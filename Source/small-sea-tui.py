@@ -5,7 +5,7 @@ import os
 import sqlite3
 import secrets
 
-import platformdirs
+import requests
 
 program_title = "Small Sea Collective TUI"
 
@@ -23,7 +23,7 @@ class SmallSea:
         print( f"Root Cooperative Clique Directory: {self.root_dir}" )
 
 
-    def create_new_identity( self, nickname, primary_cloud_location ):
+    def create_new_user( self, nickname, primary_cloud_location ):
         """ This makes a new, globally unique identity. In normal day to day
         operations, it should be an uncommon command
         """
@@ -80,6 +80,6 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    cc = CooperativeClique( root_dir=args.root_data_dir )
-    exit_code = cc.main( args.command, args.more_args )
+    sea = SmallSea( hub_port=args.local_hub_port )
+    exit_code = sea.main( args.command, args.more_args )
     sys.exit( exit_code )
