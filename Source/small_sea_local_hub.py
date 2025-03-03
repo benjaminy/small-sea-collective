@@ -9,9 +9,6 @@ from small_sea_backend import SmallSeaBackend
 
 app = FastAPI()
 
-small_sea_app_name = "SmallSeaCollectiveLocalHub"
-small_sea_app_author = "Benjamin Ylvisaker"
-
 @app.on_event("startup")
 async def startup_event():
     # Code to run on startup, such as initializing a DB connection
@@ -31,9 +28,6 @@ async def root():
 
 @app.post( "/synthesize_new_user" )
 async def new_user_form( nickname:str = Form(...) ):
-    root_dir = platformdirs.user_data_dir( small_sea_app_name, small_sea_app_author )
-    os.makedirs( root_dir, exist_ok=True )
-    path_local_db = os.path.join( root_dir, "small-sea-collective-local.db" )
     with sqlite3.connect( path_local_db ) as conn:
         cursor = conn.cursor()
         cursor.execute( "PRAGMA schema_version" )
