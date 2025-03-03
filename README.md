@@ -17,7 +17,7 @@ There has been a little explosion of projects in this space, and a couple of cha
   
 The Small Sea projects leans in hard to using git as its synchronization framework.
 
-`uvicorn small-sea-local-hub:app --reload --port 11437`
+`uvicorn small_sea_local_hub:app --reload --port 11437`
 
 ## The Name 'Small Sea'
 
