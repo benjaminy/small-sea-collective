@@ -4,14 +4,18 @@ import os
 import sqlite3
 import platformdirs
 from datetime import datetime
+import secrets
 
 class SmallSeaBackend:
     """
+
+    "Maybe overkill..."
     """
 
-    app_name = "SmallSeaCollectiveLocalHub"
-    app_author = "Benjamin Ylvisaker"
-    schema_version_number = 42
+    app_name       : str = "SmallSeaCollectiveLocalHub"
+    app_author     : str = "Benjamin Ylvisaker"
+    schema_version : int = 42
+    id_size_bytes  : int = 32
     
     def __init__( self ):
         self.root_dir = platformdirs.user_data_dir( SmallSeaBackend.app_name, SmallSeaBackend.app_author )
@@ -38,9 +42,18 @@ class SmallSeaBackend:
         cursor.execute( "PRAGMA user_version" )
         user_version = cursor.fetchone()[ 0 ]
 
-        if user_version == SmallSeaBackend.schema_version_number:
+        if user_version == SmallSeaBackend.schema_version:
             print( "SmallSea local DB already initialized" )
             return
+
+        if ( ( 0 != user_version )
+             and ( user_version < SmallSeaBackend.schema_version ) ):
+            print( "TODO: Migrate local DB!" )
+            raise NotImplementedError()
+
+        if user_version > SmallSeaBackend.schema_version:
+            print( "TODO: DB FROM THE FUTURE!" )
+            raise NotImplementedError()
 
         cursor.execute( "PRAGMA foreign_keys = ON;" )
         
@@ -59,15 +72,26 @@ class SmallSeaBackend:
             )
         """)
 
-        cursor.execute( f"PRAGMA user_version = {SmallSeaBackend.schema_version_number}" )
+        cursor.execute( f"PRAGMA user_version = {SmallSeaBackend.schema_version}" )
+        print( "Database schema initialized successfully." )
 
 
-print("Database schema initialized successfully.")
+    def new_identity( self, nickname ):
+        ident = secrets.token_bytes( SmallSeaBackend.id_size_bytes )
+        id_hex = "".join( f"{b:02x}" for b in ident )
+        ident_dir = os.path.join( self.root_dir, id_hex )
+        os.makedirs( ident_dir, exist_ok=True )
 
-    def get_db_schema_version( self ):
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
     
+
+    def add_cloud_location( self, user, url ):
+        pass
+
+
+    def fresh_team( self, user, team ):
+        pass
+
+
     try:
         cursor.execute("SELECT version FROM schema_version ORDER BY id DESC LIMIT 1")
         version = cursor.fetchone()
@@ -77,18 +101,4 @@ print("Database schema initialized successfully.")
     finally:
         conn.close()
 
-# Example usage
-version = get_schema_version(db_path)
-if version:
-    print(f"Database is initialized. Schema version: {version}")
-else:
-    print("Database is NOT initialized.")
 
-    def fresh_user( self, nickname ):
-        pass
-
-    def add_cloud_location( self, user, url ):
-        pass
-
-    def fresh_team( self, user, team ):
-        pass
