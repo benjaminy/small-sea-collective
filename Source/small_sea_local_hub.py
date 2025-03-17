@@ -39,7 +39,10 @@ async def new_user_form( request: Request ):
 
 @app.get("/session/user/{ident}")
 async def start_session_user( ident ):
-    return {"message": f"Hello World user: {ident}"}
+    small_sea = SmallSeaBackend()
+    session_suid = small_sea.start_session_user( ident )
+    session_hex = "".join( f"{b:02x}" for b in session_suid )
+    return session_hex
 
 @app.get("/session/team/{ident}/{team_id}")
 async def start_session_team( ident, team_id ):

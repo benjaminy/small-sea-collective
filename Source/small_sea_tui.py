@@ -25,6 +25,11 @@ class SmallSeaTui:
         small_sea = SmallSeaLib.SmallSeaClient()
         small_sea.new_identity( nickname )
 
+    def start_user_session( self, nickname ):
+        small_sea = SmallSeaLib.SmallSeaClient()
+        session = small_sea.start_session_user( nickname )
+        print( f"OMG {session}" )
+
 
     def add_new_cloud( self ):
         pass
@@ -38,7 +43,7 @@ class SmallSeaTui:
         pass
 
 
-    def create_new_team( self ):
+    def create_new_team( self, nick, team_name ):
         pass
 
 
@@ -57,6 +62,13 @@ class SmallSeaTui:
                 print( "Pick a better nick" )
                 return
             self.create_new_user( args.nickname )
+        elif "start_user_session" == cmd:
+            if SmallSeaTui.ILLEGAL_NICKNAME == args.nickname:
+                print( "WHO ARE YOU?" )
+                return
+            self.start_user_session( args.nickname )
+        else:
+            print( f"Unknown command '{cmd}'" )
         return 0
 
 

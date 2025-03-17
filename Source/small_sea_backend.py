@@ -93,7 +93,7 @@ class SmallSeaBackend:
             CREATE TABLE IF NOT EXISTS session (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             suid BLOB NOT NULL UNIQUE,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             duration_sec INTEGER
             )
         """)
@@ -226,6 +226,33 @@ class SmallSeaBackend:
     def fresh_team( self, user, team ):
         pass
 
+    def start_session_user( self, nickname ):
+        try:
+            conn = None
+            conn = sqlite3.connect( self.path_local_db )
+            cursor = conn.cursor()
+            print( f"GET IDENT {nickname}" )
+            cursor.execute("SELECT identity_id FROM nickname WHERE nick = ?;", ( nickname, ) )
+
+            ident = cursor.fetchall()[ 0 ][ 0 ]
+            session_suid = secrets.token_bytes( SmallSeaBackend.id_size_bytes )
+
+            print( f"ADD SESS {session_suid} {1234}" )
+            cursor.execute("INSERT INTO session (suid, duration_sec) VALUES (?, ?);", ( session_suid, 1234 ) )
+            session_id = cursor.lastrowid
+            print( f"ADD SESSU {session_id} {ident}" )
+            cursor.execute("INSERT INTO session_user (session_id, identity_id) VALUES (?, ?);",
+                           ( session_id, ident ) )
+
+            conn.commit()
+            return session_suid
+
+        except sqlite3.Error as e:
+            print("SQLite error occurred:", e)
+
+        finally:
+            if None != conn:
+                conn.close()
 
     # try:
     #     cursor.execute("SELECT version FROM schema_version ORDER BY id DESC LIMIT 1")

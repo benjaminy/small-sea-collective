@@ -13,19 +13,24 @@ class SmallSeaClient:
 
 
     def new_identity( self, nickname ):
-        self.send_post( "synthesize_new_user", { "nickname" : nickname } )
-        
+        response = self._send_post( "synthesize_new_user", { "nickname" : nickname } )
+        print( f"NEW ID {response.json()}" )
 
-    def send_get( self, path ):
+    def start_session_user( self, nickname ):
+        response = self._send_get( f"/session/user/{nickname}" )
+        print( f"NEW SESION {response.json()}" )
+        return response.json()
+
+    def _send_get( self, path ):
         scheme = "http"
         host = "127.0.0.1"
-        url = f"{scheme}://{host}/{path}"
-            
-    def send_post( self, path, json_data ):
-        scheme = "http"
-        # host = "127.0.0.1"
-        host = "localhost"
+        # host = "localhost"
         url = f"{scheme}://{host}:{self.port}/{path}"
-        print( f"POST URL {url}" )
-        response = requests.post( url, json=json_data )
-        print( response.json() )
+        return requests.get( url )
+        return response
+            
+    def _send_post( self, path, json_data ):
+        scheme = "http"
+        host = "127.0.0.1"
+        url = f"{scheme}://{host}:{self.port}/{path}"
+        return requests.post( url, json=json_data )
