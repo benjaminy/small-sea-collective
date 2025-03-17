@@ -19,7 +19,7 @@ class SmallSeaBackend:
     
     def __init__( self ):
         self.root_dir = platformdirs.user_data_dir( SmallSeaBackend.app_name, SmallSeaBackend.app_author )
-        os.makedirs( root_dir, exist_ok=True )
+        os.makedirs( self.root_dir, exist_ok=True )
         self.path_local_db = os.path.join( self.root_dir, "small_sea_collective_local.db" )
 
 
@@ -81,8 +81,18 @@ class SmallSeaBackend:
         id_hex = "".join( f"{b:02x}" for b in ident )
         ident_dir = os.path.join( self.root_dir, id_hex )
         os.makedirs( ident_dir, exist_ok=True )
+        self._initialize_small_sea_db()
+        return id_hex
 
-    
+        # with sqlite3.connect( path_local_db ) as conn:
+        # cursor = conn.cursor()
+        # cursor.execute( "PRAGMA schema_version" )
+        # schema_version = cursor.fetchone()[ 0 ]
+        # if schema_version < 13:
+        #     print( f"INIT SCHEMA!" )
+        # return { "message": f"NICK '{nickname}'",
+        #          "schema": schema_version }
+
 
     def add_cloud_location( self, user, url ):
         pass
@@ -92,13 +102,13 @@ class SmallSeaBackend:
         pass
 
 
-    try:
-        cursor.execute("SELECT version FROM schema_version ORDER BY id DESC LIMIT 1")
-        version = cursor.fetchone()
-        return version[0] if version else None
-    except sqlite3.Error:
-        return None
-    finally:
-        conn.close()
+    # try:
+    #     cursor.execute("SELECT version FROM schema_version ORDER BY id DESC LIMIT 1")
+    #     version = cursor.fetchone()
+    #     return version[0] if version else None
+    # except sqlite3.Error:
+    #     return None
+    # finally:
+    #     conn.close()
 
 

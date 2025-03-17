@@ -3,7 +3,7 @@
 import sys
 import os
 
-from fastapi import FastAPI, Form
+from fastapi import FastAPI, Form, Request, HTTPException
 
 from small_sea_backend import SmallSeaBackend
 
@@ -27,16 +27,13 @@ async def root():
     return {"message": "Hello World"}
 
 @app.post( "/synthesize_new_user" )
-async def new_user_form( nickname:str = Form(...) ):
-    with sqlite3.connect( path_local_db ) as conn:
-        cursor = conn.cursor()
-        cursor.execute( "PRAGMA schema_version" )
-        schema_version = cursor.fetchone()[ 0 ]
-        if schema_version < 13:
-            print( f"INIT SCHEMA!" )
-        return { "message": f"NICK '{nickname}'",
-                 "schema": schema_version }
-
+async def new_user_form( request: Request ):
+    req_data = await request.json()
+    if not "nickname" in req_data:
+        raise HTTPException( status=400, detail=f"Missing 'nickname'" )
+    small_sea = SmallSeaBackend()
+    id_hex = small_sea.new_identity( req_data[ "nickname" ] )
+    return { "message": id_hex }
 
 
 
