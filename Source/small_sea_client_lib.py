@@ -1,6 +1,7 @@
 # Top Matter
 
 import requests
+from datetime import datetime
 
 class SmallSeaClient:
     """
@@ -26,7 +27,10 @@ class SmallSeaClient:
         host = "127.0.0.1"
         # host = "localhost"
         url = f"{scheme}://{host}:{self.port}/{path}"
-        return requests.get( url )
+        before = datetime.now()
+        response = requests.get( url )
+        after = datetime.now()
+        print( f"get took {after - before}" )
         return response
             
     def _send_post( self, path, json_data ):

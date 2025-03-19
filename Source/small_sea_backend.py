@@ -228,6 +228,7 @@ class SmallSeaBackend:
 
     def start_session_user( self, nickname ):
         try:
+            before = datetime.now()
             conn = None
             conn = sqlite3.connect( self.path_local_db )
             cursor = conn.cursor()
@@ -243,8 +244,10 @@ class SmallSeaBackend:
             print( f"ADD SESSU {session_id} {ident}" )
             cursor.execute("INSERT INTO session_user (session_id, identity_id) VALUES (?, ?);",
                            ( session_id, ident ) )
+            after = datetime.now()
 
             conn.commit()
+            print( f"Starting a session took: {after - before}" )
             return session_suid
 
         except sqlite3.Error as e:
