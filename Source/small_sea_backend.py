@@ -223,7 +223,7 @@ class SmallSeaBackend:
         pass
 
 
-    def fresh_team( self, user, team ):
+    def create_team( self, session, team ):
         pass
 
     def start_session_user( self, nickname ):

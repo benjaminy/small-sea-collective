@@ -22,3 +22,5 @@ The Small Sea projects leans in hard to using git as its synchronization framewo
 ## The Name 'Small Sea'
 
 It's kind of a pun
+
+`rclone serve webdav --addr :PORT LOCAL_PATH --vfs-cache-mode full`

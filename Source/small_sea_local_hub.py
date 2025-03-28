@@ -56,6 +56,16 @@ async def start_session_app_meta( ident, app_id ):
 async def start_session_app_team( ident, app_id, team_id ):
     return {"message": f"Hello World team: {ident} {app_id} {team_id}"}
 
+@app.post( "/synthesize_new_team" )
+async def new_team( request: Request ):
+    req_data = await request.json()
+    if not ( "session" in req_data and "team_name" in req_data ):
+        raise HTTPException( status=400, detail=f"Missing 'session' and/or 'team_name'" )
+    small_sea = SmallSeaBackend()
+    id_hex = small_sea.new_team( req_data[ "session" ], req_data[ "team_name" ] )
+    return { "message": id_hex }
+
+
 @app.get("//")
 async def read_item(skip: int = 0, limit: int = 10):
     return {"skip": skip, "limit": limit}

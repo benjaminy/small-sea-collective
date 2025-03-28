@@ -22,6 +22,15 @@ class SmallSeaClient:
         print( f"NEW SESION {response.json()}" )
         return response.json()
 
+    def add_cloud_location( self, url ):
+        data = { "session" : session, "team_name" : team_name }
+        response = self._send_post( f"add_cloud_location", data )
+
+    def new_team( self, session, team_name ):
+        data = { "session" : session, "team_name" : team_name }
+        response = self._send_post( "synthesize_new_team", data )
+        print( f"NEW TEAM {response.json()}" )
+
     def _send_get( self, path ):
         scheme = "http"
         host = "127.0.0.1"
