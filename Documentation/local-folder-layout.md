@@ -2,23 +2,17 @@
 This all in the SmallSeaCollective AppData or UserData folder
 
 - small-sea-collective-local.db
-- Users/
+- Participants/
   - Alice/
-    - Private/ *Sync'd*
-      - identity.db 
-    - Teams/
-      - NoteToSelf/ *Sync'd*
-        - team-stuff.db
-      - School/ *Sync'd*
-        - team-stuff.db
+    - NoteToSelf/ *Sync'd*
+      - team-stuff.db
+    - School/ *Sync'd*
+      - team-stuff.db
   - Bob/
-    - Private/ *Sync'd*
-      - identity.db 
-    - Teams/
-      - NoteToSelf/ *Sync'd*
-        - team-stuff.db
-      - Home/ *Sync'd*
-      - Work/ *Sync'd*
+    - NoteToSelf/ *Sync'd*
+      - team-stuff.db
+    - Home/ *Sync'd*
+    - Work/ *Sync'd*
 
 This is in some custom app's AppData or UserData folder (in this example: ManyHands)
 
@@ -27,8 +21,9 @@ This is in some custom app's AppData or UserData folder (in this example: ManyHa
   - whatever app stuff
   - SmallSeaCollective/
     - Alice/
-      - Meta/ *Sync'd*
-      - Teams/
-        - Home/ *Sync'd*
-        - Work/ *Sync'd*
+      - NoteToSelf/
+        - general-syncd-app-stuff
+      - Home/ *Sync'd*
+      - Work/ *Sync'd*
+    - Bob/
 

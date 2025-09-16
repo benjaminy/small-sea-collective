@@ -13,23 +13,26 @@ class SmallSeaClient:
         self.port = SmallSeaClient.PORT_DEFAULT
 
 
-    def new_identity( self, nickname ):
-        response = self._send_post( "synthesize_new_user", { "nickname" : nickname } )
+    def create_new_participant( self, nickname ):
+        response = self._send_post( "participants", { "nickname" : nickname } )
         print( f"NEW ID {response.json()}" )
 
-    def start_session_user( self, nickname ):
-        response = self._send_get( f"/session/user/{nickname}" )
+    def open_session( self, nickname ):
+        response = self._send_post( f"/sessions/{participant}/{app}/{team}" )
         print( f"NEW SESION {response.json()}" )
         return response.json()
 
-    def add_cloud_location( self, url ):
-        data = { "session" : session, "team_name" : team_name }
+    def add_cloud_location( self, session, url ):
+        data = { "session" : session, "url" : url }
         response = self._send_post( f"add_cloud_location", data )
 
-    def new_team( self, session, team_name ):
+    def create_new_team( self, session, team_name ):
         data = { "session" : session, "team_name" : team_name }
-        response = self._send_post( "synthesize_new_team", data )
+        response = self._send_post( "teams", data )
         print( f"NEW TEAM {response.json()}" )
+
+    def get_blob( self, session, path ):
+        pass
 
     def _send_get( self, path ):
         scheme = "http"

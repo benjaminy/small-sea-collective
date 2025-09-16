@@ -3,6 +3,7 @@
 import sys
 import os
 import secrets
+import json
 
 import small_sea_client_lib as SmallSeaLib
 
@@ -15,21 +16,43 @@ class SmallSeaTui:
     def __init__( self, hub_port=None ):
         self.hub_port = hub_port
 
-        print( f"Root Cooperative Clique Directory: {self.hub_port}" )
+        print( f"Small Sea Collective local hub port: {self.hub_port}" )
 
 
-    def create_new_user( self, nickname, primary_cloud_location=None ):
-        """ This makes a new, globally unique identity. In normal day to day
-        operations, it should be an uncommon command
+    def create_new_participant( self, nickname, primary_cloud_location=None ):
+        """ Create a new participant identity in the SmallSea universe.
+
+        In normal day to day operations, it should be an uncommon command
         """
         small_sea = SmallSeaLib.SmallSeaClient()
-        small_sea.new_identity( nickname )
+        small_sea.create_new_participant( nickname )
 
-    def start_user_session( self, nickname ):
-        small_sea = SmallSeaLib.SmallSeaClient()
-        session = small_sea.start_session_user( nickname )
+    def open_session( self, nickname, team ):
+        sessions_env_str = os.getenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", json.dumps({}))
+        session = None
+        format_error = True
+        try:
+            sessions = json.loads(sessions_env_str)
+            if isinstance(sessions, dict):
+                session = sessions_env_val.get((nickname, team))
+                format_error = False
+        except json.decoder.JSONDecodeError as exn:
+            pass
+
+        if format_error:
+            print(f"Small Sea TUI Sessions env var broken {sessions_env_str}")
+            sessions = {}
+
+        if session is None:
+            print( f"No session for {nickname} {team}. Requesting a session." )
+            small_sea = SmallSeaLib.SmallSeaClient()
+            session = small_sea.open_session( nickname, "small_sea_collective_core_app", team )
+            sessions[ ( nickname, team ) ] = session
+            os.putenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", json.dumps(sessions))
+
+        session = sessions_env_val[ ( nickname, team ) ]
         print( f"OMG {session}" )
-
+        return session
 
     def add_new_cloud( self, nickname, url ):
         small_sea = SmallSeaLib.SmallSeaClient()
@@ -47,7 +70,7 @@ class SmallSeaTui:
 
     def create_new_team( self, nick, team_name ):
         small_sea = SmallSeaLib.SmallSeaClient()
-        session = small_sea.start_session_user( nickname )
+        session = small_sea.open_session( nickname, "SmallSeaTui", "SmallSeaCollectiveMeta" )
         small_sea.create_new_team( session, team_name )
 
 
@@ -61,11 +84,11 @@ class SmallSeaTui:
 
     def main( self, cmd, args ):
 
-        if "new_user" == cmd:
+        if "new_participant" == cmd:
             if SmallSeaTui.ILLEGAL_NAME == args.nickname:
                 print( "Pick a better nick" )
                 return
-            self.create_new_user( args.nickname )
+            self.create_new_participant( args.nickname )
         elif "start_user_session" == cmd:
             if SmallSeaTui.ILLEGAL_NAME == args.nickname:
                 print( "WHO ARE YOU?" )
