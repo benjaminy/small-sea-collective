@@ -4,6 +4,7 @@ import sys
 import os
 
 from fastapi import FastAPI, Form, Request, HTTPException
+import pydantic
 
 from small_sea_local_hub_config import settings
 from small_sea_backend import SmallSeaBackend
@@ -40,7 +41,8 @@ async def root():
     return {"message": "Hello World"}
 
 @app.post( "/participants" )
-async def new_user_form( request: Request ):
+async def create_new_participant(
+        request: Request):
     req_data = await request.json()
     if not "nickname" in req_data:
         raise HTTPException( status=400, detail=f"Missing 'nickname'" )
@@ -49,33 +51,37 @@ async def new_user_form( request: Request ):
     return { "message": id_hex }
 
 
+class SessionReq(pydantic.BaseModel):
+    participant: str
+    app: str
+    team: str
+    client: str
 
-@app.get("/session/user/{ident}")
-async def start_session_user( ident ):
+@app.post("/sessions")
+async def open_session(req: SessionReq):
     small_sea = app.state.backend
-    session_suid = small_sea.start_session_user( ident )
-    session_hex = "".join( f"{b:02x}" for b in session_suid )
-    return session_hex
+    try:
+        session_suid = small_sea.open_session(
+            req.participant,
+            req.app,
+            req.team,
+            req.client)
+        session_hex = "".join( f"{b:02x}" for b in session_suid )
+        return session_hex
+    except Exception as exn:
+        return f"error {str(exn)}"
 
-@app.get("/session/team/{ident}/{team_id}")
-async def start_session_team( ident, team_id ):
-    return {"message": f"Hello World app: {ident} {team_id}"}
 
-@app.get("/session/app/{ident}/{app_id}")
-async def start_session_app_meta( ident, app_id ):
-    return {"message": f"Hello World app: {ident} {app_id}"}
+class NewTeamReq(pydantic.BaseModel):
+    session: str
+    name: str
 
-@app.get("/session/app-team/{ident}/{app_id}/{team_id}")
-async def start_session_app_team( ident, app_id, team_id ):
-    return {"message": f"Hello World team: {ident} {app_id} {team_id}"}
-
-@app.post( "/synthesize_new_team" )
-async def new_team( request: Request ):
-    req_data = await request.json()
-    if not ( "session" in req_data and "team_name" in req_data ):
-        raise HTTPException( status=400, detail=f"Missing 'session' and/or 'team_name'" )
+@app.post( "/teams" )
+async def new_team(req: NewTeamReq):
     small_sea = app.state.backend
-    id_hex = small_sea.new_team( req_data[ "session" ], req_data[ "team_name" ] )
+    id_hex = small_sea.new_team(
+        req.session,
+        req.name)
     return { "message": id_hex }
 
 

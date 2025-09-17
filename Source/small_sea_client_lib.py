@@ -17,14 +17,25 @@ class SmallSeaClient:
         response = self._send_post( "participants", { "nickname" : nickname } )
         print( f"NEW ID {response.json()}" )
 
-    def open_session( self, nickname ):
-        response = self._send_post( f"/sessions/{participant}/{app}/{team}" )
+    def open_session(
+            self,
+            nickname,
+            app,
+            team,
+            client ):
+        data = {
+            "participant": nickname,
+            "app": app,
+            "team": team,
+            "client": client,
+        }
+        response = self._send_post( f"/sessions", data )
         print( f"NEW SESION {response.json()}" )
         return response.json()
 
     def add_cloud_location( self, session, url ):
         data = { "session" : session, "url" : url }
-        response = self._send_post( f"add_cloud_location", data )
+        response = self._send_post( f"cloud_locations", data )
 
     def create_new_team( self, session, team_name ):
         data = { "session" : session, "team_name" : team_name }

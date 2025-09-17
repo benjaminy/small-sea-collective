@@ -28,13 +28,20 @@ class SmallSeaTui:
         small_sea.create_new_participant( nickname )
 
     def open_session( self, nickname, team ):
+        def encode_sessions( ss ):
+            step1 = { json.dumps(k): v for k, v in ss.items() }
+            return json.dumps(step1)
+        def decode_sessions( ss_str ):
+            step1 = json.loads(ss_str)
+            return { json.loads(k): v for k, v in step1 }
+
         sessions_env_str = os.getenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", json.dumps({}))
         session = None
         format_error = True
         try:
-            sessions = json.loads(sessions_env_str)
+            sessions = decode_sessions(sessions_env_str)
             if isinstance(sessions, dict):
-                session = sessions_env_val.get((nickname, team))
+                session = sessions.get((nickname, team))
                 format_error = False
         except json.decoder.JSONDecodeError as exn:
             pass
@@ -46,11 +53,11 @@ class SmallSeaTui:
         if session is None:
             print( f"No session for {nickname} {team}. Requesting a session." )
             small_sea = SmallSeaLib.SmallSeaClient()
-            session = small_sea.open_session( nickname, "small_sea_collective_core_app", team )
+            session = small_sea.open_session( nickname, "small_sea_collective_core_app", team, "small_sea_tui" )
             sessions[ ( nickname, team ) ] = session
-            os.putenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", json.dumps(sessions))
+            os.putenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", encode_sessions(sessions))
 
-        session = sessions_env_val[ ( nickname, team ) ]
+        session = sessions[(nickname, team)]
         print( f"OMG {session}" )
         return session
 
@@ -89,11 +96,11 @@ class SmallSeaTui:
                 print( "Pick a better nick" )
                 return
             self.create_new_participant( args.nickname )
-        elif "start_user_session" == cmd:
+        elif "open_session" == cmd:
             if SmallSeaTui.ILLEGAL_NAME == args.nickname:
                 print( "WHO ARE YOU?" )
                 return
-            self.start_user_session( args.nickname )
+            self.open_session( args.nickname, args.team_name )
         elif "new_team" == cmd:
             if SmallSeaTui.ILLEGAL_NAME == args.nickname:
                 print( "WHO ARE YOU?" )

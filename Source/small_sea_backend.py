@@ -11,6 +11,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
 from botocore.exceptions import ClientError
+import plyer
 
 class SmallSeaBackend:
     """
@@ -35,8 +36,63 @@ class SmallSeaBackend:
         os.makedirs( self.root_dir / "Logging", exist_ok=True )
         log_path = self.root_dir / "Logging" / "small_sea_hub.log"
         self.logger = setup_logging( log_file=log_path )
-        # self._initialize_small_sea_db()
+        self._initialize_small_sea_db()
 
+
+    def create_new_participant( self, nickname ):
+        ident = secrets.token_bytes( SmallSeaBackend.id_size_bytes )
+        id_hex = "".join( f"{b:02x}" for b in ident )
+        ident_dir = self.root_dir / "Participants" / id_hex / "NoteToSelf"
+        try:
+            os.makedirs( ident_dir, exist_ok=False )
+        except Exception as exn:
+            print( f"makedirs failed :( {ident_dir}" )
+        self._initialize_user_db( ident, id_hex )
+        # self._add_user_to_hub_db( ident, nickname )
+        return id_hex
+
+
+    def open_session(
+            self,
+            nickname,
+            app,
+            team,
+            client):
+        auth_token = str(secrets.randbelow(10000)).zfill(4)
+        plyer.notification.notify(
+            title="Small Sea Access Request",
+            message=f"Client {client} requested access to the resources for app {app}. {auth_token} is the code to provide to the client if you approve this request.",
+            app_name="Small Sea Hub",
+            # app_icon="PATH",
+            timeout=5,
+            ticker="WHAT THE HECK IS A TICKER"
+        )
+        try:
+            before = datetime.now()
+            conn = None
+            conn = sqlite3.connect( self.path_local_db )
+            cursor = conn.cursor()
+
+            # TODO: Validation
+
+            session_suid = secrets.token_bytes( SmallSeaBackend.id_size_bytes )
+
+            print( f"ADD SESS {session_suid} {1234}" )
+            cursor.execute("""
+                INSERT INTO session (suid, duration_sec, participant, app, team, client)
+                VALUES (?, ?, ?, ?, ?, ?);""",
+                ( session_suid, 1234, nickname, app, team, client ) )
+            after = datetime.now()
+            conn.commit()
+            print( f"Starting a session took: {after - before}" )
+            return session_suid
+
+        except sqlite3.Error as e:
+            print("SQLite error occurred:", e)
+
+        finally:
+            if None != conn:
+                conn.close()
 
     def _initialize_small_sea_db( self ):
         try:
@@ -52,6 +108,8 @@ class SmallSeaBackend:
         finally:
             if None != conn:
                 conn.close()
+
+
 
     def _initialize_small_sea_schema( self, cursor ):
         cursor.execute( "PRAGMA user_version" )
@@ -71,91 +129,23 @@ class SmallSeaBackend:
             raise NotImplementedError()
 
         cursor.execute( "PRAGMA foreign_keys = ON;" )
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS identity (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL UNIQUE
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS nickname (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            identity_id INTEGER NOT NULL,
-            nick TEXT NOT NULL,
-            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS team (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL UNIQUE
-            )
-        """)
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS app (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL UNIQUE
-            )
-        """)
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS session (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             suid BLOB NOT NULL UNIQUE,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            duration_sec INTEGER
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS session_user (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            identity_id INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sesion(id) ON DELETE CASCADE,
-            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS session_team (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            team_id INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sesion(id) ON DELETE CASCADE,
-            FOREIGN KEY (team_id) REFERENCES team(id) ON DELETE CASCADE
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS session_app (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            app_id INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sesion(id) ON DELETE CASCADE,
-            FOREIGN KEY (app_id) REFERENCES app(id) ON DELETE CASCADE
+            duration_sec INTEGER,
+            participant TEXT,
+            app TEXT,
+            team TEXT,
+            client TEXT
             )
         """)
 
         cursor.execute( f"PRAGMA user_version = {SmallSeaBackend.hub_schema_version}" )
         print( "Hub DB schema initialized successfully." )
 
-
-    def create_new_participant( self, nickname ):
-        ident = secrets.token_bytes( SmallSeaBackend.id_size_bytes )
-        id_hex = "".join( f"{b:02x}" for b in ident )
-        ident_dir = self.root_dir / "Participants" / id_hex / "NoteToSelf"
-        try:
-            os.makedirs( ident_dir, exist_ok=False )
-        except Exception as exn:
-            print( f"makedirs failed :( {ident_dir}" )
-        self._initialize_user_db( ident, id_hex )
-        # self._add_user_to_hub_db( ident, nickname )
-        return id_hex
 
     def _add_user_to_hub_db( self, ident, nickname ):
         try:
@@ -310,37 +300,6 @@ class SmallSeaBackend:
     def create_team( self, session, team ):
         pass
 
-    def start_session_user( self, nickname ):
-        try:
-            before = datetime.now()
-            conn = None
-            conn = sqlite3.connect( self.path_local_db )
-            cursor = conn.cursor()
-            print( f"GET IDENT {nickname}" )
-            cursor.execute("SELECT identity_id FROM nickname WHERE nick = ?;", ( nickname, ) )
-
-            ident = cursor.fetchall()[ 0 ][ 0 ]
-            session_suid = secrets.token_bytes( SmallSeaBackend.id_size_bytes )
-
-            print( f"ADD SESS {session_suid} {1234}" )
-            cursor.execute("INSERT INTO session (suid, duration_sec) VALUES (?, ?);", ( session_suid, 1234 ) )
-            session_id = cursor.lastrowid
-            print( f"ADD SESSU {session_id} {ident}" )
-            cursor.execute("INSERT INTO session_user (session_id, identity_id) VALUES (?, ?);",
-                           ( session_id, ident ) )
-            after = datetime.now()
-
-            conn.commit()
-            print( f"Starting a session took: {after - before}" )
-            return session_suid
-
-        except sqlite3.Error as e:
-            print("SQLite error occurred:", e)
-
-        finally:
-            if None != conn:
-                conn.close()
-
     # try:
     #     cursor.execute("SELECT version FROM schema_version ORDER BY id DESC LIMIT 1")
     #     version = cursor.fetchone()
@@ -433,3 +392,101 @@ def setup_logging(
     logger.addHandler(file_handler)
 
     return logger
+
+# GRAVEYARD:
+if False:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS identity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            suid BLOB NOT NULL UNIQUE
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS nickname (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            identity_id INTEGER NOT NULL,
+            nick TEXT NOT NULL,
+            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS team (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            suid BLOB NOT NULL UNIQUE
+            )
+        """)
+        
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS app (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            suid BLOB NOT NULL UNIQUE
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS session_user (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            identity_id INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sesion(id) ON DELETE CASCADE,
+            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS session_team (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            team_id INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sesion(id) ON DELETE CASCADE,
+            FOREIGN KEY (team_id) REFERENCES team(id) ON DELETE CASCADE
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS session_app (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            app_id INTEGER NOT NULL,
+            FOREIGN KEY (session_id) REFERENCES sesion(id) ON DELETE CASCADE,
+            FOREIGN KEY (app_id) REFERENCES app(id) ON DELETE CASCADE
+            )
+        """)
+
+def open_session(
+        self,
+        nickname,
+        app,
+        team,
+        client):
+    try:
+        before = datetime.now()
+        conn = None
+        conn = sqlite3.connect( self.path_local_db )
+        cursor = conn.cursor()
+        print( f"GET IDENT {nickname}" )
+        cursor.execute("SELECT identity_id FROM nickname WHERE nick = ?;", ( nickname, ) )
+
+        ident = cursor.fetchall()[ 0 ][ 0 ]
+        session_suid = secrets.token_bytes( SmallSeaBackend.id_size_bytes )
+
+        print( f"ADD SESS {session_suid} {1234}" )
+        cursor.execute("INSERT INTO session (suid, duration_sec) VALUES (?, ?);", ( session_suid, 1234 ) )
+        session_id = cursor.lastrowid
+        print( f"ADD SESSU {session_id} {ident}" )
+        cursor.execute("INSERT INTO session_user (session_id, identity_id) VALUES (?, ?);",
+                       ( session_id, ident ) )
+        after = datetime.now()
+
+        conn.commit()
+        print( f"Starting a session took: {after - before}" )
+        return session_suid
+
+    except sqlite3.Error as e:
+        print("SQLite error occurred:", e)
+
+    finally:
+        if None != conn:
+            conn.close()
