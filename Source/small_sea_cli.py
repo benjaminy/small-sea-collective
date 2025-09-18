@@ -1,128 +1,102 @@
-#
+# Top Matter
 
-import sys
+import click
+
 import os
-import secrets
 import json
 
 import small_sea_client_lib as SmallSeaLib
 
-program_title = "Small Sea Collective TUI"
+@click.group()
+@click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
+@click.option("--hub_port", type=int, default=11437, help="Port number for the local hub")
+@click.pass_context
+def cli(ctx, verbose, hub_port):
+    """ Small Sea Core CLI tool """
+    ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
+    ctx.obj["hub_part"] = hub_port
+    click.echo(f"CLI CALLED")
 
-class SmallSeaTui:
 
-    ILLEGAL_NAME = "SmallSeaIllegalNameNeverUseMe"
+@cli.command()
+@click.argument("nickname")
+@click.option("--cloud_backend", type=click.Choice(["s3", "webdav","drive"]))
+@click.option("--cloud_url")
+@click.pass_context
+def new_participant(ctx, nickname, cloud_backend, cloud_url):
+    """ Create a new participant identity in the SmallSea universe.
 
-    def __init__( self, hub_port=None ):
-        self.hub_port = hub_port
+    In normal day to day operations, it should be an uncommon command
+    """
+    small_sea = SmallSeaLib.SmallSeaClient()
+    result = small_sea.create_new_participant( nickname )
 
-        print( f"Small Sea Collective local hub port: {self.hub_port}" )
+    if (cloud_backend is None) != (cloud_url is None):
+        click.echo("ERROR. Only one of backend and url provided")
 
 
-    def create_new_participant( self, nickname, primary_cloud_location=None ):
-        """ Create a new participant identity in the SmallSea universe.
+@cli.command()
+@click.argument("nickname")
+@click.argument("team_name")
+@click.pass_context
+def open_session(ctx, nickname, team_name ):
+    def encode_sessions( ss ):
+        step1 = { json.dumps(k): v for k, v in ss.items() }
+        return json.dumps(step1)
+    def decode_sessions( ss_str ):
+        step1 = json.loads(ss_str)
+        return { json.loads(k): v for k, v in step1 }
 
-        In normal day to day operations, it should be an uncommon command
-        """
+    sessions_env_str = os.getenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", json.dumps({}))
+    session = None
+    format_error = True
+    try:
+        sessions = decode_sessions(sessions_env_str)
+        if isinstance(sessions, dict):
+            session = sessions.get((nickname, team_name))
+            format_error = False
+    except json.decoder.JSONDecodeError as exn:
+        pass
+
+    if format_error:
+        click.echo(f"Small Sea TUI Sessions env var broken {sessions_env_str}")
+        sessions = {}
+
+    if session is None:
+        click.echo( f"No session for {nickname} {team_name}. Requesting a session." )
         small_sea = SmallSeaLib.SmallSeaClient()
-        small_sea.create_new_participant( nickname )
+        session = small_sea.open_session( nickname, "small_sea_collective_core_app", team_name, "small_sea_tui" )
+        sessions[ ( nickname, team_name ) ] = session
+        os.putenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", encode_sessions(sessions))
 
-    def open_session( self, nickname, team ):
-        def encode_sessions( ss ):
-            step1 = { json.dumps(k): v for k, v in ss.items() }
-            return json.dumps(step1)
-        def decode_sessions( ss_str ):
-            step1 = json.loads(ss_str)
-            return { json.loads(k): v for k, v in step1 }
-
-        sessions_env_str = os.getenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", json.dumps({}))
-        session = None
-        format_error = True
-        try:
-            sessions = decode_sessions(sessions_env_str)
-            if isinstance(sessions, dict):
-                session = sessions.get((nickname, team))
-                format_error = False
-        except json.decoder.JSONDecodeError as exn:
-            pass
-
-        if format_error:
-            print(f"Small Sea TUI Sessions env var broken {sessions_env_str}")
-            sessions = {}
-
-        if session is None:
-            print( f"No session for {nickname} {team}. Requesting a session." )
-            small_sea = SmallSeaLib.SmallSeaClient()
-            session = small_sea.open_session( nickname, "small_sea_collective_core_app", team, "small_sea_tui" )
-            sessions[ ( nickname, team ) ] = session
-            os.putenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", encode_sessions(sessions))
-
-        session = sessions[(nickname, team)]
-        print( f"OMG {session}" )
-        return session
-
-    def add_new_cloud( self, nickname, protocol, url ):
-        small_sea = SmallSeaLib.SmallSeaClient()
-        session = small_sea.open_session( nickname, "NoteToSelf" )
-        small_sea.add_cloud_location( session, protocol, url )
+    session = sessions[(nickname, team_name)]
+    click.echo( f"OMG {session}" )
+    return session
 
 
-    def connect_to_existing_cloud( self, url ):
-        pass
+@cli.command()
+@click.argument("nickname")
+@click.argument("backend", type=click.Choice(["s3", "webdav","drive"]))
+@click.argument("url")
+@click.pass_context
+def add_cloud(ctx, nickname, backend, url ):
+    small_sea = SmallSeaLib.SmallSeaClient()
+    session = open_session( nickname, "NoteToSelf" )
+    small_sea.add_cloud_location( session, backend, url )
 
 
-    def import_user( self, primary_cloud_location ):
-        pass
-
-
-    def create_new_team( self, nick, team_name ):
-        small_sea = SmallSeaLib.SmallSeaClient()
-        session = small_sea.open_session( nickname, "SmallSeaTui", "SmallSeaCollectiveMeta" )
-        small_sea.create_new_team( session, team_name )
-
-
-    def invite_user_to_team( self ):
-        pass
-
-
-    def remove_user_from_team( self ):
-        pass
-
-
-    def main( self, cmd, args ):
-
-        if "new_participant" == cmd:
-            if SmallSeaTui.ILLEGAL_NAME == args.nickname:
-                print( "Pick a better nick" )
-                return
-            self.create_new_participant( args.nickname )
-        elif "open_session" == cmd:
-            if SmallSeaTui.ILLEGAL_NAME == args.nickname:
-                print( "WHO ARE YOU?" )
-                return
-            self.open_session( args.nickname, args.team_name )
-        elif "new_team" == cmd:
-            if SmallSeaTui.ILLEGAL_NAME == args.nickname:
-                print( "WHO ARE YOU?" )
-                return
-            self.create_new_team( args.nickname, args.team_name )
-        else:
-            print( f"Unknown command '{cmd}'" )
-        return 0
+@cli.command()
+@click.argument("nickname")
+@click.argument("team_name")
+@click.pass_context
+def create_new_team(ctx, nickname, team_name ):
+    small_sea = SmallSeaLib.SmallSeaClient()
+    session = open_session( nickname, "NoteToSelf" )
+    small_sea.create_new_team( session, team_name )
 
 
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser( program_title )
-    parser.add_argument( "command", type=str )
-    parser.add_argument( "--local-hub-port", type=int, default=11437 )
-    parser.add_argument( "--nickname", type=str, default=SmallSeaTui.ILLEGAL_NAME )
-    parser.add_argument( "--team_name", type=str, default=SmallSeaTui.ILLEGAL_NAME )
-    parser.add_argument( "more_args", nargs=argparse.REMAINDER )
-
-    args = parser.parse_args()
-
-    sea = SmallSeaTui( hub_port=args.local_hub_port )
-    exit_code = sea.main( args.command, args )
-    sys.exit( exit_code )
+    if False:
+        print("Registered commands:", list(cli.commands.keys()))
+    cli(prog_name="Small Sea Core CLI")
