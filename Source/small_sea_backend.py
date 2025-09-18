@@ -249,7 +249,11 @@ class SmallSeaBackend:
         cursor.execute( f"PRAGMA user_version = {SmallSeaBackend.user_schema_version}" )
         print( "User DB schema initialized successfully." )
 
-    def add_cloud_location( self, session, url ):
+    def add_cloud_location(
+            self,
+            session,
+            protocol,
+            url ):
         idx_colon = url.find( ":" )
         if 0 > idx_colon:
             error

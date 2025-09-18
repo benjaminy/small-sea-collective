@@ -33,14 +33,29 @@ class SmallSeaClient:
         print( f"NEW SESION {response.json()}" )
         return response.json()
 
-    def add_cloud_location( self, session, url ):
-        data = { "session" : session, "url" : url }
+    def add_cloud_location( self, session, protocol, url ):
+        data = { "session" : session, "protocol" : protocol, "url" : url }
         response = self._send_post( f"cloud_locations", data )
 
     def create_new_team( self, session, team_name ):
         data = { "session" : session, "team_name" : team_name }
         response = self._send_post( "teams", data )
         print( f"NEW TEAM {response.json()}" )
+        return response
+
+    def put_blob(
+            self,
+            session,
+            path,
+            blob,
+            if_match=None,
+            if_none_match=None ):
+        data = { "session": sessiom, "path": path, "blob": blob }
+        if if_match is not None:
+            data["if_match"] = if_match
+        if if_none_match is not None:
+            data["if_none_match"] = if_none_match
+        response = self._send_post("blobs", data)
 
     def get_blob( self, session, path ):
         pass

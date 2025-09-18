@@ -1,5 +1,7 @@
 #
 
+from typing import Optional, Union
+
 import sys
 import os
 
@@ -85,15 +87,29 @@ async def new_team(req: NewTeamReq):
     return { "message": id_hex }
 
 
-@app.post( "/add_cloud_location" )
-async def add_cloud( request: Request ):
-    req_data = await request.json()
-    if not ( "session" in req_data and "url" in req_data ):
-        raise HTTPException( status=400, detail=f"Missing 'session' and/or 'url'" )
+class AddCloudLocReq(pydantic.BaseModel):
+    session: str
+    protocol: str
+    url: str
+
+@app.post( "/cloud_locations" )
+async def add_cloud(req: AddCloudLocReq):
     small_sea = app.state.backend
-    id_hex = small_sea.add_cloud_location( req_data[ "session" ], req_data[ "url" ] )
+    id_hex = small_sea.add_cloud_location( req.session, req.protocol, req.url )
     return { "message": id_hex }
 
+class PutBlobReq(pydantic.BaseModel):
+    session: str
+    path: str
+    blob: Union[str, bytes]
+    if_match: Optional[str]
+    if_none_match: Optional[str]
+
+@app.post( "/blobs" )
+async def put_blob(req: PutBlobReq):
+    small_sea = app.state.backend
+    id_hex = small_sea.put_blob( req.session, req.protocol, req.url )
+    return { "message": id_hex }
 
 @app.get("//")
 async def read_item(skip: int = 0, limit: int = 10):

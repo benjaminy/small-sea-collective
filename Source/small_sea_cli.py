@@ -61,10 +61,10 @@ class SmallSeaTui:
         print( f"OMG {session}" )
         return session
 
-    def add_new_cloud( self, nickname, url ):
+    def add_new_cloud( self, nickname, protocol, url ):
         small_sea = SmallSeaLib.SmallSeaClient()
-        session = small_sea.start_session_user( nickname )
-        small_sea.add_cloud_location( session, url )
+        session = small_sea.open_session( nickname, "NoteToSelf" )
+        small_sea.add_cloud_location( session, protocol, url )
 
 
     def connect_to_existing_cloud( self, url ):
