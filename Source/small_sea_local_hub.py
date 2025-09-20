@@ -89,13 +89,13 @@ async def new_team(req: NewTeamReq):
 
 class AddCloudLocReq(pydantic.BaseModel):
     session: str
-    protocol: str
+    backend: str
     url: str
 
 @app.post( "/cloud_locations" )
 async def add_cloud(req: AddCloudLocReq):
     small_sea = app.state.backend
-    id_hex = small_sea.add_cloud_location( req.session, req.protocol, req.url )
+    id_hex = small_sea.add_cloud_location( req.session, req.backend, req.url )
     return { "message": id_hex }
 
 class PutBlobReq(pydantic.BaseModel):
@@ -108,7 +108,7 @@ class PutBlobReq(pydantic.BaseModel):
 @app.post( "/blobs" )
 async def put_blob(req: PutBlobReq):
     small_sea = app.state.backend
-    id_hex = small_sea.put_blob( req.session, req.protocol, req.url )
+    id_hex = small_sea.put_blob( req.session, req.backend, req.url )
     return { "message": id_hex }
 
 @app.get("//")

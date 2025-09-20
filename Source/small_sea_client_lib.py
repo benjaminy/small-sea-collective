@@ -33,8 +33,8 @@ class SmallSeaClient:
         print( f"NEW SESION {response.json()}" )
         return response.json()
 
-    def add_cloud_location( self, session, protocol, url ):
-        data = { "session" : session, "protocol" : protocol, "url" : url }
+    def add_cloud_location( self, session, backend, url ):
+        data = { "session" : session, "backend" : backend, "url" : url }
         response = self._send_post( f"cloud_locations", data )
 
     def create_new_team( self, session, team_name ):

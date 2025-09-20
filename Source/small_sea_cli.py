@@ -99,6 +99,10 @@ def create_new_team(ctx, nickname, team_name ):
     small_sea.create_new_team( session, team_name )
 
 
+# @cli.command()
+# @click.argument("nickname")
+
+
 @cli.command()
 @click.argument("nickname")
 @click.argument("team_name")
