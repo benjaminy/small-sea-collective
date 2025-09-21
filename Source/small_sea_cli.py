@@ -108,10 +108,10 @@ def create_new_team(ctx, nickname, team_name ):
 @click.argument("team_name")
 @click.option("--abort_on_stale", is_flag=True, help="If the local copy is stale, abort instead of automatically reconciling")
 @click.pass_context
-def upload_changes(ctx, nickname, team_name):
+def upload_snapshot(ctx, nickname, team_name):
     small_sea = SmallSeaLib.SmallSeaClient()
     session = open_session(nickname, team_name)
-    small_sea.upload_changes(session)
+    small_sea.upload_snapshot(session)
 
 
 @cli.command()

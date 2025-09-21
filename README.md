@@ -51,6 +51,18 @@ The Small Sea projects leans in hard to using git as its synchronization framewo
 
 General Purpose Services
 
+<table>
+<tr>
+<th>Feature</th>
+<th><img src="./Images/slack-icon.png" alt="Slack"></th>
+<th>WUT</th>
+</tr>
+</table>
+
+| Feature         | Slack | Discord | Teams |
+|-----------------|-------|---------|-------|
+| Storage         |       |         |       |
+| Team management |       |         |       |
 
 `uvicorn --app-dir Source small_sea_local_hub:app --reload --port 11437`
 
