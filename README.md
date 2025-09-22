@@ -53,9 +53,25 @@ General Purpose Services
 
 <table>
 <tr>
-<th>Feature</th>
-<th><img src="./Images/slack-icon.png" alt="Slack"></th>
-<th>WUT</th>
+<th>Feature \ App</th>
+<th><img src="./Documentation/Images/slack-icon.png" alt="Slack"></th>
+<th><img src="./Documentation/Images/discord-logo.png" alt="Discord"></th>
+<th><img src="./Documentation/Images/ms-teams-logo.png" alt="MS Teams"></th>
+</tr>
+<tr>
+<td><img src="./Documentation/Images/cloud-storage.png" alt="Cloud storage"></td>
+</tr>
+<tr>
+<td><img src="./Documentation/Images/meeple-team.png" alt="Team management"></td>
+</tr>
+<tr>
+<td><img src="./Documentation/Images/notifications.png" alt="Notifications"></td>
+</tr>
+<tr>
+<td><img src="./Documentation/Images/sync-engine.png" alt="Synchronization"></td>
+</tr>
+<tr>
+<td><img src="./Documentation/Images/security-etc.png" alt="Security, privacy, auth"></td>
 </tr>
 </table>
 
