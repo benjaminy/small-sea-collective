@@ -1,6 +1,7 @@
 
-`uvicorn --app-dir Source small_sea_local_hub:app --reload --port 11437`
+uvicorn --app-dir Source small_sea_local_hub:app --reload --port 11437
 
+uv run fastapi dev Source/small_sea_local_hub.py
 
 `rclone serve webdav --addr :PORT LOCAL_PATH --user USER --pass SECRET --etag-hash --vfs-cache-mode full`
 
