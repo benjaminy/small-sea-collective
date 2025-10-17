@@ -13,6 +13,9 @@ from typing import Optional, Tuple
 from botocore.exceptions import ClientError
 import plyer
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives import serialization
+
 class SmallSeaBackend:
     """
 
@@ -42,9 +45,28 @@ class SmallSeaBackend:
     def create_new_participant( self, nickname ):
         ident = secrets.token_bytes( SmallSeaBackend.id_size_bytes )
         id_hex = "".join( f"{b:02x}" for b in ident )
-        ident_dir = self.root_dir / "Participants" / id_hex / "NoteToSelf"
+        ident_dir = self.root_dir / "Participants" / id_hex
+        device_key = Ed25519PrivateKey.generate()
+        device_public_key = private_key.public_key()
+        device_key_bytes = device_key.private_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PrivateFormat.Raw,
+            encryption_algorithm=serialization.NoEncryption()
+        )
+        device_public_key_bytes = device_public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw
+        )
+
+        if False:
+            signature = private_key.sign(b"my authenticated message")
+            # Raises InvalidSignature if verification fails
+            public_key.verify(signature, b"my authenticated message")
+            loaded_public_key = ed25519.Ed25519PublicKey.from_public_bytes(public_bytes)
+
         try:
-            os.makedirs( ident_dir, exist_ok=False )
+            os.makedirs( ident_dir / "NoteToSelf", exist_ok=False )
+            os.makedirs( ident_dir / "FakeEnclave", exist_ok=False )
         except Exception as exn:
             print( f"makedirs failed :( {ident_dir}" )
         self._initialize_user_db( ident, id_hex )
@@ -171,7 +193,7 @@ class SmallSeaBackend:
     def _initialize_user_db( self, ident, id_hex ):
         try:
             conn = None
-            path = self.root_dir / "Participants" / id_hex / "NoteToSelf" /"participant.db"
+            path = self.root_dir / "Participants" / id_hex / "NoteToSelf" / "participant.db"
             conn = sqlite3.connect( path )
             cursor = conn.cursor()
             self._initialize_core_note_to_self_schema( cursor )
@@ -202,6 +224,14 @@ class SmallSeaBackend:
             raise NotImplementedError()
 
         cursor.execute( "PRAGMA foreign_keys = ON;" )
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_device (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            suid BLOB NOT NULL,
+            key BLOB NOT NULL
+            )
+        """)
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS team (
@@ -300,6 +330,12 @@ class SmallSeaBackend:
         finally:
             if None != conn:
                 conn.close()
+
+    def make_device_link_invitation(
+            self,
+            session):
+        # make keypair
+        pass
 
     def create_team( self, session, team ):
         pass

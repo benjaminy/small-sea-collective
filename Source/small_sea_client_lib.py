@@ -3,19 +3,28 @@
 import requests
 from datetime import datetime
 
+class SmallSeaHubUnavailable(Exception):
+    def __init__(self):
+        pass
+
 class SmallSeaClient:
     """
     """
 
     PORT_DEFAULT = 11437
-    
-    def __init__( self ):
-        self.port = SmallSeaClient.PORT_DEFAULT
+
+    def __init__(
+            self,
+            port=SmallSeaClient.PORT_DEFAULT):
+        self.port = port
 
 
     def create_new_participant( self, nickname ):
-        response = self._send_post( "participants", { "nickname" : nickname } )
-        print( f"NEW ID {response.json()}" )
+        try:
+            response = self._send_post( "participants", { "nickname" : nickname } )
+            print( f"NEW ID {response.json()}" )
+        except requests.exceptions.ConnectionError as exn:
+            raise SmallSeaHubUnavailable()
 
     def open_session(
             self,
@@ -41,6 +50,12 @@ class SmallSeaClient:
         data = { "session" : session, "team_name" : team_name }
         response = self._send_post( "teams", data )
         print( f"NEW TEAM {response.json()}" )
+        return response
+
+    def make_device_link_invitation(self, session):
+        data = {"session" : session}
+        response = self._send_post("device-link-invitations", data)
+        print(f"DEVICE LINK INVITE {response}")
         return response
 
     def put_blob(

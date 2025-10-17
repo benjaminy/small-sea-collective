@@ -5,16 +5,16 @@ from typing import Optional, Union
 import sys
 import os
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Form, Request, HTTPException
 import pydantic
 
 from small_sea_local_hub_config import settings
 from small_sea_backend import SmallSeaBackend
 
-app = FastAPI()
-
-@app.on_event("startup")
-async def startup_event():
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     # Code to run on startup, such as initializing a DB connection
     app.state.backend = SmallSeaBackend(
         settings.app_name,
@@ -31,12 +31,13 @@ async def startup_event():
         logger.error("This is an error message.")
         logger.critical("This is a critical message.")
 
+    yield
 
-@app.on_event("shutdown")
-async def shutdown_event():
     # Code to run on shutdown, such as closing DB connections
     print("Shutting down...")
     # Example: database.disconnect()
+
+app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 async def root():
@@ -84,6 +85,17 @@ async def new_team(req: NewTeamReq):
     id_hex = small_sea.new_team(
         req.session,
         req.name)
+    return { "message": id_hex }
+
+
+class DeviceLinkInvReq(pydantic.BaseModel):
+    session: str
+
+@app.post("/device-link-invitations")
+async def make_device_link_invitation(req: DeviceLinkInvReq):
+    small_sea = app.state.backend
+    id_hex = small_sea.make_device_link_invitation(
+        req.session)
     return { "message": id_hex }
 
 

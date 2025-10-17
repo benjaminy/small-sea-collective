@@ -1,8 +1,9 @@
 # Top Matter
 
+import os
+
 import click
 
-import os
 import json
 
 import small_sea_client_lib as SmallSeaLib
@@ -29,7 +30,11 @@ def new_participant(ctx, nickname, cloud_backend, cloud_url):
     In normal day to day operations, it should be an uncommon command
     """
     small_sea = SmallSeaLib.SmallSeaClient()
-    result = small_sea.create_new_participant( nickname )
+    try:
+        result = small_sea.create_new_participant( nickname )
+    except SmallSeaLib.SmallSeaHubUnavailable as exn:
+        print(f"Failed to connect to Small Sea Hub")
+        return
 
     if (cloud_backend is None) != (cloud_url is None):
         click.echo("ERROR. Only one of backend and url provided")
@@ -118,7 +123,9 @@ def upload_snapshot(ctx, nickname, team_name):
 @click.argument("nickname")
 @click.pass_context
 def make_device_link_invitation(ctx, nickname):
-    pass
+    small_sea = SmallSeaLib.SmallSeaClient()
+    session = open_session(nickname, "NoteToSelf")
+    small_sea.make_device_link_invitation(session)
 
 
 @cli.command()
