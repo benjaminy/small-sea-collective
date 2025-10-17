@@ -15,7 +15,7 @@ class SmallSeaClient:
 
     def __init__(
             self,
-            port=SmallSeaClient.PORT_DEFAULT):
+            port=PORT_DEFAULT):
         self.port = port
 
 
