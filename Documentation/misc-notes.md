@@ -1,5 +1,6 @@
 
 uvicorn --app-dir Source small_sea_local_hub:app --reload --port 11437
+uvicorn --app-dir Source small_sea_local_hub:app --reload --port ${SMALL_SEA_HUB_PORT}
 
 uv run fastapi dev Source/small_sea_local_hub.py
 
