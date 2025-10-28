@@ -21,13 +21,6 @@ If people want more fine-grained permissions systems, this might be achievable w
 Or something like that.
 I'm not especially interested in this topic.
 
-Access control for apps is interesting.
-It would _not_ be great if apps could easily peek into each others' data or impersonate each other.
-The security model here depends on a distinction between clients and apps.
-When some client software wants to access any resource associated with an app/zone it has to start a session with the Small Sea Hub.
-The request for a new session will prompt a user with a two-step process that involves the Hub generating a PIN that the user has to input to the client.
-This should help keeps apps out of each others' business.
-
 <table>
 <tr>
 <td></td>
@@ -69,3 +62,16 @@ This should help keeps apps out of each others' business.
 <td></td>
 </tr>
 </table>
+
+### Apps vs Clients
+
+An _app_ in Small Sea jargon is distinct from _client_ software.
+An app is a way to organize resources like storage, connections and notifications.
+A client is actual software that can access an app's resources.
+Typically a client will only access one apps's resources, but there may be several different clients that access a single app (for example a command line client and a GUI client).
+
+Access control for apps is interesting.
+It would _not_ be great if clients could easily peek into any app's data or "impersonate" any app.
+When some client software wants to access any resource associated with an app/zone it has to start a session with the Small Sea Hub.
+The request for a new session will prompt a user with a two-step process that involves the Hub generating a PIN that the user has to input to the client.
+This should help keep clients out of each others' business.
