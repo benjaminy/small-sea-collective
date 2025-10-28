@@ -23,17 +23,20 @@ class SmallSeaBackend:
     """
 
     app_author     : str = "Benjamin Ylvisaker"
+    app_name : str = "SmallSeaCollectiveCore"
     hub_schema_version : int = 42
     user_schema_version : int = 42
     id_size_bytes  : int = 32
 
     def __init__(
             self,
-            app_name,
-            root_dir_suffix):
-        self.root_dir = pathlib.Path(
-            platformdirs.user_data_dir( app_name, SmallSeaBackend.app_author ) )
-        self.root_dir = pathlib.Path(str(self.root_dir) + root_dir_suffix)
+            root_dir=None):
+        if root_dir is None:
+            self.root_dir = pathlib.Path(
+                platformdirs.user_data_dir( SmallSeaBackend.app_name, SmallSeaBackend.app_author ) )
+        else:
+            self.root_dir = pathlib.Path(root_dir)
+        # self.root_dir = pathlib.Path(str(self.root_dir) + root_dir_suffix)
         os.makedirs( self.root_dir, exist_ok=True )
         self.path_local_db = self.root_dir / "small_sea_collective_local.db"
         os.makedirs( self.root_dir / "Logging", exist_ok=True )
@@ -47,7 +50,7 @@ class SmallSeaBackend:
         id_hex = "".join( f"{b:02x}" for b in ident )
         ident_dir = self.root_dir / "Participants" / id_hex
         device_key = Ed25519PrivateKey.generate()
-        device_public_key = private_key.public_key()
+        device_public_key = device_key.public_key()
         device_key_bytes = device_key.private_bytes(
             encoding=serialization.Encoding.Raw,
             format=serialization.PrivateFormat.Raw,
@@ -79,16 +82,17 @@ class SmallSeaBackend:
             nickname,
             app,
             team,
-            client):
+            client) -> bytes:
         auth_token = str(secrets.randbelow(10000)).zfill(4)
-        plyer.notification.notify(
-            title="Small Sea Access Request",
-            message=f"Client {client} requested access to the resources for app {app}. {auth_token} is the code to provide to the client if you approve this request.",
-            app_name="Small Sea Hub",
-            # app_icon="PATH",
-            timeout=5,
-            ticker="WHAT THE HECK IS A TICKER"
-        )
+        if client != "Smoke Tests":
+            plyer.notification.notify(
+                title="Small Sea Access Request",
+                message=f"Client {client} requested access to the resources for app {app}. {auth_token} is the code to provide to the client if you approve this request.",
+                app_name="Small Sea Hub",
+                # app_icon="PATH",
+                timeout=5,
+                ticker="WHAT THE HECK IS A TICKER"
+            )
         try:
             before = datetime.now()
             conn = None
@@ -150,19 +154,15 @@ class SmallSeaBackend:
             print( "TODO: DB FROM THE FUTURE!" )
             raise NotImplementedError()
 
-        cursor.execute( "PRAGMA foreign_keys = ON;" )
+        schema_path = pathlib.Path(__file__).parent
+        schema_path = schema_path / "sql" / "hub_local_schema.sql"
+
+        with open(schema_path, "r") as f:
+            schema_script = f.read()
+        cursor.executescript(schema_script)
 
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS session (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL UNIQUE,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            duration_sec INTEGER,
-            participant TEXT,
-            app TEXT,
-            team TEXT,
-            client TEXT
-            )
         """)
 
         cursor.execute( f"PRAGMA user_version = {SmallSeaBackend.hub_schema_version}" )
@@ -223,58 +223,12 @@ class SmallSeaBackend:
             print( "TODO: DB FROM THE FUTURE!" )
             raise NotImplementedError()
 
-        cursor.execute( "PRAGMA foreign_keys = ON;" )
+        schema_path = pathlib.Path(__file__).parent
+        schema_path = schema_path / "sql" / "core_note_to_self_schema.sql"
 
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS user_device (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL,
-            key BLOB NOT NULL
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS team (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL,
-            name TEXT NOT NULL
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS app (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL,
-            name TEXT NOT NULL
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS app_team (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL,
-            app_id INTEGER NOT NULL,
-            team_id INTEGER NOT NULL,
-            FOREIGN KEY (app_id) REFERENCES app(id) ON DELETE CASCADE,
-            FOREIGN KEY (team_id) REFERENCES team(id) ON DELETE CASCADE
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS cloud (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            protocol TEXT NOT NULL,
-            url TEXT NOT NULL
-            )
-        """)
-
-        # cursor.execute("""
-        #     CREATE TABLE IF NOT EXISTS nickname (
-        #     id INTEGER PRIMARY KEY AUTOINCREMENT,
-        #     FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE,
-        #     nick TEXT NOT NULL
-        #     )
-        # """)
+        with open(schema_path, "r") as f:
+            schema_script = f.read()
+        cursor.executescript(schema_script)
 
         cursor.execute( f"PRAGMA user_version = {SmallSeaBackend.user_schema_version}" )
         print( "User DB schema initialized successfully." )
@@ -284,22 +238,22 @@ class SmallSeaBackend:
             session,
             protocol,
             url ):
-        idx_colon = url.find( ":" )
-        if 0 > idx_colon:
-            error
-        scheme = url[ : idx_colon ]
-        location = url[ 1 + idx_colon : ]
-        if "webdav" == scheme.lower():
+        known_protocols = ["s3", "webdav"]
+        if protocol in known_protocols:
             pass
         else:
             error
 
-        return _add_cloud_location( self, session, scheme, location )
+        return self._add_cloud_location( session, protocol, url )
 
-    def _add_cloud_location( self, session_hex, scheme, location ):
+    def _add_cloud_location(
+            self,
+            session_hex,
+            scheme,
+            location ):
+        conn = None
         try:
             session_suid = bytes.fromhex( session_hex )
-            conn = None
             conn = sqlite3.connect( self.path_local_db )
             cursor = conn.cursor()
             cursor.execute("""
@@ -330,6 +284,11 @@ class SmallSeaBackend:
         finally:
             if None != conn:
                 conn.close()
+
+    def sync_to_cloud(
+            self,
+            session):
+        pass
 
     def make_device_link_invitation(
             self,
