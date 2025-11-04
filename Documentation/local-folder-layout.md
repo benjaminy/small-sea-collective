@@ -1,5 +1,5 @@
 
-This all in the SmallSeaCollective AppData or UserData folder
+This all in the SmallSeaCollectiveCore AppData or UserData folder
 
 - Local/
   - small-sea-collective.db
