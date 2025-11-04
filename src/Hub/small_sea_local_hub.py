@@ -43,14 +43,16 @@ app = FastAPI(lifespan=lifespan)
 async def root():
     return {"message": "Hello World"}
 
+class NewParticipantReq(pydantic.BaseModel):
+    nickname: str
+    device: str
+
 @app.post( "/participants" )
 async def create_new_participant(
-        request: Request):
-    req_data = await request.json()
-    if not "nickname" in req_data:
-        raise HTTPException( status=400, detail=f"Missing 'nickname'" )
+        req: NewParticipantReq):
     small_sea = app.state.backend
-    id_hex = small_sea.create_new_participant( req_data[ "nickname" ] )
+    id_hex = small_sea.create_new_participant(
+        req.nickname)
     return { "message": id_hex }
 
 
@@ -109,6 +111,17 @@ async def add_cloud(req: AddCloudLocReq):
     small_sea = app.state.backend
     id_hex = small_sea.add_cloud_location( req.session, req.backend, req.url )
     return { "message": id_hex }
+
+
+class CloudSyncReq(pydantic.BaseModel):
+    session: str
+
+@app.post( "/sync_to_cloud" )
+async def sync_to_cloud(req: CloudSyncReq):
+    small_sea = app.state.backend
+    id_hex = small_sea.sync_to_cloud(req.session)
+    return { "message": id_hex }
+
 
 class PutBlobReq(pydantic.BaseModel):
     session: str

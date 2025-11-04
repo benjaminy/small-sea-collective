@@ -1,0 +1,29 @@
+[project]
+name = "small-sea-collective"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "botocore>=1.40.43",
+    "cryptography>=46.0.3",
+    "fastapi[standard]>=0.118.0",
+    "platformdirs>=4.4.0",
+    "plyer>=2.1.0",
+    "pydantic-settings>=2.11.0",
+    "pyobjus>=1.2.3",
+    "requests>=2.32.5",
+    "sqlalchemy>=2.0.44",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.uv.sources]
+small-sea-collective = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "boto3>=1.40.53",
+    "pytest>=8.4.2"
+]

@@ -12,6 +12,17 @@ import requests
 
 program_title = "CornCob protocol Git remote helper work-a-like"
 
+def gitCmd( git_params, raise_on_error=True ):
+    git_cmd = [ "git" ] + git_params
+    result = subprocess.run( git_cmd, capture_output=True, text=True )
+    if 0 != result.returncode:
+        exn = GitCmdFailed( git_params, result.returncode, result.stdout, result.stderr )
+        if raise_on_error:
+            raise exn
+        else:
+            print( exn )
+    return result
+
 class Corncob:
 
     def __init__( self, remote_name ):
@@ -279,16 +290,6 @@ class Corncob:
         return [ f"{self.remote_name}-corncob-bundle-tmp",
                  f"./.corncob-bundle-tmp/{self.remote_name}" ]
 
-    def gitCmd( self, git_params, raise_on_error=True ):
-        git_cmd = [ "git" ] + git_params
-        result = subprocess.run( git_cmd, capture_output=True, text=True )
-        if 0 != result.returncode:
-            exn = GitCmdFailed( git_params, result.returncode, result.stdout, result.stderr )
-            if raise_on_error:
-                raise exn
-            else:
-                print( exn )
-        return result
 
 
 class GitCmdFailed( Exception ):
