@@ -1,6 +1,6 @@
 # Top Matter
 
-import Hub.small_sea_backend as SmallSea
+import small_sea_hub.backend as SmallSea
 
 def test_just_make_backend():
     small_sea = SmallSea.SmallSeaBackend()

@@ -2,9 +2,7 @@
 
 import sys
 
-import importlib
-
-Corncob = importlib.import_module( "git-remote-workalike-corncob" )
+import corncob.protocol as Corncob
 
 program_title = "CornCob protocol Git remote helper work-a-like"
 

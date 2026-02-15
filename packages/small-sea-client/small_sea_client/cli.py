@@ -6,7 +6,7 @@ import click
 
 import json
 
-import small_sea_client_lib as SmallSeaLib
+import small_sea_client.client as SmallSeaLib
 
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")

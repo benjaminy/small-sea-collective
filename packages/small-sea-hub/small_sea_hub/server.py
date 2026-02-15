@@ -10,8 +10,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Form, Request, HTTPException
 import pydantic
 
-from small_sea_local_hub_config import settings
-from small_sea_backend import SmallSeaBackend
+from small_sea_hub.config import settings
+from small_sea_hub.backend import SmallSeaBackend
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):

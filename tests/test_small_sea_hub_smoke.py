@@ -12,7 +12,7 @@ import pytest
 import pathlib
 import time
 
-import Client.small_sea_client_lib as SmallSea
+import small_sea_client.client as SmallSea
 
 def test_create_participant(hub_server_gen):
     hub_server = hub_server_gen()

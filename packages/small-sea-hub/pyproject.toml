@@ -1,0 +1,22 @@
+[project]
+name = "small-sea-hub"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    "botocore>=1.40.43",
+    "cryptography>=46.0.3",
+    "fastapi[standard]>=0.118.0",
+    "platformdirs>=4.4.0",
+    "plyer>=2.1.0",
+    "pydantic-settings>=2.11.0",
+    "pyobjus>=1.2.3",
+    "sqlalchemy>=2.0.44",
+    "corncob",
+]
+
+[tool.uv.sources]
+corncob = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
