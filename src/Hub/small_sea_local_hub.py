@@ -43,6 +43,7 @@ app = FastAPI(lifespan=lifespan)
 async def root():
     return {"message": "Hello World"}
 
+
 class NewParticipantReq(pydantic.BaseModel):
     nickname: str
     device: str
@@ -77,19 +78,6 @@ async def open_session(req: SessionReq):
         return f"error {str(exn)}"
 
 
-class NewTeamReq(pydantic.BaseModel):
-    session: str
-    name: str
-
-@app.post( "/teams" )
-async def new_team(req: NewTeamReq):
-    small_sea = app.state.backend
-    id_hex = small_sea.new_team(
-        req.session,
-        req.name)
-    return { "message": id_hex }
-
-
 class DeviceLinkInvReq(pydantic.BaseModel):
     session: str
 
@@ -113,6 +101,41 @@ async def add_cloud(req: AddCloudLocReq):
     return { "message": id_hex }
 
 
+class CloudUploadReq(pydantic.BaseModel):
+    session: str
+    backend: str
+    url: str
+
+@app.post("/cloud_file")
+async def upload_to_cloud():
+    raise NotImplementedError("upload")
+
+
+# deprecated version:
+# class PutBlobReq(pydantic.BaseModel):
+#     session: str
+#     path: str
+#     blob: Union[str, bytes]
+#     if_match: Optional[str]
+#     if_none_match: Optional[str]
+
+# @app.post( "/blobs" )
+# async def put_blob(req: PutBlobReq):
+#     small_sea = app.state.backend
+#     id_hex = small_sea.put_blob( req.session, req.backend, req.url )
+#     return { "message": id_hex }
+
+
+class CloudDownloadReq(pydantic.BaseModel):
+    session: str
+    backend: str
+    url: str
+
+@app.get("/cloud_file")
+async def download_from_cloud():
+    raise NotImplementedError("download")
+
+
 class CloudSyncReq(pydantic.BaseModel):
     session: str
 
@@ -123,18 +146,18 @@ async def sync_to_cloud(req: CloudSyncReq):
     return { "message": id_hex }
 
 
-class PutBlobReq(pydantic.BaseModel):
+class NewTeamReq(pydantic.BaseModel):
     session: str
-    path: str
-    blob: Union[str, bytes]
-    if_match: Optional[str]
-    if_none_match: Optional[str]
+    name: str
 
-@app.post( "/blobs" )
-async def put_blob(req: PutBlobReq):
+@app.post( "/teams" )
+async def new_team(req: NewTeamReq):
     small_sea = app.state.backend
-    id_hex = small_sea.put_blob( req.session, req.backend, req.url )
+    id_hex = small_sea.new_team(
+        req.session,
+        req.name)
     return { "message": id_hex }
+
 
 @app.get("//")
 async def read_item(skip: int = 0, limit: int = 10):

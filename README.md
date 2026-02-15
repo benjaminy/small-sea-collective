@@ -4,19 +4,22 @@
 
 Around 2020 the local-first community coalesced around discontent with cloud-oriented software architectures and SaaS business models.
 "[Local-first software](https://www.inkandswitch.com/essay/local-first/)" from Ink & Switch is widely seen as the community's founding manifesto.
-(If you're unfamiliar with local-first, skimming the Ink & Switch essay will help contextualize the Small Sea project.)
+(If you're unfamiliar with local-first, skimming that essay helps contextualize the Small Sea project.)
 
 Many have commented on a pragmatist-idealist spectrum in local-first.
-On the pragmatist end, the backend architectures and business models are similar to established cloud-first models.
+On the pragmatist end, the backend architectures and business models are similar to the dominant cloud-first models.
 The _local-first_ part is focused on caching and lazy synchronization to support offline mode and less waiting for remote services (No Spinners!).
-Pragmatic local-first is better than a poke in the eye with a sharp stick, but it fails to address some of the community's more ambitious ideals.
+Pragmatic local-first is better than a poke in the eye with a sharp stick, but it doesn't address some of the community's more ambitious ideals.
 
 The Small Sea project is firmly on the idealist side.
-We aim to enable the deployment of applications with little (even zero) dependence on bespoke/application-specific services.
-Applications that people can use without fear of misuse of their data; with confidence that their ongoing use of the application doesn't depend on some business unit keeping the lights on.
+We want applications that work without depending on some company's bespoke service.
+We aim to enable the deployment of applications that people can use without fear of misuse of their data; with confidence that their ongoing use of the application doesn't depend on some business unit keeping the lights on.
 But of course network services are essential for many features that we expect from software.
-So the challenge this project takes on is decoupling applications from services.
-We are building frameworks that allow a combination of client-side logic and _general-purpose_ services to play roles that are so often filled by application-specific backends today.
+(Local-_first_ is not local-_only_.)
+
+And every _bespoke_ service available from only one specific vendor makes these local-first ideals harder to achieve.
+So the challenge this project takes on is making it possible to build rich applications with _general-purpose_ serivices; decoupling applications from services.
+We are building frameworks that allow a combination of client-side logic and _general-purpose_ services to play roles that are filled by application-specific backends today.
 By general-purpose services, we mean things like:
 
 - Internet service providers
@@ -151,11 +154,12 @@ To put it in visual terms, conventional SaaS application architectures look some
 </tr>
 </table>
 
-Each application implements its own version of more or less standard services.
-The application and the services are bundled as a single thing.
+Custom versions of more or less standard services are made to support each application.
+The application and its services are bundled as a single thing.
+If the opperator pulls the plug on the services, the application ceases to exist.
 
 In the Small Sea framework, the Small Sea Hub provides a collection of generic services to applications and implements those with whatever general-purpose services users subscribe to.
-Application development and providing services are two different businesses.
+Application development and service operation are two different businesses.
 
 <img src="./Documentation/Images/small-sea-hub.png" alt="Small Sea Hub" title="Small Sea Hub">
 
@@ -190,15 +194,13 @@ Schema evolution remains a not-entirely-solved problem.
 The baseline sync method in Small Sea is another old friend: snapshot-based 3-way merge.
 In other words, `git`.
 This approach to sync is slow.
-It can get inefficient quickly in the face of lots of transient data churn.
+It can get very inefficient in the face of lots of transient data churn.
 It's not appropriate for real-time concurrent editing of some doc where users want to see each others' edits immediately.
 But for situations where occasional, slow sync is sufficient it has some compelling advantages:
 
 - Full-environment snapshots are the basic unit, so it's relatively easy to avoid mixing edits together in a way that breaks some data relationship invariant (even accidental invariants)
 - When reconciling concurrent changes in a clever, fine-grained way gets hard, it is easy to fall back to _pick yours_ or _pick mine_
 - It's relatively easy to incrementally adapt existing software, starting with coarse yours-or-mine reconciliation and improving automatic merge logic as needed
-
-One way to look at this is the classic N×M problem.
 
 So to refine the motivating question: How much application functionality can be implemented by stitching together general-purpose services like these, instead of the application creator providing them directly?
 
@@ -234,7 +236,7 @@ For many applications/features there's no obvious way to implement them with onl
 Small Sea is not an attempt to re-implement these things in a different style.
 It's for apps where small groups of people share and collaborate among each other.
 
-## If Not SaaS How will Devs Feed their Families?
+## If Not SaaS, What's the Business Model for App Development?
 
 SaaS business models are overwhelmingly dominant in software development today, but it has not always been thus.
 I am not opposed to developers getting paid for their efforts.

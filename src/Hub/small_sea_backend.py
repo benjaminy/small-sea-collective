@@ -12,6 +12,7 @@ from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
 from botocore.exceptions import ClientError
 import plyer
+import yaml
 
 from sqlalchemy import create_engine, text, Column, Integer, String, LargeBinary, DateTime, ForeignKey
 from sqlalchemy.orm import declarative_base, Session, relationship
@@ -35,7 +36,7 @@ class SmallSeaSession(Base):
     token = Column(LargeBinary, nullable=False)
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     duration_sec = Column(Integer)
-    participant_id = Column(Integer, nullable=False)
+    participant_id = Column(LargeBinary, nullable=False)
     app_id = Column(Integer, nullable=False)
     team_id = Column(Integer, nullable=False)
     zone_id = Column(Integer, nullable=False)
@@ -263,7 +264,7 @@ class SmallSeaBackend:
         repo_dir = self.root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
         CornCob.gitCmd(["init", "-b", "main", str(repo_dir)])
         CornCob.gitCmd(["-C", str(repo_dir), "add", "core.db"])
-        CornCob.gitCmd(["-C", str(repo_dir), "commit", "-m", f"Hey, a new Small Sea Collective user"])
+        CornCob.gitCmd(["-C", str(repo_dir), "commit", "-m", f"Welcome to Small Sea Collective"])
 
     def _initialize_core_note_to_self_schema(
             self,
@@ -391,19 +392,19 @@ class SmallSeaBackend:
         with Session(engine_local) as session:
             results_sesh = session.query(SmallSeaSession).filter(SmallSeaSession.token == session_token).all()
 
-        return results_sesh[0]
+        ss_session = results_sesh[0]
+        ss_session.participant_path = self.root_dir / "Participants" / ss_session.participant_id.hex()
+        return ss_session
 
     def _add_cloud_location(
             self,
             session_hex,
             scheme,
             location ):
-
         ss_session = self._lookup_session(session_hex)
 
-        participant_id = ss_session.participant_id.hex()
         # TODO: Should we check permissions? Probably.
-        core_path = self.root_dir / "Participants" / participant_id / "NoteToSelf" / "Sync" / "core.db"
+        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
         engine_core = create_engine(f"sqlite:///{core_path}")
         with Session(engine_core) as session:
             cloud_suid = secrets.token_bytes(SmallSeaBackend.id_size_bytes)
@@ -414,20 +415,55 @@ class SmallSeaBackend:
             session.add_all([cloud])
             session.commit()
 
-
-    def sync_to_cloud(
+    def _commit_any_changes(
             self,
-            session:str):
-        ss_session = self._lookup_session(session)
-        participant_id = ss_session.participant_id.hex()
+            ss_session:SmallSeaSession):
+        repo_dir = ss_session.participant_path / "NoteToSelf" / "Sync"
+        diff_q = CornCob.gitCmd(["-C", str(repo_dir), "diff", "--quiet"], raise_on_error=False)
+        if 0 != diff_q.returncode:
+            CornCob.gitCmd(["-C", str(repo_dir), "add", "-A"])
+            CornCob.gitCmd(["-C", str(repo_dir), "commit", "-m", "TODO: Better commit message"])
+
+
+    def _get_cloud_link(
+            self,
+            ss_session:SmallSeaSession):
         # TODO: Should we check permissions? Probably.
-        core_path = self.root_dir / "Participants" / participant_id / "NoteToSelf" / "Sync" / "core.db"
+        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
         engine_core = create_engine(f"sqlite:///{core_path}")
         with Session(engine_core) as session:
             results = session.query(CloudStorage).all()
             if 1 != len(results):
                 print(f"TODO: Other cases {len(results)} {participant_id}")
                 raise NotImplementedError()
+            cloud = results[0]
+        return cloud
+
+    def sync_to_cloud(
+            self,
+            session:str):
+        ss_session = self._lookup_session(session)
+        self._commit_any_changes(ss_session)
+        cloud = self._get_cloud_link(ss_session)
+
+        repo_dir = ss_session.participant_path / "NoteToSelf" / "Sync"
+        rev_parse = CornCob.gitCmd(
+            ["-C", str(repo_dir), "rev-parse", "HEAD"])
+
+        local_hash = bytes.fromhex(rev_parse.stdout.strip())
+
+        head_path = ss_session.participant_path / "NoteToSelf" / "Local" / "cached_cloud_head.yaml"
+        try:
+            cached_head_str = head_path.read_text()
+            cached_head = yaml.safe_load(cached_head_str)
+            cached_cloud_hash = bytes.fromhex(cached_head.commit_hash)
+        except FileNotFoundError:
+            data = None
+
+    def sync_from_cloud(
+            self,
+            session:str):
+        ss_session = self._lookup_session(session)
 
     def make_device_link_invitation(
             self,
@@ -448,15 +484,44 @@ class SmallSeaBackend:
     #     conn.close()
 
 class SmallSeaStorageAdapter:
-    def __init__(self):
-        pass
+    def __init__(
+            self,
+            zone:str):
+        self.zone = zone
 
-class SmallSeaS3Adapter:
+    def upload_overwrite(
+            self,
+            path:str,
+            data:bytes,
+            content_type: str = 'application/octet-stream'):
+        return self._upload(path, data, content_type)
+
+    def upload_fresh(
+            self,
+            path:str,
+            data:bytes,
+            content_type: str = 'application/octet-stream'):
+        return self._upload(path, data, "*", content_type)
+
+    def upload_if_match(
+            self,
+            path:str,
+            data:bytes,
+            expected_etag:str,
+            content_type: str = 'application/octet-stream'):
+        return self._upload(path, data, expected_etag, content_type)
+
+
+class SmallSeaS3Adapter(SmallSeaStorageAdapter):
     def __init__(self, s3, bucket_name):
+        super().__init__(bucket_name)
         self.s3 = s3
-        self.bucket_name = bucket_name
 
-    def upload(
+    # def download(
+    #         self,
+    #         path:str)
+
+    def _upload(
             self,
             path:str,
             data:bytes,
@@ -466,16 +531,23 @@ class SmallSeaS3Adapter:
         """
         try:
             if expected_etag is None:
-                # IfNoneMatch='*'  # Only upload if key doesn't exist
                 response = s3_client.put_object(
-                    Bucket=self.bucket_name,
+                    Bucket=self.zone,
                     Key=path,
                     Body=data,
                     ContentType=content_type
                 )
+            elif "*" == expected_etag:
+                response = s3_client.put_object(
+                    Bucket=self.zone,
+                    Key=path,
+                    Body=data,
+                    ContentType=content_type,
+                    IfNoneMatch=expected_etag
+                )
             else:
                 response = s3_client.put_object(
-                    Bucket=self.bucket_name,
+                    Bucket=self.zone,
                     Key=path,
                     Body=data,
                     ContentType=content_type,

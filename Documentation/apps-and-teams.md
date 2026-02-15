@@ -1,17 +1,17 @@
 # Apps and Teams
 
 The primary organizing concepts in Small Sea are **teams** and **apps**.
-Each _team_-_app_ combination defines a space or zone that things like storage space can be allocated to.
+Each _team_-_app_ combination defines a _station_ that things like storage space can be allocated to.
 
 There is one special built-in team (NoteToSelf) and one special built-in app (SmallSeaCore).
-The zone at the intersection of these two (NoteToSelf-SmallSeaCore) is where special stuff like information about a users' authorized devices is kept.
-The _Team_-SmallSeaCore zones are where team membership, invitations and associated metadata is kept.
-The NoteToSelf-_App_ zones are where apps can keep any user-specific customization.
+The station at the intersection of these two (NoteToSelf-SmallSeaCore) is where special stuff like information about a users' authorized devices is kept.
+The _Team_-SmallSeaCore stations are where team membership, invitations and associated metadata is kept.
+The NoteToSelf-_App_ stations are where apps can keep any user-private customization.
 
 Teams in Small Sea are similar to any other groupware framework, but there is at least one important difference.
 The sharing in Small Sea is entirely distributed and voluntary.
-There might be some intuitive notion of a heirarchy of leaders or owners, but the built-in permission structure in Small Sea is very simple.
-Each _Team_-_App_ zone can assign either read-write or read-only permissions to each participant in the team.
+There might be some intuitive notion of a heirarchy of leaders, core members or owners, but the built-in permission structure in Small Sea is very simple.
+Each participant has either full or read-only permissions in each station.
 One common arrangement is:
 
 1. Some participants have read-write permissions for _Team_-SmallSeaCore; these are the _admins_ for the team; they can create invitations for new members and propose member removals.
