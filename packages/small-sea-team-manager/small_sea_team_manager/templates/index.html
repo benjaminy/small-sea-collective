@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}Teams - Small Sea Team Manager{% endblock %}
+
+{% block content %}
+<h1>Teams</h1>
+
+<div class="section">
+    <h2>Create a Team</h2>
+    <form hx-post="/fragments/teams" hx-target="#team-list">
+        <input type="text" name="team_name" placeholder="Team name" required>
+        <button type="submit">Create</button>
+    </form>
+</div>
+
+<div class="section">
+    <h2>Your Teams</h2>
+    <div id="team-list" hx-get="/fragments/teams" hx-trigger="load">
+        Loading...
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+
+{% block title %}{{ team.name }} - Small Sea Team Manager{% endblock %}
+
+{% block content %}
+<h1>{{ team.name }}</h1>
+
+<div class="section">
+    <h2>Members</h2>
+    <div id="member-list"
+         hx-get="/fragments/teams/{{ team.name }}/members"
+         hx-trigger="load">
+        Loading...
+    </div>
+</div>
+
+<div class="section">
+    <h2>Invitations</h2>
+    <div id="invite-section">
+        <form hx-post="/fragments/teams/{{ team.name }}/invitations"
+              hx-target="#invite-section">
+            <input type="text" name="invitee" placeholder="Nickname to invite" required>
+            <button type="submit">Send Invitation</button>
+        </form>
+
+        {% if invitations %}
+        <table>
+            <thead>
+                <tr><th>Invitee</th><th>Status</th></tr>
+            </thead>
+            <tbody>
+            {% for inv in invitations %}
+                <tr>
+                    <td>{{ inv.invitee }}</td>
+                    <td>{{ inv.status | default("pending") }}</td>
+                </tr>
+            {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <p>No pending invitations.</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

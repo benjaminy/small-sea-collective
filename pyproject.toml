@@ -7,10 +7,12 @@ dev-dependencies = [
     "pytest>=8.4.2",
     "small-sea-hub",
     "small-sea-client",
+    "small-sea-team-manager",
     "corncob",
 ]
 
 [tool.uv.sources]
 small-sea-hub = { workspace = true }
 small-sea-client = { workspace = true }
+small-sea-team-manager = { workspace = true }
 corncob = { workspace = true }

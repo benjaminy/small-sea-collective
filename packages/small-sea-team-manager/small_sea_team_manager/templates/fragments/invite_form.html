@@ -1,0 +1,27 @@
+{% if message %}
+<div class="message">{{ message }}</div>
+{% endif %}
+
+<form hx-post="/fragments/teams/{{ team_name }}/invitations"
+      hx-target="#invite-section">
+    <input type="text" name="invitee" placeholder="Nickname to invite" required>
+    <button type="submit">Send Invitation</button>
+</form>
+
+{% if invitations %}
+<table>
+    <thead>
+        <tr><th>Invitee</th><th>Status</th></tr>
+    </thead>
+    <tbody>
+    {% for inv in invitations %}
+        <tr>
+            <td>{{ inv.invitee }}</td>
+            <td>{{ inv.status | default("pending") }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No pending invitations.</p>
+{% endif %}

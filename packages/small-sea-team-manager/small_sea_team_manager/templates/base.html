@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Small Sea Team Manager{% endblock %}</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: system-ui, -apple-system, sans-serif;
+            max-width: 48rem;
+            margin: 0 auto;
+            padding: 1rem;
+            color: #1a1a1a;
+            background: #fafafa;
+        }
+        nav {
+            border-bottom: 2px solid #2563eb;
+            padding-bottom: 0.5rem;
+            margin-bottom: 1.5rem;
+        }
+        nav a {
+            color: #2563eb;
+            text-decoration: none;
+            font-weight: 600;
+        }
+        h1, h2, h3 { margin-bottom: 0.75rem; }
+        h1 { font-size: 1.5rem; }
+        h2 { font-size: 1.25rem; color: #374151; }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-bottom: 1rem;
+        }
+        th, td {
+            text-align: left;
+            padding: 0.5rem 0.75rem;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        th { font-weight: 600; color: #6b7280; font-size: 0.85rem; text-transform: uppercase; }
+        a { color: #2563eb; }
+        form { margin-bottom: 1rem; }
+        input[type="text"] {
+            padding: 0.4rem 0.6rem;
+            border: 1px solid #d1d5db;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        button {
+            padding: 0.4rem 0.8rem;
+            background: #2563eb;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.9rem;
+        }
+        button:hover { background: #1d4ed8; }
+        button.danger { background: #dc2626; }
+        button.danger:hover { background: #b91c1c; }
+        .message {
+            padding: 0.5rem 0.75rem;
+            margin-bottom: 1rem;
+            background: #fef3c7;
+            border: 1px solid #f59e0b;
+            border-radius: 4px;
+            font-size: 0.9rem;
+        }
+        .section { margin-bottom: 2rem; }
+    </style>
+</head>
+<body>
+    <nav>
+        <a href="/">Small Sea Team Manager</a>
+    </nav>
+    {% block content %}{% endblock %}
+</body>
+</html>

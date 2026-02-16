@@ -1,0 +1,22 @@
+{% if message %}
+<div class="message">{{ message }}</div>
+{% endif %}
+
+{% if teams %}
+<table>
+    <thead>
+        <tr><th>Team</th><th>Role</th><th>Members</th></tr>
+    </thead>
+    <tbody>
+    {% for team in teams %}
+        <tr>
+            <td><a href="/teams/{{ team.name }}">{{ team.name }}</a></td>
+            <td>{{ team.role | default("?") }}</td>
+            <td>{{ team.members | default("?") }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No teams yet.</p>
+{% endif %}
