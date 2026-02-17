@@ -344,6 +344,42 @@ class LocalFolderRemote( CornCobRemote ):
         self.path = path
 
 
+    def upload_latest_link( self, link_uid, blob, bundle_uid, local_bundle_path ):
+        path_bundle = f"{self.path}{os.path.sep}B-{bundle_uid}.bundle"
+        shutil.copy( local_bundle_path, path_bundle )
+
+        path_latest = f"{self.path}{os.path.sep}latest-link.yaml"
+        with open( path_latest, "w", encoding="utf-8" ) as link_strm:
+            yaml.dump( blob, link_strm, default_flow_style=False )
+
+        path_uid = f"{self.path}{os.path.sep}L-{link_uid}.yaml"
+        with open( path_uid, "w", encoding="utf-8" ) as link_strm:
+            yaml.dump( blob, link_strm, default_flow_style=False )
+
+
+    def get_link( self, uid ):
+        if uid == "latest-link":
+            path_link = f"{self.path}{os.path.sep}latest-link.yaml"
+        else:
+            path_link = f"{self.path}{os.path.sep}L-{uid}.yaml"
+
+        if not os.path.exists( path_link ):
+            print( f"FILE DOES NOT EXIST {path_link}" )
+            return None
+
+        with open( path_link, "r" ) as link_file_strm:
+            return self.read_link_blob( link_file_strm )
+
+
+    def get_latest_link( self ):
+        return self.get_link( "latest-link" )
+
+
+    def download_bundle( self, bundle_uid, local_bundle_path ):
+        path_bundle = f"{self.path}{os.path.sep}B-{bundle_uid}.bundle"
+        shutil.copy( path_bundle, local_bundle_path )
+
+
 class SmallSeaRemote( CornCobRemote ):
     """
 
