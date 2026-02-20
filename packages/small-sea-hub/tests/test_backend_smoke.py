@@ -1,6 +1,10 @@
 # Top Matter
+# Smoke tests for the hub backend.
+# Participant provisioning now lives in small_sea_team_manager.provisioning,
+# so we call that to set up test participants before exercising hub operations.
 
 import small_sea_hub.backend as SmallSea
+import small_sea_team_manager.provisioning as Provisioning
 
 def test_just_make_backend():
     small_sea = SmallSea.SmallSeaBackend()
@@ -9,7 +13,7 @@ def test_create_user(playground_dir):
     small_sea = SmallSea.SmallSeaBackend(
         root_dir=playground_dir)
 
-    small_sea.create_new_participant("alice")
+    Provisioning.create_new_participant(playground_dir, "alice")
 
 def helper_add_cloud(
         small_sea,
@@ -38,7 +42,7 @@ def test_add_cloud(playground_dir, minio_server_gen):
     small_sea = SmallSea.SmallSeaBackend(
         root_dir=playground_dir)
 
-    small_sea.create_new_participant("alice")
+    Provisioning.create_new_participant(playground_dir, "alice")
 
     session = helper_add_cloud(
         small_sea,
@@ -54,7 +58,7 @@ def test_first_sync_to_cloud(playground_dir, minio_server_gen):
     small_sea = SmallSea.SmallSeaBackend(
         root_dir=playground_dir)
 
-    small_sea.create_new_participant("alice")
+    Provisioning.create_new_participant(playground_dir, "alice")
 
     session = helper_add_cloud(
         small_sea,

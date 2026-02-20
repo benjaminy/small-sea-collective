@@ -18,9 +18,6 @@ from sqlalchemy import create_engine, text, Column, Integer, String, LargeBinary
 from sqlalchemy.orm import declarative_base, Session, relationship
 Base = declarative_base()
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives import serialization
-
 import corncob.protocol as CornCob
 
 class SmallSeaBackendExn(Exception):
@@ -28,6 +25,10 @@ class SmallSeaBackendExn(Exception):
 
 class SmallSeaNotFoundExn(SmallSeaBackendExn):
     pass
+
+
+# ---- SQLAlchemy models ----
+# Hub-local session table
 
 class SmallSeaSession(Base):
     __tablename__ = 'session'
@@ -46,16 +47,7 @@ class SmallSeaSession(Base):
         return f"<Session(lid={self.lid}, title='{self.token.hex()}')>"
 
 
-class UserDevice(Base):
-    __tablename__ = 'user_device'
-
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
-    key = Column(LargeBinary, nullable=False)
-
-    def __repr__(self):
-        return f"<UserDevice(lid={self.lid}, suid='{self.suid}')>"
-
+# Per-user core.db models (duplicated in team manager — the DB is the contract)
 
 class Nickname(Base):
     __tablename__ = 'nickname'
@@ -63,9 +55,6 @@ class Nickname(Base):
     lid = Column(Integer, primary_key=True)
     suid = Column(LargeBinary, nullable=False)
     name = Column(String, nullable=False)
-
-    def __repr__(self):
-        return f"<Nickname(lid={self.lid}, suid='{self.suid}')>"
 
 
 class Team(Base):
@@ -76,9 +65,6 @@ class Team(Base):
     name = Column(String, nullable=False)
     self_in_team = Column(LargeBinary, nullable=False)
 
-    def __repr__(self):
-        return f"<Team(lid={self.lid}, suid='{self.suid}')>"
-
 
 class App(Base):
     __tablename__ = 'app'
@@ -86,9 +72,6 @@ class App(Base):
     lid = Column(Integer, primary_key=True)
     suid = Column(LargeBinary, nullable=False)
     name = Column(String, nullable=False)
-
-    def __repr__(self):
-        return f"<App(lid={self.lid}, suid='{self.suid}')>"
 
 
 class TeamAppZone(Base):
@@ -98,9 +81,6 @@ class TeamAppZone(Base):
     suid = Column(LargeBinary, nullable=False)
     team_id = Column(Integer, ForeignKey("team.lid"), nullable=False)
     app_id = Column(Integer, ForeignKey("app.lid"), nullable=False)
-
-    def __repr__(self):
-        return f"<TeamAppZone(lid={self.lid}, suid='{self.suid}')>"
 
 
 class CloudStorage(Base):
@@ -117,14 +97,15 @@ class CloudStorage(Base):
 
 class SmallSeaBackend:
     """
+    Hub backend — session management, cloud storage, sync.
 
-    "Maybe overkill..."
+    Participant/user/team provisioning has moved to the
+    small-sea-team-manager package (provisioning.py).
     """
 
     app_author     : str = "Benjamin Ylvisaker"
     app_name : str = "SmallSeaCollectiveCore"
     hub_schema_version : int = 42
-    user_schema_version : int = 42
     id_size_bytes  : int = 32
 
     def __init__(
@@ -136,51 +117,12 @@ class SmallSeaBackend:
         else:
             self.root_dir = pathlib.Path(root_dir)
         print(f"ROOTROOTROOT '{self.root_dir}'")
-        # self.root_dir = pathlib.Path(str(self.root_dir) + root_dir_suffix)
         os.makedirs( self.root_dir, exist_ok=True )
         self.path_local_db = self.root_dir / "small_sea_collective_local.db"
         os.makedirs( self.root_dir / "Logging", exist_ok=True )
         log_path = self.root_dir / "Logging" / "small_sea_hub.log"
         self.logger = setup_logging( log_file=log_path )
         self._initialize_small_sea_db()
-
-
-    def create_new_participant(
-            self,
-            nickname:str,
-            device=None):
-        ident = secrets.token_bytes( SmallSeaBackend.id_size_bytes )
-        ident_dir = self.root_dir / "Participants" / ident.hex()
-        device_key = Ed25519PrivateKey.generate()
-        device_public_key = device_key.public_key()
-        device_key_bytes = device_key.private_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PrivateFormat.Raw,
-            encryption_algorithm=serialization.NoEncryption()
-        )
-        device_public_key_bytes = device_public_key.public_bytes(
-            encoding=serialization.Encoding.Raw,
-            format=serialization.PublicFormat.Raw
-        )
-
-        if False:
-            signature = private_key.sign(b"my authenticated message")
-            # Raises InvalidSignature if verification fails
-            public_key.verify(signature, b"my authenticated message")
-            loaded_public_key = ed25519.Ed25519PublicKey.from_public_bytes(public_bytes)
-
-        try:
-            os.makedirs( ident_dir / "NoteToSelf" / "Sync", exist_ok=False )
-            os.makedirs( ident_dir / "FakeEnclave", exist_ok=False )
-        except Exception as exn:
-            print( f"makedirs failed :( {ident_dir}" )
-        if device is None:
-            device = "42"
-        self._initialize_user_db(
-            ident,
-            nickname,
-            device)
-        return ident.hex()
 
 
     def _initialize_small_sea_db( self ):
@@ -197,7 +139,6 @@ class SmallSeaBackend:
         finally:
             if None != conn:
                 conn.close()
-
 
 
     def _initialize_small_sea_schema( self, cursor ):
@@ -228,77 +169,7 @@ class SmallSeaBackend:
         print( "Hub DB schema initialized successfully." )
 
 
-    def _initialize_user_db(
-            self,
-            ident:bytes,
-            nickname:str,
-            device:str):
-        path = self.root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync" / "core.db"
-        engine = create_engine(f"sqlite:///{path}")
-        conn = None
-        try:
-            with engine.begin() as conn:
-                self._initialize_core_note_to_self_schema(conn)
-
-            with Session(engine) as session:
-                nick_id = secrets.token_bytes(SmallSeaBackend.id_size_bytes)
-                nick1 = Nickname(suid=nick_id, name=nickname)
-                note_to_self_id = secrets.token_bytes(SmallSeaBackend.id_size_bytes)
-                team1 = Team(
-                    suid=note_to_self_id,
-                    name="NoteToSelf",
-                    self_in_team=b"0")
-                core_id = secrets.token_bytes(SmallSeaBackend.id_size_bytes)
-                app1 = App(suid=core_id, name="SmallSeaCollectiveCore")
-                session.add_all([nick1, team1, app1])
-                session.flush()
-                zone_id = secrets.token_bytes(SmallSeaBackend.id_size_bytes)
-                print(f"ADD ZONE {team1.lid} {app1.lid}")
-                team_app = TeamAppZone(suid=zone_id, team_id=team1.lid, app_id=app1.lid)
-                session.add_all([team_app])
-                session.commit()
-
-        except sqlite3.Error as e:
-            print("SQLite error occurred:", e)
-
-        repo_dir = self.root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
-        CornCob.gitCmd(["init", "-b", "main", str(repo_dir)])
-        CornCob.gitCmd(["-C", str(repo_dir), "add", "core.db"])
-        CornCob.gitCmd(["-C", str(repo_dir), "commit", "-m", f"Welcome to Small Sea Collective"])
-
-    def _initialize_core_note_to_self_schema(
-            self,
-            conn ):
-        result = conn.execute(text("PRAGMA user_version"))
-        user_version = result.scalar()
-
-        if user_version == SmallSeaBackend.user_schema_version:
-            print( "SmallSea local DB already initialized" )
-            return
-
-        if ( ( 0 != user_version )
-             and ( user_version < SmallSeaBackend.user_schema_version ) ):
-            print( "TODO: Migrate user DB!" )
-            raise NotImplementedError()
-
-        if user_version > SmallSeaBackend.user_schema_version:
-            print( "TODO: DB FROM THE FUTURE!" )
-            raise NotImplementedError()
-
-        schema_path = pathlib.Path(__file__).parent
-        schema_path = schema_path / "sql" / "core_note_to_self_schema.sql"
-
-        with open(schema_path, "r") as f:
-            schema_script = f.read()
-
-        for statement in schema_script.split(";"):
-            statement = statement.strip()
-            if statement:
-                conn.execute(text(statement))
-
-        conn.execute(text(f"PRAGMA user_version = {SmallSeaBackend.user_schema_version}"))
-        print( "User DB schema initialized successfully." )
-
+    # ---- Session management ----
 
     def open_session(
             self,
@@ -369,19 +240,6 @@ class SmallSeaBackend:
 
         return token
 
-    def add_cloud_location(
-            self,
-            session,
-            protocol,
-            url ):
-        known_protocols = ["s3", "webdav"]
-        if protocol in known_protocols:
-            pass
-        else:
-            error
-
-        return self._add_cloud_location( session, protocol, url )
-
 
     def _lookup_session(
             self,
@@ -395,6 +253,23 @@ class SmallSeaBackend:
         ss_session = results_sesh[0]
         ss_session.participant_path = self.root_dir / "Participants" / ss_session.participant_id.hex()
         return ss_session
+
+
+    # ---- Cloud storage ----
+
+    def add_cloud_location(
+            self,
+            session,
+            protocol,
+            url ):
+        known_protocols = ["s3", "webdav"]
+        if protocol in known_protocols:
+            pass
+        else:
+            error
+
+        return self._add_cloud_location( session, protocol, url )
+
 
     def _add_cloud_location(
             self,
@@ -434,10 +309,13 @@ class SmallSeaBackend:
         with Session(engine_core) as session:
             results = session.query(CloudStorage).all()
             if 1 != len(results):
-                print(f"TODO: Other cases {len(results)} {participant_id}")
+                print(f"TODO: Other cases {len(results)}")
                 raise NotImplementedError()
             cloud = results[0]
         return cloud
+
+
+    # ---- Sync ----
 
     def sync_to_cloud(
             self,
@@ -465,23 +343,8 @@ class SmallSeaBackend:
             session:str):
         ss_session = self._lookup_session(session)
 
-    def make_device_link_invitation(
-            self,
-            session):
-        # make keypair
-        pass
 
-    def create_team( self, session, team ):
-        pass
-
-    # try:
-    #     cursor.execute("SELECT version FROM schema_version ORDER BY id DESC LIMIT 1")
-    #     version = cursor.fetchone()
-    #     return version[0] if version else None
-    # except sqlite3.Error:
-    #     return None
-    # finally:
-    #     conn.close()
+# ---- Storage adapters ----
 
 class SmallSeaStorageAdapter:
     def __init__(
@@ -494,7 +357,7 @@ class SmallSeaStorageAdapter:
             path:str,
             data:bytes,
             content_type: str = 'application/octet-stream'):
-        return self._upload(path, data, content_type)
+        return self._upload(path, data, None, content_type)
 
     def upload_fresh(
             self,
@@ -517,9 +380,13 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
         super().__init__(bucket_name)
         self.s3 = s3
 
-    # def download(
-    #         self,
-    #         path:str)
+    def download(self, path:str):
+        try:
+            response = self.s3.get_object(Bucket=self.zone, Key=path)
+            return True, response['Body'].read(), response['ETag'].strip('"')
+        except ClientError as exn:
+            error_code = exn.response['Error']['Code']
+            return False, None, f"Download failed: {error_code}"
 
     def _upload(
             self,
@@ -527,18 +394,16 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
             data:bytes,
             expected_etag:Optional[str],
             content_type: str = 'application/octet-stream' ):
-        """
-        """
         try:
             if expected_etag is None:
-                response = s3_client.put_object(
+                response = self.s3.put_object(
                     Bucket=self.zone,
                     Key=path,
                     Body=data,
                     ContentType=content_type
                 )
             elif "*" == expected_etag:
-                response = s3_client.put_object(
+                response = self.s3.put_object(
                     Bucket=self.zone,
                     Key=path,
                     Body=data,
@@ -546,7 +411,7 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
                     IfNoneMatch=expected_etag
                 )
             else:
-                response = s3_client.put_object(
+                response = self.s3.put_object(
                     Bucket=self.zone,
                     Key=path,
                     Body=data,
@@ -556,13 +421,13 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
             new_etag = response['ETag'].strip('"')
             return True, new_etag, "Object updated successfully"
         except ClientError as exn:
-            error_code = e.response['Error']['Code']
+            error_code = exn.response['Error']['Code']
             if error_code == 'PreconditionFailed':
                 if expected_etag is None:
                     return False, None, "Object already exists"
                 else:
                     return False, None, "ETag mismatch - object was modified"
-            return False, None, f"Operation failed: {e}"
+            return False, None, f"Operation failed: {exn}"
 
 def setup_logging(
     log_file="app.log",
@@ -602,101 +467,3 @@ def setup_logging(
     logger.addHandler(file_handler)
 
     return logger
-
-# GRAVEYARD:
-if False:
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS identity (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL UNIQUE
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS nickname (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            identity_id INTEGER NOT NULL,
-            nick TEXT NOT NULL,
-            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS team (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL UNIQUE
-            )
-        """)
-        
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS app (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            suid BLOB NOT NULL UNIQUE
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS session_user (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            identity_id INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sesion(id) ON DELETE CASCADE,
-            FOREIGN KEY (identity_id) REFERENCES identity(id) ON DELETE CASCADE
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS session_team (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            team_id INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sesion(id) ON DELETE CASCADE,
-            FOREIGN KEY (team_id) REFERENCES team(id) ON DELETE CASCADE
-            )
-        """)
-
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS session_app (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            session_id INTEGER NOT NULL,
-            app_id INTEGER NOT NULL,
-            FOREIGN KEY (session_id) REFERENCES sesion(id) ON DELETE CASCADE,
-            FOREIGN KEY (app_id) REFERENCES app(id) ON DELETE CASCADE
-            )
-        """)
-
-def open_session(
-        self,
-        nickname,
-        app,
-        team,
-        client):
-    try:
-        before = datetime.now()
-        conn = None
-        conn = sqlite3.connect( self.path_local_db )
-        cursor = conn.cursor()
-        print( f"GET IDENT {nickname}" )
-        cursor.execute("SELECT identity_id FROM nickname WHERE nick = ?;", ( nickname, ) )
-
-        ident = cursor.fetchall()[ 0 ][ 0 ]
-        session_suid = secrets.token_bytes( SmallSeaBackend.id_size_bytes )
-
-        print( f"ADD SESS {session_suid} {1234}" )
-        cursor.execute("INSERT INTO session (suid, duration_sec) VALUES (?, ?);", ( session_suid, 1234 ) )
-        session_id = cursor.lastrowid
-        print( f"ADD SESSU {session_id} {ident}" )
-        cursor.execute("INSERT INTO session_user (session_id, identity_id) VALUES (?, ?);",
-                       ( session_id, ident ) )
-        after = datetime.now()
-
-        conn.commit()
-        print( f"Starting a session took: {after - before}" )
-        return session_suid
-
-    except sqlite3.Error as e:
-        print("SQLite error occurred:", e)
-
-    finally:
-        if None != conn:
-            conn.close()

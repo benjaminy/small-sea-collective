@@ -15,7 +15,6 @@ from small_sea_hub.backend import SmallSeaBackend
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Code to run on startup, such as initializing a DB connection
     app.state.backend = SmallSeaBackend(
         settings.app_name,
         settings.small_sea_root_dir_suffix)
@@ -33,9 +32,7 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Code to run on shutdown, such as closing DB connections
     print("Shutting down...")
-    # Example: database.disconnect()
 
 app = FastAPI(lifespan=lifespan)
 
@@ -44,18 +41,7 @@ async def root():
     return {"message": "Hello World"}
 
 
-class NewParticipantReq(pydantic.BaseModel):
-    nickname: str
-    device: str
-
-@app.post( "/participants" )
-async def create_new_participant(
-        req: NewParticipantReq):
-    small_sea = app.state.backend
-    id_hex = small_sea.create_new_participant(
-        req.nickname)
-    return { "message": id_hex }
-
+# ---- Session management ----
 
 class SessionReq(pydantic.BaseModel):
     participant: str
@@ -78,16 +64,7 @@ async def open_session(req: SessionReq):
         return f"error {str(exn)}"
 
 
-class DeviceLinkInvReq(pydantic.BaseModel):
-    session: str
-
-@app.post("/device-link-invitations")
-async def make_device_link_invitation(req: DeviceLinkInvReq):
-    small_sea = app.state.backend
-    id_hex = small_sea.make_device_link_invitation(
-        req.session)
-    return { "message": id_hex }
-
+# ---- Cloud storage ----
 
 class AddCloudLocReq(pydantic.BaseModel):
     session: str
@@ -111,21 +88,6 @@ async def upload_to_cloud():
     raise NotImplementedError("upload")
 
 
-# deprecated version:
-# class PutBlobReq(pydantic.BaseModel):
-#     session: str
-#     path: str
-#     blob: Union[str, bytes]
-#     if_match: Optional[str]
-#     if_none_match: Optional[str]
-
-# @app.post( "/blobs" )
-# async def put_blob(req: PutBlobReq):
-#     small_sea = app.state.backend
-#     id_hex = small_sea.put_blob( req.session, req.backend, req.url )
-#     return { "message": id_hex }
-
-
 class CloudDownloadReq(pydantic.BaseModel):
     session: str
     backend: str
@@ -136,6 +98,8 @@ async def download_from_cloud():
     raise NotImplementedError("download")
 
 
+# ---- Sync ----
+
 class CloudSyncReq(pydantic.BaseModel):
     session: str
 
@@ -144,38 +108,3 @@ async def sync_to_cloud(req: CloudSyncReq):
     small_sea = app.state.backend
     id_hex = small_sea.sync_to_cloud(req.session)
     return { "message": id_hex }
-
-
-class NewTeamReq(pydantic.BaseModel):
-    session: str
-    name: str
-
-@app.post( "/teams" )
-async def new_team(req: NewTeamReq):
-    small_sea = app.state.backend
-    id_hex = small_sea.new_team(
-        req.session,
-        req.name)
-    return { "message": id_hex }
-
-
-@app.get("//")
-async def read_item(skip: int = 0, limit: int = 10):
-    return {"skip": skip, "limit": limit}
-
-
-# if __name__ == "__main__":
-#     # import argparse
-
-#     # parser = argparse.ArgumentParser( program_title )
-#     # parser.add_argument( "command", type=str )
-#     # parser.add_argument( "--root_data_dir", type=str, default=None )
-#     # parser.add_argument( "more_args", nargs=argparse.REMAINDER )
-
-#     # args = parser.parse_args()
-
-#     # cc = CooperativeClique( root_dir=args.root_data_dir )
-#     # exit_code = cc.main( args.command, args.more_args )
-#     # sys.exit( exit_code )
-
-#     main()
