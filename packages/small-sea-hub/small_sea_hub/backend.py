@@ -90,6 +90,9 @@ class CloudStorage(Base):
     suid = Column(LargeBinary, nullable=False)
     protocol = Column(String, nullable=False)
     url = Column(String, nullable=False)
+    # Credential storage will likely change (e.g. to a keyring or vault reference)
+    access_key = Column(String, nullable=True)
+    secret_key = Column(String, nullable=True)
 
     def __repr__(self):
         return f"<CloudStorage(lid={self.lid}, suid='{self.suid}')>"
@@ -261,21 +264,25 @@ class SmallSeaBackend:
             self,
             session,
             protocol,
-            url ):
+            url,
+            access_key=None,
+            secret_key=None ):
         known_protocols = ["s3", "webdav"]
         if protocol in known_protocols:
             pass
         else:
             error
 
-        return self._add_cloud_location( session, protocol, url )
+        return self._add_cloud_location( session, protocol, url, access_key, secret_key )
 
 
     def _add_cloud_location(
             self,
             session_hex,
             scheme,
-            location ):
+            location,
+            access_key=None,
+            secret_key=None ):
         ss_session = self._lookup_session(session_hex)
 
         # TODO: Should we check permissions? Probably.
@@ -286,7 +293,9 @@ class SmallSeaBackend:
             cloud = CloudStorage(
                 suid=cloud_suid,
                 protocol=scheme,
-                url=location)
+                url=location,
+                access_key=access_key,
+                secret_key=secret_key)
             session.add_all([cloud])
             session.commit()
 
@@ -313,6 +322,56 @@ class SmallSeaBackend:
                 raise NotImplementedError()
             cloud = results[0]
         return cloud
+
+
+    def _make_s3_adapter(
+            self,
+            ss_session:SmallSeaSession):
+        import boto3
+        from botocore.config import Config as BotoConfig
+
+        cloud = self._get_cloud_link(ss_session)
+
+        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
+        engine_core = create_engine(f"sqlite:///{core_path}")
+        with Session(engine_core) as session:
+            zone = session.query(TeamAppZone).filter(
+                TeamAppZone.lid == ss_session.zone_id).first()
+            if zone is None:
+                raise SmallSeaNotFoundExn("zone not found")
+            zone_suid = zone.suid
+
+        bucket_name = f"ss-{zone_suid.hex()[:16]}"
+
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=cloud.url,
+            aws_access_key_id=cloud.access_key,
+            aws_secret_access_key=cloud.secret_key,
+            config=BotoConfig(signature_version="s3v4"),
+            region_name="us-east-1",
+        )
+
+        return SmallSeaS3Adapter(s3_client, bucket_name)
+
+
+    def upload_to_cloud(
+            self,
+            session_hex,
+            path,
+            data):
+        ss_session = self._lookup_session(session_hex)
+        adapter = self._make_s3_adapter(ss_session)
+        return adapter.upload_overwrite(path, data)
+
+
+    def download_from_cloud(
+            self,
+            session_hex,
+            path):
+        ss_session = self._lookup_session(session_hex)
+        adapter = self._make_s3_adapter(ss_session)
+        return adapter.download(path)
 
 
     # ---- Sync ----

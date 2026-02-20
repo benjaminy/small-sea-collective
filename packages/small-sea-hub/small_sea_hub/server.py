@@ -70,32 +70,42 @@ class AddCloudLocReq(pydantic.BaseModel):
     session: str
     backend: str
     url: str
+    access_key: Optional[str] = None
+    secret_key: Optional[str] = None
 
 @app.post( "/cloud_locations" )
 async def add_cloud(req: AddCloudLocReq):
     small_sea = app.state.backend
-    id_hex = small_sea.add_cloud_location( req.session, req.backend, req.url )
+    id_hex = small_sea.add_cloud_location(
+        req.session, req.backend, req.url,
+        access_key=req.access_key, secret_key=req.secret_key )
     return { "message": id_hex }
 
 
 class CloudUploadReq(pydantic.BaseModel):
     session: str
-    backend: str
-    url: str
+    path: str
+    data: str  # base64-encoded
 
 @app.post("/cloud_file")
-async def upload_to_cloud():
-    raise NotImplementedError("upload")
+async def upload_to_cloud(req: CloudUploadReq):
+    import base64
+    small_sea = app.state.backend
+    decoded_data = base64.b64decode(req.data)
+    ok, etag, msg = small_sea.upload_to_cloud(req.session, req.path, decoded_data)
+    if not ok:
+        raise HTTPException(status_code=500, detail=msg)
+    return { "ok": True, "etag": etag, "message": msg }
 
-
-class CloudDownloadReq(pydantic.BaseModel):
-    session: str
-    backend: str
-    url: str
 
 @app.get("/cloud_file")
-async def download_from_cloud():
-    raise NotImplementedError("download")
+async def download_from_cloud(session: str, path: str):
+    import base64
+    small_sea = app.state.backend
+    ok, data, etag = small_sea.download_from_cloud(session, path)
+    if not ok:
+        raise HTTPException(status_code=404, detail=etag)
+    return { "ok": True, "data": base64.b64encode(data).decode(), "etag": etag }
 
 
 # ---- Sync ----

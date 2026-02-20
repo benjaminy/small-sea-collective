@@ -38,5 +38,8 @@ CREATE TABLE IF NOT EXISTS cloud_storage (
     lid INTEGER PRIMARY KEY AUTOINCREMENT,
     suid BLOB NOT NULL,
     protocol TEXT NOT NULL,
-    url TEXT NOT NULL
+    url TEXT NOT NULL,
+    -- Credential storage will likely change (e.g. to a keyring or vault reference)
+    access_key TEXT,
+    secret_key TEXT
 );
