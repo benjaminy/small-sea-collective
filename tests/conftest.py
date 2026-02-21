@@ -77,8 +77,11 @@ def hub_server_gen():
             root_dir = tempfile.mkdtemp()
             root_dir_created = True
 
+        env = os.environ.copy()
+        env["SMALL_SEA_ROOT_DIR"] = root_dir
+
         cmd = ["uv", "run", "fastapi", "dev", "packages/small-sea-hub/small_sea_hub/server.py", "--port", str(port)]
-        proc = subprocess.Popen(cmd)
+        proc = subprocess.Popen(cmd, env=env)
         servers.append({
             "proc": proc,
             "root_dir":root_dir,
@@ -88,6 +91,12 @@ def hub_server_gen():
         time.sleep(1)
         if proc.poll() is not None:
             raise RuntimeError(f"Small Sea Hub exited early (code {proc.returncode})")
+
+        return {
+            "port": port,
+            "root_dir": root_dir,
+            "endpoint": f"http://localhost:{port}",
+        }
 
     yield start_server
 

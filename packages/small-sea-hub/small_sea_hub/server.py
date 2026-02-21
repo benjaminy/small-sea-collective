@@ -10,14 +10,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Form, Request, HTTPException
 import pydantic
 
-from small_sea_hub.config import settings
+from small_sea_hub.config import Settings
 from small_sea_hub.backend import SmallSeaBackend
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.backend = SmallSeaBackend(
-        settings.app_name,
-        settings.small_sea_root_dir_suffix)
+    if not hasattr(app.state, "backend"):
+        settings = Settings()
+        app.state.backend = SmallSeaBackend(root_dir=settings.get_root_dir())
     app.state.logger = app.state.backend.logger
     logger = app.state.backend.logger
 

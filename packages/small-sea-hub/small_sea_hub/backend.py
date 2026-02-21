@@ -3,7 +3,6 @@
 import sys
 import os
 import sqlite3
-import platformdirs
 from datetime import datetime, timezone
 import secrets
 import pathlib
@@ -106,20 +105,13 @@ class SmallSeaBackend:
     small-sea-team-manager package (provisioning.py).
     """
 
-    app_author     : str = "Benjamin Ylvisaker"
-    app_name : str = "SmallSeaCollectiveCore"
     hub_schema_version : int = 42
     id_size_bytes  : int = 32
 
     def __init__(
             self,
-            root_dir=None):
-        if root_dir is None:
-            self.root_dir = pathlib.Path(
-                platformdirs.user_data_dir( SmallSeaBackend.app_name, SmallSeaBackend.app_author ) )
-        else:
-            self.root_dir = pathlib.Path(root_dir)
-        print(f"ROOTROOTROOT '{self.root_dir}'")
+            root_dir):
+        self.root_dir = pathlib.Path(root_dir)
         os.makedirs( self.root_dir, exist_ok=True )
         self.path_local_db = self.root_dir / "small_sea_collective_local.db"
         os.makedirs( self.root_dir / "Logging", exist_ok=True )

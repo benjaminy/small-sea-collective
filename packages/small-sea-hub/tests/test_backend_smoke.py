@@ -6,8 +6,8 @@
 import small_sea_hub.backend as SmallSea
 import small_sea_team_manager.provisioning as Provisioning
 
-def test_just_make_backend():
-    small_sea = SmallSea.SmallSeaBackend()
+def test_just_make_backend(playground_dir):
+    small_sea = SmallSea.SmallSeaBackend(root_dir=playground_dir)
 
 def test_create_user(playground_dir):
     small_sea = SmallSea.SmallSeaBackend(
