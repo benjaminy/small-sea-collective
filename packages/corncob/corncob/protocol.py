@@ -8,6 +8,8 @@ import yaml
 import pathlib
 import shutil
 import tempfile
+import io
+import base64
 import requests
 
 program_title = "CornCob protocol Git remote helper work-a-like"
@@ -311,9 +313,16 @@ class CornCobRemote:
         if url.startswith( "file://" ):
             return LocalFolderRemote( url[ 7: ].strip() )
         if url.startswith( smallsea_prefix ):
-            return SmallSeaRemote( url[ len( smallsea_prefix ): ].strip() )
+            remainder = url[ len( smallsea_prefix ): ].strip()
+            # remainder is host:port/SESSION_HEX
+            slash_pos = remainder.find( "/" )
+            if slash_pos < 0:
+                raise ValueError( f"Invalid smallsea URL, expected smallsea://host:port/SESSION_HEX, got '{url}'" )
+            host_port = remainder[ :slash_pos ]
+            session_hex = remainder[ slash_pos + 1: ]
+            return SmallSeaRemote( session_hex, base_url=f"http://{host_port}" )
 
-        raise NotImplementedError( f"Unsupported CornCob cloud protocol. '{corncob_url}'" )
+        raise NotImplementedError( f"Unsupported CornCob cloud protocol. '{url}'" )
 
     def read_link_blob( self, yaml_strm ):
         parsed_data = yaml.load( yaml_strm, Loader=yaml.FullLoader )
@@ -381,55 +390,69 @@ class LocalFolderRemote( CornCobRemote ):
 
 
 class SmallSeaRemote( CornCobRemote ):
+    """Hub-backed cloud storage remote.
+
+    Talks to the hub's POST /cloud_file and GET /cloud_file endpoints.
     """
 
-    """
+    def __init__( self, session_hex, base_url="http://localhost:11437", client=None ):
+        self.session_hex = session_hex
 
-    def __init__( self, path ):
-        self.path = None
-        self.session_token = None
+        if client is not None:
+            self._post = client.post
+            self._get = client.get
+            self._url_prefix = ""
+        else:
+            self._url_prefix = base_url
+            self._post = lambda path, **kw: requests.post( f"{base_url}{path}", **kw )
+            self._get = lambda path, **kw: requests.get( f"{base_url}{path}", **kw )
 
-        url = f"http://localhost:11437/session/{path}"
-        response = requests.get( url )
 
-        if 200 != response.status_code:
-            print( f"ERROR. {response.status_code} {response}" )
-            return
+    def _upload( self, cloud_path, data_bytes ):
+        resp = self._post( "/cloud_file", json={
+            "session": self.session_hex,
+            "path": cloud_path,
+            "data": base64.b64encode( data_bytes ).decode(),
+        })
+        if resp.status_code != 200:
+            raise RuntimeError( f"cloud upload failed ({resp.status_code}): {cloud_path}" )
+        return resp
 
-        response_data = response.json()
 
-        self.path = path
-        self.session_token = response_data[ "token" ]
-
-        print( f"SHNIFTY {self.path} {self.session_token}" )
+    def _download( self, cloud_path ):
+        resp = self._get( "/cloud_file", params={
+            "session": self.session_hex,
+            "path": cloud_path,
+        })
+        if resp.status_code != 200:
+            return None
+        return base64.b64decode( resp.json()[ "data" ] )
 
 
     def upload_latest_link( self, link_uid, blob, bundle_uid, local_bundle_path ):
-        path_bundle = f"{self.path}{os.path.sep}B-{bundle_uid}.bundle"
-        # TODO: error handling
-        shutil.copy( local_bundle_path, path_bundle )
+        # 1. Upload bundle
+        with open( local_bundle_path, "rb" ) as f:
+            bundle_bytes = f.read()
+        self._upload( f"B-{bundle_uid}.bundle", bundle_bytes )
 
-        path_latest = f"{self.path}{os.path.sep}latest-link.yaml"
-        with open( path_latest, "w", encoding="utf-8" ) as link_strm:
-            yaml.dump( blob, link_strm, default_flow_style=False )
+        # 2. Serialize link YAML
+        link_yaml = yaml.dump( blob, default_flow_style=False ).encode( "utf-8" )
 
-        path_uid = f"{self.path}{os.path.sep}L-{link_uid}.yaml"
-        with open( path_uid, "w", encoding="utf-8" ) as link_strm:
-            yaml.dump( blob, link_strm, default_flow_style=False )
+        # 3. Upload latest-link.yaml and L-{link_uid}.yaml
+        self._upload( "latest-link.yaml", link_yaml )
+        self._upload( f"L-{link_uid}.yaml", link_yaml )
 
 
     def get_link( self, uid ):
         if uid == "latest-link":
-            path_link = f"{self.path}{os.path.sep}latest-link.yaml"
+            cloud_path = "latest-link.yaml"
         else:
-            path_link = f"{self.path}{os.path.sep}L-{uid}.yaml"
+            cloud_path = f"L-{uid}.yaml"
 
-        if not os.path.exists( path_link ):
-            print( f"FILE DOES NOT EXIST {path_link}" )
+        data = self._download( cloud_path )
+        if data is None:
             return None
-
-        with open( path_link, "r" ) as link_file_strm:
-            return self.read_link_blob( link_file_strm )
+        return self.read_link_blob( io.BytesIO( data ) )
 
 
     def get_latest_link( self ):
@@ -437,9 +460,11 @@ class SmallSeaRemote( CornCobRemote ):
 
 
     def download_bundle( self, bundle_uid, local_bundle_path ):
-        path_bundle = f"{self.path}{os.path.sep}B-{bundle_uid}.bundle"
-        # TODO: error handling
-        shutil.copy( path_bundle, local_bundle_path )
+        data = self._download( f"B-{bundle_uid}.bundle" )
+        if data is None:
+            raise RuntimeError( f"Failed to download bundle B-{bundle_uid}.bundle" )
+        with open( local_bundle_path, "wb" ) as f:
+            f.write( data )
 
 
 if __name__ == "__main__":

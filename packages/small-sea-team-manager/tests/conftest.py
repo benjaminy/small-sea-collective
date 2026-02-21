@@ -1,23 +1,18 @@
+# Top Matter
+
 import os
-import shutil
 import subprocess
 import tempfile
 import time
-
 import pytest
-
-
-@pytest.fixture
-def scratch_dir():
-    d = tempfile.mkdtemp(prefix="corncob-test-")
-    yield d
-    shutil.rmtree(d, ignore_errors=True)
-
+import shutil
 
 @pytest.fixture()
 def playground_dir():
     dir_name = tempfile.mkdtemp()
+
     yield dir_name
+
     try:
         shutil.rmtree(dir_name)
     except FileNotFoundError:
@@ -28,7 +23,9 @@ def playground_dir():
 def minio_server_gen():
     servers = []
 
-    def start_server(root_dir=None, port=9000):
+    def start_server(
+            root_dir=None,
+            port=9000 ):
         root_dir_created = False
         if root_dir is None:
             root_dir = tempfile.mkdtemp()
@@ -37,21 +34,20 @@ def minio_server_gen():
         env["MINIO_ROOT_USER"] = "minioadmin"
         env["MINIO_ROOT_PASSWORD"] = "minioadmin"
         proc = subprocess.Popen([
-            "minio", "server", root_dir,
-            "--address", f":{port}",
-            "--console-address", f":{port + 1}",
-        ], env=env)
+            "minio", "server", root_dir, "--address", f":{port}", "--console-address", f":{port + 1}"
+        ], env=env )
         servers.append({
             "proc": proc,
-            "root_dir": root_dir,
+            "root_dir":root_dir,
             "root_created": root_dir_created,
         })
         time.sleep(2)
         if proc.poll() is not None:
             raise RuntimeError(f"MinIO exited early (code {proc.returncode})")
+
         return {
-            "port": port,
-            "endpoint": f"http://localhost:{port}",
+            "port"      : port,
+            "endpoint"  : f"http://localhost:{port}",
             "access_key": "minioadmin",
             "secret_key": "minioadmin",
         }

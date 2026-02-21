@@ -18,16 +18,8 @@ import corncob.protocol as CC
 
 
 def make_file_remote(pub_dir):
-    """Create a SmallSeaRemote-like object pointing at a local directory.
-
-    SmallSeaRemote.__init__ tries to contact the Hub over HTTP, but the
-    actual link+bundle file methods just operate on self.path.  We bypass
-    the constructor to get at those methods for testing.
-    """
-    remote = object.__new__(CC.SmallSeaRemote)
-    remote.path = str(pub_dir)
-    remote.session_token = None
-    return remote
+    """Create a LocalFolderRemote pointing at a local directory."""
+    return CC.LocalFolderRemote(str(pub_dir))
 
 
 def make_corncob(repo_dir, remote_name):

@@ -84,20 +84,6 @@ class TeamAppZone(Base):
         return f"<TeamAppZone(lid={self.lid}, suid='{self.suid}')>"
 
 
-class CloudStorage(Base):
-    __tablename__ = 'cloud_storage'
-
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
-    protocol = Column(String, nullable=False)
-    url = Column(String, nullable=False)
-    # Credential storage will likely change (e.g. to a keyring or vault reference)
-    access_key = Column(String, nullable=True)
-    secret_key = Column(String, nullable=True)
-
-    def __repr__(self):
-        return f"<CloudStorage(lid={self.lid}, suid='{self.suid}')>"
-
 
 # ---- Constants ----
 
