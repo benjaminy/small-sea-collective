@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<h1><a href="/teams/{{ team_name }}/niches">{{ team_name }}</a> / {{ niche_name }}</h1>
+
+<div class="section">
+    {% if status_entries is none %}
+    <h2>Checkout</h2>
+    <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/checkout" hx-target="#status-area">
+        <input type="text" name="dest_path" placeholder="Destination path" required>
+        <button type="submit">Checkout</button>
+    </form>
+    {% else %}
+    <h2>Publish</h2>
+    <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/publish" hx-target="#status-area">
+        <input type="text" name="message" placeholder="Commit message (optional)">
+        <button type="submit">Publish All</button>
+    </form>
+    {% endif %}
+</div>
+
+<div id="status-area">
+    {% include "fragments/status.html" %}
+</div>
+
+<div class="section">
+    <h2>History</h2>
+    {% include "fragments/file_list.html" %}
+</div>
+{% endblock %}

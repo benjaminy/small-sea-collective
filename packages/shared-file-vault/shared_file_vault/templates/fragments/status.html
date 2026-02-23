@@ -1,0 +1,27 @@
+{% if message %}
+<div class="message">{{ message }}</div>
+{% endif %}
+
+{% if status_entries is not none %}
+<h2>Status</h2>
+{% if status_entries %}
+<table>
+    <thead>
+        <tr>
+            <th>Status</th>
+            <th>File</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for e in status_entries %}
+        <tr>
+            <td><code>{{ e.status }}</code></td>
+            <td>{{ e.path }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>Working tree clean.</p>
+{% endif %}
+{% endif %}

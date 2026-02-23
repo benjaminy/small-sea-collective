@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+<h1>File Vault</h1>
+
+{% if team_name %}
+<h2>{{ team_name }} &mdash; Niches</h2>
+
+<div class="section">
+    <form hx-post="/teams/{{ team_name }}/niches" hx-target="#niche-list">
+        <input type="text" name="niche_name" placeholder="New niche name" required>
+        <button type="submit">Create Niche</button>
+    </form>
+</div>
+
+<div id="niche-list">
+    {% include "fragments/niche_list.html" %}
+</div>
+
+{% else %}
+<p>Select a team to manage its niches.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,22 @@
+{% if niches %}
+<table>
+    <thead>
+        <tr>
+            <th>Name</th>
+            <th>Checkout Path</th>
+            <th>Created</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for n in niches %}
+        <tr>
+            <td><a href="/teams/{{ team_name }}/niches/{{ n.name }}">{{ n.name }}</a></td>
+            <td>{{ n.checkout_path or "(not checked out)" }}</td>
+            <td>{{ n.created_at[:10] }}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No niches yet.</p>
+{% endif %}

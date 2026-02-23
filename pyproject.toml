@@ -8,6 +8,7 @@ dev-dependencies = [
     "small-sea-hub",
     "small-sea-client",
     "small-sea-team-manager",
+    "shared-file-vault",
     "corncob",
 ]
 
@@ -15,4 +16,5 @@ dev-dependencies = [
 small-sea-hub = { workspace = true }
 small-sea-client = { workspace = true }
 small-sea-team-manager = { workspace = true }
+shared-file-vault = { workspace = true }
 corncob = { workspace = true }
