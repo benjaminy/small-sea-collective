@@ -193,5 +193,70 @@ def make_device_link_invitation(session):
     pass
 
 
-def create_team(session, team):
-    pass
+def create_team(root_dir, participant_hex, team_name):
+    """Create a new team for an existing participant.
+
+    Adds team + team_app_zone rows to the user's NoteToSelf/Sync/core.db,
+    creates the team directory with its own core.db (member table),
+    and initializes a git repo for the team sync directory.
+
+    Returns the new team's SUID hex.
+    """
+    root_dir = pathlib.Path(root_dir)
+    participant_dir = root_dir / "Participants" / participant_hex
+
+    # --- Update the user's NoteToSelf core.db ---
+    user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
+    engine = create_engine(f"sqlite:///{user_db_path}")
+
+    team_suid = secrets.token_bytes(ID_SIZE_BYTES)
+
+    with Session(engine) as session:
+        # Reuse the existing SmallSeaCollectiveCore app row
+        app_row = session.query(App).filter_by(name="SmallSeaCollectiveCore").one()
+
+        team_row = Team(
+            suid=team_suid,
+            name=team_name,
+            self_in_team=b"0")
+        session.add(team_row)
+        session.flush()
+
+        zone_id = secrets.token_bytes(ID_SIZE_BYTES)
+        team_app = TeamAppZone(suid=zone_id, team_id=team_row.lid, app_id=app_row.lid)
+        session.add(team_app)
+        session.commit()
+
+    # --- Create team directory and its core.db ---
+    team_sync_dir = participant_dir / team_name / "Sync"
+    os.makedirs(team_sync_dir, exist_ok=False)
+
+    team_db_path = team_sync_dir / "core.db"
+    team_engine = create_engine(f"sqlite:///{team_db_path}")
+
+    with team_engine.begin() as conn:
+        schema_path = pathlib.Path(__file__).parent / "sql" / "core_other_team.sql"
+        with open(schema_path, "r") as f:
+            schema_script = f.read()
+        for statement in schema_script.split(";"):
+            statement = statement.strip()
+            if statement:
+                conn.execute(text(statement))
+        conn.execute(text(f"PRAGMA user_version = {USER_SCHEMA_VERSION}"))
+
+    # Add the creator as the first member
+    with Session(team_engine) as session:
+        member_suid = secrets.token_bytes(ID_SIZE_BYTES)
+        from sqlalchemy import Table, MetaData
+        metadata = MetaData()
+        metadata.reflect(bind=team_engine)
+        member_table = metadata.tables["member"]
+        session.execute(member_table.insert().values(suid=bytes.fromhex(participant_hex)))
+        session.commit()
+
+    # --- Git init ---
+    CornCob.gitCmd(["init", "-b", "main", str(team_sync_dir)])
+    CornCob.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+    CornCob.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"New team: {team_name}"])
+
+    return team_suid.hex()
