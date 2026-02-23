@@ -12,8 +12,13 @@ def test_create_team(playground_dir):
     alice_hex = create_new_participant(root, "Alice")
 
     # Create a team
-    team_id_hex = create_team(root, alice_hex, "CoolProject")
+    result = create_team(root, alice_hex, "CoolProject")
+    team_id_hex = result["team_id_hex"]
+    member_id_hex = result["member_id_hex"]
     assert len(team_id_hex) == 32  # 16 bytes (UUIDv7) -> 32 hex chars
+    assert len(member_id_hex) == 32
+    # Member ID should be different from participant ID (fresh per-team ID)
+    assert member_id_hex != alice_hex
 
     # --- Verify NoteToSelf core.db has team + team_app_zone rows ---
     user_db = root / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
@@ -37,11 +42,14 @@ def test_create_team(playground_dir):
     assert team_db.exists()
 
     tconn = sqlite3.connect(str(team_db))
-    # member table should exist with Alice as first member
+    # member table should exist with Alice as first member (fresh per-team ID)
     members = tconn.execute("SELECT * FROM member").fetchall()
     assert len(members) == 1
-    assert members[0][0] == bytes.fromhex(alice_hex)  # id column
+    assert members[0][0] == bytes.fromhex(member_id_hex)  # fresh per-team ID, not alice_hex
     tconn.close()
+
+    # --- Verify self_in_team matches the member ID ---
+    assert teams[0]["self_in_team"] == bytes.fromhex(member_id_hex)
 
     # --- Verify git repo ---
     team_sync = root / "Participants" / alice_hex / "CoolProject" / "Sync"
