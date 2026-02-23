@@ -1,6 +1,5 @@
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS member (
-    lid INTEGER PRIMARY KEY AUTOINCREMENT,
-    suid BLOB NOT NULL
+    id BLOB PRIMARY KEY
 );

@@ -1,42 +1,36 @@
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS user_device (
-    lid INTEGER PRIMARY KEY AUTOINCREMENT,
-    suid BLOB NOT NULL,
+    id BLOB PRIMARY KEY,
     key BLOB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS nickname (
-    lid INTEGER PRIMARY KEY AUTOINCREMENT,
-    suid BLOB NOT NULL,
+    id BLOB PRIMARY KEY,
     name TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS team (
-    lid INTEGER PRIMARY KEY AUTOINCREMENT,
-    suid BLOB NOT NULL,
+    id BLOB PRIMARY KEY,
     name TEXT NOT NULL,
     self_in_team BLOB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS app (
-    lid INTEGER PRIMARY KEY AUTOINCREMENT,
-    suid BLOB NOT NULL,
+    id BLOB PRIMARY KEY,
     name TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS team_app_zone (
-    lid INTEGER PRIMARY KEY AUTOINCREMENT,
-    suid BLOB NOT NULL,
-    app_id INTEGER NOT NULL,
-    team_id INTEGER NOT NULL,
-    FOREIGN KEY (app_id) REFERENCES app(lid) ON DELETE CASCADE,
-    FOREIGN KEY (team_id) REFERENCES team(lid) ON DELETE CASCADE
+    id BLOB PRIMARY KEY,
+    app_id BLOB NOT NULL,
+    team_id BLOB NOT NULL,
+    FOREIGN KEY (app_id) REFERENCES app(id) ON DELETE CASCADE,
+    FOREIGN KEY (team_id) REFERENCES team(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS cloud_storage (
-    lid INTEGER PRIMARY KEY AUTOINCREMENT,
-    suid BLOB NOT NULL,
+    id BLOB PRIMARY KEY,
     protocol TEXT NOT NULL,
     url TEXT NOT NULL,
     -- Credential storage will likely change (e.g. to a keyring or vault reference)

@@ -13,11 +13,12 @@ from botocore.exceptions import ClientError
 import plyer
 import yaml
 
-from sqlalchemy import create_engine, text, Column, Integer, String, LargeBinary, DateTime, ForeignKey
-from sqlalchemy.orm import declarative_base, Session, relationship
+from sqlalchemy import create_engine, text, Column, Integer, String, LargeBinary, DateTime
+from sqlalchemy.orm import declarative_base, Session
 Base = declarative_base()
 
 import corncob.protocol as CornCob
+from small_sea_team_manager.provisioning import uuid7
 
 class SmallSeaBackendExn(Exception):
     pass
@@ -32,18 +33,18 @@ class SmallSeaNotFoundExn(SmallSeaBackendExn):
 class SmallSeaSession(Base):
     __tablename__ = 'session'
 
-    lid = Column(Integer, primary_key=True)
+    id = Column(LargeBinary, primary_key=True)
     token = Column(LargeBinary, nullable=False)
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     duration_sec = Column(Integer)
     participant_id = Column(LargeBinary, nullable=False)
-    app_id = Column(Integer, nullable=False)
-    team_id = Column(Integer, nullable=False)
-    zone_id = Column(Integer, nullable=False)
+    app_id = Column(LargeBinary, nullable=False)
+    team_id = Column(LargeBinary, nullable=False)
+    zone_id = Column(LargeBinary, nullable=False)
     client = Column(String, nullable=False)
 
     def __repr__(self):
-        return f"<Session(lid={self.lid}, title='{self.token.hex()}')>"
+        return f"<Session(id='{self.id.hex()}', token='{self.token.hex()}')>"
 
 
 # Per-user core.db models (duplicated in team manager — the DB is the contract)
@@ -51,16 +52,14 @@ class SmallSeaSession(Base):
 class Nickname(Base):
     __tablename__ = 'nickname'
 
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
+    id = Column(LargeBinary, primary_key=True)
     name = Column(String, nullable=False)
 
 
 class Team(Base):
     __tablename__ = 'team'
 
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
+    id = Column(LargeBinary, primary_key=True)
     name = Column(String, nullable=False)
     self_in_team = Column(LargeBinary, nullable=False)
 
@@ -68,25 +67,22 @@ class Team(Base):
 class App(Base):
     __tablename__ = 'app'
 
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
+    id = Column(LargeBinary, primary_key=True)
     name = Column(String, nullable=False)
 
 
 class TeamAppZone(Base):
     __tablename__ = 'team_app_zone'
 
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
-    team_id = Column(Integer, ForeignKey("team.lid"), nullable=False)
-    app_id = Column(Integer, ForeignKey("app.lid"), nullable=False)
+    id = Column(LargeBinary, primary_key=True)
+    team_id = Column(LargeBinary, nullable=False)
+    app_id = Column(LargeBinary, nullable=False)
 
 
 class CloudStorage(Base):
     __tablename__ = 'cloud_storage'
 
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
+    id = Column(LargeBinary, primary_key=True)
     protocol = Column(String, nullable=False)
     url = Column(String, nullable=False)
     # Credential storage will likely change (e.g. to a keyring or vault reference)
@@ -94,7 +90,7 @@ class CloudStorage(Base):
     secret_key = Column(String, nullable=True)
 
     def __repr__(self):
-        return f"<CloudStorage(lid={self.lid}, suid='{self.suid}')>"
+        return f"<CloudStorage(id='{self.id.hex()}')>"
 
 
 class SmallSeaBackend:
@@ -105,8 +101,7 @@ class SmallSeaBackend:
     small-sea-team-manager package (provisioning.py).
     """
 
-    hub_schema_version : int = 42
-    id_size_bytes  : int = 32
+    hub_schema_version : int = 43
 
     def __init__(
             self,
@@ -211,7 +206,7 @@ class SmallSeaBackend:
             if (1 > len(results_team)) or (1 > len(results_app)):
                 raise SmallSeaNotFoundExn()
             results_zone = session.query(TeamAppZone).filter(
-                (TeamAppZone.team_id == results_team[0].lid) and (TeamAppZone.app_id == results_app[0].lid)).all()
+                (TeamAppZone.team_id == results_team[0].id) and (TeamAppZone.app_id == results_app[0].id)).all()
             print(results_team[0])
             print(results_app[0])
             if 1 > len(results_zone):
@@ -219,14 +214,15 @@ class SmallSeaBackend:
 
         engine_local = create_engine(f"sqlite:///{self.path_local_db}")
         with Session(engine_local) as session:
-            token = secrets.token_bytes(SmallSeaBackend.id_size_bytes)
+            token = secrets.token_bytes(32)
             ss_session = SmallSeaSession(
+                id=uuid7(),
                 token=token,
                 duration_sec=1234,
                 participant_id=participant_lid,
-                team_id=results_team[0].lid,
-                app_id=results_app[0].lid,
-                zone_id=results_zone[0].lid,
+                team_id=results_team[0].id,
+                app_id=results_app[0].id,
+                zone_id=results_zone[0].id,
                 client=client)
 
             print(f"ADD SESH {token.hex()} {token}")
@@ -281,9 +277,8 @@ class SmallSeaBackend:
         core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
         engine_core = create_engine(f"sqlite:///{core_path}")
         with Session(engine_core) as session:
-            cloud_suid = secrets.token_bytes(SmallSeaBackend.id_size_bytes)
             cloud = CloudStorage(
-                suid=cloud_suid,
+                id=uuid7(),
                 protocol=scheme,
                 url=location,
                 access_key=access_key,
@@ -328,12 +323,11 @@ class SmallSeaBackend:
         engine_core = create_engine(f"sqlite:///{core_path}")
         with Session(engine_core) as session:
             zone = session.query(TeamAppZone).filter(
-                TeamAppZone.lid == ss_session.zone_id).first()
+                TeamAppZone.id == ss_session.zone_id).first()
             if zone is None:
                 raise SmallSeaNotFoundExn("zone not found")
-            zone_suid = zone.suid
 
-        bucket_name = f"ss-{zone_suid.hex()[:16]}"
+        bucket_name = f"ss-{zone.id.hex()[:16]}"
 
         s3_client = boto3.client(
             "s3",

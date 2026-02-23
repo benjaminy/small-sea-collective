@@ -12,8 +12,8 @@ def test_create_team(playground_dir):
     alice_hex = create_new_participant(root, "Alice")
 
     # Create a team
-    team_suid_hex = create_team(root, alice_hex, "CoolProject")
-    assert len(team_suid_hex) == 64  # 32 bytes -> 64 hex chars
+    team_id_hex = create_team(root, alice_hex, "CoolProject")
+    assert len(team_id_hex) == 32  # 16 bytes (UUIDv7) -> 32 hex chars
 
     # --- Verify NoteToSelf core.db has team + team_app_zone rows ---
     user_db = root / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
@@ -22,11 +22,11 @@ def test_create_team(playground_dir):
 
     teams = conn.execute("SELECT * FROM team WHERE name = 'CoolProject'").fetchall()
     assert len(teams) == 1
-    assert teams[0]["suid"] == bytes.fromhex(team_suid_hex)
+    assert teams[0]["id"] == bytes.fromhex(team_id_hex)
 
     zones = conn.execute(
         "SELECT taz.* FROM team_app_zone taz "
-        "JOIN team t ON taz.team_id = t.lid "
+        "JOIN team t ON taz.team_id = t.id "
         "WHERE t.name = 'CoolProject'"
     ).fetchall()
     assert len(zones) == 1
@@ -40,7 +40,7 @@ def test_create_team(playground_dir):
     # member table should exist with Alice as first member
     members = tconn.execute("SELECT * FROM member").fetchall()
     assert len(members) == 1
-    assert members[0][1] == bytes.fromhex(alice_hex)  # suid column
+    assert members[0][0] == bytes.fromhex(alice_hex)  # id column
     tconn.close()
 
     # --- Verify git repo ---

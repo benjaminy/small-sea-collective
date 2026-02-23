@@ -11,11 +11,13 @@
 # schema is the shared contract between the two packages.
 
 import os
+import struct
 import sqlite3
 import secrets
 import pathlib
+import time
 
-from sqlalchemy import create_engine, text, Column, Integer, String, LargeBinary, ForeignKey
+from sqlalchemy import create_engine, text, Column, String, LargeBinary
 from sqlalchemy.orm import declarative_base, Session
 Base = declarative_base()
 
@@ -25,70 +27,88 @@ from cryptography.hazmat.primitives import serialization
 import corncob.protocol as CornCob
 
 
+# ---- UUIDv7 ----
+
+def uuid7():
+    """Generate a UUIDv7 (time-ordered, random) as 16 bytes."""
+    timestamp_ms = int(time.time() * 1000)
+    rand_bytes = secrets.token_bytes(10)
+
+    # 48-bit timestamp | 4-bit version (0111) | 12-bit rand_a
+    # 2-bit variant (10) | 62-bit rand_b
+    high = (timestamp_ms << 16) | 0x7000 | (rand_bytes[0] << 4 | rand_bytes[1] >> 4)
+    # This gives us the first 8 bytes
+    # Actually let me do this more carefully with struct
+
+    # Bytes 0-5: 48-bit unix timestamp ms (big-endian)
+    # Byte 6: version (0111) + top 4 bits of rand
+    # Byte 7: next 8 bits of rand
+    # Byte 8: variant (10) + 6 bits of rand
+    # Bytes 9-15: 48 bits of rand
+    b = struct.pack(">Q", timestamp_ms)[2:]  # 6 bytes of timestamp
+    b += bytes([(0x70 | (rand_bytes[0] & 0x0F)), rand_bytes[1]])  # ver + rand_a
+    b += bytes([(0x80 | (rand_bytes[2] & 0x3F))]) + rand_bytes[3:10]  # variant + rand_b
+    return b
+
+
 # ---- SQLAlchemy models for per-user core.db ----
 
 class UserDevice(Base):
     __tablename__ = 'user_device'
 
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
+    id = Column(LargeBinary, primary_key=True)
     key = Column(LargeBinary, nullable=False)
 
     def __repr__(self):
-        return f"<UserDevice(lid={self.lid}, suid='{self.suid}')>"
+        return f"<UserDevice(id='{self.id.hex()}')>"
 
 
 class Nickname(Base):
     __tablename__ = 'nickname'
 
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
+    id = Column(LargeBinary, primary_key=True)
     name = Column(String, nullable=False)
 
     def __repr__(self):
-        return f"<Nickname(lid={self.lid}, suid='{self.suid}')>"
+        return f"<Nickname(id='{self.id.hex()}')>"
 
 
 class Team(Base):
     __tablename__ = 'team'
 
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
+    id = Column(LargeBinary, primary_key=True)
     name = Column(String, nullable=False)
     self_in_team = Column(LargeBinary, nullable=False)
 
     def __repr__(self):
-        return f"<Team(lid={self.lid}, suid='{self.suid}')>"
+        return f"<Team(id='{self.id.hex()}')>"
 
 
 class App(Base):
     __tablename__ = 'app'
 
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
+    id = Column(LargeBinary, primary_key=True)
     name = Column(String, nullable=False)
 
     def __repr__(self):
-        return f"<App(lid={self.lid}, suid='{self.suid}')>"
+        return f"<App(id='{self.id.hex()}')>"
 
 
 class TeamAppZone(Base):
     __tablename__ = 'team_app_zone'
 
-    lid = Column(Integer, primary_key=True)
-    suid = Column(LargeBinary, nullable=False)
-    team_id = Column(Integer, ForeignKey("team.lid"), nullable=False)
-    app_id = Column(Integer, ForeignKey("app.lid"), nullable=False)
+    id = Column(LargeBinary, primary_key=True)
+    team_id = Column(LargeBinary, nullable=False)
+    app_id = Column(LargeBinary, nullable=False)
 
     def __repr__(self):
-        return f"<TeamAppZone(lid={self.lid}, suid='{self.suid}')>"
+        return f"<TeamAppZone(id='{self.id.hex()}')>"
 
 
 
 # ---- Constants ----
 
-ID_SIZE_BYTES = 32
-USER_SCHEMA_VERSION = 42
+USER_SCHEMA_VERSION = 43
 
 
 # ---- Provisioning functions ----
@@ -96,7 +116,7 @@ USER_SCHEMA_VERSION = 42
 def create_new_participant(root_dir, nickname, device=None):
     """Create a new participant: directory layout, user DB, git repo."""
     root_dir = pathlib.Path(root_dir)
-    ident = secrets.token_bytes(ID_SIZE_BYTES)
+    ident = uuid7()
     ident_dir = root_dir / "Participants" / ident.hex()
 
     device_key = Ed25519PrivateKey.generate()
@@ -132,20 +152,15 @@ def _initialize_user_db(root_dir, ident, nickname, device):
             _initialize_core_note_to_self_schema(conn)
 
         with Session(engine) as session:
-            nick_id = secrets.token_bytes(ID_SIZE_BYTES)
-            nick1 = Nickname(suid=nick_id, name=nickname)
-            note_to_self_id = secrets.token_bytes(ID_SIZE_BYTES)
+            nick1 = Nickname(id=uuid7(), name=nickname)
             team1 = Team(
-                suid=note_to_self_id,
+                id=uuid7(),
                 name="NoteToSelf",
                 self_in_team=b"0")
-            core_id = secrets.token_bytes(ID_SIZE_BYTES)
-            app1 = App(suid=core_id, name="SmallSeaCollectiveCore")
+            app1 = App(id=uuid7(), name="SmallSeaCollectiveCore")
             session.add_all([nick1, team1, app1])
             session.flush()
-            zone_id = secrets.token_bytes(ID_SIZE_BYTES)
-            print(f"ADD ZONE {team1.lid} {app1.lid}")
-            team_app = TeamAppZone(suid=zone_id, team_id=team1.lid, app_id=app1.lid)
+            team_app = TeamAppZone(id=uuid7(), team_id=team1.id, app_id=app1.id)
             session.add_all([team_app])
             session.commit()
 
@@ -200,7 +215,7 @@ def create_team(root_dir, participant_hex, team_name):
     creates the team directory with its own core.db (member table),
     and initializes a git repo for the team sync directory.
 
-    Returns the new team's SUID hex.
+    Returns the new team's id hex.
     """
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
@@ -209,21 +224,20 @@ def create_team(root_dir, participant_hex, team_name):
     user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
     engine = create_engine(f"sqlite:///{user_db_path}")
 
-    team_suid = secrets.token_bytes(ID_SIZE_BYTES)
+    team_id = uuid7()
 
     with Session(engine) as session:
         # Reuse the existing SmallSeaCollectiveCore app row
         app_row = session.query(App).filter_by(name="SmallSeaCollectiveCore").one()
 
         team_row = Team(
-            suid=team_suid,
+            id=team_id,
             name=team_name,
             self_in_team=b"0")
         session.add(team_row)
         session.flush()
 
-        zone_id = secrets.token_bytes(ID_SIZE_BYTES)
-        team_app = TeamAppZone(suid=zone_id, team_id=team_row.lid, app_id=app_row.lid)
+        team_app = TeamAppZone(id=uuid7(), team_id=team_row.id, app_id=app_row.id)
         session.add(team_app)
         session.commit()
 
@@ -245,18 +259,13 @@ def create_team(root_dir, participant_hex, team_name):
         conn.execute(text(f"PRAGMA user_version = {USER_SCHEMA_VERSION}"))
 
     # Add the creator as the first member
-    with Session(team_engine) as session:
-        member_suid = secrets.token_bytes(ID_SIZE_BYTES)
-        from sqlalchemy import Table, MetaData
-        metadata = MetaData()
-        metadata.reflect(bind=team_engine)
-        member_table = metadata.tables["member"]
-        session.execute(member_table.insert().values(suid=bytes.fromhex(participant_hex)))
-        session.commit()
+    with team_engine.begin() as conn:
+        conn.execute(text("INSERT INTO member (id) VALUES (:id)"),
+                     {"id": bytes.fromhex(participant_hex)})
 
     # --- Git init ---
     CornCob.gitCmd(["init", "-b", "main", str(team_sync_dir)])
     CornCob.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
     CornCob.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"New team: {team_name}"])
 
-    return team_suid.hex()
+    return team_id.hex()
