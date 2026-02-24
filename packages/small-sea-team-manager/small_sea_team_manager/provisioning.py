@@ -159,7 +159,7 @@ class MemberCloud(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 43
+USER_SCHEMA_VERSION = 44
 
 
 # ---- Provisioning functions ----
@@ -224,6 +224,14 @@ def _initialize_user_db(root_dir, ident, nickname, device):
     CornCob.gitCmd(["-C", str(repo_dir), "commit", "-m", f"Welcome to Small Sea Collective"])
 
 
+def _migrate_user_db(conn, from_version):
+    """Apply incremental migrations to bring a user DB up to USER_SCHEMA_VERSION."""
+    if from_version < 44:
+        for col in ["client_id", "client_secret", "refresh_token",
+                     "access_token", "token_expiry", "path_metadata"]:
+            conn.execute(text(f"ALTER TABLE cloud_storage ADD COLUMN {col} TEXT"))
+
+
 def _initialize_core_note_to_self_schema(conn):
     result = conn.execute(text("PRAGMA user_version"))
     user_version = result.scalar()
@@ -233,8 +241,10 @@ def _initialize_core_note_to_self_schema(conn):
         return
 
     if (0 != user_version) and (user_version < USER_SCHEMA_VERSION):
-        print("TODO: Migrate user DB!")
-        raise NotImplementedError()
+        _migrate_user_db(conn, user_version)
+        conn.execute(text(f"PRAGMA user_version = {USER_SCHEMA_VERSION}"))
+        print(f"User DB migrated from v{user_version} to v{USER_SCHEMA_VERSION}.")
+        return
 
     if user_version > USER_SCHEMA_VERSION:
         print("TODO: DB FROM THE FUTURE!")

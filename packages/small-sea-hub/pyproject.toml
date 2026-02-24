@@ -5,12 +5,18 @@ requires-python = ">=3.12"
 dependencies = [
     "botocore>=1.40.43",
     "fastapi[standard]>=0.118.0",
+    "httpx>=0.27.0",
     "platformdirs>=4.4.0",
     "plyer>=2.1.0",
     "pydantic-settings[toml]>=2.11.0",
     "pyobjus>=1.2.3",
     "sqlalchemy>=2.0.44",
     "corncob",
+]
+
+[project.optional-dependencies]
+test = [
+    "respx>=0.21.0",
 ]
 
 [tool.uv.sources]

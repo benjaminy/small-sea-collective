@@ -9,7 +9,6 @@ import pathlib
 import logging
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
-from botocore.exceptions import ClientError
 import plyer
 import yaml
 
@@ -19,6 +18,8 @@ Base = declarative_base()
 
 import corncob.protocol as CornCob
 from small_sea_team_manager.provisioning import uuid7
+from small_sea_hub.adapters import SmallSeaStorageAdapter, SmallSeaS3Adapter, SmallSeaGDriveAdapter, SmallSeaDropboxAdapter
+from small_sea_hub.adapters.oauth import is_token_expired, refresh_google_token, refresh_dropbox_token
 
 class SmallSeaBackendExn(Exception):
     pass
@@ -88,6 +89,14 @@ class CloudStorage(Base):
     # Credential storage will likely change (e.g. to a keyring or vault reference)
     access_key = Column(String, nullable=True)
     secret_key = Column(String, nullable=True)
+    # OAuth fields for Google Drive / Dropbox
+    client_id = Column(String, nullable=True)
+    client_secret = Column(String, nullable=True)
+    refresh_token = Column(String, nullable=True)
+    access_token = Column(String, nullable=True)
+    token_expiry = Column(String, nullable=True)
+    # JSON dict mapping path → provider-specific metadata (e.g. Google Drive file IDs)
+    path_metadata = Column(String, nullable=True)
 
     def __repr__(self):
         return f"<CloudStorage(id='{self.id.hex()}')>"
@@ -254,14 +263,19 @@ class SmallSeaBackend:
             protocol,
             url,
             access_key=None,
-            secret_key=None ):
-        known_protocols = ["s3", "webdav"]
-        if protocol in known_protocols:
-            pass
-        else:
-            error
+            secret_key=None,
+            client_id=None,
+            client_secret=None,
+            refresh_token=None ):
+        known_protocols = ["s3", "webdav", "gdrive", "dropbox"]
+        if protocol not in known_protocols:
+            raise SmallSeaBackendExn(f"Unknown protocol: {protocol}")
 
-        return self._add_cloud_location( session, protocol, url, access_key, secret_key )
+        return self._add_cloud_location(
+            session, protocol, url,
+            access_key=access_key, secret_key=secret_key,
+            client_id=client_id, client_secret=client_secret,
+            refresh_token=refresh_token)
 
 
     def _add_cloud_location(
@@ -270,7 +284,10 @@ class SmallSeaBackend:
             scheme,
             location,
             access_key=None,
-            secret_key=None ):
+            secret_key=None,
+            client_id=None,
+            client_secret=None,
+            refresh_token=None ):
         ss_session = self._lookup_session(session_hex)
 
         # TODO: Should we check permissions? Probably.
@@ -282,7 +299,10 @@ class SmallSeaBackend:
                 protocol=scheme,
                 url=location,
                 access_key=access_key,
-                secret_key=secret_key)
+                secret_key=secret_key,
+                client_id=client_id,
+                client_secret=client_secret,
+                refresh_token=refresh_token)
             session.add_all([cloud])
             session.commit()
 
@@ -311,13 +331,49 @@ class SmallSeaBackend:
         return cloud
 
 
-    def _make_s3_adapter(
+    def _make_storage_adapter(
             self,
             ss_session:SmallSeaSession):
+        cloud = self._get_cloud_link(ss_session)
+
+        if cloud.protocol == "s3":
+            return self._make_s3_adapter(ss_session, cloud)
+        elif cloud.protocol == "gdrive":
+            return self._make_gdrive_adapter(ss_session, cloud)
+        elif cloud.protocol == "dropbox":
+            return self._make_dropbox_adapter(ss_session, cloud)
+        else:
+            raise SmallSeaBackendExn(f"Unsupported protocol: {cloud.protocol}")
+
+
+    def _refresh_token_if_needed(self, ss_session, cloud):
+        """Refresh OAuth token if expired, persisting the new token to the DB."""
+        if not is_token_expired(cloud.token_expiry):
+            return cloud.access_token
+
+        if cloud.protocol == "gdrive":
+            access_token, expiry = refresh_google_token(
+                cloud.client_id, cloud.client_secret, cloud.refresh_token)
+        elif cloud.protocol == "dropbox":
+            access_token, expiry = refresh_dropbox_token(
+                cloud.client_id, cloud.client_secret, cloud.refresh_token)
+        else:
+            raise SmallSeaBackendExn(f"No token refresh for protocol: {cloud.protocol}")
+
+        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
+        engine_core = create_engine(f"sqlite:///{core_path}")
+        with Session(engine_core) as session:
+            session.execute(
+                text("UPDATE cloud_storage SET access_token = :token, token_expiry = :expiry WHERE id = :id"),
+                {"token": access_token, "expiry": expiry, "id": cloud.id})
+            session.commit()
+
+        return access_token
+
+
+    def _make_s3_adapter(self, ss_session, cloud):
         import boto3
         from botocore.config import Config as BotoConfig
-
-        cloud = self._get_cloud_link(ss_session)
 
         core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
         engine_core = create_engine(f"sqlite:///{core_path}")
@@ -341,13 +397,27 @@ class SmallSeaBackend:
         return SmallSeaS3Adapter(s3_client, bucket_name)
 
 
+    def _make_gdrive_adapter(self, ss_session, cloud):
+        import json as _json
+        access_token = self._refresh_token_if_needed(ss_session, cloud)
+        path_metadata = None
+        if cloud.path_metadata:
+            path_metadata = _json.loads(cloud.path_metadata)
+        return SmallSeaGDriveAdapter(access_token, path_metadata=path_metadata)
+
+
+    def _make_dropbox_adapter(self, ss_session, cloud):
+        access_token = self._refresh_token_if_needed(ss_session, cloud)
+        return SmallSeaDropboxAdapter(access_token)
+
+
     def upload_to_cloud(
             self,
             session_hex,
             path,
             data):
         ss_session = self._lookup_session(session_hex)
-        adapter = self._make_s3_adapter(ss_session)
+        adapter = self._make_storage_adapter(ss_session)
         return adapter.upload_overwrite(path, data)
 
 
@@ -356,7 +426,7 @@ class SmallSeaBackend:
             session_hex,
             path):
         ss_session = self._lookup_session(session_hex)
-        adapter = self._make_s3_adapter(ss_session)
+        adapter = self._make_storage_adapter(ss_session)
         return adapter.download(path)
 
 
@@ -388,91 +458,6 @@ class SmallSeaBackend:
             session:str):
         ss_session = self._lookup_session(session)
 
-
-# ---- Storage adapters ----
-
-class SmallSeaStorageAdapter:
-    def __init__(
-            self,
-            zone:str):
-        self.zone = zone
-
-    def upload_overwrite(
-            self,
-            path:str,
-            data:bytes,
-            content_type: str = 'application/octet-stream'):
-        return self._upload(path, data, None, content_type)
-
-    def upload_fresh(
-            self,
-            path:str,
-            data:bytes,
-            content_type: str = 'application/octet-stream'):
-        return self._upload(path, data, "*", content_type)
-
-    def upload_if_match(
-            self,
-            path:str,
-            data:bytes,
-            expected_etag:str,
-            content_type: str = 'application/octet-stream'):
-        return self._upload(path, data, expected_etag, content_type)
-
-
-class SmallSeaS3Adapter(SmallSeaStorageAdapter):
-    def __init__(self, s3, bucket_name):
-        super().__init__(bucket_name)
-        self.s3 = s3
-
-    def download(self, path:str):
-        try:
-            response = self.s3.get_object(Bucket=self.zone, Key=path)
-            return True, response['Body'].read(), response['ETag'].strip('"')
-        except ClientError as exn:
-            error_code = exn.response['Error']['Code']
-            return False, None, f"Download failed: {error_code}"
-
-    def _upload(
-            self,
-            path:str,
-            data:bytes,
-            expected_etag:Optional[str],
-            content_type: str = 'application/octet-stream' ):
-        try:
-            if expected_etag is None:
-                response = self.s3.put_object(
-                    Bucket=self.zone,
-                    Key=path,
-                    Body=data,
-                    ContentType=content_type
-                )
-            elif "*" == expected_etag:
-                response = self.s3.put_object(
-                    Bucket=self.zone,
-                    Key=path,
-                    Body=data,
-                    ContentType=content_type,
-                    IfNoneMatch=expected_etag
-                )
-            else:
-                response = self.s3.put_object(
-                    Bucket=self.zone,
-                    Key=path,
-                    Body=data,
-                    ContentType=content_type,
-                    IfMatch=expected_etag
-                )
-            new_etag = response['ETag'].strip('"')
-            return True, new_etag, "Object updated successfully"
-        except ClientError as exn:
-            error_code = exn.response['Error']['Code']
-            if error_code == 'PreconditionFailed':
-                if expected_etag is None:
-                    return False, None, "Object already exists"
-                else:
-                    return False, None, "ETag mismatch - object was modified"
-            return False, None, f"Operation failed: {exn}"
 
 def setup_logging(
     log_file="app.log",

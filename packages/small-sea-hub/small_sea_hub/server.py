@@ -72,13 +72,18 @@ class AddCloudLocReq(pydantic.BaseModel):
     url: str
     access_key: Optional[str] = None
     secret_key: Optional[str] = None
+    client_id: Optional[str] = None
+    client_secret: Optional[str] = None
+    refresh_token: Optional[str] = None
 
 @app.post( "/cloud_locations" )
 async def add_cloud(req: AddCloudLocReq):
     small_sea = app.state.backend
     id_hex = small_sea.add_cloud_location(
         req.session, req.backend, req.url,
-        access_key=req.access_key, secret_key=req.secret_key )
+        access_key=req.access_key, secret_key=req.secret_key,
+        client_id=req.client_id, client_secret=req.client_secret,
+        refresh_token=req.refresh_token )
     return { "message": id_hex }
 
 

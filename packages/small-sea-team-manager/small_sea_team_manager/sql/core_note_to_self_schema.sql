@@ -35,5 +35,13 @@ CREATE TABLE IF NOT EXISTS cloud_storage (
     url TEXT NOT NULL,
     -- Credential storage will likely change (e.g. to a keyring or vault reference)
     access_key TEXT,
-    secret_key TEXT
+    secret_key TEXT,
+    -- OAuth fields for Google Drive / Dropbox
+    client_id TEXT,
+    client_secret TEXT,
+    refresh_token TEXT,
+    access_token TEXT,
+    token_expiry TEXT,
+    -- JSON dict mapping path → provider-specific metadata (e.g. Google Drive file IDs)
+    path_metadata TEXT
 );

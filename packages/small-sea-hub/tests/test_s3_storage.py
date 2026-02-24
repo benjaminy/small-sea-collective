@@ -11,7 +11,7 @@ import boto3
 from botocore.config import Config
 import pytest
 
-import small_sea_hub.backend as SmallSea
+from small_sea_hub.adapters import SmallSeaS3Adapter
 
 
 MINIO_PORT = 9100
@@ -36,7 +36,7 @@ def make_adapter(minio_info, bucket):
         region_name="us-east-1",
     )
     s3.create_bucket(Bucket=bucket)
-    return SmallSea.SmallSeaS3Adapter(s3, bucket)
+    return SmallSeaS3Adapter(s3, bucket)
 
 
 # ---- Tests ----
