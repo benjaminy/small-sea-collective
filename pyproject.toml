@@ -10,6 +10,7 @@ dev-dependencies = [
     "small-sea-team-manager",
     "shared-file-vault",
     "corncob",
+    "harmonic-merge",
 ]
 
 [tool.uv.sources]
@@ -18,3 +19,4 @@ small-sea-client = { workspace = true }
 small-sea-team-manager = { workspace = true }
 shared-file-vault = { workspace = true }
 corncob = { workspace = true }
+harmonic-merge = { workspace = true }

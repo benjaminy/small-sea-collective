@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "small-sea-client",
     "corncob",
+    "harmonic-merge",
     "click>=8.0",
     "cryptography>=46.0.3",
     "fastapi[standard]>=0.118.0",
@@ -19,6 +20,7 @@ small-sea-teams = "small_sea_team_manager.cli:cli"
 [tool.uv.sources]
 small-sea-client = { workspace = true }
 corncob = { workspace = true }
+harmonic-merge = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

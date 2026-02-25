@@ -27,6 +27,9 @@ Base = declarative_base()
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from cryptography.hazmat.primitives import serialization
 
+import shutil
+import subprocess
+
 import corncob.protocol as CornCob
 
 
@@ -284,6 +287,35 @@ def _init_team_db(db_path):
     return engine
 
 
+def _install_sqlite_merge_driver(team_sync_dir):
+    """Install the harmonic-sqlite-merge git merge driver for core.db.
+
+    Writes .gitattributes (tracked) and configures the merge driver
+    command in .git/config (local only).
+    """
+    team_sync_dir = pathlib.Path(team_sync_dir)
+    schema_path = pathlib.Path(__file__).parent / "sql" / "core_other_team.sql"
+
+    # .gitattributes — tracked by git, cloned automatically
+    gitattributes = team_sync_dir / ".gitattributes"
+    gitattributes.write_text("core.db merge=harmonic-sqlite\n")
+
+    # Find the harmonic-sqlite-merge executable
+    merge_bin = shutil.which("harmonic-sqlite-merge")
+    if merge_bin is None:
+        # Fallback: try to find it via the Python that's running us
+        merge_bin = "harmonic-sqlite-merge"
+
+    driver_cmd = (
+        f"HARMONIC_MERGE_SCHEMA={schema_path} "
+        f"{merge_bin} %O %A %B %L %P"
+    )
+    CornCob.gitCmd([
+        "-C", str(team_sync_dir),
+        "config", "merge.harmonic-sqlite.driver", driver_cmd,
+    ])
+
+
 def create_team(root_dir, participant_hex, team_name):
     """Create a new team for an existing participant.
 
@@ -331,7 +363,8 @@ def create_team(root_dir, participant_hex, team_name):
 
     # --- Git init ---
     CornCob.gitCmd(["init", "-b", "main", str(team_sync_dir)])
-    CornCob.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+    _install_sqlite_merge_driver(team_sync_dir)
+    CornCob.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
     CornCob.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"New team: {team_name}"])
 
     return {"team_id_hex": team_id.hex(), "member_id_hex": member_id.hex()}
@@ -454,7 +487,8 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
 
     # --- Git init acceptor's team sync dir ---
     CornCob.gitCmd(["init", "-b", "main", str(team_sync_dir)])
-    CornCob.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+    _install_sqlite_merge_driver(team_sync_dir)
+    CornCob.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
     CornCob.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Joined team: {team_name}"])
 
     return {"team_name": team_name, "member_id_hex": acceptor_member_id.hex()}
