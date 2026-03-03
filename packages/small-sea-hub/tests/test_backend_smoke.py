@@ -49,20 +49,3 @@ def test_add_cloud(playground_dir, minio_server_gen):
         "alice",
         cloud_port)
 
-
-def test_first_sync_to_cloud(playground_dir, minio_server_gen):
-    cloud_port = 9878
-    cloud_server = minio_server_gen(
-        root_dir=None,
-        port=cloud_port)
-    small_sea = SmallSea.SmallSeaBackend(
-        root_dir=playground_dir)
-
-    Provisioning.create_new_participant(playground_dir, "alice")
-
-    session = helper_add_cloud(
-        small_sea,
-        "alice",
-        cloud_port)
-
-    small_sea.sync_to_cloud(session)

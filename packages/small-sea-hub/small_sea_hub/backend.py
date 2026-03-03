@@ -10,13 +10,11 @@ import logging
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
 import plyer
-import yaml
 
 from sqlalchemy import create_engine, text, Column, Integer, String, LargeBinary, DateTime
 from sqlalchemy.orm import declarative_base, Session
 Base = declarative_base()
 
-import corncob.protocol as CornCob
 from small_sea_team_manager.provisioning import uuid7
 from small_sea_hub.adapters import SmallSeaStorageAdapter, SmallSeaS3Adapter, SmallSeaGDriveAdapter, SmallSeaDropboxAdapter
 from small_sea_hub.adapters.oauth import is_token_expired, refresh_google_token, refresh_dropbox_token
@@ -306,16 +304,6 @@ class SmallSeaBackend:
             session.add_all([cloud])
             session.commit()
 
-    def _commit_any_changes(
-            self,
-            ss_session:SmallSeaSession):
-        repo_dir = ss_session.participant_path / "NoteToSelf" / "Sync"
-        diff_q = CornCob.gitCmd(["-C", str(repo_dir), "diff", "--quiet"], raise_on_error=False)
-        if 0 != diff_q.returncode:
-            CornCob.gitCmd(["-C", str(repo_dir), "add", "-A"])
-            CornCob.gitCmd(["-C", str(repo_dir), "commit", "-m", "TODO: Better commit message"])
-
-
     def _get_cloud_link(
             self,
             ss_session:SmallSeaSession):
@@ -428,35 +416,6 @@ class SmallSeaBackend:
         ss_session = self._lookup_session(session_hex)
         adapter = self._make_storage_adapter(ss_session)
         return adapter.download(path)
-
-
-    # ---- Sync ----
-
-    def sync_to_cloud(
-            self,
-            session:str):
-        ss_session = self._lookup_session(session)
-        self._commit_any_changes(ss_session)
-        cloud = self._get_cloud_link(ss_session)
-
-        repo_dir = ss_session.participant_path / "NoteToSelf" / "Sync"
-        rev_parse = CornCob.gitCmd(
-            ["-C", str(repo_dir), "rev-parse", "HEAD"])
-
-        local_hash = bytes.fromhex(rev_parse.stdout.strip())
-
-        head_path = ss_session.participant_path / "NoteToSelf" / "Local" / "cached_cloud_head.yaml"
-        try:
-            cached_head_str = head_path.read_text()
-            cached_head = yaml.safe_load(cached_head_str)
-            cached_cloud_hash = bytes.fromhex(cached_head.commit_hash)
-        except FileNotFoundError:
-            data = None
-
-    def sync_from_cloud(
-            self,
-            session:str):
-        ss_session = self._lookup_session(session)
 
 
 def setup_logging(

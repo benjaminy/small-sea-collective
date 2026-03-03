@@ -78,11 +78,6 @@ class SmallSeaSession:
         data = { "session" : self.session_id, "backend" : backend, "url" : url }
         response = self.client._send_post( f"cloud_locations", data )
 
-    def sync_to_cloud(
-            self ):
-        data = { "session" : self.session_id }
-        response = self.client._send_post( f"sync_to_cloud", data )
-
     def create_new_team( self, team_name ):
         data = { "session" : session, "team_name" : team_name }
         response = self.client._send_post( "teams", data )

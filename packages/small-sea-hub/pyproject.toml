@@ -11,16 +11,12 @@ dependencies = [
     "pydantic-settings[toml]>=2.11.0",
     "pyobjus>=1.2.3",
     "sqlalchemy>=2.0.44",
-    "corncob",
 ]
 
 [project.optional-dependencies]
 test = [
     "respx>=0.21.0",
 ]
-
-[tool.uv.sources]
-corncob = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

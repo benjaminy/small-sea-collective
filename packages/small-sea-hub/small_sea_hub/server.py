@@ -112,14 +112,3 @@ async def download_from_cloud(session: str, path: str):
         raise HTTPException(status_code=404, detail=etag)
     return { "ok": True, "data": base64.b64encode(data).decode(), "etag": etag }
 
-
-# ---- Sync ----
-
-class CloudSyncReq(pydantic.BaseModel):
-    session: str
-
-@app.post( "/sync_to_cloud" )
-async def sync_to_cloud(req: CloudSyncReq):
-    small_sea = app.state.backend
-    id_hex = small_sea.sync_to_cloud(req.session)
-    return { "message": id_hex }
