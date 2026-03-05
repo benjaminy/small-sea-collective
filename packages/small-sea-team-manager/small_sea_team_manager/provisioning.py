@@ -100,15 +100,15 @@ class App(Base):
         return f"<App(id='{self.id.hex()}')>"
 
 
-class TeamAppZone(Base):
-    __tablename__ = 'team_app_zone'
+class TeamAppStation(Base):
+    __tablename__ = 'team_app_station'
 
     id = Column(LargeBinary, primary_key=True)
     team_id = Column(LargeBinary, nullable=False)
     app_id = Column(LargeBinary, nullable=False)
 
     def __repr__(self):
-        return f"<TeamAppZone(id='{self.id.hex()}')>"
+        return f"<TeamAppStation(id='{self.id.hex()}')>"
 
 
 class NotificationService(Base):
@@ -225,7 +225,7 @@ def _initialize_user_db(root_dir, ident, nickname, device):
             app1 = App(id=uuid7(), name="SmallSeaCollectiveCore")
             session.add_all([nick1, team1, app1])
             session.flush()
-            team_app = TeamAppZone(id=uuid7(), team_id=team1.id, app_id=app1.id)
+            team_app = TeamAppStation(id=uuid7(), team_id=team1.id, app_id=app1.id)
             session.add_all([team_app])
             session.commit()
 
@@ -337,7 +337,7 @@ def _install_sqlite_merge_driver(team_sync_dir):
 def create_team(root_dir, participant_hex, team_name):
     """Create a new team for an existing participant.
 
-    Adds team + team_app_zone rows to the user's NoteToSelf/Sync/core.db,
+    Adds team + team_app_station rows to the user's NoteToSelf/Sync/core.db,
     creates the team directory with its own core.db (member table),
     and initializes a git repo for the team sync directory.
 
@@ -363,7 +363,7 @@ def create_team(root_dir, participant_hex, team_name):
         session.add(team_row)
         session.flush()
 
-        team_app = TeamAppZone(id=uuid7(), team_id=team_row.id, app_id=app_row.id)
+        team_app = TeamAppStation(id=uuid7(), team_id=team_row.id, app_id=app_row.id)
         session.add(team_app)
         session.commit()
 
@@ -494,7 +494,7 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
         team_row = Team(id=team_id, name=team_name, self_in_team=acceptor_member_id)
         session.add(team_row)
         session.flush()
-        team_app = TeamAppZone(id=uuid7(), team_id=team_row.id, app_id=app_row.id)
+        team_app = TeamAppStation(id=uuid7(), team_id=team_row.id, app_id=app_row.id)
         session.add(team_app)
         session.commit()
 

@@ -73,9 +73,9 @@ def _derive_bucket_name(playground_dir, session_hex):
     core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
     engine = create_engine(f"sqlite:///{core_path}")
     with Session(engine) as session:
-        zone = session.query(SmallSea.TeamAppZone).filter(
-            SmallSea.TeamAppZone.id == ss_session.zone_id).first()
-    return f"ss-{zone.id.hex()[:16]}"
+        station = session.query(SmallSea.TeamAppStation).filter(
+            SmallSea.TeamAppStation.id == ss_session.station_id).first()
+    return f"ss-{station.id.hex()[:16]}"
 
 
 def _create_bucket(minio, bucket_name):

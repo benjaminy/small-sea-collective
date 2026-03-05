@@ -65,7 +65,7 @@ def test_local_provision_then_hub_roundtrip(playground_dir, minio_server_gen):
         config=BotoConfig(signature_version="s3v4"),
         region_name="us-east-1",
     )
-    s3.create_bucket(Bucket=adapter.zone)
+    s3.create_bucket(Bucket=adapter.bucket_name)
 
     # ---- 5. Upload a file through the hub ----
     content = b"hello from the team manager test"

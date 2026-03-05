@@ -84,9 +84,9 @@ def hub_env(playground_dir, minio):
     core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
     engine = create_engine(f"sqlite:///{core_path}")
     with Session(engine) as db_session:
-        zone = db_session.query(SmallSea.TeamAppZone).filter(
-            SmallSea.TeamAppZone.id == ss_session.zone_id).first()
-    bucket_name = f"ss-{zone.id.hex()[:16]}"
+        station = db_session.query(SmallSea.TeamAppStation).filter(
+            SmallSea.TeamAppStation.id == ss_session.station_id).first()
+    bucket_name = f"ss-{station.id.hex()[:16]}"
 
     s3 = boto3.client(
         "s3",

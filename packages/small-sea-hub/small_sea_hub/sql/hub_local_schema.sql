@@ -8,6 +8,6 @@ CREATE TABLE IF NOT EXISTS session (
     participant_id BLOB NOT NULL,
     team_id BLOB NOT NULL,
     app_id BLOB NOT NULL,
-    zone_id BLOB NOT NULL,
+    station_id BLOB NOT NULL,
     client TEXT NOT NULL
 );

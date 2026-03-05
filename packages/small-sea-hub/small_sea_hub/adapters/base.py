@@ -4,8 +4,8 @@ from typing import Optional
 class SmallSeaStorageAdapter:
     def __init__(
             self,
-            zone:str):
-        self.zone = zone
+            bucket_name:str):
+        self.bucket_name = bucket_name
 
     def upload_overwrite(
             self,

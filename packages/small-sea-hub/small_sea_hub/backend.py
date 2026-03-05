@@ -39,7 +39,7 @@ class SmallSeaSession(Base):
     participant_id = Column(LargeBinary, nullable=False)
     app_id = Column(LargeBinary, nullable=False)
     team_id = Column(LargeBinary, nullable=False)
-    zone_id = Column(LargeBinary, nullable=False)
+    station_id = Column(LargeBinary, nullable=False)
     client = Column(String, nullable=False)
 
     def __repr__(self):
@@ -70,8 +70,8 @@ class App(Base):
     name = Column(String, nullable=False)
 
 
-class TeamAppZone(Base):
-    __tablename__ = 'team_app_zone'
+class TeamAppStation(Base):
+    __tablename__ = 'team_app_station'
 
     id = Column(LargeBinary, primary_key=True)
     team_id = Column(LargeBinary, nullable=False)
@@ -119,7 +119,7 @@ class SmallSeaBackend:
     small-sea-team-manager package (provisioning.py).
     """
 
-    hub_schema_version : int = 43
+    hub_schema_version : int = 44
 
     def __init__(
             self,
@@ -223,11 +223,11 @@ class SmallSeaBackend:
             results_app = session.query(App).filter(App.name == app).all()
             if (1 > len(results_team)) or (1 > len(results_app)):
                 raise SmallSeaNotFoundExn()
-            results_zone = session.query(TeamAppZone).filter(
-                (TeamAppZone.team_id == results_team[0].id) and (TeamAppZone.app_id == results_app[0].id)).all()
+            results_station = session.query(TeamAppStation).filter(
+                (TeamAppStation.team_id == results_team[0].id) and (TeamAppStation.app_id == results_app[0].id)).all()
             print(results_team[0])
             print(results_app[0])
-            if 1 > len(results_zone):
+            if 1 > len(results_station):
                 raise SmallSeaNotFoundExn()
 
         engine_local = create_engine(f"sqlite:///{self.path_local_db}")
@@ -240,7 +240,7 @@ class SmallSeaBackend:
                 participant_id=participant_lid,
                 team_id=results_team[0].id,
                 app_id=results_app[0].id,
-                zone_id=results_zone[0].id,
+                station_id=results_station[0].id,
                 client=client)
 
             print(f"ADD SESH {token.hex()} {token}")
@@ -377,12 +377,12 @@ class SmallSeaBackend:
         core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
         engine_core = create_engine(f"sqlite:///{core_path}")
         with Session(engine_core) as session:
-            zone = session.query(TeamAppZone).filter(
-                TeamAppZone.id == ss_session.zone_id).first()
-            if zone is None:
-                raise SmallSeaNotFoundExn("zone not found")
+            station = session.query(TeamAppStation).filter(
+                TeamAppStation.id == ss_session.station_id).first()
+            if station is None:
+                raise SmallSeaNotFoundExn("station not found")
 
-        bucket_name = f"ss-{zone.id.hex()[:16]}"
+        bucket_name = f"ss-{station.id.hex()[:16]}"
 
         s3_client = boto3.client(
             "s3",

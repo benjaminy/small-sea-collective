@@ -20,7 +20,7 @@ def test_create_team(playground_dir):
     # Member ID should be different from participant ID (fresh per-team ID)
     assert member_id_hex != alice_hex
 
-    # --- Verify NoteToSelf core.db has team + team_app_zone rows ---
+    # --- Verify NoteToSelf core.db has team + team_app_station rows ---
     user_db = root / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
     conn = sqlite3.connect(str(user_db))
     conn.row_factory = sqlite3.Row
@@ -29,12 +29,12 @@ def test_create_team(playground_dir):
     assert len(teams) == 1
     assert teams[0]["id"] == bytes.fromhex(team_id_hex)
 
-    zones = conn.execute(
-        "SELECT taz.* FROM team_app_zone taz "
-        "JOIN team t ON taz.team_id = t.id "
+    stations = conn.execute(
+        "SELECT tas.* FROM team_app_station tas "
+        "JOIN team t ON tas.team_id = t.id "
         "WHERE t.name = 'CoolProject'"
     ).fetchall()
-    assert len(zones) == 1
+    assert len(stations) == 1
     conn.close()
 
     # --- Verify team directory and its core.db ---

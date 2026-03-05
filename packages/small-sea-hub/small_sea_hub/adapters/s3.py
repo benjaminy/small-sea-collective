@@ -11,7 +11,7 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
 
     def download(self, path:str):
         try:
-            response = self.s3.get_object(Bucket=self.zone, Key=path)
+            response = self.s3.get_object(Bucket=self.bucket_name, Key=path)
             return True, response['Body'].read(), response['ETag'].strip('"')
         except ClientError as exn:
             error_code = exn.response['Error']['Code']
@@ -26,14 +26,14 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
         try:
             if expected_etag is None:
                 response = self.s3.put_object(
-                    Bucket=self.zone,
+                    Bucket=self.bucket_name,
                     Key=path,
                     Body=data,
                     ContentType=content_type
                 )
             elif "*" == expected_etag:
                 response = self.s3.put_object(
-                    Bucket=self.zone,
+                    Bucket=self.bucket_name,
                     Key=path,
                     Body=data,
                     ContentType=content_type,
@@ -41,7 +41,7 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
                 )
             else:
                 response = self.s3.put_object(
-                    Bucket=self.zone,
+                    Bucket=self.bucket_name,
                     Key=path,
                     Body=data,
                     ContentType=content_type,
