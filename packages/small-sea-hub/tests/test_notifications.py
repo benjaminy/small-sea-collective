@@ -33,10 +33,10 @@ def test_notification_roundtrip(playground_dir, ntfy_server):
     alice_session = alice_token.hex()
     bob_session = bob_token.hex()
 
-    # -- Register notification service for both --
+    # -- Register notification service for both (via team manager, not hub) --
     ntfy_url = ntfy_server["url"]
-    backend.add_notification_service(alice_session, "ntfy", ntfy_url)
-    backend.add_notification_service(bob_session, "ntfy", ntfy_url)
+    Provisioning.add_notification_service(playground_dir, alice_hex, "ntfy", ntfy_url)
+    Provisioning.add_notification_service(playground_dir, bob_hex, "ntfy", ntfy_url)
 
     # -- Use TestClient for HTTP calls --
     Server.app.state.backend = backend

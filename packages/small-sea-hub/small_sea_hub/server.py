@@ -115,19 +115,6 @@ async def download_from_cloud(session: str, path: str):
 
 # ---- Notifications ----
 
-class AddNotificationServiceReq(pydantic.BaseModel):
-    session: str
-    protocol: str
-    url: str
-
-@app.post("/notification_services")
-async def add_notification_service(req: AddNotificationServiceReq):
-    small_sea = app.state.backend
-    id_hex = small_sea.add_notification_service(
-        req.session, req.protocol, req.url)
-    return { "message": id_hex }
-
-
 class SendNotificationReq(pydantic.BaseModel):
     session: str
     message: str

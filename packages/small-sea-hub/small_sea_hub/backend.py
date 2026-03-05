@@ -431,27 +431,6 @@ class SmallSeaBackend:
 
     # ---- Notifications ----
 
-    def add_notification_service(
-            self,
-            session_hex,
-            protocol,
-            url):
-        if protocol != "ntfy":
-            raise SmallSeaBackendExn(f"Unknown notification protocol: {protocol}")
-
-        ss_session = self._lookup_session(session_hex)
-        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
-        engine_core = create_engine(f"sqlite:///{core_path}")
-        ns_id = uuid7()
-        with Session(engine_core) as session:
-            ns = NotificationService(
-                id=ns_id,
-                protocol=protocol,
-                url=url)
-            session.add(ns)
-            session.commit()
-        return ns_id.hex()
-
     def _get_notification_service(self, ss_session):
         core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
         engine_core = create_engine(f"sqlite:///{core_path}")

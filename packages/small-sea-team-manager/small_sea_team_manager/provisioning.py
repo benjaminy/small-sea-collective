@@ -589,6 +589,29 @@ def _mark_invitation_accepted(root_dir, team_name, invitation_id, nonce,
     raise ValueError("Invitation not found in any participant's team DB")
 
 
+def add_notification_service(root_dir, participant_hex, protocol, url):
+    """Register a notification service in a participant's NoteToSelf DB.
+
+    Returns the notification service ID hex.
+    """
+    if protocol != "ntfy":
+        raise ValueError(f"Unknown notification protocol: {protocol}")
+
+    root_dir = pathlib.Path(root_dir)
+    user_db_path = (root_dir / "Participants" / participant_hex /
+                    "NoteToSelf" / "Sync" / "core.db")
+    engine = create_engine(f"sqlite:///{user_db_path}")
+    ns_id = uuid7()
+    with Session(engine) as session:
+        ns = NotificationService(
+            id=ns_id,
+            protocol=protocol,
+            url=url)
+        session.add(ns)
+        session.commit()
+    return ns_id.hex()
+
+
 def list_invitations(root_dir, participant_hex, team_name):
     """List invitations for a team. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
