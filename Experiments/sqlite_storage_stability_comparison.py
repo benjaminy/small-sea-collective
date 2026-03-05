@@ -5,7 +5,7 @@ Compare how SQLite configuration affects storage-level stability under git.
 Different SQLite settings (journal mode, auto-vacuum, page size) change how
 much of the database file is rewritten on each transaction. This matters when
 the DB is tracked in git, because smaller binary diffs mean smaller bundles
-and more efficient sync (e.g. via CornCob).
+and more efficient sync (e.g. via Cod Sync).
 
 For each experimental condition, we:
   1. Create a subdirectory with a fresh git repo

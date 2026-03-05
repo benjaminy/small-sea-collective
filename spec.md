@@ -46,7 +46,7 @@ In order for an application to access any of these resources, the Hub needs to k
 The application has to start a session to gain such access, which gives users an opportunity to decide if they want that app client to access those resources.
 
 On the local side, apps are free to organize their data however they like, but will have an easier time integrating with Small Sea if teams are partitioned clearly.
-For example, team-specific data should be kept in separate folders that can be git repos to integrate with CornCob.
+For example, team-specific data should be kept in separate folders that can be git repos to integrate with Cod Sync.
 
 A central piece of Small Sea is the Hub: This is a service that runs locally on any device that a user wants to run a Small Sea app on.
 The Hub provides/controls access to the user's general-purpose service providers for the apps.
@@ -94,12 +94,12 @@ If teammates disagree about the membership, it's relatively easy to end up with 
 At its base level, Small Sea provides convenient access to general-purpose services.
 Above that, some kind of data synchronization is necessary.
 Probably in the fullness of time there is room for multiple sync protocols with different strengths and weaknesses.
-Out of the box, the Small Sea framework provides one slow, but safe sync mechanism called "CornCob".
+Out of the box, the Small Sea framework provides one slow, but safe sync mechanism called "Cod Sync".
 The idea is to store a station's data in a git repository and then encode changes/deltas as git bundles.
 These bundles are uploaded in a cryptographically linked chain to a user's cloud storage location.
 Users monitor each other's changes and pull them into their own clones.
 
-In order to fully participate in CornCob sync, each member needs to have their own cloud storage location where their chain of bundles is uploaded.
+In order to fully participate in Cod Sync sync, each member needs to have their own cloud storage location where their chain of bundles is uploaded.
 This location is part of the member's data in the team database.
 This architecture is clearly space inefficient in the sense that each member stores a full copy of the team's data.
 For many kinds of data and applications, storage has become cheap enough that this price is well worth paying.
@@ -131,7 +131,7 @@ The Small Sea framework has the following components:
 - Small Sea encryption layer (name TBD).
    In normal production environments, the Hub encrypts and obscures all communication with services so that very little can be inferred by the general-purpose services providers about what users are doing with them.
    This should be mostly transparent to Small Sea apps.
-- CornCob.
+- Cod Sync.
    This is safe and slow sync library that is based on git and encodes deltas as a chain of git bundles.
 - harmonic-merge.
    This is a library to support merging concurrent changes to an application's state, and conflict resolution when safe automatic merging is not possible.
@@ -170,9 +170,9 @@ When a user wants to share their changes with their team, the following flow hap
 
 App developers should do all team interaction through the Hub.
 Much of the API is yet to be developed, but eventually there will be local notifications for things like addition of teammates, availability of new data, etc.
-App developers are free to make their own synchronization frameworks, but CornCob is a convenient place to start:
+App developers are free to make their own synchronization frameworks, but Cod Sync is a convenient place to start:
 Put all the app's data that needs to be synchronized in appropriate team folders (with NoteToSelf for general app stuff that isn't shared with any 'real' team).
-Make each folder a git repo and use CornCob to sync.
+Make each folder a git repo and use Cod Sync to sync.
 Probably the most work app developers have to do specifically related to Small Sea is managing concurrent change conflicts.
 harmonic-merge provides some help with conflict resolution, but apps have to handle some of that.
 

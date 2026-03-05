@@ -17,8 +17,8 @@ import small_sea_hub.backend as SmallSea
 from small_sea_hub.server import app
 import small_sea_team_manager.provisioning as Provisioning
 
-import corncob.protocol as CC
-from test_clone_from_local_bundle import make_corncob, working_tree_files
+import cod_sync.protocol as CS
+from test_clone_from_local_bundle import make_cod_sync, working_tree_files
 
 
 MINIO_PORT = 9400
@@ -97,26 +97,26 @@ def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
     bob_repo.mkdir()
 
     # ---- Alice: init repo, commit files ----
-    CC.gitCmd(["init", "-b", "main", str(alice_repo)])
-    CC.gitCmd(["-C", str(alice_repo), "config", "user.email", "alice@test"])
-    CC.gitCmd(["-C", str(alice_repo), "config", "user.name", "Alice"])
+    CS.gitCmd(["init", "-b", "main", str(alice_repo)])
+    CS.gitCmd(["-C", str(alice_repo), "config", "user.email", "alice@test"])
+    CS.gitCmd(["-C", str(alice_repo), "config", "user.name", "Alice"])
 
     (alice_repo / "README.md").write_text("# Hub Roundtrip\n")
     (alice_repo / "notes.txt").write_text("testing through the hub\n")
-    CC.gitCmd(["-C", str(alice_repo), "add", "-A"])
-    CC.gitCmd(["-C", str(alice_repo), "commit", "-m", "initial commit"])
+    CS.gitCmd(["-C", str(alice_repo), "add", "-A"])
+    CS.gitCmd(["-C", str(alice_repo), "commit", "-m", "initial commit"])
 
     # ---- Alice: push via SmallSeaRemote ----
-    alice_remote = CC.SmallSeaRemote(session_hex, client=client)
-    alice_corn = make_corncob(alice_repo, "hub-pub")
-    alice_corn.remote = alice_remote
-    alice_corn.push_to_remote(["main"])
+    alice_remote = CS.SmallSeaRemote(session_hex, client=client)
+    alice_cod = make_cod_sync(alice_repo, "hub-pub")
+    alice_cod.remote = alice_remote
+    alice_cod.push_to_remote(["main"])
 
     # ---- Bob: clone via SmallSeaRemote ----
-    bob_remote = CC.SmallSeaRemote(session_hex, client=client)
-    bob_corn = make_corncob(bob_repo, "hub")
-    bob_corn.remote = bob_remote
-    # clone_from_remote calls CornCobRemote.init internally, so we
+    bob_remote = CS.SmallSeaRemote(session_hex, client=client)
+    bob_cod = make_cod_sync(bob_repo, "hub")
+    bob_cod.remote = bob_remote
+    # clone_from_remote calls CodSyncRemote.init internally, so we
     # need to wire the remote manually and replicate clone logic
     latest = bob_remote.get_latest_link()
     assert latest is not None
@@ -130,7 +130,7 @@ def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
     with tempfile.TemporaryDirectory() as td:
         bundle_path = f"{td}/clone.bundle"
         bob_remote.download_bundle(bundle_uid, bundle_path)
-        CC.gitCmd(["clone", bundle_path, str(bob_repo / "checkout")])
+        CS.gitCmd(["clone", bundle_path, str(bob_repo / "checkout")])
 
     # Move contents up (clone creates a subdir)
     import shutil
@@ -140,7 +140,7 @@ def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
         shutil.move(str(item), str(bob_repo / item.name))
     checkout.rmdir()
 
-    CC.gitCmd(["-C", str(bob_repo), "checkout", "main"])
+    CS.gitCmd(["-C", str(bob_repo), "checkout", "main"])
 
     # ---- Verify working trees match ----
     alice_files = working_tree_files(alice_repo)

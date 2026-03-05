@@ -1,43 +1,43 @@
-# Test the CornCob bundle-based sync protocol end to end:
+# Test the Cod Sync bundle-based sync protocol end to end:
 #
 # 1. Set up scratch dirs for Alice's clone, Bob's clone,
 #    and each person's bundle publication location
 # 2. Alice inits a repo and commits a few tiny files
-# 3. Alice publishes an initial bundle via Corncob.push_to_remote
-# 4. Bob clones from Alice's publication via Corncob.clone_from_remote
+# 3. Alice publishes an initial bundle via CodSync.push_to_remote
+# 4. Bob clones from Alice's publication via CodSync.clone_from_remote
 # 5. Verify the two working trees match
 #
-# Exercises: gitCmd, Corncob.push_to_remote, Corncob.clone_from_remote,
-# Corncob.build_link_blob, SmallSeaRemote link+bundle file methods,
-# CornCobRemote.read_link_blob
+# Exercises: gitCmd, CodSync.push_to_remote, CodSync.clone_from_remote,
+# CodSync.build_link_blob, SmallSeaRemote link+bundle file methods,
+# CodSyncRemote.read_link_blob
 
 import os
 import pathlib
 
-import corncob.protocol as CC
+import cod_sync.protocol as CS
 
 
 def make_file_remote(pub_dir):
     """Create a LocalFolderRemote pointing at a local directory."""
-    return CC.LocalFolderRemote(str(pub_dir))
+    return CS.LocalFolderRemote(str(pub_dir))
 
 
-def make_corncob(repo_dir, remote_name):
-    """Create a Corncob wired to a specific repo directory.
+def make_cod_sync(repo_dir, remote_name):
+    """Create a CodSync wired to a specific repo directory.
 
-    Corncob methods call self.gitCmd, but only the module-level gitCmd
-    exists.  We patch it onto the instance.  Corncob also assumes cwd is
+    CodSync methods call self.gitCmd, but only the module-level gitCmd
+    exists.  We patch it onto the instance.  CodSync also assumes cwd is
     the repo root (via change_to_root_git_dir), so we chdir there.
     """
     os.chdir(repo_dir)
-    corn = CC.Corncob(remote_name)
-    corn.gitCmd = CC.gitCmd
-    return corn
+    cod = CS.CodSync(remote_name)
+    cod.gitCmd = CS.gitCmd
+    return cod
 
 
 def working_tree_files(repo_dir):
     """Return {path: content} for all git-tracked files."""
-    result = CC.gitCmd(["-C", str(repo_dir), "ls-files"])
+    result = CS.gitCmd(["-C", str(repo_dir), "ls-files"])
     files = {}
     for name in result.stdout.strip().splitlines():
         files[name] = (pathlib.Path(repo_dir) / name).read_text()
@@ -55,22 +55,22 @@ def test_initial_publish_and_clone(scratch_dir):
         d.mkdir()
 
     # ---- 1. Alice initializes a repo and commits some files ----
-    CC.gitCmd(["init", "-b", "main", str(alice_clone)])
-    CC.gitCmd(["-C", str(alice_clone), "config", "user.email", "alice@test"])
-    CC.gitCmd(["-C", str(alice_clone), "config", "user.name", "Alice"])
+    CS.gitCmd(["init", "-b", "main", str(alice_clone)])
+    CS.gitCmd(["-C", str(alice_clone), "config", "user.email", "alice@test"])
+    CS.gitCmd(["-C", str(alice_clone), "config", "user.name", "Alice"])
 
     (alice_clone / "README.md").write_text("# My Project\n")
     (alice_clone / "notes.txt").write_text("remember to buy milk\n")
     (alice_clone / "plan.txt").write_text("step 1: profit\n")
-    CC.gitCmd(["-C", str(alice_clone), "add", "-A"])
-    CC.gitCmd(["-C", str(alice_clone), "commit", "-m", "initial commit"])
+    CS.gitCmd(["-C", str(alice_clone), "add", "-A"])
+    CS.gitCmd(["-C", str(alice_clone), "commit", "-m", "initial commit"])
 
     # ---- 2. Alice publishes an initial bundle ----
     alice_remote = make_file_remote(alice_pub)
-    alice_corn = make_corncob(alice_clone, "alice-pub")
-    alice_corn.remote = alice_remote
+    alice_cod = make_cod_sync(alice_clone, "alice-pub")
+    alice_cod.remote = alice_remote
 
-    alice_corn.push_to_remote(["main"])
+    alice_cod.push_to_remote(["main"])
 
     # Verify the publication directory has a link and a bundle
     assert (alice_pub / "latest-link.yaml").exists()
@@ -88,11 +88,11 @@ def test_initial_publish_and_clone(scratch_dir):
     assert len(bundle_list) == 1
 
     # ---- 3. Bob clones from Alice's publication ----
-    bob_corn = make_corncob(bob_clone, "alice")
-    bob_corn.clone_from_remote(f"file://{alice_pub}")
+    bob_cod = make_cod_sync(bob_clone, "alice")
+    bob_cod.clone_from_remote(f"file://{alice_pub}")
 
-    CC.gitCmd(["-C", str(bob_clone), "config", "user.email", "bob@test"])
-    CC.gitCmd(["-C", str(bob_clone), "config", "user.name", "Bob"])
+    CS.gitCmd(["-C", str(bob_clone), "config", "user.email", "bob@test"])
+    CS.gitCmd(["-C", str(bob_clone), "config", "user.name", "Bob"])
 
     # ---- 4. Verify the two working trees match ----
     alice_files = working_tree_files(alice_clone)

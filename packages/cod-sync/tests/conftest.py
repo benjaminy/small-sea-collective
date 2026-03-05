@@ -9,7 +9,7 @@ import pytest
 
 @pytest.fixture
 def scratch_dir():
-    d = tempfile.mkdtemp(prefix="corncob-test-")
+    d = tempfile.mkdtemp(prefix="cod-sync-test-")
     yield d
     shutil.rmtree(d, ignore_errors=True)
 

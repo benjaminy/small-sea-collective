@@ -1,7 +1,7 @@
 # INCOMPLETE SKETCH — sync orchestration
 #
 # This was started in the hub backend but belongs here: the hub provides
-# upload/download primitives for cloud storage, and corncob (or whatever
+# upload/download primitives for cloud storage, and cod-sync (or whatever
 # sync protocol is in use) is responsible for orchestrating the actual
 # commit → bundle → upload and download → unbundle → merge flows.
 #
@@ -11,16 +11,16 @@
 import pathlib
 import yaml
 
-from . import protocol as CC
+from . import protocol as CS
 
 
 def commit_any_changes(repo_dir):
     """Commit uncommitted changes in a repo (if any)."""
     repo_dir = str(repo_dir)
-    diff_q = CC.gitCmd(["-C", repo_dir, "diff", "--quiet"], raise_on_error=False)
+    diff_q = CS.gitCmd(["-C", repo_dir, "diff", "--quiet"], raise_on_error=False)
     if 0 != diff_q.returncode:
-        CC.gitCmd(["-C", repo_dir, "add", "-A"])
-        CC.gitCmd(["-C", repo_dir, "commit", "-m", "TODO: Better commit message"])
+        CS.gitCmd(["-C", repo_dir, "add", "-A"])
+        CS.gitCmd(["-C", repo_dir, "commit", "-m", "TODO: Better commit message"])
 
 
 def sync_to_cloud(repo_dir, hub_upload_fn, cached_head_path=None):
@@ -32,7 +32,7 @@ def sync_to_cloud(repo_dir, hub_upload_fn, cached_head_path=None):
                       cloud head commit hash.
 
     TODO: This is an incomplete sketch. Needs:
-    - Bundle creation (Corncob.push_to_remote logic)
+    - Bundle creation (CodSync.push_to_remote logic)
     - ETag-based concurrency control on the chain head file
     - Integration with hub upload/download API
     - Error handling
@@ -41,7 +41,7 @@ def sync_to_cloud(repo_dir, hub_upload_fn, cached_head_path=None):
 
     commit_any_changes(repo_dir)
 
-    rev_parse = CC.gitCmd(["-C", str(repo_dir), "rev-parse", "HEAD"])
+    rev_parse = CS.gitCmd(["-C", str(repo_dir), "rev-parse", "HEAD"])
     local_hash = rev_parse.stdout.strip()
 
     if cached_head_path:

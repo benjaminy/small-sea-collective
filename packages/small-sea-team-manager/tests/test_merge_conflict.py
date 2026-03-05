@@ -9,7 +9,7 @@ import pathlib
 import tempfile
 import shutil
 
-import corncob.protocol as CC
+import cod_sync.protocol as CS
 
 from small_sea_team_manager.provisioning import (
     create_new_participant, create_team, create_invitation,
@@ -25,12 +25,12 @@ ALICE_CLOUD = {
 }
 
 
-def _make_corncob(repo_dir, remote_name):
-    """Create a Corncob wired to a specific repo directory."""
+def _make_cod_sync(repo_dir, remote_name):
+    """Create a CodSync wired to a specific repo directory."""
     os.chdir(repo_dir)
-    corn = CC.Corncob(remote_name)
-    corn.gitCmd = CC.gitCmd
-    return corn
+    cod = CS.CodSync(remote_name)
+    cod.gitCmd = CS.gitCmd
+    return cod
 
 
 def test_concurrent_invitations_merge(playground_dir):
@@ -49,19 +49,19 @@ def test_concurrent_invitations_merge(playground_dir):
 
     team_sync_1 = root1 / "Participants" / alice_hex / "ProjectX" / "Sync"
 
-    # 3. Push team repo to cloud via corncob
-    cloud_remote = CC.LocalFolderRemote(str(cloud_dir))
-    corn1 = _make_corncob(team_sync_1, "cloud")
-    corn1.remote = cloud_remote
-    corn1.push_to_remote(["main"])
+    # 3. Push team repo to cloud via cod-sync
+    cloud_remote = CS.LocalFolderRemote(str(cloud_dir))
+    cod1 = _make_cod_sync(team_sync_1, "cloud")
+    cod1.remote = cloud_remote
+    cod1.push_to_remote(["main"])
 
     # 4. Clone from cloud into device 2's team directory
     #    Device 2 needs the same path structure: Participants/<alice_hex>/ProjectX/Sync/
     team_sync_2 = root2 / "Participants" / alice_hex / "ProjectX" / "Sync"
     team_sync_2.mkdir(parents=True)
 
-    corn2 = _make_corncob(team_sync_2, "cloud")
-    corn2.clone_from_remote(f"file://{cloud_dir}")
+    cod2 = _make_cod_sync(team_sync_2, "cloud")
+    cod2.clone_from_remote(f"file://{cloud_dir}")
 
     # Install merge driver on device 2 (git config is local-only)
     _install_sqlite_merge_driver(team_sync_2)
@@ -69,9 +69,9 @@ def test_concurrent_invitations_merge(playground_dir):
     # 5. Device 1: create invitation for Bob, push to cloud
     token_bob = create_invitation(root1, alice_hex, "ProjectX", ALICE_CLOUD, invitee_label="Bob")
 
-    corn1 = _make_corncob(team_sync_1, "cloud")
-    corn1.remote = cloud_remote
-    corn1.push_to_remote(["main"])
+    cod1 = _make_cod_sync(team_sync_1, "cloud")
+    cod1.remote = cloud_remote
+    cod1.push_to_remote(["main"])
 
     # 6. Device 2: create invitation for Carol (commit locally only)
     #    We need to insert directly into device 2's DB since create_invitation
@@ -80,10 +80,10 @@ def test_concurrent_invitations_merge(playground_dir):
 
     # 7. Device 2: fetch + merge from cloud
     #    This should trigger the harmonic-sqlite-merge driver
-    corn2 = _make_corncob(team_sync_2, "cloud")
-    corn2.remote = CC.LocalFolderRemote(str(cloud_dir))
-    corn2.fetch_from_remote(["main"])
-    corn2.merge_from_remote(["main"])
+    cod2 = _make_cod_sync(team_sync_2, "cloud")
+    cod2.remote = CS.LocalFolderRemote(str(cloud_dir))
+    cod2.fetch_from_remote(["main"])
+    cod2.merge_from_remote(["main"])
 
     # 8. Assert: device 2's core.db has BOTH Bob and Carol invitations
     conn2 = sqlite3.connect(str(team_sync_2 / "core.db"))
@@ -96,15 +96,15 @@ def test_concurrent_invitations_merge(playground_dir):
     assert "Carol" in labels_2, f"Missing Carol in device 2. Got: {labels_2}"
 
     # 9. Push device 2 to cloud, fetch+merge on device 1
-    corn2 = _make_corncob(team_sync_2, "cloud")
-    corn2.remote = cloud_remote
-    corn2.push_to_remote(["main"])
+    cod2 = _make_cod_sync(team_sync_2, "cloud")
+    cod2.remote = cloud_remote
+    cod2.push_to_remote(["main"])
 
-    corn1 = _make_corncob(team_sync_1, "cloud")
-    corn1.remote = CC.LocalFolderRemote(str(cloud_dir))
-    corn1.add_remote(f"file://{cloud_dir}", [])
-    corn1.fetch_from_remote(["main"])
-    corn1.merge_from_remote(["main"])
+    cod1 = _make_cod_sync(team_sync_1, "cloud")
+    cod1.remote = CS.LocalFolderRemote(str(cloud_dir))
+    cod1.add_remote(f"file://{cloud_dir}", [])
+    cod1.fetch_from_remote(["main"])
+    cod1.merge_from_remote(["main"])
 
     # 10. Assert: device 1 also has both invitations
     conn1 = sqlite3.connect(str(team_sync_1 / "core.db"))
@@ -143,5 +143,5 @@ def _create_invitation_on_device(team_sync_dir, invitee_label):
     conn.commit()
     conn.close()
 
-    CC.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-    CC.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Created invitation for {invitee_label}"])
+    CS.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+    CS.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Created invitation for {invitee_label}"])

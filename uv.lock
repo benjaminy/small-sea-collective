@@ -4,7 +4,7 @@ requires-python = ">=3.12"
 
 [manifest]
 members = [
-    "corncob",
+    "cod-sync",
     "harmonic-merge",
     "shared-file-vault",
     "small-sea-client",
@@ -15,7 +15,7 @@ members = [
 [manifest.dependency-groups]
 dev = [
     { name = "boto3", specifier = ">=1.40.53" },
-    { name = "corncob", editable = "packages/corncob" },
+    { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "harmonic-merge", editable = "packages/harmonic-merge" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "respx", specifier = ">=0.22.0" },
@@ -197,18 +197,9 @@ wheels = [
 ]
 
 [[package]]
-name = "colorama"
-version = "0.4.6"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
-]
-
-[[package]]
-name = "corncob"
+name = "cod-sync"
 version = "0.1.0"
-source = { editable = "packages/corncob" }
+source = { editable = "packages/cod-sync" }
 dependencies = [
     { name = "pyyaml" },
     { name = "requests" },
@@ -218,6 +209,15 @@ dependencies = [
 requires-dist = [
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "requests", specifier = ">=2.32.5" },
+]
+
+[[package]]
+name = "colorama"
+version = "0.4.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
 ]
 
 [[package]]
@@ -957,7 +957,7 @@ version = "0.1.0"
 source = { editable = "packages/shared-file-vault" }
 dependencies = [
     { name = "click" },
-    { name = "corncob" },
+    { name = "cod-sync" },
     { name = "fastapi", extra = ["standard"] },
     { name = "jinja2" },
     { name = "sqlalchemy" },
@@ -966,7 +966,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0" },
-    { name = "corncob", editable = "packages/corncob" },
+    { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.118.0" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "sqlalchemy", specifier = ">=2.0.44" },
@@ -1045,7 +1045,7 @@ version = "0.1.0"
 source = { editable = "packages/small-sea-team-manager" }
 dependencies = [
     { name = "click" },
-    { name = "corncob" },
+    { name = "cod-sync" },
     { name = "cryptography" },
     { name = "fastapi", extra = ["standard"] },
     { name = "harmonic-merge" },
@@ -1058,7 +1058,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.0" },
-    { name = "corncob", editable = "packages/corncob" },
+    { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "cryptography", specifier = ">=46.0.3" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.118.0" },
     { name = "harmonic-merge", editable = "packages/harmonic-merge" },

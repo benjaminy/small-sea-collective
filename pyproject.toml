@@ -9,7 +9,7 @@ dev-dependencies = [
     "small-sea-client",
     "small-sea-team-manager",
     "shared-file-vault",
-    "corncob",
+    "cod-sync",
     "harmonic-merge",
     "respx>=0.22.0",
 ]
@@ -19,5 +19,5 @@ small-sea-hub = { workspace = true }
 small-sea-client = { workspace = true }
 small-sea-team-manager = { workspace = true }
 shared-file-vault = { workspace = true }
-corncob = { workspace = true }
+cod-sync = { workspace = true }
 harmonic-merge = { workspace = true }

@@ -8,8 +8,8 @@ import struct
 import time
 from datetime import datetime, timezone
 
-import corncob.protocol as CC
-from corncob.protocol import gitCmd
+import cod_sync.protocol as CS
+from cod_sync.protocol import gitCmd
 
 
 def uuid7():
@@ -197,39 +197,39 @@ def list_niches(vault_root, participant_hex, team_name):
 
 
 def push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
-    """Push a niche to a cloud directory via CornCob bundle protocol."""
+    """Push a niche to a cloud directory via Cod Sync bundle protocol."""
     _git_dir, checkout_path = _git_dirs(vault_root, participant_hex, team_name, niche_name)
     saved_cwd = os.getcwd()
     try:
         os.chdir(checkout_path)
-        corn = CC.Corncob("cloud")
-        corn.gitCmd = CC.gitCmd
-        corn.remote = CC.LocalFolderRemote(str(cloud_dir))
-        corn.push_to_remote(["main"])
+        cod = CS.CodSync("cloud")
+        cod.gitCmd = CS.gitCmd
+        cod.remote = CS.LocalFolderRemote(str(cloud_dir))
+        cod.push_to_remote(["main"])
     finally:
         os.chdir(saved_cwd)
 
 
 def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
-    """Pull a niche from a cloud directory via CornCob bundle protocol."""
+    """Pull a niche from a cloud directory via Cod Sync bundle protocol."""
     _git_dir, checkout_path = _git_dirs(vault_root, participant_hex, team_name, niche_name)
     saved_cwd = os.getcwd()
     try:
         os.chdir(checkout_path)
-        corn = CC.Corncob("cloud")
-        corn.gitCmd = CC.gitCmd
-        corn.remote = CC.LocalFolderRemote(str(cloud_dir))
+        cod = CS.CodSync("cloud")
+        cod.gitCmd = CS.gitCmd
+        cod.remote = CS.LocalFolderRemote(str(cloud_dir))
 
         # Check if repo has any commits
         result = gitCmd(["rev-parse", "HEAD"], raise_on_error=False)
         has_commits = result.returncode == 0
 
         if has_commits:
-            corn.fetch_from_remote(["main"])
-            corn.merge_from_remote(["main"])
+            cod.fetch_from_remote(["main"])
+            cod.merge_from_remote(["main"])
         else:
-            corn.add_remote(f"file://{cloud_dir}", [])
-            corn.fetch_from_remote(["main"])
+            cod.add_remote(f"file://{cloud_dir}", [])
+            cod.fetch_from_remote(["main"])
             gitCmd(["checkout", "main"])
     finally:
         os.chdir(saved_cwd)

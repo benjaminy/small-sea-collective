@@ -1,4 +1,4 @@
-# CornCob
+# Cod Sync
 
 import os
 import sys
@@ -12,7 +12,7 @@ import io
 import base64
 import requests
 
-program_title = "CornCob protocol Git remote helper work-a-like"
+program_title = "Cod Sync protocol Git remote helper work-a-like"
 
 def gitCmd( git_params, raise_on_error=True ):
     git_cmd = [ "git" ] + git_params
@@ -25,7 +25,7 @@ def gitCmd( git_params, raise_on_error=True ):
             print( exn )
     return result
 
-class Corncob:
+class CodSync:
 
     def __init__( self, remote_name ):
         self.remote_name = remote_name
@@ -33,10 +33,10 @@ class Corncob:
 
 
     def add_remote( self, url, dotdotdot ):
-        """Add a CornCob remote
+        """Add a Cod Sync remote
 
         :param remote: The nickname for the remote
-        :param url: The URL for the remote. (This should not include 'corncob:')
+        :param url: The URL for the remote. (This should not include 'codsync:')
 
         Currently the only supported URL schema is file://
         In the fullness of time the idea is to support googledrive: , etc
@@ -48,7 +48,7 @@ class Corncob:
           - When pulling from a remote, the bundle is copied here and `git fetch`d
         """
 
-        self.gitCmd( [ "remote", "add", self.remote_name, f"corncob:{url}" ] )
+        self.gitCmd( [ "remote", "add", self.remote_name, f"codsync:{url}" ] )
         print( f"Added remote '{self.remote_name}' ({url})" )
 
         [ bundle_remote, path ] = self.bundle_tmp()
@@ -57,7 +57,7 @@ class Corncob:
 
 
     def remove_remote( self, dotdotdot ):
-        """Remove a CornCob remote
+        """Remove a Cod Sync remote
         """
 
         result1 = self.gitCmd( [ "remote", "remove", self.remote_name ], False )
@@ -80,7 +80,7 @@ class Corncob:
 
     def initialize_existing_remote( self ):
         """ git remote get-url `remote_name`
-        with some error checking. Plus strip the 'corncob:' prefix,
+        with some error checking. Plus strip the 'codsync:' prefix,
         """
         self.url = None
         result = self.gitCmd( [ "remote", "get-url", self.remote_name ], False )
@@ -89,18 +89,18 @@ class Corncob:
 
         remote_url = result.stdout.strip()
 
-        if not remote_url.startswith( "corncob:" ):
+        if not remote_url.startswith( "codsync:" ):
             print( f"ERROR: Wrong remote protocol '{remote_url}' ({program_title})" )
             return
 
-        # Strip 'corncob:'
+        # Strip 'codsync:'
         self.url = remote_url[ 8: ]
 
 
     def push_to_remote( self, branches ):
         print( f"PUSH {self.remote_name} {self.url} '{branches}'" )
 
-        bundle_uid = Corncob.token_hex( 8 )
+        bundle_uid = CodSync.token_hex( 8 )
         [ _, path_tmp ] = self.bundle_tmp()
         os.makedirs( path_tmp, exist_ok=True )
         bundle_path_tmp = f"{path_tmp}/B-{bundle_uid}.bundle"
@@ -115,14 +115,14 @@ class Corncob:
 
         else:
             [ link_ids, branches, bundles, supp_data ] = latest_link
-            link_uid = Corncob.token_hex( 8 )
+            link_uid = CodSync.token_hex( 8 )
             link_uid_prev = link_ids[ 0 ]
             assert( 1 == len( branches ) )
             assert( 0 < len( link_ids ) )
             branch = branches[ 0 ]
             assert( "main" == branch[ 0 ] )
             prerequisites = { "main": branch[ 1 ] }
-            tag = f"corncob_temp_tag_{'main'}"
+            tag = f"codsync_temp_tag_{'main'}"
             self.gitCmd( [ "tag", tag, branch[ 1 ] ] )
             bundle_spec = f"{tag}..main"
 
@@ -132,7 +132,7 @@ class Corncob:
             self.gitCmd( [ "tag", "-d", tag ] )
 
         blob = self.build_link_blob( link_uid, link_uid_prev, bundle_uid, prerequisites )
-        print( f"Pushing to Corncob clone {link_uid} '{bundle_path_tmp}' {blob}" )
+        print( f"Pushing to Cod Sync clone {link_uid} '{bundle_path_tmp}' {blob}" )
         return self.remote.upload_latest_link( link_uid, blob, bundle_uid, bundle_path_tmp )
 
     def build_link_blob( self, new_link_uid, prev_link_uid, bundle_uid, prerequisites ):
@@ -156,12 +156,12 @@ class Corncob:
             print( f"ERROR. Trying to clone, but already in a repo '{os.getcwd()}' '{result.stdout.strip()}' ({program_title})" )
             return -1
 
-        self.remote = CornCobRemote.init( url )
+        self.remote = CodSyncRemote.init( url )
         latest_link = self.remote.get_latest_link()
         if latest_link == None:
             print( f"CLONE SADNESS" )
             return -1
-        
+
         [ link_ids, branches, bundles, supp_data ] = latest_link
         if link_ids[ 0 ] != "initial-snapshot":
             print( f"CLONE MORE THAN INIT {link_ids[ 0 ]}" )
@@ -184,14 +184,14 @@ class Corncob:
         self.add_remote( url, [] )
         print( f"CLONE WORKED!!!" )
         return 0
-        
+
 
     def fetch_from_remote( self, branches ):
         print( f"FETCH {self.remote_name} {self.url} {branches}" )
         latest_link = self.remote.get_latest_link()
 
         if latest_link == None:
-            print( f"ERROR: Failed to fetch latest link '{corncob_url}' ({program_title})" )
+            print( f"ERROR: Failed to fetch latest link ({program_title})" )
             return -1
 
         return self.fetch_chain( latest_link, branches, False )
@@ -253,7 +253,7 @@ class Corncob:
         with error checking
         """
         result = self.gitCmd( [ "for-each-ref", "--format=%(refname:short)", "refs/heads/" ], False )
-        # cwd=repo_path, 
+        # cwd=repo_path,
 
         if 0 == result.returncode:
             return result.stdout.splitlines()
@@ -289,8 +289,8 @@ class Corncob:
         return -1
 
     def bundle_tmp( self ):
-        return [ f"{self.remote_name}-corncob-bundle-tmp",
-                 f"./.corncob-bundle-tmp/{self.remote_name}" ]
+        return [ f"{self.remote_name}-codsync-bundle-tmp",
+                 f"./.codsync-bundle-tmp/{self.remote_name}" ]
 
 
 
@@ -304,7 +304,7 @@ class GitCmdFailed( Exception ):
     def __str__( self ):
         return f"ERROR. git cmd failed. `git {' '.join( self.params )}` => {self.exit_code}. o:'{self.out}' e:'{self.err}'"
 
-class CornCobRemote:
+class CodSyncRemote:
     """ Abstract class for different kinds of remotes (Google Drive, etc)
     """
     @staticmethod
@@ -322,7 +322,7 @@ class CornCobRemote:
             session_hex = remainder[ slash_pos + 1: ]
             return SmallSeaRemote( session_hex, base_url=f"http://{host_port}" )
 
-        raise NotImplementedError( f"Unsupported CornCob cloud protocol. '{url}'" )
+        raise NotImplementedError( f"Unsupported Cod Sync cloud protocol. '{url}'" )
 
     def read_link_blob( self, yaml_strm ):
         parsed_data = yaml.load( yaml_strm, Loader=yaml.FullLoader )
@@ -339,7 +339,7 @@ class CornCobRemote:
         return [ link_ids, branches, bundles, supp_data ]
 
 
-class LocalFolderRemote( CornCobRemote ):
+class LocalFolderRemote( CodSyncRemote ):
     """ Mostly for debugging purposes. Pretend a local folder is a cloud location.
     """
 
@@ -389,7 +389,7 @@ class LocalFolderRemote( CornCobRemote ):
         shutil.copy( path_bundle, local_bundle_path )
 
 
-class SmallSeaRemote( CornCobRemote ):
+class SmallSeaRemote( CodSyncRemote ):
     """Hub-backed cloud storage remote.
 
     Talks to the hub's POST /cloud_file and GET /cloud_file endpoints.

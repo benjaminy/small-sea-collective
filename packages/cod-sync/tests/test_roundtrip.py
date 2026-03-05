@@ -1,4 +1,4 @@
-# Test a full roundtrip through the CornCob bundle protocol:
+# Test a full roundtrip through the Cod Sync bundle protocol:
 #
 # 1. Alice publishes, Bob clones (reuses test_clone_from_local_bundle setup)
 # 2. Bob modifies, adds, and deletes files, then commits
@@ -11,11 +11,11 @@
 
 import pathlib
 
-import corncob.protocol as CC
+import cod_sync.protocol as CS
 
 from test_clone_from_local_bundle import (
     make_file_remote,
-    make_corncob,
+    make_cod_sync,
     working_tree_files,
 )
 
@@ -31,49 +31,49 @@ def test_roundtrip(scratch_dir):
         d.mkdir()
 
     # ---- Setup: Alice publishes, Bob clones (same as clone test) ----
-    CC.gitCmd(["init", "-b", "main", str(alice_clone)])
-    CC.gitCmd(["-C", str(alice_clone), "config", "user.email", "alice@test"])
-    CC.gitCmd(["-C", str(alice_clone), "config", "user.name", "Alice"])
+    CS.gitCmd(["init", "-b", "main", str(alice_clone)])
+    CS.gitCmd(["-C", str(alice_clone), "config", "user.email", "alice@test"])
+    CS.gitCmd(["-C", str(alice_clone), "config", "user.name", "Alice"])
 
     (alice_clone / "README.md").write_text("# My Project\n")
     (alice_clone / "notes.txt").write_text("remember to buy milk\n")
     (alice_clone / "plan.txt").write_text("step 1: profit\n")
-    CC.gitCmd(["-C", str(alice_clone), "add", "-A"])
-    CC.gitCmd(["-C", str(alice_clone), "commit", "-m", "initial commit"])
+    CS.gitCmd(["-C", str(alice_clone), "add", "-A"])
+    CS.gitCmd(["-C", str(alice_clone), "commit", "-m", "initial commit"])
 
     alice_remote = make_file_remote(alice_pub)
-    alice_corn = make_corncob(alice_clone, "alice-pub")
-    alice_corn.remote = alice_remote
-    alice_corn.push_to_remote(["main"])
+    alice_cod = make_cod_sync(alice_clone, "alice-pub")
+    alice_cod.remote = alice_remote
+    alice_cod.push_to_remote(["main"])
 
-    bob_corn = make_corncob(bob_clone, "alice")
-    bob_corn.clone_from_remote(f"file://{alice_pub}")
-    CC.gitCmd(["-C", str(bob_clone), "config", "user.email", "bob@test"])
-    CC.gitCmd(["-C", str(bob_clone), "config", "user.name", "Bob"])
+    bob_cod = make_cod_sync(bob_clone, "alice")
+    bob_cod.clone_from_remote(f"file://{alice_pub}")
+    CS.gitCmd(["-C", str(bob_clone), "config", "user.email", "bob@test"])
+    CS.gitCmd(["-C", str(bob_clone), "config", "user.name", "Bob"])
 
     # ---- 1. Bob makes changes: modify, add, delete ----
     (bob_clone / "README.md").write_text("# My Project\n\nUpdated by Bob.\n")
     (bob_clone / "notes.txt").unlink()
     (bob_clone / "todo.txt").write_text("- write tests\n- ship it\n")
-    CC.gitCmd(["-C", str(bob_clone), "add", "-A"])
-    CC.gitCmd(["-C", str(bob_clone), "commit", "-m", "Bob's changes"])
+    CS.gitCmd(["-C", str(bob_clone), "add", "-A"])
+    CS.gitCmd(["-C", str(bob_clone), "commit", "-m", "Bob's changes"])
 
     # ---- 2. Bob publishes an incremental bundle ----
     bob_remote = make_file_remote(bob_pub)
-    bob_corn = make_corncob(bob_clone, "bob-pub")
-    bob_corn.remote = bob_remote
-    bob_corn.push_to_remote(["main"])
+    bob_cod = make_cod_sync(bob_clone, "bob-pub")
+    bob_cod.remote = bob_remote
+    bob_cod.push_to_remote(["main"])
 
     # Verify Bob's publication has a link and bundle
     assert (bob_pub / "latest-link.yaml").exists()
     assert len(list(bob_pub.glob("B-*.bundle"))) == 1
 
     # ---- 3. Alice fetches and merges Bob's changes ----
-    alice_corn = make_corncob(alice_clone, "bob")
-    alice_corn.remote = CC.LocalFolderRemote(str(bob_pub))
-    alice_corn.add_remote(f"file://{bob_pub}", [])
-    alice_corn.fetch_from_remote(["main"])
-    alice_corn.merge_from_remote(["main"])
+    alice_cod = make_cod_sync(alice_clone, "bob")
+    alice_cod.remote = CS.LocalFolderRemote(str(bob_pub))
+    alice_cod.add_remote(f"file://{bob_pub}", [])
+    alice_cod.fetch_from_remote(["main"])
+    alice_cod.merge_from_remote(["main"])
 
     # ---- 4. Verify the two working trees match ----
     alice_files = working_tree_files(alice_clone)
