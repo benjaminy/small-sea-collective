@@ -5,14 +5,11 @@ Git invokes this as:
 
 Where %O=ancestor, %A=ours (result written here), %B=theirs,
 %L=conflict-marker-size, %P=pathname.
-
-The schema SQL path is read from HARMONIC_MERGE_SCHEMA env var.
 """
 
-import os
 import sys
 
-from .core import sqlite_to_json, json_to_sqlite, merge_json_dbs
+from .core import sqlite_to_json, compute_delta, reconcile_deltas, apply_delta
 
 
 def main():
@@ -26,23 +23,15 @@ def main():
     # %L and %P are optional / unused beyond logging
     pathname = sys.argv[5] if len(sys.argv) > 5 else "<unknown>"
 
-    schema_path = os.environ.get("HARMONIC_MERGE_SCHEMA")
-    if not schema_path:
-        print("error: HARMONIC_MERGE_SCHEMA env var not set", file=sys.stderr)
-        sys.exit(1)
-
-    with open(schema_path, "r") as f:
-        schema_sql = f.read()
-
     try:
         ancestor = sqlite_to_json(ancestor_path)
         ours = sqlite_to_json(ours_path)
         theirs = sqlite_to_json(theirs_path)
 
-        merged = merge_json_dbs(ancestor, ours, theirs)
-
-        # Write merged result back to %A (ours) — git expects this
-        json_to_sqlite(merged, ours_path, schema_sql)
+        ours_delta = compute_delta(ancestor, ours)
+        theirs_delta = compute_delta(ancestor, theirs)
+        cleaned = reconcile_deltas(ours_delta, theirs_delta)
+        apply_delta(ours_path, cleaned)
     except Exception as e:
         print(f"harmonic-sqlite-merge failed for {pathname}: {e}", file=sys.stderr)
         sys.exit(1)

@@ -312,7 +312,6 @@ def _install_sqlite_merge_driver(team_sync_dir):
     command in .git/config (local only).
     """
     team_sync_dir = pathlib.Path(team_sync_dir)
-    schema_path = pathlib.Path(__file__).parent / "sql" / "core_other_team.sql"
 
     # .gitattributes — tracked by git, cloned automatically
     gitattributes = team_sync_dir / ".gitattributes"
@@ -324,10 +323,7 @@ def _install_sqlite_merge_driver(team_sync_dir):
         # Fallback: try to find it via the Python that's running us
         merge_bin = "harmonic-sqlite-merge"
 
-    driver_cmd = (
-        f"HARMONIC_MERGE_SCHEMA={schema_path} "
-        f"{merge_bin} %O %A %B %L %P"
-    )
+    driver_cmd = f"{merge_bin} %O %A %B %L %P"
     CodSync.gitCmd([
         "-C", str(team_sync_dir),
         "config", "merge.harmonic-sqlite.driver", driver_cmd,

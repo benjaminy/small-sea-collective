@@ -1,7 +1,6 @@
 """Core merge logic for SQLite databases."""
 
 import sqlite3
-import json
 import sys
 
 
@@ -27,7 +26,6 @@ def sqlite_to_json(db_path):
         table_name = tbl["name"]
         col_info = conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
         col_names = [c["name"] for c in col_info]
-        col_types = {c["name"]: c["type"].upper() for c in col_info}
 
         rows = conn.execute(f"SELECT * FROM '{table_name}'").fetchall()
         row_dicts = []
@@ -46,93 +44,6 @@ def sqlite_to_json(db_path):
     return {"__tables__": tables, "__pragmas__": {"user_version": user_version}}
 
 
-def json_to_sqlite(data, db_path, schema_sql):
-    """Recreate a SQLite database from JSON data and a schema script.
-
-    The schema is executed first, then rows from data["__tables__"] are
-    inserted in the order the tables appear in the schema SQL (so that FK
-    constraints are respected).
-    """
-    import pathlib
-    pathlib.Path(db_path).unlink(missing_ok=True)
-
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA foreign_keys = ON")
-
-    # Execute schema
-    for statement in schema_sql.split(";"):
-        statement = statement.strip()
-        if statement:
-            conn.execute(statement)
-    conn.commit()
-
-    # Determine table insertion order from schema (declaration order)
-    tables_in_schema = []
-    for statement in schema_sql.split(";"):
-        s = statement.strip()
-        upper = s.upper()
-        if "CREATE TABLE" in upper:
-            # Extract table name: CREATE TABLE [IF NOT EXISTS] <name>
-            parts = s.split()
-            idx = next(i for i, p in enumerate(parts) if p.upper() == "TABLE") + 1
-            if parts[idx].upper() == "IF":
-                idx += 3  # skip "IF NOT EXISTS"
-            table_name = parts[idx].strip("(").strip('"').strip("'")
-            tables_in_schema.append(table_name)
-
-    tables_data = data.get("__tables__", {})
-
-    for table_name in tables_in_schema:
-        rows = tables_data.get(table_name, [])
-        if not rows:
-            continue
-        col_names = list(rows[0].keys())
-        placeholders = ", ".join(["?"] * len(col_names))
-        cols = ", ".join(col_names)
-        sql = f"INSERT INTO '{table_name}' ({cols}) VALUES ({placeholders})"
-        for row in rows:
-            values = []
-            for col in col_names:
-                val = row[col]
-                if isinstance(val, dict) and "__blob__" in val:
-                    val = bytes.fromhex(val["__blob__"])
-                values.append(val)
-            conn.execute(sql, values)
-    conn.commit()
-
-    # Restore pragmas
-    pragmas = data.get("__pragmas__", {})
-    uv = pragmas.get("user_version", 0)
-    conn.execute(f"PRAGMA user_version = {int(uv)}")
-    conn.commit()
-    conn.close()
-
-
-def merge_json_dbs(ancestor, ours, theirs):
-    """Three-way merge of JSON-ified SQLite databases.
-
-    Keyed on primary key (first column = 'id' in every table).
-    Returns a merged dict in the same format as sqlite_to_json output.
-    """
-    merged_tables = {}
-
-    all_table_names = set()
-    all_table_names.update(ancestor.get("__tables__", {}).keys())
-    all_table_names.update(ours.get("__tables__", {}).keys())
-    all_table_names.update(theirs.get("__tables__", {}).keys())
-
-    for table_name in sorted(all_table_names):
-        a_rows = ancestor.get("__tables__", {}).get(table_name, [])
-        o_rows = ours.get("__tables__", {}).get(table_name, [])
-        t_rows = theirs.get("__tables__", {}).get(table_name, [])
-
-        merged_tables[table_name] = _merge_table(a_rows, o_rows, t_rows, table_name)
-
-    # Use ours' pragmas as base
-    merged_pragmas = dict(ours.get("__pragmas__", {}))
-    return {"__tables__": merged_tables, "__pragmas__": merged_pragmas}
-
-
 def _row_key(row):
     """Extract the primary key from a row dict. Always 'id'."""
     return _normalize_key(row.get("id"))
@@ -145,67 +56,151 @@ def _normalize_key(val):
     return ("val", val)
 
 
-def _merge_table(a_rows, o_rows, t_rows, table_name):
-    """Three-way merge of a single table's rows."""
-    a_by_key = {_row_key(r): r for r in a_rows}
-    o_by_key = {_row_key(r): r for r in o_rows}
-    t_by_key = {_row_key(r): r for r in t_rows}
+def _decode_value(val):
+    """Convert {"__blob__": "hex"} back to bytes, pass other values through."""
+    if isinstance(val, dict) and "__blob__" in val:
+        return bytes.fromhex(val["__blob__"])
+    return val
 
-    all_keys = set()
-    all_keys.update(a_by_key.keys())
-    all_keys.update(o_by_key.keys())
-    all_keys.update(t_by_key.keys())
 
-    merged = []
-    for key in sorted(all_keys, key=str):
-        in_a = key in a_by_key
-        in_o = key in o_by_key
-        in_t = key in t_by_key
+def compute_delta(ancestor_json, version_json):
+    """Compute row-level delta between ancestor and version.
 
-        if not in_a:
-            # New row — added by one or both sides
-            if in_o and in_t:
-                # Both added same key — keep ours
-                merged.append(o_by_key[key])
-            elif in_o:
-                merged.append(o_by_key[key])
+    Returns dict keyed by table name, each containing:
+        inserts: {normalized_key: row_dict}
+        deletes: {normalized_key: row_dict}
+        updates: {normalized_key: row_dict}  (new values)
+    """
+    a_tables = ancestor_json.get("__tables__", {})
+    v_tables = version_json.get("__tables__", {})
+
+    all_table_names = set(a_tables.keys()) | set(v_tables.keys())
+    delta = {}
+
+    for table_name in sorted(all_table_names):
+        a_rows = a_tables.get(table_name, [])
+        v_rows = v_tables.get(table_name, [])
+
+        a_by_key = {_row_key(r): r for r in a_rows}
+        v_by_key = {_row_key(r): r for r in v_rows}
+
+        inserts = {}
+        deletes = {}
+        updates = {}
+
+        for key, row in v_by_key.items():
+            if key not in a_by_key:
+                inserts[key] = row
+            elif row != a_by_key[key]:
+                updates[key] = row
+
+        for key, row in a_by_key.items():
+            if key not in v_by_key:
+                deletes[key] = row
+
+        if inserts or deletes or updates:
+            delta[table_name] = {
+                "inserts": inserts,
+                "deletes": deletes,
+                "updates": updates,
+            }
+
+    return delta
+
+
+def reconcile_deltas(ours_delta, theirs_delta):
+    """Reconcile theirs_delta against ours_delta. Ours wins on conflicts.
+
+    Returns a cleaned copy of theirs_delta with conflicts removed.
+    """
+    cleaned = {}
+
+    for table_name, t_ops in theirs_delta.items():
+        o_ops = ours_delta.get(table_name, {"inserts": {}, "deletes": {}, "updates": {}})
+
+        new_inserts = {}
+        new_deletes = {}
+        new_updates = {}
+
+        for key, row in t_ops.get("inserts", {}).items():
+            if key in o_ops.get("inserts", {}):
+                print(f"warning: insert/insert conflict in {table_name}, keeping ours", file=sys.stderr)
             else:
-                merged.append(t_by_key[key])
-        elif in_a and not in_o and not in_t:
-            # Deleted by both — gone
-            pass
-        elif in_a and not in_o and in_t:
-            # Deleted by ours
-            if t_by_key[key] != a_by_key[key]:
-                # Theirs modified, ours deleted — keep deletion
-                print(f"warning: delete/modify conflict in {table_name}, keeping deletion", file=sys.stderr)
-            pass
-        elif in_a and in_o and not in_t:
-            # Deleted by theirs
-            if o_by_key[key] != a_by_key[key]:
-                # Ours modified, theirs deleted — keep ours
+                new_inserts[key] = row
+
+        for key, row in t_ops.get("deletes", {}).items():
+            if key in o_ops.get("deletes", {}):
+                # Both deleted — redundant, drop
+                pass
+            elif key in o_ops.get("updates", {}):
+                print(f"warning: delete/modify conflict in {table_name}, keeping ours", file=sys.stderr)
+            else:
+                new_deletes[key] = row
+
+        for key, row in t_ops.get("updates", {}).items():
+            if key in o_ops.get("deletes", {}):
                 print(f"warning: modify/delete conflict in {table_name}, keeping ours", file=sys.stderr)
-                merged.append(o_by_key[key])
-            pass
-        else:
-            # Present in all three
-            o_row = o_by_key[key]
-            t_row = t_by_key[key]
-            a_row = a_by_key[key]
-
-            if o_row == a_row and t_row == a_row:
-                # No changes
-                merged.append(o_row)
-            elif o_row == a_row:
-                # Only theirs changed
-                merged.append(t_row)
-            elif t_row == a_row:
-                # Only ours changed
-                merged.append(o_row)
+            elif key in o_ops.get("updates", {}):
+                print(f"warning: true conflict in {table_name}, keeping ours", file=sys.stderr)
             else:
-                # Both changed — true conflict, ours wins
-                if o_row != t_row:
-                    print(f"warning: true conflict in {table_name}, keeping ours", file=sys.stderr)
-                merged.append(o_row)
+                new_updates[key] = row
 
-    return merged
+        if new_inserts or new_deletes or new_updates:
+            cleaned[table_name] = {
+                "inserts": new_inserts,
+                "deletes": new_deletes,
+                "updates": new_updates,
+            }
+
+    return cleaned
+
+
+def apply_delta(db_path, delta):
+    """Apply a reconciled delta to a SQLite database in-place.
+
+    Only touches rows that actually changed — preserves SQLite page stability.
+    """
+    if not delta:
+        return
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA foreign_keys = OFF")
+
+    for table_name, ops in delta.items():
+        # Get column names from the actual DB
+        col_info = conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
+        col_names = [row[1] for row in col_info]
+
+        # DELETEs
+        for key, row in ops.get("deletes", {}).items():
+            id_val = _decode_value(row["id"])
+            conn.execute(f"DELETE FROM '{table_name}' WHERE id = ?", (id_val,))
+
+        # INSERTs
+        for key, row in ops.get("inserts", {}).items():
+            placeholders = ", ".join(["?"] * len(col_names))
+            cols = ", ".join(col_names)
+            values = [_decode_value(row.get(c)) for c in col_names]
+            conn.execute(
+                f"INSERT INTO '{table_name}' ({cols}) VALUES ({placeholders})",
+                values,
+            )
+
+        # UPDATEs
+        for key, row in ops.get("updates", {}).items():
+            id_val = _decode_value(row["id"])
+            set_clauses = []
+            set_values = []
+            for c in col_names:
+                if c == "id":
+                    continue
+                set_clauses.append(f"{c} = ?")
+                set_values.append(_decode_value(row.get(c)))
+            set_values.append(id_val)
+            conn.execute(
+                f"UPDATE '{table_name}' SET {', '.join(set_clauses)} WHERE id = ?",
+                set_values,
+            )
+
+    conn.commit()
+    conn.close()

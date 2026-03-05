@@ -1,10 +1,11 @@
-"""Unit tests for harmonic_merge.core."""
+"""Unit tests for harmonic_merge.core (delta-based merge)."""
 
 import sqlite3
+import shutil
 import tempfile
 import pathlib
 
-from harmonic_merge.core import sqlite_to_json, json_to_sqlite, merge_json_dbs
+from harmonic_merge.core import sqlite_to_json, compute_delta, reconcile_deltas, apply_delta
 
 
 SCHEMA_PATH = (
@@ -40,58 +41,14 @@ def _make_db(tmp, name, members=None, invitations=None):
     return str(db_path)
 
 
-def test_roundtrip():
-    """sqlite_to_json -> json_to_sqlite preserves all data."""
-    with tempfile.TemporaryDirectory() as tmp:
-        member_id = b"\x01" * 16
-        inv_id = b"\x02" * 16
-        nonce = b"\x03" * 16
-
-        orig = _make_db(
-            tmp, "orig.db",
-            members=[member_id],
-            invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01T00:00:00Z")],
-        )
-
-        data = sqlite_to_json(orig)
-        restored = pathlib.Path(tmp) / "restored.db"
-        json_to_sqlite(data, str(restored), SCHEMA_SQL)
-
-        conn = sqlite3.connect(str(restored))
-        members = conn.execute("SELECT id FROM member").fetchall()
-        assert len(members) == 1
-        assert members[0][0] == member_id
-
-        invs = conn.execute("SELECT id, nonce, status, invitee_label FROM invitation").fetchall()
-        assert len(invs) == 1
-        assert invs[0][0] == inv_id
-        assert invs[0][1] == nonce
-        assert invs[0][2] == "pending"
-        assert invs[0][3] == "Bob"
-
-        uv = conn.execute("PRAGMA user_version").fetchone()[0]
-        assert uv == 44
-        conn.close()
-
-
-def test_blob_hex_encoding():
-    """BLOB values round-trip through hex encoding."""
-    with tempfile.TemporaryDirectory() as tmp:
-        blob_val = bytes(range(256))
-        db_path = _make_db(tmp, "blob.db", members=[blob_val])
-
-        data = sqlite_to_json(db_path)
-        member_rows = data["__tables__"]["member"]
-        assert len(member_rows) == 1
-        assert member_rows[0]["id"] == {"__blob__": blob_val.hex()}
-
-        restored = pathlib.Path(tmp) / "blob_restored.db"
-        json_to_sqlite(data, str(restored), SCHEMA_SQL)
-
-        conn = sqlite3.connect(str(restored))
-        rows = conn.execute("SELECT id FROM member").fetchall()
-        assert rows[0][0] == blob_val
-        conn.close()
+def _query_table(db_path, table, columns="*"):
+    """Helper to query a table and return list of dicts."""
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(f"SELECT {columns} FROM {table}").fetchall()
+    result = [dict(r) for r in rows]
+    conn.close()
+    return result
 
 
 def test_merge_both_insert():
@@ -115,9 +72,12 @@ def test_merge_both_insert():
         o_json = sqlite_to_json(ours_db)
         t_json = sqlite_to_json(theirs_db)
 
-        merged = merge_json_dbs(a_json, o_json, t_json)
+        ours_delta = compute_delta(a_json, o_json)
+        theirs_delta = compute_delta(a_json, t_json)
+        cleaned = reconcile_deltas(ours_delta, theirs_delta)
+        apply_delta(ours_db, cleaned)
 
-        inv_rows = merged["__tables__"]["invitation"]
+        inv_rows = _query_table(ours_db, "invitation")
         labels = {r["invitee_label"] for r in inv_rows}
         assert "Bob" in labels
         assert "Carol" in labels
@@ -125,7 +85,7 @@ def test_merge_both_insert():
 
 
 def test_merge_one_side_modification():
-    """One-side modification is kept."""
+    """One-side modification (ours) is kept."""
     inv_id = b"\x10" * 16
     nonce = b"\xaa" * 16
 
@@ -139,7 +99,6 @@ def test_merge_one_side_modification():
         )
         # Ours: changed status to accepted
         ours_db = pathlib.Path(tmp) / "ours.db"
-        import shutil
         shutil.copy(ancestor, str(ours_db))
         conn = sqlite3.connect(str(ours_db))
         conn.execute("UPDATE invitation SET status='accepted' WHERE id=?", (inv_id,))
@@ -154,8 +113,51 @@ def test_merge_one_side_modification():
         o_json = sqlite_to_json(str(ours_db))
         t_json = sqlite_to_json(str(theirs_db))
 
-        merged = merge_json_dbs(a_json, o_json, t_json)
-        inv_rows = merged["__tables__"]["invitation"]
+        ours_delta = compute_delta(a_json, o_json)
+        theirs_delta = compute_delta(a_json, t_json)
+        cleaned = reconcile_deltas(ours_delta, theirs_delta)
+        apply_delta(str(ours_db), cleaned)
+
+        inv_rows = _query_table(str(ours_db), "invitation")
+        assert len(inv_rows) == 1
+        assert inv_rows[0]["status"] == "accepted"
+
+
+def test_theirs_only_modification():
+    """Theirs changes a row, ours doesn't — update is applied to ours DB."""
+    inv_id = b"\x10" * 16
+    nonce = b"\xaa" * 16
+
+    with tempfile.TemporaryDirectory() as tmp:
+        member_a = b"\x01" * 16
+
+        ancestor = _make_db(
+            tmp, "ancestor.db",
+            members=[member_a],
+            invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01")],
+        )
+        # Ours: unchanged
+        ours_db = pathlib.Path(tmp) / "ours.db"
+        shutil.copy(ancestor, str(ours_db))
+
+        # Theirs: changed status to accepted
+        theirs_db = pathlib.Path(tmp) / "theirs.db"
+        shutil.copy(ancestor, str(theirs_db))
+        conn = sqlite3.connect(str(theirs_db))
+        conn.execute("UPDATE invitation SET status='accepted' WHERE id=?", (inv_id,))
+        conn.commit()
+        conn.close()
+
+        a_json = sqlite_to_json(ancestor)
+        o_json = sqlite_to_json(str(ours_db))
+        t_json = sqlite_to_json(str(theirs_db))
+
+        ours_delta = compute_delta(a_json, o_json)
+        theirs_delta = compute_delta(a_json, t_json)
+        cleaned = reconcile_deltas(ours_delta, theirs_delta)
+        apply_delta(str(ours_db), cleaned)
+
+        inv_rows = _query_table(str(ours_db), "invitation")
         assert len(inv_rows) == 1
         assert inv_rows[0]["status"] == "accepted"
 
@@ -176,7 +178,6 @@ def test_merge_deletion():
 
         # Ours: deleted the invitation
         ours_db = pathlib.Path(tmp) / "ours.db"
-        import shutil
         shutil.copy(ancestor, str(ours_db))
         conn = sqlite3.connect(str(ours_db))
         conn.execute("DELETE FROM invitation WHERE id=?", (inv_id,))
@@ -191,8 +192,12 @@ def test_merge_deletion():
         o_json = sqlite_to_json(str(ours_db))
         t_json = sqlite_to_json(str(theirs_db))
 
-        merged = merge_json_dbs(a_json, o_json, t_json)
-        inv_rows = merged["__tables__"]["invitation"]
+        ours_delta = compute_delta(a_json, o_json)
+        theirs_delta = compute_delta(a_json, t_json)
+        cleaned = reconcile_deltas(ours_delta, theirs_delta)
+        apply_delta(str(ours_db), cleaned)
+
+        inv_rows = _query_table(str(ours_db), "invitation")
         assert len(inv_rows) == 0
 
 
@@ -209,8 +214,6 @@ def test_merge_true_conflict_ours_wins():
             members=[member_a],
             invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01")],
         )
-
-        import shutil
 
         ours_db = pathlib.Path(tmp) / "ours.db"
         shutil.copy(ancestor, str(ours_db))
@@ -230,7 +233,11 @@ def test_merge_true_conflict_ours_wins():
         o_json = sqlite_to_json(str(ours_db))
         t_json = sqlite_to_json(str(theirs_db))
 
-        merged = merge_json_dbs(a_json, o_json, t_json)
-        inv_rows = merged["__tables__"]["invitation"]
+        ours_delta = compute_delta(a_json, o_json)
+        theirs_delta = compute_delta(a_json, t_json)
+        cleaned = reconcile_deltas(ours_delta, theirs_delta)
+        apply_delta(str(ours_db), cleaned)
+
+        inv_rows = _query_table(str(ours_db), "invitation")
         assert len(inv_rows) == 1
         assert inv_rows[0]["status"] == "accepted"  # ours wins
