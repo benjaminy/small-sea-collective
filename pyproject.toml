@@ -11,6 +11,7 @@ dev-dependencies = [
     "shared-file-vault",
     "corncob",
     "harmonic-merge",
+    "respx>=0.22.0",
 ]
 
 [tool.uv.sources]

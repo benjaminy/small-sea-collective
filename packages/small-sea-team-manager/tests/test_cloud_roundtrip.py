@@ -56,7 +56,7 @@ def test_local_provision_then_hub_roundtrip(playground_dir, minio_server_gen):
     # Pre-create the bucket in MinIO (test infrastructure — the hub
     # derives the same name internally but doesn't create buckets)
     ss_session = backend._lookup_session(session_hex)
-    adapter = backend._make_s3_adapter(ss_session)
+    adapter = backend._make_storage_adapter(ss_session)
     s3 = boto3.client(
         "s3",
         endpoint_url=minio["endpoint"],
