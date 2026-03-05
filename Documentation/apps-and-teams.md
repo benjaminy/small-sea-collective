@@ -72,6 +72,6 @@ Typically a client will only access one apps's resources, but there may be sever
 
 Access control for apps is interesting.
 It would _not_ be great if clients could easily peek into any app's data or "impersonate" any app.
-When some client software wants to access any resource associated with an app/zone it has to start a session with the Small Sea Hub.
+When some client software wants to access any resource associated with an app/station it has to start a session with the Small Sea Hub.
 The request for a new session will prompt a user with a two-step process that involves the Hub generating a PIN that the user has to input to the client.
 This should help keep clients out of each others' business.
