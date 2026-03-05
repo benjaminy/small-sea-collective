@@ -16,7 +16,7 @@ from sqlalchemy.orm import declarative_base, Session
 Base = declarative_base()
 
 from small_sea_team_manager.provisioning import uuid7
-from small_sea_hub.adapters import SmallSeaStorageAdapter, SmallSeaS3Adapter, SmallSeaGDriveAdapter, SmallSeaDropboxAdapter
+from small_sea_hub.adapters import SmallSeaStorageAdapter, SmallSeaS3Adapter, SmallSeaGDriveAdapter, SmallSeaDropboxAdapter, SmallSeaNtfyAdapter
 from small_sea_hub.adapters.oauth import is_token_expired, refresh_google_token, refresh_dropbox_token
 
 class SmallSeaBackendExn(Exception):
@@ -98,6 +98,17 @@ class CloudStorage(Base):
 
     def __repr__(self):
         return f"<CloudStorage(id='{self.id.hex()}')>"
+
+
+class NotificationService(Base):
+    __tablename__ = 'notification_service'
+
+    id = Column(LargeBinary, primary_key=True)
+    protocol = Column(String, nullable=False)
+    url = Column(String, nullable=False)
+
+    def __repr__(self):
+        return f"<NotificationService(id='{self.id.hex()}')>"
 
 
 class SmallSeaBackend:
@@ -416,6 +427,67 @@ class SmallSeaBackend:
         ss_session = self._lookup_session(session_hex)
         adapter = self._make_storage_adapter(ss_session)
         return adapter.download(path)
+
+
+    # ---- Notifications ----
+
+    def add_notification_service(
+            self,
+            session_hex,
+            protocol,
+            url):
+        if protocol != "ntfy":
+            raise SmallSeaBackendExn(f"Unknown notification protocol: {protocol}")
+
+        ss_session = self._lookup_session(session_hex)
+        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
+        engine_core = create_engine(f"sqlite:///{core_path}")
+        ns_id = uuid7()
+        with Session(engine_core) as session:
+            ns = NotificationService(
+                id=ns_id,
+                protocol=protocol,
+                url=url)
+            session.add(ns)
+            session.commit()
+        return ns_id.hex()
+
+    def _get_notification_service(self, ss_session):
+        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
+        engine_core = create_engine(f"sqlite:///{core_path}")
+        with Session(engine_core) as session:
+            results = session.query(NotificationService).all()
+            if len(results) == 0:
+                raise SmallSeaNotFoundExn("No notification service configured")
+            return results[0]
+
+    def _make_ntfy_adapter(self, ss_session):
+        import hashlib
+        ns = self._get_notification_service(ss_session)
+        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
+        engine_core = create_engine(f"sqlite:///{core_path}")
+        with Session(engine_core) as session:
+            team = session.query(Team).filter(Team.id == ss_session.team_id).first()
+            app_row = session.query(App).filter(App.id == ss_session.app_id).first()
+            if team is None or app_row is None:
+                raise SmallSeaNotFoundExn("team or app not found")
+        # Derive topic from team+app names so all participants on the same
+        # station share the same ntfy topic.
+        station_key = f"{team.name}/{app_row.name}"
+        topic = "ss-" + hashlib.sha256(station_key.encode()).hexdigest()[:16]
+        return SmallSeaNtfyAdapter(ns.url, topic)
+
+    def send_notification(self, session_hex, message, title=None):
+        ss_session = self._lookup_session(session_hex)
+        adapter = self._make_ntfy_adapter(ss_session)
+        return adapter.publish(message, title)
+
+    def poll_notifications(self, session_hex, since=None, timeout=30):
+        ss_session = self._lookup_session(session_hex)
+        adapter = self._make_ntfy_adapter(ss_session)
+        if since is None:
+            since = "all"
+        return adapter.poll(since, timeout)
 
 
 def setup_logging(

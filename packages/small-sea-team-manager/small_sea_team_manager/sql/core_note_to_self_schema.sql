@@ -45,3 +45,9 @@ CREATE TABLE IF NOT EXISTS cloud_storage (
     -- JSON dict mapping path → provider-specific metadata (e.g. Google Drive file IDs)
     path_metadata TEXT
 );
+
+CREATE TABLE IF NOT EXISTS notification_service (
+    id BLOB PRIMARY KEY,
+    protocol TEXT NOT NULL,
+    url TEXT NOT NULL
+);

@@ -121,7 +121,7 @@ For applications with large data (e.g. video editing), it will probably be neces
 
 The Small Sea framework has the following components:
 
-- Hub.
+- [Hub](packages/small-sea-hub/spec.md).
    This is a local service that runs on devices and mediates access to all a user's general-purpose services.
    For example:
       - Apps upload and download files through the hub, which puts them in the correct folder or bucket.

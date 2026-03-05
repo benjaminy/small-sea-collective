@@ -111,6 +111,17 @@ class TeamAppZone(Base):
         return f"<TeamAppZone(id='{self.id.hex()}')>"
 
 
+class NotificationService(Base):
+    __tablename__ = 'notification_service'
+
+    id = Column(LargeBinary, primary_key=True)
+    protocol = Column(String, nullable=False)
+    url = Column(String, nullable=False)
+
+    def __repr__(self):
+        return f"<NotificationService(id='{self.id.hex()}')>"
+
+
 # ---- SQLAlchemy models for per-team core.db ----
 
 class Invitation(Base):
@@ -162,7 +173,7 @@ class MemberCloud(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 44
+USER_SCHEMA_VERSION = 45
 
 
 # ---- Provisioning functions ----
@@ -233,6 +244,13 @@ def _migrate_user_db(conn, from_version):
         for col in ["client_id", "client_secret", "refresh_token",
                      "access_token", "token_expiry", "path_metadata"]:
             conn.execute(text(f"ALTER TABLE cloud_storage ADD COLUMN {col} TEXT"))
+    if from_version < 45:
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS notification_service ("
+            "id BLOB PRIMARY KEY, "
+            "protocol TEXT NOT NULL, "
+            "url TEXT NOT NULL)"
+        ))
 
 
 def _initialize_core_note_to_self_schema(conn):

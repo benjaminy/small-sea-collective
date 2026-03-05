@@ -62,3 +62,35 @@ def minio_server_gen():
                 shutil.rmtree(server["root_dir"])
             except FileNotFoundError:
                 print(f"Temp directory disappeared ({server['root_dir']})")
+
+
+@pytest.fixture(scope="session")
+def ntfy_server():
+    import httpx
+
+    port = 9090
+    container_name = f"ntfy-test-{os.getpid()}"
+    subprocess.run([
+        "docker", "run", "-d",
+        "--name", container_name,
+        "-p", f"{port}:80",
+        "binwiederhier/ntfy", "serve",
+    ], check=True)
+    url = f"http://localhost:{port}"
+
+    # Health check — wait up to 15 seconds
+    for _ in range(30):
+        time.sleep(0.5)
+        try:
+            resp = httpx.get(f"{url}/v1/health", timeout=2)
+            if resp.status_code == 200:
+                break
+        except Exception:
+            pass
+    else:
+        subprocess.run(["docker", "rm", "-f", container_name])
+        raise RuntimeError("ntfy server failed to start")
+
+    yield {"port": port, "url": url}
+
+    subprocess.run(["docker", "rm", "-f", container_name])

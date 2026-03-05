@@ -112,3 +112,44 @@ async def download_from_cloud(session: str, path: str):
         raise HTTPException(status_code=404, detail=etag)
     return { "ok": True, "data": base64.b64encode(data).decode(), "etag": etag }
 
+
+# ---- Notifications ----
+
+class AddNotificationServiceReq(pydantic.BaseModel):
+    session: str
+    protocol: str
+    url: str
+
+@app.post("/notification_services")
+async def add_notification_service(req: AddNotificationServiceReq):
+    small_sea = app.state.backend
+    id_hex = small_sea.add_notification_service(
+        req.session, req.protocol, req.url)
+    return { "message": id_hex }
+
+
+class SendNotificationReq(pydantic.BaseModel):
+    session: str
+    message: str
+    title: Optional[str] = None
+
+@app.post("/notifications")
+async def send_notification(req: SendNotificationReq):
+    small_sea = app.state.backend
+    ok, msg_id, err = small_sea.send_notification(
+        req.session, req.message, title=req.title)
+    if not ok:
+        raise HTTPException(status_code=500, detail=err)
+    return { "ok": True, "id": msg_id }
+
+
+@app.get("/notifications")
+async def poll_notifications(
+        session: str,
+        since: Optional[str] = None,
+        timeout: int = 30):
+    small_sea = app.state.backend
+    messages = small_sea.poll_notifications(
+        session, since=since, timeout=timeout)
+    return { "ok": True, "messages": messages }
+

@@ -6,25 +6,33 @@ status: experimental
 
 ## Purpose
 
-The Hub is a local service that runs on each user's device.
-It is the sole gateway between Small Sea applications and the outside world.
-Apps never make network calls directly; they go through the Hub.
+The Small Sea Hub is a local service that runs on each user's device.
+It is the sole gateway between applications and Small Sea services.
+Apps never access these services directly; they go through the Hub.
 
 The Hub has two main jobs:
 1. Mediate access to general-purpose cloud services (storage, notifications, VPN, etc.) on behalf of apps.
 2. Gate that access through sessions, so users can control which apps access which stations.
+
+Currently the Hub serves its API over HTTP.
+There could be a reason for a different protocol in the future (direct IPC or something).
+However, the whole Small Sea framework is designed with local-first application styles in mind, where waiting on responses from the network should be minimized.
+So interactions with the Hub should generally be off an app's critical path.
+If apps have a need for low-latency communication among teammates, they should open VPN connections through Small Sea, then sending communicating through the VPN will not involve the Hub.
 
 ## Sessions
 
 Sessions are how apps gain access to Hub services.
 A session is scoped to exactly one station (one team + one app).
 
+Apps start a session by sending a request to the 
+
 TODO: Describe the session lifecycle — opening, approval, duration, expiry.
 
 ## Relationship with the Team Manager
 
 The Hub has a special relationship with the Team Manager app.
-The Team Manager writes the databases that the Hub reads to do its work: team membership, app registrations, cloud storage credentials, etc.
+The Team Manager writes the databases that the Hub reads to do its work: team membership, app registrations, cloud service credentials, etc.
 
 TODO: Specify the shared database contract — which tables the Hub reads, where they live on disk.
 
