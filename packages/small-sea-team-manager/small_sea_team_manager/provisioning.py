@@ -401,6 +401,21 @@ def create_invitation(root_dir, participant_hex, team_name, inviter_cloud, invit
         row = conn.execute(text("SELECT id FROM member LIMIT 1")).fetchone()
         inviter_member_id = row[0]
 
+    # Look up the station ID for the team (to derive the bucket name)
+    user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
+    user_engine = create_engine(f"sqlite:///{user_db_path}")
+
+    with Session(user_engine) as session:
+        team_row = session.query(Team).filter_by(name=team_name).one()
+        team_id = team_row.id
+        app_row = session.query(App).filter_by(name="SmallSeaCollectiveCore").one()
+        station_row = session.query(TeamAppStation).filter_by(
+            team_id=team_id, app_id=app_row.id).one()
+        station_id = station_row.id
+
+    station_id_hex = station_id.hex()
+    inviter_bucket = f"ss-{station_id_hex[:16]}"
+
     # Create invitation row
     inv_id = uuid7()
     nonce = secrets.token_bytes(16)
@@ -419,6 +434,7 @@ def create_invitation(root_dir, participant_hex, team_name, inviter_cloud, invit
         "team_name": team_name,
         "inviter_member_id": inviter_member_id.hex(),
         "inviter_cloud": inviter_cloud,
+        "inviter_bucket": inviter_bucket,
     }
     token_json = json.dumps(token_data)
     token_b64 = base64.b64encode(token_json.encode()).decode()
@@ -431,11 +447,15 @@ def create_invitation(root_dir, participant_hex, team_name, inviter_cloud, invit
     return token_b64
 
 
-def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cloud):
-    """Accept a team invitation token.
+def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cloud, acceptor_bucket):
+    """Accept a team invitation token (acceptor side).
+
+    Clones the team repo from the inviter's cloud, adds self as member,
+    pushes to own cloud, and returns an acceptance response for the inviter.
 
     acceptor_cloud: dict with keys protocol, url, access_key, secret_key.
-    Returns {"team_name": ..., "member_id_hex": ...}.
+    acceptor_bucket: S3 bucket name for the acceptor's cloud.
+    Returns a base64-encoded acceptance response JSON string.
     """
     root_dir = pathlib.Path(root_dir)
 
@@ -445,28 +465,49 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
     team_name = token["team_name"]
     inviter_member_id = bytes.fromhex(token["inviter_member_id"])
     inviter_cloud = token["inviter_cloud"]
+    inviter_bucket = token["inviter_bucket"]
     invitation_id = bytes.fromhex(token["invitation_id"])
     nonce = bytes.fromhex(token["nonce"])
 
-    # Generate Bob's fresh team-local member ID
+    # Generate acceptor's fresh team-local member ID
     acceptor_member_id = uuid7()
 
     acceptor_dir = root_dir / "Participants" / acceptor_participant_hex
 
-    # --- Create acceptor's team directory + DB ---
+    # --- Create acceptor's team directory ---
     team_sync_dir = acceptor_dir / team_name / "Sync"
     os.makedirs(team_sync_dir, exist_ok=False)
 
+    # --- Clone the team repo from inviter's cloud ---
+    inviter_remote = CodSync.S3Remote(
+        inviter_cloud["url"], inviter_bucket,
+        inviter_cloud["access_key"], inviter_cloud["secret_key"])
+
+    saved_cwd = os.getcwd()
+    os.chdir(team_sync_dir)
+    try:
+        cod = CodSync.CodSync("inviter")
+        cod.gitCmd = CodSync.gitCmd
+        cod.remote = inviter_remote
+
+        # Build the s3:// URL for add_remote
+        inviter_s3_url = (
+            f"s3://{inviter_cloud['access_key']}:{inviter_cloud['secret_key']}"
+            f"@{inviter_cloud['url'].replace('http://', '')}/{inviter_bucket}"
+        )
+        result = cod.clone_from_remote(inviter_s3_url)
+        if result != 0:
+            raise RuntimeError(f"Failed to clone team repo from inviter's cloud (code {result})")
+    finally:
+        os.chdir(saved_cwd)
+
+    # --- Add acceptor as member in the cloned DB ---
     team_db_path = team_sync_dir / "core.db"
-    team_engine = _init_team_db(team_db_path)
+    team_engine = create_engine(f"sqlite:///{team_db_path}")
 
     with team_engine.begin() as conn:
-        # Add acceptor as member
         conn.execute(text("INSERT INTO member (id) VALUES (:id)"),
                      {"id": acceptor_member_id})
-        # Add inviter as member
-        conn.execute(text("INSERT INTO member (id) VALUES (:id)"),
-                     {"id": inviter_member_id})
         # Store inviter's cloud info as a peer
         conn.execute(text(
             "INSERT INTO peer (id, member_id, protocol, url, access_key, secret_key) "
@@ -479,6 +520,11 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
             "access_key": inviter_cloud.get("access_key"),
             "secret_key": inviter_cloud.get("secret_key"),
         })
+
+    team_engine.dispose()
+
+    # --- Install sqlite merge driver ---
+    _install_sqlite_merge_driver(team_sync_dir)
 
     # --- Add team to acceptor's NoteToSelf ---
     user_db_path = acceptor_dir / "NoteToSelf" / "Sync" / "core.db"
@@ -494,95 +540,117 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
         session.add(team_app)
         session.commit()
 
-    # --- Mark invitation accepted in inviter's DB ---
-    _mark_invitation_accepted(
-        root_dir, team_name, invitation_id, nonce,
-        acceptor_member_id, acceptor_cloud)
-
-    # --- Git init acceptor's team sync dir ---
-    CodSync.gitCmd(["init", "-b", "main", str(team_sync_dir)])
-    _install_sqlite_merge_driver(team_sync_dir)
+    # --- Git commit the DB changes ---
     CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
     CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Joined team: {team_name}"])
 
-    return {"team_name": team_name, "member_id_hex": acceptor_member_id.hex()}
+    # --- Push to acceptor's cloud ---
+    acceptor_remote = CodSync.S3Remote(
+        acceptor_cloud["url"], acceptor_bucket,
+        acceptor_cloud["access_key"], acceptor_cloud["secret_key"])
+
+    saved_cwd = os.getcwd()
+    os.chdir(team_sync_dir)
+    try:
+        cod = CodSync.CodSync("acceptor-cloud")
+        cod.gitCmd = CodSync.gitCmd
+        cod.remote = acceptor_remote
+        cod.push_to_remote(["main"])
+    finally:
+        os.chdir(saved_cwd)
+
+    # --- Build and return acceptance response ---
+    acceptance_data = {
+        "invitation_id": invitation_id.hex(),
+        "nonce": nonce.hex(),
+        "acceptor_member_id": acceptor_member_id.hex(),
+        "acceptor_cloud": acceptor_cloud,
+        "acceptor_bucket": acceptor_bucket,
+    }
+    acceptance_json = json.dumps(acceptance_data)
+    acceptance_b64 = base64.b64encode(acceptance_json.encode()).decode()
+
+    return acceptance_b64
 
 
-def _mark_invitation_accepted(root_dir, team_name, invitation_id, nonce,
-                               acceptor_member_id, acceptor_cloud):
-    """Scan local Participants dirs to find and mark the invitation as accepted."""
+def complete_invitation_acceptance(root_dir, participant_hex, team_name, acceptance_b64):
+    """Complete an invitation acceptance (inviter side).
+
+    Decodes the acceptance response, validates it against the invitation row,
+    and adds the acceptor as a member + peer in the inviter's team DB.
+    """
     root_dir = pathlib.Path(root_dir)
-    participants_dir = root_dir / "Participants"
+    participant_dir = root_dir / "Participants" / participant_hex
 
-    for participant_dir in participants_dir.iterdir():
-        team_db_path = participant_dir / team_name / "Sync" / "core.db"
-        if not team_db_path.exists():
-            continue
+    # Decode acceptance response
+    acceptance_json = base64.b64decode(acceptance_b64).decode()
+    acceptance = json.loads(acceptance_json)
+    invitation_id = bytes.fromhex(acceptance["invitation_id"])
+    nonce = bytes.fromhex(acceptance["nonce"])
+    acceptor_member_id = bytes.fromhex(acceptance["acceptor_member_id"])
+    acceptor_cloud = acceptance["acceptor_cloud"]
+    acceptor_bucket = acceptance["acceptor_bucket"]
 
-        engine = create_engine(f"sqlite:///{team_db_path}")
-        found = False
-        with engine.begin() as conn:
-            row = conn.execute(
-                text("SELECT nonce, status FROM invitation WHERE id = :id"),
-                {"id": invitation_id}
-            ).fetchone()
+    # Find and validate the invitation in the inviter's team DB
+    team_db_path = participant_dir / team_name / "Sync" / "core.db"
+    engine = create_engine(f"sqlite:///{team_db_path}")
 
-            if row is None:
-                engine.dispose()
-                continue
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT nonce, status FROM invitation WHERE id = :id"),
+            {"id": invitation_id}
+        ).fetchone()
 
-            # Found the invitation
-            if row[1] != "pending":
-                engine.dispose()
-                raise ValueError(f"Invitation is not pending (status: {row[1]})")
-            if row[0] != nonce:
-                engine.dispose()
-                raise ValueError("Nonce mismatch")
+        if row is None:
+            engine.dispose()
+            raise ValueError("Invitation not found")
 
-            now = datetime.now(timezone.utc).isoformat()
-            conn.execute(text(
-                "UPDATE invitation SET status='accepted', accepted_at=:now, "
-                "accepted_by=:member_id, acceptor_protocol=:protocol, "
-                "acceptor_url=:url, acceptor_access_key=:access_key, "
-                "acceptor_secret_key=:secret_key "
-                "WHERE id = :id"
-            ), {
-                "id": invitation_id,
-                "now": now,
-                "member_id": acceptor_member_id,
-                "protocol": acceptor_cloud["protocol"],
-                "url": acceptor_cloud["url"],
-                "access_key": acceptor_cloud.get("access_key"),
-                "secret_key": acceptor_cloud.get("secret_key"),
-            })
+        if row[1] != "pending":
+            engine.dispose()
+            raise ValueError(f"Invitation is not pending (status: {row[1]})")
+        if row[0] != nonce:
+            engine.dispose()
+            raise ValueError("Nonce mismatch")
 
-            # Add acceptor as member + peer in inviter's team DB
-            conn.execute(text("INSERT INTO member (id) VALUES (:id)"),
-                         {"id": acceptor_member_id})
-            conn.execute(text(
-                "INSERT INTO peer (id, member_id, protocol, url, access_key, secret_key) "
-                "VALUES (:id, :member_id, :protocol, :url, :access_key, :secret_key)"
-            ), {
-                "id": uuid7(),
-                "member_id": acceptor_member_id,
-                "protocol": acceptor_cloud["protocol"],
-                "url": acceptor_cloud["url"],
-                "access_key": acceptor_cloud.get("access_key"),
-                "secret_key": acceptor_cloud.get("secret_key"),
-            })
-            found = True
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(text(
+            "UPDATE invitation SET status='accepted', accepted_at=:now, "
+            "accepted_by=:member_id, acceptor_protocol=:protocol, "
+            "acceptor_url=:url, acceptor_access_key=:access_key, "
+            "acceptor_secret_key=:secret_key "
+            "WHERE id = :id"
+        ), {
+            "id": invitation_id,
+            "now": now,
+            "member_id": acceptor_member_id,
+            "protocol": acceptor_cloud["protocol"],
+            "url": acceptor_cloud["url"],
+            "access_key": acceptor_cloud.get("access_key"),
+            "secret_key": acceptor_cloud.get("secret_key"),
+        })
 
-        # Dispose engine to release file locks before git operations
-        engine.dispose()
+        # Add acceptor as member + peer in inviter's team DB
+        conn.execute(text("INSERT INTO member (id) VALUES (:id)"),
+                     {"id": acceptor_member_id})
+        conn.execute(text(
+            "INSERT INTO peer (id, member_id, protocol, url, access_key, secret_key) "
+            "VALUES (:id, :member_id, :protocol, :url, :access_key, :secret_key)"
+        ), {
+            "id": uuid7(),
+            "member_id": acceptor_member_id,
+            "protocol": acceptor_cloud["protocol"],
+            "url": acceptor_cloud["url"],
+            "access_key": acceptor_cloud.get("access_key"),
+            "secret_key": acceptor_cloud.get("secret_key"),
+        })
 
-        if found:
-            team_sync_dir = participant_dir / team_name / "Sync"
-            CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-            CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m",
-                            f"Accepted invitation"])
-            return
+    # Dispose engine to release file locks before git operations
+    engine.dispose()
 
-    raise ValueError("Invitation not found in any participant's team DB")
+    team_sync_dir = participant_dir / team_name / "Sync"
+    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m",
+                    f"Accepted invitation"])
 
 
 def add_notification_service(root_dir, participant_hex, protocol, url):

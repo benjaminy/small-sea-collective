@@ -1,28 +1,27 @@
+import json
+import base64
+import os
 import sqlite3
 import pathlib
 import subprocess
 
 import pytest
 
+import cod_sync.protocol as CS
+
 from small_sea_team_manager.provisioning import (
     create_new_participant, create_team,
-    create_invitation, accept_invitation, list_invitations,
+    create_invitation, accept_invitation, complete_invitation_acceptance,
+    list_invitations,
 )
 
 
-ALICE_CLOUD = {
-    "protocol": "s3",
-    "url": "http://localhost:9000/alice-bucket",
-    "access_key": "alice-key",
-    "secret_key": "alice-secret",
-}
-
-BOB_CLOUD = {
-    "protocol": "s3",
-    "url": "http://localhost:9000/bob-bucket",
-    "access_key": "bob-key",
-    "secret_key": "bob-secret",
-}
+def _make_cod_sync(repo_dir, remote_name):
+    """Create a CodSync wired to a specific repo directory."""
+    os.chdir(repo_dir)
+    cod = CS.CodSync(remote_name)
+    cod.gitCmd = CS.gitCmd
+    return cod
 
 
 def test_create_invitation(playground_dir):
@@ -31,7 +30,13 @@ def test_create_invitation(playground_dir):
     alice_hex = create_new_participant(root, "Alice")
     create_team(root, alice_hex, "ProjectX")
 
-    token = create_invitation(root, alice_hex, "ProjectX", ALICE_CLOUD, invitee_label="Bob")
+    alice_cloud = {
+        "protocol": "s3",
+        "url": "http://localhost:9000",
+        "access_key": "alice-key",
+        "secret_key": "alice-secret",
+    }
+    token = create_invitation(root, alice_hex, "ProjectX", alice_cloud, invitee_label="Bob")
     assert isinstance(token, str)
     assert len(token) > 0
 
@@ -42,34 +47,108 @@ def test_create_invitation(playground_dir):
     assert invitations[0]["invitee_label"] == "Bob"
 
 
-def test_full_invitation_flow(playground_dir):
+def test_create_invitation_includes_bucket(playground_dir):
     root = pathlib.Path(playground_dir)
 
-    # Alice creates a team
     alice_hex = create_new_participant(root, "Alice")
-    team_result = create_team(root, alice_hex, "ProjectX")
+    create_team(root, alice_hex, "ProjectX")
+
+    alice_cloud = {
+        "protocol": "s3",
+        "url": "http://localhost:9000",
+        "access_key": "alice-key",
+        "secret_key": "alice-secret",
+    }
+    token_b64 = create_invitation(root, alice_hex, "ProjectX", alice_cloud)
+    token_json = base64.b64decode(token_b64).decode()
+    token = json.loads(token_json)
+
+    assert "inviter_bucket" in token
+    assert token["inviter_bucket"].startswith("ss-")
+    assert len(token["inviter_bucket"]) == 3 + 16  # "ss-" + 16 hex chars
+
+
+def test_full_invitation_flow(playground_dir, minio_server_gen):
+    """Full decentralized invitation flow with separate root dirs and MinIO."""
+    minio = minio_server_gen(port=19100)
+
+    alice_root = pathlib.Path(playground_dir) / "alice-root"
+    bob_root = pathlib.Path(playground_dir) / "bob-root"
+    alice_root.mkdir()
+    bob_root.mkdir()
+
+    # Alice creates participant + team
+    alice_hex = create_new_participant(alice_root, "Alice")
+    team_result = create_team(alice_root, alice_hex, "ProjectX")
     alice_member_id_hex = team_result["member_id_hex"]
 
-    # Alice creates an invitation
-    token = create_invitation(root, alice_hex, "ProjectX", ALICE_CLOUD, invitee_label="Bob")
+    # Alice's cloud info
+    alice_bucket = "alice-team-bucket"
+    alice_cloud = {
+        "protocol": "s3",
+        "url": minio["endpoint"],
+        "access_key": minio["access_key"],
+        "secret_key": minio["secret_key"],
+    }
 
-    # Bob accepts the invitation
-    bob_hex = create_new_participant(root, "Bob")
-    result = accept_invitation(root, bob_hex, token, BOB_CLOUD)
-    assert result["team_name"] == "ProjectX"
-    bob_member_id_hex = result["member_id_hex"]
+    # Alice pushes team repo to MinIO
+    alice_team_sync = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync"
+    alice_remote = CS.S3Remote(
+        minio["endpoint"], alice_bucket,
+        minio["access_key"], minio["secret_key"])
+    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
+    cod_alice.remote = alice_remote
+    cod_alice.push_to_remote(["main"])
 
-    # Bob's member ID should be a fresh UUIDv7 (not his participant ID)
+    # Alice creates invitation (token includes bucket info)
+    token = create_invitation(alice_root, alice_hex, "ProjectX", alice_cloud, invitee_label="Bob")
+
+    # Verify token has inviter_bucket
+    token_data = json.loads(base64.b64decode(token).decode())
+    assert "inviter_bucket" in token_data
+
+    # Patch the token to use alice_bucket (since the auto-derived bucket differs)
+    token_data["inviter_bucket"] = alice_bucket
+    token = base64.b64encode(json.dumps(token_data).encode()).decode()
+
+    # Re-push after invitation commit
+    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
+    cod_alice.remote = alice_remote
+    cod_alice.push_to_remote(["main"])
+
+    # Bob creates participant
+    bob_hex = create_new_participant(bob_root, "Bob")
+    bob_bucket = "bob-team-bucket"
+    bob_cloud = {
+        "protocol": "s3",
+        "url": minio["endpoint"],
+        "access_key": minio["access_key"],
+        "secret_key": minio["secret_key"],
+    }
+
+    # Bob accepts invitation (clones from Alice's MinIO, pushes to his bucket)
+    acceptance_b64 = accept_invitation(
+        bob_root, bob_hex, token, bob_cloud, bob_bucket)
+    assert isinstance(acceptance_b64, str)
+
+    # Decode acceptance to get Bob's member ID
+    acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
+    bob_member_id_hex = acceptance["acceptor_member_id"]
+
+    # Bob's member ID should be a fresh UUIDv7
     assert bob_member_id_hex != bob_hex
     assert len(bob_member_id_hex) == 32
 
+    # Alice completes the acceptance
+    complete_invitation_acceptance(alice_root, alice_hex, "ProjectX", acceptance_b64)
+
     # --- Verify Alice's invitation is accepted ---
-    invitations = list_invitations(root, alice_hex, "ProjectX")
+    invitations = list_invitations(alice_root, alice_hex, "ProjectX")
     assert len(invitations) == 1
     assert invitations[0]["status"] == "accepted"
 
     # --- Verify Alice's team DB has 2 members and a peer (Bob) ---
-    alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
+    alice_team_db = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     aconn = sqlite3.connect(str(alice_team_db))
     members = aconn.execute("SELECT id FROM member").fetchall()
     assert len(members) == 2
@@ -81,11 +160,11 @@ def test_full_invitation_flow(playground_dir):
     assert len(peers) == 1
     assert peers[0][0] == bytes.fromhex(bob_member_id_hex)
     assert peers[0][1] == "s3"
-    assert peers[0][2] == BOB_CLOUD["url"]
+    assert peers[0][2] == bob_cloud["url"]
     aconn.close()
 
     # --- Verify Bob's team DB has 2 members and a peer (Alice) ---
-    bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
+    bob_team_db = bob_root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
     members = bconn.execute("SELECT id FROM member").fetchall()
     assert len(members) == 2
@@ -97,11 +176,11 @@ def test_full_invitation_flow(playground_dir):
     assert len(peers) == 1
     assert peers[0][0] == bytes.fromhex(alice_member_id_hex)
     assert peers[0][1] == "s3"
-    assert peers[0][2] == ALICE_CLOUD["url"]
+    assert peers[0][2] == alice_cloud["url"]
     bconn.close()
 
     # --- Verify Bob's NoteToSelf has the team with correct self_in_team ---
-    bob_user_db = root / "Participants" / bob_hex / "NoteToSelf" / "Sync" / "core.db"
+    bob_user_db = bob_root / "Participants" / bob_hex / "NoteToSelf" / "Sync" / "core.db"
     buconn = sqlite3.connect(str(bob_user_db))
     buconn.row_factory = sqlite3.Row
     teams = buconn.execute("SELECT * FROM team WHERE name = 'ProjectX'").fetchall()
@@ -109,8 +188,8 @@ def test_full_invitation_flow(playground_dir):
     assert teams[0]["self_in_team"] == bytes.fromhex(bob_member_id_hex)
     buconn.close()
 
-    # --- Verify Bob's team dir has a git repo ---
-    bob_sync = root / "Participants" / bob_hex / "ProjectX" / "Sync"
+    # --- Verify Bob's team dir has a git repo with correct commit ---
+    bob_sync = bob_root / "Participants" / bob_hex / "ProjectX" / "Sync"
     result = subprocess.run(
         ["git", "-C", str(bob_sync), "log", "--oneline"],
         capture_output=True, text=True)
@@ -118,23 +197,80 @@ def test_full_invitation_flow(playground_dir):
     assert "Joined team: ProjectX" in result.stdout
 
 
-def test_double_accept_rejected(playground_dir):
-    root = pathlib.Path(playground_dir)
+def test_double_accept_rejected(playground_dir, minio_server_gen):
+    """Second acceptance of the same invitation should fail."""
+    minio = minio_server_gen(port=19200)
 
-    alice_hex = create_new_participant(root, "Alice")
-    create_team(root, alice_hex, "ProjectX")
-    token = create_invitation(root, alice_hex, "ProjectX", ALICE_CLOUD)
+    alice_root = pathlib.Path(playground_dir) / "alice-root"
+    bob_root = pathlib.Path(playground_dir) / "bob-root"
+    carol_root = pathlib.Path(playground_dir) / "carol-root"
+    alice_root.mkdir()
+    bob_root.mkdir()
+    carol_root.mkdir()
 
-    # First accept succeeds
-    bob_hex = create_new_participant(root, "Bob")
-    accept_invitation(root, bob_hex, token, BOB_CLOUD)
+    alice_hex = create_new_participant(alice_root, "Alice")
+    create_team(alice_root, alice_hex, "ProjectX")
 
-    # Second accept fails
-    carol_hex = create_new_participant(root, "Carol")
+    alice_bucket = "alice-double-bucket"
+    alice_cloud = {
+        "protocol": "s3",
+        "url": minio["endpoint"],
+        "access_key": minio["access_key"],
+        "secret_key": minio["secret_key"],
+    }
+
+    # Push team repo to MinIO
+    alice_team_sync = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync"
+    alice_remote = CS.S3Remote(
+        minio["endpoint"], alice_bucket,
+        minio["access_key"], minio["secret_key"])
+    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
+    cod_alice.remote = alice_remote
+    cod_alice.push_to_remote(["main"])
+
+    token = create_invitation(alice_root, alice_hex, "ProjectX", alice_cloud)
+
+    # Patch token with correct bucket
+    token_data = json.loads(base64.b64decode(token).decode())
+    token_data["inviter_bucket"] = alice_bucket
+    token = base64.b64encode(json.dumps(token_data).encode()).decode()
+
+    # Re-push after invitation commit
+    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
+    cod_alice.remote = alice_remote
+    cod_alice.push_to_remote(["main"])
+
+    # Bob accepts
+    bob_hex = create_new_participant(bob_root, "Bob")
+    bob_bucket = "bob-double-bucket"
+    bob_cloud = {
+        "protocol": "s3",
+        "url": minio["endpoint"],
+        "access_key": minio["access_key"],
+        "secret_key": minio["secret_key"],
+    }
+    acceptance_b64 = accept_invitation(bob_root, bob_hex, token, bob_cloud, bob_bucket)
+
+    # Alice completes Bob's acceptance
+    complete_invitation_acceptance(alice_root, alice_hex, "ProjectX", acceptance_b64)
+
+    # Carol tries to accept the same invitation — but complete should fail
+    carol_hex = create_new_participant(carol_root, "Carol")
+    carol_bucket = "carol-double-bucket"
+    carol_cloud = {
+        "protocol": "s3",
+        "url": minio["endpoint"],
+        "access_key": minio["access_key"],
+        "secret_key": minio["secret_key"],
+    }
+
+    # Re-push so Carol can clone the latest
+    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
+    cod_alice.remote = alice_remote
+    cod_alice.push_to_remote(["main"])
+
+    carol_acceptance_b64 = accept_invitation(
+        carol_root, carol_hex, token, carol_cloud, carol_bucket)
+
     with pytest.raises(ValueError, match="not pending"):
-        accept_invitation(root, carol_hex, token, {
-            "protocol": "s3",
-            "url": "http://localhost:9000/carol-bucket",
-            "access_key": "carol-key",
-            "secret_key": "carol-secret",
-        })
+        complete_invitation_acceptance(alice_root, alice_hex, "ProjectX", carol_acceptance_b64)

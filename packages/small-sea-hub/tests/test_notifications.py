@@ -1,28 +1,78 @@
+import json
+import base64
+import os
 import time
 
 from fastapi.testclient import TestClient
 
+import cod_sync.protocol as CS
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
 import small_sea_team_manager.provisioning as Provisioning
 
 
-def test_notification_roundtrip(playground_dir, ntfy_server):
+def _make_cod_sync(repo_dir, remote_name):
+    """Create a CodSync wired to a specific repo directory."""
+    os.chdir(repo_dir)
+    cod = CS.CodSync(remote_name)
+    cod.gitCmd = CS.gitCmd
+    return cod
+
+
+def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     """Two participants on one Hub: one sends a notification, the other receives it."""
+    import pathlib
+
+    minio = minio_server_gen(port=19300)
 
     # -- Set up participants --
     alice_hex = Provisioning.create_new_participant(playground_dir, "Alice")
     bob_hex = Provisioning.create_new_participant(playground_dir, "Bob")
 
     # -- Create team for Alice, invite Bob --
-    alice_cloud = {"protocol": "s3", "url": "http://fake", "access_key": "x", "secret_key": "y"}
-    bob_cloud = {"protocol": "s3", "url": "http://fake", "access_key": "x", "secret_key": "y"}
+    cloud = {
+        "protocol": "s3",
+        "url": minio["endpoint"],
+        "access_key": minio["access_key"],
+        "secret_key": minio["secret_key"],
+    }
+    alice_bucket = "notif-alice-bucket"
+    bob_bucket = "notif-bob-bucket"
 
     team_info = Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+
+    # Push Alice's team repo to MinIO
+    alice_team_sync = (pathlib.Path(playground_dir) / "Participants" /
+                       alice_hex / "ProjectX" / "Sync")
+    alice_remote = CS.S3Remote(
+        minio["endpoint"], alice_bucket,
+        minio["access_key"], minio["secret_key"])
+    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
+    cod_alice.remote = alice_remote
+    cod_alice.push_to_remote(["main"])
+
     token = Provisioning.create_invitation(
         playground_dir, alice_hex, "ProjectX",
-        inviter_cloud=alice_cloud, invitee_label="Bob")
-    Provisioning.accept_invitation(playground_dir, bob_hex, token, acceptor_cloud=bob_cloud)
+        inviter_cloud=cloud, invitee_label="Bob")
+
+    # Patch token with the correct bucket
+    token_data = json.loads(base64.b64decode(token).decode())
+    token_data["inviter_bucket"] = alice_bucket
+    token = base64.b64encode(json.dumps(token_data).encode()).decode()
+
+    # Re-push after invitation commit
+    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
+    cod_alice.remote = alice_remote
+    cod_alice.push_to_remote(["main"])
+
+    # Bob accepts invitation
+    acceptance_b64 = Provisioning.accept_invitation(
+        playground_dir, bob_hex, token,
+        acceptor_cloud=cloud, acceptor_bucket=bob_bucket)
+
+    # Alice completes the acceptance
+    Provisioning.complete_invitation_acceptance(
+        playground_dir, alice_hex, "ProjectX", acceptance_b64)
 
     # -- Single Hub backend --
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)

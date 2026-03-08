@@ -162,26 +162,46 @@ class CodSync:
             print( f"CLONE SADNESS" )
             return -1
 
-        [ link_ids, branches, bundles, supp_data ] = latest_link
-        if link_ids[ 0 ] != "initial-snapshot":
-            print( f"CLONE MORE THAN INIT {link_ids[ 0 ]}" )
-            return -1
+        # Walk back through the link chain to collect all links from initial to latest
+        chain = [ latest_link ]
+        current = latest_link
+        while current[ 0 ][ 0 ] != "initial-snapshot":
+            prev_link_uid = current[ 0 ][ 1 ]
+            prev_link = self.remote.get_link( prev_link_uid )
+            if prev_link is None:
+                print( f"CLONE BROKEN CHAIN at {prev_link_uid}" )
+                return -1
+            chain.append( prev_link )
+            current = prev_link
 
-        if len( bundles ) != 1:
-            print( f"CLONE BS {bundles}" )
-            return -1
+        # chain is [latest, ..., initial] — reverse to get [initial, ..., latest]
+        chain.reverse()
 
-        bundle = bundles[ 0 ]
-        bundle_uid = bundle[ 0 ]
+        # Clone from the initial snapshot bundle
+        initial_link = chain[ 0 ]
+        if len( initial_link[ 2 ] ) != 1:
+            print( f"CLONE BS {initial_link[ 2 ]}" )
+            return -1
+        initial_bundle_uid = initial_link[ 2 ][ 0 ][ 0 ]
 
         with tempfile.TemporaryDirectory() as bundle_temp_dir:
             bundle_path = f"{bundle_temp_dir}/clone.bundle"
-            self.remote.download_bundle( bundle_uid, bundle_path )
+            self.remote.download_bundle( initial_bundle_uid, bundle_path )
             self.gitCmd( [ "clone", bundle_path, "." ] )
 
         self.gitCmd( [ "checkout", "main" ] )
 
         self.add_remote( url, [] )
+
+        # Apply remaining incremental bundles
+        for link in chain[ 1: ]:
+            result = self.fetch_chain( link, [ "main" ], True )
+            if 0 != result:
+                return result
+
+            [ tmp_remote, _ ] = self.bundle_tmp()
+            self.gitCmd( [ "merge", f"{tmp_remote}/main" ] )
+
         print( f"CLONE WORKED!!!" )
         return 0
 
@@ -321,6 +341,27 @@ class CodSyncRemote:
             host_port = remainder[ :slash_pos ]
             session_hex = remainder[ slash_pos + 1: ]
             return SmallSeaRemote( session_hex, base_url=f"http://{host_port}" )
+
+        if url.startswith( "s3://" ):
+            remainder = url[ 5: ]
+            # format: access_key:secret_key@host:port/bucket_name
+            at_pos = remainder.find( "@" )
+            if at_pos < 0:
+                raise ValueError( f"Invalid s3 URL, expected s3://access_key:secret_key@host:port/bucket_name, got '{url}'" )
+            creds = remainder[ :at_pos ]
+            host_and_bucket = remainder[ at_pos + 1: ]
+            colon_pos = creds.find( ":" )
+            if colon_pos < 0:
+                raise ValueError( f"Invalid s3 URL credentials, expected access_key:secret_key, got '{creds}'" )
+            access_key = creds[ :colon_pos ]
+            secret_key = creds[ colon_pos + 1: ]
+            slash_pos = host_and_bucket.find( "/" )
+            if slash_pos < 0:
+                raise ValueError( f"Invalid s3 URL, expected host:port/bucket_name, got '{host_and_bucket}'" )
+            host_port = host_and_bucket[ :slash_pos ]
+            bucket_name = host_and_bucket[ slash_pos + 1: ]
+            endpoint_url = f"http://{host_port}"
+            return S3Remote( endpoint_url, bucket_name, access_key, secret_key )
 
         raise NotImplementedError( f"Unsupported Cod Sync cloud protocol. '{url}'" )
 
@@ -465,6 +506,66 @@ class SmallSeaRemote( CodSyncRemote ):
             raise RuntimeError( f"Failed to download bundle B-{bundle_uid}.bundle" )
         with open( local_bundle_path, "wb" ) as f:
             f.write( data )
+
+
+class S3Remote( CodSyncRemote ):
+    """S3-backed cloud storage remote (works with MinIO or AWS S3)."""
+
+    def __init__( self, endpoint_url, bucket_name, access_key, secret_key ):
+        import boto3
+        from botocore.config import Config
+
+        self.bucket_name = bucket_name
+        self.s3 = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config( signature_version="s3v4" ),
+            region_name="us-east-1",
+        )
+        # Ensure bucket exists
+        try:
+            self.s3.head_bucket( Bucket=bucket_name )
+        except Exception:
+            self.s3.create_bucket( Bucket=bucket_name )
+
+
+    def upload_latest_link( self, link_uid, blob, bundle_uid, local_bundle_path ):
+        # 1. Upload bundle
+        self.s3.upload_file( local_bundle_path, self.bucket_name, f"B-{bundle_uid}.bundle" )
+
+        # 2. Serialize link YAML
+        link_yaml = yaml.dump( blob, default_flow_style=False ).encode( "utf-8" )
+
+        # 3. Upload latest-link.yaml and L-{link_uid}.yaml
+        self.s3.put_object( Bucket=self.bucket_name, Key="latest-link.yaml", Body=link_yaml )
+        self.s3.put_object( Bucket=self.bucket_name, Key=f"L-{link_uid}.yaml", Body=link_yaml )
+
+
+    def get_link( self, uid ):
+        if uid == "latest-link":
+            key = "latest-link.yaml"
+        else:
+            key = f"L-{uid}.yaml"
+
+        try:
+            resp = self.s3.get_object( Bucket=self.bucket_name, Key=key )
+            return self.read_link_blob( io.BytesIO( resp[ "Body" ].read() ) )
+        except self.s3.exceptions.NoSuchKey:
+            return None
+        except Exception as e:
+            if "NoSuchKey" in str( e ) or "Not Found" in str( e ):
+                return None
+            raise
+
+
+    def get_latest_link( self ):
+        return self.get_link( "latest-link" )
+
+
+    def download_bundle( self, bundle_uid, local_bundle_path ):
+        self.s3.download_file( self.bucket_name, f"B-{bundle_uid}.bundle", local_bundle_path )
 
 
 if __name__ == "__main__":
