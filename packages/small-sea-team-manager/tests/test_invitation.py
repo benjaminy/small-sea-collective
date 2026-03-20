@@ -147,7 +147,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert len(invitations) == 1
     assert invitations[0]["status"] == "accepted"
 
-    # --- Verify Alice's team DB has 2 members and a peer (Bob) ---
+    # --- Verify Alice's team DB has 2 members, a peer (Bob), and 2 station_roles ---
     alice_team_db = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     aconn = sqlite3.connect(str(alice_team_db))
     members = aconn.execute("SELECT id FROM member").fetchall()
@@ -161,6 +161,13 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert peers[0][0] == bytes.fromhex(bob_member_id_hex)
     assert peers[0][1] == "s3"
     assert peers[0][2] == bob_cloud["url"]
+
+    # Both Alice and Bob should have read-write roles
+    roles = aconn.execute("SELECT member_id, role FROM station_role").fetchall()
+    assert len(roles) == 2
+    role_map = {row[0].hex(): row[1] for row in roles}
+    assert role_map[alice_member_id_hex] == "read-write"
+    assert role_map[bob_member_id_hex] == "read-write"
     aconn.close()
 
     # --- Verify Bob's team DB has 2 members and a peer (Alice) ---
@@ -179,13 +186,21 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert peers[0][2] == alice_cloud["url"]
     bconn.close()
 
-    # --- Verify Bob's NoteToSelf has the team with correct self_in_team ---
+    # --- Verify Bob's NoteToSelf has the team pointer but NOT a TeamAppStation for ProjectX ---
     bob_user_db = bob_root / "Participants" / bob_hex / "NoteToSelf" / "Sync" / "core.db"
     buconn = sqlite3.connect(str(bob_user_db))
     buconn.row_factory = sqlite3.Row
     teams = buconn.execute("SELECT * FROM team WHERE name = 'ProjectX'").fetchall()
     assert len(teams) == 1
     assert teams[0]["self_in_team"] == bytes.fromhex(bob_member_id_hex)
+
+    # TeamAppStation for ProjectX must NOT be in NoteToSelf
+    other_stations = buconn.execute(
+        "SELECT tas.* FROM team_app_station tas "
+        "JOIN team t ON tas.team_id = t.id "
+        "WHERE t.name = 'ProjectX'"
+    ).fetchall()
+    assert len(other_stations) == 0
     buconn.close()
 
     # --- Verify Bob's team dir has a git repo with correct commit ---

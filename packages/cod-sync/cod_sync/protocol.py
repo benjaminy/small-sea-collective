@@ -603,7 +603,9 @@ class S3Remote( CodSyncRemote ):
             self.s3.create_bucket( Bucket=bucket_name )
 
 
-    def upload_latest_link( self, link_uid, blob, bundle_uid, local_bundle_path ):
+    def upload_latest_link( self, link_uid, blob, bundle_uid, local_bundle_path, expected_etag=None ):
+        # TODO: S3Remote is slated for elimination (all cloud access should go through Hub).
+        # expected_etag is accepted for interface compatibility but not enforced here.
         # 1. Upload bundle
         self.s3.upload_file( local_bundle_path, self.bucket_name, f"B-{bundle_uid}.bundle" )
 
@@ -623,7 +625,11 @@ class S3Remote( CodSyncRemote ):
 
         try:
             resp = self.s3.get_object( Bucket=self.bucket_name, Key=key )
-            return self.read_link_blob( io.BytesIO( resp[ "Body" ].read() ) )
+            link = self.read_link_blob( io.BytesIO( resp[ "Body" ].read() ) )
+            if uid == "latest-link":
+                etag = resp.get( "ETag" )
+                return ( link, etag )
+            return link
         except self.s3.exceptions.NoSuchKey:
             return None
         except Exception as e:

@@ -14,6 +14,27 @@ CREATE TABLE IF NOT EXISTS member_cloud (
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS app (
+    id BLOB PRIMARY KEY,
+    name TEXT NOT NULL
+);
+
+-- team_id is intentionally absent here: in a team DB the team is implicit.
+CREATE TABLE IF NOT EXISTS team_app_station (
+    id BLOB PRIMARY KEY,
+    app_id BLOB NOT NULL,
+    FOREIGN KEY (app_id) REFERENCES app(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS station_role (
+    id BLOB PRIMARY KEY,
+    member_id BLOB NOT NULL,
+    station_id BLOB NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('read-only', 'read-write')),
+    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE,
+    FOREIGN KEY (station_id) REFERENCES team_app_station(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS invitation (
     id BLOB PRIMARY KEY,
     nonce BLOB NOT NULL,

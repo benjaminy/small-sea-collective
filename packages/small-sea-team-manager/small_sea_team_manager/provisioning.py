@@ -173,7 +173,7 @@ class MemberCloud(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 45
+USER_SCHEMA_VERSION = 46
 
 
 # ---- Provisioning functions ----
@@ -251,6 +251,8 @@ def _migrate_user_db(conn, from_version):
             "protocol TEXT NOT NULL, "
             "url TEXT NOT NULL)"
         ))
+    if from_version < 46:
+        pass  # team DB schema updated (app, team_app_station, station_role); NoteToSelf schema unchanged
 
 
 def _initialize_core_note_to_self_schema(conn):
@@ -346,21 +348,17 @@ def create_team(root_dir, participant_hex, team_name):
     member_id = uuid7()
 
     # --- Update the user's NoteToSelf core.db ---
+    # Only a lightweight membership pointer goes here; structural team data
+    # (App, TeamAppStation, StationRole) lives in the team's own DB.
     user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
     engine = create_engine(f"sqlite:///{user_db_path}")
 
     with Session(engine) as session:
-        app_row = session.query(App).filter_by(name="SmallSeaCollectiveCore").one()
-
         team_row = Team(
             id=team_id,
             name=team_name,
             self_in_team=member_id)
         session.add(team_row)
-        session.flush()
-
-        team_app = TeamAppStation(id=uuid7(), team_id=team_row.id, app_id=app_row.id)
-        session.add(team_app)
         session.commit()
 
     # --- Create team directory and its core.db ---
@@ -370,10 +368,20 @@ def create_team(root_dir, participant_hex, team_name):
     team_db_path = team_sync_dir / "core.db"
     team_engine = _init_team_db(team_db_path)
 
-    # Add the creator as the first member (fresh per-team ID)
+    # Populate the team DB: creator member, app, station, and creator's role.
+    app_id = uuid7()
+    station_id = uuid7()
     with team_engine.begin() as conn:
         conn.execute(text("INSERT INTO member (id) VALUES (:id)"),
                      {"id": member_id})
+        conn.execute(text("INSERT INTO app (id, name) VALUES (:id, :name)"),
+                     {"id": app_id, "name": "SmallSeaCollectiveCore"})
+        conn.execute(text("INSERT INTO team_app_station (id, app_id) VALUES (:id, :app_id)"),
+                     {"id": station_id, "app_id": app_id})
+        conn.execute(text(
+            "INSERT INTO station_role (id, member_id, station_id, role) "
+            "VALUES (:id, :mid, :sid, :role)"
+        ), {"id": uuid7(), "mid": member_id, "sid": station_id, "role": "read-write"})
 
     # --- Git init ---
     CodSync.gitCmd(["init", "-b", "main", str(team_sync_dir)])
@@ -381,7 +389,7 @@ def create_team(root_dir, participant_hex, team_name):
     CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
     CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"New team: {team_name}"])
 
-    return {"team_id_hex": team_id.hex(), "member_id_hex": member_id.hex()}
+    return {"team_id_hex": team_id.hex(), "member_id_hex": member_id.hex(), "station_id_hex": station_id.hex()}
 
 
 def create_invitation(root_dir, participant_hex, team_name, inviter_cloud, invitee_label=None):
@@ -401,19 +409,15 @@ def create_invitation(root_dir, participant_hex, team_name, inviter_cloud, invit
         row = conn.execute(text("SELECT id FROM member LIMIT 1")).fetchone()
         inviter_member_id = row[0]
 
-    # Look up the station ID for the team (to derive the bucket name)
-    user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
-    user_engine = create_engine(f"sqlite:///{user_db_path}")
-
-    with Session(user_engine) as session:
-        team_row = session.query(Team).filter_by(name=team_name).one()
-        team_id = team_row.id
-        app_row = session.query(App).filter_by(name="SmallSeaCollectiveCore").one()
-        station_row = session.query(TeamAppStation).filter_by(
-            team_id=team_id, app_id=app_row.id).one()
-        station_id = station_row.id
-
-    station_id_hex = station_id.hex()
+    # Look up the station ID from the team DB (to derive the bucket name).
+    # Station structural data lives in the team DB, not NoteToSelf.
+    with team_engine.begin() as conn:
+        station_row = conn.execute(
+            text("SELECT id FROM team_app_station LIMIT 1")
+        ).fetchone()
+    if station_row is None:
+        raise ValueError(f"No station found in team DB for '{team_name}'")
+    station_id_hex = station_row[0].hex()
     inviter_bucket = f"ss-{station_id_hex[:16]}"
 
     # Create invitation row
@@ -526,18 +530,16 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
     # --- Install sqlite merge driver ---
     _install_sqlite_merge_driver(team_sync_dir)
 
-    # --- Add team to acceptor's NoteToSelf ---
+    # --- Add team membership pointer to acceptor's NoteToSelf ---
+    # Only a lightweight Team reference goes in NoteToSelf; structural data
+    # (App, TeamAppStation, StationRole) lives in the team DB, which was cloned above.
     user_db_path = acceptor_dir / "NoteToSelf" / "Sync" / "core.db"
     user_engine = create_engine(f"sqlite:///{user_db_path}")
 
     with Session(user_engine) as session:
-        app_row = session.query(App).filter_by(name="SmallSeaCollectiveCore").one()
         team_id = uuid7()
         team_row = Team(id=team_id, name=team_name, self_in_team=acceptor_member_id)
         session.add(team_row)
-        session.flush()
-        team_app = TeamAppStation(id=uuid7(), team_id=team_row.id, app_id=app_row.id)
-        session.add(team_app)
         session.commit()
 
     # --- Git commit the DB changes ---
@@ -643,6 +645,17 @@ def complete_invitation_acceptance(root_dir, participant_hex, team_name, accepta
             "access_key": acceptor_cloud.get("access_key"),
             "secret_key": acceptor_cloud.get("secret_key"),
         })
+
+        # Grant the acceptor read-write on all stations (default).
+        # The inviter (admin) can change this later.
+        station_row = conn.execute(
+            text("SELECT id FROM team_app_station LIMIT 1")
+        ).fetchone()
+        if station_row is not None:
+            conn.execute(text(
+                "INSERT INTO station_role (id, member_id, station_id, role) "
+                "VALUES (:id, :mid, :sid, :role)"
+            ), {"id": uuid7(), "mid": acceptor_member_id, "sid": station_row[0], "role": "read-write"})
 
     # Dispose engine to release file locks before git operations
     engine.dispose()

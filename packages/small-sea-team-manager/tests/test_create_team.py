@@ -20,7 +20,7 @@ def test_create_team(playground_dir):
     # Member ID should be different from participant ID (fresh per-team ID)
     assert member_id_hex != alice_hex
 
-    # --- Verify NoteToSelf core.db has team + team_app_station rows ---
+    # --- Verify NoteToSelf core.db has only a lightweight team membership pointer ---
     user_db = root / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
     conn = sqlite3.connect(str(user_db))
     conn.row_factory = sqlite3.Row
@@ -28,13 +28,15 @@ def test_create_team(playground_dir):
     teams = conn.execute("SELECT * FROM team WHERE name = 'CoolProject'").fetchall()
     assert len(teams) == 1
     assert teams[0]["id"] == bytes.fromhex(team_id_hex)
+    assert teams[0]["self_in_team"] == bytes.fromhex(member_id_hex)
 
-    stations = conn.execute(
+    # TeamAppStation for CoolProject must NOT be in NoteToSelf — it belongs in the team DB.
+    other_team_stations = conn.execute(
         "SELECT tas.* FROM team_app_station tas "
         "JOIN team t ON tas.team_id = t.id "
         "WHERE t.name = 'CoolProject'"
     ).fetchall()
-    assert len(stations) == 1
+    assert len(other_team_stations) == 0
     conn.close()
 
     # --- Verify team directory and its core.db ---
@@ -42,14 +44,30 @@ def test_create_team(playground_dir):
     assert team_db.exists()
 
     tconn = sqlite3.connect(str(team_db))
-    # member table should exist with Alice as first member (fresh per-team ID)
+
+    # member: Alice as first member (fresh per-team ID)
     members = tconn.execute("SELECT * FROM member").fetchall()
     assert len(members) == 1
-    assert members[0][0] == bytes.fromhex(member_id_hex)  # fresh per-team ID, not alice_hex
-    tconn.close()
+    assert members[0][0] == bytes.fromhex(member_id_hex)
 
-    # --- Verify self_in_team matches the member ID ---
-    assert teams[0]["self_in_team"] == bytes.fromhex(member_id_hex)
+    # app + team_app_station live here now
+    apps = tconn.execute("SELECT * FROM app").fetchall()
+    assert len(apps) == 1
+    assert apps[0][1] == "SmallSeaCollectiveCore"
+
+    stations = tconn.execute("SELECT * FROM team_app_station").fetchall()
+    assert len(stations) == 1
+    station_id_hex = result["station_id_hex"]
+    assert stations[0][0] == bytes.fromhex(station_id_hex)
+
+    # Alice has read-write on the station
+    roles = tconn.execute("SELECT member_id, station_id, role FROM station_role").fetchall()
+    assert len(roles) == 1
+    assert roles[0][0] == bytes.fromhex(member_id_hex)
+    assert roles[0][1] == bytes.fromhex(station_id_hex)
+    assert roles[0][2] == "read-write"
+
+    tconn.close()
 
     # --- Verify git repo ---
     team_sync = root / "Participants" / alice_hex / "CoolProject" / "Sync"
