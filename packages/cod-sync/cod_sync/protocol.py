@@ -9,10 +9,17 @@ import pathlib
 import shutil
 import tempfile
 import io
+import hashlib
 import base64
 import requests
 
 program_title = "Cod Sync protocol Git remote helper work-a-like"
+
+COD_SYNC_VERSION = "1.0.0"
+
+class CasConflictError( Exception ):
+    """Raised when a compare-and-swap write fails due to a concurrent update."""
+    pass
 
 def gitCmd( git_params, raise_on_error=True ):
     git_cmd = [ "git" ] + git_params
@@ -105,7 +112,13 @@ class CodSync:
         os.makedirs( path_tmp, exist_ok=True )
         bundle_path_tmp = f"{path_tmp}/B-{bundle_uid}.bundle"
 
-        latest_link = self.remote.get_latest_link()
+        result = self.remote.get_latest_link()
+        if result is None:
+            latest_link = None
+            etag = None
+        else:
+            ( latest_link, etag ) = result
+
         if None == latest_link:
             link_uid = "initial-snapshot"
             link_uid_prev = "initial-snapshot"
@@ -133,7 +146,7 @@ class CodSync:
 
         blob = self.build_link_blob( link_uid, link_uid_prev, bundle_uid, prerequisites )
         print( f"Pushing to Cod Sync clone {link_uid} '{bundle_path_tmp}' {blob}" )
-        return self.remote.upload_latest_link( link_uid, blob, bundle_uid, bundle_path_tmp )
+        return self.remote.upload_latest_link( link_uid, blob, bundle_uid, bundle_path_tmp, expected_etag=etag )
 
     def build_link_blob( self, new_link_uid, prev_link_uid, bundle_uid, prerequisites ):
         link_ids = [ new_link_uid, prev_link_uid ]
@@ -143,7 +156,7 @@ class CodSync:
             branches.append( [ branch, self.get_branch_head_sha( branch ) ] )
         print( f"BRANCHES {branches}" )
         bundles = [ [ bundle_uid, [ "main", prerequisites[ "main" ] ] ] ]
-        supplement = {}
+        supplement = { "cod_version": COD_SYNC_VERSION }
         return [ link_ids, branches, bundles, supplement ]
 
 
@@ -157,7 +170,11 @@ class CodSync:
             return -1
 
         self.remote = CodSyncRemote.init( url )
-        latest_link = self.remote.get_latest_link()
+        result = self.remote.get_latest_link()
+        if result is None:
+            latest_link = None
+        else:
+            ( latest_link, _etag ) = result
         if latest_link == None:
             print( f"CLONE SADNESS" )
             return -1
@@ -208,7 +225,11 @@ class CodSync:
 
     def fetch_from_remote( self, branches ):
         print( f"FETCH {self.remote_name} {self.url} {branches}" )
-        latest_link = self.remote.get_latest_link()
+        result = self.remote.get_latest_link()
+        if result is None:
+            latest_link = None
+        else:
+            ( latest_link, _etag ) = result
 
         if latest_link == None:
             print( f"ERROR: Failed to fetch latest link ({program_title})" )
@@ -377,6 +398,16 @@ class CodSyncRemote:
             supp_data = parsed_data[ 3 ]
         else:
             supp_data = {}
+
+        # Version compatibility check
+        link_version = supp_data.get( "cod_version", "0.0.0" )
+        link_major = int( link_version.split( "." )[ 0 ] )
+        reader_major = int( COD_SYNC_VERSION.split( "." )[ 0 ] )
+        if link_major > reader_major:
+            raise ValueError(
+                f"Link format version {link_version} is incompatible with this reader "
+                f"(supports up to major version {reader_major}). Please upgrade Cod Sync." )
+
         return [ link_ids, branches, bundles, supp_data ]
 
 
@@ -394,11 +425,34 @@ class LocalFolderRemote( CodSyncRemote ):
         self.path = path
 
 
-    def upload_latest_link( self, link_uid, blob, bundle_uid, local_bundle_path ):
+    @staticmethod
+    def _file_etag( path ):
+        """Compute an etag (MD5 hex digest) for a file's content."""
+        h = hashlib.md5()
+        with open( path, "rb" ) as f:
+            for chunk in iter( lambda: f.read( 8192 ), b"" ):
+                h.update( chunk )
+        return h.hexdigest()
+
+    def upload_latest_link( self, link_uid, blob, bundle_uid, local_bundle_path, expected_etag=None ):
         path_bundle = f"{self.path}{os.path.sep}B-{bundle_uid}.bundle"
         shutil.copy( local_bundle_path, path_bundle )
 
         path_latest = f"{self.path}{os.path.sep}latest-link.yaml"
+
+        # CAS check for latest-link.yaml
+        if expected_etag is not None:
+            if not os.path.exists( path_latest ):
+                raise CasConflictError( "expected existing file but latest-link.yaml does not exist" )
+            current_etag = self._file_etag( path_latest )
+            if current_etag != expected_etag:
+                raise CasConflictError(
+                    f"CAS conflict on latest-link.yaml: expected etag {expected_etag}, got {current_etag}" )
+        elif os.path.exists( path_latest ) and expected_etag is None:
+            # First push should not have an etag; subsequent pushes should.
+            # We allow None for backward compat but the caller should pass etags.
+            pass
+
         with open( path_latest, "w", encoding="utf-8" ) as link_strm:
             yaml.dump( blob, link_strm, default_flow_style=False )
 
@@ -418,7 +472,12 @@ class LocalFolderRemote( CodSyncRemote ):
             return None
 
         with open( path_link, "r" ) as link_file_strm:
-            return self.read_link_blob( link_file_strm )
+            link = self.read_link_blob( link_file_strm )
+
+        if uid == "latest-link":
+            etag = self._file_etag( path_link )
+            return ( link, etag )
+        return link
 
 
     def get_latest_link( self ):
@@ -449,12 +508,17 @@ class SmallSeaRemote( CodSyncRemote ):
             self._get = lambda path, **kw: requests.get( f"{base_url}{path}", **kw )
 
 
-    def _upload( self, cloud_path, data_bytes ):
-        resp = self._post( "/cloud_file", json={
+    def _upload( self, cloud_path, data_bytes, expected_etag=None ):
+        payload = {
             "session": self.session_hex,
             "path": cloud_path,
             "data": base64.b64encode( data_bytes ).decode(),
-        })
+        }
+        if expected_etag is not None:
+            payload[ "expected_etag" ] = expected_etag
+        resp = self._post( "/cloud_file", json=payload )
+        if resp.status_code == 409:
+            raise CasConflictError( f"CAS conflict uploading {cloud_path}" )
         if resp.status_code != 200:
             raise RuntimeError( f"cloud upload failed ({resp.status_code}): {cloud_path}" )
         return resp
@@ -466,11 +530,14 @@ class SmallSeaRemote( CodSyncRemote ):
             "path": cloud_path,
         })
         if resp.status_code != 200:
-            return None
-        return base64.b64decode( resp.json()[ "data" ] )
+            return ( None, None )
+        body = resp.json()
+        data = base64.b64decode( body[ "data" ] )
+        etag = body.get( "etag" )
+        return ( data, etag )
 
 
-    def upload_latest_link( self, link_uid, blob, bundle_uid, local_bundle_path ):
+    def upload_latest_link( self, link_uid, blob, bundle_uid, local_bundle_path, expected_etag=None ):
         # 1. Upload bundle
         with open( local_bundle_path, "rb" ) as f:
             bundle_bytes = f.read()
@@ -479,8 +546,8 @@ class SmallSeaRemote( CodSyncRemote ):
         # 2. Serialize link YAML
         link_yaml = yaml.dump( blob, default_flow_style=False ).encode( "utf-8" )
 
-        # 3. Upload latest-link.yaml and L-{link_uid}.yaml
-        self._upload( "latest-link.yaml", link_yaml )
+        # 3. Upload latest-link.yaml (with CAS) and L-{link_uid}.yaml
+        self._upload( "latest-link.yaml", link_yaml, expected_etag=expected_etag )
         self._upload( f"L-{link_uid}.yaml", link_yaml )
 
 
@@ -490,10 +557,15 @@ class SmallSeaRemote( CodSyncRemote ):
         else:
             cloud_path = f"L-{uid}.yaml"
 
-        data = self._download( cloud_path )
+        ( data, etag ) = self._download( cloud_path )
         if data is None:
             return None
-        return self.read_link_blob( io.BytesIO( data ) )
+
+        link = self.read_link_blob( io.BytesIO( data ) )
+
+        if uid == "latest-link":
+            return ( link, etag )
+        return link
 
 
     def get_latest_link( self ):

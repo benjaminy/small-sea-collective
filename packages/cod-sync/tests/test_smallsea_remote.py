@@ -118,12 +118,15 @@ def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
     bob_cod.remote = bob_remote
     # clone_from_remote calls CodSyncRemote.init internally, so we
     # need to wire the remote manually and replicate clone logic
-    latest = bob_remote.get_latest_link()
-    assert latest is not None
+    result = bob_remote.get_latest_link()
+    assert result is not None
+    (latest, etag) = result
+    assert etag is not None
 
     [link_ids, branches, bundles, supp] = latest
     assert link_ids[0] == "initial-snapshot"
     assert len(bundles) == 1
+    assert supp["cod_version"] == "1.0.0"
 
     import tempfile
     bundle_uid = bundles[0][0]

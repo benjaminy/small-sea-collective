@@ -414,9 +414,12 @@ class SmallSeaBackend:
             self,
             session_hex,
             path,
-            data):
+            data,
+            expected_etag=None):
         ss_session = self._lookup_session(session_hex)
         adapter = self._make_storage_adapter(ss_session)
+        if expected_etag is not None:
+            return adapter.upload_if_match(path, data, expected_etag)
         return adapter.upload_overwrite(path, data)
 
 

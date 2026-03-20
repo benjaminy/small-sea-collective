@@ -80,12 +80,15 @@ def test_initial_publish_and_clone(scratch_dir):
     assert len(links) == 1
 
     # Verify we can read the link back through the protocol
-    link = alice_remote.get_latest_link()
-    assert link is not None
+    result = alice_remote.get_latest_link()
+    assert result is not None
+    (link, etag) = result
+    assert etag is not None
     [link_ids, branches, bundle_list, supp] = link
     assert link_ids[0] == "initial-snapshot"
     assert branches[0][0] == "main"
     assert len(bundle_list) == 1
+    assert supp["cod_version"] == "1.0.0"
 
     # ---- 3. Bob clones from Alice's publication ----
     bob_cod = make_cod_sync(bob_clone, "alice")

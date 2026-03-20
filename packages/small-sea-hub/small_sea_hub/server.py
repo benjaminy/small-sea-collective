@@ -91,14 +91,18 @@ class CloudUploadReq(pydantic.BaseModel):
     session: str
     path: str
     data: str  # base64-encoded
+    expected_etag: Optional[str] = None
 
 @app.post("/cloud_file")
 async def upload_to_cloud(req: CloudUploadReq):
     import base64
     small_sea = app.state.backend
     decoded_data = base64.b64decode(req.data)
-    ok, etag, msg = small_sea.upload_to_cloud(req.session, req.path, decoded_data)
+    ok, etag, msg = small_sea.upload_to_cloud(
+        req.session, req.path, decoded_data, expected_etag=req.expected_etag)
     if not ok:
+        if msg == "CAS_CONFLICT":
+            raise HTTPException(status_code=409, detail="CAS conflict: file was modified concurrently")
         raise HTTPException(status_code=500, detail=msg)
     return { "ok": True, "etag": etag, "message": msg }
 
