@@ -11,3 +11,14 @@ CREATE TABLE IF NOT EXISTS session (
     station_id BLOB NOT NULL,
     client TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pending_session (
+    id BLOB PRIMARY KEY,
+    participant_hex TEXT NOT NULL,
+    team_name TEXT NOT NULL,
+    app_name TEXT NOT NULL,
+    client_name TEXT NOT NULL,
+    pin TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);

@@ -43,27 +43,30 @@ def test_env(playground_dir, minio):
 
 
 def _open_session(client):
-    resp = client.post("/sessions", json={
+    resp = client.post("/sessions/request", json={
         "participant": "alice",
         "app": "SmallSeaCollectiveCore",
         "team": "NoteToSelf",
         "client": "Smoke Tests",
     })
     assert resp.status_code == 200
+    result = resp.json()
+    pending_id = result["pending_id"]
+    pin = result["pin"]
+
+    resp = client.post("/sessions/confirm", json={"pending_id": pending_id, "pin": pin})
+    assert resp.status_code == 200
     session_hex = resp.json()
     assert isinstance(session_hex, str)
     return session_hex
 
 
-def _register_cloud(client, session_hex, minio):
-    resp = client.post("/cloud_locations", json={
-        "session": session_hex,
-        "backend": "s3",
-        "url": minio["endpoint"],
-        "access_key": minio["access_key"],
-        "secret_key": minio["secret_key"],
-    })
-    assert resp.status_code == 200
+def _register_cloud(backend, session_hex, minio):
+    backend.add_cloud_location(
+        session_hex, "s3", minio["endpoint"],
+        access_key=minio["access_key"],
+        secret_key=minio["secret_key"],
+    )
 
 
 def _derive_bucket_name(playground_dir, session_hex):
@@ -99,29 +102,27 @@ def test_upload_and_download(test_env):
     session_hex = _open_session(client)
 
     # 2. Register MinIO cloud location with credentials
-    _register_cloud(client, session_hex, minio)
+    _register_cloud(test_env["backend"], session_hex, minio)
 
     # 3. Pre-create the bucket
     bucket_name = _derive_bucket_name(playground_dir, session_hex)
     _create_bucket(minio, bucket_name)
 
+    auth = {"Authorization": f"Bearer {session_hex}"}
+
     # 4. Upload a file
     content = b"hello from alice"
     resp = client.post("/cloud_file", json={
-        "session": session_hex,
         "path": "greeting.txt",
         "data": base64.b64encode(content).decode(),
-    })
+    }, headers=auth)
     assert resp.status_code == 200
     upload_result = resp.json()
     assert upload_result["ok"] is True
     assert upload_result["etag"] is not None
 
     # 5. Download the file
-    resp = client.get("/cloud_file", params={
-        "session": session_hex,
-        "path": "greeting.txt",
-    })
+    resp = client.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)
     assert resp.status_code == 200
     dl_result = resp.json()
     assert dl_result["ok"] is True
@@ -131,35 +132,24 @@ def test_upload_and_download(test_env):
     # 6. Upload a second file, download both
     content2 = b"second file contents"
     resp = client.post("/cloud_file", json={
-        "session": session_hex,
         "path": "notes/todo.txt",
         "data": base64.b64encode(content2).decode(),
-    })
+    }, headers=auth)
     assert resp.status_code == 200
 
-    resp = client.get("/cloud_file", params={
-        "session": session_hex,
-        "path": "greeting.txt",
-    })
+    resp = client.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)
     assert base64.b64decode(resp.json()["data"]) == content
 
-    resp = client.get("/cloud_file", params={
-        "session": session_hex,
-        "path": "notes/todo.txt",
-    })
+    resp = client.get("/cloud_file", params={"path": "notes/todo.txt"}, headers=auth)
     assert base64.b64decode(resp.json()["data"]) == content2
 
     # 7. Overwrite first file, verify new content
     new_content = b"updated greeting"
     resp = client.post("/cloud_file", json={
-        "session": session_hex,
         "path": "greeting.txt",
         "data": base64.b64encode(new_content).decode(),
-    })
+    }, headers=auth)
     assert resp.status_code == 200
 
-    resp = client.get("/cloud_file", params={
-        "session": session_hex,
-        "path": "greeting.txt",
-    })
+    resp = client.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)
     assert base64.b64decode(resp.json()["data"]) == new_content

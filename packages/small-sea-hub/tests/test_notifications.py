@@ -94,10 +94,9 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
 
     # Alice sends a notification
     resp = client.post("/notifications", json={
-        "session": alice_session,
         "message": "new data available",
         "title": "Sync Update",
-    })
+    }, headers={"Authorization": f"Bearer {alice_session}"})
     assert resp.status_code == 200
     send_result = resp.json()
     assert send_result["ok"] is True
@@ -108,10 +107,9 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
 
     # Bob polls for notifications
     resp = client.get("/notifications", params={
-        "session": bob_session,
         "since": "all",
         "timeout": "5",
-    })
+    }, headers={"Authorization": f"Bearer {bob_session}"})
     assert resp.status_code == 200
     poll_result = resp.json()
     assert poll_result["ok"] is True

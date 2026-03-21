@@ -3,7 +3,7 @@
 import sys
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import secrets
 import pathlib
 import logging
@@ -44,6 +44,19 @@ class SmallSeaSession(Base):
 
     def __repr__(self):
         return f"<Session(id='{self.id.hex()}', token='{self.token.hex()}')>"
+
+
+class PendingSession(Base):
+    __tablename__ = 'pending_session'
+
+    id = Column(LargeBinary, primary_key=True)
+    participant_hex = Column(String, nullable=False)
+    team_name = Column(String, nullable=False)
+    app_name = Column(String, nullable=False)
+    client_name = Column(String, nullable=False)
+    pin = Column(String, nullable=False)
+    created_at = Column(String, nullable=False)
+    expires_at = Column(String, nullable=False)
 
 
 # Per-user core.db models (duplicated in team manager — the DB is the contract)
@@ -119,7 +132,7 @@ class SmallSeaBackend:
     small-sea-team-manager package (provisioning.py).
     """
 
-    hub_schema_version : int = 44
+    hub_schema_version : int = 45
 
     def __init__(
             self,
@@ -157,6 +170,23 @@ class SmallSeaBackend:
             print( "SmallSea local DB already initialized" )
             return
 
+        if user_version == 44:
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS pending_session (
+                    id BLOB PRIMARY KEY,
+                    participant_hex TEXT NOT NULL,
+                    team_name TEXT NOT NULL,
+                    app_name TEXT NOT NULL,
+                    client_name TEXT NOT NULL,
+                    pin TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                )
+            """)
+            cursor.execute(f"PRAGMA user_version = {SmallSeaBackend.hub_schema_version}")
+            print("Hub DB migrated from v44 to v45.")
+            return
+
         if ( ( 0 != user_version )
              and ( user_version < SmallSeaBackend.hub_schema_version ) ):
             print( "TODO: Migrate local DB!" )
@@ -179,75 +209,137 @@ class SmallSeaBackend:
 
     # ---- Session management ----
 
-    def open_session(
-            self,
-            nickname,
-            app,
-            team,
-            client) -> bytes:
-        auth_token = str(secrets.randbelow(10000)).zfill(4)
-        if client != "Smoke Tests":
-            plyer.notification.notify(
-                title="Small Sea Access Request",
-                message=f"Client {client} requested access to the resources for app {app}. {auth_token} is the code to provide to the client if you approve this request.",
-                app_name="Small Sea Hub",
-                # app_icon="PATH",
-                timeout=5,
-                ticker="WHAT THE HECK IS A TICKER"
-            )
-
-        matching_dirs = []
+    def _find_participant(self, nickname):
+        """Return list of (participant_dir, engine) for participants matching nickname."""
+        matching = []
         participants_dir = self.root_dir / "Participants"
         for d in participants_dir.iterdir():
             if not d.is_dir():
                 continue
             note_to_self_db_path = d / "NoteToSelf" / "Sync" / "core.db"
             engine = create_engine(f"sqlite:///{note_to_self_db_path}")
-            # TODO: exn handling
-            with Session(engine) as session:
-                results = session.query(Nickname).filter(Nickname.name == nickname).all()
-                if 0 < len(results):
-                    matching_dirs.append((d, engine))
+            with Session(engine) as sess:
+                results = sess.query(Nickname).filter(Nickname.name == nickname).all()
+                if results:
+                    matching.append((d, engine))
+        return matching
 
-        if 1 > len(matching_dirs):
+    def _resolve_station(self, engine, team, app):
+        """Return (team_row, app_row, station_row) from a participant's NoteToSelf DB."""
+        with Session(engine) as sess:
+            results_team = sess.query(Team).filter(Team.name == team).all()
+            results_app = sess.query(App).filter(App.name == app).all()
+            if not results_team or not results_app:
+                raise SmallSeaNotFoundExn()
+            results_station = sess.query(TeamAppStation).filter(
+                TeamAppStation.app_id == results_app[0].id).all()
+            if not results_station:
+                raise SmallSeaNotFoundExn()
+            return results_team[0], results_app[0], results_station[0]
+
+    def request_session(self, nickname, app, team, client):
+        """Step 1 of session approval: generate PIN, write pending row, send OS notification.
+
+        Returns (pending_id_hex, pin). For normal clients, pin should not be shown to
+        the requester — it arrives via OS notification. For 'Smoke Tests', the caller
+        may use the returned pin directly to call confirm_session.
+        """
+        matching = self._find_participant(nickname)
+        if not matching:
             raise SmallSeaNotFoundExn()
 
-        # TODO: Multiple matches?
+        participant_dir, engine = matching[0]
+        participant_hex = participant_dir.absolute().name
+        self._resolve_station(engine, team, app)  # validate existence
 
-        (participant_dir, engine) = matching_dirs[0]
-        participant_lid = participant_dir.absolute().name
-        participant_lid = bytes.fromhex(participant_lid)
+        pin = str(secrets.randbelow(10000)).zfill(4)
 
-        with Session(engine) as session:
-            results_team = session.query(Team).filter(Team.name == team).all()
-            results_app = session.query(App).filter(App.name == app).all()
-            if (1 > len(results_team)) or (1 > len(results_app)):
-                raise SmallSeaNotFoundExn()
-            results_station = session.query(TeamAppStation).filter(
-                (TeamAppStation.team_id == results_team[0].id) and (TeamAppStation.app_id == results_app[0].id)).all()
-            print(results_team[0])
-            print(results_app[0])
-            if 1 > len(results_station):
-                raise SmallSeaNotFoundExn()
+        if client != "Smoke Tests":
+            plyer.notification.notify(
+                title="Small Sea Access Request",
+                message=f"PIN: {pin} — \"{client}\" requesting access to {team} → {app}",
+                app_name="Small Sea Hub",
+                timeout=10,
+            )
+
+        now = datetime.now(timezone.utc)
+        expires_at = now + timedelta(minutes=5)
+        pending_id = uuid7()
 
         engine_local = create_engine(f"sqlite:///{self.path_local_db}")
-        with Session(engine_local) as session:
+        with Session(engine_local) as sess:
+            pending = PendingSession(
+                id=pending_id,
+                participant_hex=participant_hex,
+                team_name=team,
+                app_name=app,
+                client_name=client,
+                pin=pin,
+                created_at=now.isoformat(),
+                expires_at=expires_at.isoformat(),
+            )
+            sess.add(pending)
+            sess.commit()
+
+        return pending_id.hex(), pin
+
+    def confirm_session(self, pending_id_hex, pin) -> bytes:
+        """Step 2 of session approval: validate PIN and TTL, create real session.
+
+        Returns the session token (bytes) on success.
+        Raises SmallSeaBackendExn on invalid or expired PIN.
+        """
+        pending_id = bytes.fromhex(pending_id_hex)
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+
+        with Session(engine_local) as sess:
+            pending = sess.query(PendingSession).filter(
+                PendingSession.id == pending_id).first()
+            if pending is None:
+                raise SmallSeaNotFoundExn("No pending session found")
+
+            now = datetime.now(timezone.utc)
+            expires_at = datetime.fromisoformat(pending.expires_at)
+            if now > expires_at:
+                sess.delete(pending)
+                sess.commit()
+                raise SmallSeaBackendExn("PIN expired")
+
+            if pending.pin != pin:
+                raise SmallSeaBackendExn("Invalid PIN")
+
+            note_to_self_db = (self.root_dir / "Participants" /
+                               pending.participant_hex / "NoteToSelf" / "Sync" / "core.db")
+            engine_core = create_engine(f"sqlite:///{note_to_self_db}")
+            team_row, app_row, station_row = self._resolve_station(
+                engine_core, pending.team_name, pending.app_name)
+
             token = secrets.token_bytes(32)
             ss_session = SmallSeaSession(
                 id=uuid7(),
                 token=token,
-                duration_sec=1234,
-                participant_id=participant_lid,
-                team_id=results_team[0].id,
-                app_id=results_app[0].id,
-                station_id=results_station[0].id,
-                client=client)
-
-            print(f"ADD SESH {token.hex()} {token}")
-            session.add_all([ss_session])
-            session.commit()
+                duration_sec=None,
+                participant_id=bytes.fromhex(pending.participant_hex),
+                team_id=team_row.id,
+                app_id=app_row.id,
+                station_id=station_row.id,
+                client=pending.client_name,
+            )
+            sess.add(ss_session)
+            sess.delete(pending)
+            sess.commit()
 
         return token
+
+    def open_session(self, nickname, app, team, client) -> bytes:
+        """Smoke-test shortcut: request + auto-confirm in one call.
+
+        Only for use with client='Smoke Tests'. Real clients use the
+        request_session / confirm_session two-step flow via the HTTP API.
+        """
+        assert client == "Smoke Tests", "open_session is only for smoke tests"
+        pending_id_hex, pin = self.request_session(nickname, app, team, client)
+        return self.confirm_session(pending_id_hex, pin)
 
 
     def _lookup_session(
