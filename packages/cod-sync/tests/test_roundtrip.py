@@ -12,20 +12,16 @@
 import pathlib
 
 import cod_sync.protocol as CS
-
-from test_clone_from_local_bundle import (
-    make_file_remote,
-    make_cod_sync,
-    working_tree_files,
-)
+from test_clone_from_local_bundle import (make_cod_sync, make_file_remote,
+                                          working_tree_files)
 
 
 def test_roundtrip(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     alice_clone = scratch / "alice-clone"
-    bob_clone   = scratch / "bob-clone"
-    alice_pub   = scratch / "alice-publication"
-    bob_pub     = scratch / "bob-publication"
+    bob_clone = scratch / "bob-clone"
+    alice_pub = scratch / "alice-publication"
+    bob_pub = scratch / "bob-publication"
 
     for d in [alice_clone, bob_clone, alice_pub, bob_pub]:
         d.mkdir()
@@ -77,7 +73,7 @@ def test_roundtrip(scratch_dir):
 
     # ---- 4. Verify the two working trees match ----
     alice_files = working_tree_files(alice_clone)
-    bob_files   = working_tree_files(bob_clone)
+    bob_files = working_tree_files(bob_clone)
 
     assert alice_files == bob_files
     assert "README.md" in alice_files

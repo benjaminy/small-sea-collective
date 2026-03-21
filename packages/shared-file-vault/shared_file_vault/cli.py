@@ -1,7 +1,6 @@
 """Click CLI for the Small Sea Shared File Vault."""
 
 import click
-
 from shared_file_vault import vault
 
 
@@ -39,7 +38,9 @@ def create_cmd(vault_root, participant_hex, team_name, niche_name):
 @click.argument("dest_path")
 def checkout_cmd(vault_root, participant_hex, team_name, niche_name, dest_path):
     """Check out a niche to a filesystem location."""
-    dest = vault.checkout_niche(vault_root, participant_hex, team_name, niche_name, dest_path)
+    dest = vault.checkout_niche(
+        vault_root, participant_hex, team_name, niche_name, dest_path
+    )
     click.echo(f"Checked out to {dest}")
 
 
@@ -83,7 +84,10 @@ def status_cmd(vault_root, participant_hex, team_name, niche_name):
 def publish_cmd(vault_root, participant_hex, team_name, niche_name, message, files):
     """Publish changes (stage + commit)."""
     commit_hash = vault.publish(
-        vault_root, participant_hex, team_name, niche_name,
+        vault_root,
+        participant_hex,
+        team_name,
+        niche_name,
         files=list(files) if files else None,
         message=message,
     )

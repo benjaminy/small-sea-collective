@@ -6,16 +6,14 @@
 import base64
 
 import boto3
-from botocore.config import Config as BotoConfig
 import pytest
+import small_sea_hub.backend as SmallSea
+import small_sea_team_manager.provisioning as Provisioning
+from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
+from small_sea_hub.server import app
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-
-import small_sea_hub.backend as SmallSea
-from small_sea_hub.server import app
-import small_sea_team_manager.provisioning as Provisioning
-
 
 MINIO_PORT = 9200
 
@@ -43,12 +41,15 @@ def test_env(playground_dir, minio):
 
 
 def _open_session(client):
-    resp = client.post("/sessions/request", json={
-        "participant": "alice",
-        "app": "SmallSeaCollectiveCore",
-        "team": "NoteToSelf",
-        "client": "Smoke Tests",
-    })
+    resp = client.post(
+        "/sessions/request",
+        json={
+            "participant": "alice",
+            "app": "SmallSeaCollectiveCore",
+            "team": "NoteToSelf",
+            "client": "Smoke Tests",
+        },
+    )
     assert resp.status_code == 200
     result = resp.json()
     pending_id = result["pending_id"]
@@ -63,7 +64,9 @@ def _open_session(client):
 
 def _register_cloud(backend, session_hex, minio):
     backend.add_cloud_location(
-        session_hex, "s3", minio["endpoint"],
+        session_hex,
+        "s3",
+        minio["endpoint"],
         access_key=minio["access_key"],
         secret_key=minio["secret_key"],
     )
@@ -76,8 +79,11 @@ def _derive_bucket_name(playground_dir, session_hex):
     core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
     engine = create_engine(f"sqlite:///{core_path}")
     with Session(engine) as session:
-        station = session.query(SmallSea.TeamAppStation).filter(
-            SmallSea.TeamAppStation.id == ss_session.station_id).first()
+        station = (
+            session.query(SmallSea.TeamAppStation)
+            .filter(SmallSea.TeamAppStation.id == ss_session.station_id)
+            .first()
+        )
     return f"ss-{station.id.hex()[:16]}"
 
 
@@ -112,10 +118,14 @@ def test_upload_and_download(test_env):
 
     # 4. Upload a file
     content = b"hello from alice"
-    resp = client.post("/cloud_file", json={
-        "path": "greeting.txt",
-        "data": base64.b64encode(content).decode(),
-    }, headers=auth)
+    resp = client.post(
+        "/cloud_file",
+        json={
+            "path": "greeting.txt",
+            "data": base64.b64encode(content).decode(),
+        },
+        headers=auth,
+    )
     assert resp.status_code == 200
     upload_result = resp.json()
     assert upload_result["ok"] is True
@@ -131,10 +141,14 @@ def test_upload_and_download(test_env):
 
     # 6. Upload a second file, download both
     content2 = b"second file contents"
-    resp = client.post("/cloud_file", json={
-        "path": "notes/todo.txt",
-        "data": base64.b64encode(content2).decode(),
-    }, headers=auth)
+    resp = client.post(
+        "/cloud_file",
+        json={
+            "path": "notes/todo.txt",
+            "data": base64.b64encode(content2).decode(),
+        },
+        headers=auth,
+    )
     assert resp.status_code == 200
 
     resp = client.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)
@@ -145,10 +159,14 @@ def test_upload_and_download(test_env):
 
     # 7. Overwrite first file, verify new content
     new_content = b"updated greeting"
-    resp = client.post("/cloud_file", json={
-        "path": "greeting.txt",
-        "data": base64.b64encode(new_content).decode(),
-    }, headers=auth)
+    resp = client.post(
+        "/cloud_file",
+        json={
+            "path": "greeting.txt",
+            "data": base64.b64encode(new_content).decode(),
+        },
+        headers=auth,
+    )
     assert resp.status_code == 200
 
     resp = client.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)

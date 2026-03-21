@@ -19,10 +19,8 @@ class TeamManager:
         """Open a session with the Hub for team management."""
         self.nickname = nickname
         self.session = self.client.open_session(
-            nickname,
-            "SmallSeaCollectiveCore",
-            team,
-            "TeamManager")
+            nickname, "SmallSeaCollectiveCore", team, "TeamManager"
+        )
 
     # --- Team CRUD ---
 

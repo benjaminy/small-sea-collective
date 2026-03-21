@@ -1,8 +1,9 @@
-import sqlite3
 import pathlib
+import sqlite3
 import subprocess
 
-from small_sea_team_manager.provisioning import create_new_participant, create_team
+from small_sea_team_manager.provisioning import (create_new_participant,
+                                                 create_team)
 
 
 def test_create_team(playground_dir):
@@ -61,7 +62,9 @@ def test_create_team(playground_dir):
     assert stations[0][0] == bytes.fromhex(station_id_hex)
 
     # Alice has read-write on the station
-    roles = tconn.execute("SELECT member_id, station_id, role FROM station_role").fetchall()
+    roles = tconn.execute(
+        "SELECT member_id, station_id, role FROM station_role"
+    ).fetchall()
     assert len(roles) == 1
     assert roles[0][0] == bytes.fromhex(member_id_hex)
     assert roles[0][1] == bytes.fromhex(station_id_hex)
@@ -73,6 +76,8 @@ def test_create_team(playground_dir):
     team_sync = root / "Participants" / alice_hex / "CoolProject" / "Sync"
     result = subprocess.run(
         ["git", "-C", str(team_sync), "log", "--oneline"],
-        capture_output=True, text=True)
+        capture_output=True,
+        text=True,
+    )
     assert result.returncode == 0
     assert "New team: CoolProject" in result.stdout

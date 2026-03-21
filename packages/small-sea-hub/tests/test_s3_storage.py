@@ -8,11 +8,9 @@
 # for isolation.
 
 import boto3
-from botocore.config import Config
 import pytest
-
+from botocore.config import Config
 from small_sea_hub.adapters import SmallSeaS3Adapter
-
 
 MINIO_PORT = 9100
 _minio_info = None

@@ -4,18 +4,16 @@ Uses LocalFolderRemote (file://) — no MinIO or hub needed.
 """
 
 import os
-import sqlite3
 import pathlib
-import tempfile
 import shutil
+import sqlite3
+import tempfile
 
 import cod_sync.protocol as CS
-
-from small_sea_team_manager.provisioning import (
-    create_new_participant, create_team, create_invitation,
-    _install_sqlite_merge_driver,
-)
-
+from small_sea_team_manager.provisioning import (_install_sqlite_merge_driver,
+                                                 create_invitation,
+                                                 create_new_participant,
+                                                 create_team)
 
 ALICE_CLOUD = {
     "protocol": "file",
@@ -67,7 +65,9 @@ def test_concurrent_invitations_merge(playground_dir):
     _install_sqlite_merge_driver(team_sync_2)
 
     # 5. Device 1: create invitation for Bob, push to cloud
-    token_bob = create_invitation(root1, alice_hex, "ProjectX", ALICE_CLOUD, invitee_label="Bob")
+    token_bob = create_invitation(
+        root1, alice_hex, "ProjectX", ALICE_CLOUD, invitee_label="Bob"
+    )
 
     cod1 = _make_cod_sync(team_sync_1, "cloud")
     cod1.remote = cloud_remote
@@ -129,7 +129,7 @@ def _create_invitation_on_device(team_sync_dir, invitee_label):
         rand_bytes = secrets.token_bytes(10)
         b = struct.pack(">Q", timestamp_ms)[2:]
         b += bytes([(0x70 | (rand_bytes[0] & 0x0F)), rand_bytes[1]])
-        b += bytes([(0x80 | (rand_bytes[2] & 0x3F))]) + rand_bytes[3:10]
+        b += bytes([0x80 | (rand_bytes[2] & 0x3F)]) + rand_bytes[3:10]
         return b
 
     db_path = pathlib.Path(team_sync_dir) / "core.db"
@@ -137,11 +137,23 @@ def _create_invitation_on_device(team_sync_dir, invitee_label):
     conn.execute(
         "INSERT INTO invitation (id, nonce, status, invitee_label, created_at) "
         "VALUES (?, ?, 'pending', ?, ?)",
-        (uuid7(), secrets.token_bytes(16), invitee_label,
-         datetime.now(timezone.utc).isoformat()),
+        (
+            uuid7(),
+            secrets.token_bytes(16),
+            invitee_label,
+            datetime.now(timezone.utc).isoformat(),
+        ),
     )
     conn.commit()
     conn.close()
 
     CS.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-    CS.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Created invitation for {invitee_label}"])
+    CS.gitCmd(
+        [
+            "-C",
+            str(team_sync_dir),
+            "commit",
+            "-m",
+            f"Created invitation for {invitee_label}",
+        ]
+    )

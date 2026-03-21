@@ -1,13 +1,7 @@
 import pathlib
 
-from shared_file_vault.vault import (
-    init_vault,
-    create_niche,
-    checkout_niche,
-    publish,
-    push_niche,
-    pull_niche,
-)
+from shared_file_vault.vault import (checkout_niche, create_niche, init_vault,
+                                     publish, pull_niche, push_niche)
 
 PARTICIPANT = "bb" * 16
 TEAM = "SyncTeam"

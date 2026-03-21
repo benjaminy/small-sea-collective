@@ -1,19 +1,15 @@
-import json
 import base64
+import json
 import os
-import sqlite3
 import pathlib
+import sqlite3
 import subprocess
 
-import pytest
-
 import cod_sync.protocol as CS
-
+import pytest
 from small_sea_team_manager.provisioning import (
-    create_new_participant, create_team,
-    create_invitation, accept_invitation, complete_invitation_acceptance,
-    list_invitations,
-)
+    accept_invitation, complete_invitation_acceptance, create_invitation,
+    create_new_participant, create_team, list_invitations)
 
 
 def _make_cod_sync(repo_dir, remote_name):
@@ -36,7 +32,9 @@ def test_create_invitation(playground_dir):
         "access_key": "alice-key",
         "secret_key": "alice-secret",
     }
-    token = create_invitation(root, alice_hex, "ProjectX", alice_cloud, invitee_label="Bob")
+    token = create_invitation(
+        root, alice_hex, "ProjectX", alice_cloud, invitee_label="Bob"
+    )
     assert isinstance(token, str)
     assert len(token) > 0
 
@@ -94,14 +92,16 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     # Alice pushes team repo to MinIO
     alice_team_sync = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync"
     alice_remote = CS.S3Remote(
-        minio["endpoint"], alice_bucket,
-        minio["access_key"], minio["secret_key"])
+        minio["endpoint"], alice_bucket, minio["access_key"], minio["secret_key"]
+    )
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
     cod_alice.remote = alice_remote
     cod_alice.push_to_remote(["main"])
 
     # Alice creates invitation (token includes bucket info)
-    token = create_invitation(alice_root, alice_hex, "ProjectX", alice_cloud, invitee_label="Bob")
+    token = create_invitation(
+        alice_root, alice_hex, "ProjectX", alice_cloud, invitee_label="Bob"
+    )
 
     # Verify token has inviter_bucket
     token_data = json.loads(base64.b64decode(token).decode())
@@ -127,8 +127,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     }
 
     # Bob accepts invitation (clones from Alice's MinIO, pushes to his bucket)
-    acceptance_b64 = accept_invitation(
-        bob_root, bob_hex, token, bob_cloud, bob_bucket)
+    acceptance_b64 = accept_invitation(bob_root, bob_hex, token, bob_cloud, bob_bucket)
     assert isinstance(acceptance_b64, str)
 
     # Decode acceptance to get Bob's member ID
@@ -148,7 +147,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert invitations[0]["status"] == "accepted"
 
     # --- Verify Alice's team DB has 2 members, a peer (Bob), and 2 station_roles ---
-    alice_team_db = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
+    alice_team_db = (
+        alice_root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
+    )
     aconn = sqlite3.connect(str(alice_team_db))
     members = aconn.execute("SELECT id FROM member").fetchall()
     assert len(members) == 2
@@ -187,7 +188,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     bconn.close()
 
     # --- Verify Bob's NoteToSelf has the team pointer but NOT a TeamAppStation for ProjectX ---
-    bob_user_db = bob_root / "Participants" / bob_hex / "NoteToSelf" / "Sync" / "core.db"
+    bob_user_db = (
+        bob_root / "Participants" / bob_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
     buconn = sqlite3.connect(str(bob_user_db))
     buconn.row_factory = sqlite3.Row
     teams = buconn.execute("SELECT * FROM team WHERE name = 'ProjectX'").fetchall()
@@ -206,8 +209,8 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     # --- Verify Bob's team dir has a git repo with correct commit ---
     bob_sync = bob_root / "Participants" / bob_hex / "ProjectX" / "Sync"
     result = subprocess.run(
-        ["git", "-C", str(bob_sync), "log", "--oneline"],
-        capture_output=True, text=True)
+        ["git", "-C", str(bob_sync), "log", "--oneline"], capture_output=True, text=True
+    )
     assert result.returncode == 0
     assert "Joined team: ProjectX" in result.stdout
 
@@ -237,8 +240,8 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
     # Push team repo to MinIO
     alice_team_sync = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync"
     alice_remote = CS.S3Remote(
-        minio["endpoint"], alice_bucket,
-        minio["access_key"], minio["secret_key"])
+        minio["endpoint"], alice_bucket, minio["access_key"], minio["secret_key"]
+    )
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
     cod_alice.remote = alice_remote
     cod_alice.push_to_remote(["main"])
@@ -285,7 +288,10 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
     cod_alice.push_to_remote(["main"])
 
     carol_acceptance_b64 = accept_invitation(
-        carol_root, carol_hex, token, carol_cloud, carol_bucket)
+        carol_root, carol_hex, token, carol_cloud, carol_bucket
+    )
 
     with pytest.raises(ValueError, match="not pending"):
-        complete_invitation_acceptance(alice_root, alice_hex, "ProjectX", carol_acceptance_b64)
+        complete_invitation_acceptance(
+            alice_root, alice_hex, "ProjectX", carol_acceptance_b64
+        )

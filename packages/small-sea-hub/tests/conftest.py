@@ -1,11 +1,13 @@
 # Top Matter
 
 import os
+import shutil
 import subprocess
 import tempfile
 import time
+
 import pytest
-import shutil
+
 
 @pytest.fixture()
 def playground_dir():
@@ -23,9 +25,7 @@ def playground_dir():
 def minio_server_gen():
     servers = []
 
-    def start_server(
-            root_dir=None,
-            port=9000 ):
+    def start_server(root_dir=None, port=9000):
         root_dir_created = False
         if root_dir is None:
             root_dir = tempfile.mkdtemp()
@@ -33,21 +33,32 @@ def minio_server_gen():
         env = os.environ.copy()
         env["MINIO_ROOT_USER"] = "minioadmin"
         env["MINIO_ROOT_PASSWORD"] = "minioadmin"
-        proc = subprocess.Popen([
-            "minio", "server", root_dir, "--address", f":{port}", "--console-address", f":{port + 1}"
-        ], env=env )
-        servers.append({
-            "proc": proc,
-            "root_dir":root_dir,
-            "root_created": root_dir_created,
-        })
+        proc = subprocess.Popen(
+            [
+                "minio",
+                "server",
+                root_dir,
+                "--address",
+                f":{port}",
+                "--console-address",
+                f":{port + 1}",
+            ],
+            env=env,
+        )
+        servers.append(
+            {
+                "proc": proc,
+                "root_dir": root_dir,
+                "root_created": root_dir_created,
+            }
+        )
         time.sleep(2)
         if proc.poll() is not None:
             raise RuntimeError(f"MinIO exited early (code {proc.returncode})")
 
         return {
-            "port"      : port,
-            "endpoint"  : f"http://localhost:{port}",
+            "port": port,
+            "endpoint": f"http://localhost:{port}",
             "access_key": "minioadmin",
             "secret_key": "minioadmin",
         }
@@ -70,12 +81,20 @@ def ntfy_server():
 
     port = 9090
     container_name = f"ntfy-test-{os.getpid()}"
-    subprocess.run([
-        "docker", "run", "-d",
-        "--name", container_name,
-        "-p", f"{port}:80",
-        "binwiederhier/ntfy", "serve",
-    ], check=True)
+    subprocess.run(
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            container_name,
+            "-p",
+            f"{port}:80",
+            "binwiederhier/ntfy",
+            "serve",
+        ],
+        check=True,
+    )
     url = f"http://localhost:{port}"
 
     # Health check — wait up to 15 seconds

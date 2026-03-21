@@ -3,9 +3,8 @@ import json
 import httpx
 import pytest
 import respx
-
-from small_sea_hub.adapters.gdrive import SmallSeaGDriveAdapter, DRIVE_API, DRIVE_UPLOAD
-
+from small_sea_hub.adapters.gdrive import (DRIVE_API, DRIVE_UPLOAD,
+                                           SmallSeaGDriveAdapter)
 
 TOKEN = "test-access-token"
 
@@ -15,6 +14,7 @@ def make_adapter(path_metadata=None):
 
 
 # ---- Download ----
+
 
 @respx.mock
 def test_download_success():
@@ -53,9 +53,7 @@ def test_download_not_found_stale_cache():
     file_id = "stale-id"
     adapter = make_adapter({"missing.txt": file_id})
 
-    respx.get(f"{DRIVE_API}/files/{file_id}").mock(
-        return_value=httpx.Response(404)
-    )
+    respx.get(f"{DRIVE_API}/files/{file_id}").mock(return_value=httpx.Response(404))
 
     ok, data, msg = adapter.download("missing.txt")
     assert not ok
@@ -64,6 +62,7 @@ def test_download_not_found_stale_cache():
 
 
 # ---- Upload overwrite ----
+
 
 @respx.mock
 def test_upload_overwrite_create():
@@ -109,6 +108,7 @@ def test_upload_overwrite_update():
 
 # ---- Upload fresh ----
 
+
 @respx.mock
 def test_upload_fresh_success():
     adapter = make_adapter()
@@ -140,6 +140,7 @@ def test_upload_fresh_already_exists():
 
 
 # ---- Upload if-match ----
+
 
 @respx.mock
 def test_upload_if_match_success():
@@ -174,6 +175,7 @@ def test_upload_if_match_stale_etag():
 
 
 # ---- Path metadata persistence ----
+
 
 def test_path_metadata_roundtrip():
     original = {"a.txt": "id-a", "b.txt": "id-b"}

@@ -1,16 +1,19 @@
 """Unit tests for harmonic_merge.core (delta-based merge)."""
 
-import sqlite3
-import shutil
-import tempfile
 import pathlib
+import shutil
+import sqlite3
+import tempfile
 
-from harmonic_merge.core import sqlite_to_json, compute_delta, reconcile_deltas, apply_delta
-
+from harmonic_merge.core import (apply_delta, compute_delta, reconcile_deltas,
+                                 sqlite_to_json)
 
 SCHEMA_PATH = (
     pathlib.Path(__file__).resolve().parent.parent.parent
-    / "small-sea-team-manager" / "small_sea_team_manager" / "sql" / "core_other_team.sql"
+    / "small-sea-team-manager"
+    / "small_sea_team_manager"
+    / "sql"
+    / "core_other_team.sql"
 )
 
 SCHEMA_SQL = SCHEMA_PATH.read_text()
@@ -27,10 +30,10 @@ def _make_db(tmp, name, members=None, invitations=None):
             conn.execute(stmt)
     conn.execute("PRAGMA user_version = 44")
 
-    for m in (members or []):
+    for m in members or []:
         conn.execute("INSERT INTO member (id) VALUES (?)", (m,))
 
-    for inv in (invitations or []):
+    for inv in invitations or []:
         conn.execute(
             "INSERT INTO invitation (id, nonce, status, invitee_label, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
@@ -58,14 +61,18 @@ def test_merge_both_insert():
 
         ancestor = _make_db(tmp, "ancestor.db", members=[member_a])
         ours_db = _make_db(
-            tmp, "ours.db",
+            tmp,
+            "ours.db",
             members=[member_a],
             invitations=[(b"\x10" * 16, b"\xaa" * 16, "pending", "Bob", "2025-01-01")],
         )
         theirs_db = _make_db(
-            tmp, "theirs.db",
+            tmp,
+            "theirs.db",
             members=[member_a],
-            invitations=[(b"\x20" * 16, b"\xbb" * 16, "pending", "Carol", "2025-01-01")],
+            invitations=[
+                (b"\x20" * 16, b"\xbb" * 16, "pending", "Carol", "2025-01-01")
+            ],
         )
 
         a_json = sqlite_to_json(ancestor)
@@ -93,7 +100,8 @@ def test_merge_one_side_modification():
         member_a = b"\x01" * 16
 
         ancestor = _make_db(
-            tmp, "ancestor.db",
+            tmp,
+            "ancestor.db",
             members=[member_a],
             invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01")],
         )
@@ -132,7 +140,8 @@ def test_theirs_only_modification():
         member_a = b"\x01" * 16
 
         ancestor = _make_db(
-            tmp, "ancestor.db",
+            tmp,
+            "ancestor.db",
             members=[member_a],
             invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01")],
         )
@@ -171,7 +180,8 @@ def test_merge_deletion():
         member_a = b"\x01" * 16
 
         ancestor = _make_db(
-            tmp, "ancestor.db",
+            tmp,
+            "ancestor.db",
             members=[member_a],
             invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01")],
         )
@@ -210,7 +220,8 @@ def test_merge_true_conflict_ours_wins():
         member_a = b"\x01" * 16
 
         ancestor = _make_db(
-            tmp, "ancestor.db",
+            tmp,
+            "ancestor.db",
             members=[member_a],
             invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01")],
         )

@@ -1,14 +1,13 @@
-import json
 import base64
+import json
 import os
 import time
-
-from fastapi.testclient import TestClient
 
 import cod_sync.protocol as CS
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
 import small_sea_team_manager.provisioning as Provisioning
+from fastapi.testclient import TestClient
 
 
 def _make_cod_sync(repo_dir, remote_name):
@@ -42,18 +41,19 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     team_info = Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
 
     # Push Alice's team repo to MinIO
-    alice_team_sync = (pathlib.Path(playground_dir) / "Participants" /
-                       alice_hex / "ProjectX" / "Sync")
+    alice_team_sync = (
+        pathlib.Path(playground_dir) / "Participants" / alice_hex / "ProjectX" / "Sync"
+    )
     alice_remote = CS.S3Remote(
-        minio["endpoint"], alice_bucket,
-        minio["access_key"], minio["secret_key"])
+        minio["endpoint"], alice_bucket, minio["access_key"], minio["secret_key"]
+    )
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
     cod_alice.remote = alice_remote
     cod_alice.push_to_remote(["main"])
 
     token = Provisioning.create_invitation(
-        playground_dir, alice_hex, "ProjectX",
-        inviter_cloud=cloud, invitee_label="Bob")
+        playground_dir, alice_hex, "ProjectX", inviter_cloud=cloud, invitee_label="Bob"
+    )
 
     # Patch token with the correct bucket
     token_data = json.loads(base64.b64decode(token).decode())
@@ -67,19 +67,24 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
 
     # Bob accepts invitation
     acceptance_b64 = Provisioning.accept_invitation(
-        playground_dir, bob_hex, token,
-        acceptor_cloud=cloud, acceptor_bucket=bob_bucket)
+        playground_dir, bob_hex, token, acceptor_cloud=cloud, acceptor_bucket=bob_bucket
+    )
 
     # Alice completes the acceptance
     Provisioning.complete_invitation_acceptance(
-        playground_dir, alice_hex, "ProjectX", acceptance_b64)
+        playground_dir, alice_hex, "ProjectX", acceptance_b64
+    )
 
     # -- Single Hub backend --
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
 
     # -- Open sessions --
-    alice_token = backend.open_session("Alice", "SmallSeaCollectiveCore", "ProjectX", "Smoke Tests")
-    bob_token = backend.open_session("Bob", "SmallSeaCollectiveCore", "ProjectX", "Smoke Tests")
+    alice_token = backend.open_session(
+        "Alice", "SmallSeaCollectiveCore", "ProjectX", "Smoke Tests"
+    )
+    bob_token = backend.open_session(
+        "Bob", "SmallSeaCollectiveCore", "ProjectX", "Smoke Tests"
+    )
     alice_session = alice_token.hex()
     bob_session = bob_token.hex()
 
@@ -93,10 +98,14 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     client = TestClient(Server.app)
 
     # Alice sends a notification
-    resp = client.post("/notifications", json={
-        "message": "new data available",
-        "title": "Sync Update",
-    }, headers={"Authorization": f"Bearer {alice_session}"})
+    resp = client.post(
+        "/notifications",
+        json={
+            "message": "new data available",
+            "title": "Sync Update",
+        },
+        headers={"Authorization": f"Bearer {alice_session}"},
+    )
     assert resp.status_code == 200
     send_result = resp.json()
     assert send_result["ok"] is True
@@ -106,10 +115,14 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     time.sleep(0.5)
 
     # Bob polls for notifications
-    resp = client.get("/notifications", params={
-        "since": "all",
-        "timeout": "5",
-    }, headers={"Authorization": f"Bearer {bob_session}"})
+    resp = client.get(
+        "/notifications",
+        params={
+            "since": "all",
+            "timeout": "5",
+        },
+        headers={"Authorization": f"Bearer {bob_session}"},
+    )
     assert resp.status_code == 200
     poll_result = resp.json()
     assert poll_result["ok"] is True

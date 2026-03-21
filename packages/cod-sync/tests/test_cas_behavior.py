@@ -5,15 +5,10 @@
 
 import pathlib
 
-import yaml
-import pytest
-
 import cod_sync.protocol as CS
-
-from test_clone_from_local_bundle import (
-    make_file_remote,
-    make_cod_sync,
-)
+import pytest
+import yaml
+from test_clone_from_local_bundle import make_cod_sync, make_file_remote
 
 
 def test_cas_success_local(scratch_dir):
@@ -41,7 +36,7 @@ def test_cas_success_local(scratch_dir):
     assert (pub / "latest-link.yaml").exists()
 
     # Read back etag
-    (link1, etag1) = remote.get_latest_link()
+    link1, etag1 = remote.get_latest_link()
     assert etag1 is not None
 
     # Second push
@@ -54,7 +49,7 @@ def test_cas_success_local(scratch_dir):
     cod2.push_to_remote(["main"])
 
     # Verify chain grew
-    (link2, etag2) = remote.get_latest_link()
+    link2, etag2 = remote.get_latest_link()
     assert etag2 is not None
     assert etag2 != etag1
     assert link2[0][1] == link1[0][0]  # prev_link_uid points to first link
@@ -82,7 +77,7 @@ def test_cas_conflict_local(scratch_dir):
     cod.push_to_remote(["main"])
 
     # Get current etag
-    (link, etag) = remote.get_latest_link()
+    link, etag = remote.get_latest_link()
     assert etag is not None
 
     # Tamper with latest-link.yaml to simulate a concurrent write
@@ -91,11 +86,15 @@ def test_cas_conflict_local(scratch_dir):
         f.write("# tampered\n")
 
     # Now try to upload with the stale etag — should fail
-    blob = cod.build_link_blob("test-uid", link[0][0], "bundle-uid", {"main": "initial-snapshot"})
+    blob = cod.build_link_blob(
+        "test-uid", link[0][0], "bundle-uid", {"main": "initial-snapshot"}
+    )
     bundle_path = pub / list(pub.glob("B-*.bundle"))[0].name
 
     with pytest.raises(CS.CasConflictError):
-        remote.upload_latest_link("test-uid", blob, "bundle-uid", str(bundle_path), expected_etag=etag)
+        remote.upload_latest_link(
+            "test-uid", blob, "bundle-uid", str(bundle_path), expected_etag=etag
+        )
 
 
 def test_version_field_roundtrip(scratch_dir):
@@ -119,7 +118,7 @@ def test_version_field_roundtrip(scratch_dir):
     cod.remote = remote
     cod.push_to_remote(["main"])
 
-    (link, etag) = remote.get_latest_link()
+    link, etag = remote.get_latest_link()
     [link_ids, branches, bundles, supp] = link
     assert "cod_version" in supp
     assert supp["cod_version"] == CS.COD_SYNC_VERSION

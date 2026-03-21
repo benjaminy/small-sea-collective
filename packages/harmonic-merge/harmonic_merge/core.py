@@ -116,7 +116,9 @@ def reconcile_deltas(ours_delta, theirs_delta):
     cleaned = {}
 
     for table_name, t_ops in theirs_delta.items():
-        o_ops = ours_delta.get(table_name, {"inserts": {}, "deletes": {}, "updates": {}})
+        o_ops = ours_delta.get(
+            table_name, {"inserts": {}, "deletes": {}, "updates": {}}
+        )
 
         new_inserts = {}
         new_deletes = {}
@@ -124,7 +126,10 @@ def reconcile_deltas(ours_delta, theirs_delta):
 
         for key, row in t_ops.get("inserts", {}).items():
             if key in o_ops.get("inserts", {}):
-                print(f"warning: insert/insert conflict in {table_name}, keeping ours", file=sys.stderr)
+                print(
+                    f"warning: insert/insert conflict in {table_name}, keeping ours",
+                    file=sys.stderr,
+                )
             else:
                 new_inserts[key] = row
 
@@ -133,15 +138,24 @@ def reconcile_deltas(ours_delta, theirs_delta):
                 # Both deleted — redundant, drop
                 pass
             elif key in o_ops.get("updates", {}):
-                print(f"warning: delete/modify conflict in {table_name}, keeping ours", file=sys.stderr)
+                print(
+                    f"warning: delete/modify conflict in {table_name}, keeping ours",
+                    file=sys.stderr,
+                )
             else:
                 new_deletes[key] = row
 
         for key, row in t_ops.get("updates", {}).items():
             if key in o_ops.get("deletes", {}):
-                print(f"warning: modify/delete conflict in {table_name}, keeping ours", file=sys.stderr)
+                print(
+                    f"warning: modify/delete conflict in {table_name}, keeping ours",
+                    file=sys.stderr,
+                )
             elif key in o_ops.get("updates", {}):
-                print(f"warning: true conflict in {table_name}, keeping ours", file=sys.stderr)
+                print(
+                    f"warning: true conflict in {table_name}, keeping ours",
+                    file=sys.stderr,
+                )
             else:
                 new_updates[key] = row
 

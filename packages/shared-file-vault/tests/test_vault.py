@@ -1,15 +1,8 @@
 import pathlib
 import sqlite3
 
-from shared_file_vault.vault import (
-    init_vault,
-    create_niche,
-    checkout_niche,
-    status,
-    publish,
-    log,
-    list_niches,
-)
+from shared_file_vault.vault import (checkout_niche, create_niche, init_vault,
+                                     list_niches, log, publish, status)
 
 PARTICIPANT = "aa" * 16
 TEAM = "TestTeam"
@@ -35,7 +28,15 @@ def test_create_niche(playground_dir):
     assert rows[0]["checkout_path"] is None
 
     # Verify git dir exists
-    git_dir = pathlib.Path(playground_dir) / "Participants" / PARTICIPANT / TEAM / "Niches" / "photos" / "git"
+    git_dir = (
+        pathlib.Path(playground_dir)
+        / "Participants"
+        / PARTICIPANT
+        / TEAM
+        / "Niches"
+        / "photos"
+        / "git"
+    )
     assert git_dir.is_dir()
     assert (git_dir / "HEAD").exists()
 
@@ -68,7 +69,9 @@ def test_publish_and_log(playground_dir):
 
     # Create a file and publish
     (dest / "hello.txt").write_text("hello world")
-    commit_hash = publish(playground_dir, PARTICIPANT, TEAM, "notes", message="first note")
+    commit_hash = publish(
+        playground_dir, PARTICIPANT, TEAM, "notes", message="first note"
+    )
 
     assert len(commit_hash) >= 7
 
@@ -104,7 +107,9 @@ def test_selective_publish(playground_dir):
     (dest / "b.txt").write_text("bbb")
 
     # Publish only a.txt
-    publish(playground_dir, PARTICIPANT, TEAM, "mixed", files=["a.txt"], message="only a")
+    publish(
+        playground_dir, PARTICIPANT, TEAM, "mixed", files=["a.txt"], message="only a"
+    )
 
     entries = status(playground_dir, PARTICIPANT, TEAM, "mixed")
     paths = [e["path"] for e in entries]

@@ -44,11 +44,12 @@ class SmallSeaDropboxAdapter(SmallSeaStorageAdapter):
         return True, resp.content, rev
 
     def _upload(
-            self,
-            path: str,
-            data: bytes,
-            expected_etag: Optional[str],
-            content_type: str = "application/octet-stream"):
+        self,
+        path: str,
+        data: bytes,
+        expected_etag: Optional[str],
+        content_type: str = "application/octet-stream",
+    ):
 
         if expected_etag is None:
             mode = {".tag": "overwrite"}
@@ -57,19 +58,23 @@ class SmallSeaDropboxAdapter(SmallSeaStorageAdapter):
         else:
             mode = {".tag": "update", "update": expected_etag}
 
-        api_arg = json.dumps({
-            "path": f"/{path}",
-            "mode": mode,
-            "autorename": False,
-            "mute": True,
-        })
+        api_arg = json.dumps(
+            {
+                "path": f"/{path}",
+                "mode": mode,
+                "autorename": False,
+                "mute": True,
+            }
+        )
 
         resp = httpx.post(
             f"{DROPBOX_CONTENT}/files/upload",
-            headers=self._headers({
-                "Dropbox-API-Arg": api_arg,
-                "Content-Type": "application/octet-stream",
-            }),
+            headers=self._headers(
+                {
+                    "Dropbox-API-Arg": api_arg,
+                    "Content-Type": "application/octet-stream",
+                }
+            ),
             content=data,
         )
 

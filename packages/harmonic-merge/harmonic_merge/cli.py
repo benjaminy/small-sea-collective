@@ -9,7 +9,7 @@ Where %O=ancestor, %A=ours (result written here), %B=theirs,
 
 import sys
 
-from .core import sqlite_to_json, compute_delta, reconcile_deltas, apply_delta
+from .core import apply_delta, compute_delta, reconcile_deltas, sqlite_to_json
 
 
 def main():

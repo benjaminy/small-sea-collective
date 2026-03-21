@@ -47,9 +47,9 @@ def working_tree_files(repo_dir):
 def test_initial_publish_and_clone(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     alice_clone = scratch / "alice-clone"
-    bob_clone   = scratch / "bob-clone"
-    alice_pub   = scratch / "alice-publication"
-    bob_pub     = scratch / "bob-publication"
+    bob_clone = scratch / "bob-clone"
+    alice_pub = scratch / "alice-publication"
+    bob_pub = scratch / "bob-publication"
 
     for d in [alice_clone, bob_clone, alice_pub, bob_pub]:
         d.mkdir()
@@ -82,7 +82,7 @@ def test_initial_publish_and_clone(scratch_dir):
     # Verify we can read the link back through the protocol
     result = alice_remote.get_latest_link()
     assert result is not None
-    (link, etag) = result
+    link, etag = result
     assert etag is not None
     [link_ids, branches, bundle_list, supp] = link
     assert link_ids[0] == "initial-snapshot"
@@ -99,7 +99,7 @@ def test_initial_publish_and_clone(scratch_dir):
 
     # ---- 4. Verify the two working trees match ----
     alice_files = working_tree_files(alice_clone)
-    bob_files   = working_tree_files(bob_clone)
+    bob_files = working_tree_files(bob_clone)
 
     assert alice_files == bob_files
     assert "README.md" in alice_files

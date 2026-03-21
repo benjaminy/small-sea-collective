@@ -7,19 +7,16 @@
 import pathlib
 
 import boto3
-from botocore.config import Config as BotoConfig
+import cod_sync.protocol as CS
 import pytest
+import small_sea_hub.backend as SmallSea
+import small_sea_team_manager.provisioning as Provisioning
+from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
+from small_sea_hub.server import app
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-
-import small_sea_hub.backend as SmallSea
-from small_sea_hub.server import app
-import small_sea_team_manager.provisioning as Provisioning
-
-import cod_sync.protocol as CS
 from test_clone_from_local_bundle import make_cod_sync, working_tree_files
-
 
 MINIO_PORT = 9400
 
@@ -39,23 +36,29 @@ def hub_env(playground_dir, minio):
     client = TestClient(app)
 
     # Open session
-    resp = client.post("/sessions", json={
-        "participant": "alice",
-        "app": "SmallSeaCollectiveCore",
-        "team": "NoteToSelf",
-        "client": "Smoke Tests",
-    })
+    resp = client.post(
+        "/sessions",
+        json={
+            "participant": "alice",
+            "app": "SmallSeaCollectiveCore",
+            "team": "NoteToSelf",
+            "client": "Smoke Tests",
+        },
+    )
     assert resp.status_code == 200
     session_hex = resp.json()
 
     # Register MinIO cloud location
-    resp = client.post("/cloud_locations", json={
-        "session": session_hex,
-        "backend": "s3",
-        "url": minio["endpoint"],
-        "access_key": minio["access_key"],
-        "secret_key": minio["secret_key"],
-    })
+    resp = client.post(
+        "/cloud_locations",
+        json={
+            "session": session_hex,
+            "backend": "s3",
+            "url": minio["endpoint"],
+            "access_key": minio["access_key"],
+            "secret_key": minio["secret_key"],
+        },
+    )
     assert resp.status_code == 200
 
     # Derive and pre-create bucket
@@ -64,8 +67,11 @@ def hub_env(playground_dir, minio):
     core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
     engine = create_engine(f"sqlite:///{core_path}")
     with Session(engine) as db_session:
-        station = db_session.query(SmallSea.TeamAppStation).filter(
-            SmallSea.TeamAppStation.id == ss_session.station_id).first()
+        station = (
+            db_session.query(SmallSea.TeamAppStation)
+            .filter(SmallSea.TeamAppStation.id == ss_session.station_id)
+            .first()
+        )
     bucket_name = f"ss-{station.id.hex()[:16]}"
 
     s3 = boto3.client(
@@ -120,7 +126,7 @@ def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
     # need to wire the remote manually and replicate clone logic
     result = bob_remote.get_latest_link()
     assert result is not None
-    (latest, etag) = result
+    latest, etag = result
     assert etag is not None
 
     [link_ids, branches, bundles, supp] = latest
@@ -129,6 +135,7 @@ def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
     assert supp["cod_version"] == "1.0.0"
 
     import tempfile
+
     bundle_uid = bundles[0][0]
     with tempfile.TemporaryDirectory() as td:
         bundle_path = f"{td}/clone.bundle"
@@ -136,8 +143,9 @@ def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
         CS.gitCmd(["clone", bundle_path, str(bob_repo / "checkout")])
 
     # Move contents up (clone creates a subdir)
-    import shutil
     import os
+    import shutil
+
     checkout = bob_repo / "checkout"
     for item in checkout.iterdir():
         shutil.move(str(item), str(bob_repo / item.name))

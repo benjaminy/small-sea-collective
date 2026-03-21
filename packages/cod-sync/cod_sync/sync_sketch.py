@@ -9,6 +9,7 @@
 # it just ferries opaque files to and from cloud storage.
 
 import pathlib
+
 import yaml
 
 from . import protocol as CS
@@ -18,7 +19,7 @@ def commit_any_changes(repo_dir):
     """Commit uncommitted changes in a repo (if any)."""
     repo_dir = str(repo_dir)
     diff_q = CS.gitCmd(["-C", repo_dir, "diff", "--quiet"], raise_on_error=False)
-    if 0 != diff_q.returncode:
+    if diff_q.returncode != 0:
         CS.gitCmd(["-C", repo_dir, "add", "-A"])
         CS.gitCmd(["-C", repo_dir, "commit", "-m", "TODO: Better commit message"])
 

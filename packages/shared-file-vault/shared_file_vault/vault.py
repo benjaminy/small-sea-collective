@@ -18,7 +18,7 @@ def uuid7():
     rand_bytes = secrets.token_bytes(10)
     b = struct.pack(">Q", timestamp_ms)[2:]  # 6 bytes of timestamp
     b += bytes([(0x70 | (rand_bytes[0] & 0x0F)), rand_bytes[1]])  # ver + rand_a
-    b += bytes([(0x80 | (rand_bytes[2] & 0x3F))]) + rand_bytes[3:10]  # variant + rand_b
+    b += bytes([0x80 | (rand_bytes[2] & 0x3F)]) + rand_bytes[3:10]  # variant + rand_b
     return b
 
 
@@ -34,7 +34,12 @@ def _db_path(vault_root, participant_hex, team_name):
 
 
 def _niche_git_dir(vault_root, participant_hex, team_name, niche_name):
-    return _vault_dir(vault_root, participant_hex, team_name) / "Niches" / niche_name / "git"
+    return (
+        _vault_dir(vault_root, participant_hex, team_name)
+        / "Niches"
+        / niche_name
+        / "git"
+    )
 
 
 def _connect(vault_root, participant_hex, team_name):
@@ -83,13 +88,17 @@ def create_niche(vault_root, participant_hex, team_name, niche_name):
 def checkout_niche(vault_root, participant_hex, team_name, niche_name, dest_path):
     """Check out a niche to a filesystem location using --separate-git-dir."""
     conn = _connect(vault_root, participant_hex, team_name)
-    row = conn.execute("SELECT checkout_path FROM niche WHERE name = ?", (niche_name,)).fetchone()
+    row = conn.execute(
+        "SELECT checkout_path FROM niche WHERE name = ?", (niche_name,)
+    ).fetchone()
     if row is None:
         conn.close()
         raise ValueError(f"Niche '{niche_name}' does not exist")
     if row["checkout_path"] is not None:
         conn.close()
-        raise ValueError(f"Niche '{niche_name}' is already checked out at {row['checkout_path']}")
+        raise ValueError(
+            f"Niche '{niche_name}' is already checked out at {row['checkout_path']}"
+        )
 
     dest = pathlib.Path(dest_path)
     dest.mkdir(parents=True, exist_ok=True)
@@ -143,7 +152,9 @@ def status(vault_root, participant_hex, team_name, niche_name):
     return entries
 
 
-def publish(vault_root, participant_hex, team_name, niche_name, files=None, message=None):
+def publish(
+    vault_root, participant_hex, team_name, niche_name, files=None, message=None
+):
     """Stage and commit changes. Returns commit hash."""
     git_dir, work_tree = _git_dirs(vault_root, participant_hex, team_name, niche_name)
     git_prefix = ["--git-dir", git_dir, "--work-tree", work_tree]
@@ -167,7 +178,16 @@ def log(vault_root, participant_hex, team_name, niche_name, limit=20):
     """Get commit log. Returns list of {hash, message} dicts."""
     git_dir, work_tree = _git_dirs(vault_root, participant_hex, team_name, niche_name)
     result = gitCmd(
-        ["--git-dir", git_dir, "--work-tree", work_tree, "log", "--oneline", "-n", str(limit)],
+        [
+            "--git-dir",
+            git_dir,
+            "--work-tree",
+            work_tree,
+            "log",
+            "--oneline",
+            "-n",
+            str(limit),
+        ],
         raise_on_error=False,
     )
 
@@ -175,14 +195,18 @@ def log(vault_root, participant_hex, team_name, niche_name, limit=20):
     for line in result.stdout.strip().splitlines():
         if line:
             parts = line.split(" ", 1)
-            entries.append({"hash": parts[0], "message": parts[1] if len(parts) > 1 else ""})
+            entries.append(
+                {"hash": parts[0], "message": parts[1] if len(parts) > 1 else ""}
+            )
     return entries
 
 
 def list_niches(vault_root, participant_hex, team_name):
     """List all niches. Returns list of dicts."""
     conn = _connect(vault_root, participant_hex, team_name)
-    rows = conn.execute("SELECT id, name, created_at, checkout_path FROM niche").fetchall()
+    rows = conn.execute(
+        "SELECT id, name, created_at, checkout_path FROM niche"
+    ).fetchall()
     conn.close()
 
     return [
@@ -198,7 +222,9 @@ def list_niches(vault_root, participant_hex, team_name):
 
 def push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
     """Push a niche to a cloud directory via Cod Sync bundle protocol."""
-    _git_dir, checkout_path = _git_dirs(vault_root, participant_hex, team_name, niche_name)
+    _git_dir, checkout_path = _git_dirs(
+        vault_root, participant_hex, team_name, niche_name
+    )
     saved_cwd = os.getcwd()
     try:
         os.chdir(checkout_path)
@@ -212,7 +238,9 @@ def push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
 
 def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
     """Pull a niche from a cloud directory via Cod Sync bundle protocol."""
-    _git_dir, checkout_path = _git_dirs(vault_root, participant_hex, team_name, niche_name)
+    _git_dir, checkout_path = _git_dirs(
+        vault_root, participant_hex, team_name, niche_name
+    )
     saved_cwd = os.getcwd()
     try:
         os.chdir(checkout_path)

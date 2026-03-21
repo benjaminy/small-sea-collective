@@ -1,14 +1,14 @@
 """Tests for the two-step PIN-based session approval flow."""
 
+from datetime import datetime, timedelta, timezone
+
 import pytest
-from datetime import datetime, timezone, timedelta
+import small_sea_hub.backend as SmallSea
+import small_sea_team_manager.provisioning as Provisioning
 from fastapi.testclient import TestClient
+from small_sea_hub.server import app
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session as SASession
-
-import small_sea_hub.backend as SmallSea
-from small_sea_hub.server import app
-import small_sea_team_manager.provisioning as Provisioning
 
 
 @pytest.fixture()
@@ -20,14 +20,22 @@ def test_env(playground_dir):
     return {"backend": backend, "client": client}
 
 
-def _request_and_confirm(client, participant="alice", app_name="SmallSeaCollectiveCore",
-                         team="NoteToSelf", client_name="Smoke Tests"):
-    resp = client.post("/sessions/request", json={
-        "participant": participant,
-        "app": app_name,
-        "team": team,
-        "client": client_name,
-    })
+def _request_and_confirm(
+    client,
+    participant="alice",
+    app_name="SmallSeaCollectiveCore",
+    team="NoteToSelf",
+    client_name="Smoke Tests",
+):
+    resp = client.post(
+        "/sessions/request",
+        json={
+            "participant": participant,
+            "app": app_name,
+            "team": team,
+            "client": client_name,
+        },
+    )
     assert resp.status_code == 200
     result = resp.json()
     pending_id = result["pending_id"]
@@ -50,7 +58,8 @@ def test_wrong_pin_rejected(test_env):
     """Confirming with the wrong PIN raises an error."""
     backend = test_env["backend"]
     pending_id_hex, correct_pin = backend.request_session(
-        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests")
+        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests"
+    )
 
     wrong_pin = str((int(correct_pin) + 1) % 10000).zfill(4)
     with pytest.raises(SmallSea.SmallSeaBackendExn, match="Invalid PIN"):
@@ -61,14 +70,18 @@ def test_expired_pin_rejected(test_env):
     """A pending session past its TTL is rejected."""
     backend = test_env["backend"]
     pending_id_hex, pin = backend.request_session(
-        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests")
+        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests"
+    )
 
     # Manually backdate the expires_at in the DB
     pending_id = bytes.fromhex(pending_id_hex)
     engine_local = create_engine(f"sqlite:///{backend.path_local_db}")
     with SASession(engine_local) as sess:
-        pending = sess.query(SmallSea.PendingSession).filter(
-            SmallSea.PendingSession.id == pending_id).first()
+        pending = (
+            sess.query(SmallSea.PendingSession)
+            .filter(SmallSea.PendingSession.id == pending_id)
+            .first()
+        )
         past = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
         pending.expires_at = past
         sess.commit()
@@ -81,14 +94,18 @@ def test_pending_row_deleted_after_confirm(test_env):
     """The pending_session row is cleaned up after successful confirmation."""
     backend = test_env["backend"]
     pending_id_hex, pin = backend.request_session(
-        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests")
+        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests"
+    )
     backend.confirm_session(pending_id_hex, pin)
 
     pending_id = bytes.fromhex(pending_id_hex)
     engine_local = create_engine(f"sqlite:///{backend.path_local_db}")
     with SASession(engine_local) as sess:
-        row = sess.query(SmallSea.PendingSession).filter(
-            SmallSea.PendingSession.id == pending_id).first()
+        row = (
+            sess.query(SmallSea.PendingSession)
+            .filter(SmallSea.PendingSession.id == pending_id)
+            .first()
+        )
     assert row is None
 
 
@@ -102,6 +119,9 @@ def test_session_requires_bearer_header(test_env):
 def test_invalid_bearer_rejected(test_env):
     """A malformed Authorization header returns 401."""
     client = test_env["client"]
-    resp = client.get("/cloud_file", params={"path": "foo.txt"},
-                      headers={"Authorization": "NotBearer abc"})
+    resp = client.get(
+        "/cloud_file",
+        params={"path": "foo.txt"},
+        headers={"Authorization": "NotBearer abc"},
+    )
     assert resp.status_code == 401

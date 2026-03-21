@@ -24,7 +24,8 @@ class SmallSeaNtfyAdapter:
 
     def poll(self, since="all", timeout=30):
         """GET {base_url}/{topic}/json?poll=1&since={since}.
-        Returns list of message dicts (only event="message", filters out open/keepalive)."""
+        Returns list of message dicts (only event="message", filters out open/keepalive).
+        """
         url = f"{self.base_url}/{self.topic}/json"
         params = {"poll": "1", "since": since}
         try:
@@ -38,6 +39,7 @@ class SmallSeaNtfyAdapter:
             if not line:
                 continue
             import json
+
             msg = json.loads(line)
             if msg.get("event") == "message":
                 messages.append(msg)

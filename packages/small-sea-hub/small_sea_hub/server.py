@@ -1,17 +1,15 @@
 #
 
+import os
+import sys
+from contextlib import asynccontextmanager
 from typing import Optional, Union
 
-import sys
-import os
-
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, Form, Request, HTTPException, Header, Depends
 import pydantic
-
-from small_sea_hub.config import Settings
+from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from small_sea_hub.backend import SmallSeaBackend
+from small_sea_hub.config import Settings
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,7 +32,9 @@ async def lifespan(app: FastAPI):
 
     print("Shutting down...")
 
+
 app = FastAPI(lifespan=lifespan)
+
 
 @app.get("/")
 async def root():
@@ -43,13 +43,17 @@ async def root():
 
 # ---- Authorization ----
 
+
 def _require_session(authorization: str = Header(...)):
     if not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
+        raise HTTPException(
+            status_code=401, detail="Missing or invalid Authorization header"
+        )
     return authorization[7:]
 
 
 # ---- Session management ----
+
 
 class SessionRequestReq(pydantic.BaseModel):
     participant: str
@@ -57,11 +61,13 @@ class SessionRequestReq(pydantic.BaseModel):
     team: str
     client: str
 
+
 @app.post("/sessions/request")
 async def request_session(req: SessionRequestReq):
     small_sea = app.state.backend
     pending_id_hex, pin = small_sea.request_session(
-        req.participant, req.app, req.team, req.client)
+        req.participant, req.app, req.team, req.client
+    )
     result = {"pending_id": pending_id_hex}
     if req.client == "Smoke Tests":
         result["pin"] = pin
@@ -72,6 +78,7 @@ class SessionConfirmReq(pydantic.BaseModel):
     pending_id: str
     pin: str
 
+
 @app.post("/sessions/confirm")
 async def confirm_session(req: SessionConfirmReq):
     small_sea = app.state.backend
@@ -81,58 +88,71 @@ async def confirm_session(req: SessionConfirmReq):
 
 # ---- Cloud storage ----
 
+
 class CloudUploadReq(pydantic.BaseModel):
     path: str
     data: str  # base64-encoded
     expected_etag: Optional[str] = None
 
+
 @app.post("/cloud_file")
-async def upload_to_cloud(req: CloudUploadReq, session_hex: str = Depends(_require_session)):
+async def upload_to_cloud(
+    req: CloudUploadReq, session_hex: str = Depends(_require_session)
+):
     import base64
+
     small_sea = app.state.backend
     decoded_data = base64.b64decode(req.data)
     ok, etag, msg = small_sea.upload_to_cloud(
-        session_hex, req.path, decoded_data, expected_etag=req.expected_etag)
+        session_hex, req.path, decoded_data, expected_etag=req.expected_etag
+    )
     if not ok:
         if msg == "CAS_CONFLICT":
-            raise HTTPException(status_code=409, detail="CAS conflict: file was modified concurrently")
+            raise HTTPException(
+                status_code=409, detail="CAS conflict: file was modified concurrently"
+            )
         raise HTTPException(status_code=500, detail=msg)
-    return { "ok": True, "etag": etag, "message": msg }
+    return {"ok": True, "etag": etag, "message": msg}
 
 
 @app.get("/cloud_file")
 async def download_from_cloud(path: str, session_hex: str = Depends(_require_session)):
     import base64
+
     small_sea = app.state.backend
     ok, data, etag = small_sea.download_from_cloud(session_hex, path)
     if not ok:
         raise HTTPException(status_code=404, detail=etag)
-    return { "ok": True, "data": base64.b64encode(data).decode(), "etag": etag }
+    return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
 
 
 # ---- Notifications ----
+
 
 class SendNotificationReq(pydantic.BaseModel):
     message: str
     title: Optional[str] = None
 
+
 @app.post("/notifications")
-async def send_notification(req: SendNotificationReq, session_hex: str = Depends(_require_session)):
+async def send_notification(
+    req: SendNotificationReq, session_hex: str = Depends(_require_session)
+):
     small_sea = app.state.backend
     ok, msg_id, err = small_sea.send_notification(
-        session_hex, req.message, title=req.title)
+        session_hex, req.message, title=req.title
+    )
     if not ok:
         raise HTTPException(status_code=500, detail=err)
-    return { "ok": True, "id": msg_id }
+    return {"ok": True, "id": msg_id}
 
 
 @app.get("/notifications")
 async def poll_notifications(
-        session_hex: str = Depends(_require_session),
-        since: Optional[str] = None,
-        timeout: int = 30):
+    session_hex: str = Depends(_require_session),
+    since: Optional[str] = None,
+    timeout: int = 30,
+):
     small_sea = app.state.backend
-    messages = small_sea.poll_notifications(
-        session_hex, since=since, timeout=timeout)
-    return { "ok": True, "messages": messages }
-
+    messages = small_sea.poll_notifications(session_hex, since=since, timeout=timeout)
+    return {"ok": True, "messages": messages}

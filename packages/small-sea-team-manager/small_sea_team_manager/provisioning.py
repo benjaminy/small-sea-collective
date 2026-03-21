@@ -10,30 +10,30 @@
 # The SQLAlchemy models here are duplicated from the hub — the SQLite DB
 # schema is the shared contract between the two packages.
 
-import os
-import struct
-import sqlite3
-import secrets
-import pathlib
-import time
-import json
 import base64
+import json
+import os
+import pathlib
+import secrets
+import sqlite3
+import struct
+import time
 from datetime import datetime, timezone
 
-from sqlalchemy import create_engine, text, Column, String, LargeBinary
-from sqlalchemy.orm import declarative_base, Session
-Base = declarative_base()
+from sqlalchemy import Column, LargeBinary, String, create_engine, text
+from sqlalchemy.orm import Session, declarative_base
 
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cryptography.hazmat.primitives import serialization
+Base = declarative_base()
 
 import shutil
 import subprocess
 
 import cod_sync.protocol as CodSync
-
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 # ---- UUIDv7 ----
+
 
 def uuid7():
     """Generate a UUIDv7 (time-ordered, random) as 16 bytes."""
@@ -53,14 +53,15 @@ def uuid7():
     # Bytes 9-15: 48 bits of rand
     b = struct.pack(">Q", timestamp_ms)[2:]  # 6 bytes of timestamp
     b += bytes([(0x70 | (rand_bytes[0] & 0x0F)), rand_bytes[1]])  # ver + rand_a
-    b += bytes([(0x80 | (rand_bytes[2] & 0x3F))]) + rand_bytes[3:10]  # variant + rand_b
+    b += bytes([0x80 | (rand_bytes[2] & 0x3F)]) + rand_bytes[3:10]  # variant + rand_b
     return b
 
 
 # ---- SQLAlchemy models for per-user core.db ----
 
+
 class UserDevice(Base):
-    __tablename__ = 'user_device'
+    __tablename__ = "user_device"
 
     id = Column(LargeBinary, primary_key=True)
     key = Column(LargeBinary, nullable=False)
@@ -70,7 +71,7 @@ class UserDevice(Base):
 
 
 class Nickname(Base):
-    __tablename__ = 'nickname'
+    __tablename__ = "nickname"
 
     id = Column(LargeBinary, primary_key=True)
     name = Column(String, nullable=False)
@@ -80,7 +81,7 @@ class Nickname(Base):
 
 
 class Team(Base):
-    __tablename__ = 'team'
+    __tablename__ = "team"
 
     id = Column(LargeBinary, primary_key=True)
     name = Column(String, nullable=False)
@@ -91,7 +92,7 @@ class Team(Base):
 
 
 class App(Base):
-    __tablename__ = 'app'
+    __tablename__ = "app"
 
     id = Column(LargeBinary, primary_key=True)
     name = Column(String, nullable=False)
@@ -101,7 +102,7 @@ class App(Base):
 
 
 class TeamAppStation(Base):
-    __tablename__ = 'team_app_station'
+    __tablename__ = "team_app_station"
 
     id = Column(LargeBinary, primary_key=True)
     team_id = Column(LargeBinary, nullable=False)
@@ -112,7 +113,7 @@ class TeamAppStation(Base):
 
 
 class NotificationService(Base):
-    __tablename__ = 'notification_service'
+    __tablename__ = "notification_service"
 
     id = Column(LargeBinary, primary_key=True)
     protocol = Column(String, nullable=False)
@@ -124,12 +125,13 @@ class NotificationService(Base):
 
 # ---- SQLAlchemy models for per-team core.db ----
 
+
 class Invitation(Base):
-    __tablename__ = 'invitation'
+    __tablename__ = "invitation"
 
     id = Column(LargeBinary, primary_key=True)
     nonce = Column(LargeBinary, nullable=False)
-    status = Column(String, nullable=False, default='pending')
+    status = Column(String, nullable=False, default="pending")
     invitee_label = Column(String)
     created_at = Column(String, nullable=False)
     accepted_at = Column(String)
@@ -144,7 +146,7 @@ class Invitation(Base):
 
 
 class Peer(Base):
-    __tablename__ = 'peer'
+    __tablename__ = "peer"
 
     id = Column(LargeBinary, primary_key=True)
     member_id = Column(LargeBinary, nullable=False)
@@ -158,7 +160,7 @@ class Peer(Base):
 
 
 class MemberCloud(Base):
-    __tablename__ = 'member_cloud'
+    __tablename__ = "member_cloud"
 
     id = Column(LargeBinary, primary_key=True)
     member_id = Column(LargeBinary, nullable=False)
@@ -178,6 +180,7 @@ USER_SCHEMA_VERSION = 46
 
 # ---- Provisioning functions ----
 
+
 def create_new_participant(root_dir, nickname, device=None):
     """Create a new participant: directory layout, user DB, git repo."""
     root_dir = pathlib.Path(root_dir)
@@ -189,11 +192,10 @@ def create_new_participant(root_dir, nickname, device=None):
     device_key_bytes = device_key.private_bytes(
         encoding=serialization.Encoding.Raw,
         format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption()
+        encryption_algorithm=serialization.NoEncryption(),
     )
     device_public_key_bytes = device_public_key.public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw
+        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
     )
 
     try:
@@ -218,10 +220,7 @@ def _initialize_user_db(root_dir, ident, nickname, device):
 
         with Session(engine) as session:
             nick1 = Nickname(id=uuid7(), name=nickname)
-            team1 = Team(
-                id=uuid7(),
-                name="NoteToSelf",
-                self_in_team=b"0")
+            team1 = Team(id=uuid7(), name="NoteToSelf", self_in_team=b"0")
             app1 = App(id=uuid7(), name="SmallSeaCollectiveCore")
             session.add_all([nick1, team1, app1])
             session.flush()
@@ -235,22 +234,32 @@ def _initialize_user_db(root_dir, ident, nickname, device):
     repo_dir = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
     CodSync.gitCmd(["init", "-b", "main", str(repo_dir)])
     CodSync.gitCmd(["-C", str(repo_dir), "add", "core.db"])
-    CodSync.gitCmd(["-C", str(repo_dir), "commit", "-m", f"Welcome to Small Sea Collective"])
+    CodSync.gitCmd(
+        ["-C", str(repo_dir), "commit", "-m", f"Welcome to Small Sea Collective"]
+    )
 
 
 def _migrate_user_db(conn, from_version):
     """Apply incremental migrations to bring a user DB up to USER_SCHEMA_VERSION."""
     if from_version < 44:
-        for col in ["client_id", "client_secret", "refresh_token",
-                     "access_token", "token_expiry", "path_metadata"]:
+        for col in [
+            "client_id",
+            "client_secret",
+            "refresh_token",
+            "access_token",
+            "token_expiry",
+            "path_metadata",
+        ]:
             conn.execute(text(f"ALTER TABLE cloud_storage ADD COLUMN {col} TEXT"))
     if from_version < 45:
-        conn.execute(text(
-            "CREATE TABLE IF NOT EXISTS notification_service ("
-            "id BLOB PRIMARY KEY, "
-            "protocol TEXT NOT NULL, "
-            "url TEXT NOT NULL)"
-        ))
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS notification_service ("
+                "id BLOB PRIMARY KEY, "
+                "protocol TEXT NOT NULL, "
+                "url TEXT NOT NULL)"
+            )
+        )
     if from_version < 46:
         pass  # team DB schema updated (app, team_app_station, station_role); NoteToSelf schema unchanged
 
@@ -326,10 +335,15 @@ def _install_sqlite_merge_driver(team_sync_dir):
         merge_bin = "harmonic-sqlite-merge"
 
     driver_cmd = f"{merge_bin} %O %A %B %L %P"
-    CodSync.gitCmd([
-        "-C", str(team_sync_dir),
-        "config", "merge.harmonic-sqlite.driver", driver_cmd,
-    ])
+    CodSync.gitCmd(
+        [
+            "-C",
+            str(team_sync_dir),
+            "config",
+            "merge.harmonic-sqlite.driver",
+            driver_cmd,
+        ]
+    )
 
 
 def create_team(root_dir, participant_hex, team_name):
@@ -354,10 +368,7 @@ def create_team(root_dir, participant_hex, team_name):
     engine = create_engine(f"sqlite:///{user_db_path}")
 
     with Session(engine) as session:
-        team_row = Team(
-            id=team_id,
-            name=team_name,
-            self_in_team=member_id)
+        team_row = Team(id=team_id, name=team_name, self_in_team=member_id)
         session.add(team_row)
         session.commit()
 
@@ -372,16 +383,22 @@ def create_team(root_dir, participant_hex, team_name):
     app_id = uuid7()
     station_id = uuid7()
     with team_engine.begin() as conn:
-        conn.execute(text("INSERT INTO member (id) VALUES (:id)"),
-                     {"id": member_id})
-        conn.execute(text("INSERT INTO app (id, name) VALUES (:id, :name)"),
-                     {"id": app_id, "name": "SmallSeaCollectiveCore"})
-        conn.execute(text("INSERT INTO team_app_station (id, app_id) VALUES (:id, :app_id)"),
-                     {"id": station_id, "app_id": app_id})
-        conn.execute(text(
-            "INSERT INTO station_role (id, member_id, station_id, role) "
-            "VALUES (:id, :mid, :sid, :role)"
-        ), {"id": uuid7(), "mid": member_id, "sid": station_id, "role": "read-write"})
+        conn.execute(text("INSERT INTO member (id) VALUES (:id)"), {"id": member_id})
+        conn.execute(
+            text("INSERT INTO app (id, name) VALUES (:id, :name)"),
+            {"id": app_id, "name": "SmallSeaCollectiveCore"},
+        )
+        conn.execute(
+            text("INSERT INTO team_app_station (id, app_id) VALUES (:id, :app_id)"),
+            {"id": station_id, "app_id": app_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO station_role (id, member_id, station_id, role) "
+                "VALUES (:id, :mid, :sid, :role)"
+            ),
+            {"id": uuid7(), "mid": member_id, "sid": station_id, "role": "read-write"},
+        )
 
     # --- Git init ---
     CodSync.gitCmd(["init", "-b", "main", str(team_sync_dir)])
@@ -389,10 +406,16 @@ def create_team(root_dir, participant_hex, team_name):
     CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
     CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"New team: {team_name}"])
 
-    return {"team_id_hex": team_id.hex(), "member_id_hex": member_id.hex(), "station_id_hex": station_id.hex()}
+    return {
+        "team_id_hex": team_id.hex(),
+        "member_id_hex": member_id.hex(),
+        "station_id_hex": station_id.hex(),
+    }
 
 
-def create_invitation(root_dir, participant_hex, team_name, inviter_cloud, invitee_label=None):
+def create_invitation(
+    root_dir, participant_hex, team_name, inviter_cloud, invitee_label=None
+):
     """Create an invitation token for a team.
 
     inviter_cloud: dict with keys protocol, url, access_key, secret_key.
@@ -426,10 +449,13 @@ def create_invitation(root_dir, participant_hex, team_name, inviter_cloud, invit
     now = datetime.now(timezone.utc).isoformat()
 
     with team_engine.begin() as conn:
-        conn.execute(text(
-            "INSERT INTO invitation (id, nonce, status, invitee_label, created_at) "
-            "VALUES (:id, :nonce, 'pending', :label, :created_at)"
-        ), {"id": inv_id, "nonce": nonce, "label": invitee_label, "created_at": now})
+        conn.execute(
+            text(
+                "INSERT INTO invitation (id, nonce, status, invitee_label, created_at) "
+                "VALUES (:id, :nonce, 'pending', :label, :created_at)"
+            ),
+            {"id": inv_id, "nonce": nonce, "label": invitee_label, "created_at": now},
+        )
 
     # Build token
     token_data = {
@@ -451,7 +477,9 @@ def create_invitation(root_dir, participant_hex, team_name, inviter_cloud, invit
     return token_b64
 
 
-def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cloud, acceptor_bucket):
+def accept_invitation(
+    root_dir, acceptor_participant_hex, token_b64, acceptor_cloud, acceptor_bucket
+):
     """Accept a team invitation token (acceptor side).
 
     Clones the team repo from the inviter's cloud, adds self as member,
@@ -484,8 +512,11 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
 
     # --- Clone the team repo from inviter's cloud ---
     inviter_remote = CodSync.S3Remote(
-        inviter_cloud["url"], inviter_bucket,
-        inviter_cloud["access_key"], inviter_cloud["secret_key"])
+        inviter_cloud["url"],
+        inviter_bucket,
+        inviter_cloud["access_key"],
+        inviter_cloud["secret_key"],
+    )
 
     saved_cwd = os.getcwd()
     os.chdir(team_sync_dir)
@@ -501,7 +532,9 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
         )
         result = cod.clone_from_remote(inviter_s3_url)
         if result != 0:
-            raise RuntimeError(f"Failed to clone team repo from inviter's cloud (code {result})")
+            raise RuntimeError(
+                f"Failed to clone team repo from inviter's cloud (code {result})"
+            )
     finally:
         os.chdir(saved_cwd)
 
@@ -510,20 +543,24 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
     team_engine = create_engine(f"sqlite:///{team_db_path}")
 
     with team_engine.begin() as conn:
-        conn.execute(text("INSERT INTO member (id) VALUES (:id)"),
-                     {"id": acceptor_member_id})
+        conn.execute(
+            text("INSERT INTO member (id) VALUES (:id)"), {"id": acceptor_member_id}
+        )
         # Store inviter's cloud info as a peer
-        conn.execute(text(
-            "INSERT INTO peer (id, member_id, protocol, url, access_key, secret_key) "
-            "VALUES (:id, :member_id, :protocol, :url, :access_key, :secret_key)"
-        ), {
-            "id": uuid7(),
-            "member_id": inviter_member_id,
-            "protocol": inviter_cloud["protocol"],
-            "url": inviter_cloud["url"],
-            "access_key": inviter_cloud.get("access_key"),
-            "secret_key": inviter_cloud.get("secret_key"),
-        })
+        conn.execute(
+            text(
+                "INSERT INTO peer (id, member_id, protocol, url, access_key, secret_key) "
+                "VALUES (:id, :member_id, :protocol, :url, :access_key, :secret_key)"
+            ),
+            {
+                "id": uuid7(),
+                "member_id": inviter_member_id,
+                "protocol": inviter_cloud["protocol"],
+                "url": inviter_cloud["url"],
+                "access_key": inviter_cloud.get("access_key"),
+                "secret_key": inviter_cloud.get("secret_key"),
+            },
+        )
 
     team_engine.dispose()
 
@@ -544,12 +581,17 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
 
     # --- Git commit the DB changes ---
     CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
-    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Joined team: {team_name}"])
+    CodSync.gitCmd(
+        ["-C", str(team_sync_dir), "commit", "-m", f"Joined team: {team_name}"]
+    )
 
     # --- Push to acceptor's cloud ---
     acceptor_remote = CodSync.S3Remote(
-        acceptor_cloud["url"], acceptor_bucket,
-        acceptor_cloud["access_key"], acceptor_cloud["secret_key"])
+        acceptor_cloud["url"],
+        acceptor_bucket,
+        acceptor_cloud["access_key"],
+        acceptor_cloud["secret_key"],
+    )
 
     saved_cwd = os.getcwd()
     os.chdir(team_sync_dir)
@@ -575,7 +617,9 @@ def accept_invitation(root_dir, acceptor_participant_hex, token_b64, acceptor_cl
     return acceptance_b64
 
 
-def complete_invitation_acceptance(root_dir, participant_hex, team_name, acceptance_b64):
+def complete_invitation_acceptance(
+    root_dir, participant_hex, team_name, acceptance_b64
+):
     """Complete an invitation acceptance (inviter side).
 
     Decodes the acceptance response, validates it against the invitation row,
@@ -600,7 +644,7 @@ def complete_invitation_acceptance(root_dir, participant_hex, team_name, accepta
     with engine.begin() as conn:
         row = conn.execute(
             text("SELECT nonce, status FROM invitation WHERE id = :id"),
-            {"id": invitation_id}
+            {"id": invitation_id},
         ).fetchone()
 
         if row is None:
@@ -615,36 +659,43 @@ def complete_invitation_acceptance(root_dir, participant_hex, team_name, accepta
             raise ValueError("Nonce mismatch")
 
         now = datetime.now(timezone.utc).isoformat()
-        conn.execute(text(
-            "UPDATE invitation SET status='accepted', accepted_at=:now, "
-            "accepted_by=:member_id, acceptor_protocol=:protocol, "
-            "acceptor_url=:url, acceptor_access_key=:access_key, "
-            "acceptor_secret_key=:secret_key "
-            "WHERE id = :id"
-        ), {
-            "id": invitation_id,
-            "now": now,
-            "member_id": acceptor_member_id,
-            "protocol": acceptor_cloud["protocol"],
-            "url": acceptor_cloud["url"],
-            "access_key": acceptor_cloud.get("access_key"),
-            "secret_key": acceptor_cloud.get("secret_key"),
-        })
+        conn.execute(
+            text(
+                "UPDATE invitation SET status='accepted', accepted_at=:now, "
+                "accepted_by=:member_id, acceptor_protocol=:protocol, "
+                "acceptor_url=:url, acceptor_access_key=:access_key, "
+                "acceptor_secret_key=:secret_key "
+                "WHERE id = :id"
+            ),
+            {
+                "id": invitation_id,
+                "now": now,
+                "member_id": acceptor_member_id,
+                "protocol": acceptor_cloud["protocol"],
+                "url": acceptor_cloud["url"],
+                "access_key": acceptor_cloud.get("access_key"),
+                "secret_key": acceptor_cloud.get("secret_key"),
+            },
+        )
 
         # Add acceptor as member + peer in inviter's team DB
-        conn.execute(text("INSERT INTO member (id) VALUES (:id)"),
-                     {"id": acceptor_member_id})
-        conn.execute(text(
-            "INSERT INTO peer (id, member_id, protocol, url, access_key, secret_key) "
-            "VALUES (:id, :member_id, :protocol, :url, :access_key, :secret_key)"
-        ), {
-            "id": uuid7(),
-            "member_id": acceptor_member_id,
-            "protocol": acceptor_cloud["protocol"],
-            "url": acceptor_cloud["url"],
-            "access_key": acceptor_cloud.get("access_key"),
-            "secret_key": acceptor_cloud.get("secret_key"),
-        })
+        conn.execute(
+            text("INSERT INTO member (id) VALUES (:id)"), {"id": acceptor_member_id}
+        )
+        conn.execute(
+            text(
+                "INSERT INTO peer (id, member_id, protocol, url, access_key, secret_key) "
+                "VALUES (:id, :member_id, :protocol, :url, :access_key, :secret_key)"
+            ),
+            {
+                "id": uuid7(),
+                "member_id": acceptor_member_id,
+                "protocol": acceptor_cloud["protocol"],
+                "url": acceptor_cloud["url"],
+                "access_key": acceptor_cloud.get("access_key"),
+                "secret_key": acceptor_cloud.get("secret_key"),
+            },
+        )
 
         # Grant the acceptor read-write on all stations (default).
         # The inviter (admin) can change this later.
@@ -652,18 +703,25 @@ def complete_invitation_acceptance(root_dir, participant_hex, team_name, accepta
             text("SELECT id FROM team_app_station LIMIT 1")
         ).fetchone()
         if station_row is not None:
-            conn.execute(text(
-                "INSERT INTO station_role (id, member_id, station_id, role) "
-                "VALUES (:id, :mid, :sid, :role)"
-            ), {"id": uuid7(), "mid": acceptor_member_id, "sid": station_row[0], "role": "read-write"})
+            conn.execute(
+                text(
+                    "INSERT INTO station_role (id, member_id, station_id, role) "
+                    "VALUES (:id, :mid, :sid, :role)"
+                ),
+                {
+                    "id": uuid7(),
+                    "mid": acceptor_member_id,
+                    "sid": station_row[0],
+                    "role": "read-write",
+                },
+            )
 
     # Dispose engine to release file locks before git operations
     engine.dispose()
 
     team_sync_dir = participant_dir / team_name / "Sync"
     CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m",
-                    f"Accepted invitation"])
+    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Accepted invitation"])
 
 
 def add_notification_service(root_dir, participant_hex, protocol, url):
@@ -675,15 +733,13 @@ def add_notification_service(root_dir, participant_hex, protocol, url):
         raise ValueError(f"Unknown notification protocol: {protocol}")
 
     root_dir = pathlib.Path(root_dir)
-    user_db_path = (root_dir / "Participants" / participant_hex /
-                    "NoteToSelf" / "Sync" / "core.db")
+    user_db_path = (
+        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
     engine = create_engine(f"sqlite:///{user_db_path}")
     ns_id = uuid7()
     with Session(engine) as session:
-        ns = NotificationService(
-            id=ns_id,
-            protocol=protocol,
-            url=url)
+        ns = NotificationService(id=ns_id, protocol=protocol, url=url)
         session.add(ns)
         session.commit()
     return ns_id.hex()
@@ -692,14 +748,15 @@ def add_notification_service(root_dir, participant_hex, protocol, url):
 def list_invitations(root_dir, participant_hex, team_name):
     """List invitations for a team. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
-    team_db_path = (root_dir / "Participants" / participant_hex /
-                    team_name / "Sync" / "core.db")
+    team_db_path = (
+        root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
+    )
     engine = create_engine(f"sqlite:///{team_db_path}")
 
     with engine.begin() as conn:
-        rows = conn.execute(text(
-            "SELECT id, status, invitee_label, created_at FROM invitation"
-        )).fetchall()
+        rows = conn.execute(
+            text("SELECT id, status, invitee_label, created_at FROM invitation")
+        ).fetchall()
 
     return [
         {

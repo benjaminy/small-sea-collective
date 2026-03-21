@@ -36,16 +36,25 @@ def minio_server_gen():
         env = os.environ.copy()
         env["MINIO_ROOT_USER"] = "minioadmin"
         env["MINIO_ROOT_PASSWORD"] = "minioadmin"
-        proc = subprocess.Popen([
-            "minio", "server", root_dir,
-            "--address", f":{port}",
-            "--console-address", f":{port + 1}",
-        ], env=env)
-        servers.append({
-            "proc": proc,
-            "root_dir": root_dir,
-            "root_created": root_dir_created,
-        })
+        proc = subprocess.Popen(
+            [
+                "minio",
+                "server",
+                root_dir,
+                "--address",
+                f":{port}",
+                "--console-address",
+                f":{port + 1}",
+            ],
+            env=env,
+        )
+        servers.append(
+            {
+                "proc": proc,
+                "root_dir": root_dir,
+                "root_created": root_dir_created,
+            }
+        )
         time.sleep(2)
         if proc.poll() is not None:
             raise RuntimeError(f"MinIO exited early (code {proc.returncode})")

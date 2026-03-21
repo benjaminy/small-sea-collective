@@ -1,4 +1,4 @@
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -14,9 +14,8 @@ def is_token_expired(token_expiry: str | None) -> bool:
 
 
 def refresh_google_token(
-        client_id: str,
-        client_secret: str,
-        refresh_token: str) -> tuple[str, str]:
+    client_id: str, client_secret: str, refresh_token: str
+) -> tuple[str, str]:
     """Refresh a Google OAuth2 access token.
 
     Returns (access_token, expiry_iso) where expiry_iso is an ISO 8601 timestamp.
@@ -39,9 +38,8 @@ def refresh_google_token(
 
 
 def refresh_dropbox_token(
-        client_id: str,
-        client_secret: str,
-        refresh_token: str) -> tuple[str, str]:
+    client_id: str, client_secret: str, refresh_token: str
+) -> tuple[str, str]:
     """Refresh a Dropbox OAuth2 access token.
 
     Returns (access_token, expiry_iso) where expiry_iso is an ISO 8601 timestamp.

@@ -3,9 +3,8 @@ import json
 import httpx
 import pytest
 import respx
-
-from small_sea_hub.adapters.dropbox import SmallSeaDropboxAdapter, DROPBOX_CONTENT
-
+from small_sea_hub.adapters.dropbox import (DROPBOX_CONTENT,
+                                            SmallSeaDropboxAdapter)
 
 TOKEN = "test-access-token"
 
@@ -15,6 +14,7 @@ def make_adapter():
 
 
 # ---- Download ----
+
 
 @respx.mock
 def test_download_success():
@@ -39,10 +39,13 @@ def test_download_not_found():
     adapter = make_adapter()
 
     respx.post(f"{DROPBOX_CONTENT}/files/download").mock(
-        return_value=httpx.Response(409, json={
-            "error_summary": "path/not_found/...",
-            "error": {".tag": "path", "path": {".tag": "not_found"}},
-        })
+        return_value=httpx.Response(
+            409,
+            json={
+                "error_summary": "path/not_found/...",
+                "error": {".tag": "path", "path": {".tag": "not_found"}},
+            },
+        )
     )
 
     ok, data, msg = adapter.download("missing.txt")
@@ -52,15 +55,19 @@ def test_download_not_found():
 
 # ---- Upload overwrite ----
 
+
 @respx.mock
 def test_upload_overwrite():
     adapter = make_adapter()
 
     respx.post(f"{DROPBOX_CONTENT}/files/upload").mock(
-        return_value=httpx.Response(200, json={
-            "name": "file.txt",
-            "rev": "rev002",
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "name": "file.txt",
+                "rev": "rev002",
+            },
+        )
     )
 
     ok, rev, msg = adapter.upload_overwrite("file.txt", b"data")
@@ -75,15 +82,19 @@ def test_upload_overwrite():
 
 # ---- Upload fresh ----
 
+
 @respx.mock
 def test_upload_fresh_success():
     adapter = make_adapter()
 
     respx.post(f"{DROPBOX_CONTENT}/files/upload").mock(
-        return_value=httpx.Response(200, json={
-            "name": "new.txt",
-            "rev": "rev003",
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "name": "new.txt",
+                "rev": "rev003",
+            },
+        )
     )
 
     ok, rev, msg = adapter.upload_fresh("new.txt", b"brand new")
@@ -100,10 +111,13 @@ def test_upload_fresh_already_exists():
     adapter = make_adapter()
 
     respx.post(f"{DROPBOX_CONTENT}/files/upload").mock(
-        return_value=httpx.Response(409, json={
-            "error_summary": "path/conflict/file/...",
-            "error": {".tag": "path", "reason": {".tag": "conflict"}},
-        })
+        return_value=httpx.Response(
+            409,
+            json={
+                "error_summary": "path/conflict/file/...",
+                "error": {".tag": "path", "reason": {".tag": "conflict"}},
+            },
+        )
     )
 
     ok, rev, msg = adapter.upload_fresh("existing.txt", b"nope")
@@ -113,15 +127,19 @@ def test_upload_fresh_already_exists():
 
 # ---- Upload if-match (rev-based conditional write) ----
 
+
 @respx.mock
 def test_upload_if_match_success():
     adapter = make_adapter()
 
     respx.post(f"{DROPBOX_CONTENT}/files/upload").mock(
-        return_value=httpx.Response(200, json={
-            "name": "file.txt",
-            "rev": "rev004",
-        })
+        return_value=httpx.Response(
+            200,
+            json={
+                "name": "file.txt",
+                "rev": "rev004",
+            },
+        )
     )
 
     ok, rev, msg = adapter.upload_if_match("file.txt", b"updated", "rev003")
@@ -138,10 +156,13 @@ def test_upload_if_match_conflict():
     adapter = make_adapter()
 
     respx.post(f"{DROPBOX_CONTENT}/files/upload").mock(
-        return_value=httpx.Response(409, json={
-            "error_summary": "path/conflict/...",
-            "error": {".tag": "path", "reason": {".tag": "conflict"}},
-        })
+        return_value=httpx.Response(
+            409,
+            json={
+                "error_summary": "path/conflict/...",
+                "error": {".tag": "path", "reason": {".tag": "conflict"}},
+            },
+        )
     )
 
     ok, rev, msg = adapter.upload_if_match("file.txt", b"conflict", "old-rev")

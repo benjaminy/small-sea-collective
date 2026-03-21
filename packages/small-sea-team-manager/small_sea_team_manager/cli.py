@@ -1,12 +1,13 @@
 # Top Matter
 
 import click
-
 from small_sea_team_manager.manager import TeamManager
 
 
 @click.group()
-@click.option("--hub-port", type=int, default=11437, help="Port for the local Small Sea Hub")
+@click.option(
+    "--hub-port", type=int, default=11437, help="Port for the local Small Sea Hub"
+)
 @click.pass_context
 def cli(ctx, hub_port):
     """Small Sea Team Manager CLI"""

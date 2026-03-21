@@ -1,19 +1,20 @@
 # Top Matter
 
+import json
 import os
 
 import click
-
-import json
-
 import small_sea_client.client as SmallSeaLib
+
 
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose output")
-@click.option("--hub_port", type=int, default=11437, help="Port number for the local hub")
+@click.option(
+    "--hub_port", type=int, default=11437, help="Port number for the local hub"
+)
 @click.pass_context
 def cli(ctx, verbose, hub_port):
-    """ Small Sea Core CLI tool """
+    """Small Sea Core CLI tool"""
     ctx.ensure_object(dict)
     ctx.obj["verbose"] = verbose
     ctx.obj["hub_port"] = hub_port
@@ -21,17 +22,17 @@ def cli(ctx, verbose, hub_port):
 
 @cli.command()
 @click.argument("nickname")
-@click.option("--cloud_backend", type=click.Choice(["s3", "webdav","drive"]))
+@click.option("--cloud_backend", type=click.Choice(["s3", "webdav", "drive"]))
 @click.option("--cloud_url")
 @click.pass_context
 def new_participant(ctx, nickname, cloud_backend, cloud_url):
-    """ Create a new participant identity in the SmallSea universe.
+    """Create a new participant identity in the SmallSea universe.
 
     In normal day to day operations, it should be an uncommon command
     """
     small_sea = SmallSeaLib.SmallSeaClient()
     try:
-        result = small_sea.create_new_participant( nickname )
+        result = small_sea.create_new_participant(nickname)
     except SmallSeaLib.SmallSeaHubUnavailable as exn:
         print(f"Failed to connect to Small Sea Hub")
         return
@@ -46,17 +47,20 @@ def new_participant(ctx, nickname, cloud_backend, cloud_url):
 @click.argument("nickname")
 @click.argument("team_name")
 @click.pass_context
-def open_session(ctx, nickname, team_name ):
-    def encode_sessions( ss ):
-        """ First serialize the keys, then the whole dict """
-        step1 = { json.dumps(k): v for k, v in ss.items() }
+def open_session(ctx, nickname, team_name):
+    def encode_sessions(ss):
+        """First serialize the keys, then the whole dict"""
+        step1 = {json.dumps(k): v for k, v in ss.items()}
         return json.dumps(step1)
-    def decode_sessions( ss_str ):
-        """ First deserialize the dict, then the keys """
-        step1 = json.loads(ss_str)
-        return { json.loads(k): v for k, v in step1 }
 
-    sessions_env_str = os.getenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", json.dumps({}))
+    def decode_sessions(ss_str):
+        """First deserialize the dict, then the keys"""
+        step1 = json.loads(ss_str)
+        return {json.loads(k): v for k, v in step1}
+
+    sessions_env_str = os.getenv(
+        "SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", json.dumps({})
+    )
     session = None
     format_error = True
     try:
@@ -72,36 +76,38 @@ def open_session(ctx, nickname, team_name ):
         sessions = {}
 
     if session is None:
-        click.echo( f"No session for {nickname} {team_name}. Requesting a session." )
+        click.echo(f"No session for {nickname} {team_name}. Requesting a session.")
         small_sea = SmallSeaLib.SmallSeaClient()
-        session = small_sea.open_session( nickname, "small_sea_collective_core_app", team_name, "small_sea_tui" )
-        sessions[ ( nickname, team_name ) ] = session
+        session = small_sea.open_session(
+            nickname, "small_sea_collective_core_app", team_name, "small_sea_tui"
+        )
+        sessions[(nickname, team_name)] = session
         os.putenv("SMALL_SEA_COLLECTIVE_CORE_TUI_SESSIONS", encode_sessions(sessions))
 
     session = sessions[(nickname, team_name)]
-    click.echo( f"OMG {session}" )
+    click.echo(f"OMG {session}")
     return session
 
 
 @cli.command()
 @click.argument("nickname")
-@click.argument("backend", type=click.Choice(["s3", "webdav","drive"]))
+@click.argument("backend", type=click.Choice(["s3", "webdav", "drive"]))
 @click.argument("url")
 @click.pass_context
-def add_cloud(ctx, nickname, backend, url ):
+def add_cloud(ctx, nickname, backend, url):
     small_sea = SmallSeaLib.SmallSeaClient()
-    session = open_session( nickname, "NoteToSelf" )
-    small_sea.add_cloud_location( session, backend, url )
+    session = open_session(nickname, "NoteToSelf")
+    small_sea.add_cloud_location(session, backend, url)
 
 
 @cli.command()
 @click.argument("nickname")
 @click.argument("team_name")
 @click.pass_context
-def create_new_team(ctx, nickname, team_name ):
+def create_new_team(ctx, nickname, team_name):
     small_sea = SmallSeaLib.SmallSeaClient()
-    session = open_session( nickname, "NoteToSelf" )
-    small_sea.create_new_team( session, team_name )
+    session = open_session(nickname, "NoteToSelf")
+    small_sea.create_new_team(session, team_name)
 
 
 # @cli.command()
@@ -111,7 +117,11 @@ def create_new_team(ctx, nickname, team_name ):
 @cli.command()
 @click.argument("nickname")
 @click.argument("team_name")
-@click.option("--abort_on_stale", is_flag=True, help="If the local copy is stale, abort instead of automatically reconciling")
+@click.option(
+    "--abort_on_stale",
+    is_flag=True,
+    help="If the local copy is stale, abort instead of automatically reconciling",
+)
 @click.pass_context
 def upload_snapshot(ctx, nickname, team_name):
     small_sea = SmallSeaLib.SmallSeaClient()

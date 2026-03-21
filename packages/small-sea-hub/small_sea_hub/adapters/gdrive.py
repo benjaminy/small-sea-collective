@@ -73,11 +73,12 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
         return True, resp.content, etag
 
     def _upload(
-            self,
-            path: str,
-            data: bytes,
-            expected_etag: Optional[str],
-            content_type: str = "application/octet-stream"):
+        self,
+        path: str,
+        data: bytes,
+        expected_etag: Optional[str],
+        content_type: str = "application/octet-stream",
+    ):
         file_id = self._find_file_id(path)
 
         if expected_etag == "*":
@@ -117,18 +118,24 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
         # Multipart upload: metadata + file content
         boundary = "small_sea_boundary"
         body = (
-            f"--{boundary}\r\n"
-            f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
-            f"{metadata}\r\n"
-            f"--{boundary}\r\n"
-            f"Content-Type: {content_type}\r\n\r\n"
-        ).encode() + data + f"\r\n--{boundary}--".encode()
+            (
+                f"--{boundary}\r\n"
+                f"Content-Type: application/json; charset=UTF-8\r\n\r\n"
+                f"{metadata}\r\n"
+                f"--{boundary}\r\n"
+                f"Content-Type: {content_type}\r\n\r\n"
+            ).encode()
+            + data
+            + f"\r\n--{boundary}--".encode()
+        )
 
         resp = httpx.post(
             f"{DRIVE_UPLOAD}/files",
-            headers=self._headers({
-                "Content-Type": f"multipart/related; boundary={boundary}",
-            }),
+            headers=self._headers(
+                {
+                    "Content-Type": f"multipart/related; boundary={boundary}",
+                }
+            ),
             params={"uploadType": "multipart"},
             content=body,
         )
