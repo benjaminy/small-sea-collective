@@ -12,11 +12,11 @@
 # signed statement that a set of keys all belong to the same participant?
 # Bindings are more powerful but have trickier revocation semantics.
 #
-# Related prior work to investigate:
+# Related prior work (see README.md § Prior Art for full list):
+#   - Matrix cross-signing QR verification — closest production ceremony UX
 #   - Signal Safety Number / fingerprint comparison
-#   - CONIKS / Key Transparency
-#   - Keybase social proof model (no central server analogue needed here)
-#   - TOFU + key continuity (SSH model)
+#   - Briar QR code contact exchange
+#   - Keybase sigchain — public audit trail for key operations
 
 from __future__ import annotations
 

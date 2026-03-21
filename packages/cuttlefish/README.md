@@ -142,12 +142,7 @@ addressed through lightweight physical ceremonies:
   chain, transitively extends the trust. The goal is that a user should never
   need to think about which key is being signed.
 
-This is related to (and should build on, if usable) prior work on:
-- TOFU + key continuity (as in SSH)
-- CONIKS / Key Transparency
-- The Signal Safety Number / fingerprint comparison UX
-- Keybase's social proof model (though Cuttlefish has no central keybase-style
-  server)
+See the Prior Art section below for related systems (Matrix, Keybase, Briar).
 
 **Open question**: whether the bump ceremony should sign a single key or a
 *binding* (a signed statement that "these keys all belong to the same
@@ -195,6 +190,82 @@ key. It is the natural choice for signing revocations of lower-level keys.
 | `identity.py` | Certificates, the CA hierarchy, signing and verification |
 | `ceremony.py` | Key signing ceremony helpers (QR / bump exchange format) |
 | `trust.py` | Trust chain traversal and policy evaluation |
+
+---
+
+## Prior Art
+
+The individual pieces of Cuttlefish's design have strong prior art; their
+specific combination — particularly the two-dimensional key model (protection
+level x age) with relying-party-configurable trust policy — appears to be
+novel. No existing system combines all three of: physical ceremonies,
+hierarchical per-participant keys, and a fully decentralized web of trust.
+
+### Systems to study and build on
+
+**Matrix cross-signing** — the closest production system. Three-key hierarchy
+(Master → Self-Signing → User-Signing) maps roughly to BURIED/GUARDED/DAILY.
+QR-based verification ceremonies. Trust is binary (verified or not); no
+concept of key age as a positive signal. Federated, not fully decentralized.
+- [Cross-signing overview](https://jcg.re/blog/quick-overview-matrix-cross-signing/)
+- [E2EE implementation guide](https://matrix.org/docs/matrix-concepts/end-to-end-encryption/)
+
+**Keybase sigchains** — multi-device key management with a public audit trail.
+Each device has its own key-pair; a Per-User Key (PUK) is encrypted to all
+active device keys and rotated on revocation. Paper keys serve as offline
+recovery. The sigchain concept is the best reference for how Cuttlefish
+should structure its public certificate log. Effectively dead (Zoom
+acquisition 2020), but the client is open source and an NCC Group security
+audit is public.
+- [New key model](https://keybase.io/blog/keybase-new-key-model)
+- [Per-User Keys](https://book.keybase.io/docs/teams/puk)
+- [NCC Group audit](https://keybase.io/docs-assets/blog/NCC_Group_Keybase_KB2018_Public_Report_2019-02-27_v1.3.pdf)
+
+**OpenPGP offline master key + subkeys** — the BURIED/GUARDED/DAILY hierarchy
+maps almost directly to the standard GPG best practice of an offline master
+that certifies online subkeys. Battle-tested. Sequoia PGP's web-of-trust
+implementation models trust evaluation as a max-flow network problem — the
+closest existing implementation of configurable trust policy evaluation.
+- [Sequoia web of trust](https://sequoia-pgp.gitlab.io/sequoia-wot/)
+- [Debian subkeys guide](https://wiki.debian.org/Subkeys)
+
+**KERI** (Key Event Receipt Infrastructure) — fully decentralized identity
+with pre-rotation: commit to the hash of your next key before you need it.
+If the current key is compromised, rotate to the pre-committed key. Key
+events form a hash-chained log verifiable by anyone. Specified as an IETF
+Internet-Draft, used by GLEIF.
+- [KERI paper (arXiv:1907.02143)](https://arxiv.org/abs/1907.02143)
+- [KERI Made Easy (DIF)](https://identity.foundation/keri/docs/KERI-made-easy.html)
+
+**SPKI/SDSI** (Rivest & Lampson, 1990s) — decentralized certificate system
+with authorization-centric design and "threshold subjects" (K-of-N policy).
+The threshold construct is the closest existing mechanism to Cuttlefish's
+relying-party-configurable trust policy. Academically influential but saw
+essentially zero real-world deployment.
+- [SPKI/SDSI certificate chain discovery](https://people.csail.mit.edu/rivest/pubs/CEEFx01.pdf)
+
+**CONIKS / Key Transparency** — Merkle-tree-based key directory that prevents
+a provider from lying about key bindings. Complementary to (not overlapping
+with) Cuttlefish's web of trust. Apple has shipped it for iMessage. IETF
+standardization in progress.
+- [CONIKS paper (USENIX)](https://www.usenix.org/conference/usenixsecurity15/technical-sessions/presentation/melara)
+- [IETF keytrans working group](https://datatracker.ietf.org/wg/keytrans/about/)
+
+### What's novel in Cuttlefish
+
+1. **Key age as a positive trust signal.** All existing systems treat old keys
+   as purely a liability (longer exposure). The insight that old keys have
+   accumulated social proof while new keys have less exposure — and that both
+   dimensions matter simultaneously — is not present in any prior system found.
+
+2. **Relying-party-configurable multi-dimensional trust policy.** Policy
+   expressions like "certs from old AND new keys from different teams" go
+   beyond OpenPGP trust signatures (single scalar) and SPKI/SDSI thresholds
+   (K-of-N on a single dimension).
+
+3. **The full combination.** Signal-based E2E encryption + per-user CA
+   hierarchy + decentralized web of trust + physical ceremonies + graduated
+   multi-dimensional trust. Each pair exists somewhere; nobody has all of them.
 
 ---
 
