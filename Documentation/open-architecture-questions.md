@@ -8,12 +8,23 @@ Decisions that are hard to change once downstream code is written. Work through 
 
 The Hub-as-chokepoint architecture exists to enable transparent E2E encryption, but the encryption layer isn't implemented yet. This decision ripples into everything else.
 
-**Questions to answer:**
-- What does the Hub encrypt/decrypt, and when? Does it encrypt before writing Cod Sync bundles, or after? Does the Hub hold decrypted data in memory during a session?
-- Where do private keys live? Hard disk? OS keychain? Passphrase-protected? This determines the threat model.
-- What does cloud storage actually see? If S3 sees only encrypted blobs, the Cod Sync chain format probably needs to be encryption-aware (e.g., metadata vs. payload separation).
-
 **Why it's urgent:** Building out Team Manager, the invitation flow, and Cod Sync consumers before answering these means retrofitting encryption into many call sites.
+
+### Settled Decisions
+
+- **Hub is the transparent crypto proxy** — apps interact with the Hub using plaintext (file upload/download, notifications, VPN send/receive). The Hub transparently negotiates session keys and encrypts/decrypts at the boundary. Apps are crypto-naive; they never touch key material or the Cuttlefish library.
+- **Hub = user's crypto identity on this device** — the existing session context (team/app/station) already tells the Hub which team's keys to use for any operation. No additional routing information is needed.
+- **Cloud storage sees only ciphertext** — link blobs and git bundles are encrypted before leaving the Hub. Service providers can affect availability but nothing else. Security comes from E2E encryption, not access control (consistent with Section 2).
+- **Cuttlefish is a Hub-internal library** — the protocol stack is PQXDH → Double Ratchet (1:1) / Sender Keys (group). See `packages/cuttlefish/README.md` for primitives and PQC choices.
+- **Key storage follows protection levels** — DAILY keys may be unlocked at Hub startup (biometric/device PIN). GUARDED keys are loaded on-demand with an explicit user prompt. BURIED keys are never loaded into Hub memory during normal operation; they are used only for offline root-of-trust ceremonies (signing, revocation).
+- **App ↔ Hub channel is localhost plaintext** — acceptable given OS process isolation on a single-user device. A process on the same device already has equivalent trust to the Hub. This is a conscious decision, not an oversight.
+
+### Remaining Open Items
+
+- **Key storage format** — how private keys are persisted on disk (OS keychain, encrypted file, secure enclave where available) is TBD.
+- **Key backup/recovery** — base keys that encrypt data can themselves be re-encrypted under multiple other keys (local use, sharing, backup). Mechanism TBD; see also Section 5.
+- **`member` key/cert material schema** — placeholder exists in `core.db`; contents now unblocked by Cuttlefish key model.
+- **Cod Sync encryption wiring** — cipher and key-exchange bootstrapping for new members joining an existing chain are TBD (see Section 4).
 
 ---
 
@@ -110,12 +121,24 @@ The `NoteToSelf-SmallSeaCore` station holds personal keys and device info. The o
 
 **Why it's urgent:** The invitation flow and key rotation logic both depend on the identity model. It can be stubbed longer than the others but shouldn't be deferred past the point where invitations are fully wired up.
 
+
+Answers:
+- This is not implemented at all yet, but my plan is that a person can have the same identity with any number of devides, but it's cryptographically a little complicated.
+   Unique key-pairs are generated on devices that support secure enclave fanciness (and fudged on devices that don't).
+   That key is the one that's used to sign data that goes out.
+   And then there's another cert signing kind of layer where a person can say "yes, this is 'my' device"
+- The question about prekeys and signing will be addressed (soon) in addressing section 1.
+- The backup key question is important.
+   As is common with E2E encrypted systems, the base keys that encrypt the data can themselves be copied and encrypted with lots of other keys for different purposes (local use, sharing, backup)
+
+
+
 ---
 
 ## Suggested Order
 
 1. ~~Hub ↔ Team Manager DB contract~~ — mostly resolved; see settled decisions in Section 2. Remaining: monitoring API shape, `/cloud_locations` removal, Hub `open_session` update
 2. ~~Session lifecycle~~ — mostly resolved; see settled decisions in Section 3. Remaining: expiry policy, session management UI
-3. Encryption layer interface — even a rough API sketch (encrypt/decrypt boundary, key storage stub) protects against having to retrofit it everywhere
+3. ~~Encryption layer interface~~ — mostly resolved; see settled decisions in Section 1. Remaining: key storage format, key backup/recovery, Cod Sync encryption wiring
 4. ~~Cod Sync chain format~~ — mostly resolved; see [format spec](../packages/cod-sync/Documentation/format-spec.md). Remaining: encryption details, S3Remote elimination
 5. Identity model — most complex; can be stubbed a while longer
