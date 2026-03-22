@@ -478,7 +478,13 @@ def create_invitation(
 
 
 def accept_invitation(
-    root_dir, acceptor_participant_hex, token_b64, acceptor_cloud, acceptor_bucket
+    root_dir,
+    acceptor_participant_hex,
+    token_b64,
+    acceptor_cloud,
+    acceptor_bucket,
+    inviter_remote=None,
+    acceptor_remote=None,
 ):
     """Accept a team invitation token (acceptor side).
 
@@ -487,6 +493,8 @@ def accept_invitation(
 
     acceptor_cloud: dict with keys protocol, url, access_key, secret_key.
     acceptor_bucket: S3 bucket name for the acceptor's cloud.
+    inviter_remote: CodSyncRemote for reading the inviter's cloud.
+    acceptor_remote: CodSyncRemote for writing to the acceptor's cloud.
     Returns a base64-encoded acceptance response JSON string.
     """
     root_dir = pathlib.Path(root_dir)
@@ -511,26 +519,20 @@ def accept_invitation(
     os.makedirs(team_sync_dir, exist_ok=False)
 
     # --- Clone the team repo from inviter's cloud ---
-    inviter_remote = CodSync.S3Remote(
-        inviter_cloud["url"],
-        inviter_bucket,
-        inviter_cloud["access_key"],
-        inviter_cloud["secret_key"],
-    )
+    if inviter_remote is None:
+        raise ValueError("inviter_remote is required")
 
     saved_cwd = os.getcwd()
     os.chdir(team_sync_dir)
     try:
         cod = CodSync.CodSync("inviter")
         cod.gitCmd = CodSync.gitCmd
-        cod.remote = inviter_remote
 
-        # Build the s3:// URL for add_remote
-        inviter_s3_url = (
-            f"s3://{inviter_cloud['access_key']}:{inviter_cloud['secret_key']}"
-            f"@{inviter_cloud['url'].replace('http://', '')}/{inviter_bucket}"
+        # Build a URL for git remote registration (used by add_remote inside clone_from_remote)
+        inviter_url = (
+            f"{inviter_cloud['protocol']}://{inviter_cloud['url']}/{inviter_bucket}"
         )
-        result = cod.clone_from_remote(inviter_s3_url)
+        result = cod.clone_from_remote(inviter_url, remote=inviter_remote)
         if result != 0:
             raise RuntimeError(
                 f"Failed to clone team repo from inviter's cloud (code {result})"
@@ -586,12 +588,8 @@ def accept_invitation(
     )
 
     # --- Push to acceptor's cloud ---
-    acceptor_remote = CodSync.S3Remote(
-        acceptor_cloud["url"],
-        acceptor_bucket,
-        acceptor_cloud["access_key"],
-        acceptor_cloud["secret_key"],
-    )
+    if acceptor_remote is None:
+        raise ValueError("acceptor_remote is required")
 
     saved_cwd = os.getcwd()
     os.chdir(team_sync_dir)

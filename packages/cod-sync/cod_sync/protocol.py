@@ -161,7 +161,7 @@ class CodSync:
         supplement = {"cod_version": COD_SYNC_VERSION}
         return [link_ids, branches, bundles, supplement]
 
-    def clone_from_remote(self, url):
+    def clone_from_remote(self, url, remote=None):
         print(f"CLONE {self.remote_name} {url}")
 
         git_cmd = ["git", "rev-parse", "--show-toplevel"]
@@ -172,7 +172,10 @@ class CodSync:
             )
             return -1
 
-        self.remote = CodSyncRemote.init(url)
+        if remote is not None:
+            self.remote = remote
+        else:
+            self.remote = CodSyncRemote.init(url)
         result = self.remote.get_latest_link()
         if result is None:
             latest_link = None
@@ -367,33 +370,6 @@ class CodSyncRemote:
             host_port = remainder[:slash_pos]
             session_hex = remainder[slash_pos + 1 :]
             return SmallSeaRemote(session_hex, base_url=f"http://{host_port}")
-
-        if url.startswith("s3://"):
-            remainder = url[5:]
-            # format: access_key:secret_key@host:port/bucket_name
-            at_pos = remainder.find("@")
-            if at_pos < 0:
-                raise ValueError(
-                    f"Invalid s3 URL, expected s3://access_key:secret_key@host:port/bucket_name, got '{url}'"
-                )
-            creds = remainder[:at_pos]
-            host_and_bucket = remainder[at_pos + 1 :]
-            colon_pos = creds.find(":")
-            if colon_pos < 0:
-                raise ValueError(
-                    f"Invalid s3 URL credentials, expected access_key:secret_key, got '{creds}'"
-                )
-            access_key = creds[:colon_pos]
-            secret_key = creds[colon_pos + 1 :]
-            slash_pos = host_and_bucket.find("/")
-            if slash_pos < 0:
-                raise ValueError(
-                    f"Invalid s3 URL, expected host:port/bucket_name, got '{host_and_bucket}'"
-                )
-            host_port = host_and_bucket[:slash_pos]
-            bucket_name = host_and_bucket[slash_pos + 1 :]
-            endpoint_url = f"http://{host_port}"
-            return S3Remote(endpoint_url, bucket_name, access_key, secret_key)
 
         raise NotImplementedError(f"Unsupported Cod Sync cloud protocol. '{url}'")
 
@@ -591,78 +567,6 @@ class SmallSeaRemote(CodSyncRemote):
             raise RuntimeError(f"Failed to download bundle B-{bundle_uid}.bundle")
         with open(local_bundle_path, "wb") as f:
             f.write(data)
-
-
-class S3Remote(CodSyncRemote):
-    """S3-backed cloud storage remote (works with MinIO or AWS S3)."""
-
-    def __init__(self, endpoint_url, bucket_name, access_key, secret_key):
-        import boto3
-        from botocore.config import Config
-
-        self.bucket_name = bucket_name
-        self.s3 = boto3.client(
-            "s3",
-            endpoint_url=endpoint_url,
-            aws_access_key_id=access_key,
-            aws_secret_access_key=secret_key,
-            config=Config(signature_version="s3v4"),
-            region_name="us-east-1",
-        )
-        # Ensure bucket exists
-        try:
-            self.s3.head_bucket(Bucket=bucket_name)
-        except Exception:
-            self.s3.create_bucket(Bucket=bucket_name)
-
-    def upload_latest_link(
-        self, link_uid, blob, bundle_uid, local_bundle_path, expected_etag=None
-    ):
-        # TODO: S3Remote is slated for elimination (all cloud access should go through Hub).
-        # expected_etag is accepted for interface compatibility but not enforced here.
-        # 1. Upload bundle
-        self.s3.upload_file(
-            local_bundle_path, self.bucket_name, f"B-{bundle_uid}.bundle"
-        )
-
-        # 2. Serialize link YAML
-        link_yaml = yaml.dump(blob, default_flow_style=False).encode("utf-8")
-
-        # 3. Upload latest-link.yaml and L-{link_uid}.yaml
-        self.s3.put_object(
-            Bucket=self.bucket_name, Key="latest-link.yaml", Body=link_yaml
-        )
-        self.s3.put_object(
-            Bucket=self.bucket_name, Key=f"L-{link_uid}.yaml", Body=link_yaml
-        )
-
-    def get_link(self, uid):
-        if uid == "latest-link":
-            key = "latest-link.yaml"
-        else:
-            key = f"L-{uid}.yaml"
-
-        try:
-            resp = self.s3.get_object(Bucket=self.bucket_name, Key=key)
-            link = self.read_link_blob(io.BytesIO(resp["Body"].read()))
-            if uid == "latest-link":
-                etag = resp.get("ETag")
-                return (link, etag)
-            return link
-        except self.s3.exceptions.NoSuchKey:
-            return None
-        except Exception as e:
-            if "NoSuchKey" in str(e) or "Not Found" in str(e):
-                return None
-            raise
-
-    def get_latest_link(self):
-        return self.get_link("latest-link")
-
-    def download_bundle(self, bundle_uid, local_bundle_path):
-        self.s3.download_file(
-            self.bucket_name, f"B-{bundle_uid}.bundle", local_bundle_path
-        )
 
 
 if __name__ == "__main__":

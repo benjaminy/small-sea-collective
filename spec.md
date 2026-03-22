@@ -128,9 +128,10 @@ The Small Sea framework has the following components:
       - Apps can send and receive notifications which the Hub routes to the correct apps/teams on the other side.
       - Apps can create create live VPN connections which the Hubs running on the various devices negotiate access to.
    The Hub has a special relationship with the built-in Team Manager app, which manages teams, invitations, apps, service accounts, etc.
-- Small Sea encryption layer (name TBD).
+- Cuttlefish encryption layer.
    In normal production environments, the Hub encrypts and obscures all communication with services so that very little can be inferred by the general-purpose services providers about what users are doing with them.
    This should be mostly transparent to Small Sea apps.
+   This package also provides the cryptographic primitives for the web of trust identity system.
 - Cod Sync.
    This is safe and slow sync library that is based on git and encodes deltas as a chain of git bundles.
 - harmonic-merge.

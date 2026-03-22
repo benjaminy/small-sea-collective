@@ -7,6 +7,7 @@ import subprocess
 
 import cod_sync.protocol as CS
 import pytest
+from cod_sync.testing import S3Remote
 from small_sea_team_manager.provisioning import (
     accept_invitation, complete_invitation_acceptance, create_invitation,
     create_new_participant, create_team, list_invitations)
@@ -91,7 +92,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
 
     # Alice pushes team repo to MinIO
     alice_team_sync = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync"
-    alice_remote = CS.S3Remote(
+    alice_remote = S3Remote(
         minio["endpoint"], alice_bucket, minio["access_key"], minio["secret_key"]
     )
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
@@ -127,7 +128,13 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     }
 
     # Bob accepts invitation (clones from Alice's MinIO, pushes to his bucket)
-    acceptance_b64 = accept_invitation(bob_root, bob_hex, token, bob_cloud, bob_bucket)
+    bob_remote = S3Remote(
+        minio["endpoint"], bob_bucket, minio["access_key"], minio["secret_key"]
+    )
+    acceptance_b64 = accept_invitation(
+        bob_root, bob_hex, token, bob_cloud, bob_bucket,
+        inviter_remote=alice_remote, acceptor_remote=bob_remote,
+    )
     assert isinstance(acceptance_b64, str)
 
     # Decode acceptance to get Bob's member ID
@@ -239,7 +246,7 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
 
     # Push team repo to MinIO
     alice_team_sync = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync"
-    alice_remote = CS.S3Remote(
+    alice_remote = S3Remote(
         minio["endpoint"], alice_bucket, minio["access_key"], minio["secret_key"]
     )
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
@@ -267,7 +274,13 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
         "access_key": minio["access_key"],
         "secret_key": minio["secret_key"],
     }
-    acceptance_b64 = accept_invitation(bob_root, bob_hex, token, bob_cloud, bob_bucket)
+    bob_remote = S3Remote(
+        minio["endpoint"], bob_bucket, minio["access_key"], minio["secret_key"]
+    )
+    acceptance_b64 = accept_invitation(
+        bob_root, bob_hex, token, bob_cloud, bob_bucket,
+        inviter_remote=alice_remote, acceptor_remote=bob_remote,
+    )
 
     # Alice completes Bob's acceptance
     complete_invitation_acceptance(alice_root, alice_hex, "ProjectX", acceptance_b64)
@@ -287,8 +300,12 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
     cod_alice.remote = alice_remote
     cod_alice.push_to_remote(["main"])
 
+    carol_remote = S3Remote(
+        minio["endpoint"], carol_bucket, minio["access_key"], minio["secret_key"]
+    )
     carol_acceptance_b64 = accept_invitation(
-        carol_root, carol_hex, token, carol_cloud, carol_bucket
+        carol_root, carol_hex, token, carol_cloud, carol_bucket,
+        inviter_remote=alice_remote, acceptor_remote=carol_remote,
     )
 
     with pytest.raises(ValueError, match="not pending"):

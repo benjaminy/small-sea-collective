@@ -7,6 +7,7 @@ import cod_sync.protocol as CS
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
 import small_sea_team_manager.provisioning as Provisioning
+from cod_sync.testing import S3Remote
 from fastapi.testclient import TestClient
 
 
@@ -44,7 +45,7 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     alice_team_sync = (
         pathlib.Path(playground_dir) / "Participants" / alice_hex / "ProjectX" / "Sync"
     )
-    alice_remote = CS.S3Remote(
+    alice_remote = S3Remote(
         minio["endpoint"], alice_bucket, minio["access_key"], minio["secret_key"]
     )
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
@@ -66,8 +67,12 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     cod_alice.push_to_remote(["main"])
 
     # Bob accepts invitation
+    bob_remote = S3Remote(
+        minio["endpoint"], bob_bucket, minio["access_key"], minio["secret_key"]
+    )
     acceptance_b64 = Provisioning.accept_invitation(
-        playground_dir, bob_hex, token, acceptor_cloud=cloud, acceptor_bucket=bob_bucket
+        playground_dir, bob_hex, token, acceptor_cloud=cloud, acceptor_bucket=bob_bucket,
+        inviter_remote=alice_remote, acceptor_remote=bob_remote,
     )
 
     # Alice completes the acceptance
