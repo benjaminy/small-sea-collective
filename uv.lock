@@ -1009,15 +1009,11 @@ name = "small-sea-client"
 version = "0.1.0"
 source = { editable = "packages/small-sea-client" }
 dependencies = [
-    { name = "click" },
-    { name = "requests" },
+    { name = "httpx" },
 ]
 
 [package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.0" },
-    { name = "requests", specifier = ">=2.32.5" },
-]
+requires-dist = [{ name = "httpx", specifier = ">=0.28" }]
 
 [[package]]
 name = "small-sea-hub"
