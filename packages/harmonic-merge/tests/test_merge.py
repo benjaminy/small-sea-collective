@@ -10,8 +10,8 @@ from harmonic_merge.core import (apply_delta, compute_delta, reconcile_deltas,
 
 SCHEMA_PATH = (
     pathlib.Path(__file__).resolve().parent.parent.parent
-    / "small-sea-team-manager"
-    / "small_sea_team_manager"
+    / "small-sea-manager"
+    / "small_sea_manager"
     / "sql"
     / "core_other_team.sql"
 )

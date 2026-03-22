@@ -6,7 +6,7 @@ import time
 import cod_sync.protocol as CS
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
-import small_sea_team_manager.provisioning as Provisioning
+import small_sea_manager.provisioning as Provisioning
 from cod_sync.testing import S3Remote
 from fastapi.testclient import TestClient
 

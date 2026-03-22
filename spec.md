@@ -79,7 +79,7 @@ The lack of a central service makes the protocol for adding team members a bit c
 Any user with write permission to a team's Core station can invite others.
 
 Users are added to teams by a moderately complex invitation and acceptance protocol.
-The details of this protocol are in the Team Manager package.
+The details of this protocol are in the Small Sea Manager package.
 It can be made more convenient if the invitee is already a Small Sea user with pre-configured keys in a manner similar to the chat initialization protocol in Signal.
 
 A common way of organizing permissions on a team is that some _admin_ members have read-write permission to all the team's stations; normal users have read-write permissions to all the stations except the core (others will not pay attention to any changes they try to make to the team's metadata); _observers_ have read-only permission to all the stations.
@@ -127,7 +127,7 @@ The Small Sea framework has the following components:
       - Apps upload and download files through the hub, which puts them in the correct folder or bucket.
       - Apps can send and receive notifications which the Hub routes to the correct apps/teams on the other side.
       - Apps can create create live VPN connections which the Hubs running on the various devices negotiate access to.
-   The Hub has a special relationship with the built-in Team Manager app, which manages teams, invitations, apps, service accounts, etc.
+   The Hub has a special relationship with the built-in Small Sea Manager app, which manages teams, invitations, apps, service accounts, etc.
 - Cuttlefish encryption layer.
    In normal production environments, the Hub encrypts and obscures all communication with services so that very little can be inferred by the general-purpose services providers about what users are doing with them.
    This should be mostly transparent to Small Sea apps.
@@ -139,7 +139,7 @@ The Small Sea framework has the following components:
 - Small Sea Client.
    This is a utility library for applications communicating with the Hub.
    It helps manage sessions, makes common workflows easy, etc.
-- Team Manager.
+- Small Sea Manager.
    This is the essential built-in user application.
    It manages not only team membership, but devices, general-purpose service subscriptions, etc.
    This info is all stored in a database that the Hub also needs to do its work.

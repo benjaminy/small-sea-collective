@@ -1,7 +1,7 @@
 # Top Matter
 
 import click
-from small_sea_team_manager.manager import TeamManager
+from small_sea_manager.manager import TeamManager
 
 
 @click.group()
@@ -10,7 +10,7 @@ from small_sea_team_manager.manager import TeamManager
 )
 @click.pass_context
 def cli(ctx, hub_port):
-    """Small Sea Team Manager CLI"""
+    """Small Sea Manager CLI"""
     ctx.ensure_object(dict)
     ctx.obj["hub_port"] = hub_port
 

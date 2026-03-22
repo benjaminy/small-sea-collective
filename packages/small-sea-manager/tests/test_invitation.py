@@ -8,7 +8,7 @@ import subprocess
 import cod_sync.protocol as CS
 import pytest
 from cod_sync.testing import S3Remote
-from small_sea_team_manager.provisioning import (
+from small_sea_manager.provisioning import (
     accept_invitation, complete_invitation_acceptance, create_invitation,
     create_new_participant, create_team, list_invitations)
 

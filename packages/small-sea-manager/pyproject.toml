@@ -1,5 +1,5 @@
 [project]
-name = "small-sea-team-manager"
+name = "small-sea-manager"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-small-sea-teams = "small_sea_team_manager.cli:cli"
+small-sea-manage = "small_sea_manager.cli:cli"
 
 [tool.uv.sources]
 small-sea-client = { workspace = true }

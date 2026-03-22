@@ -2,7 +2,7 @@ import pathlib
 import sqlite3
 import subprocess
 
-from small_sea_team_manager.provisioning import (create_new_participant,
+from small_sea_manager.provisioning import (create_new_participant,
                                                  create_team)
 
 

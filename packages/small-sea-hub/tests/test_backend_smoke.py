@@ -1,10 +1,10 @@
 # Top Matter
 # Smoke tests for the hub backend.
-# Participant provisioning now lives in small_sea_team_manager.provisioning,
+# Participant provisioning now lives in small_sea_manager.provisioning,
 # so we call that to set up test participants before exercising hub operations.
 
 import small_sea_hub.backend as SmallSea
-import small_sea_team_manager.provisioning as Provisioning
+import small_sea_manager.provisioning as Provisioning
 
 
 def test_just_make_backend(playground_dir):

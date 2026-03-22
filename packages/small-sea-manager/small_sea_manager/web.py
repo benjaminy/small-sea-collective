@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from small_sea_team_manager.manager import TeamManager
+from small_sea_manager.manager import TeamManager
 
 template_dir = pathlib.Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=template_dir)

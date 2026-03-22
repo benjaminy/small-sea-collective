@@ -1,4 +1,4 @@
-# Small Sea Team Manager — Spec
+# Small Sea Manager — Spec
 
 ## Overview
 

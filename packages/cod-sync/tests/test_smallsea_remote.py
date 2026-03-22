@@ -10,7 +10,7 @@ import boto3
 import cod_sync.protocol as CS
 import pytest
 import small_sea_hub.backend as SmallSea
-import small_sea_team_manager.provisioning as Provisioning
+import small_sea_manager.provisioning as Provisioning
 from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app

@@ -10,7 +10,7 @@ import sqlite3
 import tempfile
 
 import cod_sync.protocol as CS
-from small_sea_team_manager.provisioning import (_install_sqlite_merge_driver,
+from small_sea_manager.provisioning import (_install_sqlite_merge_driver,
                                                  create_invitation,
                                                  create_new_participant,
                                                  create_team)

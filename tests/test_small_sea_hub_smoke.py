@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 import pytest
 
 import small_sea_hub.backend as SmallSea
-import small_sea_team_manager.provisioning as Provisioning
+import small_sea_manager.provisioning as Provisioning
 import cod_sync.protocol as CS
 
 

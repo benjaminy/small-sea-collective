@@ -8,7 +8,7 @@ Decisions that are hard to change once downstream code is written. Work through 
 
 The Hub-as-chokepoint architecture exists to enable transparent E2E encryption, but the encryption layer isn't implemented yet. This decision ripples into everything else.
 
-**Why it's urgent:** Building out Team Manager, the invitation flow, and Cod Sync consumers before answering these means retrofitting encryption into many call sites.
+**Why it's urgent:** Building out Small Sea Manager, the invitation flow, and Cod Sync consumers before answering these means retrofitting encryption into many call sites.
 
 ### Settled Decisions
 
@@ -28,19 +28,19 @@ The Hub-as-chokepoint architecture exists to enable transparent E2E encryption, 
 
 ---
 
-## 2. Hub ↔ Team Manager Database Contract
+## 2. Hub ↔ Small Sea Manager Database Contract
 
-Explicitly TBD in the Hub spec. Hub needs to read team membership/permissions to make authorization decisions; Team Manager owns writes. This is a hard coupling.
+Explicitly TBD in the Hub spec. Hub needs to read team membership/permissions to make authorization decisions; Small Sea Manager owns writes. This is a hard coupling.
 
-**Why it's urgent:** The Team Manager spec is skeleton-only. This contract unblocks finishing it.
+**Why it's urgent:** The Small Sea Manager spec is skeleton-only. This contract unblocks finishing it.
 
 ### Settled Decisions
 
 - **Shared SQLite, direct read** — Hub reads `core.db` directly via file-watch + whole-cache flush on any modification. No query API. Fine-grained cache invalidation is possible but almost certainly overkill given low change frequency.
-- **Team Manager is UI-only** — writes `core.db` directly, no API surface. Client apps interact with data only through the Hub API. Hub's `/cloud_locations` endpoint is wrong and should be removed; cloud storage config is the Team Manager's responsibility.
+- **Small Sea Manager is UI-only** — writes `core.db` directly, no API surface. Client apps interact with data only through the Hub API. Hub's `/cloud_locations` endpoint is wrong and should be removed; cloud storage config is the Small Sea Manager's responsibility.
 - **Sessions in Hub-only DB** — sessions live in `small_sea_collective_local.db` (separate from `core.db`). Other apps access sessions through the Hub API only.
 - **Single-user-per-Hub** — one Hub per device/user; no multi-participant file-watcher complexity needed.
-- **Hub and Team Manager stay version-locked** — they are the core infrastructure and update together; no cross-version compatibility needed.
+- **Hub and Small Sea Manager stay version-locked** — they are the core infrastructure and update together; no cross-version compatibility needed.
 - **Permissions are per-station, two-table schema** — `member(id)` (per-team identity) + `station_role(id, member_id, station_id, role)` where role ∈ `{read-only, read-write}`. "Admin" simply means read-write on the TeamManager station. The `member` table will eventually carry key/cert material.
 - **Local permissions are authoritative** — Hub only incorporates changes from teammates who have read-write permission in its own local copy. Permission-change race conditions (e.g. Alice upgrades Bob mid-sync) are implementation details, not architecture.
 - **Teammate cloud locations belong to member** — stored linked to the `member` record (set via invitation flow). Multiple locations per member deferred.
@@ -50,7 +50,7 @@ Explicitly TBD in the Hub spec. Hub needs to read team membership/permissions to
 ### Remaining Open Items
 
 - **Hub monitoring API** — apps may need a way to register/deregister cloud locations for the Hub to watch, rather than hard-coding assumptions into the Hub. Shape TBD.
-- **Hub's `/cloud_locations` endpoint** — needs to be removed; currently writes to `core.db` directly which is Team Manager's domain.
+- **Hub's `/cloud_locations` endpoint** — needs to be removed; currently writes to `core.db` directly which is Small Sea Manager's domain.
 - **Hub `open_session` for non-NoteToSelf teams** — currently reads `App`/`TeamAppStation` from NoteToSelf/core.db; needs updating to read from the team DB for non-NoteToSelf sessions.
 - **`member` key/cert material** — schema placeholder exists; contents TBD (tied to Section 1 encryption decisions).
 - **NoteToSelf/[App] stations** — per-app personal state that's more app-specific than team-specific; useful but not yet designed.
@@ -81,7 +81,7 @@ Sessions are the primary API surface every client app uses.
 - **Session expiry policy** — when and how sessions expire (time, logout, device removal) is TBD. Schema has `duration_sec` as a placeholder.
 - **Multi-station sessions** — one session spanning all stations for a given app; deferred as a UX enhancement.
 - **Stale pending session cleanup** — no background cleanup job exists yet; expired rows are only removed when a confirm attempt hits the TTL check.
-- **Session management UI** — Hub needs an endpoint to list/revoke active sessions; Team Manager needs a UI for it. Neither is implemented yet.
+- **Session management UI** — Hub needs an endpoint to list/revoke active sessions; Small Sea Manager needs a UI for it. Neither is implemented yet.
 
 
 ---
@@ -105,7 +105,7 @@ These questions were worked through in detail and are now captured in the [Cod S
 - **S3Remote elimination**: Requires reworking the invitation flow. Inviter's cloud data is assumed globally readable (security comes from E2E encryption, not access control). Invitation tokens may include time-limited read paths.
 - **Encryption details**: Cipher selection, key exchange protocol, and the bootstrapping flow for new members joining a chain are all TBD.
 
-**Why it's urgent:** Every Cod Sync consumer (Team Manager, shared-file-vault, future apps) inherits this format.
+**Why it's urgent:** Every Cod Sync consumer (Small Sea Manager, shared-file-vault, future apps) inherits this format.
 
 
 ---
@@ -137,7 +137,7 @@ Answers:
 
 ## Suggested Order
 
-1. ~~Hub ↔ Team Manager DB contract~~ — mostly resolved; see settled decisions in Section 2. Remaining: monitoring API shape, `/cloud_locations` removal, Hub `open_session` update
+1. ~~Hub ↔ Small Sea Manager DB contract~~ — mostly resolved; see settled decisions in Section 2. Remaining: monitoring API shape, `/cloud_locations` removal, Hub `open_session` update
 2. ~~Session lifecycle~~ — mostly resolved; see settled decisions in Section 3. Remaining: expiry policy, session management UI
 3. ~~Encryption layer interface~~ — mostly resolved; see settled decisions in Section 1. Remaining: key storage format, key backup/recovery, Cod Sync encryption wiring
 4. ~~Cod Sync chain format~~ — mostly resolved; see [format spec](../packages/cod-sync/Documentation/format-spec.md). Remaining: encryption details, S3Remote elimination

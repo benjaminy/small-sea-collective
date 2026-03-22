@@ -29,10 +29,10 @@ Apps start a session by sending a request to the
 
 TODO: Describe the session lifecycle — opening, approval, duration, expiry.
 
-## Relationship with the Team Manager
+## Relationship with Small Sea Manager
 
-The Hub has a special relationship with the Team Manager app.
-The Team Manager writes the databases that the Hub reads to do its work: team membership, app registrations, cloud service credentials, etc.
+The Hub has a special relationship with the Small Sea Manager app.
+Small Sea Manager writes the databases that the Hub reads to do its work: team membership, app registrations, cloud service credentials, etc.
 
 TODO: Specify the shared database contract — which tables the Hub reads, where they live on disk.
 
@@ -70,7 +70,7 @@ TODO: Document the Hub's HTTP endpoints — request/response formats, error hand
 
 ## Local Data
 
-The Hub maintains its own local SQLite database for session tracking, separate from the Team Manager's databases.
+The Hub maintains its own local SQLite database for session tracking, separate from Small Sea Manager's databases.
 
 TODO: Document the Hub's local database schema and the on-disk directory layout it expects.
 

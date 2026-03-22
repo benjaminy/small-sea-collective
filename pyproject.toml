@@ -7,7 +7,7 @@ dev-dependencies = [
     "pytest>=8.4.2",
     "small-sea-hub",
     "small-sea-client",
-    "small-sea-team-manager",
+    "small-sea-manager",
     "shared-file-vault",
     "cod-sync",
     "harmonic-merge",
@@ -17,7 +17,7 @@ dev-dependencies = [
 [tool.uv.sources]
 small-sea-hub = { workspace = true }
 small-sea-client = { workspace = true }
-small-sea-team-manager = { workspace = true }
+small-sea-manager = { workspace = true }
 shared-file-vault = { workspace = true }
 cod-sync = { workspace = true }
 harmonic-merge = { workspace = true }

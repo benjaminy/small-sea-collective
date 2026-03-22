@@ -23,7 +23,7 @@ from small_sea_hub.adapters import (SmallSeaDropboxAdapter,
 from small_sea_hub.adapters.oauth import (is_token_expired,
                                           refresh_dropbox_token,
                                           refresh_google_token)
-from small_sea_team_manager.provisioning import uuid7
+from small_sea_manager.provisioning import uuid7
 
 
 class SmallSeaBackendExn(Exception):
@@ -139,7 +139,7 @@ class SmallSeaBackend:
     Hub backend — session management, cloud storage, sync.
 
     Participant/user/team provisioning has moved to the
-    small-sea-team-manager package (provisioning.py).
+    small-sea-manager package (provisioning.py).
     """
 
     hub_schema_version: int = 45
