@@ -133,6 +133,7 @@ class Invitation(Base):
     nonce = Column(LargeBinary, nullable=False)
     status = Column(String, nullable=False, default="pending")
     invitee_label = Column(String)
+    role = Column(String, nullable=False, default="admin")
     created_at = Column(String, nullable=False)
     accepted_at = Column(String)
     accepted_by = Column(LargeBinary)
@@ -400,7 +401,7 @@ def create_team(root_dir, participant_hex, team_name):
 
 
 def create_invitation(
-    root_dir, participant_hex, team_name, inviter_cloud, invitee_label=None
+    root_dir, participant_hex, team_name, inviter_cloud, invitee_label=None, role="admin"
 ):
     """Create an invitation token for a team.
 
@@ -437,10 +438,10 @@ def create_invitation(
     with team_engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO invitation (id, nonce, status, invitee_label, created_at) "
-                "VALUES (:id, :nonce, 'pending', :label, :created_at)"
+                "INSERT INTO invitation (id, nonce, status, invitee_label, role, created_at) "
+                "VALUES (:id, :nonce, 'pending', :label, :role, :created_at)"
             ),
-            {"id": inv_id, "nonce": nonce, "label": invitee_label, "created_at": now},
+            {"id": inv_id, "nonce": nonce, "label": invitee_label, "role": role, "created_at": now},
         )
 
     # Build token
@@ -739,7 +740,7 @@ def list_invitations(root_dir, participant_hex, team_name):
 
     with engine.begin() as conn:
         rows = conn.execute(
-            text("SELECT id, status, invitee_label, created_at FROM invitation")
+            text("SELECT id, status, invitee_label, role, created_at FROM invitation")
         ).fetchall()
 
     return [
@@ -747,7 +748,8 @@ def list_invitations(root_dir, participant_hex, team_name):
             "id": row[0].hex(),
             "status": row[1],
             "invitee_label": row[2],
-            "created_at": row[3],
+            "role": row[3],
+            "created_at": row[4],
         }
         for row in rows
     ]

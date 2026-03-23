@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS invitation (
     nonce BLOB NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     invitee_label TEXT,
+    role TEXT NOT NULL DEFAULT 'admin',
     created_at TEXT NOT NULL,
     accepted_at TEXT,
     accepted_by BLOB,

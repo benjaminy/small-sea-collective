@@ -135,8 +135,8 @@ def _create_invitation_on_device(team_sync_dir, invitee_label):
     db_path = pathlib.Path(team_sync_dir) / "core.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute(
-        "INSERT INTO invitation (id, nonce, status, invitee_label, created_at) "
-        "VALUES (?, ?, 'pending', ?, ?)",
+        "INSERT INTO invitation (id, nonce, status, invitee_label, role, created_at) "
+        "VALUES (?, ?, 'pending', ?, 'admin', ?)",
         (
             uuid7(),
             secrets.token_bytes(16),

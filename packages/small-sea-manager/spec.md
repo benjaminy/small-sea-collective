@@ -516,7 +516,6 @@ CREATE TABLE IF NOT EXISTS peer (
 | **`make_device_link_invitation()`** | Currently a stub (`pass`). The primary device-linking flow is not yet implemented. |
 | **`manager.py` stubs** | `TeamManager` methods currently have Hub-query TODOs. These should read from local DB instead. See issue 0003. |
 | **`manager.py` sessions** | `TeamManager.connect()` always opens a NoteToSelf session. It should open sessions for each relevant station lazily as needed. |
-| **`role` column in `invitation`** | Not yet in the SQL schema; needs to be added. |
 | **`participant` / `participant_unification` tables** | Not yet in the SQL schema; needs to be designed and added to NoteToSelf DB. |
 | **NoteToSelf/{App} stations** | Per-app personal state outside of team context. Not yet designed; stub only. |
 | **Sync mailbox API** | Hub needs a mailbox abstraction to notify the Manager (and other apps) when incoming changes arrive from the internet. Shape TBD. |
