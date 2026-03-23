@@ -3,31 +3,27 @@ id: 0004
 title: Complete Cod Sync sketch implementation
 type: task
 priority: high
+status: closed
 ---
 
 ## Context
 
-`sync_sketch.py` is explicitly an incomplete sketch. The two core functions — `sync_to_cloud()` and `sync_from_cloud()` — have their structure but are missing all the real work. This needs to be completed before sync orchestration (issue 0001) can be wired up.
+`sync_sketch.py` was explicitly an incomplete sketch. The two core functions —
+`sync_to_cloud()` and `sync_from_cloud()` — had their structure but were missing
+all the real work. This needed to be completed before sync orchestration (issue
+0001) could be wired up.
 
-## Work to do
+## Resolution
 
-### sync_to_cloud
-- Bundle creation from `cached_cloud_hash..HEAD`
-- Upload bundle via Hub upload API
-- Upload updated chain head file with ETag if-match (for concurrency control)
-- Update `cached_head_path` after successful upload
+Obsoleted by the real implementation that was already in `protocol.py`:
 
-### sync_from_cloud
-- Download chain head file
-- Walk prerequisite links to find needed bundles
-- Download bundles
-- Unbundle and merge (harmonic-merge for conflicts)
+- **sync_to_cloud** → `CodSync.push_to_remote`: bundle creation, chain head
+  upload with ETag CAS (`CasConflictError`), per-link YAML files
+- **sync_from_cloud** → `CodSync.fetch_from_remote` / `clone_from_remote`: chain
+  walking, bundle download, unbundle via git fetch
+- **Hub upload/download** → `SmallSeaRemote` (fixed to use Bearer auth in 0001)
+- **TODO commit message** → not present in the real implementation
+- **ETag concurrency** → `CasConflictError` raised and tested
 
-### Other
-- Replace placeholder commit message (line 24: `"TODO: Better commit message"`)
-- Decide on ETag concurrency strategy for simultaneous syncs
-
-## References
-
-- `packages/cod-sync/cod_sync/sync_sketch.py` — the incomplete sketch
-- `packages/cod-sync/` — rest of the cod-sync package for context
+`sync_sketch.py` was deleted when closing issue 0001. The remaining
+orchestration work (triggers, app-facing push/pull API) is tracked in 0015.
