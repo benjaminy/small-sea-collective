@@ -7,7 +7,8 @@ from typing import Optional, Union
 
 import pydantic
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
-from small_sea_hub.backend import SmallSeaBackend
+from fastapi.responses import JSONResponse
+from small_sea_hub.backend import SmallSeaBackend, SmallSeaNotFoundExn
 from small_sea_hub.config import Settings
 
 
@@ -34,6 +35,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+@app.exception_handler(SmallSeaNotFoundExn)
+async def not_found_handler(request: Request, exc: SmallSeaNotFoundExn):
+    return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
 @app.get("/")

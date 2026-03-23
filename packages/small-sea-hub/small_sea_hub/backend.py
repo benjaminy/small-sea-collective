@@ -46,8 +46,10 @@ class SmallSeaSession(Base):
     created_at = Column(DateTime, default=datetime.now(timezone.utc))
     duration_sec = Column(Integer)
     participant_id = Column(LargeBinary, nullable=False)
-    app_id = Column(LargeBinary, nullable=False)
     team_id = Column(LargeBinary, nullable=False)
+    team_name = Column(String, nullable=False)
+    app_id = Column(LargeBinary, nullable=False)
+    app_name = Column(String, nullable=False)
     station_id = Column(LargeBinary, nullable=False)
     client = Column(String, nullable=False)
 
@@ -97,7 +99,7 @@ class TeamAppStation(Base):
     __tablename__ = "team_app_station"
 
     id = Column(LargeBinary, primary_key=True)
-    team_id = Column(LargeBinary, nullable=False)
+    team_id = Column(LargeBinary, nullable=True)  # absent in team DBs (table is team-scoped)
     app_id = Column(LargeBinary, nullable=False)
 
 
@@ -142,7 +144,7 @@ class SmallSeaBackend:
     small-sea-manager package (provisioning.py).
     """
 
-    hub_schema_version: int = 45
+    hub_schema_version: int = 46
 
     def __init__(self, root_dir):
         self.root_dir = pathlib.Path(root_dir)
@@ -176,28 +178,37 @@ class SmallSeaBackend:
             print("SmallSea local DB already initialized")
             return
 
-        if user_version == 44:
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS pending_session (
-                    id BLOB PRIMARY KEY,
-                    participant_hex TEXT NOT NULL,
-                    team_name TEXT NOT NULL,
-                    app_name TEXT NOT NULL,
-                    client_name TEXT NOT NULL,
-                    pin TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    expires_at TEXT NOT NULL
+        if user_version != 0 and user_version < SmallSeaBackend.hub_schema_version:
+            if user_version <= 44:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS pending_session (
+                        id BLOB PRIMARY KEY,
+                        participant_hex TEXT NOT NULL,
+                        team_name TEXT NOT NULL,
+                        app_name TEXT NOT NULL,
+                        client_name TEXT NOT NULL,
+                        pin TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL
+                    )
+                """)
+                user_version = 45
+                print("Hub DB migrated to v45.")
+
+            if user_version == 45:
+                cursor.execute(
+                    "ALTER TABLE session ADD COLUMN team_name TEXT NOT NULL DEFAULT ''"
                 )
-            """)
+                cursor.execute(
+                    "ALTER TABLE session ADD COLUMN app_name TEXT NOT NULL DEFAULT ''"
+                )
+                user_version = 46
+                print("Hub DB migrated to v46.")
+
             cursor.execute(
                 f"PRAGMA user_version = {SmallSeaBackend.hub_schema_version}"
             )
-            print("Hub DB migrated from v44 to v45.")
             return
-
-        if user_version != 0 and user_version < SmallSeaBackend.hub_schema_version:
-            print("TODO: Migrate local DB!")
-            raise NotImplementedError()
 
         if user_version > SmallSeaBackend.hub_schema_version:
             print("TODO: DB FROM THE FUTURE!")
@@ -230,21 +241,57 @@ class SmallSeaBackend:
                     matching.append((d, engine))
         return matching
 
-    def _resolve_station(self, engine, team, app):
-        """Return (team_row, app_row, station_row) from a participant's NoteToSelf DB."""
-        with Session(engine) as sess:
-            results_team = sess.query(Team).filter(Team.name == team).all()
-            results_app = sess.query(App).filter(App.name == app).all()
-            if not results_team or not results_app:
-                raise SmallSeaNotFoundExn()
-            results_station = (
-                sess.query(TeamAppStation)
-                .filter(TeamAppStation.app_id == results_app[0].id)
-                .all()
-            )
-            if not results_station:
-                raise SmallSeaNotFoundExn()
-            return results_team[0], results_app[0], results_station[0]
+    def _resolve_station(self, participant_dir, team_name, app_name):
+        """Return (team_id, app_id, station_id) as bytes.
+
+        The team row is always read from the participant's NoteToSelf DB.
+        For NoteToSelf, app and station are also in that DB.
+        For all other teams, app and station are in the team DB at
+        Participants/{hex}/{team_name}/Sync/core.db.
+
+        Uses raw SQL for the app/station lookup to stay compatible with both
+        the NoteToSelf schema (team_app_station has team_id) and the team DB
+        schema (team_app_station intentionally omits team_id).
+        """
+        note_to_self_db = str(participant_dir / "NoteToSelf" / "Sync" / "core.db")
+        conn = sqlite3.connect(note_to_self_db)
+        try:
+            row = conn.execute(
+                "SELECT id FROM team WHERE name = ?", (team_name,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if row is None:
+            raise SmallSeaNotFoundExn(f"Team '{team_name}' not found")
+        team_id = row[0]
+
+        if team_name == "NoteToSelf":
+            station_db = note_to_self_db
+        else:
+            station_db = str(participant_dir / team_name / "Sync" / "core.db")
+
+        conn = sqlite3.connect(station_db)
+        try:
+            app_row = conn.execute(
+                "SELECT id FROM app WHERE name = ?", (app_name,)
+            ).fetchone()
+            if app_row is None:
+                raise SmallSeaNotFoundExn(f"App '{app_name}' not found in '{team_name}'")
+            app_id = app_row[0]
+
+            station_row = conn.execute(
+                "SELECT id FROM team_app_station WHERE app_id = ?", (app_id,)
+            ).fetchone()
+            if station_row is None:
+                raise SmallSeaNotFoundExn(
+                    f"No station for app '{app_name}' in team '{team_name}'"
+                )
+            station_id = station_row[0]
+        finally:
+            conn.close()
+
+        return team_id, app_id, station_id
 
     def request_session(self, nickname, app, team, client):
         """Step 1 of session approval: generate PIN, write pending row, send OS notification.
@@ -259,7 +306,7 @@ class SmallSeaBackend:
 
         participant_dir, engine = matching[0]
         participant_hex = participant_dir.absolute().name
-        self._resolve_station(engine, team, app)  # validate existence
+        self._resolve_station(participant_dir, team, app)  # validate existence
 
         pin = str(secrets.randbelow(10000)).zfill(4)
 
@@ -320,17 +367,11 @@ class SmallSeaBackend:
             if pending.pin != pin:
                 raise SmallSeaBackendExn("Invalid PIN")
 
-            note_to_self_db = (
-                self.root_dir
-                / "Participants"
-                / pending.participant_hex
-                / "NoteToSelf"
-                / "Sync"
-                / "core.db"
+            participant_dir = (
+                self.root_dir / "Participants" / pending.participant_hex
             )
-            engine_core = create_engine(f"sqlite:///{note_to_self_db}")
-            team_row, app_row, station_row = self._resolve_station(
-                engine_core, pending.team_name, pending.app_name
+            team_id, app_id, station_id = self._resolve_station(
+                participant_dir, pending.team_name, pending.app_name
             )
 
             token = secrets.token_bytes(32)
@@ -339,9 +380,11 @@ class SmallSeaBackend:
                 token=token,
                 duration_sec=None,
                 participant_id=bytes.fromhex(pending.participant_hex),
-                team_id=team_row.id,
-                app_id=app_row.id,
-                station_id=station_row.id,
+                team_id=team_id,
+                team_name=pending.team_name,
+                app_id=app_id,
+                app_name=pending.app_name,
+                station_id=station_id,
                 client=pending.client_name,
             )
             sess.add(ss_session)
@@ -492,18 +535,7 @@ class SmallSeaBackend:
         import boto3
         from botocore.config import Config as BotoConfig
 
-        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
-        engine_core = create_engine(f"sqlite:///{core_path}")
-        with Session(engine_core) as session:
-            station = (
-                session.query(TeamAppStation)
-                .filter(TeamAppStation.id == ss_session.station_id)
-                .first()
-            )
-            if station is None:
-                raise SmallSeaNotFoundExn("station not found")
-
-        bucket_name = f"ss-{station.id.hex()[:16]}"
+        bucket_name = f"ss-{ss_session.station_id.hex()[:16]}"
 
         s3_client = boto3.client(
             "s3",
@@ -556,16 +588,9 @@ class SmallSeaBackend:
         import hashlib
 
         ns = self._get_notification_service(ss_session)
-        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
-        engine_core = create_engine(f"sqlite:///{core_path}")
-        with Session(engine_core) as session:
-            team = session.query(Team).filter(Team.id == ss_session.team_id).first()
-            app_row = session.query(App).filter(App.id == ss_session.app_id).first()
-            if team is None or app_row is None:
-                raise SmallSeaNotFoundExn("team or app not found")
         # Derive topic from team+app names so all participants on the same
         # station share the same ntfy topic.
-        station_key = f"{team.name}/{app_row.name}"
+        station_key = f"{ss_session.team_name}/{ss_session.app_name}"
         topic = "ss-" + hashlib.sha256(station_key.encode()).hexdigest()[:16]
         return SmallSeaNtfyAdapter(ns.url, topic)
 

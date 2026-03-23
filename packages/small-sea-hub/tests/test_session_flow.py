@@ -109,6 +109,54 @@ def test_pending_row_deleted_after_confirm(test_env):
     assert row is None
 
 
+def test_session_for_team_station(playground_dir):
+    """Sessions can be opened for non-NoteToSelf teams."""
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    alice_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    resp = client.post(
+        "/sessions/request",
+        json={
+            "participant": "alice",
+            "app": "SmallSeaCollectiveCore",
+            "team": "ProjectX",
+            "client": "Smoke Tests",
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()
+    pending_id = result["pending_id"]
+    pin = result["pin"]
+
+    resp = client.post("/sessions/confirm", json={"pending_id": pending_id, "pin": pin})
+    assert resp.status_code == 200
+    session_hex = resp.json()
+    assert isinstance(session_hex, str)
+    assert len(session_hex) == 64
+
+
+def test_unknown_team_rejected(playground_dir):
+    """Requesting a session for a team that doesn't exist raises 422 or 404."""
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    Provisioning.create_new_participant(playground_dir, "alice")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    resp = client.post(
+        "/sessions/request",
+        json={
+            "participant": "alice",
+            "app": "SmallSeaCollectiveCore",
+            "team": "NoSuchTeam",
+            "client": "Smoke Tests",
+        },
+    )
+    assert resp.status_code == 404
+
+
 def test_session_requires_bearer_header(test_env):
     """Cloud endpoints return 422 without an Authorization header."""
     client = test_env["client"]
