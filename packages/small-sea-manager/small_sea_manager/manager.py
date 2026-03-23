@@ -29,7 +29,7 @@ class TeamManager:
 
     def create_team(self, team_name):
         """Create a new team."""
-        raise NotImplementedError("create_team")
+        return provisioning.create_team(self.root_dir, self.participant_hex, team_name)
 
     def list_teams(self):
         """List all teams the current participant belongs to."""

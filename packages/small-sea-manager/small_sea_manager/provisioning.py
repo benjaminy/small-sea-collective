@@ -1,11 +1,8 @@
-# Participant/user/team/app provisioning — stashed here from the Hub backend.
+# Participant/user/team/app provisioning for small-sea-manager.
 #
-# This code used to live in small_sea_hub.backend.  It handles creating
-# participants, initializing per-user databases, and managing teams/apps.
-#
-# It's not properly wired up yet — the TeamManager stubs in manager.py
-# will eventually call into this, or this will be restructured to work
-# through the Hub's HTTP API.
+# Handles creating participants, initializing per-user databases, and managing
+# teams/apps via direct SQLite and filesystem operations. No network I/O.
+# Called by TeamManager (manager.py) for all local DB reads and writes.
 #
 # The SQLAlchemy models here are duplicated from the hub — the SQLite DB
 # schema is the shared contract between the two packages.

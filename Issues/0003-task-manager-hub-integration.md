@@ -3,23 +3,26 @@ id: 0003
 title: Wire small-sea-manager stubs to Hub
 type: task
 priority: medium
+status: closed
 ---
 
 ## Context
 
-Five methods in `manager.py` are currently stubs that return placeholder data. They need to query the Hub (or the shared database) to return real information.
+Five methods in `manager.py` were stubs returning placeholder data. The original plan was to query the Hub, but the architecture was clarified: reads should come from the local SQLite DB directly, with Hub sessions reserved for cloud sync only.
 
-## Work to do
+## Resolution
 
-- `create_team()` — call `session.create_new_team` once Hub supports it (line 29)
-- `list_teams()` — query Hub for team list (line 34)
-- `get_team()` — query Hub for team details (line 42)
-- `list_members()` — query the Team-SmallSeaCore station for membership records (line 57)
-- `list_invitations()` — query invitation records from the Team-SmallSeaCore station (line 81)
+All five stubs wired up via `provisioning.py` (direct DB reads/writes, no Hub API):
 
-Depends on Hub session API being stable enough to build against.
+- `create_team()` — calls `provisioning.create_team()`
+- `list_teams()` — calls `provisioning.list_teams()` (reads NoteToSelf DB)
+- `get_team()` — calls `provisioning.list_members()` + `provisioning.list_invitations()`
+- `list_members()` — calls `provisioning.list_members()` (reads team DB)
+- `list_invitations()` — calls `provisioning.list_invitations()` (reads team DB)
 
-## References
+`TeamManager` now takes `root_dir` + `participant_hex` instead of relying on a Hub session for data. CLI and web UI read these from `SMALL_SEA_ROOT` / `SMALL_SEA_PARTICIPANT` env vars.
 
-- `packages/small-sea-manager/small_sea_manager/manager.py:29,34,42,57,81`
-- `packages/small-sea-hub/small_sea_hub/backend.py` — Hub session and team APIs
+## Commits
+
+- `62c73e9` — Fix manager.py to read from local DB (issue 0003)
+- `ae45d69` — Follow-up: wire create_team, fix provisioning.py header
