@@ -485,25 +485,23 @@ class SmallSeaRemote(CodSyncRemote):
 
     def __init__(self, session_hex, base_url="http://localhost:11437", client=None):
         self.session_hex = session_hex
+        self._auth = {"Authorization": f"Bearer {session_hex}"}
 
         if client is not None:
             self._post = client.post
             self._get = client.get
-            self._url_prefix = ""
         else:
-            self._url_prefix = base_url
             self._post = lambda path, **kw: requests.post(f"{base_url}{path}", **kw)
             self._get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
 
     def _upload(self, cloud_path, data_bytes, expected_etag=None):
         payload = {
-            "session": self.session_hex,
             "path": cloud_path,
             "data": base64.b64encode(data_bytes).decode(),
         }
         if expected_etag is not None:
             payload["expected_etag"] = expected_etag
-        resp = self._post("/cloud_file", json=payload)
+        resp = self._post("/cloud_file", json=payload, headers=self._auth)
         if resp.status_code == 409:
             raise CasConflictError(f"CAS conflict uploading {cloud_path}")
         if resp.status_code != 200:
@@ -515,10 +513,8 @@ class SmallSeaRemote(CodSyncRemote):
     def _download(self, cloud_path):
         resp = self._get(
             "/cloud_file",
-            params={
-                "session": self.session_hex,
-                "path": cloud_path,
-            },
+            params={"path": cloud_path},
+            headers=self._auth,
         )
         if resp.status_code != 200:
             return (None, None)
@@ -562,7 +558,7 @@ class SmallSeaRemote(CodSyncRemote):
         return self.get_link("latest-link")
 
     def download_bundle(self, bundle_uid, local_bundle_path):
-        data = self._download(f"B-{bundle_uid}.bundle")
+        data, _ = self._download(f"B-{bundle_uid}.bundle")
         if data is None:
             raise RuntimeError(f"Failed to download bundle B-{bundle_uid}.bundle")
         with open(local_bundle_path, "wb") as f:

@@ -5,6 +5,8 @@
 #            download_bundle via hub's /cloud_file endpoints.
 
 import pathlib
+import shutil
+import tempfile
 
 import boto3
 import cod_sync.protocol as CS
@@ -14,8 +16,6 @@ import small_sea_manager.provisioning as Provisioning
 from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 from test_clone_from_local_bundle import make_cod_sync, working_tree_files
 
 MINIO_PORT = 9400
@@ -35,9 +35,9 @@ def hub_env(playground_dir, minio):
     app.state.backend = backend
     client = TestClient(app)
 
-    # Open session
+    # Open session (two-step flow)
     resp = client.post(
-        "/sessions",
+        "/sessions/request",
         json={
             "participant": "alice",
             "app": "SmallSeaCollectiveCore",
@@ -46,43 +46,32 @@ def hub_env(playground_dir, minio):
         },
     )
     assert resp.status_code == 200
-    session_hex = resp.json()
-
-    # Register MinIO cloud location
+    result = resp.json()
     resp = client.post(
-        "/cloud_locations",
-        json={
-            "session": session_hex,
-            "backend": "s3",
-            "url": minio["endpoint"],
-            "access_key": minio["access_key"],
-            "secret_key": minio["secret_key"],
-        },
+        "/sessions/confirm",
+        json={"pending_id": result["pending_id"], "pin": result["pin"]},
     )
     assert resp.status_code == 200
+    session_hex = resp.json()
 
-    # Derive and pre-create bucket
-    ss = SmallSea.SmallSeaBackend(root_dir=playground_dir)
-    ss_session = ss._lookup_session(session_hex)
-    core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
-    engine = create_engine(f"sqlite:///{core_path}")
-    with Session(engine) as db_session:
-        station = (
-            db_session.query(SmallSea.TeamAppStation)
-            .filter(SmallSea.TeamAppStation.id == ss_session.station_id)
-            .first()
-        )
-    bucket_name = f"ss-{station.id.hex()[:16]}"
-
-    s3 = boto3.client(
+    # Register MinIO cloud location and pre-create bucket
+    backend.add_cloud_location(
+        session_hex,
+        "s3",
+        minio["endpoint"],
+        access_key=minio["access_key"],
+        secret_key=minio["secret_key"],
+    )
+    ss_session = backend._lookup_session(session_hex)
+    bucket_name = backend._make_storage_adapter(ss_session).bucket_name
+    boto3.client(
         "s3",
         endpoint_url=minio["endpoint"],
         aws_access_key_id=minio["access_key"],
         aws_secret_access_key=minio["secret_key"],
         config=BotoConfig(signature_version="s3v4"),
         region_name="us-east-1",
-    )
-    s3.create_bucket(Bucket=bucket_name)
+    ).create_bucket(Bucket=bucket_name)
 
     return {
         "client": client,
@@ -120,10 +109,6 @@ def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
 
     # ---- Bob: clone via SmallSeaRemote ----
     bob_remote = CS.SmallSeaRemote(session_hex, client=client)
-    bob_cod = make_cod_sync(bob_repo, "hub")
-    bob_cod.remote = bob_remote
-    # clone_from_remote calls CodSyncRemote.init internally, so we
-    # need to wire the remote manually and replicate clone logic
     result = bob_remote.get_latest_link()
     assert result is not None
     latest, etag = result
@@ -134,8 +119,6 @@ def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
     assert len(bundles) == 1
     assert supp["cod_version"] == "1.0.0"
 
-    import tempfile
-
     bundle_uid = bundles[0][0]
     with tempfile.TemporaryDirectory() as td:
         bundle_path = f"{td}/clone.bundle"
@@ -143,9 +126,6 @@ def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
         CS.gitCmd(["clone", bundle_path, str(bob_repo / "checkout")])
 
     # Move contents up (clone creates a subdir)
-    import os
-    import shutil
-
     checkout = bob_repo / "checkout"
     for item in checkout.iterdir():
         shutil.move(str(item), str(bob_repo / item.name))
