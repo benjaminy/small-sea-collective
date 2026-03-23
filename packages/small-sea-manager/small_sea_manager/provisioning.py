@@ -730,6 +730,55 @@ def add_notification_service(root_dir, participant_hex, protocol, url):
     return ns_id.hex()
 
 
+def list_teams(root_dir, participant_hex):
+    """List teams from NoteToSelf DB. Returns list of dicts."""
+    root_dir = pathlib.Path(root_dir)
+    nts_db_path = (
+        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{nts_db_path}")
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT id, name, self_in_team FROM team")
+        ).fetchall()
+
+    engine.dispose()
+    return [
+        {"id": row[0].hex(), "name": row[1], "self_in_team": row[2].hex()}
+        for row in rows
+    ]
+
+
+def list_members(root_dir, participant_hex, team_name):
+    """List members of a team with their station roles. Returns list of dicts."""
+    root_dir = pathlib.Path(root_dir)
+    team_db_path = (
+        root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{team_db_path}")
+
+    with engine.begin() as conn:
+        members = conn.execute(text("SELECT id FROM member")).fetchall()
+        role_rows = conn.execute(
+            text("SELECT member_id, station_id, role FROM station_role")
+        ).fetchall()
+
+    engine.dispose()
+
+    roles_by_member = {}
+    for r in role_rows:
+        key = r[0].hex()
+        roles_by_member.setdefault(key, []).append(
+            {"station_id": r[1].hex(), "role": r[2]}
+        )
+
+    return [
+        {"id": row[0].hex(), "station_roles": roles_by_member.get(row[0].hex(), [])}
+        for row in members
+    ]
+
+
 def list_invitations(root_dir, participant_hex, team_name):
     """List invitations for a team. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)

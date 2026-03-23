@@ -31,7 +31,6 @@ This means the Manager has *two distinct layers*:
 - **Provisioning layer** (`provisioning.py`) — direct filesystem and SQLite operations: creating participants, initializing databases, running git, writing invitation records. No network I/O.
 - **Session layer** (`manager.py`, `TeamManager`) — Hub client sessions used only for cloud sync and any Hub-mediated network operations. Reads team data from local DB, not from the Hub API.
 
-> **Note:** The current `manager.py` stubs have TODOs to "query the Hub for team list/details/members/invitations." This is wrong per the architecture above. Those reads should come from the local DB. See issue 0003.
 
 ### Single participant per installation
 
@@ -514,7 +513,6 @@ CREATE TABLE IF NOT EXISTS peer (
 | **Deep device unification** | Merging team memberships across two separate participant identities is not designed. Shallow unification (NoteToSelf-level only) is the current scope. |
 | **Key transfer between devices** | How DAILY/GUARDED/BURIED keys are shared with a newly linked device is TBD, pending Cuttlefish integration. |
 | **`make_device_link_invitation()`** | Currently a stub (`pass`). The primary device-linking flow is not yet implemented. |
-| **`manager.py` stubs** | `TeamManager` methods currently have Hub-query TODOs. These should read from local DB instead. See issue 0003. |
 | **`manager.py` sessions** | `TeamManager.connect()` always opens a NoteToSelf session. It should open sessions for each relevant station lazily as needed. |
 | **`participant` / `participant_unification` tables** | Not yet in the SQL schema; needs to be designed and added to NoteToSelf DB. |
 | **NoteToSelf/{App} stations** | Per-app personal state outside of team context. Not yet designed; stub only. |

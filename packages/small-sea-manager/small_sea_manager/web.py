@@ -1,5 +1,6 @@
 # Top Matter
 
+import os
 import pathlib
 from contextlib import asynccontextmanager
 
@@ -14,11 +15,11 @@ templates = Jinja2Templates(directory=template_dir)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # The manager is configured via environment or defaults.
-    # In production use, the nickname would come from a login flow;
-    # for now it's set on the app state and can be overridden.
-    app.state.manager = TeamManager()
-    app.state.nickname = None
+    app.state.manager = TeamManager(
+        root_dir=os.environ["SMALL_SEA_ROOT"],
+        participant_hex=os.environ["SMALL_SEA_PARTICIPANT"],
+        hub_port=int(os.environ.get("SMALL_SEA_HUB_PORT", "11437")),
+    )
     yield
 
 
@@ -37,7 +38,6 @@ async def index(request: Request):
         {
             "request": request,
             "teams": teams,
-            "nickname": request.app.state.nickname,
         },
     )
 
@@ -55,7 +55,6 @@ async def team_detail(request: Request, team_name: str):
             "team": team,
             "members": members,
             "invitations": invitations,
-            "nickname": request.app.state.nickname,
         },
     )
 
