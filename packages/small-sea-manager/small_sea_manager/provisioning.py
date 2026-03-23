@@ -727,6 +727,52 @@ def add_notification_service(root_dir, participant_hex, protocol, url):
     return ns_id.hex()
 
 
+def get_cloud_storage(root_dir, participant_hex):
+    """Return the first cloud storage config from NoteToSelf DB as a dict.
+
+    Raises ValueError if no cloud storage is configured.
+    """
+    root_dir = pathlib.Path(root_dir)
+    nts_db_path = (
+        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{nts_db_path}")
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT protocol, url, access_key, secret_key FROM cloud_storage LIMIT 1")
+        ).fetchone()
+    engine.dispose()
+    if row is None:
+        raise ValueError("No cloud storage configured for this participant")
+    return {"protocol": row[0], "url": row[1], "access_key": row[2], "secret_key": row[3]}
+
+
+def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
+    """Set an invitation's status to 'revoked'. Raises ValueError if not pending."""
+    root_dir = pathlib.Path(root_dir)
+    team_db_path = (
+        root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
+    )
+    invitation_id = bytes.fromhex(invitation_id_hex)
+    engine = create_engine(f"sqlite:///{team_db_path}")
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT status FROM invitation WHERE id = :id"), {"id": invitation_id}
+        ).fetchone()
+        if row is None:
+            raise ValueError("Invitation not found")
+        if row[0] != "pending":
+            raise ValueError(f"Invitation is not pending (status: {row[0]})")
+        conn.execute(
+            text("UPDATE invitation SET status = 'revoked' WHERE id = :id"),
+            {"id": invitation_id},
+        )
+    engine.dispose()
+    team_sync_dir = root_dir / "Participants" / participant_hex / team_name / "Sync"
+    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", "Revoked invitation"])
+
+
 def list_teams(root_dir, participant_hex):
     """List teams from NoteToSelf DB. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)

@@ -19,6 +19,10 @@ class TeamManager:
         self.client = SmallSeaClient(port=hub_port)
         self.session = None
 
+    def _cloud(self):
+        """Return the participant's primary cloud storage config dict."""
+        return provisioning.get_cloud_storage(self.root_dir, self.participant_hex)
+
     def connect(self, team="NoteToSelf"):
         """Open a Hub session for cloud sync on the given team station."""
         self.session = self.client.open_session(
@@ -67,18 +71,42 @@ class TeamManager:
 
     # --- Invitations ---
 
-    def create_invitation(self, team_name, invitee):
-        """Create an invitation for someone to join a team."""
-        raise NotImplementedError("create_invitation")
+    def create_invitation(self, team_name, invitee_label=None, role="admin"):
+        """Create an invitation token for someone to join a team."""
+        cloud = provisioning.get_cloud_storage(self.root_dir, self.participant_hex)
+        return provisioning.create_invitation(
+            self.root_dir, self.participant_hex, team_name, cloud,
+            invitee_label=invitee_label, role=role,
+        )
 
     def list_invitations(self, team_name):
-        """List pending invitations for a team."""
+        """List invitations for a team."""
         return provisioning.list_invitations(self.root_dir, self.participant_hex, team_name)
 
     def revoke_invitation(self, team_name, invitation_id):
         """Revoke a pending invitation."""
-        raise NotImplementedError("revoke_invitation")
+        provisioning.revoke_invitation(
+            self.root_dir, self.participant_hex, team_name, invitation_id
+        )
 
-    def accept_invitation(self, invitation_id):
-        """Accept an invitation to join a team."""
-        raise NotImplementedError("accept_invitation")
+    def accept_invitation(self, token_b64, inviter_remote, acceptor_remote):
+        """Accept an invitation token (acceptor side). Returns an acceptance token.
+
+        inviter_remote: CodSyncRemote for reading the inviter's cloud.
+        acceptor_remote: CodSyncRemote for writing to the acceptor's cloud.
+        """
+        import base64, json
+        token = json.loads(base64.b64decode(token_b64).decode())
+        cloud = provisioning.get_cloud_storage(self.root_dir, self.participant_hex)
+        # Bucket name is the same for all members of a team (same station ID).
+        acceptor_bucket = token["inviter_bucket"]
+        return provisioning.accept_invitation(
+            self.root_dir, self.participant_hex, token_b64, cloud, acceptor_bucket,
+            inviter_remote=inviter_remote, acceptor_remote=acceptor_remote,
+        )
+
+    def complete_invitation_acceptance(self, team_name, acceptance_b64):
+        """Complete an acceptance (inviter side): add acceptor as member + peer."""
+        provisioning.complete_invitation_acceptance(
+            self.root_dir, self.participant_hex, team_name, acceptance_b64
+        )

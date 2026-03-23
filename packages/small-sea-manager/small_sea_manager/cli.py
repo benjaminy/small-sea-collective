@@ -76,13 +76,19 @@ def list_members(ctx, team_name):
 
 @cli.command("invite")
 @click.argument("team_name")
-@click.argument("invitee")
+@click.option("--label", default=None, help="Human note for who this invitation is for")
+@click.option(
+    "--role",
+    default="admin",
+    type=click.Choice(["admin", "contributor", "observer"]),
+    help="Role to grant on acceptance (default: admin)",
+)
 @click.pass_context
-def invite(ctx, team_name, invitee):
-    """Invite someone to join a team."""
+def invite(ctx, team_name, label, role):
+    """Create an invitation token for a team. Prints the token to stdout."""
     manager = _make_manager(ctx)
-    manager.create_invitation(team_name, invitee)
-    click.echo(f"Invited '{invitee}' to '{team_name}'")
+    token = manager.create_invitation(team_name, invitee_label=label, role=role)
+    click.echo(token)
 
 
 @cli.command("invitations")
@@ -101,13 +107,47 @@ def list_invitations(ctx, team_name):
 
 
 @cli.command("accept")
+@click.argument("token_b64")
+@click.pass_context
+def accept_invitation(ctx, token_b64):
+    """Accept an invitation token (Bob side). Prints the acceptance token to stdout.
+
+    Remotes are constructed from cloud credentials in the token and local DB.
+    """
+    import base64, json
+    from cod_sync.testing import S3Remote
+
+    manager = _make_manager(ctx)
+    token = json.loads(base64.b64decode(token_b64).decode())
+    ic = token["inviter_cloud"]
+    inviter_remote = S3Remote(ic["url"], token["inviter_bucket"], ic["access_key"], ic["secret_key"])
+    cloud = manager._cloud()
+    acceptor_bucket = token["inviter_bucket"]
+    acceptor_remote = S3Remote(cloud["url"], acceptor_bucket, cloud["access_key"], cloud["secret_key"])
+    acceptance = manager.accept_invitation(token_b64, inviter_remote, acceptor_remote)
+    click.echo(acceptance)
+
+
+@cli.command("complete-acceptance")
+@click.argument("team_name")
+@click.argument("acceptance_b64")
+@click.pass_context
+def complete_acceptance(ctx, team_name, acceptance_b64):
+    """Complete an acceptance (Alice side), given the acceptance token from the invitee."""
+    manager = _make_manager(ctx)
+    manager.complete_invitation_acceptance(team_name, acceptance_b64)
+    click.echo(f"Acceptance complete for team '{team_name}'")
+
+
+@cli.command("revoke")
+@click.argument("team_name")
 @click.argument("invitation_id")
 @click.pass_context
-def accept_invitation(ctx, invitation_id):
-    """Accept a team invitation."""
+def revoke_invitation(ctx, team_name, invitation_id):
+    """Revoke a pending invitation."""
     manager = _make_manager(ctx)
-    manager.accept_invitation(invitation_id)
-    click.echo(f"Accepted invitation '{invitation_id}'")
+    manager.revoke_invitation(team_name, invitation_id)
+    click.echo(f"Revoked invitation '{invitation_id}'")
 
 
 @cli.command("remove-member")
