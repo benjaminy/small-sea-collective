@@ -159,20 +159,6 @@ class Peer(Base):
         return f"<Peer(id='{self.id.hex()}')>"
 
 
-class MemberCloud(Base):
-    __tablename__ = "member_cloud"
-
-    id = Column(LargeBinary, primary_key=True)
-    member_id = Column(LargeBinary, nullable=False)
-    protocol = Column(String, nullable=False)
-    url = Column(String, nullable=False)
-    access_key = Column(String)
-    secret_key = Column(String)
-
-    def __repr__(self):
-        return f"<MemberCloud(id='{self.id.hex()}')>"
-
-
 # ---- Constants ----
 
 USER_SCHEMA_VERSION = 46

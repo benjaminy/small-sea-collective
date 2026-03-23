@@ -4,16 +4,6 @@ CREATE TABLE IF NOT EXISTS member (
     id BLOB PRIMARY KEY
 );
 
-CREATE TABLE IF NOT EXISTS member_cloud (
-    id BLOB PRIMARY KEY,
-    member_id BLOB NOT NULL,
-    protocol TEXT NOT NULL,
-    url TEXT NOT NULL,
-    access_key TEXT,
-    secret_key TEXT,
-    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS app (
     id BLOB PRIMARY KEY,
     name TEXT NOT NULL
