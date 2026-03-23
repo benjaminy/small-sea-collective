@@ -139,7 +139,7 @@ The Small Sea framework has the following components:
 - Small Sea Client.
    This is a utility library for applications communicating with the Hub.
    It helps manage sessions, makes common workflows easy, etc.
-- Small Sea Manager.
+- [Small Sea Manager](packages/small-sea-manager/spec.md).
    This is the essential built-in user application.
    It manages not only team membership, but devices, general-purpose service subscriptions, etc.
    This info is all stored in a database that the Hub also needs to do its work.
