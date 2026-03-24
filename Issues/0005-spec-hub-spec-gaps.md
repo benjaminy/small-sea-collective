@@ -3,6 +3,7 @@ id: 0005
 title: Fill in Hub spec gaps
 type: spec
 priority: medium
+status: closed
 ---
 
 ## Context
