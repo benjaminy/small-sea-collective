@@ -47,46 +47,59 @@ def minio(minio_server_gen):
 
 
 @pytest.fixture()
-def hub_env(playground_dir, minio):
+def hub_env(playground_dir, minio, hub_server_gen):
     """Real subprocess hub, participant, session, and S3 bucket — ready to go."""
     root_dir = playground_dir
 
     # Provision participant directly on disk
-    Provisioning.create_new_participant(root_dir, "alice")
+    alice_hex = Provisioning.create_new_participant(root_dir, "alice")
+
+    # Write S3 cloud config directly to NoteToSelf DB before starting the Hub.
+    # The Hub reads this at request time; no HTTP endpoint for cloud registration.
+    note_to_self_db = (
+        pathlib.Path(root_dir)
+        / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{note_to_self_db}")
+    with Session(engine) as db_session:
+        cloud = SmallSea.CloudStorage(
+            id=os.urandom(16),
+            protocol="s3",
+            url=minio["endpoint"],
+            access_key=minio["access_key"],
+            secret_key=minio["secret_key"],
+        )
+        db_session.add(cloud)
+        db_session.commit()
 
     # Start hub as a real subprocess
-    hub = hub_server_gen_inner(root_dir, HUB_PORT)
+    hub = hub_server_gen(root_dir=root_dir, port=HUB_PORT)
     hub_endpoint = hub["endpoint"]
 
-    # Open session via real HTTP
-    resp = requests.post(f"{hub_endpoint}/sessions", json={
+    # Open session via two-step HTTP flow.
+    # client="Smoke Tests" causes the Hub to echo the PIN in the response.
+    resp = requests.post(f"{hub_endpoint}/sessions/request", json={
         "participant": "alice",
         "app": "SmallSeaCollectiveCore",
         "team": "NoteToSelf",
         "client": "Smoke Tests",
     })
     assert resp.status_code == 200
-    session_hex = resp.json()
+    data = resp.json()
+    pending_id = data["pending_id"]
+    pin = data["pin"]
 
-    # Register MinIO cloud location via real HTTP
-    resp = requests.post(f"{hub_endpoint}/cloud_locations", json={
-        "session": session_hex,
-        "backend": "s3",
-        "url": minio["endpoint"],
-        "access_key": minio["access_key"],
-        "secret_key": minio["secret_key"],
+    resp = requests.post(f"{hub_endpoint}/sessions/confirm", json={
+        "pending_id": pending_id,
+        "pin": pin,
     })
     assert resp.status_code == 200
+    session_hex = resp.json()
 
-    # Derive and pre-create bucket (same logic as in-process test)
+    # Derive bucket name from station_id and pre-create it in MinIO.
     ss = SmallSea.SmallSeaBackend(root_dir=root_dir)
     ss_session = ss._lookup_session(session_hex)
-    core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
-    engine = create_engine(f"sqlite:///{core_path}")
-    with Session(engine) as db_session:
-        station = db_session.query(SmallSea.TeamAppStation).filter(
-            SmallSea.TeamAppStation.id == ss_session.station_id).first()
-    bucket_name = f"ss-{station.id.hex()[:16]}"
+    bucket_name = f"ss-{ss_session.station_id.hex()[:16]}"
 
     s3 = boto3.client(
         "s3",
@@ -104,34 +117,6 @@ def hub_env(playground_dir, minio):
         "session_hex": session_hex,
         "playground_dir": playground_dir,
         "minio": minio,
-    }
-
-    # Teardown: stop hub subprocess
-    hub["proc"].terminate()
-    hub["proc"].wait()
-
-
-def hub_server_gen_inner(root_dir, port):
-    """Start a hub subprocess (used by the fixture, not a pytest fixture itself)."""
-    import subprocess
-    import time
-
-    env = os.environ.copy()
-    env["SMALL_SEA_ROOT_DIR"] = root_dir
-
-    cmd = ["uv", "run", "fastapi", "dev",
-           "packages/small-sea-hub/small_sea_hub/server.py",
-           "--port", str(port)]
-    proc = subprocess.Popen(cmd, env=env)
-    time.sleep(2)
-    if proc.poll() is not None:
-        raise RuntimeError(f"Small Sea Hub exited early (code {proc.returncode})")
-
-    return {
-        "proc": proc,
-        "port": port,
-        "root_dir": root_dir,
-        "endpoint": f"http://localhost:{port}",
     }
 
 
@@ -167,7 +152,8 @@ def test_push_clone_roundtrip_subprocess(hub_env):
         latest = bob_remote.get_latest_link()
         assert latest is not None
 
-        [link_ids, branches, bundles, supp] = latest
+        link, _etag = latest
+        [link_ids, branches, bundles, supp] = link
         assert link_ids[0] == "initial-snapshot"
         assert len(bundles) == 1
 
