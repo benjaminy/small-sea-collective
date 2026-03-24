@@ -37,7 +37,6 @@ def make_cod_sync(repo_dir, remote_name):
     """Create a CodSync wired to a specific repo directory."""
     os.chdir(repo_dir)
     cod = CS.CodSync(remote_name)
-    cod.gitCmd = CS.gitCmd
     return cod
 
 

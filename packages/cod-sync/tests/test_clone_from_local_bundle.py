@@ -31,7 +31,6 @@ def make_cod_sync(repo_dir, remote_name):
     """
     os.chdir(repo_dir)
     cod = CS.CodSync(remote_name)
-    cod.gitCmd = CS.gitCmd
     return cod
 
 

@@ -510,7 +510,6 @@ def accept_invitation(
     os.chdir(team_sync_dir)
     try:
         cod = CodSync.CodSync("inviter")
-        cod.gitCmd = CodSync.gitCmd
 
         # Build a URL for git remote registration (used by add_remote inside clone_from_remote)
         inviter_url = (
@@ -579,7 +578,6 @@ def accept_invitation(
     os.chdir(team_sync_dir)
     try:
         cod = CodSync.CodSync("acceptor-cloud")
-        cod.gitCmd = CodSync.gitCmd
         cod.remote = acceptor_remote
         cod.push_to_remote(["main"])
     finally:

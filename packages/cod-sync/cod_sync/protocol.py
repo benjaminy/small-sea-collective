@@ -42,6 +42,7 @@ class CodSync:
     def __init__(self, remote_name):
         self.remote_name = remote_name
         self.url = None
+        self.gitCmd = gitCmd
 
     def add_remote(self, url, dotdotdot):
         """Add a Cod Sync remote

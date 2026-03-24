@@ -229,7 +229,6 @@ def push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
     try:
         os.chdir(checkout_path)
         cod = CS.CodSync("cloud")
-        cod.gitCmd = CS.gitCmd
         cod.remote = CS.LocalFolderRemote(str(cloud_dir))
         cod.push_to_remote(["main"])
     finally:
@@ -245,7 +244,6 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
     try:
         os.chdir(checkout_path)
         cod = CS.CodSync("cloud")
-        cod.gitCmd = CS.gitCmd
         cod.remote = CS.LocalFolderRemote(str(cloud_dir))
 
         # Check if repo has any commits
