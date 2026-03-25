@@ -79,8 +79,9 @@ Stores this participant's personal Small Sea metadata. The Hub reads it to know 
 | `team_app_station` | Stations for the NoteToSelf team (one per app; carries `team_id` since NoteToSelf DB may host multiple teams' personal stations) |
 | `cloud_storage` | Cloud storage accounts available to this participant (S3, Google Drive, Dropbox, etc.) — the Hub reads these to know where to push/pull |
 | `notification_service` | Notification endpoints (e.g. ntfy) — the Hub reads these to know where to send/receive notifications |
+| `team_signing_key` | Per-team Ed25519 signing key pairs; private key stored here (syncs across devices), public key also stored in the team DB's `member` row |
 
-Schema version is tracked via SQLite `PRAGMA user_version`. Current: `USER_SCHEMA_VERSION = 46`.
+Schema version is tracked via SQLite `PRAGMA user_version`. Current: `USER_SCHEMA_VERSION = 47`.
 
 ### Team DB (`{TeamName}/Sync/core.db`)
 
@@ -88,7 +89,7 @@ Stores the shared state for one team. All members maintain their own copy; chang
 
 | Table | Purpose |
 |-------|---------|
-| `member` | One row per team member; the primary key is that member's team-local identity |
+| `member` | One row per team member; the primary key is that member's team-local identity; `public_key` holds their Ed25519 signing key for bundle verification |
 | `member_unification` | Maps multiple member IDs to the same person (for the oops-unification device flow; see §Device Management) |
 | `app` | Apps active for this team |
 | `team_app_station` | Stations for this team (one per app; `team_id` omitted — implicit from which DB this is) |
@@ -445,6 +446,15 @@ CREATE TABLE IF NOT EXISTS notification_service (
     protocol TEXT NOT NULL,
     url      TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS team_signing_key (
+    id          BLOB PRIMARY KEY,
+    team_id     BLOB NOT NULL,
+    public_key  BLOB NOT NULL,
+    private_key BLOB NOT NULL,
+    created_at  TEXT NOT NULL,
+    FOREIGN KEY (team_id) REFERENCES team(id)
+);
 ```
 
 ### Team schema (`sql/core_other_team.sql`)
@@ -453,7 +463,8 @@ CREATE TABLE IF NOT EXISTS notification_service (
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS member (
-    id BLOB PRIMARY KEY
+    id BLOB PRIMARY KEY,
+    public_key BLOB
 );
 
 CREATE TABLE IF NOT EXISTS app (

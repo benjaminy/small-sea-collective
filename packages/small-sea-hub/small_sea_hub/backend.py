@@ -144,7 +144,7 @@ class SmallSeaBackend:
     small-sea-manager package (provisioning.py).
     """
 
-    hub_schema_version: int = 46
+    hub_schema_version: int = 47
 
     def __init__(self, root_dir):
         self.root_dir = pathlib.Path(root_dir)
@@ -204,6 +204,12 @@ class SmallSeaBackend:
                 )
                 user_version = 46
                 print("Hub DB migrated to v46.")
+
+            if user_version == 46:
+                # team_signing_key table added to NoteToSelf schema;
+                # Hub doesn't read it, just needs to accept the version bump.
+                user_version = 47
+                print("Hub DB migrated to v47.")
 
             cursor.execute(
                 f"PRAGMA user_version = {SmallSeaBackend.hub_schema_version}"

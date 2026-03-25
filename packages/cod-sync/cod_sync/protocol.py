@@ -19,6 +19,67 @@ program_title = "Cod Sync protocol Git remote helper work-a-like"
 COD_SYNC_VERSION = "1.0.0"
 
 
+# --- Link signing and verification ---
+
+
+def canonical_link_bytes(link_ids, branches, bundles, supplement):
+    """Produce the canonical byte string that is signed for a link.
+
+    Covers link_ids, branches, bundles, and supplement (excluding the
+    'signatures' key if present). Deterministic YAML serialization.
+
+    Normalizes bundle prerequisites to flat list form (the wire format)
+    since read_link_blob converts them to dicts.
+    """
+    supp_without_sigs = {k: v for k, v in supplement.items() if k != "signatures"}
+    # Normalize: read_link_blob converts prerequisites from list to dict;
+    # canonical form always uses the flat list.
+    normalized_bundles = []
+    for bundle in bundles:
+        prereqs = bundle[1]
+        if isinstance(prereqs, dict):
+            flat = []
+            for k, v in sorted(prereqs.items()):
+                flat.extend([k, v])
+            normalized_bundles.append([bundle[0], flat])
+        else:
+            normalized_bundles.append(bundle)
+    signable = [link_ids, branches, normalized_bundles, supp_without_sigs]
+    return yaml.dump(signable, default_flow_style=False, sort_keys=True).encode("utf-8")
+
+
+def sign_link(private_key_bytes, canonical_bytes):
+    """Sign canonical link bytes with an Ed25519 private key.
+
+    private_key_bytes: 32-byte Ed25519 private key (raw format).
+    Returns a base64-encoded signature string.
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    key = Ed25519PrivateKey.from_private_bytes(private_key_bytes)
+    signature = key.sign(canonical_bytes)
+    return base64.b64encode(signature).decode()
+
+
+def verify_link_signature(public_key_bytes, signature_b64, canonical_bytes):
+    """Verify an Ed25519 signature on canonical link bytes.
+
+    public_key_bytes: 32-byte Ed25519 public key (raw format).
+    signature_b64: base64-encoded signature string.
+    Returns True if valid, False otherwise.
+    """
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.exceptions import InvalidSignature
+
+    key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
+    signature = base64.b64decode(signature_b64)
+    try:
+        key.verify(signature, canonical_bytes)
+        return True
+    except InvalidSignature:
+        return False
+
+
 class CasConflictError(Exception):
     """Raised when a compare-and-swap write fails due to a concurrent update."""
 
@@ -105,7 +166,7 @@ class CodSync:
         # Strip 'codsync:'
         self.url = remote_url[8:]
 
-    def push_to_remote(self, branches):
+    def push_to_remote(self, branches, signing_key=None, member_id=None):
         print(f"PUSH {self.remote_name} {self.url} '{branches}'")
 
         bundle_uid = CodSync.token_hex(8)
@@ -145,13 +206,17 @@ class CodSync:
         if latest_link is not None:
             self.gitCmd(["tag", "-d", tag])
 
-        blob = self.build_link_blob(link_uid, link_uid_prev, bundle_uid, prerequisites)
+        blob = self.build_link_blob(
+            link_uid, link_uid_prev, bundle_uid, prerequisites,
+            signing_key=signing_key, member_id=member_id,
+        )
         print(f"Pushing to Cod Sync clone {link_uid} '{bundle_path_tmp}' {blob}")
         return self.remote.upload_latest_link(
             link_uid, blob, bundle_uid, bundle_path_tmp, expected_etag=etag
         )
 
-    def build_link_blob(self, new_link_uid, prev_link_uid, bundle_uid, prerequisites):
+    def build_link_blob(self, new_link_uid, prev_link_uid, bundle_uid, prerequisites,
+                        signing_key=None, member_id=None):
         link_ids = [new_link_uid, prev_link_uid]
         branch_names = self.get_branches()
         branches = []
@@ -160,6 +225,12 @@ class CodSync:
         print(f"BRANCHES {branches}")
         bundles = [[bundle_uid, ["main", prerequisites["main"]]]]
         supplement = {"cod_version": COD_SYNC_VERSION}
+
+        if signing_key is not None and member_id is not None:
+            signable = canonical_link_bytes(link_ids, branches, bundles, supplement)
+            signature = sign_link(signing_key, signable)
+            supplement["signatures"] = {member_id: signature}
+
         return [link_ids, branches, bundles, supplement]
 
     def clone_from_remote(self, url, remote=None):

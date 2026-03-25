@@ -1,7 +1,8 @@
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS member (
-    id BLOB PRIMARY KEY
+    id BLOB PRIMARY KEY,
+    public_key BLOB
 );
 
 CREATE TABLE IF NOT EXISTS app (

@@ -155,7 +155,7 @@ class Peer(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 46
+USER_SCHEMA_VERSION = 47
 
 
 # ---- Provisioning functions ----
@@ -242,6 +242,18 @@ def _migrate_user_db(conn, from_version):
         )
     if from_version < 46:
         pass  # team DB schema updated (app, team_app_station, station_role); NoteToSelf schema unchanged
+    if from_version < 47:
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS team_signing_key ("
+                "id BLOB PRIMARY KEY, "
+                "team_id BLOB NOT NULL, "
+                "public_key BLOB NOT NULL, "
+                "private_key BLOB NOT NULL, "
+                "created_at TEXT NOT NULL, "
+                "FOREIGN KEY (team_id) REFERENCES team(id))"
+            )
+        )
 
 
 def _initialize_core_note_to_self_schema(conn):
@@ -326,6 +338,61 @@ def _install_sqlite_merge_driver(team_sync_dir):
     )
 
 
+def _generate_team_signing_key(nts_engine, team_id):
+    """Generate an Ed25519 signing key pair for a team.
+
+    Stores the key in the team_signing_key table in NoteToSelf.
+    Returns (private_key_bytes, public_key_bytes).
+    """
+    private_key = Ed25519PrivateKey.generate()
+    private_key_bytes = private_key.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public_key_bytes = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    with nts_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO team_signing_key (id, team_id, public_key, private_key, created_at) "
+                "VALUES (:id, :team_id, :pub, :priv, :created_at)"
+            ),
+            {"id": uuid7(), "team_id": team_id, "pub": public_key_bytes,
+             "priv": private_key_bytes, "created_at": now},
+        )
+    return private_key_bytes, public_key_bytes
+
+
+def get_team_signing_key(root_dir, participant_hex, team_name):
+    """Return the signing key for a team as (private_key_bytes, public_key_bytes).
+
+    Looks up the team by name in NoteToSelf, then fetches the key from team_signing_key.
+    Raises ValueError if no key is found.
+    """
+    root_dir = pathlib.Path(root_dir)
+    nts_db_path = (
+        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{nts_db_path}")
+    with engine.begin() as conn:
+        row = conn.execute(
+            text(
+                "SELECT tsk.private_key, tsk.public_key FROM team_signing_key tsk "
+                "JOIN team t ON tsk.team_id = t.id "
+                "WHERE t.name = :team_name LIMIT 1"
+            ),
+            {"team_name": team_name},
+        ).fetchone()
+    engine.dispose()
+    if row is None:
+        raise ValueError(f"No signing key found for team '{team_name}'")
+    return row[0], row[1]
+
+
 def create_team(root_dir, participant_hex, team_name):
     """Create a new team for an existing participant.
 
@@ -352,6 +419,9 @@ def create_team(root_dir, participant_hex, team_name):
         session.add(team_row)
         session.commit()
 
+    # --- Generate team signing key (stored in NoteToSelf) ---
+    _priv, pub = _generate_team_signing_key(engine, team_id)
+
     # --- Create team directory and its core.db ---
     team_sync_dir = participant_dir / team_name / "Sync"
     os.makedirs(team_sync_dir, exist_ok=False)
@@ -363,7 +433,10 @@ def create_team(root_dir, participant_hex, team_name):
     app_id = uuid7()
     station_id = uuid7()
     with team_engine.begin() as conn:
-        conn.execute(text("INSERT INTO member (id) VALUES (:id)"), {"id": member_id})
+        conn.execute(
+            text("INSERT INTO member (id, public_key) VALUES (:id, :pub)"),
+            {"id": member_id, "pub": pub},
+        )
         conn.execute(
             text("INSERT INTO app (id, name) VALUES (:id, :name)"),
             {"id": app_id, "name": "SmallSeaCollectiveCore"},
@@ -556,6 +629,19 @@ def accept_invitation(
         session.add(team_row)
         session.commit()
 
+    # --- Generate team signing key (stored in NoteToSelf) ---
+    _priv, acceptor_public_key = _generate_team_signing_key(user_engine, team_id)
+
+    # --- Store public key in team DB member row ---
+    team_db_path = team_sync_dir / "core.db"
+    team_engine2 = create_engine(f"sqlite:///{team_db_path}")
+    with team_engine2.begin() as conn:
+        conn.execute(
+            text("UPDATE member SET public_key = :pub WHERE id = :id"),
+            {"pub": acceptor_public_key, "id": acceptor_member_id},
+        )
+    team_engine2.dispose()
+
     # --- Git commit the DB changes ---
     CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
     CodSync.gitCmd(
@@ -586,6 +672,7 @@ def accept_invitation(
         "invitation_id": invitation_id.hex(),
         "nonce": nonce.hex(),
         "acceptor_member_id": acceptor_member_id.hex(),
+        "acceptor_public_key": acceptor_public_key.hex(),
         "acceptor_cloud": acceptor_cloud,
         "acceptor_bucket": acceptor_bucket,
     }
@@ -612,6 +699,7 @@ def complete_invitation_acceptance(
     invitation_id = bytes.fromhex(acceptance["invitation_id"])
     nonce = bytes.fromhex(acceptance["nonce"])
     acceptor_member_id = bytes.fromhex(acceptance["acceptor_member_id"])
+    acceptor_public_key = bytes.fromhex(acceptance["acceptor_public_key"])
     acceptor_cloud = acceptance["acceptor_cloud"]
     acceptor_bucket = acceptance["acceptor_bucket"]
 
@@ -655,7 +743,8 @@ def complete_invitation_acceptance(
 
         # Add acceptor as member + peer in inviter's team DB (URL only, no credentials)
         conn.execute(
-            text("INSERT INTO member (id) VALUES (:id)"), {"id": acceptor_member_id}
+            text("INSERT INTO member (id, public_key) VALUES (:id, :pub)"),
+            {"id": acceptor_member_id, "pub": acceptor_public_key},
         )
         conn.execute(
             text(

@@ -51,3 +51,12 @@ CREATE TABLE IF NOT EXISTS notification_service (
     protocol TEXT NOT NULL,
     url TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS team_signing_key (
+    id          BLOB PRIMARY KEY,
+    team_id     BLOB NOT NULL,
+    public_key  BLOB NOT NULL,
+    private_key BLOB NOT NULL,
+    created_at  TEXT NOT NULL,
+    FOREIGN KEY (team_id) REFERENCES team(id)
+);
