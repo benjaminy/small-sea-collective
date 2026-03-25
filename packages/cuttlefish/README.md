@@ -80,6 +80,33 @@ machinery will be layered in incrementally with clearly marked TODO points.
 
 ## 2. Key-Based Identity
 
+### A Fresh Start
+
+Identity in the Small Sea Collective is hard.
+There is no central/global actor to provide any kind of trust/identity anchor.
+Rather we need *some kind* of web of trust model.
+Participants add evidence to support identity trust through other channels (ideally meeting in the real world and scanning QR codes or similar).
+And that trust propagates around networks of teams somehow.
+That sounds good, but getting it right is **hard**.
+Webs of trust is not a new idea, but it has yet to have much impact on regular people/systems.
+
+Lets lay out some ingredients and figure out how this can build up to a resilient and convenient identity trust system.
+
+Every byte/blob/bundle that goes out to the internet through Small Sea should be encrypted and signed with some key.
+A good starting point is using per-participant, per-device, per-team keys that are stored in secure enclaves.
+(For legacy devices that don't have secure enclaves we can fake it with password encrypted keys or something.)
+Let's call these the workhorse keys.
+They can be somewhat transient; they should not be the primary locus of identity.
+
+Sidebar: The rotation schedule for the workhorse keys is an interesting question to investigate later.
+We certainly need the machinery to rotate them without major disruption.
+Probably this will include some overlap period where the new key is propagated but not used yet, then a transfer.
+
+The workhorse keys are infused with identity with certificates signed by per-team, cross-device keys stored in a table in the NoteToSelf/SmallSeaCollectiveCore station.
+{Team}/SmallSeaCollectiveCore stations should have a table full of certificates where participants attest to their own workhorse keys and each others' identity keys.
+
+
+
 ### The Problem with Single Key-Pairs
 
 Traditional public-key identity systems rely on a single long-lived key-pair
