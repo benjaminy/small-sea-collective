@@ -136,8 +136,6 @@ class Invitation(Base):
     accepted_by = Column(LargeBinary)
     acceptor_protocol = Column(String)
     acceptor_url = Column(String)
-    acceptor_access_key = Column(String)
-    acceptor_secret_key = Column(String)
 
     def __repr__(self):
         return f"<Invitation(id='{self.id.hex()}', status='{self.status}')>"
@@ -150,8 +148,6 @@ class Peer(Base):
     member_id = Column(LargeBinary, nullable=False)
     protocol = Column(String, nullable=False)
     url = Column(String, nullable=False)
-    access_key = Column(String)
-    secret_key = Column(String)
 
     def __repr__(self):
         return f"<Peer(id='{self.id.hex()}')>"

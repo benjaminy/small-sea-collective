@@ -219,7 +219,7 @@ Inserts a pending `invitation` row in the team DB. Produces a token for out-of-b
 
 Inputs: `team_name`, optional `invitee_label` (human note for who this is for), `role` (default: admin).
 
-> **Known security issue:** The current token includes the inviter's raw cloud credentials. This should be replaced with key material that allows the invitee to decrypt the team data — not credentials that allow them to impersonate the inviter's cloud account. See issue TBD.
+Token contents: invitation ID, nonce, team name, inviter member ID, inviter cloud endpoint (protocol + URL only — no credentials), inviter bucket name. Privacy is provided by E2E encryption (issue #0008), not by keeping the bucket private.
 
 #### List invitations
 
@@ -333,11 +333,11 @@ Alice                                Bob
   |  → commits git
 ```
 
-**Token contents:** invitation ID, nonce, team name, inviter member ID, inviter cloud info, inviter bucket name.
+**Token contents:** invitation ID, nonce, team name, inviter member ID, inviter cloud endpoint (protocol + URL only — no credentials), inviter bucket name.
 
-**Acceptance token contents:** invitation ID, nonce, acceptor member ID, acceptor cloud info, acceptor bucket name.
+**Acceptance token contents:** invitation ID, nonce, acceptor member ID, acceptor cloud endpoint (protocol + URL only — no credentials), acceptor bucket name.
 
-**Security note:** Tokens currently contain raw cloud credentials. This is a known issue; the intended design is to include only key material sufficient to decrypt the team data.
+**Security model:** Inviter's bucket is publicly readable (anonymous reads via unsigned requests). Privacy is provided by E2E encryption (issue #0008), not by access control. Credentials are never transmitted in tokens or stored in the `peer` table.
 
 **Double-accept protection:** `complete_invitation_acceptance` checks that the invitation status is `pending` before proceeding. A second acceptor presenting a different acceptance token will be rejected with a "not pending" error.
 
@@ -478,27 +478,25 @@ CREATE TABLE IF NOT EXISTS station_role (
 );
 
 CREATE TABLE IF NOT EXISTS invitation (
-    id                   BLOB PRIMARY KEY,
-    nonce                BLOB NOT NULL,
-    status               TEXT NOT NULL DEFAULT 'pending',
-    invitee_label        TEXT,
-    role                 TEXT NOT NULL DEFAULT 'admin',  -- role to grant on acceptance
-    created_at           TEXT NOT NULL,
-    accepted_at          TEXT,
-    accepted_by          BLOB,
-    acceptor_protocol    TEXT,
-    acceptor_url         TEXT,
-    acceptor_access_key  TEXT,
-    acceptor_secret_key  TEXT
+    id                BLOB PRIMARY KEY,
+    nonce             BLOB NOT NULL,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    invitee_label     TEXT,
+    role              TEXT NOT NULL DEFAULT 'admin',  -- role to grant on acceptance
+    created_at        TEXT NOT NULL,
+    accepted_at       TEXT,
+    accepted_by       BLOB,
+    acceptor_protocol TEXT,
+    acceptor_url      TEXT
+    -- no credential columns: privacy is E2E, not access-control
 );
 
 CREATE TABLE IF NOT EXISTS peer (
-    id         BLOB PRIMARY KEY,
-    member_id  BLOB NOT NULL,
-    protocol   TEXT NOT NULL,
-    url        TEXT NOT NULL,
-    access_key TEXT,
-    secret_key TEXT,
+    id        BLOB PRIMARY KEY,
+    member_id BLOB NOT NULL,
+    protocol  TEXT NOT NULL,
+    url       TEXT NOT NULL,
+    -- no credential columns: credentials stay in the local Hub, never shared
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 );
 ```
@@ -509,7 +507,7 @@ CREATE TABLE IF NOT EXISTS peer (
 
 | # | Issue |
 |---|-------|
-| **Invitation token credentials** | Token currently includes inviter's raw cloud credentials. Should be replaced with key material. |
+| **E2E encryption** | Tokens and peer table carry only cloud endpoints (no credentials). Data privacy depends on E2E encryption (issue #0008), which is not yet implemented. |
 | **Deep device unification** | Merging team memberships across two separate participant identities is not designed. Shallow unification (NoteToSelf-level only) is the current scope. |
 | **Key transfer between devices** | How DAILY/GUARDED/BURIED keys are shared with a newly linked device is TBD, pending Cuttlefish integration. |
 | **`make_device_link_invitation()`** | Currently a stub (`pass`). The primary device-linking flow is not yet implemented. |
