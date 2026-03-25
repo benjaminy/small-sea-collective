@@ -35,9 +35,7 @@ CREATE TABLE IF NOT EXISTS invitation (
     accepted_at TEXT,
     accepted_by BLOB,
     acceptor_protocol TEXT,
-    acceptor_url TEXT,
-    acceptor_access_key TEXT,
-    acceptor_secret_key TEXT
+    acceptor_url TEXT
 );
 
 CREATE TABLE IF NOT EXISTS peer (
@@ -45,7 +43,5 @@ CREATE TABLE IF NOT EXISTS peer (
     member_id BLOB NOT NULL,
     protocol TEXT NOT NULL,
     url TEXT NOT NULL,
-    access_key TEXT,
-    secret_key TEXT,
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 );

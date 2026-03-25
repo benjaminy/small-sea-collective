@@ -112,18 +112,20 @@ def list_invitations(ctx, team_name):
 def accept_invitation(ctx, token_b64):
     """Accept an invitation token (Bob side). Prints the acceptance token to stdout.
 
-    Remotes are constructed from cloud credentials in the token and local DB.
+    The inviter's bucket is read anonymously (publicly readable).
+    The acceptor's bucket is written via the Hub session.
     """
     import base64, json
-    from cod_sync.testing import S3Remote
+    from cod_sync.testing import PublicS3Remote, S3Remote
 
     manager = _make_manager(ctx)
     token = json.loads(base64.b64decode(token_b64).decode())
     ic = token["inviter_cloud"]
-    inviter_remote = S3Remote(ic["url"], token["inviter_bucket"], ic["access_key"], ic["secret_key"])
+    inviter_remote = PublicS3Remote(ic["url"], token["inviter_bucket"])
+    # Acceptor writes to the same bucket name (shared station ID) on their own cloud.
+    # TODO: use SmallSeaRemote via Hub session once TeamManager.connect() is wired (0015).
     cloud = manager._cloud()
-    acceptor_bucket = token["inviter_bucket"]
-    acceptor_remote = S3Remote(cloud["url"], acceptor_bucket, cloud["access_key"], cloud["secret_key"])
+    acceptor_remote = S3Remote(cloud["url"], token["inviter_bucket"], cloud["access_key"], cloud["secret_key"])
     acceptance = manager.accept_invitation(token_b64, inviter_remote, acceptor_remote)
     click.echo(acceptance)
 

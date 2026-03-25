@@ -92,17 +92,12 @@ class TeamManager:
     def accept_invitation(self, token_b64, inviter_remote, acceptor_remote):
         """Accept an invitation token (acceptor side). Returns an acceptance token.
 
-        inviter_remote: CodSyncRemote for reading the inviter's cloud.
-        acceptor_remote: CodSyncRemote for writing to the acceptor's cloud.
+        inviter_remote: CodSyncRemote for reading the inviter's public bucket.
+        acceptor_remote: CodSyncRemote for writing to the acceptor's own bucket.
         """
-        import base64, json
-        token = json.loads(base64.b64decode(token_b64).decode())
-        cloud = provisioning.get_cloud_storage(self.root_dir, self.participant_hex)
-        # Bucket name is the same for all members of a team (same station ID).
-        acceptor_bucket = token["inviter_bucket"]
         return provisioning.accept_invitation(
-            self.root_dir, self.participant_hex, token_b64, cloud, acceptor_bucket,
-            inviter_remote=inviter_remote, acceptor_remote=acceptor_remote,
+            self.root_dir, self.participant_hex, token_b64,
+            inviter_remote, acceptor_remote,
         )
 
     def complete_invitation_acceptance(self, team_name, acceptance_b64):

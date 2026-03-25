@@ -5,12 +5,14 @@ import pathlib
 import sqlite3
 import subprocess
 
+import boto3
 import cod_sync.protocol as CS
 import pytest
-from cod_sync.testing import S3Remote
+from botocore.config import Config
+from cod_sync.testing import PublicS3Remote, S3Remote
 from small_sea_manager.provisioning import (
-    accept_invitation, complete_invitation_acceptance, create_invitation,
-    create_new_participant, create_team, list_invitations)
+    accept_invitation, add_cloud_storage, complete_invitation_acceptance,
+    create_invitation, create_new_participant, create_team, list_invitations)
 
 
 def _make_cod_sync(repo_dir, remote_name):
@@ -18,6 +20,30 @@ def _make_cod_sync(repo_dir, remote_name):
     os.chdir(repo_dir)
     cod = CS.CodSync(remote_name)
     return cod
+
+
+def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
+    """Set a bucket policy to allow public reads (MinIO)."""
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=Config(signature_version="s3v4"),
+        region_name="us-east-1",
+    )
+    s3.put_bucket_policy(
+        Bucket=bucket_name,
+        Policy=json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": ["s3:GetObject"],
+                "Resource": [f"arn:aws:s3:::{bucket_name}/*"],
+            }],
+        }),
+    )
 
 
 def test_create_invitation(playground_dir):
@@ -67,8 +93,9 @@ def test_create_invitation_includes_bucket(playground_dir):
 
 
 def test_full_invitation_flow(playground_dir, minio_server_gen):
-    """Full decentralized invitation flow with separate root dirs and MinIO."""
-    minio = minio_server_gen(port=19100)
+    """Full decentralized invitation flow: separate root dirs and separate MinIO servers."""
+    alice_minio = minio_server_gen(port=19100)
+    bob_minio = minio_server_gen(port=19200)
 
     alice_root = pathlib.Path(playground_dir) / "alice-root"
     bob_root = pathlib.Path(playground_dir) / "bob-root"
@@ -80,59 +107,74 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     team_result = create_team(alice_root, alice_hex, "ProjectX")
     alice_member_id_hex = team_result["member_id_hex"]
 
-    # Alice's cloud info
-    alice_bucket = "alice-team-bucket"
-    alice_cloud = {
-        "protocol": "s3",
-        "url": minio["endpoint"],
-        "access_key": minio["access_key"],
-        "secret_key": minio["secret_key"],
-    }
+    # Bucket name derived from station ID (same formula used in create_invitation)
+    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
 
-    # Alice pushes team repo to MinIO
+    # Register Alice's cloud storage in her NoteToSelf DB
+    add_cloud_storage(
+        alice_root, alice_hex,
+        protocol="s3",
+        url=alice_minio["endpoint"],
+        access_key=alice_minio["access_key"],
+        secret_key=alice_minio["secret_key"],
+    )
+
+    # Alice pushes team repo to her MinIO
     alice_team_sync = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync"
     alice_remote = S3Remote(
-        minio["endpoint"], alice_bucket, minio["access_key"], minio["secret_key"]
+        alice_minio["endpoint"], team_bucket,
+        alice_minio["access_key"], alice_minio["secret_key"],
     )
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
     cod_alice.remote = alice_remote
     cod_alice.push_to_remote(["main"])
 
-    # Alice creates invitation (token includes bucket info)
-    token = create_invitation(
-        alice_root, alice_hex, "ProjectX", alice_cloud, invitee_label="Bob"
+    # Make Alice's bucket publicly readable (privacy comes from E2E crypto)
+    _make_bucket_public(
+        alice_minio["endpoint"],
+        alice_minio["access_key"],
+        alice_minio["secret_key"],
+        team_bucket,
     )
 
-    # Verify token has inviter_bucket
+    # Alice creates invitation (credentials are never included in the token)
+    token = create_invitation(
+        alice_root, alice_hex, "ProjectX",
+        {"protocol": "s3", "url": alice_minio["endpoint"]},
+        invitee_label="Bob",
+    )
+
+    # Verify token has no credentials
     token_data = json.loads(base64.b64decode(token).decode())
     assert "inviter_bucket" in token_data
-
-    # Patch the token to use alice_bucket (since the auto-derived bucket differs)
-    token_data["inviter_bucket"] = alice_bucket
-    token = base64.b64encode(json.dumps(token_data).encode()).decode()
+    assert "access_key" not in token_data.get("inviter_cloud", {})
+    assert "secret_key" not in token_data.get("inviter_cloud", {})
 
     # Re-push after invitation commit
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
     cod_alice.remote = alice_remote
     cod_alice.push_to_remote(["main"])
 
-    # Bob creates participant
+    # Bob creates participant and registers his own cloud (separate MinIO server)
     bob_hex = create_new_participant(bob_root, "Bob")
-    bob_bucket = "bob-team-bucket"
-    bob_cloud = {
-        "protocol": "s3",
-        "url": minio["endpoint"],
-        "access_key": minio["access_key"],
-        "secret_key": minio["secret_key"],
-    }
+    add_cloud_storage(
+        bob_root, bob_hex,
+        protocol="s3",
+        url=bob_minio["endpoint"],
+        access_key=bob_minio["access_key"],
+        secret_key=bob_minio["secret_key"],
+    )
 
-    # Bob accepts invitation (clones from Alice's MinIO, pushes to his bucket)
+    # Bob reads from Alice's public bucket anonymously; writes to his own server
+    inviter_remote = PublicS3Remote(alice_minio["endpoint"], team_bucket)
     bob_remote = S3Remote(
-        minio["endpoint"], bob_bucket, minio["access_key"], minio["secret_key"]
+        bob_minio["endpoint"], team_bucket,
+        bob_minio["access_key"], bob_minio["secret_key"],
     )
     acceptance_b64 = accept_invitation(
-        bob_root, bob_hex, token, bob_cloud, bob_bucket,
-        inviter_remote=alice_remote, acceptor_remote=bob_remote,
+        bob_root, bob_hex, token,
+        inviter_remote=inviter_remote,
+        acceptor_remote=bob_remote,
     )
     assert isinstance(acceptance_b64, str)
 
@@ -167,7 +209,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert len(peers) == 1
     assert peers[0][0] == bytes.fromhex(bob_member_id_hex)
     assert peers[0][1] == "s3"
-    assert peers[0][2] == bob_cloud["url"]
+    assert peers[0][2] == bob_minio["endpoint"]
 
     # Both Alice and Bob should have read-write roles
     roles = aconn.execute("SELECT member_id, role FROM station_role").fetchall()
@@ -190,7 +232,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert len(peers) == 1
     assert peers[0][0] == bytes.fromhex(alice_member_id_hex)
     assert peers[0][1] == "s3"
-    assert peers[0][2] == alice_cloud["url"]
+    assert peers[0][2] == alice_minio["endpoint"]
     bconn.close()
 
     # --- Verify Bob's NoteToSelf has the team pointer but NOT a TeamAppStation for ProjectX ---
@@ -223,7 +265,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
 
 def test_double_accept_rejected(playground_dir, minio_server_gen):
     """Second acceptance of the same invitation should fail."""
-    minio = minio_server_gen(port=19200)
+    alice_minio = minio_server_gen(port=19300)
+    bob_minio = minio_server_gen(port=19400)
+    carol_minio = minio_server_gen(port=19500)
 
     alice_root = pathlib.Path(playground_dir) / "alice-root"
     bob_root = pathlib.Path(playground_dir) / "bob-root"
@@ -233,31 +277,37 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
     carol_root.mkdir()
 
     alice_hex = create_new_participant(alice_root, "Alice")
-    create_team(alice_root, alice_hex, "ProjectX")
+    team_result = create_team(alice_root, alice_hex, "ProjectX")
+    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
 
-    alice_bucket = "alice-double-bucket"
-    alice_cloud = {
-        "protocol": "s3",
-        "url": minio["endpoint"],
-        "access_key": minio["access_key"],
-        "secret_key": minio["secret_key"],
-    }
+    add_cloud_storage(
+        alice_root, alice_hex,
+        protocol="s3",
+        url=alice_minio["endpoint"],
+        access_key=alice_minio["access_key"],
+        secret_key=alice_minio["secret_key"],
+    )
 
-    # Push team repo to MinIO
     alice_team_sync = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync"
     alice_remote = S3Remote(
-        minio["endpoint"], alice_bucket, minio["access_key"], minio["secret_key"]
+        alice_minio["endpoint"], team_bucket,
+        alice_minio["access_key"], alice_minio["secret_key"],
     )
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
     cod_alice.remote = alice_remote
     cod_alice.push_to_remote(["main"])
 
-    token = create_invitation(alice_root, alice_hex, "ProjectX", alice_cloud)
+    _make_bucket_public(
+        alice_minio["endpoint"],
+        alice_minio["access_key"],
+        alice_minio["secret_key"],
+        team_bucket,
+    )
 
-    # Patch token with correct bucket
-    token_data = json.loads(base64.b64decode(token).decode())
-    token_data["inviter_bucket"] = alice_bucket
-    token = base64.b64encode(json.dumps(token_data).encode()).decode()
+    token = create_invitation(
+        alice_root, alice_hex, "ProjectX",
+        {"protocol": "s3", "url": alice_minio["endpoint"]},
+    )
 
     # Re-push after invitation commit
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
@@ -266,45 +316,49 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
 
     # Bob accepts
     bob_hex = create_new_participant(bob_root, "Bob")
-    bob_bucket = "bob-double-bucket"
-    bob_cloud = {
-        "protocol": "s3",
-        "url": minio["endpoint"],
-        "access_key": minio["access_key"],
-        "secret_key": minio["secret_key"],
-    }
+    add_cloud_storage(
+        bob_root, bob_hex,
+        protocol="s3",
+        url=bob_minio["endpoint"],
+        access_key=bob_minio["access_key"],
+        secret_key=bob_minio["secret_key"],
+    )
+    inviter_remote = PublicS3Remote(alice_minio["endpoint"], team_bucket)
     bob_remote = S3Remote(
-        minio["endpoint"], bob_bucket, minio["access_key"], minio["secret_key"]
+        bob_minio["endpoint"], team_bucket,
+        bob_minio["access_key"], bob_minio["secret_key"],
     )
     acceptance_b64 = accept_invitation(
-        bob_root, bob_hex, token, bob_cloud, bob_bucket,
-        inviter_remote=alice_remote, acceptor_remote=bob_remote,
+        bob_root, bob_hex, token,
+        inviter_remote=inviter_remote,
+        acceptor_remote=bob_remote,
     )
 
     # Alice completes Bob's acceptance
     complete_invitation_acceptance(alice_root, alice_hex, "ProjectX", acceptance_b64)
 
-    # Carol tries to accept the same invitation — but complete should fail
-    carol_hex = create_new_participant(carol_root, "Carol")
-    carol_bucket = "carol-double-bucket"
-    carol_cloud = {
-        "protocol": "s3",
-        "url": minio["endpoint"],
-        "access_key": minio["access_key"],
-        "secret_key": minio["secret_key"],
-    }
-
-    # Re-push so Carol can clone the latest
+    # Alice re-pushes so Carol can clone the latest
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
     cod_alice.remote = alice_remote
     cod_alice.push_to_remote(["main"])
 
+    # Carol tries to accept the same token — but complete should fail
+    carol_hex = create_new_participant(carol_root, "Carol")
+    add_cloud_storage(
+        carol_root, carol_hex,
+        protocol="s3",
+        url=carol_minio["endpoint"],
+        access_key=carol_minio["access_key"],
+        secret_key=carol_minio["secret_key"],
+    )
     carol_remote = S3Remote(
-        minio["endpoint"], carol_bucket, minio["access_key"], minio["secret_key"]
+        carol_minio["endpoint"], team_bucket,
+        carol_minio["access_key"], carol_minio["secret_key"],
     )
     carol_acceptance_b64 = accept_invitation(
-        carol_root, carol_hex, token, carol_cloud, carol_bucket,
-        inviter_remote=alice_remote, acceptor_remote=carol_remote,
+        carol_root, carol_hex, token,
+        inviter_remote=inviter_remote,
+        acceptor_remote=carol_remote,
     )
 
     with pytest.raises(ValueError, match="not pending"):

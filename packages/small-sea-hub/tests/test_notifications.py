@@ -1,13 +1,14 @@
-import base64
 import json
 import os
 import time
 
+import boto3
 import cod_sync.protocol as CS
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.testing import S3Remote
+from botocore.config import Config
+from cod_sync.testing import PublicS3Remote, S3Remote
 from fastapi.testclient import TestClient
 
 
@@ -18,60 +19,101 @@ def _make_cod_sync(repo_dir, remote_name):
     return cod
 
 
+def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
+    """Set a bucket policy to allow public reads (MinIO)."""
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=Config(signature_version="s3v4"),
+        region_name="us-east-1",
+    )
+    s3.put_bucket_policy(
+        Bucket=bucket_name,
+        Policy=json.dumps({
+            "Version": "2012-10-17",
+            "Statement": [{
+                "Effect": "Allow",
+                "Principal": "*",
+                "Action": ["s3:GetObject"],
+                "Resource": [f"arn:aws:s3:::{bucket_name}/*"],
+            }],
+        }),
+    )
+
+
 def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     """Two participants on one Hub: one sends a notification, the other receives it."""
     import pathlib
 
-    minio = minio_server_gen(port=19300)
+    alice_minio = minio_server_gen(port=19600)
+    bob_minio = minio_server_gen(port=19700)
 
     # -- Set up participants --
     alice_hex = Provisioning.create_new_participant(playground_dir, "Alice")
     bob_hex = Provisioning.create_new_participant(playground_dir, "Bob")
 
     # -- Create team for Alice, invite Bob --
-    cloud = {
-        "protocol": "s3",
-        "url": minio["endpoint"],
-        "access_key": minio["access_key"],
-        "secret_key": minio["secret_key"],
-    }
-    alice_bucket = "notif-alice-bucket"
-    bob_bucket = "notif-bob-bucket"
-
     team_info = Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    team_bucket = f"ss-{team_info['station_id_hex'][:16]}"
 
-    # Push Alice's team repo to MinIO
+    Provisioning.add_cloud_storage(
+        playground_dir, alice_hex,
+        protocol="s3",
+        url=alice_minio["endpoint"],
+        access_key=alice_minio["access_key"],
+        secret_key=alice_minio["secret_key"],
+    )
+    Provisioning.add_cloud_storage(
+        playground_dir, bob_hex,
+        protocol="s3",
+        url=bob_minio["endpoint"],
+        access_key=bob_minio["access_key"],
+        secret_key=bob_minio["secret_key"],
+    )
+
+    # Push Alice's team repo to her MinIO
     alice_team_sync = (
         pathlib.Path(playground_dir) / "Participants" / alice_hex / "ProjectX" / "Sync"
     )
     alice_remote = S3Remote(
-        minio["endpoint"], alice_bucket, minio["access_key"], minio["secret_key"]
+        alice_minio["endpoint"], team_bucket,
+        alice_minio["access_key"], alice_minio["secret_key"],
     )
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
     cod_alice.remote = alice_remote
     cod_alice.push_to_remote(["main"])
 
-    token = Provisioning.create_invitation(
-        playground_dir, alice_hex, "ProjectX", inviter_cloud=cloud, invitee_label="Bob"
+    # Make Alice's bucket publicly readable
+    _make_bucket_public(
+        alice_minio["endpoint"],
+        alice_minio["access_key"],
+        alice_minio["secret_key"],
+        team_bucket,
     )
 
-    # Patch token with the correct bucket
-    token_data = json.loads(base64.b64decode(token).decode())
-    token_data["inviter_bucket"] = alice_bucket
-    token = base64.b64encode(json.dumps(token_data).encode()).decode()
+    token = Provisioning.create_invitation(
+        playground_dir, alice_hex, "ProjectX",
+        inviter_cloud={"protocol": "s3", "url": alice_minio["endpoint"]},
+        invitee_label="Bob",
+    )
 
     # Re-push after invitation commit
     cod_alice = _make_cod_sync(alice_team_sync, "cloud")
     cod_alice.remote = alice_remote
     cod_alice.push_to_remote(["main"])
 
-    # Bob accepts invitation
+    # Bob accepts: reads Alice's public bucket anonymously, writes to his own server
+    inviter_remote = PublicS3Remote(alice_minio["endpoint"], team_bucket)
     bob_remote = S3Remote(
-        minio["endpoint"], bob_bucket, minio["access_key"], minio["secret_key"]
+        bob_minio["endpoint"], team_bucket,
+        bob_minio["access_key"], bob_minio["secret_key"],
     )
     acceptance_b64 = Provisioning.accept_invitation(
-        playground_dir, bob_hex, token, acceptor_cloud=cloud, acceptor_bucket=bob_bucket,
-        inviter_remote=alice_remote, acceptor_remote=bob_remote,
+        playground_dir, bob_hex, token,
+        inviter_remote=inviter_remote,
+        acceptor_remote=bob_remote,
     )
 
     # Alice completes the acceptance

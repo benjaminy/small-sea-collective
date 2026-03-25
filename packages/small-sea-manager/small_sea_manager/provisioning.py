@@ -402,7 +402,7 @@ def create_invitation(
 ):
     """Create an invitation token for a team.
 
-    inviter_cloud: dict with keys protocol, url, access_key, secret_key.
+    inviter_cloud: dict with keys protocol and url (endpoint only — no credentials).
     Returns a base64-encoded JSON token string.
     """
     root_dir = pathlib.Path(root_dir)
@@ -441,13 +441,13 @@ def create_invitation(
             {"id": inv_id, "nonce": nonce, "label": invitee_label, "role": role, "created_at": now},
         )
 
-    # Build token
+    # Build token — credentials are never included; bucket is publicly readable.
     token_data = {
         "invitation_id": inv_id.hex(),
         "nonce": nonce.hex(),
         "team_name": team_name,
         "inviter_member_id": inviter_member_id.hex(),
-        "inviter_cloud": inviter_cloud,
+        "inviter_cloud": {"protocol": inviter_cloud["protocol"], "url": inviter_cloud["url"]},
         "inviter_bucket": inviter_bucket,
     }
     token_json = json.dumps(token_data)
@@ -465,20 +465,16 @@ def accept_invitation(
     root_dir,
     acceptor_participant_hex,
     token_b64,
-    acceptor_cloud,
-    acceptor_bucket,
-    inviter_remote=None,
-    acceptor_remote=None,
+    inviter_remote,
+    acceptor_remote,
 ):
     """Accept a team invitation token (acceptor side).
 
     Clones the team repo from the inviter's cloud, adds self as member,
     pushes to own cloud, and returns an acceptance response for the inviter.
 
-    acceptor_cloud: dict with keys protocol, url, access_key, secret_key.
-    acceptor_bucket: S3 bucket name for the acceptor's cloud.
-    inviter_remote: CodSyncRemote for reading the inviter's cloud.
-    acceptor_remote: CodSyncRemote for writing to the acceptor's cloud.
+    inviter_remote: CodSyncRemote for reading the inviter's (public) bucket.
+    acceptor_remote: CodSyncRemote for writing to the acceptor's own bucket.
     Returns a base64-encoded acceptance response JSON string.
     """
     root_dir = pathlib.Path(root_dir)
@@ -488,10 +484,14 @@ def accept_invitation(
     token = json.loads(token_json)
     team_name = token["team_name"]
     inviter_member_id = bytes.fromhex(token["inviter_member_id"])
-    inviter_cloud = token["inviter_cloud"]
+    inviter_cloud = token["inviter_cloud"]  # protocol + url only, no credentials
     inviter_bucket = token["inviter_bucket"]
     invitation_id = bytes.fromhex(token["invitation_id"])
     nonce = bytes.fromhex(token["nonce"])
+
+    # Read acceptor's own cloud config (URL only; credentials stay in Hub)
+    acceptor_cloud_full = get_cloud_storage(root_dir, acceptor_participant_hex)
+    acceptor_cloud = {"protocol": acceptor_cloud_full["protocol"], "url": acceptor_cloud_full["url"]}
 
     # Generate acceptor's fresh team-local member ID
     acceptor_member_id = uuid7()
@@ -503,8 +503,6 @@ def accept_invitation(
     os.makedirs(team_sync_dir, exist_ok=False)
 
     # --- Clone the team repo from inviter's cloud ---
-    if inviter_remote is None:
-        raise ValueError("inviter_remote is required")
 
     saved_cwd = os.getcwd()
     os.chdir(team_sync_dir)
@@ -531,19 +529,17 @@ def accept_invitation(
         conn.execute(
             text("INSERT INTO member (id) VALUES (:id)"), {"id": acceptor_member_id}
         )
-        # Store inviter's cloud info as a peer
+        # Store inviter's cloud location as a peer (URL only, no credentials)
         conn.execute(
             text(
-                "INSERT INTO peer (id, member_id, protocol, url, access_key, secret_key) "
-                "VALUES (:id, :member_id, :protocol, :url, :access_key, :secret_key)"
+                "INSERT INTO peer (id, member_id, protocol, url) "
+                "VALUES (:id, :member_id, :protocol, :url)"
             ),
             {
                 "id": uuid7(),
                 "member_id": inviter_member_id,
                 "protocol": inviter_cloud["protocol"],
                 "url": inviter_cloud["url"],
-                "access_key": inviter_cloud.get("access_key"),
-                "secret_key": inviter_cloud.get("secret_key"),
             },
         )
 
@@ -571,9 +567,6 @@ def accept_invitation(
     )
 
     # --- Push to acceptor's cloud ---
-    if acceptor_remote is None:
-        raise ValueError("acceptor_remote is required")
-
     saved_cwd = os.getcwd()
     os.chdir(team_sync_dir)
     try:
@@ -583,7 +576,16 @@ def accept_invitation(
     finally:
         os.chdir(saved_cwd)
 
-    # --- Build and return acceptance response ---
+    # Derive acceptor's bucket name from team station_id (shared with inviter)
+    team_db_path = team_sync_dir / "core.db"
+    team_engine = create_engine(f"sqlite:///{team_db_path}")
+    with team_engine.begin() as conn:
+        station_row = conn.execute(
+            text("SELECT id FROM team_app_station LIMIT 1")
+        ).fetchone()
+    acceptor_bucket = f"ss-{station_row[0].hex()[:16]}"
+
+    # --- Build and return acceptance response (no credentials) ---
     acceptance_data = {
         "invitation_id": invitation_id.hex(),
         "nonce": nonce.hex(),
@@ -643,8 +645,7 @@ def complete_invitation_acceptance(
             text(
                 "UPDATE invitation SET status='accepted', accepted_at=:now, "
                 "accepted_by=:member_id, acceptor_protocol=:protocol, "
-                "acceptor_url=:url, acceptor_access_key=:access_key, "
-                "acceptor_secret_key=:secret_key "
+                "acceptor_url=:url "
                 "WHERE id = :id"
             ),
             {
@@ -653,27 +654,23 @@ def complete_invitation_acceptance(
                 "member_id": acceptor_member_id,
                 "protocol": acceptor_cloud["protocol"],
                 "url": acceptor_cloud["url"],
-                "access_key": acceptor_cloud.get("access_key"),
-                "secret_key": acceptor_cloud.get("secret_key"),
             },
         )
 
-        # Add acceptor as member + peer in inviter's team DB
+        # Add acceptor as member + peer in inviter's team DB (URL only, no credentials)
         conn.execute(
             text("INSERT INTO member (id) VALUES (:id)"), {"id": acceptor_member_id}
         )
         conn.execute(
             text(
-                "INSERT INTO peer (id, member_id, protocol, url, access_key, secret_key) "
-                "VALUES (:id, :member_id, :protocol, :url, :access_key, :secret_key)"
+                "INSERT INTO peer (id, member_id, protocol, url) "
+                "VALUES (:id, :member_id, :protocol, :url)"
             ),
             {
                 "id": uuid7(),
                 "member_id": acceptor_member_id,
                 "protocol": acceptor_cloud["protocol"],
                 "url": acceptor_cloud["url"],
-                "access_key": acceptor_cloud.get("access_key"),
-                "secret_key": acceptor_cloud.get("secret_key"),
             },
         )
 
@@ -743,6 +740,25 @@ def get_cloud_storage(root_dir, participant_hex):
     if row is None:
         raise ValueError("No cloud storage configured for this participant")
     return {"protocol": row[0], "url": row[1], "access_key": row[2], "secret_key": row[3]}
+
+
+def add_cloud_storage(root_dir, participant_hex, protocol, url, access_key=None, secret_key=None):
+    """Add a cloud storage configuration to a participant's NoteToSelf DB."""
+    root_dir = pathlib.Path(root_dir)
+    nts_db_path = (
+        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{nts_db_path}")
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO cloud_storage (id, protocol, url, access_key, secret_key) "
+                "VALUES (:id, :protocol, :url, :access_key, :secret_key)"
+            ),
+            {"id": uuid7(), "protocol": protocol, "url": url,
+             "access_key": access_key, "secret_key": secret_key},
+        )
+    engine.dispose()
 
 
 def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
