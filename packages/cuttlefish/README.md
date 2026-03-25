@@ -25,9 +25,11 @@ The relevant Signal components:
   Cuttlefish follows this spec rather than the older X3DH spec.
 - **Double Ratchet** — per-session forward secrecy and post-compromise security.
   Each message advances a ratchet; a leaked key compromises at most one message.
-- **Sender Keys** — efficient group messaging. Each group member publishes a
-  sender chain; messages are encrypted once and are decryptable by all current
-  members.
+- **Sender Keys** — efficient group messaging. Each group member holds a
+  symmetric sender key distributed via pairwise channels; messages are
+  encrypted once and are decryptable by all current members. Each message is
+  also signed with the sender's asymmetric signing key to prevent
+  impersonation. See "Signal Group Messaging Adaptation" in section 2.
 
 ### Post-Quantum Cryptography
 
@@ -90,22 +92,139 @@ And that trust propagates around networks of teams somehow.
 That sounds good, but getting it right is **hard**.
 Webs of trust is not a new idea, but it has yet to have much impact on regular people/systems.
 
-Lets lay out some ingredients and figure out how this can build up to a resilient and convenient identity trust system.
+### Signal Group Messaging Adaptation
 
-Every byte/blob/bundle that goes out to the internet through Small Sea should be encrypted and signed with some key.
-A good starting point is using per-participant, per-device, per-team keys that are stored in secure enclaves.
-(For legacy devices that don't have secure enclaves we can fake it with password encrypted keys or something.)
-Let's call these the workhorse keys.
-They can be somewhat transient; they should not be the primary locus of identity.
+Cuttlefish adapts Signal's Sender Keys group messaging protocol to Small Sea's
+serverless, store-and-forward architecture. The core model:
 
-Sidebar: The rotation schedule for the workhorse keys is an interesting question to investigate later.
-We certainly need the machinery to rotate them without major disruption.
-Probably this will include some overlap period where the new key is propagated but not used yet, then a transfer.
+**Sender keys for team broadcast.** Each team member holds a symmetric sender
+key. When Alice pushes a bundle to her team bucket, she encrypts it once with
+her sender key. Every teammate who holds that key can decrypt it. This is
+Signal's Sender Keys protocol — one encryption operation per message regardless
+of group size.
 
-The workhorse keys are infused with identity with certificates signed by per-team, cross-device keys stored in a table in the NoteToSelf/SmallSeaCollectiveCore station.
-{Team}/SmallSeaCollectiveCore stations should have a table full of certificates where participants attest to their own workhorse keys and each others' identity keys.
+**Pairwise Double Ratchet channels for key distribution.** Sender keys,
+identity key certifications, and membership-change notifications are
+distributed over pairwise channels between team members. These channels use
+the Double Ratchet protocol for forward secrecy and post-compromise security.
+Pairwise channels are used infrequently — only for key lifecycle events, not
+regular data flow.
 
+**Asymmetric signatures for authenticity.** Every bundle is signed with the
+sender's per-team Ed25519 signing key. Teammates verify signatures using the
+sender's public key (stored in the team DB `member` table). This eliminates
+the impersonation risk inherent in symmetric sender keys — even though Bob
+holds Alice's sender key (for decryption), he cannot forge her signature.
+Signal's protocol also includes asymmetric signatures on sender key messages
+for the same reason.
 
+#### Cloud Storage Layout
+
+Pairwise channels are implemented as lightweight bucket pairs, structurally
+identical to team broadcast buckets. For Alice in team Friends with Bob and
+Carol:
+
+```
+ss-<friends-station>/              # team broadcast (sender-key encrypted)
+ss-<alice→bob(friends)>/           # pairwise: Alice → Bob
+ss-<alice→carol(friends)>/         # pairwise: Alice → Carol
+```
+
+The pairwise buckets use the same Cod Sync push/pull mechanics as team
+buckets. They carry little traffic — just key distributions and certifications
+— so storage and bandwidth costs are minimal.
+
+**Transport opportunism.** The S3 bucket is the reliable baseline for pairwise
+channels, but faster transports can be used opportunistically. If Alice and
+Bob already have a Hub-mediated VPN tunnel or are on the same LAN, pairwise
+ratchet operations can happen over that channel instead. The protocol is
+transport-agnostic; only the key material matters.
+
+#### Cross-Team Identity: Flexible Pairwise Scope
+
+Pairwise channels can be scoped per-team or shared across teams, at the
+participants' discretion:
+
+- **Per-team pairwise channels** (default): `Alice(Friends)→Bob(Friends)` is
+  completely independent from `Alice(WorkProject)→Bob(WorkProject)`. No
+  cryptographic correlation between teams. This is the right choice when
+  cross-team deniability matters — e.g., Carol and Dave work together and are
+  in a political action group, and prefer not to cross-contaminate those
+  relationships.
+
+- **Shared pairwise channels**: `Alice→Bob` serves all teams they share. Fewer
+  buckets, shared ratchet state. This is simpler and is likely the common case
+  — most people are fine being identified as the same person across their teams.
+
+The protocol must support both modes. The choice is made per-pair, not
+globally: Alice and Bob might share a pairwise channel, while Alice and Carol
+keep theirs per-team. The bucket naming scheme encodes this choice (team-
+scoped names include the team station ID; shared names do not).
+
+#### Key Lifecycle Coordination
+
+Key rotations and membership changes are coordinated through the team's
+`{Team}/SmallSeaCollectiveCore` station:
+
+1. **Trigger**: A member pushes a key-event record to their team station's
+   SmallSeaCollectiveCore (e.g., "I rotated my sender key," "new member
+   joined," "I'm certifying Bob's identity key").
+
+2. **Notice**: Other members pull from SmallSeaCollectiveCore, see the event,
+   and know they need new key material.
+
+3. **Exchange**: The actual secret key material (new sender keys, ratchet
+   messages) flows over the pairwise channels — never through the team
+   broadcast station.
+
+This separation is important: the team broadcast side carries only
+announcements and public certificates. Secret material only travels over
+pairwise ratcheted channels.
+
+**Events that trigger sender key rotation:**
+- A member joins the team (new member needs sender keys from all existing
+  members; existing members rotate their sender keys so the new member
+  cannot read pre-join history)
+- A member leaves or is revoked (all remaining members rotate their sender
+  keys so the departed member cannot read post-departure messages)
+- Periodic rotation (limits blast radius of a compromised sender key)
+- Device compromise/revocation for any member
+
+#### Sequencing and the Hub
+
+Bundles for many apps flow through the Hub simultaneously. Out-of-order
+delivery is expected:
+
+- **Sequence numbers in Cod Sync links** let a puller detect gaps ("I have
+  link 4 but not link 3") and defer decryption until the gap is filled.
+- **Per-app-per-team queues in the Hub** allow the Hub to deliver Chat bundles
+  immediately while queueing Calendar bundles for an app that isn't running.
+- **Key-dependency queuing**: if a bundle arrives but the recipient hasn't yet
+  received the sender key (via pairwise channel), the Hub queues it until the
+  key distribution completes.
+
+### Two Tiers of Keys
+
+Every byte/blob/bundle that goes out to the internet through Small Sea is
+encrypted and signed.  The key architecture has two tiers:
+
+**Workhorse keys** — per-participant, per-device, per-team. Stored in secure
+enclaves where available (or password-encrypted keys on legacy devices). Used
+for the actual encrypt/sign operations on bundles. These are somewhat
+transient; they should not be the primary locus of identity.
+
+The rotation schedule for workhorse keys is an open question. We need
+machinery to rotate them without major disruption — probably an overlap period
+where the new key is propagated but not yet used, then a switchover.
+
+**Identity keys** — per-participant, per-team, cross-device. Stored in a table
+in the NoteToSelf/SmallSeaCollectiveCore station (which syncs across the
+participant's devices). These keys certify workhorse keys: a certificate from
+an identity key says "this workhorse key belongs to me and is authorized to
+act on my behalf in this team."
+
+`{Team}/SmallSeaCollectiveCore` stations hold a cert table where participants
+attest to their own workhorse keys and each others' identity keys.
 
 ### The Problem with Single Key-Pairs
 
@@ -300,10 +419,16 @@ standardization in progress.
 
 These are tracked in `Documentation/open-architecture-questions.md`; summarized here for discoverability.
 
+- **Pairwise channel bucket naming** — how are pairwise bucket names derived? Needs to encode: the two participants, the team (if per-team scoped), and the direction. Must not leak identity correlation for per-team-scoped channels.
+- **Sender key rotation frequency** — how often should sender keys rotate in the absence of membership changes? More frequent = smaller blast radius but more pairwise traffic.
 - **Key storage format** — how private keys are persisted on-device (OS keychain, secure enclave where available, encrypted file). Determines the concrete threat model for device compromise.
 - **Key backup/recovery** — base keys can be re-encrypted under multiple other keys for backup purposes. Mechanism TBD.
 - **Cod Sync new-member bootstrapping** — when someone joins a team, can they decrypt historical chain data? This is a forward-secrecy policy question as much as a technical one.
-- **`member` key/cert schema** — the `member` table in `core.db` has a placeholder for key/cert material; contents TBD pending Cuttlefish key model stabilizing.
+- **Identity key rotation and the BURIED/GUARDED/DAILY spectrum** — identity keys need periodic rotation. A new workhorse key might initially be certified only by a DAILY identity key, with higher-ceremony certification (GUARDED/BURIED) happening when convenient. The recovery property is that having both newer and older keys is stronger than either alone (analogous to the Double Ratchet's post-compromise recovery).
+- **Proximity-based trust maintenance** — if hardware supports it, devices could detect each other (Bluetooth LE, NFC, local WiFi) and silently exchange fresh certifications without user interaction. The goal is zero-ceremony trust maintenance for the common case of people who are physically together.
+- **Sequence numbers in Cod Sync links** — needed for out-of-order delivery handling. Design must account for multiple apps producing bundles concurrently for the same team.
+- **Hub queuing model** — the Hub multiplexes bundles for many apps across many teams. Needs per-app-per-team queues, plus key-dependency queuing for bundles that arrive before their sender key.
+- **`member` key/cert schema** — the `member` table in `core.db` currently holds a single Ed25519 public key (placeholder). Will need to accommodate workhorse keys, identity keys, and certificates.
 - **SLH-DSA availability** — verify that `cryptography` >= 46 actually ships SLH-DSA; fall back to `liboqs-python` if not.
 - **Trust policy primitives** — `trust.py` defers policy to callers. Define common policy building blocks (threshold, weighted, time-decay) once real use cases emerge.
 
@@ -311,11 +436,18 @@ These are tracked in `Documentation/open-architecture-questions.md`; summarized 
 
 ## Status
 
-All modules are currently **stubs**. The intended build order is:
+**Implemented (placeholder level):**
+- Per-team Ed25519 signing keys generated on team creation and invitation acceptance
+- Private keys stored in NoteToSelf `team_signing_key` table (syncs across devices)
+- Public keys stored in team DB `member.public_key`
+- Cod Sync `push_to_remote` optionally signs links; `canonical_link_bytes` + `verify_link_signature` for verification
+- End-to-end test: `test_signed_bundle_roundtrip` demonstrates sign-on-push, verify-on-pull
 
-1. `keys.py` — data model foundation
-2. `identity.py` + `ceremony.py` — get signing ceremonies working end-to-end
-3. `prekeys.py` + `x3dh.py` — async session initiation
-4. `ratchet.py` — per-message forward secrecy
-5. `group.py` — group sender keys
+**All Cuttlefish modules are currently stubs.** The intended build order is:
+
+1. `keys.py` — data model foundation (workhorse + identity key types)
+2. `group.py` — sender key distribution and symmetric encryption
+3. `ratchet.py` — pairwise Double Ratchet for key distribution channels
+4. `identity.py` + `ceremony.py` — cert hierarchy, signing ceremonies, proximity exchange
+5. `prekeys.py` + `x3dh.py` — async session initiation for pairwise channels
 6. `trust.py` — policy evaluation over the cert graph
