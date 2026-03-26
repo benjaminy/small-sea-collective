@@ -21,12 +21,13 @@ else that requires more than one user or device.
 uv run small-sea-sandbox
 ```
 
-Opens the dashboard at `http://127.0.0.1:7000`.
+Opens the dashboard at `http://127.0.0.1:7000`. The default workspace is
+`Scratch/Sandbox/` in the repo root, which is gitignored by `Scratch/.gitignore`.
 
 Optional flags:
 
 ```
---workspace PATH   Open an existing workspace directory on startup
+--workspace PATH   Use a different workspace directory
 --port INTEGER     Dashboard port (default: 7000)
 ```
 

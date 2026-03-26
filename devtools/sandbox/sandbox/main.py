@@ -291,8 +291,17 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
 # ------------------------------------------------------------------
 
 
+_DEFAULT_WORKSPACE = (
+    pathlib.Path(__file__).parents[3] / "Scratch" / "Sandbox"
+)
+
+
 @click.command()
-@click.option("--workspace", default=None, help="Path to sandbox workspace directory")
+@click.option(
+    "--workspace",
+    default=None,
+    help=f"Path to sandbox workspace directory (default: {_DEFAULT_WORKSPACE})",
+)
 @click.option("--port", default=7000, show_default=True, help="Sandbox dashboard port")
 @click.option("--host", default="127.0.0.1", show_default=True)
 def cli(workspace, port, host):
@@ -301,10 +310,9 @@ def cli(workspace, port, host):
     import webbrowser
 
     ws = None
-    if workspace:
-        p = pathlib.Path(workspace).expanduser().resolve()
-        p.mkdir(parents=True, exist_ok=True)
-        ws = SandboxWorkspace.load(p)
+    workspace_path = pathlib.Path(workspace).expanduser().resolve() if workspace else _DEFAULT_WORKSPACE
+    workspace_path.mkdir(parents=True, exist_ok=True)
+    ws = SandboxWorkspace.load(workspace_path)
 
     app = create_app(ws)
     url = f"http://{host}:{port}"
