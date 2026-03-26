@@ -1,0 +1,32 @@
+<div id="checkouts-{{ niche_name }}">
+  {% if error %}
+  <p class="notice notice-err">{{ error }}</p>
+  {% endif %}
+
+  {% if checkouts %}
+  <ul style="list-style:none; margin-bottom:0.75rem">
+    {% for co in checkouts %}
+    <li style="display:flex; align-items:center; gap:0.75rem; padding:0.3rem 0; border-bottom:1px solid #f5f5f4">
+      <span class="checkout-path">{{ co }}</span>
+      <form style="margin-left:auto"
+            hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/checkouts/remove"
+            hx-target="#checkouts-{{ niche_name }}"
+            hx-swap="outerHTML">
+        <input type="hidden" name="checkout_path" value="{{ co }}">
+        <button class="btn btn-danger" type="submit">Remove</button>
+      </form>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p style="color:#78716c; font-size:0.88rem; margin-bottom:0.75rem">No checkouts registered.</p>
+  {% endif %}
+
+  <form class="inline-form"
+        hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/checkouts"
+        hx-target="#checkouts-{{ niche_name }}"
+        hx-swap="outerHTML">
+    <input type="text" name="dest_path" placeholder="Absolute path for new checkout" required>
+    <button class="btn btn-secondary" type="submit">Add checkout</button>
+  </form>
+</div>

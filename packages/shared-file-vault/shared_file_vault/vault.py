@@ -433,6 +433,18 @@ def push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
     _cod_push(git_dir, transit, cloud_dir)
 
 
+def list_teams(vault_root, participant_hex):
+    """List team names that have a local registry in this vault."""
+    pdir = _participant_dir(vault_root, participant_hex)
+    if not pdir.exists():
+        return []
+    return [
+        d.name
+        for d in sorted(pdir.iterdir())
+        if d.is_dir() and (d / "registry" / "git").exists()
+    ]
+
+
 def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
     """Pull a niche from a cloud directory and merge.
 

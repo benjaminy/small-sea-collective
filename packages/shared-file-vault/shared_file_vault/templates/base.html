@@ -1,83 +1,242 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>{% block title %}Small Sea File Vault{% endblock %}</title>
-    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            font-family: system-ui, -apple-system, sans-serif;
-            max-width: 48rem;
-            margin: 0 auto;
-            padding: 1rem;
-            color: #1a1a1a;
-            background: #fafafa;
-        }
-        nav {
-            border-bottom: 2px solid #2563eb;
-            padding-bottom: 0.5rem;
-            margin-bottom: 1.5rem;
-        }
-        nav a {
-            color: #2563eb;
-            text-decoration: none;
-            font-weight: 600;
-        }
-        h1, h2, h3 { margin-bottom: 0.75rem; }
-        h1 { font-size: 1.5rem; }
-        h2 { font-size: 1.25rem; color: #374151; }
-        table {
-            width: 100%;
-            border-collapse: collapse;
-            margin-bottom: 1rem;
-        }
-        th, td {
-            text-align: left;
-            padding: 0.5rem 0.75rem;
-            border-bottom: 1px solid #e5e7eb;
-        }
-        th { font-weight: 600; color: #6b7280; font-size: 0.85rem; text-transform: uppercase; }
-        a { color: #2563eb; }
-        form { margin-bottom: 1rem; }
-        input[type="text"] {
-            padding: 0.4rem 0.6rem;
-            border: 1px solid #d1d5db;
-            border-radius: 4px;
-            font-size: 0.9rem;
-        }
-        button {
-            padding: 0.4rem 0.8rem;
-            background: #2563eb;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-            font-size: 0.9rem;
-        }
-        button:hover { background: #1d4ed8; }
-        .message {
-            padding: 0.5rem 0.75rem;
-            margin-bottom: 1rem;
-            background: #fef3c7;
-            border: 1px solid #f59e0b;
-            border-radius: 4px;
-            font-size: 0.9rem;
-        }
-        .section { margin-bottom: 2rem; }
-        code {
-            background: #f3f4f6;
-            padding: 0.1rem 0.3rem;
-            border-radius: 3px;
-            font-size: 0.85rem;
-        }
-    </style>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Small Sea Vault{% endblock %}</title>
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      font-size: 0.95rem;
+      line-height: 1.5;
+      color: #1a1a1a;
+      background: #f5f5f4;
+    }
+
+    /* ── Layout ── */
+    header {
+      background: #1c1917;
+      color: #e7e5e4;
+      padding: 0.6rem 1.5rem;
+      display: flex;
+      align-items: baseline;
+      gap: 1rem;
+    }
+    header a { color: #e7e5e4; text-decoration: none; font-weight: 600; }
+    header .identity { font-size: 0.8rem; color: #a8a29e; margin-left: auto; }
+
+    main {
+      max-width: 60rem;
+      margin: 1.5rem auto;
+      padding: 0 1.5rem;
+    }
+
+    /* ── Teams & niches overview ── */
+    .team-section {
+      background: white;
+      border: 1px solid #e7e5e4;
+      border-radius: 6px;
+      margin-bottom: 1.5rem;
+    }
+    .team-section h2 {
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: #78716c;
+      padding: 0.6rem 1rem;
+      border-bottom: 1px solid #e7e5e4;
+    }
+
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 0.55rem 1rem; text-align: left; }
+    th {
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: #a8a29e;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      border-bottom: 1px solid #e7e5e4;
+    }
+    tr + tr td { border-top: 1px solid #f5f5f4; }
+
+    /* ── Niche detail panel ── */
+    #niche-detail {
+      background: white;
+      border: 1px solid #e7e5e4;
+      border-radius: 6px;
+      margin-bottom: 1.5rem;
+    }
+    #niche-detail:empty { display: none; }
+
+    .detail-header {
+      display: flex;
+      align-items: baseline;
+      gap: 0.5rem;
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid #e7e5e4;
+    }
+    .detail-header h2 { font-size: 1rem; }
+    .detail-header .breadcrumb { color: #a8a29e; font-size: 0.85rem; }
+
+    .detail-section {
+      padding: 0.75rem 1rem;
+      border-bottom: 1px solid #f5f5f4;
+    }
+    .detail-section:last-child { border-bottom: none; }
+    .detail-section h3 {
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #a8a29e;
+      margin-bottom: 0.6rem;
+    }
+
+    /* ── Status indicators ── */
+    .badge {
+      display: inline-block;
+      font-size: 0.75rem;
+      font-weight: 600;
+      padding: 0.1rem 0.45rem;
+      border-radius: 3px;
+    }
+    .badge-clean { background: #dcfce7; color: #15803d; }
+    .badge-dirty { background: #fef9c3; color: #854d0e; }
+    .badge-none  { background: #f5f5f4; color: #78716c; }
+
+    /* ── Status file list ── */
+    .file-list { list-style: none; font-size: 0.88rem; }
+    .file-list li { display: flex; gap: 0.5rem; padding: 0.2rem 0; }
+    .file-status { font-family: monospace; color: #a8a29e; min-width: 1.5rem; }
+
+    /* ── Inline forms ── */
+    .inline-form {
+      display: flex;
+      gap: 0.5rem;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .inline-form input[type="text"] {
+      flex: 1;
+      min-width: 12rem;
+      padding: 0.35rem 0.6rem;
+      border: 1px solid #d6d3d1;
+      border-radius: 4px;
+      font-size: 0.88rem;
+    }
+    .inline-form input[type="text"]:focus {
+      outline: 2px solid #0ea5e9;
+      border-color: transparent;
+    }
+
+    /* ── Buttons ── */
+    button, .btn {
+      padding: 0.35rem 0.75rem;
+      border: 1px solid transparent;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .btn-primary {
+      background: #0c4a6e;
+      color: white;
+      border-color: #0c4a6e;
+    }
+    .btn-primary:hover { background: #075985; }
+    .btn-secondary {
+      background: white;
+      color: #1a1a1a;
+      border-color: #d6d3d1;
+    }
+    .btn-secondary:hover { background: #f5f5f4; }
+    .btn-danger {
+      background: white;
+      color: #b91c1c;
+      border-color: #fca5a5;
+      font-size: 0.8rem;
+    }
+    .btn-danger:hover { background: #fef2f2; }
+    a.btn { text-decoration: none; }
+
+    /* ── Niche name as button-link ── */
+    button.niche-link {
+      background: none;
+      border: none;
+      color: #0369a1;
+      padding: 0;
+      font-size: inherit;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+    button.niche-link:hover { color: #075985; }
+
+    /* ── Notice / error ── */
+    .notice {
+      padding: 0.4rem 0.75rem;
+      border-radius: 4px;
+      font-size: 0.85rem;
+      margin-bottom: 0.6rem;
+    }
+    .notice-ok  { background: #dcfce7; color: #15803d; }
+    .notice-err { background: #fef2f2; color: #b91c1c; }
+
+    /* ── Commit history ── */
+    .commit-list { list-style: none; font-size: 0.85rem; }
+    .commit-list li {
+      display: flex;
+      gap: 0.75rem;
+      padding: 0.25rem 0;
+      border-bottom: 1px solid #f5f5f4;
+    }
+    .commit-list li:last-child { border-bottom: none; }
+    .commit-hash { font-family: monospace; color: #a8a29e; }
+
+    /* ── htmx transition: brief amber flash on newly settled content ── */
+    .htmx-settling {
+      animation: settle-flash 0.6s ease-out;
+    }
+    @keyframes settle-flash {
+      0%   { background-color: #fef9c3; }
+      100% { background-color: transparent; }
+    }
+
+    /* ── Checkout path display ── */
+    .checkout-path {
+      font-family: monospace;
+      font-size: 0.83rem;
+      color: #44403c;
+    }
+
+    .add-team-section {
+      background: white;
+      border: 1px dashed #d6d3d1;
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1.5rem;
+    }
+    .add-team-section h3 {
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #a8a29e;
+      margin-bottom: 0.6rem;
+    }
+  </style>
 </head>
 <body>
-    <nav>
-        <a href="/">Small Sea File Vault</a>
-    </nav>
+  <header>
+    <a href="/">Small Sea Vault</a>
+    {% block header_extra %}{% endblock %}
+    <span class="identity">{% block identity %}{% endblock %}</span>
+  </header>
+  <main>
     {% block content %}{% endblock %}
+  </main>
 </body>
 </html>

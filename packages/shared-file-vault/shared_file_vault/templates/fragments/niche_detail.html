@@ -1,0 +1,40 @@
+<div class="detail-header">
+  <span class="breadcrumb">{{ team_name }} /</span>
+  <h2>{{ niche_name }}</h2>
+</div>
+
+<div class="detail-section">
+  <h3>Checkouts</h3>
+  {% include "fragments/checkouts.html" %}
+</div>
+
+{% if status_by_checkout %}
+  {% for item in status_by_checkout %}
+  <div class="detail-section">
+    <h3>Status — <span class="checkout-path">{{ item.path }}</span></h3>
+    {# set variables for status_panel.html include #}
+    {% set checkout_path = item.path %}
+    {% set entries = item.entries %}
+    {% set commits = [] %}
+    {% include "fragments/status_panel.html" %}
+  </div>
+  {% endfor %}
+{% else %}
+<div class="detail-section">
+  <p style="color:#78716c; font-size:0.88rem">Add a checkout above to see status and publish changes.</p>
+</div>
+{% endif %}
+
+{% if commits %}
+<div class="detail-section">
+  <h3>History</h3>
+  <ul class="commit-list">
+    {% for c in commits[:10] %}
+    <li>
+      <span class="commit-hash">{{ c.hash }}</span>
+      <span>{{ c.message }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}

@@ -1,0 +1,42 @@
+{% set panel_id = "status-" ~ (checkout_path | replace("/", "-") | replace(" ", "-") | truncate(40, False, "")) %}
+<div id="{{ panel_id }}">
+  {% if notice %}
+  <p class="notice notice-ok">{{ notice }}</p>
+  {% endif %}
+  {% if error %}
+  <p class="notice notice-err">{{ error }}</p>
+  {% endif %}
+
+  {% if entries %}
+  <ul class="file-list" style="margin-bottom:0.75rem">
+    {% for e in entries %}
+    <li>
+      <span class="file-status">{{ e.status }}</span>
+      <span>{{ e.path }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  <form class="inline-form"
+        hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/publish"
+        hx-target="#{{ panel_id }}"
+        hx-swap="outerHTML">
+    <input type="hidden" name="checkout_path" value="{{ checkout_path }}">
+    <input type="text" name="message" placeholder="Commit message (optional)">
+    <button class="btn btn-primary" type="submit">Publish</button>
+  </form>
+  {% else %}
+  <p style="color:#15803d; font-size:0.88rem">Clean — nothing to publish.</p>
+  {% endif %}
+
+  {% if commits %}
+  <h4 style="font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:#a8a29e; margin-top:1rem; margin-bottom:0.4rem">Recent commits</h4>
+  <ul class="commit-list">
+    {% for c in commits[:5] %}
+    <li>
+      <span class="commit-hash">{{ c.hash }}</span>
+      <span>{{ c.message }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</div>
