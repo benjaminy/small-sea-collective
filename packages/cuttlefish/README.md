@@ -140,6 +140,32 @@ Bob already have a Hub-mediated VPN tunnel or are on the same LAN, pairwise
 ratchet operations can happen over that channel instead. The protocol is
 transport-agnostic; only the key material matters.
 
+#### Hub, Manager, and Cuttlefish Responsibilities
+
+All cloud storage access goes through the Hub — the Manager never talks to
+S3/GDrive/Dropbox/etc directly. But the Hub applies crypto selectively based
+on the session type, which is set at session creation time:
+
+- **Encrypted sessions** (team broadcast): The Hub uses `cuttlefish.group`
+  to apply sender-key encryption on upload and decryption on download. This
+  is the default for normal app data. Apps hand the Hub plaintext; the Hub
+  handles crypto transparently.
+
+- **Passthrough sessions** (pairwise channels, key management): The Hub
+  uploads and downloads bytes as-is. The Manager has already applied the
+  appropriate crypto (Double Ratchet encryption for pairwise key distribution
+  messages) before handing the data to the Hub.
+
+This means:
+- The **Hub** depends on `cuttlefish.group` only — it does sender-key
+  encrypt/decrypt for broadcast sessions and acts as a dumb pipe otherwise.
+- The **Manager** depends on `cuttlefish.group` (sender key creation and
+  distribution) and `cuttlefish.ratchet` (pairwise channel encryption). It
+  owns all key lifecycle operations: generation, rotation, certification,
+  and distribution.
+- **Apps** are crypto-unaware — they talk to the Hub, which handles
+  encryption transparently for team broadcast data.
+
 #### Cross-Team Identity: Flexible Pairwise Scope
 
 Pairwise channels can be scoped per-team or shared across teams, at the
