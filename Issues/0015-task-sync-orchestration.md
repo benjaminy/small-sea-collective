@@ -62,6 +62,19 @@ exist on `SmallSeaClient`. The two-step flow (`request_session` /
 the PIN) that the Manager UI doesn't yet surface. `connect()` should either be
 wired to the two-step flow or left as a clear stub until the UI exists.
 
+### 5. Manager invitation accept is CLI-only
+
+The `accept_invitation` flow (invitee side) clones the team repo from the
+inviter's cloud using `SmallSeaRemote`. Because the Hub session is not yet
+wired into `TeamManager`, the CLI currently bypasses this by constructing
+`S3Remote` directly from the local cloud config. The Manager web UI offers no
+accept flow at all — users are directed to the CLI with an inline note.
+
+Once `TeamManager.connect()` is resolved (above), `accept_invitation` should
+use `SmallSeaRemote` via a Hub session instead of direct S3 credentials, and
+the web UI can expose the accept step via a paste-token form (same as the
+existing complete-acceptance form).
+
 ## What is NOT in scope here
 
 - The Cuttlefish encryption layer (tracked in 0008)

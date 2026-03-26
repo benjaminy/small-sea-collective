@@ -80,6 +80,33 @@ recovery).
 - Sequence numbers in Cod Sync links for out-of-order delivery
 - Hub queuing model for multi-app, multi-team bundle delivery
 
+## UI consequence: member display names
+
+The team DB `member` table only carries `id` (BLOB) and `public_key`. There
+is no `display_name` column and no way to resolve a member ID to a human name
+at the team-DB level. The Manager web UI currently shows truncated hex IDs
+(e.g. `01234567abcd…`) in the member list, which is unusable in practice.
+
+The fix requires a design decision: where do display names live?
+
+- **Option A — self-reported in team DB:** Add a `display_name` column to
+  `member`; each participant writes their own name when they join. Simple but
+  unauthenticated (anyone can claim any name).
+
+- **Option B — local contacts in NoteToSelf:** The viewing participant stores
+  a contacts table in NoteToSelf mapping known `member_id` → nickname. Only
+  affects their own view; no coordination needed. Requires importing/learning
+  names out-of-band.
+
+- **Option C — identity key certification carries a name:** The certified
+  identity key includes a human-readable claim; members verify the name via
+  the same trust path as the key. Correct but depends on Cuttlefish
+  integration (0008).
+
+Option A is quickest to ship and covers the common case. Option C is the
+right long-term answer. Option B is a useful interim if A is considered too
+easy to spoof.
+
 ## References
 
 - `packages/cuttlefish/README.md` — full design spec (sections: Signal Group Messaging Adaptation, Two Tiers of Keys, Key Dimensions, Web of Trust)
