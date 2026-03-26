@@ -362,7 +362,7 @@ class CodSync:
 
         [tmp_remote, _] = self.bundle_tmp()
 
-        self.gitCmd(["merge", f"{tmp_remote}/{branch}"])
+        self.gitCmd(["merge", "--allow-unrelated-histories", f"{tmp_remote}/{branch}"])
         return 0
 
     def get_branches(self):

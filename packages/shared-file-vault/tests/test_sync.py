@@ -1,7 +1,13 @@
 import pathlib
 
-from shared_file_vault.vault import (checkout_niche, create_niche, init_vault,
-                                     publish, pull_niche, push_niche)
+from shared_file_vault.vault import (
+    add_checkout,
+    create_niche,
+    init_vault,
+    publish,
+    pull_niche,
+    push_niche,
+)
 
 PARTICIPANT = "bb" * 16
 TEAM = "SyncTeam"
@@ -14,26 +20,24 @@ def test_sync_niche_between_devices(playground_dir):
 
     # --- Device A: create and populate a niche ---
     root_a = str(playground / "device-a")
-    init_vault(root_a, PARTICIPANT, TEAM)
+    init_vault(root_a, PARTICIPANT)
     create_niche(root_a, PARTICIPANT, TEAM, "photos")
     checkout_a = str(playground / "checkout-a" / "photos")
-    checkout_niche(root_a, PARTICIPANT, TEAM, "photos", checkout_a)
+    add_checkout(root_a, PARTICIPANT, TEAM, "photos", checkout_a)
 
     (pathlib.Path(checkout_a) / "sunset.jpg").write_bytes(b"fake-sunset-data")
     (pathlib.Path(checkout_a) / "beach.jpg").write_bytes(b"fake-beach-data")
-    publish(root_a, PARTICIPANT, TEAM, "photos", message="add photos")
+    publish(root_a, PARTICIPANT, TEAM, "photos", checkout_a, message="add photos")
 
-    # Push to cloud
     push_niche(root_a, PARTICIPANT, TEAM, "photos", str(cloud_dir))
 
-    # --- Device B: create niche, then pull from cloud ---
+    # --- Device B: pull from cloud (no prior create_niche needed) ---
     root_b = str(playground / "device-b")
-    init_vault(root_b, PARTICIPANT, TEAM)
-    create_niche(root_b, PARTICIPANT, TEAM, "photos")
+    init_vault(root_b, PARTICIPANT)
     checkout_b = str(playground / "checkout-b" / "photos")
-    checkout_niche(root_b, PARTICIPANT, TEAM, "photos", checkout_b)
 
     pull_niche(root_b, PARTICIPANT, TEAM, "photos", str(cloud_dir))
+    add_checkout(root_b, PARTICIPANT, TEAM, "photos", checkout_b)
 
     # --- Assert both checkouts have the same files ---
     sunset_b = pathlib.Path(checkout_b) / "sunset.jpg"

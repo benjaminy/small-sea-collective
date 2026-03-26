@@ -1,4 +1,16 @@
-"""Core operations for the Small Sea Shared File Vault."""
+"""Core operations for the Small Sea Shared File Vault.
+
+See spec.md for the design. Key points:
+
+- One vault per device/participant. vault_root + participant_hex identify it.
+- Niches are shared file trees backed by git repos, synced via Cod Sync.
+- The niche registry (which niches exist per team) is itself a git repo
+  synced via its own Cod Sync chain. It stores one YAML file per niche.
+- Checkouts are purely local: multiple checkouts of the same niche are
+  allowed; they are tracked in a local checkouts.db.
+- Bundle temp files always live inside the niche/registry git dir so they
+  never appear in user-visible checkout directories.
+"""
 
 import os
 import pathlib
@@ -7,6 +19,8 @@ import sqlite3
 import struct
 import time
 from datetime import datetime, timezone
+
+import yaml
 
 import cod_sync.protocol as CS
 from cod_sync.protocol import gitCmd
@@ -22,246 +36,162 @@ def uuid7():
     return b
 
 
-SQL_DIR = pathlib.Path(__file__).parent / "sql"
+# ---------------------------------------------------------------------------
+# Path helpers
+# ---------------------------------------------------------------------------
+
+def _participant_dir(vault_root, participant_hex):
+    return pathlib.Path(vault_root) / participant_hex
 
 
-def _vault_dir(vault_root, participant_hex, team_name):
-    return pathlib.Path(vault_root) / "Participants" / participant_hex / team_name
+def _checkouts_db_path(vault_root, participant_hex):
+    return _participant_dir(vault_root, participant_hex) / "checkouts.db"
 
 
-def _db_path(vault_root, participant_hex, team_name):
-    return _vault_dir(vault_root, participant_hex, team_name) / "vault.db"
+def _team_dir(vault_root, participant_hex, team_name):
+    return _participant_dir(vault_root, participant_hex) / team_name
+
+
+def _registry_git_dir(vault_root, participant_hex, team_name):
+    return _team_dir(vault_root, participant_hex, team_name) / "registry" / "git"
+
+
+def _registry_checkout_dir(vault_root, participant_hex, team_name):
+    return _team_dir(vault_root, participant_hex, team_name) / "registry" / "checkout"
 
 
 def _niche_git_dir(vault_root, participant_hex, team_name, niche_name):
-    return (
-        _vault_dir(vault_root, participant_hex, team_name)
-        / "Niches"
-        / niche_name
-        / "git"
-    )
+    return _team_dir(vault_root, participant_hex, team_name) / "niches" / niche_name / "git"
 
 
-def _connect(vault_root, participant_hex, team_name):
-    db = _db_path(vault_root, participant_hex, team_name)
+def _niche_transit_dir(vault_root, participant_hex, team_name, niche_name):
+    """Internal checkout used by push/pull. Never user-managed."""
+    return _team_dir(vault_root, participant_hex, team_name) / "niches" / niche_name / "transit"
+
+
+def _bundle_tmp_dir(git_dir):
+    """Bundle temp files live inside the git dir, off all work trees."""
+    return pathlib.Path(git_dir) / "codsync-bundle-tmp"
+
+
+# ---------------------------------------------------------------------------
+# SQLite helpers
+# ---------------------------------------------------------------------------
+
+_CHECKOUTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS checkout (
+    id            BLOB PRIMARY KEY,
+    team_name     TEXT NOT NULL,
+    niche_name    TEXT NOT NULL,
+    checkout_path TEXT NOT NULL,
+    created_at    TEXT NOT NULL
+);
+"""
+
+
+def _connect_checkouts(vault_root, participant_hex):
+    db = _checkouts_db_path(vault_root, participant_hex)
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
     return conn
 
 
-def init_vault(vault_root, participant_hex, team_name):
-    """Create vault directory and initialize vault.db with schema."""
-    vdir = _vault_dir(vault_root, participant_hex, team_name)
-    vdir.mkdir(parents=True, exist_ok=True)
-    (vdir / "Niches").mkdir(exist_ok=True)
+# ---------------------------------------------------------------------------
+# Git work tree helpers
+# ---------------------------------------------------------------------------
 
-    db = _db_path(vault_root, participant_hex, team_name)
-    conn = sqlite3.connect(str(db))
-    schema = (SQL_DIR / "vault_schema.sql").read_text()
-    conn.executescript(schema)
-    conn.close()
-    return str(db)
+def _has_commits(git_dir):
+    r = gitCmd(["--git-dir", str(git_dir), "rev-parse", "HEAD"], raise_on_error=False)
+    return r.returncode == 0
 
 
-def create_niche(vault_root, participant_hex, team_name, niche_name):
-    """Create a new niche with a bare git repo. Returns niche id hex."""
-    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
-    git_dir.mkdir(parents=True, exist_ok=True)
+def _make_work_tree(git_dir, dest):
+    """Link dest to git_dir and populate it if the repo has commits.
 
-    gitCmd(["init", "--bare", str(git_dir)])
-
-    niche_id = uuid7()
-    now = datetime.now(timezone.utc).isoformat()
-
-    conn = _connect(vault_root, participant_hex, team_name)
-    conn.execute(
-        "INSERT INTO niche (id, name, created_at, checkout_path) VALUES (?, ?, ?, NULL)",
-        (niche_id, niche_name, now),
-    )
-    conn.commit()
-    conn.close()
-
-    return niche_id.hex()
-
-
-def checkout_niche(vault_root, participant_hex, team_name, niche_name, dest_path):
-    """Check out a niche to a filesystem location using --separate-git-dir."""
-    conn = _connect(vault_root, participant_hex, team_name)
-    row = conn.execute(
-        "SELECT checkout_path FROM niche WHERE name = ?", (niche_name,)
-    ).fetchone()
-    if row is None:
-        conn.close()
-        raise ValueError(f"Niche '{niche_name}' does not exist")
-    if row["checkout_path"] is not None:
-        conn.close()
-        raise ValueError(
-            f"Niche '{niche_name}' is already checked out at {row['checkout_path']}"
-        )
-
-    dest = pathlib.Path(dest_path)
-    dest.mkdir(parents=True, exist_ok=True)
-
-    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
-
-    # Init a new repo with separate git dir pointing to our vault's git dir
-    gitCmd(["init", f"--separate-git-dir={git_dir}", str(dest)])
-
-    conn.execute(
-        "UPDATE niche SET checkout_path = ? WHERE name = ?",
-        (str(dest), niche_name),
-    )
-    conn.commit()
-    conn.close()
-
-    return str(dest)
-
-
-def _git_dirs(vault_root, participant_hex, team_name, niche_name):
-    """Return (git_dir, checkout_path) for a niche. Raises if not found or not checked out."""
-    conn = _connect(vault_root, participant_hex, team_name)
-    row = conn.execute(
-        "SELECT checkout_path FROM niche WHERE name = ?", (niche_name,)
-    ).fetchone()
-    conn.close()
-
-    if row is None:
-        raise ValueError(f"Niche '{niche_name}' does not exist")
-    if row["checkout_path"] is None:
-        raise ValueError(f"Niche '{niche_name}' is not checked out")
-
-    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
-    return str(git_dir), row["checkout_path"]
-
-
-def status(vault_root, participant_hex, team_name, niche_name):
-    """Get git status for a niche. Returns list of {status, path} dicts."""
-    git_dir, work_tree = _git_dirs(vault_root, participant_hex, team_name, niche_name)
-    result = gitCmd(
-        ["--git-dir", git_dir, "--work-tree", work_tree, "status", "--porcelain"],
-        raise_on_error=False,
-    )
-
-    entries = []
-    for line in result.stdout.strip().splitlines():
-        if line:
-            st = line[:2].strip()
-            path = line[3:]
-            entries.append({"status": st, "path": path})
-    return entries
-
-
-def publish(
-    vault_root, participant_hex, team_name, niche_name, files=None, message=None
-):
-    """Stage and commit changes. Returns commit hash."""
-    git_dir, work_tree = _git_dirs(vault_root, participant_hex, team_name, niche_name)
-    git_prefix = ["--git-dir", git_dir, "--work-tree", work_tree]
-
-    if files:
-        for f in files:
-            gitCmd(git_prefix + ["add", f])
-    else:
-        gitCmd(git_prefix + ["add", "--all"])
-
-    if message is None:
-        message = "Published changes"
-
-    gitCmd(git_prefix + ["commit", "-m", message])
-
-    result = gitCmd(git_prefix + ["rev-parse", "HEAD"])
-    return result.stdout.strip()
-
-
-def log(vault_root, participant_hex, team_name, niche_name, limit=20):
-    """Get commit log. Returns list of {hash, message} dicts."""
-    git_dir, work_tree = _git_dirs(vault_root, participant_hex, team_name, niche_name)
-    result = gitCmd(
-        [
-            "--git-dir",
-            git_dir,
-            "--work-tree",
-            work_tree,
-            "log",
-            "--oneline",
-            "-n",
-            str(limit),
-        ],
-        raise_on_error=False,
-    )
-
-    entries = []
-    for line in result.stdout.strip().splitlines():
-        if line:
-            parts = line.split(" ", 1)
-            entries.append(
-                {"hash": parts[0], "message": parts[1] if len(parts) > 1 else ""}
-            )
-    return entries
-
-
-def list_niches(vault_root, participant_hex, team_name):
-    """List all niches. Returns list of dicts."""
-    conn = _connect(vault_root, participant_hex, team_name)
-    rows = conn.execute(
-        "SELECT id, name, created_at, checkout_path FROM niche"
-    ).fetchall()
-    conn.close()
-
-    return [
-        {
-            "id": row["id"].hex(),
-            "name": row["name"],
-            "created_at": row["created_at"],
-            "checkout_path": row["checkout_path"],
-        }
-        for row in rows
-    ]
-
-
-def _bundle_tmp_dir(vault_root, participant_hex, team_name, niche_name):
-    """Return the directory where cod-sync stores temporary bundle files.
-
-    Kept inside the vault's git dir so bundle files never appear in the
-    shared checkout work tree.
+    Writes a .git pointer file (same format as git init --separate-git-dir).
+    Does not touch git_dir's config, so multiple work trees can coexist.
     """
-    return _niche_git_dir(vault_root, participant_hex, team_name, niche_name) / "codsync-bundle-tmp"
+    dest = pathlib.Path(dest)
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / ".git").write_text(f"gitdir: {pathlib.Path(git_dir).resolve()}\n")
+    if _has_commits(git_dir):
+        gitCmd([
+            "--git-dir", str(git_dir), "--work-tree", str(dest),
+            "checkout", "HEAD", "--", ".",
+        ])
 
 
-def push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
-    """Push a niche to a cloud directory via Cod Sync bundle protocol."""
-    git_dir, checkout_path = _git_dirs(
-        vault_root, participant_hex, team_name, niche_name
-    )
-    saved_cwd = os.getcwd()
+def _refresh_work_tree(git_dir, dest):
+    """Update dest to match HEAD, leaving untracked files alone.
+
+    Uses 'checkout HEAD -- .' which overwrites tracked files that differ
+    from HEAD but does not remove files that HEAD doesn't know about.
+    Silently skips if dest does not exist.
+    """
+    dest = pathlib.Path(dest)
+    if not dest.exists():
+        return
+    gitCmd([
+        "--git-dir", str(git_dir), "--work-tree", str(dest),
+        "checkout", "HEAD", "--", ".",
+    ])
+
+
+# ---------------------------------------------------------------------------
+# Registry helpers (internal)
+# ---------------------------------------------------------------------------
+
+def _init_git_dir(git_dir):
+    """Initialise a git dir that supports attached work trees.
+
+    Uses --bare for the layout (no working tree files at the root) but
+    immediately sets core.bare = false so that 'git checkout' and other
+    work-tree commands succeed when run from a linked work tree.
+    """
+    gitCmd(["init", "--bare", str(git_dir)])
+    gitCmd(["--git-dir", str(git_dir), "config", "core.bare", "false"])
+
+
+def _ensure_registry(vault_root, participant_hex, team_name):
+    """Lazily create the registry git repo and checkout for a team."""
+    git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
+    checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
+    if not git_dir.exists():
+        git_dir.mkdir(parents=True)
+        _init_git_dir(git_dir)
+    if not checkout.exists():
+        _make_work_tree(git_dir, checkout)
+
+
+# ---------------------------------------------------------------------------
+# Cod Sync push/pull primitives
+# ---------------------------------------------------------------------------
+
+def _cod_push(git_dir, transit, cloud_dir):
+    saved = os.getcwd()
     try:
-        os.chdir(checkout_path)
-        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(vault_root, participant_hex, team_name, niche_name))
+        os.chdir(transit)
+        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir))
         cod.remote = CS.LocalFolderRemote(str(cloud_dir))
         cod.push_to_remote(["main"])
     finally:
-        os.chdir(saved_cwd)
+        os.chdir(saved)
 
 
-def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
-    """Pull a niche from a cloud directory via Cod Sync bundle protocol."""
-    git_dir, checkout_path = _git_dirs(
-        vault_root, participant_hex, team_name, niche_name
-    )
-    saved_cwd = os.getcwd()
+def _cod_pull(git_dir, transit, cloud_dir):
+    """Fetch from cloud_dir and merge into git_dir via transit work tree."""
+    saved = os.getcwd()
     try:
-        os.chdir(checkout_path)
-        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(vault_root, participant_hex, team_name, niche_name))
+        os.chdir(transit)
+        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir))
         cod.remote = CS.LocalFolderRemote(str(cloud_dir))
 
-        # Check if repo has any commits
-        result = gitCmd(["rev-parse", "HEAD"], raise_on_error=False)
-        has_commits = result.returncode == 0
+        if _has_commits(git_dir):
+            # Sync transit work tree to HEAD before merging.  Without this,
+            # files committed from a user checkout (not the transit) would
+            # appear as uncommitted deletions in the transit and block the merge.
+            gitCmd(["checkout", "HEAD", "--", "."])
 
-        if has_commits:
-            # Ensure the bundle remote is registered. A participant who has
-            # only ever pushed (never done an initial pull) won't have it.
             [bundle_remote, path_tmp] = cod.bundle_tmp()
             check = gitCmd(["remote", "get-url", bundle_remote], raise_on_error=False)
             if check.returncode != 0:
@@ -274,4 +204,228 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
             cod.fetch_from_remote(["main"])
             gitCmd(["checkout", "main"])
     finally:
-        os.chdir(saved_cwd)
+        os.chdir(saved)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def init_vault(vault_root, participant_hex):
+    """Create the vault directory and local checkout registry database."""
+    pdir = _participant_dir(vault_root, participant_hex)
+    pdir.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(_checkouts_db_path(vault_root, participant_hex)))
+    conn.executescript(_CHECKOUTS_SCHEMA)
+    conn.close()
+
+
+def create_niche(vault_root, participant_hex, team_name, niche_name):
+    """Create a niche and record it in the team's shared registry.
+
+    Creates the niche git repo locally. The registry entry propagates to
+    teammates on the next push_registry call.
+    """
+    _ensure_registry(vault_root, participant_hex, team_name)
+
+    # Create niche git repo and transit work tree
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    if not git_dir.exists():
+        git_dir.mkdir(parents=True)
+        _init_git_dir(git_dir)
+
+    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
+    if not transit.exists():
+        _make_work_tree(git_dir, transit)
+
+    # Write niche record to registry checkout and commit
+    registry_git = _registry_git_dir(vault_root, participant_hex, team_name)
+    registry_co = _registry_checkout_dir(vault_root, participant_hex, team_name)
+    git_prefix = ["--git-dir", str(registry_git), "--work-tree", str(registry_co)]
+
+    niche_id = uuid7().hex()
+    record = {
+        "id": niche_id,
+        "name": niche_name,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    (registry_co / f"{niche_name}.yaml").write_text(
+        yaml.dump(record, default_flow_style=False)
+    )
+    gitCmd(git_prefix + ["add", f"{niche_name}.yaml"])
+    gitCmd(git_prefix + ["commit", "-m", f"add niche {niche_name}"])
+
+    return niche_id
+
+
+def list_niches(vault_root, participant_hex, team_name):
+    """List all niches known to this participant for a team.
+
+    Reads from the local registry checkout, which reflects whatever has
+    been pulled from the shared registry chain.
+    """
+    _ensure_registry(vault_root, participant_hex, team_name)
+    registry_co = _registry_checkout_dir(vault_root, participant_hex, team_name)
+    niches = []
+    for f in sorted(registry_co.glob("*.yaml")):
+        data = yaml.safe_load(f.read_text())
+        if data:
+            niches.append(data)
+    return niches
+
+
+def add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path):
+    """Register a local directory as a checkout of a niche.
+
+    Multiple checkouts of the same niche are allowed.
+    If the niche already has commits, dest_path is populated immediately.
+    """
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    if not git_dir.exists():
+        raise ValueError(f"Niche '{niche_name}' does not exist in team '{team_name}'")
+
+    _make_work_tree(git_dir, dest_path)
+
+    conn = _connect_checkouts(vault_root, participant_hex)
+    conn.execute(
+        "INSERT INTO checkout (id, team_name, niche_name, checkout_path, created_at) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (
+            uuid7(),
+            team_name,
+            niche_name,
+            str(pathlib.Path(dest_path)),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def remove_checkout(vault_root, participant_hex, team_name, niche_name, checkout_path):
+    """Unregister a checkout. Does not delete files in the directory."""
+    conn = _connect_checkouts(vault_root, participant_hex)
+    conn.execute(
+        "DELETE FROM checkout WHERE team_name = ? AND niche_name = ? AND checkout_path = ?",
+        (team_name, niche_name, str(pathlib.Path(checkout_path))),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_checkouts(vault_root, participant_hex, team_name, niche_name):
+    """Return list of checkout paths registered for a niche."""
+    conn = _connect_checkouts(vault_root, participant_hex)
+    rows = conn.execute(
+        "SELECT checkout_path FROM checkout WHERE team_name = ? AND niche_name = ?",
+        (team_name, niche_name),
+    ).fetchall()
+    conn.close()
+    return [row["checkout_path"] for row in rows]
+
+
+def publish(vault_root, participant_hex, team_name, niche_name, checkout_path,
+            files=None, message=None):
+    """Stage changes in a checkout and commit. Returns commit hash.
+
+    After committing, refreshes all other registered checkouts of this
+    niche so they reflect the new HEAD.
+    """
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    checkout = pathlib.Path(checkout_path).resolve()
+    git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
+
+    if files:
+        for f in files:
+            gitCmd(git_prefix + ["add", f])
+    else:
+        gitCmd(git_prefix + ["add", "--all"])
+
+    gitCmd(git_prefix + ["commit", "-m", message or "Published changes"])
+
+    result = gitCmd(git_prefix + ["rev-parse", "HEAD"])
+    head = result.stdout.strip()
+
+    # Refresh sibling checkouts
+    for other in list_checkouts(vault_root, participant_hex, team_name, niche_name):
+        if pathlib.Path(other).resolve() != checkout:
+            _refresh_work_tree(git_dir, other)
+
+    return head
+
+
+def status(vault_root, participant_hex, team_name, niche_name, checkout_path):
+    """Get git status for a checkout. Returns list of {status, path} dicts."""
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    checkout = pathlib.Path(checkout_path)
+    result = gitCmd(
+        ["--git-dir", str(git_dir), "--work-tree", str(checkout),
+         "status", "--porcelain"],
+        raise_on_error=False,
+    )
+    entries = []
+    for line in result.stdout.strip().splitlines():
+        if line:
+            entries.append({"status": line[:2].strip(), "path": line[3:]})
+    return entries
+
+
+def log(vault_root, participant_hex, team_name, niche_name, limit=20):
+    """Get commit log for a niche. Returns list of {hash, message} dicts."""
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    result = gitCmd(
+        ["--git-dir", str(git_dir), "log", "--oneline", "-n", str(limit)],
+        raise_on_error=False,
+    )
+    entries = []
+    for line in result.stdout.strip().splitlines():
+        if line:
+            parts = line.split(" ", 1)
+            entries.append({"hash": parts[0], "message": parts[1] if len(parts) > 1 else ""})
+    return entries
+
+
+def push_registry(vault_root, participant_hex, team_name, cloud_dir):
+    """Push the niche registry to a cloud directory via Cod Sync."""
+    _ensure_registry(vault_root, participant_hex, team_name)
+    git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
+    checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
+    _cod_push(git_dir, checkout, cloud_dir)
+
+
+def pull_registry(vault_root, participant_hex, team_name, cloud_dir):
+    """Pull the niche registry from a cloud directory and merge."""
+    _ensure_registry(vault_root, participant_hex, team_name)
+    git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
+    checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
+    _cod_pull(git_dir, checkout, cloud_dir)
+
+
+def push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
+    """Push a niche to a cloud directory via Cod Sync."""
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
+    _cod_push(git_dir, transit, cloud_dir)
+
+
+def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
+    """Pull a niche from a cloud directory and merge.
+
+    Creates the niche git repo if this is the first time pulling it
+    (e.g. a new team member joining). Updates all registered checkouts
+    after a successful merge.
+    """
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    if not git_dir.exists():
+        git_dir.mkdir(parents=True)
+        _init_git_dir(git_dir)
+
+    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
+    if not transit.exists():
+        _make_work_tree(git_dir, transit)
+
+    _cod_pull(git_dir, transit, cloud_dir)
+
+    # Refresh all user checkouts
+    for checkout in list_checkouts(vault_root, participant_hex, team_name, niche_name):
+        _refresh_work_tree(git_dir, checkout)

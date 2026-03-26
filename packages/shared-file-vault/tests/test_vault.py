@@ -1,15 +1,22 @@
 import pathlib
-import sqlite3
 
-from shared_file_vault.vault import (checkout_niche, create_niche, init_vault,
-                                     list_niches, log, publish, status)
+from shared_file_vault.vault import (
+    add_checkout,
+    create_niche,
+    init_vault,
+    list_checkouts,
+    list_niches,
+    log,
+    publish,
+    status,
+)
 
 PARTICIPANT = "aa" * 16
 TEAM = "TestTeam"
 
 
 def _init(playground_dir):
-    init_vault(playground_dir, PARTICIPANT, TEAM)
+    init_vault(playground_dir, PARTICIPANT)
 
 
 def test_create_niche(playground_dir):
@@ -18,59 +25,62 @@ def test_create_niche(playground_dir):
 
     assert len(niche_id) == 32  # 16 bytes -> 32 hex chars
 
-    # Verify vault.db row
-    db = pathlib.Path(playground_dir) / "Participants" / PARTICIPANT / TEAM / "vault.db"
-    conn = sqlite3.connect(str(db))
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute("SELECT * FROM niche WHERE name = 'photos'").fetchall()
-    conn.close()
-    assert len(rows) == 1
-    assert rows[0]["checkout_path"] is None
-
-    # Verify git dir exists
+    # Git dir exists in the new layout
     git_dir = (
         pathlib.Path(playground_dir)
-        / "Participants"
         / PARTICIPANT
         / TEAM
-        / "Niches"
+        / "niches"
         / "photos"
         / "git"
     )
     assert git_dir.is_dir()
     assert (git_dir / "HEAD").exists()
 
+    # Niche appears in the registry
+    niches = list_niches(playground_dir, PARTICIPANT, TEAM)
+    assert any(n["name"] == "photos" for n in niches)
 
-def test_checkout_niche(playground_dir):
+
+def test_add_checkout(playground_dir):
     _init(playground_dir)
     create_niche(playground_dir, PARTICIPANT, TEAM, "docs")
 
     dest = pathlib.Path(playground_dir) / "checkout" / "docs"
-    checkout_niche(playground_dir, PARTICIPANT, TEAM, "docs", str(dest))
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "docs", str(dest))
 
-    # .git file should exist at dest (pointer to vault's git dir)
-    git_pointer = dest / ".git"
-    assert git_pointer.exists()
+    # .git pointer file exists in the checkout
+    assert (dest / ".git").exists()
 
-    # checkout_path should be set in vault.db
-    db = pathlib.Path(playground_dir) / "Participants" / PARTICIPANT / TEAM / "vault.db"
-    conn = sqlite3.connect(str(db))
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT checkout_path FROM niche WHERE name = 'docs'").fetchone()
-    conn.close()
-    assert row["checkout_path"] == str(dest)
+    # Checkout is tracked in checkouts.db
+    checkouts = list_checkouts(playground_dir, PARTICIPANT, TEAM, "docs")
+    assert str(dest) in checkouts
+
+
+def test_add_multiple_checkouts(playground_dir):
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "notes")
+
+    dest_a = pathlib.Path(playground_dir) / "checkout-a"
+    dest_b = pathlib.Path(playground_dir) / "checkout-b"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest_a))
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest_b))
+
+    checkouts = list_checkouts(playground_dir, PARTICIPANT, TEAM, "notes")
+    assert len(checkouts) == 2
+    assert str(dest_a) in checkouts
+    assert str(dest_b) in checkouts
 
 
 def test_publish_and_log(playground_dir):
     _init(playground_dir)
     create_niche(playground_dir, PARTICIPANT, TEAM, "notes")
     dest = pathlib.Path(playground_dir) / "checkout" / "notes"
-    checkout_niche(playground_dir, PARTICIPANT, TEAM, "notes", str(dest))
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest))
 
-    # Create a file and publish
     (dest / "hello.txt").write_text("hello world")
     commit_hash = publish(
-        playground_dir, PARTICIPANT, TEAM, "notes", message="first note"
+        playground_dir, PARTICIPANT, TEAM, "notes", str(dest), message="first note"
     )
 
     assert len(commit_hash) >= 7
@@ -84,16 +94,16 @@ def test_status(playground_dir):
     _init(playground_dir)
     create_niche(playground_dir, PARTICIPANT, TEAM, "pics")
     dest = pathlib.Path(playground_dir) / "checkout" / "pics"
-    checkout_niche(playground_dir, PARTICIPANT, TEAM, "pics", str(dest))
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "pics", str(dest))
 
     # Create a file — should show as untracked
     (dest / "cat.jpg").write_bytes(b"not really a jpeg")
-    entries = status(playground_dir, PARTICIPANT, TEAM, "pics")
+    entries = status(playground_dir, PARTICIPANT, TEAM, "pics", str(dest))
     assert any(e["path"] == "cat.jpg" for e in entries)
 
     # Publish it — status should be clean
-    publish(playground_dir, PARTICIPANT, TEAM, "pics", message="add cat")
-    entries = status(playground_dir, PARTICIPANT, TEAM, "pics")
+    publish(playground_dir, PARTICIPANT, TEAM, "pics", str(dest), message="add cat")
+    entries = status(playground_dir, PARTICIPANT, TEAM, "pics", str(dest))
     assert len(entries) == 0
 
 
@@ -101,17 +111,34 @@ def test_selective_publish(playground_dir):
     _init(playground_dir)
     create_niche(playground_dir, PARTICIPANT, TEAM, "mixed")
     dest = pathlib.Path(playground_dir) / "checkout" / "mixed"
-    checkout_niche(playground_dir, PARTICIPANT, TEAM, "mixed", str(dest))
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "mixed", str(dest))
 
     (dest / "a.txt").write_text("aaa")
     (dest / "b.txt").write_text("bbb")
 
-    # Publish only a.txt
     publish(
-        playground_dir, PARTICIPANT, TEAM, "mixed", files=["a.txt"], message="only a"
+        playground_dir, PARTICIPANT, TEAM, "mixed", str(dest),
+        files=["a.txt"], message="only a",
     )
 
-    entries = status(playground_dir, PARTICIPANT, TEAM, "mixed")
+    entries = status(playground_dir, PARTICIPANT, TEAM, "mixed", str(dest))
     paths = [e["path"] for e in entries]
     assert "b.txt" in paths
     assert "a.txt" not in paths
+
+
+def test_publish_refreshes_sibling_checkouts(playground_dir):
+    """After publishing from checkout_a, checkout_b reflects the new commit."""
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "shared")
+
+    dest_a = pathlib.Path(playground_dir) / "checkout-a"
+    dest_b = pathlib.Path(playground_dir) / "checkout-b"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "shared", str(dest_a))
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "shared", str(dest_b))
+
+    (dest_a / "ideas.txt").write_text("Build something useful.\n")
+    publish(playground_dir, PARTICIPANT, TEAM, "shared", str(dest_a), message="add ideas")
+
+    assert (dest_b / "ideas.txt").exists()
+    assert (dest_b / "ideas.txt").read_text() == "Build something useful.\n"

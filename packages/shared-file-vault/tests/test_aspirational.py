@@ -1,0 +1,271 @@
+"""
+Aspirational tests for the redesigned Shared File Vault.
+
+These tests are written against the spec (spec.md) and will fail until
+the implementation catches up. They cover the four tricky cases that
+diverge most from the current implementation:
+
+  1. Registry propagation — Bob discovers a niche via the shared registry
+     without Alice telling him its name out-of-band.
+
+  2. Concurrent registry additions — Alice and Bob each create a niche
+     independently; after cross-pulling registries both see all niches.
+
+  3. Multiple checkouts — one niche, two checkout paths on the same device;
+     both reflect committed state.
+
+  4. Full join flow — Bob starts with an empty vault, pulls the registry,
+     discovers a niche, pulls the niche content, adds a checkout, reads
+     Alice's files.
+
+API assumed by these tests (post-spec):
+
+  init_vault(vault_root, participant_hex)
+  create_niche(vault_root, participant_hex, team_name, niche_name)
+  list_niches(vault_root, participant_hex, team_name) -> [{name, ...}]
+  add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path)
+  remove_checkout(vault_root, participant_hex, team_name, niche_name, checkout_path)
+  list_checkouts(vault_root, participant_hex, team_name, niche_name) -> [str]
+  publish(vault_root, participant_hex, team_name, niche_name, checkout_path, message=None)
+  status(vault_root, participant_hex, team_name, niche_name, checkout_path)
+  push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir)
+  pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir)
+  push_registry(vault_root, participant_hex, team_name, cloud_dir)
+  pull_registry(vault_root, participant_hex, team_name, cloud_dir)
+
+Key differences from current implementation:
+- checkout_path is explicit in publish/status (multiple checkouts allowed)
+- add_checkout replaces checkout_niche (no one-per-niche constraint)
+- push_registry / pull_registry sync the shared niche registry
+- list_niches reads from the shared registry, not a local-only DB
+"""
+
+import pathlib
+
+import pytest
+
+from shared_file_vault.vault import (
+    add_checkout,
+    create_niche,
+    init_vault,
+    list_checkouts,
+    list_niches,
+    publish,
+    pull_niche,
+    pull_registry,
+    push_niche,
+    push_registry,
+    remove_checkout,
+)
+
+ALICE = "aa" * 16
+BOB = "bb" * 16
+TEAM = "Collab"
+
+
+# --- Helpers ---
+
+
+def setup_vault(playground, name, participant_hex):
+    """Create an empty vault for a participant. Returns vault_root."""
+    root = playground / f"vault-{name}"
+    init_vault(str(root), participant_hex)
+    return root
+
+
+def write(path, filename, content):
+    (path / filename).parent.mkdir(parents=True, exist_ok=True)
+    (path / filename).write_text(content)
+
+
+def read(path, filename):
+    return (path / filename).read_text()
+
+
+def exists(path, filename):
+    return (path / filename).exists()
+
+
+# --- Tests ---
+
+
+def test_registry_propagation(playground_dir):
+    """Bob discovers a niche via the shared registry.
+
+    Alice creates a niche and pushes her registry. Bob pulls the registry
+    and sees the niche without Alice telling him its name out-of-band.
+    After pulling the niche content, Bob can add a checkout and read the
+    files Alice published.
+    """
+    playground = pathlib.Path(playground_dir)
+    alice_reg_cloud = playground / "cloud-alice-registry"
+    alice_niche_cloud = playground / "cloud-alice-docs"
+    alice_reg_cloud.mkdir()
+    alice_niche_cloud.mkdir()
+
+    # Alice creates a vault, a niche, writes a file, and pushes everything
+    alice_root = setup_vault(playground, "alice", ALICE)
+    create_niche(str(alice_root), ALICE, TEAM, "docs")
+
+    alice_co = playground / "checkout-alice-docs"
+    add_checkout(str(alice_root), ALICE, TEAM, "docs", str(alice_co))
+
+    write(alice_co, "readme.txt", "Hello from Alice.\n")
+    publish(str(alice_root), ALICE, TEAM, "docs", str(alice_co), message="initial commit")
+
+    push_registry(str(alice_root), ALICE, TEAM, str(alice_reg_cloud))
+    push_niche(str(alice_root), ALICE, TEAM, "docs", str(alice_niche_cloud))
+
+    # Bob starts with an empty vault and pulls only the registry
+    bob_root = setup_vault(playground, "bob", BOB)
+    pull_registry(str(bob_root), BOB, TEAM, str(alice_reg_cloud))
+
+    niches = list_niches(str(bob_root), BOB, TEAM)
+    niche_names = [n["name"] for n in niches]
+    assert "docs" in niche_names, "Bob should discover the 'docs' niche via the registry"
+
+    # Bob pulls the niche content and adds his own checkout
+    pull_niche(str(bob_root), BOB, TEAM, "docs", str(alice_niche_cloud))
+
+    bob_co = playground / "checkout-bob-docs"
+    add_checkout(str(bob_root), BOB, TEAM, "docs", str(bob_co))
+
+    assert exists(bob_co, "readme.txt"), "Bob's checkout should contain Alice's file"
+    assert read(bob_co, "readme.txt") == "Hello from Alice.\n"
+
+
+def test_concurrent_registry_additions(playground_dir):
+    """Alice and Bob each create a niche independently; both converge.
+
+    Neither knows about the other's niche until they cross-pull registries.
+    After convergence each participant's registry lists both niches.
+    """
+    playground = pathlib.Path(playground_dir)
+    alice_reg_cloud = playground / "cloud-alice-registry"
+    bob_reg_cloud = playground / "cloud-bob-registry"
+    alice_reg_cloud.mkdir()
+    bob_reg_cloud.mkdir()
+
+    alice_root = setup_vault(playground, "alice", ALICE)
+    bob_root = setup_vault(playground, "bob", BOB)
+
+    # Alice creates "photos"; Bob creates "receipts" — no coordination
+    create_niche(str(alice_root), ALICE, TEAM, "photos")
+    create_niche(str(bob_root), BOB, TEAM, "receipts")
+
+    push_registry(str(alice_root), ALICE, TEAM, str(alice_reg_cloud))
+    push_registry(str(bob_root), BOB, TEAM, str(bob_reg_cloud))
+
+    # Cross-pull registries
+    pull_registry(str(alice_root), ALICE, TEAM, str(bob_reg_cloud))
+    pull_registry(str(bob_root), BOB, TEAM, str(alice_reg_cloud))
+
+    # Push merged registries so each cloud is up to date (optional but realistic)
+    push_registry(str(alice_root), ALICE, TEAM, str(alice_reg_cloud))
+    push_registry(str(bob_root), BOB, TEAM, str(bob_reg_cloud))
+
+    alice_niches = {n["name"] for n in list_niches(str(alice_root), ALICE, TEAM)}
+    bob_niches = {n["name"] for n in list_niches(str(bob_root), BOB, TEAM)}
+
+    assert "photos" in alice_niches
+    assert "receipts" in alice_niches, "Alice should see Bob's niche after registry merge"
+    assert alice_niches == bob_niches, "Both participants should converge to the same registry"
+
+
+def test_multiple_checkouts_same_niche(playground_dir):
+    """One niche, two checkout paths on the same device.
+
+    After publishing from checkout_a, both checkouts reflect the committed
+    state. The second checkout does not need to be the source of the commit
+    to see its result.
+    """
+    playground = pathlib.Path(playground_dir)
+
+    alice_root = setup_vault(playground, "alice", ALICE)
+    create_niche(str(alice_root), ALICE, TEAM, "notes")
+
+    checkout_a = playground / "checkout-a"
+    checkout_b = playground / "checkout-b"
+
+    add_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_a))
+    add_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_b))
+
+    checkouts = list_checkouts(str(alice_root), ALICE, TEAM, "notes")
+    assert len(checkouts) == 2, "Both checkouts should be registered"
+    assert str(checkout_a) in checkouts
+    assert str(checkout_b) in checkouts
+
+    # Write and publish from checkout_a
+    write(checkout_a, "ideas.txt", "Build something useful.\n")
+    publish(str(alice_root), ALICE, TEAM, "notes", str(checkout_a), message="add ideas")
+
+    # checkout_b shares the same git repo — committed content is reachable
+    assert exists(checkout_b, "ideas.txt"), (
+        "checkout_b should reflect the committed file from checkout_a"
+    )
+    assert read(checkout_b, "ideas.txt") == "Build something useful.\n"
+
+    # Remove one checkout — the other is unaffected
+    remove_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_a))
+    remaining = list_checkouts(str(alice_root), ALICE, TEAM, "notes")
+    assert len(remaining) == 1
+    assert str(checkout_b) in remaining
+    assert exists(checkout_b, "ideas.txt"), "checkout_b files should survive checkout_a removal"
+
+
+def test_full_join_flow(playground_dir):
+    """Bob starts with an empty vault and joins an existing team niche.
+
+    The join flow is:
+      1. Pull registry  → discover what niches exist
+      2. Pull niche     → get the content
+      3. Add checkout   → link to a local directory
+      4. Read files     → see Alice's work
+
+    No out-of-band niche name is needed; the registry carries it.
+    Bob then adds his own file, and Alice pulls it back.
+    """
+    playground = pathlib.Path(playground_dir)
+    alice_reg_cloud = playground / "cloud-alice-registry"
+    alice_niche_cloud = playground / "cloud-alice-docs"
+    bob_niche_cloud = playground / "cloud-bob-docs"
+    alice_reg_cloud.mkdir()
+    alice_niche_cloud.mkdir()
+    bob_niche_cloud.mkdir()
+
+    # Alice sets up the team
+    alice_root = setup_vault(playground, "alice", ALICE)
+    create_niche(str(alice_root), ALICE, TEAM, "docs")
+
+    alice_co = playground / "checkout-alice"
+    add_checkout(str(alice_root), ALICE, TEAM, "docs", str(alice_co))
+
+    write(alice_co, "guide.txt", "Getting started.\n")
+    publish(str(alice_root), ALICE, TEAM, "docs", str(alice_co), message="add guide")
+
+    push_registry(str(alice_root), ALICE, TEAM, str(alice_reg_cloud))
+    push_niche(str(alice_root), ALICE, TEAM, "docs", str(alice_niche_cloud))
+
+    # Bob joins from scratch — empty vault, no prior knowledge of niche names
+    bob_root = setup_vault(playground, "bob", BOB)
+
+    pull_registry(str(bob_root), BOB, TEAM, str(alice_reg_cloud))
+    discovered = [n["name"] for n in list_niches(str(bob_root), BOB, TEAM)]
+    assert "docs" in discovered
+
+    pull_niche(str(bob_root), BOB, TEAM, "docs", str(alice_niche_cloud))
+
+    bob_co = playground / "checkout-bob"
+    add_checkout(str(bob_root), BOB, TEAM, "docs", str(bob_co))
+
+    assert exists(bob_co, "guide.txt")
+    assert read(bob_co, "guide.txt") == "Getting started.\n"
+
+    # Bob contributes back
+    write(bob_co, "bob_notes.txt", "My contribution.\n")
+    publish(str(bob_root), BOB, TEAM, "docs", str(bob_co), message="add bob_notes")
+    push_niche(str(bob_root), BOB, TEAM, "docs", str(bob_niche_cloud))
+
+    pull_niche(str(alice_root), ALICE, TEAM, "docs", str(bob_niche_cloud))
+    assert exists(alice_co, "bob_notes.txt"), "Alice should see Bob's contribution after pull"
+    assert read(alice_co, "bob_notes.txt") == "My contribution.\n"
