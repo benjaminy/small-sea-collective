@@ -1,37 +1,35 @@
-# Cuttlefish — Post-Quantum Extended Triple Diffie-Hellman (PQXDH) key agreement
+# Cuttlefish — Extended Triple Diffie-Hellman (X3DH) key agreement
 #
-# PQXDH is Signal's extension of X3DH that adds ML-KEM-1024 alongside X25519.
-# The shared secret is derived from both; security holds if either primitive
-# is unbroken. We follow the PQXDH spec rather than the original X3DH spec.
+# X3DH provides asynchronous session initiation: Alice can establish a
+# shared secret with Bob using his published prekey bundle, even if Bob
+# is offline. The shared secret bootstraps a Double Ratchet session.
 #
-# Signal shipped PQXDH in 2023: https://signal.org/docs/specifications/pqxdh/
-#
-# Prekey exhaustion policy:
-#   The default is STRICT: if no one-time prekeys are available in the
-#   recipient's bundle, key agreement fails. The sender must wait or contact
-#   the recipient through another channel to trigger prekey replenishment.
-#   The rationale is "secure by default": falling back to the signed prekey
-#   only sacrifices one-time forward secrecy.
-#
-#   Callers may opt in to DEGRADE mode, which falls back to the signed prekey
-#   if no one-time prekeys are available — matching Signal's original behavior.
-#   This should be used only when availability is more important than the
-#   incremental forward secrecy of one-time prekeys.
+# This implements the classical X3DH protocol (X25519 only). The post-
+# quantum extension (PQXDH, adding ML-KEM) will be layered on top later.
 #
 # Signal deviation notes:
-#   - We use ML-KEM-768 rather than ML-KEM-1024 for DAILY/GUARDED keys
-#     (smaller ciphertexts; still 192-bit post-quantum security). BURIED keys
-#     use ML-KEM-1024.
-#   - Prekey exhaustion default is STRICT rather than Signal's silent fallback.
+#   - Identity keys use separate X25519 (DH) and Ed25519 (signing) key
+#     pairs rather than XEdDSA. This avoids implementing the XEdDSA
+#     conversion but means bundles carry two identity public keys.
+#   - Prekey exhaustion default is STRICT rather than Signal's silent
+#     fallback to signed prekey only.
 #
-# Reference: https://signal.org/docs/specifications/pqxdh/
+# Reference: https://signal.org/docs/specifications/x3dh/
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum, auto
 
-from .prekeys import PrekeyBundle
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.asymmetric.x25519 import (
+    X25519PrivateKey,
+    X25519PublicKey,
+)
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+from .prekeys import IdentityKeyPair, PrekeyBundle
 
 
 class PrekeyExhaustionPolicy(Enum):
@@ -40,12 +38,18 @@ class PrekeyExhaustionPolicy(Enum):
 
 
 @dataclass
-class X3DHSendResult:
-    """Output of the sender's X3DH computation."""
+class X3DHResult:
+    """Output of X3DH key agreement (sender side).
+
+    shared_secret: pass to ratchet.initialize_as_sender
+    initial_message: send to the recipient alongside the first ratchet message
+    signed_prekey_public: the recipient's signed prekey used as initial ratchet
+        key — pass to ratchet.initialize_as_sender as recipient_ratchet_public_key
+    """
 
     shared_secret: bytes
-    ephemeral_public_key: bytes   # Must be included in the initial message
-    used_one_time_prekey_id: bytes | None  # None if no OTP was available
+    initial_message: X3DHInitialMessage
+    signed_prekey_public: bytes
 
 
 @dataclass
@@ -55,42 +59,151 @@ class X3DHInitialMessage:
     The recipient uses this to reconstruct the shared secret.
     """
 
-    sender_identity_public_key: bytes
-    ephemeral_public_key: bytes
-    used_one_time_prekey_id: bytes | None
+    sender_identity_dh_public_key: bytes   # Sender's X25519 identity public key
+    ephemeral_public_key: bytes            # Sender's ephemeral X25519 public key
+    used_one_time_prekey_id: bytes | None   # None if no OTP was used
 
 
 class PrekeyExhaustedException(Exception):
     """Raised when no one-time prekeys are available and policy is STRICT."""
 
 
-def pqxdh_send(
-    sender_identity_private_key: bytes,
-    sender_identity_public_key: bytes,
+_X3DH_INFO = b"CuttlefishX3DH"
+# 32 bytes of 0xFF, prepended to DH outputs per Signal X3DH spec section 2.2
+_F = b"\xff" * 32
+
+
+def _dh(private_key_bytes: bytes, public_key_bytes: bytes) -> bytes:
+    """X25519 Diffie-Hellman."""
+    priv = X25519PrivateKey.from_private_bytes(private_key_bytes)
+    pub = X25519PublicKey.from_public_bytes(public_key_bytes)
+    return priv.exchange(pub)
+
+
+def _kdf(dh_concat: bytes) -> bytes:
+    """KDF for X3DH: HKDF-SHA256 over concatenated DH outputs.
+
+    Per Signal spec, input is prepended with 32 bytes of 0xFF.
+    """
+    return HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b"\x00" * 32,
+        info=_X3DH_INFO,
+    ).derive(_F + dh_concat)
+
+
+def x3dh_send(
+    sender_identity: IdentityKeyPair,
     recipient_bundle: PrekeyBundle,
     exhaustion_policy: PrekeyExhaustionPolicy = PrekeyExhaustionPolicy.STRICT,
-) -> X3DHSendResult:
-    """Perform PQXDH from the sender's side.
+) -> X3DHResult:
+    """Perform X3DH from the sender's (Alice's) side.
 
-    Returns the shared secret and the initial message header to send.
-    The shared secret should be passed directly to ratchet.initialize_as_sender.
+    1. Verify the signed prekey signature.
+    2. Generate ephemeral X25519 key pair.
+    3. Compute DH1..DH3 (or DH4 if one-time prekey available).
+    4. Derive shared secret via HKDF.
+
+    Returns X3DHResult with shared_secret, initial_message, and the signed
+    prekey public key (used as the initial ratchet key for the Double Ratchet).
 
     Raises PrekeyExhaustedException if policy is STRICT and no one-time
-    prekeys are available in recipient_bundle.
+    prekeys are available.
     """
-    raise NotImplementedError
+    # Verify signed prekey
+    signing_pub = Ed25519PublicKey.from_public_bytes(
+        recipient_bundle.identity_signing_public_key
+    )
+    signing_pub.verify(
+        recipient_bundle.signed_prekey.signature,
+        recipient_bundle.signed_prekey.public_key,
+    )
+
+    # Check one-time prekey availability
+    used_otp_id = None
+    otp_public = None
+    if recipient_bundle.one_time_prekeys:
+        otp = recipient_bundle.one_time_prekeys[0]
+        used_otp_id = otp.prekey_id
+        otp_public = otp.public_key
+    elif exhaustion_policy == PrekeyExhaustionPolicy.STRICT:
+        raise PrekeyExhaustedException(
+            "No one-time prekeys available and policy is STRICT"
+        )
+
+    # Generate ephemeral key pair
+    ek_priv = X25519PrivateKey.generate()
+    ek_priv_bytes = ek_priv.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    ek_pub_bytes = ek_priv.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+
+    spk_pub = recipient_bundle.signed_prekey.public_key
+    ik_b_dh = recipient_bundle.identity_dh_public_key
+
+    # DH1 = DH(IK_A, SPK_B) — sender's identity key, recipient's signed prekey
+    dh1 = _dh(sender_identity.dh_private_key, spk_pub)
+    # DH2 = DH(EK_A, IK_B) — sender's ephemeral, recipient's identity key
+    dh2 = _dh(ek_priv_bytes, ik_b_dh)
+    # DH3 = DH(EK_A, SPK_B) — sender's ephemeral, recipient's signed prekey
+    dh3 = _dh(ek_priv_bytes, spk_pub)
+
+    dh_concat = dh1 + dh2 + dh3
+
+    # DH4 = DH(EK_A, OPK_B) — if one-time prekey available
+    if otp_public is not None:
+        dh4 = _dh(ek_priv_bytes, otp_public)
+        dh_concat += dh4
+
+    shared_secret = _kdf(dh_concat)
+
+    initial_message = X3DHInitialMessage(
+        sender_identity_dh_public_key=sender_identity.dh_public_key,
+        ephemeral_public_key=ek_pub_bytes,
+        used_one_time_prekey_id=used_otp_id,
+    )
+
+    return X3DHResult(
+        shared_secret=shared_secret,
+        initial_message=initial_message,
+        signed_prekey_public=spk_pub,
+    )
 
 
-def pqxdh_receive(
-    recipient_identity_private_key: bytes,
-    recipient_signed_prekey_private_key: bytes,
-    recipient_one_time_prekey_private_key: bytes | None,
+def x3dh_receive(
+    recipient_identity: IdentityKeyPair,
+    recipient_signed_prekey_private: bytes,
+    recipient_one_time_prekey_private: bytes | None,
     initial_message: X3DHInitialMessage,
 ) -> bytes:
-    """Perform X3DH from the recipient's side. Returns the shared secret.
+    """Perform X3DH from the recipient's (Bob's) side. Returns the shared secret.
 
-    The shared secret should be passed to ratchet.initialize_as_receiver.
-    After this call the consumed one-time prekey private key must be deleted
-    and the prekey bundle updated in storage.
+    The shared secret should be passed to ratchet.initialize_as_receiver with
+    the signed prekey pair as the initial ratchet key pair.
+
+    After this call the consumed one-time prekey private key must be deleted.
     """
-    raise NotImplementedError
+    ik_a_dh = initial_message.sender_identity_dh_public_key
+    ek_a = initial_message.ephemeral_public_key
+
+    # DH1 = DH(SPK_B, IK_A) — same as sender's DH1 by commutativity
+    dh1 = _dh(recipient_signed_prekey_private, ik_a_dh)
+    # DH2 = DH(IK_B, EK_A)
+    dh2 = _dh(recipient_identity.dh_private_key, ek_a)
+    # DH3 = DH(SPK_B, EK_A)
+    dh3 = _dh(recipient_signed_prekey_private, ek_a)
+
+    dh_concat = dh1 + dh2 + dh3
+
+    # DH4 if one-time prekey was used
+    if recipient_one_time_prekey_private is not None:
+        dh4 = _dh(recipient_one_time_prekey_private, ek_a)
+        dh_concat += dh4
+
+    return _kdf(dh_concat)
