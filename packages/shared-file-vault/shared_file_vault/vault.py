@@ -220,15 +220,24 @@ def list_niches(vault_root, participant_hex, team_name):
     ]
 
 
+def _bundle_tmp_dir(vault_root, participant_hex, team_name, niche_name):
+    """Return the directory where cod-sync stores temporary bundle files.
+
+    Kept inside the vault's git dir so bundle files never appear in the
+    shared checkout work tree.
+    """
+    return _niche_git_dir(vault_root, participant_hex, team_name, niche_name) / "codsync-bundle-tmp"
+
+
 def push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
     """Push a niche to a cloud directory via Cod Sync bundle protocol."""
-    _git_dir, checkout_path = _git_dirs(
+    git_dir, checkout_path = _git_dirs(
         vault_root, participant_hex, team_name, niche_name
     )
     saved_cwd = os.getcwd()
     try:
         os.chdir(checkout_path)
-        cod = CS.CodSync("cloud")
+        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(vault_root, participant_hex, team_name, niche_name))
         cod.remote = CS.LocalFolderRemote(str(cloud_dir))
         cod.push_to_remote(["main"])
     finally:
@@ -237,13 +246,13 @@ def push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
 
 def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
     """Pull a niche from a cloud directory via Cod Sync bundle protocol."""
-    _git_dir, checkout_path = _git_dirs(
+    git_dir, checkout_path = _git_dirs(
         vault_root, participant_hex, team_name, niche_name
     )
     saved_cwd = os.getcwd()
     try:
         os.chdir(checkout_path)
-        cod = CS.CodSync("cloud")
+        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(vault_root, participant_hex, team_name, niche_name))
         cod.remote = CS.LocalFolderRemote(str(cloud_dir))
 
         # Check if repo has any commits
@@ -251,6 +260,13 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
         has_commits = result.returncode == 0
 
         if has_commits:
+            # Ensure the bundle remote is registered. A participant who has
+            # only ever pushed (never done an initial pull) won't have it.
+            [bundle_remote, path_tmp] = cod.bundle_tmp()
+            check = gitCmd(["remote", "get-url", bundle_remote], raise_on_error=False)
+            if check.returncode != 0:
+                os.makedirs(path_tmp, exist_ok=True)
+                gitCmd(["remote", "add", bundle_remote, f"{path_tmp}/fetch.bundle"])
             cod.fetch_from_remote(["main"])
             cod.merge_from_remote(["main"])
         else:

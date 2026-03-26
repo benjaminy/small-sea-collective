@@ -100,10 +100,11 @@ def gitCmd(git_params, raise_on_error=True):
 
 class CodSync:
 
-    def __init__(self, remote_name):
+    def __init__(self, remote_name, bundle_tmp_dir=None):
         self.remote_name = remote_name
         self.url = None
         self.gitCmd = gitCmd
+        self._bundle_tmp_dir = bundle_tmp_dir
 
     def add_remote(self, url, dotdotdot):
         """Add a Cod Sync remote
@@ -406,9 +407,13 @@ class CodSync:
         return -1
 
     def bundle_tmp(self):
+        if self._bundle_tmp_dir is not None:
+            base = str(self._bundle_tmp_dir)
+        else:
+            base = f"./.codsync-bundle-tmp"
         return [
             f"{self.remote_name}-codsync-bundle-tmp",
-            f"./.codsync-bundle-tmp/{self.remote_name}",
+            f"{base}/{self.remote_name}",
         ]
 
 
