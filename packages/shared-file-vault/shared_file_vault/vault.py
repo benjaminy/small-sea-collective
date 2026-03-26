@@ -12,15 +12,16 @@ See spec.md for the design. Key points:
   never appear in user-visible checkout directories.
 """
 
+import json
 import os
 import pathlib
+import re
 import secrets
 import sqlite3
 import struct
 import time
+import unicodedata
 from datetime import datetime, timezone
-
-import yaml
 
 import cod_sync.protocol as CS
 from cod_sync.protocol import gitCmd
@@ -34,6 +35,21 @@ def uuid7():
     b += bytes([(0x70 | (rand_bytes[0] & 0x0F)), rand_bytes[1]])  # ver + rand_a
     b += bytes([0x80 | (rand_bytes[2] & 0x3F)]) + rand_bytes[3:10]  # variant + rand_b
     return b
+
+
+def _canonical_name(name):
+    """Normalise a niche name to NFC + casefold + slug characters only.
+
+    Raises ValueError if the result is empty or contains invalid characters.
+    Allowed: ASCII letters, digits, hyphens, underscores.
+    """
+    name = unicodedata.normalize("NFC", name).casefold()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]*", name):
+        raise ValueError(
+            f"Niche name {name!r} is invalid after canonicalization. "
+            "Use letters, digits, hyphens, and underscores only."
+        )
+    return name
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +241,10 @@ def create_niche(vault_root, participant_hex, team_name, niche_name):
 
     Creates the niche git repo locally. The registry entry propagates to
     teammates on the next push_registry call.
+
+    niche_name is canonicalized (NFC + casefold + slug) before use.
     """
+    niche_name = _canonical_name(niche_name)
     _ensure_registry(vault_root, participant_hex, team_name)
 
     # Create niche git repo and transit work tree
@@ -249,10 +268,16 @@ def create_niche(vault_root, participant_hex, team_name, niche_name):
         "name": niche_name,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    (registry_co / f"{niche_name}.yaml").write_text(
-        yaml.dump(record, default_flow_style=False)
-    )
-    gitCmd(git_prefix + ["add", f"{niche_name}.yaml"])
+
+    # On the very first niche, also commit .gitattributes so that concurrent
+    # additions of the same-named niche produce explicit conflicts while
+    # additions of different niches (different filenames) auto-merge cleanly.
+    if not _has_commits(registry_git):
+        (registry_co / ".gitattributes").write_text("*.json merge=binary\n")
+        gitCmd(git_prefix + ["add", ".gitattributes"])
+
+    (registry_co / f"{niche_name}.json").write_text(json.dumps(record, indent=2))
+    gitCmd(git_prefix + ["add", f"{niche_name}.json"])
     gitCmd(git_prefix + ["commit", "-m", f"add niche {niche_name}"])
 
     return niche_id
@@ -267,8 +292,8 @@ def list_niches(vault_root, participant_hex, team_name):
     _ensure_registry(vault_root, participant_hex, team_name)
     registry_co = _registry_checkout_dir(vault_root, participant_hex, team_name)
     niches = []
-    for f in sorted(registry_co.glob("*.yaml")):
-        data = yaml.safe_load(f.read_text())
+    for f in sorted(registry_co.glob("*.json")):
+        data = json.loads(f.read_text())
         if data:
             niches.append(data)
     return niches
