@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block content %}
+
+{% if workspace is none %}
+  {% include "fragments/workspace_picker.html" %}
+{% else %}
+  <div class="card">
+    <h2>Workspace</h2>
+    <div class="muted">{{ workspace.workspace_dir }}</div>
+  </div>
+
+  {% include "fragments/minio_card.html" %}
+
+  {% include "fragments/participants_section.html" %}
+{% endif %}
+
+{% endblock %}

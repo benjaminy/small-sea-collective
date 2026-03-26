@@ -17,6 +17,7 @@ async def lifespan(app: FastAPI):
     if not hasattr(app.state, "backend"):
         settings = Settings()
         app.state.backend = SmallSeaBackend(root_dir=settings.get_root_dir())
+        app.state.auto_approve_sessions = settings.auto_approve_sessions
     app.state.logger = app.state.backend.logger
     logger = app.state.backend.logger
 
@@ -74,6 +75,9 @@ async def request_session(req: SessionRequestReq):
     pending_id_hex, pin = small_sea.request_session(
         req.participant, req.app, req.team, req.client
     )
+    if getattr(app.state, "auto_approve_sessions", False):
+        token = small_sea.confirm_session(pending_id_hex, pin)
+        return {"token": token.hex()}
     result = {"pending_id": pending_id_hex}
     if req.client == "Smoke Tests":
         result["pin"] = pin

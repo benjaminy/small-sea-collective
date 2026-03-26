@@ -1,0 +1,54 @@
+<div id="minio-card" class="card">
+  <h2>MinIO (shared object storage)</h2>
+
+  {% if not minio_ok %}
+  <p class="error-msg">⚠ <strong>minio</strong> not found in PATH.</p>
+  {% else %}
+
+  <table style="width:auto; margin-bottom:0.75rem;">
+    <tr>
+      <th>API port</th>
+      <td>{{ workspace.minio.api_port }}</td>
+    </tr>
+    <tr>
+      <th>Console port</th>
+      <td>{{ workspace.minio.console_port }}
+        {% if minio_status == "running" %}
+          <a href="http://localhost:{{ workspace.minio.console_port }}" target="_blank"
+             class="btn btn-secondary" style="margin-left:0.5rem; font-size:0.75rem;">
+            Open console ↗
+          </a>
+        {% endif %}
+      </td>
+    </tr>
+    <tr>
+      <th>Root user</th>
+      <td>{{ workspace.minio.root_user }}</td>
+    </tr>
+    <tr>
+      <th>Root password</th>
+      <td class="mono">{{ workspace.minio.root_password }}</td>
+    </tr>
+  </table>
+
+  <div class="row">
+    <span class="badge {{ 'badge-running' if minio_status == 'running' else 'badge-stopped' }}">
+      {{ minio_status }}
+    </span>
+    {% if minio_status == "running" %}
+    <form hx-post="/minio/stop" hx-target="#minio-card" hx-swap="outerHTML">
+      <button class="btn btn-danger">Stop MinIO</button>
+    </form>
+    {% else %}
+    <form hx-post="/minio/start" hx-target="#minio-card" hx-swap="outerHTML">
+      <button class="btn btn-primary">Start MinIO</button>
+    </form>
+    {% endif %}
+  </div>
+
+  {% if error %}
+  <p class="error-msg">{{ error }}</p>
+  {% endif %}
+
+  {% endif %}
+</div>

@@ -57,6 +57,25 @@ class SmallSeaClient:
         )
         return result["pending_id"]
 
+    def open_session(
+        self, participant: str, app: str, team: str, client_name: str
+    ) -> "SmallSeaSession":
+        """Open a session when the Hub is running in auto-approve mode.
+
+        The Hub must have SMALL_SEA_AUTO_APPROVE_SESSIONS=1 set. The PIN step
+        is skipped entirely and a session token is returned immediately.
+        Raises SmallSeaError if the Hub is not in auto-approve mode.
+        """
+        result = self._post(
+            "/sessions/request",
+            {"participant": participant, "app": app, "team": team, "client": client_name},
+        )
+        if "token" not in result:
+            raise SmallSeaError(
+                "Hub is not in auto-approve mode; use request_session/confirm_session"
+            )
+        return SmallSeaSession(self, result["token"])
+
     def confirm_session(self, pending_id: str, pin: str) -> "SmallSeaSession":
         """Complete the session flow with the PIN from the Hub notification.
 

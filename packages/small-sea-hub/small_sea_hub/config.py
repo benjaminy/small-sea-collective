@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     app_name: str = "SmallSeaCollectiveCore"
     app_author: str = "Benjamin Ylvisaker"
     debug: bool = False
+    auto_approve_sessions: bool = False
 
     def get_root_dir(self) -> str:
         if self.root_dir:

@@ -1,0 +1,38 @@
+<div id="participants-section" class="card">
+  <h2>Participants</h2>
+
+  {% if participants %}
+  <table style="margin-bottom:1rem;">
+    <thead>
+      <tr>
+        <th>Nickname</th>
+        <th>Hub port</th>
+        <th>Manager port</th>
+        <th>Hub</th>
+        <th>Manager</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for entry in participants %}
+        {% set p = entry.config %}
+        {% set hub_status = entry.hub_status %}
+        {% set manager_status = entry.manager_status %}
+        {% set error = none %}
+        {% include "fragments/participant_row.html" %}
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" style="margin-bottom:1rem;">No participants yet.</p>
+  {% endif %}
+
+  <form hx-post="/participants"
+        hx-target="#participants-section"
+        hx-swap="outerHTML">
+    <h3>Add participant</h3>
+    <div class="row">
+      <input type="text" name="nickname" placeholder="Alice" style="width:14rem">
+      <button type="submit" class="btn btn-primary">Add</button>
+    </div>
+  </form>
+</div>

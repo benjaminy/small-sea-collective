@@ -11,6 +11,7 @@ members = [
     "small-sea-client",
     "small-sea-hub",
     "small-sea-manager",
+    "small-sea-sandbox",
 ]
 
 [manifest.dependency-groups]
@@ -1076,6 +1077,29 @@ requires-dist = [
     { name = "plyer", specifier = ">=2.1.0" },
     { name = "small-sea-client", editable = "packages/small-sea-client" },
     { name = "sqlalchemy", specifier = ">=2.0.44" },
+]
+
+[[package]]
+name = "small-sea-sandbox"
+version = "0.1.0"
+source = { editable = "devtools/sandbox" }
+dependencies = [
+    { name = "click" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "jinja2" },
+    { name = "small-sea-manager" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.0" },
+    { name = "fastapi", specifier = ">=0.115" },
+    { name = "httpx", specifier = ">=0.27" },
+    { name = "jinja2", specifier = ">=3.1" },
+    { name = "small-sea-manager", editable = "packages/small-sea-manager" },
+    { name = "uvicorn", specifier = ">=0.32" },
 ]
 
 [[package]]

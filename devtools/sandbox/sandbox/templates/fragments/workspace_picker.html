@@ -1,0 +1,28 @@
+<div class="card">
+  <h2>Open Workspace</h2>
+  <p class="muted" style="margin-bottom:1rem;">
+    A workspace is a directory that holds all participant data for one sandbox session.
+  </p>
+
+  <form method="post" action="/workspace">
+    <label for="workspace_path">Workspace directory</label>
+    <div class="row">
+      <input type="text" id="workspace_path" name="workspace_path"
+             placeholder="/path/to/my-sandbox" style="flex:1">
+      <button type="submit" class="btn btn-primary">Open</button>
+    </div>
+  </form>
+
+  <div style="margin-top:1rem; display:flex; align-items:center; gap:0.75rem;">
+    <span class="muted">— or —</span>
+    <form method="post" action="/workspace/temp">
+      <button type="submit" class="btn btn-secondary">Create temp workspace</button>
+    </form>
+  </div>
+
+  {% if not minio_ok %}
+  <p class="error-msg" style="margin-top:1rem;">
+    ⚠ <strong>minio</strong> not found in PATH. Install it before starting MinIO.
+  </p>
+  {% endif %}
+</div>

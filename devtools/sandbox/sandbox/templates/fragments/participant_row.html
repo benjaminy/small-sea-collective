@@ -1,0 +1,54 @@
+<tr id="participant-{{ p.hex }}">
+  <td><strong>{{ p.nickname }}</strong>
+    <div class="muted" style="font-size:0.75rem;">{{ p.hex[:12] }}…</div>
+    {% if error %}
+    <div class="error-msg">{{ error }}</div>
+    {% endif %}
+  </td>
+  <td>{{ p.hub_port }}</td>
+  <td>{{ p.manager_port }}</td>
+
+  <td>
+    <div class="row">
+      <span class="badge {{ 'badge-running' if hub_status == 'running' else 'badge-stopped' }}">
+        {{ hub_status }}
+      </span>
+      {% if hub_status == "running" %}
+      <form hx-post="/participants/{{ p.hex }}/hub/stop"
+            hx-target="#participant-{{ p.hex }}"
+            hx-swap="outerHTML">
+        <button class="btn btn-danger btn-sm">Stop</button>
+      </form>
+      {% else %}
+      <form hx-post="/participants/{{ p.hex }}/hub/start"
+            hx-target="#participant-{{ p.hex }}"
+            hx-swap="outerHTML">
+        <button class="btn btn-secondary btn-sm">Start</button>
+      </form>
+      {% endif %}
+    </div>
+  </td>
+
+  <td>
+    <div class="row">
+      <span class="badge {{ 'badge-running' if manager_status == 'running' else 'badge-stopped' }}">
+        {{ manager_status }}
+      </span>
+      {% if manager_status == "running" %}
+      <a href="http://localhost:{{ p.manager_port }}" target="_blank"
+         class="btn btn-secondary btn-sm">Open ↗</a>
+      <form hx-post="/participants/{{ p.hex }}/manager/stop"
+            hx-target="#participant-{{ p.hex }}"
+            hx-swap="outerHTML">
+        <button class="btn btn-danger btn-sm">Stop</button>
+      </form>
+      {% else %}
+      <form hx-post="/participants/{{ p.hex }}/manager/start"
+            hx-target="#participant-{{ p.hex }}"
+            hx-swap="outerHTML">
+        <button class="btn btn-secondary btn-sm">Start</button>
+      </form>
+      {% endif %}
+    </div>
+  </td>
+</tr>
