@@ -1,0 +1,72 @@
+<div id="invitations-{{ team_name }}">
+  {% if error %}
+  <p class="notice notice-err">{{ error }}</p>
+  {% endif %}
+
+  {% if invitations %}
+  <table style="margin-bottom:0.75rem">
+    <thead>
+      <tr>
+        <th>For</th>
+        <th>Role</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for inv in invitations %}
+      <tr>
+        <td>{{ inv.invitee_label or "(unlabelled)" }}</td>
+        <td>{{ inv.role }}</td>
+        <td>
+          {% if inv.status == "pending" %}
+            <span class="badge badge-amber">pending</span>
+          {% elif inv.status == "accepted" %}
+            <span class="badge badge-green">accepted</span>
+          {% else %}
+            <span class="badge badge-grey">{{ inv.status }}</span>
+          {% endif %}
+        </td>
+        <td style="font-size:0.83rem; color:#78716c">{{ inv.created_at[:10] if inv.created_at else "—" }}</td>
+        <td style="text-align:right">
+          {% if inv.status == "pending" %}
+          <form hx-post="/teams/{{ team_name }}/invitations/{{ inv.id }}/revoke"
+                hx-target="#invitations-{{ team_name }}"
+                hx-swap="outerHTML"
+                style="display:inline">
+            <button class="btn btn-danger" type="submit">Revoke</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:#78716c; font-size:0.88rem; margin-bottom:0.75rem">No invitations.</p>
+  {% endif %}
+
+  <div style="border-top:1px solid #f5f5f4; padding-top:0.6rem">
+    <h4 style="font-size:0.78rem; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:#a8a29e; margin-bottom:0.5rem">
+      Step 1 of invitation — Create token
+    </h4>
+    <p class="notice notice-info" style="margin-bottom:0.5rem; font-size:0.83rem">
+      Requires cloud storage to be configured. Acceptance (step 2) must be done via CLI.
+    </p>
+    <form class="inline-form"
+          hx-post="/teams/{{ team_name }}/invitations"
+          hx-target="#invitation-token-area"
+          hx-swap="innerHTML">
+      <input type="text" name="invitee_label" placeholder="Label (who is this for?)">
+      <select name="role">
+        <option value="admin">admin</option>
+        <option value="contributor">contributor</option>
+        <option value="observer">observer</option>
+      </select>
+      <button class="btn btn-secondary" type="submit">Create invitation</button>
+    </form>
+  </div>
+
+  <div id="invitation-token-area" style="margin-top:0.5rem"></div>
+</div>

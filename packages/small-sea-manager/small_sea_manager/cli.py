@@ -1,41 +1,103 @@
-# Top Matter
+"""Click CLI for the Small Sea Manager."""
+
+import pathlib
+import sys
+import tomllib
 
 import click
+
 from small_sea_manager.manager import TeamManager
+
+_CONFIG_PATH = pathlib.Path.home() / ".config" / "small-sea" / "manager.toml"
+
+
+def _load_config() -> dict:
+    if _CONFIG_PATH.exists():
+        with open(_CONFIG_PATH, "rb") as f:
+            return tomllib.load(f)
+    return {}
 
 
 @click.group()
 @click.option(
-    "--hub-port", type=int, default=11437, help="Port for the local Small Sea Hub"
+    "--hub-port", type=int, default=None,
+    help="Port for the local Small Sea Hub (default: 11437)",
 )
 @click.option(
-    "--root-dir",
-    envvar="SMALL_SEA_ROOT",
-    required=True,
-    help="Participant root directory (or set SMALL_SEA_ROOT)",
+    "--root-dir", default=None,
+    help=f"Participant root directory (or set in {_CONFIG_PATH})",
 )
 @click.option(
-    "--participant-hex",
-    envvar="SMALL_SEA_PARTICIPANT",
-    required=True,
-    help="Participant hex ID (or set SMALL_SEA_PARTICIPANT)",
+    "--participant-hex", default=None,
+    help=f"Participant hex ID (or set in {_CONFIG_PATH})",
 )
 @click.pass_context
 def cli(ctx, hub_port, root_dir, participant_hex):
-    """Small Sea Manager CLI"""
+    """Small Sea Manager"""
+    cfg = _load_config()
     ctx.ensure_object(dict)
-    ctx.obj["hub_port"] = hub_port
-    ctx.obj["root_dir"] = root_dir
-    ctx.obj["participant_hex"] = participant_hex
+    ctx.obj["root_dir"] = root_dir or cfg.get("root_dir")
+    ctx.obj["participant_hex"] = participant_hex or cfg.get("participant_hex")
+    ctx.obj["hub_port"] = hub_port or cfg.get("hub_port", 11437)
 
 
-def _make_manager(ctx):
-    return TeamManager(
-        root_dir=ctx.obj["root_dir"],
-        participant_hex=ctx.obj["participant_hex"],
-        hub_port=ctx.obj["hub_port"],
-    )
+def _make_manager(ctx) -> TeamManager:
+    root_dir = ctx.obj["root_dir"]
+    participant_hex = ctx.obj["participant_hex"]
+    if not root_dir or not participant_hex:
+        click.echo(
+            f"Error: --root-dir and --participant-hex are required "
+            f"(or set them in {_CONFIG_PATH}).",
+            err=True,
+        )
+        sys.exit(1)
+    return TeamManager(root_dir, participant_hex, ctx.obj["hub_port"])
 
+
+# ---------------------------------------------------------------------------
+# serve
+# ---------------------------------------------------------------------------
+
+@cli.command("serve")
+@click.option("--host", default="127.0.0.1", show_default=True)
+@click.option("--port", default=8001, show_default=True)
+@click.option("--open/--no-open", "open_browser", default=True,
+              help="Open browser on start")
+@click.pass_context
+def serve_cmd(ctx, host, port, open_browser):
+    """Start the Manager web UI."""
+    import threading
+    import webbrowser
+
+    import uvicorn
+
+    from small_sea_manager.web import create_app
+
+    root_dir = ctx.obj["root_dir"]
+    participant_hex = ctx.obj["participant_hex"]
+    hub_port = ctx.obj["hub_port"]
+
+    if not root_dir or not participant_hex:
+        click.echo(
+            f"Error: --root-dir and --participant-hex are required "
+            f"(or set them in {_CONFIG_PATH}).",
+            err=True,
+        )
+        sys.exit(1)
+
+    app = create_app(root_dir, participant_hex, hub_port)
+    url = f"http://{host}:{port}"
+
+    if open_browser:
+        threading.Timer(0.5, lambda: webbrowser.open(url)).start()
+
+    click.echo(f"Manager UI → {url}")
+    uvicorn.run(app, host=host, port=port)
+
+
+# ---------------------------------------------------------------------------
+# team operations
+# ---------------------------------------------------------------------------
 
 @cli.command("create")
 @click.argument("team_name")
@@ -71,7 +133,9 @@ def list_members(ctx, team_name):
         click.echo(f"No members in '{team_name}'.")
         return
     for member in members:
-        click.echo(f"  {member['id']}")
+        roles = member.get("station_roles", [])
+        role_str = roles[0]["role"] if roles else "no role"
+        click.echo(f"  {member['id'][:12]}…  {role_str}")
 
 
 @cli.command("invite")
@@ -95,37 +159,35 @@ def invite(ctx, team_name, label, role):
 @click.argument("team_name")
 @click.pass_context
 def list_invitations(ctx, team_name):
-    """List pending invitations for a team."""
+    """List invitations for a team."""
     manager = _make_manager(ctx)
     invitations = manager.list_invitations(team_name)
     if not invitations:
-        click.echo(f"No pending invitations for '{team_name}'.")
+        click.echo(f"No invitations for '{team_name}'.")
         return
     for inv in invitations:
-        label = inv.get("invitee_label") or inv.get("id", "?")
-        click.echo(f"  {inv['id']}  {label}  ({inv.get('role', '?')})")
+        label = inv.get("invitee_label") or "(unlabelled)"
+        click.echo(f"  {inv['id'][:12]}…  {inv['status']}  {label}  ({inv.get('role', '?')})")
 
 
 @cli.command("accept")
 @click.argument("token_b64")
 @click.pass_context
 def accept_invitation(ctx, token_b64):
-    """Accept an invitation token (Bob side). Prints the acceptance token to stdout.
+    """Accept an invitation token (invitee side). Prints the acceptance token to stdout."""
+    import base64
+    import json
 
-    The inviter's bucket is read anonymously (publicly readable).
-    The acceptor's bucket is written via the Hub session.
-    """
-    import base64, json
     from cod_sync.testing import PublicS3Remote, S3Remote
 
     manager = _make_manager(ctx)
     token = json.loads(base64.b64decode(token_b64).decode())
     ic = token["inviter_cloud"]
     inviter_remote = PublicS3Remote(ic["url"], token["inviter_bucket"])
-    # Acceptor writes to the same bucket name (shared station ID) on their own cloud.
-    # TODO: use SmallSeaRemote via Hub session once TeamManager.connect() is wired (0015).
     cloud = manager._cloud()
-    acceptor_remote = S3Remote(cloud["url"], token["inviter_bucket"], cloud["access_key"], cloud["secret_key"])
+    acceptor_remote = S3Remote(
+        cloud["url"], token["inviter_bucket"], cloud["access_key"], cloud["secret_key"]
+    )
     acceptance = manager.accept_invitation(token_b64, inviter_remote, acceptor_remote)
     click.echo(acceptance)
 
@@ -135,7 +197,7 @@ def accept_invitation(ctx, token_b64):
 @click.argument("acceptance_b64")
 @click.pass_context
 def complete_acceptance(ctx, team_name, acceptance_b64):
-    """Complete an acceptance (Alice side), given the acceptance token from the invitee."""
+    """Complete an acceptance (inviter side), given the acceptance token from the invitee."""
     manager = _make_manager(ctx)
     manager.complete_invitation_acceptance(team_name, acceptance_b64)
     click.echo(f"Acceptance complete for team '{team_name}'")

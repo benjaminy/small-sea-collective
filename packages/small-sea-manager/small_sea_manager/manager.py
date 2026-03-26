@@ -19,6 +19,10 @@ class TeamManager:
         self.client = SmallSeaClient(port=hub_port)
         self.session = None
 
+    def get_nickname(self):
+        """Return the participant's first nickname, or a short hex fallback."""
+        return provisioning.get_nickname(self.root_dir, self.participant_hex)
+
     def _cloud(self):
         """Return the participant's primary cloud storage config dict."""
         return provisioning.get_cloud_storage(self.root_dir, self.participant_hex)

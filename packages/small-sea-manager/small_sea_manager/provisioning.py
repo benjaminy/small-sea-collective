@@ -872,6 +872,19 @@ def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
     CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", "Revoked invitation"])
 
 
+def get_nickname(root_dir, participant_hex):
+    """Return the participant's first nickname, or empty string if none."""
+    root_dir = pathlib.Path(root_dir)
+    nts_db_path = (
+        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{nts_db_path}")
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT name FROM nickname LIMIT 1")).fetchone()
+    engine.dispose()
+    return row[0] if row else ""
+
+
 def list_teams(root_dir, participant_hex):
     """List teams from NoteToSelf DB. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
