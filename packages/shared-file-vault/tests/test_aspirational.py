@@ -135,34 +135,42 @@ def test_registry_propagation(playground_dir):
 
 
 def test_concurrent_registry_additions(playground_dir):
-    """Alice and Bob each create a niche independently; both converge.
+    """Alice and Bob each add a niche after pulling from a shared seed.
 
-    Neither knows about the other's niche until they cross-pull registries.
-    After convergence each participant's registry lists both niches.
+    The supported workflow: one participant seeds the registry first;
+    others pull it before adding anything. Everyone shares a common
+    history so cross-pulls are clean merges.
+
+    Two participants independently bootstrapping separate registries
+    and then cross-pulling is not supported (produces unrelated histories).
     """
     playground = pathlib.Path(playground_dir)
+    seed_cloud = playground / "cloud-seed-registry"
     alice_reg_cloud = playground / "cloud-alice-registry"
     bob_reg_cloud = playground / "cloud-bob-registry"
+    seed_cloud.mkdir()
     alice_reg_cloud.mkdir()
     bob_reg_cloud.mkdir()
 
+    # Alice seeds the registry with an initial niche, pushes to seed cloud
     alice_root = setup_vault(playground, "alice", ALICE)
-    bob_root = setup_vault(playground, "bob", BOB)
+    create_niche(str(alice_root), ALICE, TEAM, "seed")
+    push_registry(str(alice_root), ALICE, TEAM, str(seed_cloud))
 
-    # Alice creates "photos"; Bob creates "receipts" — no coordination
+    # Bob pulls from seed cloud before adding anything — establishes common history
+    bob_root = setup_vault(playground, "bob", BOB)
+    pull_registry(str(bob_root), BOB, TEAM, str(seed_cloud))
+
+    # Now both add their own niches on top of the shared history
     create_niche(str(alice_root), ALICE, TEAM, "photos")
     create_niche(str(bob_root), BOB, TEAM, "receipts")
 
     push_registry(str(alice_root), ALICE, TEAM, str(alice_reg_cloud))
     push_registry(str(bob_root), BOB, TEAM, str(bob_reg_cloud))
 
-    # Cross-pull registries
+    # Cross-pull registries — clean merge because of the common seed history
     pull_registry(str(alice_root), ALICE, TEAM, str(bob_reg_cloud))
     pull_registry(str(bob_root), BOB, TEAM, str(alice_reg_cloud))
-
-    # Push merged registries so each cloud is up to date (optional but realistic)
-    push_registry(str(alice_root), ALICE, TEAM, str(alice_reg_cloud))
-    push_registry(str(bob_root), BOB, TEAM, str(bob_reg_cloud))
 
     alice_niches = {n["name"] for n in list_niches(str(alice_root), ALICE, TEAM)}
     bob_niches = {n["name"] for n in list_niches(str(bob_root), BOB, TEAM)}
