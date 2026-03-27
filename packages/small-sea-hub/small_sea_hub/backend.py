@@ -10,6 +10,8 @@ from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
 
+import yaml
+
 import plyer
 from sqlalchemy import (Column, DateTime, Integer, LargeBinary, String,
                         create_engine, text)
@@ -577,6 +579,82 @@ class SmallSeaBackend:
 
     def download_from_peer(self, session_hex, member_id_hex, path):
         """Download a file from a peer's public cloud bucket via the Hub proxy."""
+        return self._download_peer_file(session_hex, member_id_hex, path)
+
+    def upload_to_cloud(self, session_hex, path, data, expected_etag=None):
+        ss_session = self._lookup_session(session_hex)
+        adapter = self._make_storage_adapter(ss_session)
+        if expected_etag is not None:
+            return adapter.upload_if_match(path, data, expected_etag)
+        return adapter.upload_overwrite(path, data)
+
+    def download_from_cloud(self, session_hex, path):
+        ss_session = self._lookup_session(session_hex)
+        adapter = self._make_storage_adapter(ss_session)
+        return adapter.download(path)
+
+    # ---- Signal file ----
+
+    _SIGNAL_PATH = "signals.yaml"
+    _SIGNAL_MAX_RETRIES = 5
+
+    def _bump_signal(self, session_hex):
+        """Atomically increment the station counter in this session's signals.yaml.
+
+        Uses a CAS retry loop. On network failure after all retries, logs a
+        warning and returns — teammates will catch up on the next push.
+        Over-counting (from concurrent device pushes) is acceptable.
+        """
+        ss_session = self._lookup_session(session_hex)
+        station_id_hex = ss_session.station_id.hex()
+        adapter = self._make_storage_adapter(ss_session)
+
+        for attempt in range(self._SIGNAL_MAX_RETRIES):
+            ok, data, etag = adapter.download(self._SIGNAL_PATH)
+            if ok:
+                signals = yaml.safe_load(data.decode("utf-8")) or {}
+                if not isinstance(signals, dict):
+                    signals = {}
+            else:
+                signals = {}
+                etag = None
+
+            signals.setdefault("version", 1)
+            signals[station_id_hex] = signals.get(station_id_hex, 0) + 1
+
+            payload = yaml.dump(signals, default_flow_style=False).encode("utf-8")
+            if etag is not None:
+                upload_ok, _, msg = adapter.upload_if_match(self._SIGNAL_PATH, payload, etag)
+            else:
+                upload_ok, _, msg = adapter.upload_overwrite(self._SIGNAL_PATH, payload)
+
+            if upload_ok:
+                return
+            # CAS conflict — re-read and retry
+
+        self.logger.warning(
+            f"_bump_signal: gave up after {self._SIGNAL_MAX_RETRIES} retries "
+            f"(session {session_hex[:8]})"
+        )
+
+    def get_peer_signal(self, session_hex, member_id_hex):
+        """Return (signals_dict, etag) from a peer's public signals.yaml.
+
+        Uses the same anonymous S3 read path as download_from_peer.
+        Returns (None, None) if the file does not exist yet.
+        """
+        ok, data, etag = self._download_peer_file(
+            session_hex, member_id_hex, self._SIGNAL_PATH
+        )
+        if not ok:
+            return None, None
+        signals = yaml.safe_load(data.decode("utf-8")) or {}
+        if not isinstance(signals, dict):
+            signals = {}
+        return signals, etag
+
+    def _download_peer_file(self, session_hex, member_id_hex, path):
+        """Core of download_from_peer, factored out for reuse."""
         import boto3
         from botocore import UNSIGNED
         from botocore.config import Config as BotoConfig
@@ -620,18 +698,6 @@ class SmallSeaBackend:
         except ClientError as e:
             code = e.response["Error"]["Code"]
             return False, None, f"Peer download failed: {code}"
-
-    def upload_to_cloud(self, session_hex, path, data, expected_etag=None):
-        ss_session = self._lookup_session(session_hex)
-        adapter = self._make_storage_adapter(ss_session)
-        if expected_etag is not None:
-            return adapter.upload_if_match(path, data, expected_etag)
-        return adapter.upload_overwrite(path, data)
-
-    def download_from_cloud(self, session_hex, path):
-        ss_session = self._lookup_session(session_hex)
-        adapter = self._make_storage_adapter(ss_session)
-        return adapter.download(path)
 
     # ---- Notifications ----
 

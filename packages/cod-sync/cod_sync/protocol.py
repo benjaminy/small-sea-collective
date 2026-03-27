@@ -586,13 +586,15 @@ class SmallSeaRemote(CodSyncRemote):
             self._post = lambda path, **kw: requests.post(f"{base_url}{path}", **kw)
             self._get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
 
-    def _upload(self, cloud_path, data_bytes, expected_etag=None):
+    def _upload(self, cloud_path, data_bytes, expected_etag=None, notify=False):
         payload = {
             "path": cloud_path,
             "data": base64.b64encode(data_bytes).decode(),
         }
         if expected_etag is not None:
             payload["expected_etag"] = expected_etag
+        if notify:
+            payload["notify"] = True
         resp = self._post("/cloud_file", json=payload, headers=self._auth)
         if resp.status_code == 409:
             raise CasConflictError(f"CAS conflict uploading {cloud_path}")
@@ -626,9 +628,10 @@ class SmallSeaRemote(CodSyncRemote):
         # 2. Serialize link YAML
         link_yaml = yaml.dump(blob, default_flow_style=False).encode("utf-8")
 
-        # 3. Upload latest-link.yaml (with CAS) and L-{link_uid}.yaml
-        self._upload("latest-link.yaml", link_yaml, expected_etag=expected_etag)
+        # 3. Upload L-{link_uid}.yaml, then latest-link.yaml with notify=True
+        #    notify signals the Hub to bump signals.yaml after this write.
         self._upload(f"L-{link_uid}.yaml", link_yaml)
+        self._upload("latest-link.yaml", link_yaml, expected_etag=expected_etag, notify=True)
 
     def get_link(self, uid):
         if uid == "latest-link":

@@ -1,5 +1,6 @@
 #
 
+import asyncio
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -11,6 +12,45 @@ from fastapi.responses import JSONResponse
 from small_sea_hub.backend import SmallSeaBackend, SmallSeaNotFoundExn
 from small_sea_hub.config import Settings
 
+PEER_WATCHER_INTERVAL = 60  # seconds between poll rounds
+
+
+async def _peer_watcher_loop(app: FastAPI):
+    """Background task: poll registered peers' signal files for changes.
+
+    Peers are registered in app.state.watched_peers by _register_session_peers()
+    when a session is opened. Each entry tracks the last-seen etag and signal
+    counts so only genuinely new data triggers a notification.
+    """
+    logger = app.state.logger
+    while True:
+        await asyncio.sleep(PEER_WATCHER_INTERVAL)
+        peers = getattr(app.state, "watched_peers", {})
+        for key, state in list(peers.items()):
+            session_hex, member_id_hex = key
+            try:
+                signals, etag = app.state.backend.get_peer_signal(
+                    session_hex, member_id_hex
+                )
+                if signals is None:
+                    continue
+                if etag == state.get("etag"):
+                    continue  # unchanged
+                prev = state.get("signals", {})
+                for station_id, count in signals.items():
+                    if station_id == "version":
+                        continue
+                    if count > prev.get(station_id, 0):
+                        logger.info(
+                            f"Peer {member_id_hex[:8]} has new data on station "
+                            f"{station_id[:8]} (count {count})"
+                        )
+                        # TODO: fire ntfy / mailbox notification here (issue 0023 follow-on)
+                state["etag"] = etag
+                state["signals"] = {k: v for k, v in signals.items() if k != "version"}
+            except Exception as exc:
+                logger.warning(f"Peer watcher error for {member_id_hex[:8]}: {exc}")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -18,20 +58,17 @@ async def lifespan(app: FastAPI):
         settings = Settings()
         app.state.backend = SmallSeaBackend(root_dir=settings.get_root_dir())
         app.state.auto_approve_sessions = settings.auto_approve_sessions
+    if not hasattr(app.state, "watched_peers"):
+        app.state.watched_peers = {}
     app.state.logger = app.state.backend.logger
     logger = app.state.backend.logger
+    logger.info("Starting up...")
 
-    if True:
-        logger.info("Starting up...")
-    else:
-        logger.debug("This is a debug message (only in file).")
-        logger.info("This is an info message (console + file).")
-        logger.warning("This is a warning message.")
-        logger.error("This is an error message.")
-        logger.critical("This is a critical message.")
+    watcher_task = asyncio.create_task(_peer_watcher_loop(app))
 
     yield
 
+    watcher_task.cancel()
     print("Shutting down...")
 
 
@@ -69,6 +106,28 @@ class SessionRequestReq(pydantic.BaseModel):
     client: str
 
 
+def _register_session_peers(session_hex: str):
+    """Add the session's team peers to the watcher after a session is confirmed."""
+    try:
+        ss_session = app.state.backend._lookup_session(session_hex)
+        if ss_session.team_name == "NoteToSelf":
+            return  # NoteToSelf has no peers
+        import sqlite3 as _sqlite3
+        team_db = str(
+            ss_session.participant_path / ss_session.team_name / "Sync" / "core.db"
+        )
+        conn = _sqlite3.connect(team_db)
+        try:
+            rows = conn.execute("SELECT member_id FROM peer").fetchall()
+        finally:
+            conn.close()
+        for (member_id_bytes,) in rows:
+            key = (session_hex, member_id_bytes.hex())
+            app.state.watched_peers.setdefault(key, {"etag": None, "signals": {}})
+    except Exception as exc:
+        app.state.logger.warning(f"_register_session_peers failed: {exc}")
+
+
 @app.post("/sessions/request")
 async def request_session(req: SessionRequestReq):
     small_sea = app.state.backend
@@ -77,7 +136,9 @@ async def request_session(req: SessionRequestReq):
     )
     if getattr(app.state, "auto_approve_sessions", False):
         token = small_sea.confirm_session(pending_id_hex, pin)
-        return {"token": token.hex()}
+        token_hex = token.hex()
+        _register_session_peers(token_hex)
+        return {"token": token_hex}
     result = {"pending_id": pending_id_hex}
     if req.client == "Smoke Tests":
         result["pin"] = pin
@@ -93,7 +154,9 @@ class SessionConfirmReq(pydantic.BaseModel):
 async def confirm_session(req: SessionConfirmReq):
     small_sea = app.state.backend
     token = small_sea.confirm_session(req.pending_id, req.pin)
-    return token.hex()
+    token_hex = token.hex()
+    _register_session_peers(token_hex)
+    return token_hex
 
 
 # ---- Cloud storage ----
@@ -103,6 +166,7 @@ class CloudUploadReq(pydantic.BaseModel):
     path: str
     data: str  # base64-encoded
     expected_etag: Optional[str] = None
+    notify: bool = False  # bump signals.yaml and notify teammates after upload
 
 
 @app.post("/cloud_file")
@@ -122,6 +186,11 @@ async def upload_to_cloud(
                 status_code=409, detail="CAS conflict: file was modified concurrently"
             )
         raise HTTPException(status_code=500, detail=msg)
+    if req.notify:
+        try:
+            small_sea._bump_signal(session_hex)
+        except Exception as exc:
+            app.state.logger.warning(f"_bump_signal failed: {exc}")
     return {"ok": True, "etag": etag, "message": msg}
 
 
@@ -155,6 +224,24 @@ async def download_peer_cloud_file(
     if not ok:
         raise HTTPException(status_code=404, detail=etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
+
+
+@app.get("/peer_signal")
+async def get_peer_signal(
+    member_id: str,
+    session_hex: str = Depends(_require_session),
+    if_none_match: Optional[str] = Header(default=None),
+):
+    small_sea = app.state.backend
+    signals, etag = small_sea.get_peer_signal(session_hex, member_id)
+    if signals is None:
+        raise HTTPException(status_code=404, detail="No signal file found for peer")
+    if if_none_match and etag == if_none_match:
+        from fastapi.responses import Response
+        return Response(status_code=304)
+    return {"version": signals.get("version", 1), "stations": {
+        k: v for k, v in signals.items() if k != "version"
+    }, "etag": etag}
 
 
 # ---- Notifications ----
