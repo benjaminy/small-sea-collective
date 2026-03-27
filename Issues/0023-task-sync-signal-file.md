@@ -13,10 +13,9 @@ notifications (ntfy or similar) will be the low-latency path when configured,
 but the system needs a reliable fallback that works without any external service.
 
 The chosen approach: each participant maintains a small `signals.yaml` file in
-their own cloud bucket, written only by them. After pushing data to any app
-station, they increment that station's counter in their signal file and upload
-it. Teammates poll this file cheaply — it is tiny and can be checked with a
-HEAD request (etag comparison) before downloading.
+their own cloud bucket, written only by them. The Hub manages this file entirely
+— no app or manager involvement required. Apps trigger the machinery by setting
+a flag on upload; everything else happens inside the Hub.
 
 ## Signal file format
 
@@ -28,10 +27,9 @@ version: 1
 {station_id_hex}: 2
 ```
 
-This is the form to implement now. The file lives at a well-known path in the
-participant's own cloud bucket: `signals.yaml`. It is uploaded via the Hub's
-`POST /cloud_file` endpoint (same as any other cloud file), so existing auth
-and transport apply.
+The file lives at the well-known path `signals.yaml` in the participant's own
+cloud bucket. It is written only by the participant's own Hub; teammates read
+it anonymously (bucket is public-read after `ensure_bucket_public`).
 
 ## Future: matrix / gossip form
 
@@ -57,51 +55,77 @@ change. Implement v1 now; v2 is deferred.
 
 ## What to build
 
-### 1. Signal file writer (push side)
+### 1. `notify` flag on `POST /cloud_file`
 
-After `TeamManager.push(repo_dir)` succeeds, atomically increment the signal
-count for the pushed station and re-upload `signals.yaml`.
+Add an optional boolean field `notify` to the `CloudUploadReq` model (default
+`false`). When `true` and the upload succeeds, the Hub bumps `signals.yaml` for
+the session's station before returning.
 
-- Read current `signals.yaml` (if absent, start from empty)
-- Increment `{station_id}: N` for the station that was pushed
-- Upload via `POST /cloud_file` with `expected_etag` (CAS) to handle concurrent
-  pushes from multiple devices
-- On CAS conflict: re-read and retry (the count just needs to be strictly
-  greater than before; exact value does not matter)
+```json
+{
+  "path": "latest-link.yaml",
+  "data": "...",
+  "expected_etag": "...",
+  "notify": true
+}
+```
 
-The station ID comes from the Hub session (`ss_session.station_id`). The Hub
-already knows this — it can be returned from `POST /cloud/setup` or a new
-`GET /session/info` endpoint, so the client does not need to read the DB itself.
+The cod-sync layer (`SmallSeaRemote.upload_latest_link`) sets `notify=true`
+when uploading `latest-link.yaml` — it is the only caller that knows an upload
+is semantically significant. Arbitrary file writes (bundle uploads, etc.) do not
+set the flag. This keeps the Hub protocol-agnostic: it does not need to know
+that `latest-link.yaml` is special to cod-sync.
 
-### 2. Signal file reader (poll side)
+### 2. Hub-internal signal bump
 
-A new Hub endpoint (or an extension of `GET /peer_cloud_file`) that returns
-the parsed signal file for a given peer:
+When `notify=true` on a successful upload, the Hub performs an atomic
+increment of `signals.yaml`:
+
+- Download current `signals.yaml` + etag (if absent, start from empty)
+- Increment `{station_id_hex}: N`
+- Re-upload with `expected_etag` (CAS)
+- On 409 conflict: re-read and retry
+
+The count only needs to be strictly greater than before; exact value does not
+matter. A CAS conflict means two devices pushed simultaneously — both retries
+will succeed and the count will be bumped twice. This is fine: it causes an
+extra unnecessary poll by teammates, which is a minor performance issue, not
+a correctness problem. If the signal bump fails entirely after retries (network
+failure), teammates miss this notification but will catch up on the next push.
+
+The station ID is already available from `ss_session.station_id` inside the Hub.
+No client involvement required.
+
+### 3. Hub-internal peer watcher
+
+A background task in the Hub that polls teammates' `signals.yaml` files and
+triggers notifications when a counter increases.
+
+- On session creation, register the session's team peers in the watcher
+- Periodically fetch each peer's `signals.yaml` via anonymous S3 read (same
+  path as `download_from_peer` but for the well-known `signals.yaml` path)
+- Compare against last-seen counts; on any increase, fire a notification
+  (ntfy if configured, else store in an internal mailbox for the app to poll)
+- Track last-seen etag per peer; skip download if etag unchanged (cheap check)
+
+The poll interval is configurable; a sensible default is 60 seconds.
+
+### 4. `GET /peer_signal` endpoint
+
+A convenience endpoint that returns the parsed signal file for a given peer,
+forwarding the S3 etag so clients can do conditional polls:
 
 ```
 GET /peer_signal?member_id={hex}
-→ {"version": 1, "stations": {"{station_id}": N, ...}, "etag": "..."}
+→ {"version": 1, "stations": {"{station_id_hex}": N, ...}, "etag": "..."}
 ```
 
-The etag should be forwarded from S3 so callers can do conditional polls (pass
-`If-None-Match: {etag}` and get a 304 if nothing changed).
+This lets apps (or the Manager) check peer signal state without going through
+the background watcher, useful for on-demand "check now" flows.
 
-### 3. Polling loop skeleton
+### 5. Update issue 0015
 
-A simple polling helper in `small-sea-client` or `small-sea-manager` that:
-
-- Accepts a list of peer member IDs and a callback
-- Polls each peer's signal file on a configurable interval
-- Calls the callback when any station counter increases
-- Tracks last-seen etag per peer to minimize download traffic
-
-This does not need to be production-quality; a simple `threading.Thread` loop
-is fine for now. Apps can subscribe to a peer's changes without knowing about
-`signals.yaml` directly.
-
-### 4. Update issue 0015
-
-Mark item 1 (sync triggers) as addressed once the signal file + polling loop
+Mark item 1 (sync triggers) as addressed once the signal file + peer watcher
 are wired end-to-end. Long-poll and push notification integration remain
 separate work.
 
@@ -114,7 +138,7 @@ separate work.
 
 ## References
 
-- `packages/small-sea-manager/small_sea_manager/manager.py` — `TeamManager.push()`
 - `packages/small-sea-hub/small_sea_hub/server.py` — `POST /cloud_file`, `GET /peer_cloud_file`
-- `packages/small-sea-client/small_sea_client/client.py` — `SmallSeaSession`
+- `packages/small-sea-hub/small_sea_hub/backend.py` — `upload_to_cloud`, `download_from_peer`
+- `packages/cod-sync/cod_sync/protocol.py` — `SmallSeaRemote.upload_latest_link`
 - Issue 0015 — sync orchestration (parent task)
