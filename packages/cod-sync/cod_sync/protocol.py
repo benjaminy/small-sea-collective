@@ -100,10 +100,15 @@ def gitCmd(git_params, raise_on_error=True):
 
 class CodSync:
 
-    def __init__(self, remote_name, bundle_tmp_dir=None):
+    def __init__(self, remote_name, bundle_tmp_dir=None, repo_dir=None):
         self.remote_name = remote_name
         self.url = None
-        self.gitCmd = gitCmd
+        self._repo_dir = str(repo_dir) if repo_dir is not None else None
+        if self._repo_dir is not None:
+            _rd = self._repo_dir
+            self.gitCmd = lambda params, **kw: gitCmd(["-C", _rd] + params, **kw)
+        else:
+            self.gitCmd = gitCmd
         self._bundle_tmp_dir = bundle_tmp_dir
 
     def add_remote(self, url, dotdotdot):
@@ -352,6 +357,7 @@ class CodSync:
         self.remote.download_bundle(bundle_uid, bundle_path)
 
         self.gitCmd(["bundle", "verify", bundle_path])
+        self._ensure_bundle_remote()
         self.gitCmd(["fetch", tmp_remote])
 
         return 0
@@ -362,8 +368,8 @@ class CodSync:
 
         [tmp_remote, _] = self.bundle_tmp()
 
-        self.gitCmd(["merge", f"{tmp_remote}/{branch}"])
-        return 0
+        result = self.gitCmd(["merge", f"{tmp_remote}/{branch}"], raise_on_error=False)
+        return result.returncode
 
     def get_branches(self):
         """git for-each-ref --format=%(refname:short) refs/heads/
@@ -406,9 +412,18 @@ class CodSync:
         )
         return -1
 
+    def _ensure_bundle_remote(self):
+        [bundle_remote, path] = self.bundle_tmp()
+        result = self.gitCmd(["remote", "get-url", bundle_remote], raise_on_error=False)
+        if result.returncode != 0:
+            os.makedirs(path, exist_ok=True)
+            self.gitCmd(["remote", "add", bundle_remote, f"{path}/fetch.bundle"])
+
     def bundle_tmp(self):
         if self._bundle_tmp_dir is not None:
             base = str(self._bundle_tmp_dir)
+        elif self._repo_dir is not None:
+            base = str(pathlib.Path(self._repo_dir) / ".codsync-bundle-tmp")
         else:
             base = f"./.codsync-bundle-tmp"
         return [
@@ -638,6 +653,66 @@ class SmallSeaRemote(CodSyncRemote):
         data, _ = self._download(f"B-{bundle_uid}.bundle")
         if data is None:
             raise RuntimeError(f"Failed to download bundle B-{bundle_uid}.bundle")
+        with open(local_bundle_path, "wb") as f:
+            f.write(data)
+
+
+class PeerSmallSeaRemote(CodSyncRemote):
+    """Read-only remote that fetches a peer's cloud files via the Hub proxy endpoint.
+
+    The Hub authenticates the session, looks up the peer's cloud URL, and proxies
+    the data back — so the client never talks directly to cloud storage.
+    """
+
+    def __init__(self, session_hex, member_id_hex, base_url="http://localhost:11437", client=None):
+        self.session_hex = session_hex
+        self.member_id_hex = member_id_hex
+        self._auth = {"Authorization": f"Bearer {session_hex}"}
+
+        if client is not None:
+            self._get = client.get
+        else:
+            self._get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
+
+    def _download(self, cloud_path):
+        resp = self._get(
+            "/peer_cloud_file",
+            params={"member_id": self.member_id_hex, "path": cloud_path},
+            headers=self._auth,
+        )
+        if resp.status_code != 200:
+            return (None, None)
+        body = resp.json()
+        data = base64.b64decode(body["data"])
+        etag = body.get("etag")
+        return (data, etag)
+
+    def upload_latest_link(self, *args, **kwargs):
+        raise NotImplementedError("PeerSmallSeaRemote is read-only")
+
+    def get_link(self, uid):
+        if uid == "latest-link":
+            cloud_path = "latest-link.yaml"
+        else:
+            cloud_path = f"L-{uid}.yaml"
+
+        data, etag = self._download(cloud_path)
+        if data is None:
+            return None
+
+        link = self.read_link_blob(io.BytesIO(data))
+
+        if uid == "latest-link":
+            return (link, etag)
+        return link
+
+    def get_latest_link(self):
+        return self.get_link("latest-link")
+
+    def download_bundle(self, bundle_uid, local_bundle_path):
+        data, _ = self._download(f"B-{bundle_uid}.bundle")
+        if data is None:
+            raise RuntimeError(f"Failed to download bundle B-{bundle_uid}.bundle from peer")
         with open(local_bundle_path, "wb") as f:
             f.write(data)
 

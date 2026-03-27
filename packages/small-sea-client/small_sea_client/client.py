@@ -39,8 +39,9 @@ class SmallSeaClient:
 
     DEFAULT_PORT = 11437
 
-    def __init__(self, port: int = DEFAULT_PORT):
+    def __init__(self, port: int = DEFAULT_PORT, _http_client=None):
         self._base_url = f"http://127.0.0.1:{port}"
+        self._http_client = _http_client
 
     def request_session(
         self, participant: str, app: str, team: str, client_name: str
@@ -98,7 +99,10 @@ class SmallSeaClient:
         if token is not None:
             headers["Authorization"] = f"Bearer {token}"
         try:
-            resp = httpx.post(f"{self._base_url}{path}", json=json_data, headers=headers)
+            if self._http_client is not None:
+                resp = self._http_client.post(path, json=json_data, headers=headers)
+            else:
+                resp = httpx.post(f"{self._base_url}{path}", json=json_data, headers=headers)
         except httpx.ConnectError:
             raise SmallSeaHubUnavailable()
         _check_response(resp)
@@ -115,7 +119,10 @@ class SmallSeaClient:
         if token is not None:
             headers["Authorization"] = f"Bearer {token}"
         try:
-            resp = httpx.get(f"{self._base_url}{path}", params=params, headers=headers)
+            if self._http_client is not None:
+                resp = self._http_client.get(path, params=params, headers=headers)
+            else:
+                resp = httpx.get(f"{self._base_url}{path}", params=params, headers=headers)
         except httpx.ConnectError:
             raise SmallSeaHubUnavailable()
         _check_response(resp)
@@ -136,6 +143,13 @@ class SmallSeaSession:
         return self._token
 
     # ---- Cloud storage ----
+
+    def ensure_cloud_ready(self) -> None:
+        """Create and publish the cloud bucket for this session (S3 only).
+
+        Must be called before the first push. Safe to call multiple times.
+        """
+        self._client._post("/cloud/setup", {}, token=self._token)
 
     def upload(self, path: str, data: bytes) -> str:
         """Unconditional upload. Creates or overwrites the file. Returns the etag."""

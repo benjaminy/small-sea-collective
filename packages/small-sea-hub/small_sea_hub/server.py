@@ -136,6 +136,27 @@ async def download_from_cloud(path: str, session_hex: str = Depends(_require_ses
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
 
 
+@app.post("/cloud/setup")
+async def cloud_setup(session_hex: str = Depends(_require_session)):
+    app.state.backend.ensure_cloud_ready(session_hex)
+    return {"ok": True}
+
+
+@app.get("/peer_cloud_file")
+async def download_peer_cloud_file(
+    member_id: str,
+    path: str,
+    session_hex: str = Depends(_require_session),
+):
+    import base64
+
+    small_sea = app.state.backend
+    ok, data, etag = small_sea.download_from_peer(session_hex, member_id, path)
+    if not ok:
+        raise HTTPException(status_code=404, detail=etag)
+    return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
+
+
 # ---- Notifications ----
 
 

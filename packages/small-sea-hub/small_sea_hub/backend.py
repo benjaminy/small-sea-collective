@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, declarative_base
 
 Base = declarative_base()
 
+from botocore.exceptions import ClientError
 from small_sea_hub.adapters import (SmallSeaDropboxAdapter,
                                     SmallSeaGDriveAdapter, SmallSeaNtfyAdapter,
                                     SmallSeaS3Adapter, SmallSeaStorageAdapter)
@@ -566,6 +567,59 @@ class SmallSeaBackend:
     def _make_dropbox_adapter(self, ss_session, cloud):
         access_token = self._refresh_token_if_needed(ss_session, cloud)
         return SmallSeaDropboxAdapter(access_token)
+
+    def ensure_cloud_ready(self, session_hex):
+        """Create and publish the session's cloud bucket (S3 only)."""
+        ss_session = self._lookup_session(session_hex)
+        adapter = self._make_storage_adapter(ss_session)
+        if hasattr(adapter, "ensure_bucket_public"):
+            adapter.ensure_bucket_public()
+
+    def download_from_peer(self, session_hex, member_id_hex, path):
+        """Download a file from a peer's public cloud bucket via the Hub proxy."""
+        import boto3
+        from botocore import UNSIGNED
+        from botocore.config import Config as BotoConfig
+
+        ss_session = self._lookup_session(session_hex)
+
+        if ss_session.team_name == "NoteToSelf":
+            team_db_path = str(ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db")
+        else:
+            team_db_path = str(ss_session.participant_path / ss_session.team_name / "Sync" / "core.db")
+
+        member_id = bytes.fromhex(member_id_hex)
+        conn = sqlite3.connect(team_db_path)
+        try:
+            row = conn.execute(
+                "SELECT protocol, url FROM peer WHERE member_id = ?", (member_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+
+        if row is None:
+            raise SmallSeaNotFoundExn(f"No peer found for member {member_id_hex}")
+
+        protocol, url = row
+        if protocol != "s3":
+            raise SmallSeaBackendExn(f"Unsupported peer protocol: {protocol}")
+
+        bucket_name = f"ss-{ss_session.station_id.hex()[:16]}"
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=url,
+            config=BotoConfig(signature_version=UNSIGNED),
+            region_name="us-east-1",
+        )
+
+        try:
+            response = s3_client.get_object(Bucket=bucket_name, Key=path)
+            data_bytes = response["Body"].read()
+            etag = response["ETag"].strip('"')
+            return True, data_bytes, etag
+        except ClientError as e:
+            code = e.response["Error"]["Code"]
+            return False, None, f"Peer download failed: {code}"
 
     def upload_to_cloud(self, session_hex, path, data, expected_etag=None):
         ss_session = self._lookup_session(session_hex)

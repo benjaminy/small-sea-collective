@@ -1,9 +1,22 @@
 # Top Matter
 
 import pathlib
+from dataclasses import dataclass
+from typing import Optional
 
 from small_sea_client.client import SmallSeaClient
 from small_sea_manager import provisioning
+
+
+@dataclass
+class PushResult:
+    ok: bool
+    reason: Optional[str] = None  # e.g. "behind" on CAS conflict
+
+
+@dataclass
+class PullResult:
+    has_conflicts: bool
 
 
 class TeamManager:
@@ -109,3 +122,48 @@ class TeamManager:
         provisioning.complete_invitation_acceptance(
             self.root_dir, self.participant_hex, team_name, acceptance_b64
         )
+
+    # --- Sync ---
+
+    def push(self, repo_dir) -> PushResult:
+        """Push the local git repo to this participant's cloud bucket.
+
+        Requires an active session (call connect() first).
+        Returns PushResult(ok=False, reason="behind") if the cloud has moved on
+        since the last push (CAS conflict); the caller should pull and retry.
+        """
+        from cod_sync.protocol import CodSync, SmallSeaRemote, CasConflictError
+
+        assert self.session is not None, "call connect() before push()"
+
+        self.session.ensure_cloud_ready()
+
+        remote = SmallSeaRemote(self.session.token, base_url=self.client._base_url)
+
+        cs = CodSync("origin", repo_dir=pathlib.Path(repo_dir))
+        cs.remote = remote
+        try:
+            cs.push_to_remote(["main"])
+        except CasConflictError:
+            return PushResult(ok=False, reason="behind")
+        return PushResult(ok=True)
+
+    def pull(self, repo_dir, from_member_id: str) -> PullResult:
+        """Fetch and merge from a peer's cloud bucket.
+
+        Requires an active session (call connect() first).
+        Returns PullResult(has_conflicts=True) if git merge left unresolved conflicts.
+        """
+        from cod_sync.protocol import CodSync, PeerSmallSeaRemote
+
+        assert self.session is not None, "call connect() before pull()"
+
+        remote = PeerSmallSeaRemote(
+            self.session.token, from_member_id, base_url=self.client._base_url
+        )
+
+        cs = CodSync("peer", repo_dir=pathlib.Path(repo_dir))
+        cs.remote = remote
+        cs.fetch_from_remote(["main"])
+        exit_code = cs.merge_from_remote(["main"])
+        return PullResult(has_conflicts=(exit_code != 0))
