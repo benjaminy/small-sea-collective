@@ -18,9 +18,9 @@ PEER_WATCHER_INTERVAL = 60  # seconds between poll rounds
 async def _peer_watcher_loop(app: FastAPI):
     """Background task: poll registered peers' signal files for changes.
 
-    Peers are registered in app.state.watched_peers by _register_session_peers()
-    when a session is opened. Each entry tracks the last-seen etag and signal
-    counts so only genuinely new data triggers a notification.
+    When a peer's count increases for any station, updates peer_counts and
+    pulses the station's asyncio.Event to wake any waiting /notifications/watch
+    long-pollers.
     """
     logger = app.state.logger
     while True:
@@ -28,6 +28,7 @@ async def _peer_watcher_loop(app: FastAPI):
         peers = getattr(app.state, "watched_peers", {})
         for key, state in list(peers.items()):
             session_hex, member_id_hex = key
+            station_id_hex = state.get("station_id_hex")
             try:
                 signals, etag = app.state.backend.get_peer_signal(
                     session_hex, member_id_hex
@@ -36,18 +37,30 @@ async def _peer_watcher_loop(app: FastAPI):
                     continue
                 if etag == state.get("etag"):
                     continue  # unchanged
+
                 prev = state.get("signals", {})
-                for station_id, count in signals.items():
-                    if station_id == "version":
+                changed = False
+                for sid, count in signals.items():
+                    if sid == "version":
                         continue
-                    if count > prev.get(station_id, 0):
+                    if count > prev.get(sid, 0):
+                        app.state.peer_counts[(sid, member_id_hex)] = count
+                        changed = True
                         logger.info(
-                            f"Peer {member_id_hex[:8]} has new data on station "
-                            f"{station_id[:8]} (count {count})"
+                            f"Peer {member_id_hex[:8]} station {sid[:8]}: count={count}"
                         )
-                        # TODO: fire ntfy / mailbox notification here (issue 0023 follow-on)
+
                 state["etag"] = etag
                 state["signals"] = {k: v for k, v in signals.items() if k != "version"}
+
+                if changed and station_id_hex:
+                    # Pulse: replace the event so new waiters get a fresh one,
+                    # then set the old one to wake all current waiters.
+                    old_event = app.state.peer_signal_events.get(station_id_hex)
+                    app.state.peer_signal_events[station_id_hex] = asyncio.Event()
+                    if old_event:
+                        old_event.set()
+
             except Exception as exc:
                 logger.warning(f"Peer watcher error for {member_id_hex[:8]}: {exc}")
 
@@ -60,6 +73,10 @@ async def lifespan(app: FastAPI):
         app.state.auto_approve_sessions = settings.auto_approve_sessions
     if not hasattr(app.state, "watched_peers"):
         app.state.watched_peers = {}
+    if not hasattr(app.state, "peer_counts"):
+        app.state.peer_counts = {}       # (station_id_hex, member_id_hex) → int
+    if not hasattr(app.state, "peer_signal_events"):
+        app.state.peer_signal_events = {}  # station_id_hex → asyncio.Event
     app.state.logger = app.state.backend.logger
     logger = app.state.backend.logger
     logger.info("Starting up...")
@@ -112,6 +129,7 @@ def _register_session_peers(session_hex: str):
         ss_session = app.state.backend._lookup_session(session_hex)
         if ss_session.team_name == "NoteToSelf":
             return  # NoteToSelf has no peers
+        station_id_hex = ss_session.station_id.hex()
         import sqlite3 as _sqlite3
         team_db = str(
             ss_session.participant_path / ss_session.team_name / "Sync" / "core.db"
@@ -123,7 +141,12 @@ def _register_session_peers(session_hex: str):
             conn.close()
         for (member_id_bytes,) in rows:
             key = (session_hex, member_id_bytes.hex())
-            app.state.watched_peers.setdefault(key, {"etag": None, "signals": {}})
+            app.state.watched_peers.setdefault(key, {
+                "etag": None,
+                "signals": {},
+                "station_id_hex": station_id_hex,
+            })
+        app.state.peer_signal_events.setdefault(station_id_hex, asyncio.Event())
     except Exception as exc:
         app.state.logger.warning(f"_register_session_peers failed: {exc}")
 
@@ -245,6 +268,52 @@ async def get_peer_signal(
 
 
 # ---- Notifications ----
+
+
+class WatchNotificationsReq(pydantic.BaseModel):
+    known: dict[str, int] = {}  # member_id_hex → last known count
+    timeout: int = 30
+
+
+@app.post("/notifications/watch")
+async def watch_notifications(
+    req: WatchNotificationsReq,
+    session_hex: str = Depends(_require_session),
+):
+    """Long-poll for peer sync updates.
+
+    The client supplies its current known counts per peer member. If the Hub
+    already has higher counts, returns immediately. Otherwise blocks until a
+    peer's count increases (or timeout), then returns whatever changed.
+
+    The response is {"updated": {member_id_hex: new_count, ...}}, empty on
+    timeout.
+    """
+    ss_session = app.state.backend._lookup_session(session_hex)
+    station_id_hex = ss_session.station_id.hex()
+
+    def _check():
+        updated = {}
+        for member_id_hex, known_count in req.known.items():
+            current = app.state.peer_counts.get((station_id_hex, member_id_hex), 0)
+            if current > known_count:
+                updated[member_id_hex] = current
+        return updated
+
+    # Return immediately if we already know about newer data.
+    updated = _check()
+    if updated:
+        return {"updated": updated}
+
+    # Grab the current event before sleeping — the watcher may replace it
+    # while we wait, but we hold the reference so set() still wakes us.
+    event = app.state.peer_signal_events.setdefault(station_id_hex, asyncio.Event())
+    try:
+        await asyncio.wait_for(event.wait(), timeout=req.timeout)
+    except asyncio.TimeoutError:
+        return {"updated": {}}
+
+    return {"updated": _check()}
 
 
 class SendNotificationReq(pydantic.BaseModel):

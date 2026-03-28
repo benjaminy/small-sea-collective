@@ -196,7 +196,30 @@ class SmallSeaSession:
         )
         return base64.b64decode(result["data"]), result["etag"]
 
-    # ---- Notifications ----
+    # ---- Sync notifications ----
+
+    def watch_notifications(
+        self,
+        known: dict,
+        timeout: int = 30,
+    ) -> dict:
+        """Block until a teammate's push count exceeds a known value.
+
+        known: {member_id_hex: last_known_count} — the counts the caller has
+            already processed. Returns immediately if the Hub already has higher
+            counts; otherwise blocks up to timeout seconds.
+
+        Returns {member_id_hex: new_count} for any members with new data,
+        or an empty dict on timeout.
+        """
+        result = self._client._post(
+            "/notifications/watch",
+            {"known": known, "timeout": timeout},
+            token=self._token,
+        )
+        return result.get("updated", {})
+
+    # ---- ntfy Notifications ----
 
     def send_notification(self, message: str, title: Optional[str] = None) -> str:
         """Send a notification to all station members. Returns the message id."""
