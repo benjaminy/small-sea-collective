@@ -15,16 +15,84 @@ from small_sea_hub.config import Settings
 PEER_WATCHER_INTERVAL = 60  # seconds between poll rounds
 
 
+def _pulse_station_event(app: FastAPI, station_id_hex: str):
+    """Wake all waiters on a station by replacing its Event and setting the old one."""
+    old_event = app.state.peer_signal_events.get(station_id_hex)
+    app.state.peer_signal_events[station_id_hex] = asyncio.Event()
+    if old_event:
+        old_event.set()
+
+
+def _refresh_session_peers(app: FastAPI, session_hex: str):
+    """Re-read the team DB peer list for a session and sync watched_peers.
+
+    Adds new peers (pulsing the station event so waiters wake and re-enumerate)
+    and removes peers that are no longer in the DB.
+    """
+    import sqlite3 as _sqlite3
+
+    session_info = app.state.watched_sessions.get(session_hex)
+    if session_info is None:
+        return
+
+    station_id_hex = session_info["station_id_hex"]
+    team_db_path = session_info["team_db_path"]
+
+    try:
+        conn = _sqlite3.connect(team_db_path)
+        try:
+            rows = conn.execute("SELECT member_id FROM peer").fetchall()
+        finally:
+            conn.close()
+    except Exception as exc:
+        app.state.logger.warning(f"_refresh_session_peers: DB read failed: {exc}")
+        return
+
+    current_member_ids = {row[0].hex() for row in rows}
+    existing_member_ids = {
+        mid for (sid, mid) in app.state.watched_peers if sid == session_hex
+    }
+
+    new_members = current_member_ids - existing_member_ids
+    removed_members = existing_member_ids - current_member_ids
+
+    for member_id_hex in new_members:
+        key = (session_hex, member_id_hex)
+        app.state.watched_peers[key] = {
+            "etag": None,
+            "signals": {},
+            "station_id_hex": station_id_hex,
+        }
+        app.state.logger.info(
+            f"Watcher: new peer {member_id_hex[:8]} on station {station_id_hex[:8]}"
+        )
+
+    for member_id_hex in removed_members:
+        app.state.watched_peers.pop((session_hex, member_id_hex), None)
+
+    if new_members:
+        _pulse_station_event(app, station_id_hex)
+
+
 async def _peer_watcher_loop(app: FastAPI):
     """Background task: poll registered peers' signal files for changes.
 
-    When a peer's count increases for any station, updates peer_counts and
-    pulses the station's asyncio.Event to wake any waiting /notifications/watch
-    long-pollers.
+    On each round, re-reads the peer list for every active session so that
+    membership changes (new or removed peers) are picked up automatically.
+    New peers cause an immediate event pulse so any waiting long-pollers wake
+    and can re-enumerate the current member list.
+
+    When a peer's signal count increases, updates peer_counts and pulses the
+    station event to wake /notifications/watch waiters.
     """
     logger = app.state.logger
     while True:
         await asyncio.sleep(PEER_WATCHER_INTERVAL)
+
+        # Refresh peer lists for all active sessions before polling signals.
+        for session_hex in list(app.state.watched_sessions):
+            _refresh_session_peers(app, session_hex)
+
         peers = getattr(app.state, "watched_peers", {})
         for key, state in list(peers.items()):
             session_hex, member_id_hex = key
@@ -54,12 +122,7 @@ async def _peer_watcher_loop(app: FastAPI):
                 state["signals"] = {k: v for k, v in signals.items() if k != "version"}
 
                 if changed and station_id_hex:
-                    # Pulse: replace the event so new waiters get a fresh one,
-                    # then set the old one to wake all current waiters.
-                    old_event = app.state.peer_signal_events.get(station_id_hex)
-                    app.state.peer_signal_events[station_id_hex] = asyncio.Event()
-                    if old_event:
-                        old_event.set()
+                    _pulse_station_event(app, station_id_hex)
 
             except Exception as exc:
                 logger.warning(f"Peer watcher error for {member_id_hex[:8]}: {exc}")
@@ -71,10 +134,12 @@ async def lifespan(app: FastAPI):
         settings = Settings()
         app.state.backend = SmallSeaBackend(root_dir=settings.get_root_dir())
         app.state.auto_approve_sessions = settings.auto_approve_sessions
+    if not hasattr(app.state, "watched_sessions"):
+        app.state.watched_sessions = {}   # session_hex → {station_id_hex, team_db_path}
     if not hasattr(app.state, "watched_peers"):
-        app.state.watched_peers = {}
+        app.state.watched_peers = {}      # (session_hex, member_id_hex) → state
     if not hasattr(app.state, "peer_counts"):
-        app.state.peer_counts = {}       # (station_id_hex, member_id_hex) → int
+        app.state.peer_counts = {}        # (station_id_hex, member_id_hex) → int
     if not hasattr(app.state, "peer_signal_events"):
         app.state.peer_signal_events = {}  # station_id_hex → asyncio.Event
     app.state.logger = app.state.backend.logger
@@ -124,29 +189,27 @@ class SessionRequestReq(pydantic.BaseModel):
 
 
 def _register_session_peers(session_hex: str):
-    """Add the session's team peers to the watcher after a session is confirmed."""
+    """Register a session with the watcher after it is confirmed.
+
+    Records the team DB path and station so the watcher can re-read the peer
+    list on every round, picking up membership changes automatically.
+    """
     try:
         ss_session = app.state.backend._lookup_session(session_hex)
         if ss_session.team_name == "NoteToSelf":
             return  # NoteToSelf has no peers
         station_id_hex = ss_session.station_id.hex()
-        import sqlite3 as _sqlite3
-        team_db = str(
+        team_db_path = str(
             ss_session.participant_path / ss_session.team_name / "Sync" / "core.db"
         )
-        conn = _sqlite3.connect(team_db)
-        try:
-            rows = conn.execute("SELECT member_id FROM peer").fetchall()
-        finally:
-            conn.close()
-        for (member_id_bytes,) in rows:
-            key = (session_hex, member_id_bytes.hex())
-            app.state.watched_peers.setdefault(key, {
-                "etag": None,
-                "signals": {},
-                "station_id_hex": station_id_hex,
-            })
+        app.state.watched_sessions[session_hex] = {
+            "station_id_hex": station_id_hex,
+            "team_db_path": team_db_path,
+        }
         app.state.peer_signal_events.setdefault(station_id_hex, asyncio.Event())
+        # Do an immediate peer refresh so watched_peers is populated now rather
+        # than waiting for the first watcher round.
+        _refresh_session_peers(app, session_hex)
     except Exception as exc:
         app.state.logger.warning(f"_register_session_peers failed: {exc}")
 
