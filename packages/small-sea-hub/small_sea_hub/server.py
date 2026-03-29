@@ -74,6 +74,31 @@ def _refresh_session_peers(app: FastAPI, session_hex: str):
         _pulse_station_event(app, station_id_hex)
 
 
+def _send_peer_notification(app: FastAPI, session_hex: str, station_id_hex: str, logger):
+    """Fire a push notification when a peer's signal count increases.
+
+    Silently skips if no notification service is configured for the session.
+    Errors are logged as warnings and do not affect watcher operation.
+    """
+    from small_sea_hub.backend import SmallSeaNotFoundExn as _NotFound
+    try:
+        ok, _, err = app.state.backend.send_notification(
+            session_hex,
+            "A teammate has pushed new data",
+            title="Small Sea",
+        )
+        if not ok:
+            logger.warning(
+                f"Push notification failed for station {station_id_hex[:8]}: {err}"
+            )
+    except _NotFound:
+        pass  # no notification service configured — normal
+    except Exception as exc:
+        logger.warning(
+            f"Push notification error for station {station_id_hex[:8]}: {exc}"
+        )
+
+
 async def _peer_watcher_loop(app: FastAPI):
     """Background task: poll registered peers' signal files for changes.
 
@@ -84,16 +109,26 @@ async def _peer_watcher_loop(app: FastAPI):
 
     When a peer's signal count increases, updates peer_counts and pulses the
     station event to wake /notifications/watch waiters.
+
+    The first pass runs immediately (no initial sleep) so that peer_counts is
+    populated quickly after startup rather than after the full interval.
     """
     logger = app.state.logger
+    first_pass = True
     while True:
-        await asyncio.sleep(PEER_WATCHER_INTERVAL)
+        if not first_pass:
+            await asyncio.sleep(PEER_WATCHER_INTERVAL)
+        first_pass = False
 
         # Refresh peer lists for all active sessions before polling signals.
         for session_hex in list(app.state.watched_sessions):
             _refresh_session_peers(app, session_hex)
 
         peers = getattr(app.state, "watched_peers", {})
+        # Track which stations have already received a push notification this round
+        # so we send at most one notification per station regardless of how many
+        # sessions or peers triggered the change.
+        notified_stations: set = set()
         for key, state in list(peers.items()):
             session_hex, member_id_hex = key
             station_id_hex = state.get("station_id_hex")
@@ -123,7 +158,17 @@ async def _peer_watcher_loop(app: FastAPI):
 
                 if changed and station_id_hex:
                     _pulse_station_event(app, station_id_hex)
+                    if station_id_hex not in notified_stations:
+                        notified_stations.add(station_id_hex)
+                        _send_peer_notification(app, session_hex, station_id_hex, logger)
 
+            except SmallSeaNotFoundExn:
+                # Session expired — remove it and all its peers from the watcher.
+                app.state.watched_sessions.pop(session_hex, None)
+                stale_keys = [k for k in app.state.watched_peers if k[0] == session_hex]
+                for k in stale_keys:
+                    app.state.watched_peers.pop(k, None)
+                logger.info(f"Removed expired session {session_hex[:8]} from watcher")
             except Exception as exc:
                 logger.warning(f"Peer watcher error for {member_id_hex[:8]}: {exc}")
 
@@ -145,6 +190,11 @@ async def lifespan(app: FastAPI):
     app.state.logger = app.state.backend.logger
     logger = app.state.backend.logger
     logger.info("Starting up...")
+
+    # Rebuild watcher state from persisted sessions so a Hub restart does not
+    # require apps to re-open their sessions or wait for the first watcher round.
+    for token_hex in app.state.backend.all_session_tokens():
+        _register_session_peers(token_hex)
 
     watcher_task = asyncio.create_task(_peer_watcher_loop(app))
 

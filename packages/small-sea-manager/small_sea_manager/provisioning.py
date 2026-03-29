@@ -115,6 +115,8 @@ class NotificationService(Base):
     id = Column(LargeBinary, primary_key=True)
     protocol = Column(String, nullable=False)
     url = Column(String, nullable=False)
+    access_key = Column(String, nullable=True)   # Gotify app token; ntfy auth token
+    access_token = Column(String, nullable=True)  # Gotify client token
 
     def __repr__(self):
         return f"<NotificationService(id='{self.id.hex()}')>"
@@ -155,7 +157,7 @@ class Peer(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 47
+USER_SCHEMA_VERSION = 48
 
 
 # ---- Provisioning functions ----
@@ -254,6 +256,9 @@ def _migrate_user_db(conn, from_version):
                 "FOREIGN KEY (team_id) REFERENCES team(id))"
             )
         )
+    if from_version < 48:
+        conn.execute(text("ALTER TABLE notification_service ADD COLUMN access_key TEXT"))
+        conn.execute(text("ALTER TABLE notification_service ADD COLUMN access_token TEXT"))
 
 
 def _initialize_core_note_to_self_schema(conn):
@@ -786,12 +791,21 @@ def complete_invitation_acceptance(
     CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Accepted invitation"])
 
 
-def add_notification_service(root_dir, participant_hex, protocol, url):
+def add_notification_service(
+    root_dir, participant_hex, protocol, url,
+    access_key=None, access_token=None,
+):
     """Register a notification service in a participant's NoteToSelf DB.
+
+    protocol: "ntfy" or "gotify"
+      ntfy:   url = ntfy server base URL; access_key = auth token if server requires it
+      gotify: url = Gotify server base URL; access_key = app token (publish);
+              access_token = client token (poll/subscribe)
 
     Returns the notification service ID hex.
     """
-    if protocol != "ntfy":
+    known = {"ntfy", "gotify"}
+    if protocol not in known:
         raise ValueError(f"Unknown notification protocol: {protocol}")
 
     root_dir = pathlib.Path(root_dir)
@@ -801,7 +815,13 @@ def add_notification_service(root_dir, participant_hex, protocol, url):
     engine = create_engine(f"sqlite:///{user_db_path}")
     ns_id = uuid7()
     with Session(engine) as session:
-        ns = NotificationService(id=ns_id, protocol=protocol, url=url)
+        ns = NotificationService(
+            id=ns_id,
+            protocol=protocol,
+            url=url,
+            access_key=access_key,
+            access_token=access_token,
+        )
         session.add(ns)
         session.commit()
     return ns_id.hex()

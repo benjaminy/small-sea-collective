@@ -21,8 +21,9 @@ Base = declarative_base()
 
 from botocore.exceptions import ClientError
 from small_sea_hub.adapters import (SmallSeaDropboxAdapter,
-                                    SmallSeaGDriveAdapter, SmallSeaNtfyAdapter,
-                                    SmallSeaS3Adapter, SmallSeaStorageAdapter)
+                                    SmallSeaGDriveAdapter, SmallSeaGotifyAdapter,
+                                    SmallSeaNtfyAdapter, SmallSeaS3Adapter,
+                                    SmallSeaStorageAdapter)
 from small_sea_hub.adapters.oauth import (is_token_expired,
                                           refresh_dropbox_token,
                                           refresh_google_token)
@@ -134,6 +135,8 @@ class NotificationService(Base):
     id = Column(LargeBinary, primary_key=True)
     protocol = Column(String, nullable=False)
     url = Column(String, nullable=False)
+    access_key = Column(String, nullable=True)   # Gotify app token; ntfy auth token
+    access_token = Column(String, nullable=True)  # Gotify client token
 
     def __repr__(self):
         return f"<NotificationService(id='{self.id.hex()}')>"
@@ -415,19 +418,25 @@ class SmallSeaBackend:
     def _lookup_session(self, session_hex):
         session_token = bytes.fromhex(session_hex)
         engine_local = create_engine(f"sqlite:///{self.path_local_db}")
-        print(f"FIND SESH {session_hex} {session_token}")
         with Session(engine_local) as session:
-            results_sesh = (
+            ss_session = (
                 session.query(SmallSeaSession)
                 .filter(SmallSeaSession.token == session_token)
-                .all()
+                .first()
             )
-
-        ss_session = results_sesh[0]
+        if ss_session is None:
+            raise SmallSeaNotFoundExn(f"Session not found: {session_hex[:8]}")
         ss_session.participant_path = (
             self.root_dir / "Participants" / ss_session.participant_id.hex()
         )
         return ss_session
+
+    def all_session_tokens(self) -> list[str]:
+        """Return hex tokens for all confirmed sessions."""
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+        with Session(engine_local) as session:
+            rows = session.query(SmallSeaSession.token).all()
+        return [row.token.hex() for row in rows]
 
     # ---- Cloud storage ----
 
@@ -710,24 +719,31 @@ class SmallSeaBackend:
                 raise SmallSeaNotFoundExn("No notification service configured")
             return results[0]
 
-    def _make_ntfy_adapter(self, ss_session):
+    def _make_notification_adapter(self, ss_session):
         import hashlib
 
         ns = self._get_notification_service(ss_session)
-        # Derive topic from team+app names so all participants on the same
-        # station share the same ntfy topic.
-        station_key = f"{ss_session.team_name}/{ss_session.app_name}"
-        topic = "ss-" + hashlib.sha256(station_key.encode()).hexdigest()[:16]
-        return SmallSeaNtfyAdapter(ns.url, topic)
+        if ns.protocol == "ntfy":
+            # Derive topic from team+app names so all participants on the same
+            # station share the same ntfy topic automatically.
+            station_key = f"{ss_session.team_name}/{ss_session.app_name}"
+            topic = "ss-" + hashlib.sha256(station_key.encode()).hexdigest()[:16]
+            return SmallSeaNtfyAdapter(ns.url, topic)
+        elif ns.protocol == "gotify":
+            return SmallSeaGotifyAdapter(
+                ns.url, ns.access_key, client_token=ns.access_token
+            )
+        else:
+            raise SmallSeaBackendExn(f"Unsupported notification protocol: {ns.protocol}")
 
     def send_notification(self, session_hex, message, title=None):
         ss_session = self._lookup_session(session_hex)
-        adapter = self._make_ntfy_adapter(ss_session)
+        adapter = self._make_notification_adapter(ss_session)
         return adapter.publish(message, title)
 
     def poll_notifications(self, session_hex, since=None, timeout=30):
         ss_session = self._lookup_session(session_hex)
-        adapter = self._make_ntfy_adapter(ss_session)
+        adapter = self._make_notification_adapter(ss_session)
         if since is None:
             since = "all"
         return adapter.poll(since, timeout)

@@ -49,7 +49,9 @@ CREATE TABLE IF NOT EXISTS cloud_storage (
 CREATE TABLE IF NOT EXISTS notification_service (
     id BLOB PRIMARY KEY,
     protocol TEXT NOT NULL,
-    url TEXT NOT NULL
+    url TEXT NOT NULL,
+    access_key TEXT,    -- Gotify app token (publish); ntfy auth token if server requires auth
+    access_token TEXT   -- Gotify client token (poll/subscribe); unused for ntfy
 );
 
 CREATE TABLE IF NOT EXISTS team_signing_key (

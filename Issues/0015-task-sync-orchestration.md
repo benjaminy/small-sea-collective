@@ -13,38 +13,46 @@ The low-level plumbing for Cod Sync through the Hub is now complete:
 missing is the orchestration layer that ties all of this together into something
 an app developer can actually use.
 
+## What has been done
+
+### ✅ 1. Sync triggers
+
+The signal file + peer watcher (issue 0023) together provide the incoming
+trigger path. The Hub background task (`_peer_watcher_loop`) polls each
+teammate's `signals.yaml` every 60 seconds; on a count increase it updates
+`peer_counts` and pulses the station's `asyncio.Event`. The `POST
+/notifications/watch` long-poll endpoint allows apps to block until a
+teammate's count exceeds a known value, receiving updated counts immediately
+or after the next watcher round.
+
+Outgoing trigger: `SmallSeaRemote` sets `notify=true` when uploading
+`latest-link.yaml`, causing the Hub to atomically bump `signals.yaml` and
+pulse the local station event so same-station sessions are notified without
+waiting for the next watcher round.
+
+### ✅ 2. App-facing push/pull API
+
+`TeamManager` (in `small-sea-manager`) now exposes `push(repo_dir)` and
+`pull(repo_dir, from_member_id)`. These hide `CodSync`, `SmallSeaRemote`, and
+`PeerSmallSeaRemote` from the caller. `push()` returns a `PushResult` that
+includes a `"behind"` reason on CAS conflict. `pull()` returns a `PullResult`
+with a `has_conflicts` flag.
+
+`SmallSeaSession` in `small-sea-client` exposes `watch_notifications(known,
+timeout)` for the long-poll and `ensure_cloud_ready()` for bucket setup.
+
+`CodSync` gained a `repo_dir` parameter so callers no longer need `os.chdir`;
+all git commands run with `-C repo_dir`. `_ensure_bundle_remote()` handles
+bundle-tmp remote registration transparently.
+
+### ✅ Watcher session lifecycle
+
+The peer watcher cleans up expired sessions: when `get_peer_signal` raises
+`SmallSeaNotFoundExn` (session revoked or expired), the session is removed from
+`watched_sessions` and all its `watched_peers` entries are pruned. Transient
+errors leave the session alive for retry on the next round.
+
 ## What remains to do
-
-### 1. Sync triggers
-
-Right now nothing drives sync. The spec says sync is user-initiated by default
-with Hub-provided reminders, but none of that exists yet:
-
-- **Outgoing:** After a local commit, how does the app (or the Manager) know to
-  push? Who calls `push_to_remote`? There is no push entry point yet in the
-  Manager or Hub that an app can invoke.
-- **Incoming:** The Hub needs to monitor teammates' cloud locations and notify
-  waiting apps when new bundles appear. The spec calls this a "mailbox" — it
-  doesn't exist yet. Without it, apps have no way to know they should pull.
-
-### 2. App-facing push/pull API
-
-An app developer should not have to know about `CodSync`, `SmallSeaRemote`, or
-bundle chains. The intended interface is something like:
-
-```python
-session.push(repo_dir)   # commit any local changes, bundle, upload via Hub
-session.pull(repo_dir)   # download new bundles, merge into local clone
-```
-
-`SmallSeaSession` in `small-sea-client` is the natural home for this. It already
-has `upload`/`download`; it needs higher-level sync methods that hide the Cod
-Sync internals. The session already knows which station (and therefore which
-cloud bucket) it belongs to, so the app just hands it a repo directory.
-
-The push side needs to handle CAS conflicts gracefully (retry with a fresh
-head read). The pull side needs to walk the chain, detect which bundles are
-already present locally, download only the new ones, and merge.
 
 ### 3. Conflict resolution hookup
 
@@ -52,7 +60,8 @@ After a pull and merge, SQLite conflicts in the team DB are resolved by
 `harmonic-sqlite-merge`, which is already wired via `.gitattributes`. But
 application-level conflicts in app data are not handled — the merge driver runs
 but there is no way for the app to be notified that conflicts occurred or to
-supply resolution logic. This needs a design before it can be implemented.
+supply resolution logic. `PullResult.has_conflicts` surfaces the exit code from
+`git merge`, but what the app should do with it is not yet designed.
 
 ### 4. `TeamManager.connect()` is broken
 
@@ -61,6 +70,8 @@ exist on `SmallSeaClient`. The two-step flow (`request_session` /
 `confirm_session`) is the right API, but this requires user interaction (reading
 the PIN) that the Manager UI doesn't yet surface. `connect()` should either be
 wired to the two-step flow or left as a clear stub until the UI exists.
+
+This is tracked separately in issue 0016.
 
 ### 5. Manager invitation accept is CLI-only
 
@@ -75,15 +86,33 @@ use `SmallSeaRemote` via a Hub session instead of direct S3 credentials, and
 the web UI can expose the accept step via a paste-token form (same as the
 existing complete-acceptance form).
 
+### 6. `GET /session/info` endpoint (pending)
+
+Clients currently have to read SQLite directly to retrieve their `station_id`.
+A lightweight `/session/info` endpoint returning `{station_id, team_name, ...}`
+would let clients get this from the Hub session they already hold, and is a
+prerequisite for wiring Manager flows that don't have direct DB access.
+
+### 7. ntfy hookup from watcher (pending)
+
+The peer watcher detects count increases and logs them, but does not yet fire
+an ntfy push notification. This is the low-latency path for out-of-app
+notifications and should be added once the ntfy transport in `SmallSeaBackend`
+is connected to the watcher.
+
 ## What is NOT in scope here
 
 - The Cuttlefish encryption layer (tracked in 0008)
 - Deep device unification (tracked in 0007)
 - The Hub permissions model (tracked in 0010)
+- Signal file gossip/matrix form v2 (tracked in 0023)
 
 ## References
 
-- `packages/cod-sync/cod_sync/protocol.py` — `CodSync`, `SmallSeaRemote`
+- `packages/cod-sync/cod_sync/protocol.py` — `CodSync`, `SmallSeaRemote`, `PeerSmallSeaRemote`
 - `packages/small-sea-client/small_sea_client/client.py` — `SmallSeaSession`
-- `packages/small-sea-manager/small_sea_manager/manager.py` — `TeamManager.connect()`
-- `packages/small-sea-manager/spec.md` — §Sync, open issue "Sync mailbox API"
+- `packages/small-sea-manager/small_sea_manager/manager.py` — `TeamManager.push/pull`
+- `packages/small-sea-hub/small_sea_hub/server.py` — `_peer_watcher_loop`, `watch_notifications`
+- `packages/small-sea-manager/spec.md` — §Sync
+- Issue 0023 — sync signal file (now implemented)
+- Issue 0016 — `TeamManager.connect()` broken

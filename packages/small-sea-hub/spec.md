@@ -44,6 +44,32 @@ a 32-byte Bearer token (hex-encoded). All subsequent API calls use this token in
 Sessions do not expire. There is no revocation endpoint yet — killing the Hub process
 and clearing its local DB is the current escape hatch.
 
+### Restart resilience
+
+**Goal:** restarting the Hub should be minimally disruptive to apps. Open network
+connections will close (unavoidable), but apps that reconnect should be able to resume
+without re-opening sessions or losing sync state.
+
+Everything important is persisted to durable storage:
+
+| Data | Where stored |
+|---|---|
+| Session tokens and all session metadata | Hub SQLite DB (`small_sea_collective_local.db`) |
+| Peer cloud locations | Team DB (`peer` table), synced via Cod Sync |
+| Signal file contents (push counts) | Cloud storage (`signals.yaml`) |
+| Cloud credentials | NoteToSelf DB (`cloud_storage` table) |
+
+The Hub's in-process state (`watched_sessions`, `watched_peers`, `peer_counts`) is
+derived entirely from these durable sources and is **rebuilt at startup**:
+
+1. `watched_sessions` is repopulated by reading all confirmed session rows from the Hub DB.
+2. `watched_peers` is repopulated by reading each session's team DB peer list.
+3. `peer_counts` is repopulated by the peer watcher's first pass (which runs immediately on startup rather than after the full poll interval).
+
+This means that after a Hub restart, an app that reconnects with its existing session token
+and calls `POST /notifications/watch` will receive updated counts within the watcher's first
+polling pass (~seconds), not after the full 60-second interval.
+
 For automated tests, a client named `"Smoke Tests"` causes the Hub to echo the PIN
 back in the `/sessions/request` response rather than sending an OS notification.
 
@@ -126,18 +152,39 @@ This is used by Cod Sync to detect concurrent writes to the bundle-chain head.
 
 ## Notifications
 
-The Hub implements push notifications via [ntfy](https://ntfy.sh), a self-hosted or public
-pub/sub notification service.
+The Hub supports push notifications via two adapters. A `notification_service` row must be
+present in the participant's NoteToSelf DB (managed by Small Sea Manager).
 
-The ntfy topic for a session is derived as `ss-{sha256("{team}/{app}")[:16]}`, so all
-participants sharing the same station converge on the same topic automatically.
+### Supported protocols
 
-`POST /notifications` publishes a message (with optional `title`) to the session's topic.
-`GET /notifications` long-polls the topic for new messages; accepts `since` (ntfy message ID
+**ntfy** (`protocol = "ntfy"`): Self-hosted or public pub/sub service.
+Requires `url` (ntfy server base URL). The ntfy topic is derived automatically as
+`ss-{sha256("{team}/{app}")[:16]}`, so all participants sharing a station converge on the
+same topic without any configuration. Set `access_key` if your ntfy server requires auth.
+
+`POST /notifications` publishes; `GET /notifications` long-polls with `since` (ntfy message ID
 or `"all"`) and `timeout` (seconds, default 30).
 
-A `notification_service` row must be present in the participant's NoteToSelf DB, with
-`protocol = "ntfy"` and the ntfy server `url`.
+**Gotify** (`protocol = "gotify"`): Self-hosted push notification server.
+Requires `url` (Gotify server base URL), `access_key` (app token for publishing), and
+`access_token` (client token for polling, defaults to app token if omitted).
+`GET /notifications` returns messages with id > `since` (numeric string or `"all"`) but does
+not long-poll — use Gotify's WebSocket stream (`/stream`) for real-time delivery.
+
+### Watcher-triggered notifications
+
+When the peer watcher detects that a teammate's push count has increased, it fires a push
+notification to the participant's configured service ("A teammate has pushed new data").
+At most one notification is sent per station per watcher round, regardless of how many
+sessions or peers triggered the change. If no notification service is configured, the watcher
+skips silently.
+
+### Future: Apprise
+
+[Apprise](https://github.com/caronc/apprise) is a Python meta-library that wraps ~100
+notification services (Slack, Telegram, Pushover, Gotify, ntfy, email, and many others) behind
+a single `apprise://` URL scheme. Adding an Apprise adapter would give the Hub coverage of
+most remaining services without individual implementations. Planned for the future.
 
 ## Real-Time Connectivity
 
@@ -187,11 +234,27 @@ Errors: `404` if pending ID not found; `400`-level if PIN is wrong or expired.
 
 ### Cloud storage endpoints
 
+**`POST /cloud/setup`** — Create and publish the session's cloud bucket (S3 only). Safe to call multiple times.
+
+Response: `{ "ok": true }`
+
+---
+
 **`POST /cloud_file`** — Upload a file.
 
 ```json
-{ "path": "<remote path>", "data": "<base64>", "expected_etag": "<etag or null>" }
+{
+  "path": "<remote path>",
+  "data": "<base64>",
+  "expected_etag": "<etag or null>",
+  "notify": false
+}
 ```
+
+`notify` (default `false`): when `true` and the upload succeeds, the Hub atomically increments
+`signals.yaml` in the session's cloud bucket and pulses the station event so other sessions on
+the same station are notified without waiting for the next watcher round.
+Cod Sync sets `notify=true` when uploading `latest-link.yaml`.
 
 Response:
 ```json
@@ -213,7 +276,52 @@ Errors: `404` if not found.
 
 ---
 
-### Notification endpoints
+**`GET /peer_cloud_file?member_id=<hex>&path=<remote path>`** — Download a file from a peer's
+public cloud bucket via the Hub proxy. The Hub reads the peer's cloud URL from the team DB and
+fetches the file without credentials (public-read bucket).
+
+Response: same as `GET /cloud_file`.
+
+Errors: `404` if peer not found or file not found.
+
+---
+
+**`GET /peer_signal?member_id=<hex>`** — Return the parsed signal file for a peer.
+
+Response:
+```json
+{ "version": 1, "stations": { "<station_id_hex>": <count>, ... }, "etag": "<etag>" }
+```
+
+Returns `304` if `If-None-Match` header matches current etag.
+Errors: `404` if the peer's `signals.yaml` does not exist yet.
+
+---
+
+### Sync notification endpoints
+
+**`POST /notifications/watch`** — Long-poll for peer sync updates.
+
+The client supplies its current known push counts per peer member. If the Hub already has higher
+counts for any of them, returns immediately. Otherwise blocks until a peer's count increases,
+or until timeout.
+
+```json
+{ "known": { "<member_id_hex>": <last_known_count>, ... }, "timeout": 30 }
+```
+
+Response:
+```json
+{ "updated": { "<member_id_hex>": <new_count>, ... } }
+```
+
+`updated` is empty on timeout or on a structural change (membership update, local `notify=True`
+upload from another session on the same station). An empty response is not an error — it is the
+signal to re-enumerate the current peer list before the next watch call.
+
+---
+
+### ntfy notification endpoints
 
 **`POST /notifications`**
 
@@ -256,6 +364,9 @@ migrations.
 | `app_id`, `app_name` | BLOB / TEXT | From Manager's `app` table |
 | `station_id` | BLOB | Drives bucket naming for S3 |
 | `client` | TEXT | Human name of the requesting client |
+
+The `notification_service` table lives in the participant's NoteToSelf DB (managed by Small Sea
+Manager), not the Hub's local DB. See §Notifications above.
 
 **`pending_session` table** — In-flight approval requests (deleted on confirm or expiry):
 
