@@ -277,6 +277,13 @@ async def upload_to_cloud(
             small_sea._bump_signal(session_hex)
         except Exception as exc:
             app.state.logger.warning(f"_bump_signal failed: {exc}")
+        # Pulse the local station event so other sessions on this station
+        # (e.g. a second browser tab) are also notified.
+        try:
+            ss_session = small_sea._lookup_session(session_hex)
+            _pulse_station_event(app, ss_session.station_id.hex())
+        except Exception as exc:
+            app.state.logger.warning(f"local station pulse failed: {exc}")
     return {"ok": True, "etag": etag, "message": msg}
 
 
