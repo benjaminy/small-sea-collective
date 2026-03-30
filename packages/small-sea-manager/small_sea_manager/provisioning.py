@@ -546,19 +546,21 @@ def accept_invitation(
     acceptor_participant_hex,
     token_b64,
     inviter_remote,
-    acceptor_remote,
+    acceptor_remote=None,
     acceptor_member_id=None,
 ):
     """Accept a team invitation token (acceptor side).
 
     Clones the team repo from the inviter's cloud, adds self as member,
-    pushes to own cloud, and returns an acceptance response for the inviter.
+    and returns an acceptance response for the inviter. The caller is
+    responsible for pushing to the acceptor's own cloud after this returns
+    (typically via a Hub team session).
 
     inviter_remote: CodSyncRemote for reading the inviter's (public) bucket.
-    acceptor_remote: CodSyncRemote for writing to the acceptor's own bucket.
+    acceptor_remote: ignored (deprecated; push is now the caller's responsibility).
     acceptor_member_id: pre-generated member ID bytes (optional). When None a
-        new UUID is generated. Pass a pre-generated ID when the acceptor_remote
-        must be constructed before this call (e.g. Dropbox folder-prefix naming).
+        new UUID is generated. Pass a pre-generated ID when the acceptor's
+        bucket must be derived before this call (e.g. Dropbox folder-prefix).
     Returns a base64-encoded acceptance response JSON string.
     """
     root_dir = pathlib.Path(root_dir)
@@ -665,16 +667,6 @@ def accept_invitation(
     CodSync.gitCmd(
         ["-C", str(team_sync_dir), "commit", "-m", f"Joined team: {team_name}"]
     )
-
-    # --- Push to acceptor's cloud ---
-    saved_cwd = os.getcwd()
-    os.chdir(team_sync_dir)
-    try:
-        cod = CodSync.CodSync("acceptor-cloud")
-        cod.remote = acceptor_remote
-        cod.push_to_remote(["main"])
-    finally:
-        os.chdir(saved_cwd)
 
     # Derive acceptor's bucket name (protocol-aware to avoid folder collisions)
     team_db_path = team_sync_dir / "core.db"

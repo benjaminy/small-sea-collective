@@ -14,6 +14,10 @@ from small_sea_manager.provisioning import (
     accept_invitation, add_cloud_storage, complete_invitation_acceptance,
     create_invitation, create_new_participant, create_team, list_invitations)
 
+# Note: S3Remote / PublicS3Remote are still used here to push/read Alice's bucket
+# in setup steps. The accept_invitation call itself no longer takes acceptor_remote —
+# the cloud push is the Manager's responsibility (via Hub), not provisioning's.
+
 
 def _make_cod_sync(repo_dir, remote_name):
     """Create a CodSync wired to a specific repo directory."""
@@ -165,16 +169,12 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
         secret_key=bob_minio["secret_key"],
     )
 
-    # Bob reads from Alice's public bucket anonymously; writes to his own server
+    # Bob reads from Alice's public bucket anonymously; no cloud push happens inside
+    # accept_invitation — the Manager (via Hub) is responsible for pushing.
     inviter_remote = PublicS3Remote(alice_minio["endpoint"], team_bucket)
-    bob_remote = S3Remote(
-        bob_minio["endpoint"], team_bucket,
-        bob_minio["access_key"], bob_minio["secret_key"],
-    )
     acceptance_b64 = accept_invitation(
         bob_root, bob_hex, token,
         inviter_remote=inviter_remote,
-        acceptor_remote=bob_remote,
     )
     assert isinstance(acceptance_b64, str)
 
@@ -324,14 +324,9 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
         secret_key=bob_minio["secret_key"],
     )
     inviter_remote = PublicS3Remote(alice_minio["endpoint"], team_bucket)
-    bob_remote = S3Remote(
-        bob_minio["endpoint"], team_bucket,
-        bob_minio["access_key"], bob_minio["secret_key"],
-    )
     acceptance_b64 = accept_invitation(
         bob_root, bob_hex, token,
         inviter_remote=inviter_remote,
-        acceptor_remote=bob_remote,
     )
 
     # Alice completes Bob's acceptance
@@ -351,14 +346,9 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
         access_key=carol_minio["access_key"],
         secret_key=carol_minio["secret_key"],
     )
-    carol_remote = S3Remote(
-        carol_minio["endpoint"], team_bucket,
-        carol_minio["access_key"], carol_minio["secret_key"],
-    )
     carol_acceptance_b64 = accept_invitation(
         carol_root, carol_hex, token,
         inviter_remote=inviter_remote,
-        acceptor_remote=carol_remote,
     )
 
     with pytest.raises(ValueError, match="not pending"):

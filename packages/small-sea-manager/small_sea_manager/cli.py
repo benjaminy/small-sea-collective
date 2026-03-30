@@ -175,20 +175,8 @@ def list_invitations(ctx, team_name):
 @click.pass_context
 def accept_invitation(ctx, token_b64):
     """Accept an invitation token (invitee side). Prints the acceptance token to stdout."""
-    import base64
-    import json
-
-    from cod_sync.testing import PublicS3Remote, S3Remote
-
     manager = _make_manager(ctx)
-    token = json.loads(base64.b64decode(token_b64).decode())
-    ic = token["inviter_cloud"]
-    inviter_remote = PublicS3Remote(ic["url"], token["inviter_bucket"])
-    cloud = manager._cloud()
-    acceptor_remote = S3Remote(
-        cloud["url"], token["inviter_bucket"], cloud["access_key"], cloud["secret_key"]
-    )
-    acceptance = manager.accept_invitation(token_b64, inviter_remote, acceptor_remote)
+    acceptance = manager.accept_invitation(token_b64)
     click.echo(acceptance)
 
 

@@ -26,10 +26,10 @@ class TeamManager:
     Hub sessions (via SmallSeaClient) are used only for cloud sync operations.
     """
 
-    def __init__(self, root_dir, participant_hex, hub_port=11437):
+    def __init__(self, root_dir, participant_hex, hub_port=11437, _http_client=None):
         self.root_dir = pathlib.Path(root_dir)
         self.participant_hex = participant_hex
-        self.client = SmallSeaClient(port=hub_port)
+        self.client = SmallSeaClient(port=hub_port, _http_client=_http_client)
         self.session = None
 
     def get_nickname(self):
@@ -106,16 +106,60 @@ class TeamManager:
             self.root_dir, self.participant_hex, team_name, invitation_id
         )
 
-    def accept_invitation(self, token_b64, inviter_remote, acceptor_remote):
+    def accept_invitation(self, token_b64):
         """Accept an invitation token (acceptor side). Returns an acceptance token.
 
-        inviter_remote: CodSyncRemote for reading the inviter's public bucket.
-        acceptor_remote: CodSyncRemote for writing to the acceptor's own bucket.
+        Opens a NoteToSelf Hub session to proxy the inviter's cloud for cloning,
+        then pushes the new team repo to the acceptor's own cloud via a team session.
+        The Hub is never bypassed — all cloud I/O goes through it.
         """
-        return provisioning.accept_invitation(
-            self.root_dir, self.participant_hex, token_b64,
-            inviter_remote, acceptor_remote,
+        import base64 as _b64
+        import json as _json
+        from cod_sync.protocol import CodSync, ExplicitProxyRemote, SmallSeaRemote, CasConflictError
+
+        token = _json.loads(_b64.b64decode(token_b64))
+        team_name = token["team_name"]
+        inviter_cloud = token["inviter_cloud"]
+        inviter_bucket = token["inviter_bucket"]
+
+        # Open NoteToSelf session to access /cloud_proxy for the inviter's bucket.
+        # Bob doesn't have a team session yet — the NoteToSelf session provides auth.
+        nts_session = self.client.open_session(
+            self.participant_hex, "SmallSeaCollectiveCore", "NoteToSelf", "TeamManager"
         )
+        http = self.client._http_client  # None in production; injected TestClient in tests
+        proxy_remote = ExplicitProxyRemote(
+            nts_session.token,
+            inviter_cloud["protocol"],
+            inviter_cloud["url"],
+            inviter_bucket,
+            base_url=self.client._base_url,
+            client=http,
+        )
+
+        # Clone + local DB writes. No cloud push happens inside provisioning.
+        acceptance_b64 = provisioning.accept_invitation(
+            self.root_dir, self.participant_hex, token_b64,
+            inviter_remote=proxy_remote,
+        )
+
+        # Push to acceptor's own cloud via a team Hub session.
+        team_session = self.client.open_session(
+            self.participant_hex, "SmallSeaCollectiveCore", team_name, "TeamManager"
+        )
+        team_session.ensure_cloud_ready()
+        team_repo_dir = (
+            self.root_dir / "Participants" / self.participant_hex / team_name / "Sync"
+        )
+        remote = SmallSeaRemote(team_session.token, base_url=self.client._base_url, client=http)
+        cs = CodSync("origin", repo_dir=team_repo_dir)
+        cs.remote = remote
+        try:
+            cs.push_to_remote(["main"])
+        except CasConflictError:
+            raise RuntimeError("CAS conflict pushing new team repo — unexpected on first push")
+
+        return acceptance_b64
 
     def complete_invitation_acceptance(self, team_name, acceptance_b64):
         """Complete an acceptance (inviter side): add acceptor as member + peer."""

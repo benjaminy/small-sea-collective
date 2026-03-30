@@ -106,7 +106,7 @@ class CodSync:
         self._repo_dir = str(repo_dir) if repo_dir is not None else None
         if self._repo_dir is not None:
             _rd = self._repo_dir
-            self.gitCmd = lambda params, **kw: gitCmd(["-C", _rd] + params, **kw)
+            self.gitCmd = lambda params, raise_on_error=True: gitCmd(["-C", _rd] + params, raise_on_error=raise_on_error)
         else:
             self.gitCmd = gitCmd
         self._bundle_tmp_dir = bundle_tmp_dir
@@ -716,6 +716,77 @@ class PeerSmallSeaRemote(CodSyncRemote):
         data, _ = self._download(f"B-{bundle_uid}.bundle")
         if data is None:
             raise RuntimeError(f"Failed to download bundle B-{bundle_uid}.bundle from peer")
+        with open(local_bundle_path, "wb") as f:
+            f.write(data)
+
+
+class ExplicitProxyRemote(CodSyncRemote):
+    """Read-only remote that fetches cloud files via the Hub's /cloud_proxy endpoint.
+
+    Passes explicit cloud coordinates (protocol, url, bucket) rather than looking
+    them up from a peer row. Used during invitation acceptance to clone the
+    inviter's team repo before any peer relationship exists.
+
+    Requires a NoteToSelf session token.
+    """
+
+    def __init__(self, session_hex, protocol, url, bucket,
+                 base_url="http://localhost:11437", client=None):
+        self.session_hex = session_hex
+        self._auth = {"Authorization": f"Bearer {session_hex}"}
+        self._protocol = protocol
+        self._url = url
+        self._bucket = bucket
+
+        if client is not None:
+            self._get = client.get
+        else:
+            self._get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
+
+    def _download(self, cloud_path):
+        resp = self._get(
+            "/cloud_proxy",
+            params={
+                "protocol": self._protocol,
+                "url": self._url,
+                "bucket": self._bucket,
+                "path": cloud_path,
+            },
+            headers=self._auth,
+        )
+        if resp.status_code != 200:
+            return (None, None)
+        body = resp.json()
+        data = base64.b64decode(body["data"])
+        etag = body.get("etag")
+        return (data, etag)
+
+    def upload_latest_link(self, *args, **kwargs):
+        raise NotImplementedError("ExplicitProxyRemote is read-only")
+
+    def get_link(self, uid):
+        if uid == "latest-link":
+            cloud_path = "latest-link.yaml"
+        else:
+            cloud_path = f"L-{uid}.yaml"
+
+        data, etag = self._download(cloud_path)
+        if data is None:
+            return None
+
+        link = self.read_link_blob(io.BytesIO(data))
+
+        if uid == "latest-link":
+            return (link, etag)
+        return link
+
+    def get_latest_link(self):
+        return self.get_link("latest-link")
+
+    def download_bundle(self, bundle_uid, local_bundle_path):
+        data, _ = self._download(f"B-{bundle_uid}.bundle")
+        if data is None:
+            raise RuntimeError(f"Failed to download bundle B-{bundle_uid}.bundle via proxy")
         with open(local_bundle_path, "wb") as f:
             f.write(data)
 

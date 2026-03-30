@@ -277,8 +277,14 @@ def _register_session_peers(session_hex: str):
 @app.post("/sessions/request")
 async def request_session(req: SessionRequestReq):
     small_sea = app.state.backend
+    # When auto-approving, skip OS notifications by presenting as "Smoke Tests".
+    effective_client = (
+        "Smoke Tests"
+        if getattr(app.state, "auto_approve_sessions", False)
+        else req.client
+    )
     pending_id_hex, pin = small_sea.request_session(
-        req.participant, req.app, req.team, req.client
+        req.participant, req.app, req.team, effective_client
     )
     if getattr(app.state, "auto_approve_sessions", False):
         token = small_sea.confirm_session(pending_id_hex, pin)
@@ -377,6 +383,30 @@ async def download_peer_cloud_file(
 
     small_sea = app.state.backend
     ok, data, etag = small_sea.download_from_peer(session_hex, member_id, path)
+    if not ok:
+        raise HTTPException(status_code=404, detail=etag)
+    return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
+
+
+@app.get("/cloud_proxy")
+async def proxy_cloud_file(
+    protocol: str,
+    url: str,
+    bucket: str,
+    path: str,
+    session_hex: str = Depends(_require_session),
+):
+    """Proxy a file download from an arbitrary cloud location.
+
+    Requires a NoteToSelf session. Allows Bob's Manager to clone Alice's team
+    repo during invitation acceptance, before any peer relationship exists.
+    Hub authenticates and uses its own credentials — the client never talks to
+    cloud storage directly.
+    """
+    import base64
+
+    small_sea = app.state.backend
+    ok, data, etag = small_sea.proxy_cloud_file(session_hex, protocol, url, bucket, path)
     if not ok:
         raise HTTPException(status_code=404, detail=etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}

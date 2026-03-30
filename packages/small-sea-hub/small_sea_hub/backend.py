@@ -239,11 +239,23 @@ class SmallSeaBackend:
     # ---- Session management ----
 
     def _find_participant(self, nickname):
-        """Return list of (participant_dir, engine) for participants matching nickname."""
+        """Return list of (participant_dir, engine) for participants matching nickname.
+
+        Accepts either a human-readable nickname ("Alice") or the participant's
+        hex directory name. Matching by directory name is an exact match and
+        skips the DB query, so callers that have the hex (e.g. TeamManager) do
+        not need to know the human-readable name.
+        """
         matching = []
         participants_dir = self.root_dir / "Participants"
         for d in participants_dir.iterdir():
             if not d.is_dir():
+                continue
+            # Direct match by participant directory name (hex ID).
+            if d.name == nickname:
+                note_to_self_db_path = d / "NoteToSelf" / "Sync" / "core.db"
+                engine = create_engine(f"sqlite:///{note_to_self_db_path}")
+                matching.append((d, engine))
                 continue
             note_to_self_db_path = d / "NoteToSelf" / "Sync" / "core.db"
             engine = create_engine(f"sqlite:///{note_to_self_db_path}")
@@ -675,6 +687,49 @@ class SmallSeaBackend:
         if not isinstance(signals, dict):
             signals = {}
         return signals, etag
+
+    def proxy_cloud_file(self, session_hex, protocol, url, bucket, path):
+        """Download a file from an arbitrary cloud location using session credentials.
+
+        Requires a NoteToSelf session. Used during invitation acceptance so Bob's
+        Manager can clone Alice's team repo before any peer relationship exists.
+
+        For S3: anonymous read (public bucket).
+        For Dropbox: use the session's own Dropbox credentials to read from the
+            shared app folder using `bucket` as the folder prefix.
+        """
+        ss_session = self._lookup_session(session_hex)
+        if ss_session.team_name != "NoteToSelf":
+            raise SmallSeaBackendExn("proxy_cloud_file requires a NoteToSelf session")
+
+        if protocol == "s3":
+            import boto3
+            from botocore import UNSIGNED
+            from botocore.config import Config as BotoConfig
+
+            s3_client = boto3.client(
+                "s3",
+                endpoint_url=url,
+                config=BotoConfig(signature_version=UNSIGNED),
+                region_name="us-east-1",
+            )
+            try:
+                response = s3_client.get_object(Bucket=bucket, Key=path)
+                data_bytes = response["Body"].read()
+                etag = response["ETag"].strip('"')
+                return True, data_bytes, etag
+            except ClientError as e:
+                code = e.response["Error"]["Code"]
+                return False, None, f"Proxy download failed: {code}"
+
+        elif protocol == "dropbox":
+            cloud = self._get_cloud_link(ss_session)
+            access_token = self._refresh_token_if_needed(ss_session, cloud)
+            adapter = SmallSeaDropboxAdapter(access_token, folder_prefix=bucket)
+            return adapter.download(path)
+
+        else:
+            raise SmallSeaBackendExn(f"Unsupported proxy protocol: {protocol}")
 
     def _download_peer_file(self, session_hex, member_id_hex, path):
         """Core of download_from_peer, factored out for reuse."""

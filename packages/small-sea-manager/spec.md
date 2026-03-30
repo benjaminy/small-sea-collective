@@ -232,7 +232,13 @@ Updates `invitation.status` to `revoked` for a pending invitation. Commits.
 
 #### Accept invitation (invitee side)
 
-Takes an out-of-band token. Clones the team repo from the inviter's cloud, adds self as a member, installs the harmonic-sqlite merge driver, pushes to own cloud. Adds a Team pointer to NoteToSelf DB. Returns an acceptance token for out-of-band delivery back to the inviter.
+Takes an out-of-band token. All cloud I/O goes through the Hub:
+
+1. Opens a NoteToSelf Hub session, calls `GET /cloud_proxy` (using an `ExplicitProxyRemote`) to download the inviter's team bundle chain. The Hub proxies the bytes using appropriate credentials — the Manager never contacts cloud storage directly.
+2. Clones the team repo locally, adds self as a member, installs the harmonic-sqlite merge driver. Adds a Team pointer to NoteToSelf DB. (All local DB/git ops; no network.)
+3. Opens a team Hub session, calls `POST /cloud/setup` to create the acceptor's bucket, then pushes via Cod Sync through the Hub.
+
+Returns an acceptance token for out-of-band delivery back to the inviter.
 
 #### Complete invitation acceptance (inviter side)
 
@@ -300,7 +306,7 @@ The out-of-sync state is a two-part story:
 
 ## Invitation Protocol (detailed)
 
-All steps involve only direct DB operations and out-of-band token exchange. No Hub API calls are made for the invitation data itself.
+Invitation data is exchanged out-of-band. Hub API calls handle all cloud I/O.
 
 ```
 Alice                                Bob
@@ -311,17 +317,25 @@ Alice                                Bob
   |  → commits git                     |
   |  → returns token_b64               |
   |                                    |
+  | push via Hub (team session)        |
+  |                                    |
   | ---- token_b64 (out of band) ----> |
   |                                    |
   |                   accept_invitation(token_b64)
-  |                    → clones ProjectX/Sync from
-  |                      Alice's cloud
+  |                    → opens NoteToSelf Hub session
+  |                    → Hub /cloud_proxy fetches Alice's
+  |                      team bundle chain (anonymous read)
+  |                    → clones ProjectX/Sync locally
   |                    → adds Bob as member in team DB
   |                    → adds Alice as peer in team DB
   |                    → pushes to Bob's cloud
   |                    → adds ProjectX pointer to
   |                      Bob's NoteToSelf DB
   |                    → commits git
+  |                    → returns acceptance_b64
+  |                                    |
+  |                    → opens team Hub session
+  |                    → pushes to Bob's cloud via Hub
   |                    → returns acceptance_b64
   |                                    |
   | <-- acceptance_b64 (out of band) - |
