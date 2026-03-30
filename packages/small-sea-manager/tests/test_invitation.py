@@ -1,33 +1,56 @@
 import base64
 import json
-import os
 import pathlib
 import sqlite3
 import subprocess
 
-import boto3
-import cod_sync.protocol as CS
 import pytest
-from botocore.config import Config
-from cod_sync.testing import PublicS3Remote, S3Remote
+import small_sea_hub.backend as SmallSea
+from cod_sync.protocol import CodSync, SmallSeaRemote
+from fastapi.testclient import TestClient
+from small_sea_hub.server import app
+from small_sea_manager.manager import TeamManager
 from small_sea_manager.provisioning import (
-    accept_invitation, add_cloud_storage, complete_invitation_acceptance,
+    complete_invitation_acceptance,
     create_invitation, create_new_participant, create_team, list_invitations)
 
-# Note: S3Remote / PublicS3Remote are still used here to push/read Alice's bucket
-# in setup steps. The accept_invitation call itself no longer takes acceptor_remote —
-# the cloud push is the Manager's responsibility (via Hub), not provisioning's.
+
+def _open_session(http, nickname, team):
+    resp = http.post(
+        "/sessions/request",
+        json={
+            "participant": nickname,
+            "app": "SmallSeaCollectiveCore",
+            "team": team,
+            "client": "Smoke Tests",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    if "token" in result:
+        return result["token"]  # auto-approved
+    resp = http.post(
+        "/sessions/confirm",
+        json={"pending_id": result["pending_id"], "pin": result["pin"]},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
 
 
-def _make_cod_sync(repo_dir, remote_name):
-    """Create a CodSync wired to a specific repo directory."""
-    os.chdir(repo_dir)
-    cod = CS.CodSync(remote_name)
-    return cod
+def _push_via_hub(http, session_hex, repo_dir, **push_kwargs):
+    """Push a team repo to cloud via Hub using SmallSeaRemote."""
+    auth = {"Authorization": f"Bearer {session_hex}"}
+    resp = http.post("/cloud/setup", headers=auth)
+    assert resp.status_code == 200, resp.text
+    remote = SmallSeaRemote(session_hex, base_url="http://testserver", client=http)
+    cs = CodSync("origin", repo_dir=pathlib.Path(repo_dir))
+    cs.remote = remote
+    cs.push_to_remote(["main"], **push_kwargs)
 
 
 def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
-    """Set a bucket policy to allow public reads (MinIO)."""
+    import boto3
+    from botocore.config import Config
     s3 = boto3.client(
         "s3",
         endpoint_url=endpoint,
@@ -97,107 +120,87 @@ def test_create_invitation_includes_bucket(playground_dir):
 
 
 def test_full_invitation_flow(playground_dir, minio_server_gen):
-    """Full decentralized invitation flow: separate root dirs and separate MinIO servers."""
+    """Full invitation flow routed through the Hub."""
     alice_minio = minio_server_gen(port=19100)
     bob_minio = minio_server_gen(port=19200)
 
-    alice_root = pathlib.Path(playground_dir) / "alice-root"
-    bob_root = pathlib.Path(playground_dir) / "bob-root"
-    alice_root.mkdir()
-    bob_root.mkdir()
+    root = pathlib.Path(playground_dir)
 
-    # Alice creates participant + team
-    alice_hex = create_new_participant(alice_root, "Alice")
-    team_result = create_team(alice_root, alice_hex, "ProjectX")
-    alice_member_id_hex = team_result["member_id_hex"]
+    # -- Shared Hub --
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root))
+    app.state.backend = backend
+    app.state.auto_approve_sessions = False
+    http = TestClient(app)
 
-    # Bucket name derived from station ID (same formula used in create_invitation)
-    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
+    # -- Provision participants --
+    alice_hex = create_new_participant(root, "Alice")
+    bob_hex = create_new_participant(root, "Bob")
 
-    # Register Alice's cloud storage in her NoteToSelf DB
-    add_cloud_storage(
-        alice_root, alice_hex,
-        protocol="s3",
-        url=alice_minio["endpoint"],
+    # -- Register cloud storage via Hub --
+    alice_nts = _open_session(http, "Alice", "NoteToSelf")
+    backend.add_cloud_location(
+        alice_nts, "s3", alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
     )
-
-    # Alice pushes team repo to her MinIO
-    alice_team_sync = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync"
-    alice_remote = S3Remote(
-        alice_minio["endpoint"], team_bucket,
-        alice_minio["access_key"], alice_minio["secret_key"],
+    bob_nts = _open_session(http, "Bob", "NoteToSelf")
+    backend.add_cloud_location(
+        bob_nts, "s3", bob_minio["endpoint"],
+        access_key=bob_minio["access_key"],
+        secret_key=bob_minio["secret_key"],
     )
-    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
-    cod_alice.remote = alice_remote
-    cod_alice.push_to_remote(["main"])
 
-    # Make Alice's bucket publicly readable (privacy comes from E2E crypto)
+    # -- Alice: create team and push via Hub --
+    team_result = create_team(root, alice_hex, "ProjectX")
+    alice_member_id_hex = team_result["member_id_hex"]
+    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
+
+    alice_team_token = _open_session(http, "Alice", "ProjectX")
+    alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
+    _push_via_hub(http, alice_team_token, alice_team_sync)
+
+    # Make Alice's bucket publicly readable (anonymous clone via /cloud_proxy)
     _make_bucket_public(
-        alice_minio["endpoint"],
-        alice_minio["access_key"],
-        alice_minio["secret_key"],
-        team_bucket,
+        alice_minio["endpoint"], alice_minio["access_key"],
+        alice_minio["secret_key"], team_bucket,
     )
 
-    # Alice creates invitation (credentials are never included in the token)
+    # -- Alice: create invitation and re-push --
     token = create_invitation(
-        alice_root, alice_hex, "ProjectX",
+        root, alice_hex, "ProjectX",
         {"protocol": "s3", "url": alice_minio["endpoint"]},
         invitee_label="Bob",
     )
-
-    # Verify token has no credentials
     token_data = json.loads(base64.b64decode(token).decode())
     assert "inviter_bucket" in token_data
     assert "access_key" not in token_data.get("inviter_cloud", {})
     assert "secret_key" not in token_data.get("inviter_cloud", {})
 
-    # Re-push after invitation commit
-    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
-    cod_alice.remote = alice_remote
-    cod_alice.push_to_remote(["main"])
+    _push_via_hub(http, alice_team_token, alice_team_sync)
 
-    # Bob creates participant and registers his own cloud (separate MinIO server)
-    bob_hex = create_new_participant(bob_root, "Bob")
-    add_cloud_storage(
-        bob_root, bob_hex,
-        protocol="s3",
-        url=bob_minio["endpoint"],
-        access_key=bob_minio["access_key"],
-        secret_key=bob_minio["secret_key"],
-    )
+    # -- Bob: accept via Manager (auto-approve required for TeamManager.open_session) --
+    bob_manager = TeamManager(root, bob_hex, _http_client=http)
+    app.state.auto_approve_sessions = True
+    acceptance_b64 = bob_manager.accept_invitation(token)
+    app.state.auto_approve_sessions = False
 
-    # Bob reads from Alice's public bucket anonymously; no cloud push happens inside
-    # accept_invitation — the Manager (via Hub) is responsible for pushing.
-    inviter_remote = PublicS3Remote(alice_minio["endpoint"], team_bucket)
-    acceptance_b64 = accept_invitation(
-        bob_root, bob_hex, token,
-        inviter_remote=inviter_remote,
-    )
     assert isinstance(acceptance_b64, str)
 
-    # Decode acceptance to get Bob's member ID
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
     bob_member_id_hex = acceptance["acceptor_member_id"]
-
-    # Bob's member ID should be a fresh UUIDv7
     assert bob_member_id_hex != bob_hex
     assert len(bob_member_id_hex) == 32
 
-    # Alice completes the acceptance
-    complete_invitation_acceptance(alice_root, alice_hex, "ProjectX", acceptance_b64)
+    # -- Alice: complete the acceptance --
+    complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
 
     # --- Verify Alice's invitation is accepted ---
-    invitations = list_invitations(alice_root, alice_hex, "ProjectX")
+    invitations = list_invitations(root, alice_hex, "ProjectX")
     assert len(invitations) == 1
     assert invitations[0]["status"] == "accepted"
 
     # --- Verify Alice's team DB has 2 members, a peer (Bob), and 2 station_roles ---
-    alice_team_db = (
-        alice_root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
-    )
+    alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     aconn = sqlite3.connect(str(alice_team_db))
     members = aconn.execute("SELECT id FROM member").fetchall()
     assert len(members) == 2
@@ -211,7 +214,6 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert peers[0][1] == "s3"
     assert peers[0][2] == bob_minio["endpoint"]
 
-    # Both Alice and Bob should have read-write roles
     roles = aconn.execute("SELECT member_id, role FROM station_role").fetchall()
     assert len(roles) == 2
     role_map = {row[0].hex(): row[1] for row in roles}
@@ -220,7 +222,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     aconn.close()
 
     # --- Verify Bob's team DB has 2 members and a peer (Alice) ---
-    bob_team_db = bob_root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
+    bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
     members = bconn.execute("SELECT id FROM member").fetchall()
     assert len(members) == 2
@@ -236,16 +238,13 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     bconn.close()
 
     # --- Verify Bob's NoteToSelf has the team pointer but NOT a TeamAppStation for ProjectX ---
-    bob_user_db = (
-        bob_root / "Participants" / bob_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
+    bob_user_db = root / "Participants" / bob_hex / "NoteToSelf" / "Sync" / "core.db"
     buconn = sqlite3.connect(str(bob_user_db))
     buconn.row_factory = sqlite3.Row
     teams = buconn.execute("SELECT * FROM team WHERE name = 'ProjectX'").fetchall()
     assert len(teams) == 1
     assert teams[0]["self_in_team"] == bytes.fromhex(bob_member_id_hex)
 
-    # TeamAppStation for ProjectX must NOT be in NoteToSelf
     other_stations = buconn.execute(
         "SELECT tas.* FROM team_app_station tas "
         "JOIN team t ON tas.team_id = t.id "
@@ -255,7 +254,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     buconn.close()
 
     # --- Verify Bob's team dir has a git repo with correct commit ---
-    bob_sync = bob_root / "Participants" / bob_hex / "ProjectX" / "Sync"
+    bob_sync = root / "Participants" / bob_hex / "ProjectX" / "Sync"
     result = subprocess.run(
         ["git", "-C", str(bob_sync), "log", "--oneline"], capture_output=True, text=True
     )
@@ -269,89 +268,73 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
     bob_minio = minio_server_gen(port=19400)
     carol_minio = minio_server_gen(port=19500)
 
-    alice_root = pathlib.Path(playground_dir) / "alice-root"
-    bob_root = pathlib.Path(playground_dir) / "bob-root"
-    carol_root = pathlib.Path(playground_dir) / "carol-root"
-    alice_root.mkdir()
-    bob_root.mkdir()
-    carol_root.mkdir()
+    root = pathlib.Path(playground_dir)
 
-    alice_hex = create_new_participant(alice_root, "Alice")
-    team_result = create_team(alice_root, alice_hex, "ProjectX")
-    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
+    # -- Shared Hub --
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root))
+    app.state.backend = backend
+    app.state.auto_approve_sessions = False
+    http = TestClient(app)
 
-    add_cloud_storage(
-        alice_root, alice_hex,
-        protocol="s3",
-        url=alice_minio["endpoint"],
+    # -- Provision participants --
+    alice_hex = create_new_participant(root, "Alice")
+    bob_hex = create_new_participant(root, "Bob")
+    carol_hex = create_new_participant(root, "Carol")
+
+    # -- Register cloud storage via Hub --
+    alice_nts = _open_session(http, "Alice", "NoteToSelf")
+    backend.add_cloud_location(
+        alice_nts, "s3", alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
     )
-
-    alice_team_sync = alice_root / "Participants" / alice_hex / "ProjectX" / "Sync"
-    alice_remote = S3Remote(
-        alice_minio["endpoint"], team_bucket,
-        alice_minio["access_key"], alice_minio["secret_key"],
-    )
-    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
-    cod_alice.remote = alice_remote
-    cod_alice.push_to_remote(["main"])
-
-    _make_bucket_public(
-        alice_minio["endpoint"],
-        alice_minio["access_key"],
-        alice_minio["secret_key"],
-        team_bucket,
-    )
-
-    token = create_invitation(
-        alice_root, alice_hex, "ProjectX",
-        {"protocol": "s3", "url": alice_minio["endpoint"]},
-    )
-
-    # Re-push after invitation commit
-    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
-    cod_alice.remote = alice_remote
-    cod_alice.push_to_remote(["main"])
-
-    # Bob accepts
-    bob_hex = create_new_participant(bob_root, "Bob")
-    add_cloud_storage(
-        bob_root, bob_hex,
-        protocol="s3",
-        url=bob_minio["endpoint"],
+    bob_nts = _open_session(http, "Bob", "NoteToSelf")
+    backend.add_cloud_location(
+        bob_nts, "s3", bob_minio["endpoint"],
         access_key=bob_minio["access_key"],
         secret_key=bob_minio["secret_key"],
     )
-    inviter_remote = PublicS3Remote(alice_minio["endpoint"], team_bucket)
-    acceptance_b64 = accept_invitation(
-        bob_root, bob_hex, token,
-        inviter_remote=inviter_remote,
-    )
-
-    # Alice completes Bob's acceptance
-    complete_invitation_acceptance(alice_root, alice_hex, "ProjectX", acceptance_b64)
-
-    # Alice re-pushes so Carol can clone the latest
-    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
-    cod_alice.remote = alice_remote
-    cod_alice.push_to_remote(["main"])
-
-    # Carol tries to accept the same token — but complete should fail
-    carol_hex = create_new_participant(carol_root, "Carol")
-    add_cloud_storage(
-        carol_root, carol_hex,
-        protocol="s3",
-        url=carol_minio["endpoint"],
+    carol_nts = _open_session(http, "Carol", "NoteToSelf")
+    backend.add_cloud_location(
+        carol_nts, "s3", carol_minio["endpoint"],
         access_key=carol_minio["access_key"],
         secret_key=carol_minio["secret_key"],
     )
-    carol_acceptance_b64 = accept_invitation(
-        carol_root, carol_hex, token,
-        inviter_remote=inviter_remote,
+
+    # -- Alice: create team, push, create invitation --
+    team_result = create_team(root, alice_hex, "ProjectX")
+    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
+
+    alice_team_token = _open_session(http, "Alice", "ProjectX")
+    alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
+    _push_via_hub(http, alice_team_token, alice_team_sync)
+
+    _make_bucket_public(
+        alice_minio["endpoint"], alice_minio["access_key"],
+        alice_minio["secret_key"], team_bucket,
     )
 
+    token = create_invitation(
+        root, alice_hex, "ProjectX",
+        {"protocol": "s3", "url": alice_minio["endpoint"]},
+    )
+    _push_via_hub(http, alice_team_token, alice_team_sync)
+
+    # -- Bob: accept --
+    bob_manager = TeamManager(root, bob_hex, _http_client=http)
+    app.state.auto_approve_sessions = True
+    acceptance_b64 = bob_manager.accept_invitation(token)
+    app.state.auto_approve_sessions = False
+
+    # -- Alice: complete Bob's acceptance and re-push so Carol can clone the latest --
+    complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
+    _push_via_hub(http, alice_team_token, alice_team_sync)
+
+    # -- Carol: accept the same token (provisioning succeeds, completion fails) --
+    carol_manager = TeamManager(root, carol_hex, _http_client=http)
+    app.state.auto_approve_sessions = True
+    carol_acceptance_b64 = carol_manager.accept_invitation(token)
+    app.state.auto_approve_sessions = False
+
     with pytest.raises(ValueError, match="not pending"):
-        complete_invitation_acceptance(
-            alice_root, alice_hex, "ProjectX", carol_acceptance_b64
-        )
+        complete_invitation_acceptance(root, alice_hex, "ProjectX", carol_acceptance_b64)

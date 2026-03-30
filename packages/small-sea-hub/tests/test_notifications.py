@@ -1,26 +1,51 @@
-import json
-import os
+import pathlib
 import time
 
-import boto3
-import cod_sync.protocol as CS
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
 import small_sea_manager.provisioning as Provisioning
-from botocore.config import Config
-from cod_sync.testing import PublicS3Remote, S3Remote
+from cod_sync.protocol import CodSync, SmallSeaRemote
 from fastapi.testclient import TestClient
+from small_sea_manager.manager import TeamManager
 
 
-def _make_cod_sync(repo_dir, remote_name):
-    """Create a CodSync wired to a specific repo directory."""
-    os.chdir(repo_dir)
-    cod = CS.CodSync(remote_name)
-    return cod
+def _open_session(http, nickname, team):
+    resp = http.post(
+        "/sessions/request",
+        json={
+            "participant": nickname,
+            "app": "SmallSeaCollectiveCore",
+            "team": team,
+            "client": "Smoke Tests",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    if "token" in result:
+        return result["token"]  # auto-approved
+    resp = http.post(
+        "/sessions/confirm",
+        json={"pending_id": result["pending_id"], "pin": result["pin"]},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def _push_via_hub(http, session_hex, repo_dir):
+    """Push a team repo to cloud via Hub using SmallSeaRemote."""
+    auth = {"Authorization": f"Bearer {session_hex}"}
+    resp = http.post("/cloud/setup", headers=auth)
+    assert resp.status_code == 200, resp.text
+    remote = SmallSeaRemote(session_hex, base_url="http://testserver", client=http)
+    cs = CodSync("origin", repo_dir=pathlib.Path(repo_dir))
+    cs.remote = remote
+    cs.push_to_remote(["main"])
 
 
 def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
-    """Set a bucket policy to allow public reads (MinIO)."""
+    import json
+    import boto3
+    from botocore.config import Config
     s3 = boto3.client(
         "s3",
         endpoint_url=endpoint,
@@ -45,106 +70,75 @@ def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
 
 def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     """Two participants on one Hub: one sends a notification, the other receives it."""
-    import pathlib
-
     alice_minio = minio_server_gen(port=19600)
     bob_minio = minio_server_gen(port=19700)
 
-    # -- Set up participants --
-    alice_hex = Provisioning.create_new_participant(playground_dir, "Alice")
-    bob_hex = Provisioning.create_new_participant(playground_dir, "Bob")
+    root = pathlib.Path(playground_dir)
 
-    # -- Create team for Alice, invite Bob --
-    team_info = Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
-    team_bucket = f"ss-{team_info['station_id_hex'][:16]}"
+    # -- Shared Hub --
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root))
+    Server.app.state.backend = backend
+    Server.app.state.auto_approve_sessions = False
+    http = TestClient(Server.app)
 
-    Provisioning.add_cloud_storage(
-        playground_dir, alice_hex,
-        protocol="s3",
-        url=alice_minio["endpoint"],
+    # -- Provision participants --
+    alice_hex = Provisioning.create_new_participant(root, "Alice")
+    bob_hex = Provisioning.create_new_participant(root, "Bob")
+
+    # -- Register cloud storage via Hub --
+    alice_nts = _open_session(http, "Alice", "NoteToSelf")
+    backend.add_cloud_location(
+        alice_nts, "s3", alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
     )
-    Provisioning.add_cloud_storage(
-        playground_dir, bob_hex,
-        protocol="s3",
-        url=bob_minio["endpoint"],
+    bob_nts = _open_session(http, "Bob", "NoteToSelf")
+    backend.add_cloud_location(
+        bob_nts, "s3", bob_minio["endpoint"],
         access_key=bob_minio["access_key"],
         secret_key=bob_minio["secret_key"],
     )
 
-    # Push Alice's team repo to her MinIO
-    alice_team_sync = (
-        pathlib.Path(playground_dir) / "Participants" / alice_hex / "ProjectX" / "Sync"
-    )
-    alice_remote = S3Remote(
-        alice_minio["endpoint"], team_bucket,
-        alice_minio["access_key"], alice_minio["secret_key"],
-    )
-    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
-    cod_alice.remote = alice_remote
-    cod_alice.push_to_remote(["main"])
+    # -- Alice: create team, push, invite Bob --
+    team_info = Provisioning.create_team(root, alice_hex, "ProjectX")
+    team_bucket = f"ss-{team_info['station_id_hex'][:16]}"
 
-    # Make Alice's bucket publicly readable
+    alice_team_token = _open_session(http, "Alice", "ProjectX")
+    alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
+    _push_via_hub(http, alice_team_token, alice_team_sync)
+
     _make_bucket_public(
-        alice_minio["endpoint"],
-        alice_minio["access_key"],
-        alice_minio["secret_key"],
-        team_bucket,
+        alice_minio["endpoint"], alice_minio["access_key"],
+        alice_minio["secret_key"], team_bucket,
     )
 
     token = Provisioning.create_invitation(
-        playground_dir, alice_hex, "ProjectX",
+        root, alice_hex, "ProjectX",
         inviter_cloud={"protocol": "s3", "url": alice_minio["endpoint"]},
         invitee_label="Bob",
     )
+    _push_via_hub(http, alice_team_token, alice_team_sync)
 
-    # Re-push after invitation commit
-    cod_alice = _make_cod_sync(alice_team_sync, "cloud")
-    cod_alice.remote = alice_remote
-    cod_alice.push_to_remote(["main"])
+    # -- Bob: accept via Manager (auto-approve required for TeamManager.open_session) --
+    bob_manager = TeamManager(root, bob_hex, _http_client=http)
+    Server.app.state.auto_approve_sessions = True
+    acceptance_b64 = bob_manager.accept_invitation(token)
+    Server.app.state.auto_approve_sessions = False
 
-    # Bob accepts: reads Alice's public bucket anonymously, writes to his own server
-    inviter_remote = PublicS3Remote(alice_minio["endpoint"], team_bucket)
-    bob_remote = S3Remote(
-        bob_minio["endpoint"], team_bucket,
-        bob_minio["access_key"], bob_minio["secret_key"],
-    )
-    acceptance_b64 = Provisioning.accept_invitation(
-        playground_dir, bob_hex, token,
-        inviter_remote=inviter_remote,
-        acceptor_remote=bob_remote,
-    )
+    # -- Alice: complete acceptance --
+    Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
 
-    # Alice completes the acceptance
-    Provisioning.complete_invitation_acceptance(
-        playground_dir, alice_hex, "ProjectX", acceptance_b64
-    )
-
-    # -- Single Hub backend --
-    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
-
-    # -- Open sessions --
-    alice_token = backend.open_session(
-        "Alice", "SmallSeaCollectiveCore", "ProjectX", "Smoke Tests"
-    )
-    bob_token = backend.open_session(
-        "Bob", "SmallSeaCollectiveCore", "ProjectX", "Smoke Tests"
-    )
-    alice_session = alice_token.hex()
-    bob_session = bob_token.hex()
-
-    # -- Register notification service for both (via team manager, not hub) --
+    # -- Register notification service for both participants --
     ntfy_url = ntfy_server["url"]
-    Provisioning.add_notification_service(playground_dir, alice_hex, "ntfy", ntfy_url)
-    Provisioning.add_notification_service(playground_dir, bob_hex, "ntfy", ntfy_url)
+    Provisioning.add_notification_service(root, alice_hex, "ntfy", ntfy_url)
+    Provisioning.add_notification_service(root, bob_hex, "ntfy", ntfy_url)
 
-    # -- Use TestClient for HTTP calls --
-    Server.app.state.backend = backend
-    client = TestClient(Server.app)
+    # -- Open team sessions for notification calls --
+    alice_session = _open_session(http, "Alice", "ProjectX")
+    bob_session = _open_session(http, "Bob", "ProjectX")
 
     # Alice sends a notification
-    resp = client.post(
+    resp = http.post(
         "/notifications",
         json={
             "message": "new data available",
@@ -161,7 +155,7 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     time.sleep(0.5)
 
     # Bob polls for notifications
-    resp = client.get(
+    resp = http.get(
         "/notifications",
         params={
             "since": "all",

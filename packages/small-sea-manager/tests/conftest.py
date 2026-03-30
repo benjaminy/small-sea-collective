@@ -1,12 +1,37 @@
 # Top Matter
 
 import os
+import pathlib
 import shutil
 import subprocess
 import tempfile
 import time
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def safe_cwd():
+    """Ensure each test starts and ends with a valid working directory.
+
+    Prevents cwd contamination when a test's temp dir is deleted while still
+    the active cwd, which would cause os.getcwd() to fail in subsequent tests.
+    """
+    safe = pathlib.Path(__file__).parent
+    os.chdir(safe)
+    yield
+    try:
+        os.chdir(safe)
+    except OSError:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def reset_hub_app_state():
+    """Reset Hub app global state after each test to prevent cross-test contamination."""
+    from small_sea_hub.server import app
+    yield
+    app.state.auto_approve_sessions = False
 
 
 @pytest.fixture()
