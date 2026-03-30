@@ -8,9 +8,9 @@ Usage:
     uv run python devtools/setup_dropbox_auth.py --root-dir devtools/sandbox/
     uv run python devtools/setup_dropbox_auth.py --root-dir devtools/sandbox/ --participant <hex>
 
-App credentials default to the Small Sea Collective Dropbox app.
-Override with --app-key / --app-secret or env vars SMALL_SEA_DROPBOX_APP_KEY /
-SMALL_SEA_DROPBOX_APP_SECRET.
+App credentials are required. Set env vars SMALL_SEA_DROPBOX_APP_KEY and
+SMALL_SEA_DROPBOX_APP_SECRET, or pass --app-key / --app-secret flags.
+See scripts/.env.example.
 
 Before running, ensure your Dropbox app has
     http://localhost:9004
@@ -28,11 +28,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
-
-# Default app credentials for the Small Sea Collective Dropbox app.
-# These identify the app in the OAuth flow; they do not grant data access.
-_DEFAULT_APP_KEY = "pz516qwo0t7z8dl"
-_DEFAULT_APP_SECRET = "r63gynrdi1a325r"
 
 _DROPBOX_AUTH_URL = "https://www.dropbox.com/oauth2/authorize"
 _DROPBOX_TOKEN_URL = "https://api.dropbox.com/oauth2/token"
@@ -207,11 +202,15 @@ def main():
     )
     parser.add_argument(
         "--app-key",
-        default=os.environ.get("SMALL_SEA_DROPBOX_APP_KEY", _DEFAULT_APP_KEY),
+        default=os.environ.get("SMALL_SEA_DROPBOX_APP_KEY"),
+        required=not os.environ.get("SMALL_SEA_DROPBOX_APP_KEY"),
+        help="Dropbox app key (or set SMALL_SEA_DROPBOX_APP_KEY env var)",
     )
     parser.add_argument(
         "--app-secret",
-        default=os.environ.get("SMALL_SEA_DROPBOX_APP_SECRET", _DEFAULT_APP_SECRET),
+        default=os.environ.get("SMALL_SEA_DROPBOX_APP_SECRET"),
+        required=not os.environ.get("SMALL_SEA_DROPBOX_APP_SECRET"),
+        help="Dropbox app secret (or set SMALL_SEA_DROPBOX_APP_SECRET env var)",
     )
     args = parser.parse_args()
 

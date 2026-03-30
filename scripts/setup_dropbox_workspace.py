@@ -180,11 +180,15 @@ def main():
     )
     parser.add_argument(
         "--app-key",
-        default=os.environ.get("SMALL_SEA_DROPBOX_APP_KEY", "pz516qwo0t7z8dl"),
+        default=os.environ.get("SMALL_SEA_DROPBOX_APP_KEY"),
+        required=not os.environ.get("SMALL_SEA_DROPBOX_APP_KEY"),
+        help="Dropbox app key (or set SMALL_SEA_DROPBOX_APP_KEY env var)",
     )
     parser.add_argument(
         "--app-secret",
-        default=os.environ.get("SMALL_SEA_DROPBOX_APP_SECRET", "r63gynrdi1a325r"),
+        default=os.environ.get("SMALL_SEA_DROPBOX_APP_SECRET"),
+        required=not os.environ.get("SMALL_SEA_DROPBOX_APP_SECRET"),
+        help="Dropbox app secret (or set SMALL_SEA_DROPBOX_APP_SECRET env var)",
     )
     parser.add_argument(
         "--skip-team",
