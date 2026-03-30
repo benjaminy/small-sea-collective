@@ -150,6 +150,7 @@ class Peer(Base):
     member_id = Column(LargeBinary, nullable=False)
     protocol = Column(String, nullable=False)
     url = Column(String, nullable=False)
+    bucket = Column(String, nullable=True)
 
     def __repr__(self):
         return f"<Peer(id='{self.id.hex()}')>"
@@ -157,7 +158,7 @@ class Peer(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 48
+USER_SCHEMA_VERSION = 49
 
 
 # ---- Provisioning functions ----
@@ -259,6 +260,8 @@ def _migrate_user_db(conn, from_version):
     if from_version < 48:
         conn.execute(text("ALTER TABLE notification_service ADD COLUMN access_key TEXT"))
         conn.execute(text("ALTER TABLE notification_service ADD COLUMN access_token TEXT"))
+    if from_version < 49:
+        pass  # peer.bucket added to team DB schema; NoteToSelf schema unchanged
 
 
 def _initialize_core_note_to_self_schema(conn):
@@ -499,7 +502,10 @@ def create_invitation(
     if station_row is None:
         raise ValueError(f"No station found in team DB for '{team_name}'")
     station_id_hex = station_row[0].hex()
-    inviter_bucket = f"ss-{station_id_hex[:16]}"
+    if inviter_cloud["protocol"] == "dropbox":
+        inviter_bucket = f"ss-{inviter_member_id.hex()[:16]}"
+    else:
+        inviter_bucket = f"ss-{station_id_hex[:16]}"
 
     # Create invitation row
     inv_id = uuid7()
@@ -541,6 +547,7 @@ def accept_invitation(
     token_b64,
     inviter_remote,
     acceptor_remote,
+    acceptor_member_id=None,
 ):
     """Accept a team invitation token (acceptor side).
 
@@ -549,6 +556,9 @@ def accept_invitation(
 
     inviter_remote: CodSyncRemote for reading the inviter's (public) bucket.
     acceptor_remote: CodSyncRemote for writing to the acceptor's own bucket.
+    acceptor_member_id: pre-generated member ID bytes (optional). When None a
+        new UUID is generated. Pass a pre-generated ID when the acceptor_remote
+        must be constructed before this call (e.g. Dropbox folder-prefix naming).
     Returns a base64-encoded acceptance response JSON string.
     """
     root_dir = pathlib.Path(root_dir)
@@ -567,8 +577,10 @@ def accept_invitation(
     acceptor_cloud_full = get_cloud_storage(root_dir, acceptor_participant_hex)
     acceptor_cloud = {"protocol": acceptor_cloud_full["protocol"], "url": acceptor_cloud_full["url"]}
 
-    # Generate acceptor's fresh team-local member ID
-    acceptor_member_id = uuid7()
+    # Use pre-generated member ID if provided (required when acceptor_remote must
+    # be constructed before this call, e.g. Dropbox folder-prefix naming).
+    if acceptor_member_id is None:
+        acceptor_member_id = uuid7()
 
     acceptor_dir = root_dir / "Participants" / acceptor_participant_hex
 
@@ -606,14 +618,15 @@ def accept_invitation(
         # Store inviter's cloud location as a peer (URL only, no credentials)
         conn.execute(
             text(
-                "INSERT INTO peer (id, member_id, protocol, url) "
-                "VALUES (:id, :member_id, :protocol, :url)"
+                "INSERT INTO peer (id, member_id, protocol, url, bucket) "
+                "VALUES (:id, :member_id, :protocol, :url, :bucket)"
             ),
             {
                 "id": uuid7(),
                 "member_id": inviter_member_id,
                 "protocol": inviter_cloud["protocol"],
                 "url": inviter_cloud["url"],
+                "bucket": inviter_bucket,
             },
         )
 
@@ -663,14 +676,17 @@ def accept_invitation(
     finally:
         os.chdir(saved_cwd)
 
-    # Derive acceptor's bucket name from team station_id (shared with inviter)
+    # Derive acceptor's bucket name (protocol-aware to avoid folder collisions)
     team_db_path = team_sync_dir / "core.db"
     team_engine = create_engine(f"sqlite:///{team_db_path}")
-    with team_engine.begin() as conn:
-        station_row = conn.execute(
-            text("SELECT id FROM team_app_station LIMIT 1")
-        ).fetchone()
-    acceptor_bucket = f"ss-{station_row[0].hex()[:16]}"
+    if acceptor_cloud["protocol"] == "dropbox":
+        acceptor_bucket = f"ss-{acceptor_member_id.hex()[:16]}"
+    else:
+        with team_engine.begin() as conn:
+            station_row = conn.execute(
+                text("SELECT id FROM team_app_station LIMIT 1")
+            ).fetchone()
+        acceptor_bucket = f"ss-{station_row[0].hex()[:16]}"
 
     # --- Build and return acceptance response (no credentials) ---
     acceptance_data = {
@@ -753,14 +769,15 @@ def complete_invitation_acceptance(
         )
         conn.execute(
             text(
-                "INSERT INTO peer (id, member_id, protocol, url) "
-                "VALUES (:id, :member_id, :protocol, :url)"
+                "INSERT INTO peer (id, member_id, protocol, url, bucket) "
+                "VALUES (:id, :member_id, :protocol, :url, :bucket)"
             ),
             {
                 "id": uuid7(),
                 "member_id": acceptor_member_id,
                 "protocol": acceptor_cloud["protocol"],
                 "url": acceptor_cloud["url"],
+                "bucket": acceptor_bucket,
             },
         )
 
@@ -847,7 +864,19 @@ def get_cloud_storage(root_dir, participant_hex):
     return {"protocol": row[0], "url": row[1], "access_key": row[2], "secret_key": row[3]}
 
 
-def add_cloud_storage(root_dir, participant_hex, protocol, url, access_key=None, secret_key=None):
+def add_cloud_storage(
+    root_dir,
+    participant_hex,
+    protocol,
+    url,
+    access_key=None,
+    secret_key=None,
+    client_id=None,
+    client_secret=None,
+    refresh_token=None,
+    access_token=None,
+    token_expiry=None,
+):
     """Add a cloud storage configuration to a participant's NoteToSelf DB."""
     root_dir = pathlib.Path(root_dir)
     nts_db_path = (
@@ -857,11 +886,20 @@ def add_cloud_storage(root_dir, participant_hex, protocol, url, access_key=None,
     with engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO cloud_storage (id, protocol, url, access_key, secret_key) "
-                "VALUES (:id, :protocol, :url, :access_key, :secret_key)"
+                "INSERT INTO cloud_storage "
+                "(id, protocol, url, access_key, secret_key, "
+                " client_id, client_secret, refresh_token, access_token, token_expiry) "
+                "VALUES "
+                "(:id, :protocol, :url, :access_key, :secret_key, "
+                " :client_id, :client_secret, :refresh_token, :access_token, :token_expiry)"
             ),
-            {"id": uuid7(), "protocol": protocol, "url": url,
-             "access_key": access_key, "secret_key": secret_key},
+            {
+                "id": uuid7(), "protocol": protocol, "url": url,
+                "access_key": access_key, "secret_key": secret_key,
+                "client_id": client_id, "client_secret": client_secret,
+                "refresh_token": refresh_token, "access_token": access_token,
+                "token_expiry": token_expiry,
+            },
         )
     engine.dispose()
 

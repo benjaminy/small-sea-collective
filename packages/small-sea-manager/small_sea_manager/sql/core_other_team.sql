@@ -44,5 +44,6 @@ CREATE TABLE IF NOT EXISTS peer (
     member_id BLOB NOT NULL,
     protocol TEXT NOT NULL,
     url TEXT NOT NULL,
+    bucket TEXT,
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 );

@@ -577,7 +577,21 @@ class SmallSeaBackend:
 
     def _make_dropbox_adapter(self, ss_session, cloud):
         access_token = self._refresh_token_if_needed(ss_session, cloud)
-        return SmallSeaDropboxAdapter(access_token)
+        # Use member_id as folder prefix to avoid collisions in a shared Dropbox account.
+        nts_db = str(ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db")
+        conn = sqlite3.connect(nts_db)
+        try:
+            row = conn.execute(
+                "SELECT self_in_team FROM team WHERE name = ?", (ss_session.team_name,)
+            ).fetchone()
+        finally:
+            conn.close()
+        # self_in_team is a valid 16-byte UUID for real teams; placeholder b"0" for NoteToSelf
+        if row and len(row[0]) == 16:
+            folder_prefix = f"ss-{row[0].hex()[:16]}"
+        else:
+            folder_prefix = f"ss-{ss_session.participant_id.hex()[:16]}"
+        return SmallSeaDropboxAdapter(access_token, folder_prefix=folder_prefix)
 
     def ensure_cloud_ready(self, session_hex):
         """Create and publish the session's cloud bucket (S3 only)."""
@@ -664,10 +678,6 @@ class SmallSeaBackend:
 
     def _download_peer_file(self, session_hex, member_id_hex, path):
         """Core of download_from_peer, factored out for reuse."""
-        import boto3
-        from botocore import UNSIGNED
-        from botocore.config import Config as BotoConfig
-
         ss_session = self._lookup_session(session_hex)
 
         if ss_session.team_name == "NoteToSelf":
@@ -679,7 +689,7 @@ class SmallSeaBackend:
         conn = sqlite3.connect(team_db_path)
         try:
             row = conn.execute(
-                "SELECT protocol, url FROM peer WHERE member_id = ?", (member_id,)
+                "SELECT protocol, url, bucket FROM peer WHERE member_id = ?", (member_id,)
             ).fetchone()
         finally:
             conn.close()
@@ -687,26 +697,40 @@ class SmallSeaBackend:
         if row is None:
             raise SmallSeaNotFoundExn(f"No peer found for member {member_id_hex}")
 
-        protocol, url = row
-        if protocol != "s3":
+        protocol, url, bucket = row
+
+        if protocol == "s3":
+            import boto3
+            from botocore import UNSIGNED
+            from botocore.config import Config as BotoConfig
+
+            bucket_name = bucket or f"ss-{ss_session.station_id.hex()[:16]}"
+            s3_client = boto3.client(
+                "s3",
+                endpoint_url=url,
+                config=BotoConfig(signature_version=UNSIGNED),
+                region_name="us-east-1",
+            )
+            try:
+                response = s3_client.get_object(Bucket=bucket_name, Key=path)
+                data_bytes = response["Body"].read()
+                etag = response["ETag"].strip('"')
+                return True, data_bytes, etag
+            except ClientError as e:
+                code = e.response["Error"]["Code"]
+                return False, None, f"Peer download failed: {code}"
+
+        elif protocol == "dropbox":
+            # Use own Dropbox credentials to access the shared account,
+            # with the peer's folder prefix (stored in peer.bucket).
+            cloud = self._get_cloud_link(ss_session)
+            access_token = self._refresh_token_if_needed(ss_session, cloud)
+            folder_prefix = bucket or ""
+            adapter = SmallSeaDropboxAdapter(access_token, folder_prefix=folder_prefix)
+            return adapter.download(path)
+
+        else:
             raise SmallSeaBackendExn(f"Unsupported peer protocol: {protocol}")
-
-        bucket_name = f"ss-{ss_session.station_id.hex()[:16]}"
-        s3_client = boto3.client(
-            "s3",
-            endpoint_url=url,
-            config=BotoConfig(signature_version=UNSIGNED),
-            region_name="us-east-1",
-        )
-
-        try:
-            response = s3_client.get_object(Bucket=bucket_name, Key=path)
-            data_bytes = response["Body"].read()
-            etag = response["ETag"].strip('"')
-            return True, data_bytes, etag
-        except ClientError as e:
-            code = e.response["Error"]["Code"]
-            return False, None, f"Peer download failed: {code}"
 
     # ---- Notifications ----
 

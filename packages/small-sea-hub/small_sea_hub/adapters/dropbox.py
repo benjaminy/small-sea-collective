@@ -15,9 +15,15 @@ class SmallSeaDropboxAdapter(SmallSeaStorageAdapter):
     Conditional writes use the Dropbox `rev` field as the ETag equivalent.
     """
 
-    def __init__(self, access_token: str):
+    def __init__(self, access_token: str, folder_prefix: str = ""):
         super().__init__("dropbox")
         self.access_token = access_token
+        self.folder_prefix = folder_prefix.strip("/")
+
+    def _make_path(self, path: str) -> str:
+        if self.folder_prefix:
+            return f"/{self.folder_prefix}/{path}"
+        return f"/{path}"
 
     def _headers(self, extra: dict | None = None) -> dict:
         h = {"Authorization": f"Bearer {self.access_token}"}
@@ -26,7 +32,7 @@ class SmallSeaDropboxAdapter(SmallSeaStorageAdapter):
         return h
 
     def download(self, path: str):
-        api_arg = json.dumps({"path": f"/{path}"})
+        api_arg = json.dumps({"path": self._make_path(path)})
         resp = httpx.post(
             f"{DROPBOX_CONTENT}/files/download",
             headers=self._headers({"Dropbox-API-Arg": api_arg}),
@@ -60,7 +66,7 @@ class SmallSeaDropboxAdapter(SmallSeaStorageAdapter):
 
         api_arg = json.dumps(
             {
-                "path": f"/{path}",
+                "path": self._make_path(path),
                 "mode": mode,
                 "autorename": False,
                 "mute": True,

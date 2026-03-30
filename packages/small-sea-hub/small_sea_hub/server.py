@@ -17,8 +17,11 @@ PEER_WATCHER_INTERVAL = 60  # seconds between poll rounds
 
 def _pulse_station_event(app: FastAPI, station_id_hex: str):
     """Wake all waiters on a station by replacing its Event and setting the old one."""
-    old_event = app.state.peer_signal_events.get(station_id_hex)
-    app.state.peer_signal_events[station_id_hex] = asyncio.Event()
+    events = getattr(app.state, "peer_signal_events", None)
+    if events is None:
+        return  # Watcher state not yet initialized
+    old_event = events.get(station_id_hex)
+    events[station_id_hex] = asyncio.Event()
     if old_event:
         old_event.set()
 
@@ -243,7 +246,12 @@ def _register_session_peers(session_hex: str):
 
     Records the team DB path and station so the watcher can re-read the peer
     list on every round, picking up membership changes automatically.
+    No-ops silently if the watcher state has not been initialized yet (e.g.
+    in tests that do not run the full lifespan).
     """
+    watched_sessions = getattr(app.state, "watched_sessions", None)
+    if watched_sessions is None:
+        return  # Watcher state not yet initialized
     try:
         ss_session = app.state.backend._lookup_session(session_hex)
         if ss_session.team_name == "NoteToSelf":
@@ -252,7 +260,7 @@ def _register_session_peers(session_hex: str):
         team_db_path = str(
             ss_session.participant_path / ss_session.team_name / "Sync" / "core.db"
         )
-        app.state.watched_sessions[session_hex] = {
+        watched_sessions[session_hex] = {
             "station_id_hex": station_id_hex,
             "team_db_path": team_db_path,
         }
@@ -261,7 +269,9 @@ def _register_session_peers(session_hex: str):
         # than waiting for the first watcher round.
         _refresh_session_peers(app, session_hex)
     except Exception as exc:
-        app.state.logger.warning(f"_register_session_peers failed: {exc}")
+        logger = getattr(app.state, "logger", None)
+        if logger:
+            logger.warning(f"_register_session_peers failed: {exc}")
 
 
 @app.post("/sessions/request")
@@ -323,17 +333,20 @@ async def upload_to_cloud(
             )
         raise HTTPException(status_code=500, detail=msg)
     if req.notify:
+        _logger = getattr(app.state, "logger", None)
         try:
             small_sea._bump_signal(session_hex)
         except Exception as exc:
-            app.state.logger.warning(f"_bump_signal failed: {exc}")
+            if _logger:
+                _logger.warning(f"_bump_signal failed: {exc}")
         # Pulse the local station event so other sessions on this station
         # (e.g. a second browser tab) are also notified.
         try:
             ss_session = small_sea._lookup_session(session_hex)
             _pulse_station_event(app, ss_session.station_id.hex())
         except Exception as exc:
-            app.state.logger.warning(f"local station pulse failed: {exc}")
+            if _logger:
+                _logger.warning(f"local station pulse failed: {exc}")
     return {"ok": True, "etag": etag, "message": msg}
 
 
