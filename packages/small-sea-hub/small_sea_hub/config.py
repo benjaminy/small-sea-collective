@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     app_author: str = "Benjamin Ylvisaker"
     debug: bool = False
     auto_approve_sessions: bool = False
+    sandbox_mode: bool = False
 
     def get_root_dir(self) -> str:
         if self.root_dir:

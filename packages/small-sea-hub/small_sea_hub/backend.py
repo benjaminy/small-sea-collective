@@ -152,9 +152,10 @@ class SmallSeaBackend:
 
     hub_schema_version: int = 47
 
-    def __init__(self, root_dir, auto_approve_sessions: bool = False):
+    def __init__(self, root_dir, auto_approve_sessions: bool = False, sandbox_mode: bool = False):
         self.root_dir = pathlib.Path(root_dir)
         self.auto_approve_sessions = auto_approve_sessions
+        self.sandbox_mode = sandbox_mode
         os.makedirs(self.root_dir, exist_ok=True)
         self.path_local_db = self.root_dir / "small_sea_collective_local.db"
         os.makedirs(self.root_dir / "Logging", exist_ok=True)
@@ -420,6 +421,27 @@ class SmallSeaBackend:
             sess.commit()
 
         return token
+
+    def list_pending_sessions(self) -> list[dict]:
+        """Return all pending sessions with their PINs.
+
+        Only for sandbox use. Do not expose in production — pins are secrets.
+        """
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+        with Session(engine_local) as sess:
+            rows = sess.query(PendingSession).all()
+            return [
+                {
+                    "pending_id": r.id.hex(),
+                    "participant_hex": r.participant_hex,
+                    "team_name": r.team_name,
+                    "app_name": r.app_name,
+                    "client_name": r.client_name,
+                    "pin": r.pin,
+                    "expires_at": r.expires_at,
+                }
+                for r in rows
+            ]
 
     def open_session(self, nickname, app, team, client) -> bytes:
         """Smoke-test shortcut: request + auto-confirm in one call.

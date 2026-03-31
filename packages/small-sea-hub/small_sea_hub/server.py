@@ -183,6 +183,7 @@ async def lifespan(app: FastAPI):
         app.state.backend = SmallSeaBackend(
             root_dir=settings.get_root_dir(),
             auto_approve_sessions=settings.auto_approve_sessions,
+            sandbox_mode=settings.sandbox_mode,
         )
     if not hasattr(app.state, "watched_sessions"):
         app.state.watched_sessions = {}   # session_hex → {station_id_hex, team_db_path}
@@ -311,6 +312,19 @@ async def confirm_session(req: SessionConfirmReq):
     token_hex = token.hex()
     _register_session_peers(token_hex)
     return token_hex
+
+
+@app.get("/sessions/pending")
+async def list_pending_sessions():
+    """List pending sessions with PINs.
+
+    Only available when the Hub is started with SMALL_SEA_SANDBOX_MODE=1.
+    Exposing PINs over HTTP is unsafe in production; this endpoint is
+    intended solely for the sandbox dashboard.
+    """
+    if not app.state.backend.sandbox_mode:
+        raise HTTPException(status_code=404, detail="Not found")
+    return app.state.backend.list_pending_sessions()
 
 
 @app.get("/session/info")

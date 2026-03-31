@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import click
+import httpx
 import uvicorn
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -194,7 +195,7 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
                     env = {
                         **os.environ,
                         "SMALL_SEA_ROOT_DIR": str(ws.workspace_dir),
-                        "SMALL_SEA_AUTO_APPROVE_SESSIONS": "1",
+                        "SMALL_SEA_SANDBOX_MODE": "1",
                     }
                     request.app.state.processes[key] = subprocess.Popen(
                         [
@@ -230,6 +231,62 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
             hub_status=_process_status(request.app, f"hub:{p.hex}"),
             manager_status=_process_status(request.app, f"manager:{p.hex}"),
             error=None,
+        )
+
+    @app.get("/participants/{participant_hex}/sessions/pending-panel", response_class=HTMLResponse)
+    async def sessions_pending_panel(request: Request, participant_hex: str):
+        """Return the pending sessions HTML panel for a participant's Hub."""
+        ws = request.app.state.workspace
+        p = next((x for x in ws.participants if x.hex == participant_hex), None)
+        sessions = []
+        if p:
+            try:
+                resp = httpx.get(
+                    f"http://localhost:{p.hub_port}/sessions/pending", timeout=2
+                )
+                if resp.status_code == 200:
+                    all_pending = resp.json()
+                    sessions = [s for s in all_pending if s["participant_hex"] == participant_hex]
+            except Exception:
+                pass
+        return _render(
+            "fragments/pending_sessions.html",
+            request,
+            participant_hex=participant_hex,
+            sessions=sessions,
+        )
+
+    @app.post("/participants/{participant_hex}/sessions/confirm", response_class=HTMLResponse)
+    async def sessions_confirm(
+        request: Request,
+        participant_hex: str,
+        pending_id: str = Form(...),
+        pin: str = Form(...),
+    ):
+        """Confirm a pending Hub session from the sandbox dashboard."""
+        ws = request.app.state.workspace
+        p = next((x for x in ws.participants if x.hex == participant_hex), None)
+        sessions = []
+        if p:
+            try:
+                httpx.post(
+                    f"http://localhost:{p.hub_port}/sessions/confirm",
+                    json={"pending_id": pending_id, "pin": pin},
+                    timeout=2,
+                )
+                resp = httpx.get(
+                    f"http://localhost:{p.hub_port}/sessions/pending", timeout=2
+                )
+                if resp.status_code == 200:
+                    all_pending = resp.json()
+                    sessions = [s for s in all_pending if s["participant_hex"] == participant_hex]
+            except Exception:
+                pass
+        return _render(
+            "fragments/pending_sessions.html",
+            request,
+            participant_hex=participant_hex,
+            sessions=sessions,
         )
 
     @app.post("/participants/{participant_hex}/manager/start", response_class=HTMLResponse)

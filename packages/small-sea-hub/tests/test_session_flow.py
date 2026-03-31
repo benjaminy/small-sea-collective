@@ -197,6 +197,44 @@ def test_session_info(playground_dir):
     assert info["client"] == "Smoke Tests"
 
 
+def test_pending_sessions_requires_sandbox_mode(test_env):
+    """/sessions/pending returns 404 when not in sandbox mode."""
+    client = test_env["client"]
+    resp = client.get("/sessions/pending")
+    assert resp.status_code == 404
+
+
+def test_pending_sessions_lists_with_pin(playground_dir):
+    """/sessions/pending returns pending sessions with PINs in sandbox mode."""
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir, sandbox_mode=True)
+    Provisioning.create_new_participant(playground_dir, "alice")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    # No pending sessions yet
+    resp = client.get("/sessions/pending")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+    # Request a session (creates a pending row)
+    resp = client.post(
+        "/sessions/request",
+        json={"participant": "alice", "app": "SmallSeaCollectiveCore",
+              "team": "NoteToSelf", "client": "TestClient"},
+    )
+    assert resp.status_code == 200
+    pending_id = resp.json()["pending_id"]
+
+    resp = client.get("/sessions/pending")
+    assert resp.status_code == 200
+    pending = resp.json()
+    assert len(pending) == 1
+    assert pending[0]["pending_id"] == pending_id
+    assert pending[0]["client_name"] == "TestClient"
+    assert pending[0]["team_name"] == "NoteToSelf"
+    assert len(pending[0]["pin"]) == 4  # 4-digit PIN
+
+
 def test_session_info_via_client(playground_dir):
     """SmallSeaSession.session_info() wraps GET /session/info."""
     from small_sea_client.client import SmallSeaClient, SmallSeaSession
