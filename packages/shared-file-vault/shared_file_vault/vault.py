@@ -183,43 +183,39 @@ def _ensure_registry(vault_root, participant_hex, team_name):
 # Cod Sync push/pull primitives
 # ---------------------------------------------------------------------------
 
-def _cod_push(git_dir, transit, cloud_dir):
+def _cod_push(git_dir, transit, remote):
     saved = os.getcwd()
     try:
         os.chdir(transit)
         cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir))
-        cod.remote = CS.LocalFolderRemote(str(cloud_dir))
+        cod.remote = remote
         cod.push_to_remote(["main"])
     finally:
         os.chdir(saved)
 
 
-def _cod_pull(git_dir, transit, cloud_dir):
-    """Fetch from cloud_dir and merge into git_dir via transit work tree."""
+def _cod_pull(git_dir, transit, remote):
+    """Fetch from remote and merge into git_dir via transit work tree."""
     saved = os.getcwd()
     try:
         os.chdir(transit)
         cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir))
-        cod.remote = CS.LocalFolderRemote(str(cloud_dir))
+        cod.remote = remote
 
-        if _has_commits(git_dir):
+        has_commits = _has_commits(git_dir)
+        if has_commits:
             # Sync transit work tree to HEAD before merging.  Without this,
             # files committed from a user checkout (not the transit) would
             # appear as uncommitted deletions in the transit and block the merge.
             gitCmd(["checkout", "HEAD", "--", "."])
 
-            [bundle_remote, path_tmp] = cod.bundle_tmp()
-            check = gitCmd(["remote", "get-url", bundle_remote], raise_on_error=False)
-            if check.returncode != 0:
-                os.makedirs(path_tmp, exist_ok=True)
-                gitCmd(["remote", "add", bundle_remote, f"{path_tmp}/fetch.bundle"])
-            cod.fetch_from_remote(["main"])
+        cod.fetch_from_remote(["main"])
+
+        if has_commits:
             exit_code = cod.merge_from_remote(["main"])
             if exit_code != 0:
                 raise RuntimeError("Merge conflict during pull")
         else:
-            cod.add_remote(f"file://{cloud_dir}", [])
-            cod.fetch_from_remote(["main"])
             gitCmd(["checkout", "main"])
     finally:
         os.chdir(saved)
@@ -412,27 +408,27 @@ def log(vault_root, participant_hex, team_name, niche_name, limit=20):
     return entries
 
 
-def push_registry(vault_root, participant_hex, team_name, cloud_dir):
-    """Push the niche registry to a cloud directory via Cod Sync."""
+def push_registry(vault_root, participant_hex, team_name, remote):
+    """Push the niche registry to cloud storage via Cod Sync."""
     _ensure_registry(vault_root, participant_hex, team_name)
     git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
     checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
-    _cod_push(git_dir, checkout, cloud_dir)
+    _cod_push(git_dir, checkout, remote)
 
 
-def pull_registry(vault_root, participant_hex, team_name, cloud_dir):
-    """Pull the niche registry from a cloud directory and merge."""
+def pull_registry(vault_root, participant_hex, team_name, remote):
+    """Pull the niche registry from cloud storage and merge."""
     _ensure_registry(vault_root, participant_hex, team_name)
     git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
     checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
-    _cod_pull(git_dir, checkout, cloud_dir)
+    _cod_pull(git_dir, checkout, remote)
 
 
-def push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
-    """Push a niche to a cloud directory via Cod Sync."""
+def push_niche(vault_root, participant_hex, team_name, niche_name, remote):
+    """Push a niche to cloud storage via Cod Sync."""
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
-    _cod_push(git_dir, transit, cloud_dir)
+    _cod_push(git_dir, transit, remote)
 
 
 def list_teams(vault_root, participant_hex):
@@ -447,8 +443,8 @@ def list_teams(vault_root, participant_hex):
     ]
 
 
-def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
-    """Pull a niche from a cloud directory and merge.
+def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
+    """Pull a niche from cloud storage and merge.
 
     Creates the niche git repo if this is the first time pulling it
     (e.g. a new team member joining). Updates all registered checkouts
@@ -463,7 +459,7 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir):
     if not transit.exists():
         _make_work_tree(git_dir, transit)
 
-    _cod_pull(git_dir, transit, cloud_dir)
+    _cod_pull(git_dir, transit, remote)
 
     # Refresh all user checkouts
     for checkout in list_checkouts(vault_root, participant_hex, team_name, niche_name):

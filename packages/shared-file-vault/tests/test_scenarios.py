@@ -17,6 +17,7 @@ import os
 import pathlib
 
 import pytest
+from cod_sync.protocol import LocalFolderRemote
 
 from shared_file_vault.vault import (
     add_checkout,
@@ -48,11 +49,11 @@ def setup_participant(playground, name, participant_hex):
 
 
 def do_push(root, participant_hex, cloud):
-    push_niche(str(root), participant_hex, TEAM, NICHE, str(cloud))
+    push_niche(str(root), participant_hex, TEAM, NICHE, LocalFolderRemote(str(cloud)))
 
 
 def do_pull(root, participant_hex, cloud):
-    pull_niche(str(root), participant_hex, TEAM, NICHE, str(cloud))
+    pull_niche(str(root), participant_hex, TEAM, NICHE, LocalFolderRemote(str(cloud)))
 
 
 def write(checkout, filename, content):
