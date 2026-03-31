@@ -83,9 +83,8 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     root = pathlib.Path(playground_dir)
 
     # -- Shared Hub --
-    backend = SmallSea.SmallSeaBackend(root_dir=str(root))
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
     app.state.backend = backend
-    app.state.auto_approve_sessions = False
     http = TestClient(app)
 
     # -- Provision participants --
@@ -149,11 +148,9 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
         signing_key=alice_priv, member_id=alice_member_id_hex,
     )
 
-    # -- Bob: accept via Manager (auto-approve required for TeamManager.open_session) --
+    # -- Bob: accept via Manager --
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
-    app.state.auto_approve_sessions = True
     acceptance_b64 = bob_manager.accept_invitation(token)
-    app.state.auto_approve_sessions = False
 
     # -- Alice: complete acceptance --
     complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)

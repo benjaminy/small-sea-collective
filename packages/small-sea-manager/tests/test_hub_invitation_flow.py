@@ -35,6 +35,8 @@ def _open_session(http, nickname, team):
     )
     assert resp.status_code == 200, resp.text
     result = resp.json()
+    if "token" in result:
+        return result["token"]  # auto-approved
     resp = http.post(
         "/sessions/confirm",
         json={"pending_id": result["pending_id"], "pin": result["pin"]},
@@ -85,9 +87,8 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     root = pathlib.Path(playground_dir)
 
     # ---- Shared Hub (in-process) ----
-    backend = SmallSea.SmallSeaBackend(root_dir=str(root))
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
     app.state.backend = backend
-    app.state.auto_approve_sessions = False  # use request/confirm flow
     http = TestClient(app)
 
     # ---- Provision participants ----
@@ -142,11 +143,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
 
     # ---- Bob: accept via Manager (all cloud I/O through Hub) ----
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
-    # For auto-approve, the manager's open_session needs auto_approve=True.
-    # Temporarily enable auto-approve for this test to avoid manual PIN flow.
-    app.state.auto_approve_sessions = True
     acceptance_b64 = bob_manager.accept_invitation(token_b64)
-    app.state.auto_approve_sessions = False
 
     assert isinstance(acceptance_b64, str)
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())

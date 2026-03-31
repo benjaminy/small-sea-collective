@@ -28,6 +28,7 @@ class _StubSession:
 
 class _StubBackend:
     logger = logging.getLogger("stub_backend")
+    auto_approve_sessions = False
 
     def __init__(self):
         self._sessions = {}
@@ -56,7 +57,6 @@ def stub_app():
     """Reset app state with a fresh stub backend before each test."""
     stub = _StubBackend()
     app.state.backend = stub
-    app.state.auto_approve_sessions = False
     app.state.watched_sessions = {}
     app.state.watched_peers = {}
     app.state.peer_counts = {}
@@ -64,7 +64,7 @@ def stub_app():
     app.state.logger = logging.getLogger("test")
     yield app, stub
     for attr in (
-        "backend", "auto_approve_sessions", "watched_sessions",
+        "backend", "watched_sessions",
         "watched_peers", "peer_counts", "peer_signal_events", "logger",
     ):
         try:

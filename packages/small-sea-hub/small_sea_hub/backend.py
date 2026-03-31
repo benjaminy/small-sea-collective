@@ -152,8 +152,9 @@ class SmallSeaBackend:
 
     hub_schema_version: int = 47
 
-    def __init__(self, root_dir):
+    def __init__(self, root_dir, auto_approve_sessions: bool = False):
         self.root_dir = pathlib.Path(root_dir)
+        self.auto_approve_sessions = auto_approve_sessions
         os.makedirs(self.root_dir, exist_ok=True)
         self.path_local_db = self.root_dir / "small_sea_collective_local.db"
         os.makedirs(self.root_dir / "Logging", exist_ok=True)

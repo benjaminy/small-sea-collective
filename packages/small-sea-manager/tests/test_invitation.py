@@ -127,9 +127,8 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     root = pathlib.Path(playground_dir)
 
     # -- Shared Hub --
-    backend = SmallSea.SmallSeaBackend(root_dir=str(root))
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
     app.state.backend = backend
-    app.state.auto_approve_sessions = False
     http = TestClient(app)
 
     # -- Provision participants --
@@ -178,11 +177,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
 
     _push_via_hub(http, alice_team_token, alice_team_sync)
 
-    # -- Bob: accept via Manager (auto-approve required for TeamManager.open_session) --
+    # -- Bob: accept via Manager --
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
-    app.state.auto_approve_sessions = True
     acceptance_b64 = bob_manager.accept_invitation(token)
-    app.state.auto_approve_sessions = False
 
     assert isinstance(acceptance_b64, str)
 
@@ -271,9 +268,8 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
     root = pathlib.Path(playground_dir)
 
     # -- Shared Hub --
-    backend = SmallSea.SmallSeaBackend(root_dir=str(root))
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
     app.state.backend = backend
-    app.state.auto_approve_sessions = False
     http = TestClient(app)
 
     # -- Provision participants --
@@ -322,9 +318,7 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
 
     # -- Bob: accept --
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
-    app.state.auto_approve_sessions = True
     acceptance_b64 = bob_manager.accept_invitation(token)
-    app.state.auto_approve_sessions = False
 
     # -- Alice: complete Bob's acceptance and re-push so Carol can clone the latest --
     complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
@@ -332,9 +326,7 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
 
     # -- Carol: accept the same token (provisioning succeeds, completion fails) --
     carol_manager = TeamManager(root, carol_hex, _http_client=http)
-    app.state.auto_approve_sessions = True
     carol_acceptance_b64 = carol_manager.accept_invitation(token)
-    app.state.auto_approve_sessions = False
 
     with pytest.raises(ValueError, match="not pending"):
         complete_invitation_acceptance(root, alice_hex, "ProjectX", carol_acceptance_b64)

@@ -180,8 +180,10 @@ async def _peer_watcher_loop(app: FastAPI):
 async def lifespan(app: FastAPI):
     if not hasattr(app.state, "backend"):
         settings = Settings()
-        app.state.backend = SmallSeaBackend(root_dir=settings.get_root_dir())
-        app.state.auto_approve_sessions = settings.auto_approve_sessions
+        app.state.backend = SmallSeaBackend(
+            root_dir=settings.get_root_dir(),
+            auto_approve_sessions=settings.auto_approve_sessions,
+        )
     if not hasattr(app.state, "watched_sessions"):
         app.state.watched_sessions = {}   # session_hex → {station_id_hex, team_db_path}
     if not hasattr(app.state, "watched_peers"):
@@ -280,13 +282,13 @@ async def request_session(req: SessionRequestReq):
     # When auto-approving, skip OS notifications by presenting as "Smoke Tests".
     effective_client = (
         "Smoke Tests"
-        if getattr(app.state, "auto_approve_sessions", False)
+        if app.state.backend.auto_approve_sessions
         else req.client
     )
     pending_id_hex, pin = small_sea.request_session(
         req.participant, req.app, req.team, effective_client
     )
-    if getattr(app.state, "auto_approve_sessions", False):
+    if app.state.backend.auto_approve_sessions:
         token = small_sea.confirm_session(pending_id_hex, pin)
         token_hex = token.hex()
         _register_session_peers(token_hex)

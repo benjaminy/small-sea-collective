@@ -22,14 +22,6 @@ def safe_cwd():
         pass
 
 
-@pytest.fixture(autouse=True)
-def reset_hub_app_state():
-    """Reset Hub app global state after each test to prevent cross-test contamination."""
-    from small_sea_hub.server import app
-    yield
-    app.state.auto_approve_sessions = False
-
-
 @pytest.fixture()
 def playground_dir():
     dir_name = tempfile.mkdtemp()
