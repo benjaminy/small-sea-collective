@@ -30,7 +30,7 @@ _scripts = Path(__file__).parent
 if str(_scripts) not in sys.path:
     sys.path.insert(0, str(_scripts))
 
-import cod_sync.CodSync as CodSync
+import cod_sync.protocol as CodSync
 import setup_dropbox_auth as _auth
 from dropbox_remote import DropboxCodSyncRemote
 from small_sea_manager.provisioning import (

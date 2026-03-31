@@ -591,21 +591,25 @@ def accept_invitation(
     os.makedirs(team_sync_dir, exist_ok=False)
 
     # --- Clone the team repo from inviter's cloud ---
+    # Use git init + fetch_from_remote + checkout rather than clone_from_remote,
+    # so this works when the workspace lives inside an existing git repo.
+
+    CodSync.gitCmd(["init", "-b", "main", str(team_sync_dir)])
 
     saved_cwd = os.getcwd()
     os.chdir(team_sync_dir)
     try:
         cod = CodSync.CodSync("inviter")
-
-        # Build a URL for git remote registration (used by add_remote inside clone_from_remote)
-        inviter_url = (
-            f"{inviter_cloud['protocol']}://{inviter_cloud['url']}/{inviter_bucket}"
-        )
-        result = cod.clone_from_remote(inviter_url, remote=inviter_remote)
+        cod.remote = inviter_remote
+        result = cod.fetch_from_remote(["main"])
         if result != 0:
-            raise RuntimeError(
-                f"Failed to clone team repo from inviter's cloud (code {result})"
+            inviter_url = (
+                f"{inviter_cloud['protocol']}://{inviter_cloud['url']}/{inviter_bucket}"
             )
+            raise RuntimeError(
+                f"Failed to fetch team repo from inviter's cloud (code {result}; {inviter_url})"
+            )
+        CodSync.gitCmd(["checkout", "main"])
     finally:
         os.chdir(saved_cwd)
 
