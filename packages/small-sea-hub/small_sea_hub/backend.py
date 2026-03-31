@@ -335,12 +335,15 @@ class SmallSeaBackend:
         pin = str(secrets.randbelow(10000)).zfill(4)
 
         if client != "Smoke Tests":
-            plyer.notification.notify(
-                title="Small Sea Access Request",
-                message=f'PIN: {pin} — "{client}" requesting access to {team} → {app}',
-                app_name="Small Sea Hub",
-                timeout=10,
-            )
+            try:
+                plyer.notification.notify(
+                    title="Small Sea Access Request",
+                    message=f'PIN: {pin} — "{client}" requesting access to {team} → {app}',
+                    app_name="Small Sea Hub",
+                    timeout=10,
+                )
+            except Exception:
+                pass  # notification failure must not abort the session request
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=5)

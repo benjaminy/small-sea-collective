@@ -40,11 +40,24 @@ class TeamManager:
         """Return the participant's primary cloud storage config dict."""
         return provisioning.get_cloud_storage(self.root_dir, self.participant_hex)
 
-    def connect(self, team="NoteToSelf"):
-        """Open a Hub session for cloud sync on the given team station."""
-        self.session = self.client.open_session(
+    def connect(self, team="NoteToSelf", pin_provider=None):
+        """Open a Hub session for cloud sync on the given team station.
+
+        pin_provider: callable(pending_id) → pin string.  The Hub sends the PIN
+        via OS notification; pin_provider is responsible for collecting it from
+        the user and returning it.  Pass a backend-aware lambda in tests.
+        Raises RuntimeError if pin_provider is None (no production default yet).
+        """
+        pending_id = self.client.request_session(
             self.participant_hex, "SmallSeaCollectiveCore", team, "TeamManager"
         )
+        if pin_provider is None:
+            raise RuntimeError(
+                "connect() requires a pin_provider callable(pending_id) → pin. "
+                "Approve the session via the Hub UI or pass pin_provider in tests."
+            )
+        pin = pin_provider(pending_id)
+        self.session = self.client.confirm_session(pending_id, pin)
 
     # --- Team CRUD ---
 
