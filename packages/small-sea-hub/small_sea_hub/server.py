@@ -311,6 +311,23 @@ async def confirm_session(req: SessionConfirmReq):
     return token_hex
 
 
+@app.get("/session/info")
+async def session_info(session_hex: str = Depends(_require_session)):
+    """Return metadata for the current session.
+
+    Allows apps to discover their station_id and team context from a session
+    token, without reading the SmallSeaCollectiveCore SQLite database directly.
+    """
+    ss_session = app.state.backend._lookup_session(session_hex)
+    return {
+        "participant_hex": ss_session.participant_id.hex(),
+        "team_name": ss_session.team_name,
+        "app_name": ss_session.app_name,
+        "station_id": ss_session.station_id.hex(),
+        "client": ss_session.client,
+    }
+
+
 # ---- Cloud storage ----
 
 

@@ -142,6 +142,12 @@ class SmallSeaSession:
         """The session token. Can be persisted and passed to SmallSeaSession() to resume."""
         return self._token
 
+    # ---- Session info ----
+
+    def session_info(self) -> dict:
+        """Return metadata for this session: participant_hex, team_name, app_name, station_id, client."""
+        return self._client._get("/session/info", token=self._token)
+
     # ---- Cloud storage ----
 
     def ensure_cloud_ready(self) -> None:

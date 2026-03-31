@@ -173,3 +173,44 @@ def test_invalid_bearer_rejected(test_env):
         headers={"Authorization": "NotBearer abc"},
     )
     assert resp.status_code == 401
+
+
+def test_session_info(playground_dir):
+    """GET /session/info returns identity fields without reading the DB directly."""
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    alice_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    session_hex = _request_and_confirm(client, team="ProjectX")
+    resp = client.get(
+        "/session/info",
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+    assert resp.status_code == 200
+    info = resp.json()
+    assert info["participant_hex"] == alice_hex
+    assert info["team_name"] == "ProjectX"
+    assert info["app_name"] == "SmallSeaCollectiveCore"
+    assert len(info["station_id"]) == 32  # 16 bytes hex
+    assert info["client"] == "Smoke Tests"
+
+
+def test_session_info_via_client(playground_dir):
+    """SmallSeaSession.session_info() wraps GET /session/info."""
+    from small_sea_client.client import SmallSeaClient, SmallSeaSession
+
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    alice_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    app.state.backend = backend
+    http = TestClient(app)
+
+    session_hex = _request_and_confirm(http)
+    sc = SmallSeaClient(_http_client=http)
+    session = SmallSeaSession(sc, session_hex)
+    info = session.session_info()
+
+    assert info["participant_hex"] == alice_hex
+    assert info["team_name"] == "NoteToSelf"
+    assert len(info["station_id"]) == 32
