@@ -1,7 +1,21 @@
+import os
+import pathlib
 import shutil
 import tempfile
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def safe_cwd():
+    """Ensure each test starts and ends with a valid working directory."""
+    safe = pathlib.Path(__file__).parent
+    os.chdir(safe)
+    yield
+    try:
+        os.chdir(safe)
+    except OSError:
+        pass
 
 
 @pytest.fixture()

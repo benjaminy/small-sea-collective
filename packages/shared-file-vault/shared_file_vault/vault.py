@@ -214,7 +214,9 @@ def _cod_pull(git_dir, transit, cloud_dir):
                 os.makedirs(path_tmp, exist_ok=True)
                 gitCmd(["remote", "add", bundle_remote, f"{path_tmp}/fetch.bundle"])
             cod.fetch_from_remote(["main"])
-            cod.merge_from_remote(["main"])
+            exit_code = cod.merge_from_remote(["main"])
+            if exit_code != 0:
+                raise RuntimeError("Merge conflict during pull")
         else:
             cod.add_remote(f"file://{cloud_dir}", [])
             cod.fetch_from_remote(["main"])
