@@ -43,6 +43,8 @@ from shared_file_vault.vault import (
 
 HUB_A_PORT = 11700
 HUB_B_PORT = 11701
+HUB_A_NTFY_PORT = 11702
+HUB_B_NTFY_PORT = 11703
 NICHE = "ping-pong"
 HUB_STARTUP_TIMEOUT = 30   # seconds
 SIGNAL_POLL_TIMEOUT = 120  # seconds to wait for peer signal
@@ -120,12 +122,15 @@ def _discover_shared_team_name(workspace: pathlib.Path, hexes: list[str]) -> str
 # ---------------------------------------------------------------------------
 
 
-def _start_hub(root_dir: str, port: int, log_path: pathlib.Path) -> subprocess.Popen:
+def _start_hub(
+    root_dir: str, port: int, log_path: pathlib.Path,
+    watcher_interval: int = 2,
+) -> subprocess.Popen:
     env = os.environ.copy()
     env["SMALL_SEA_ROOT_DIR"] = root_dir
     env["SMALL_SEA_AUTO_APPROVE_SESSIONS"] = "1"
     env["SMALL_SEA_LOG_LEVEL"] = "DEBUG"
-    env["SMALL_SEA_WATCHER_INTERVAL"] = "2"
+    env["SMALL_SEA_WATCHER_INTERVAL"] = str(watcher_interval)
     cmd = [
         "uv", "run", "fastapi", "dev",
         "packages/small-sea-hub/small_sea_hub/server.py",
@@ -347,6 +352,84 @@ def dropbox_env(tmp_path_factory):
         proc1.wait()
 
 
+@pytest.fixture(scope="module")
+def dropbox_ntfy_env(tmp_path_factory):
+    """Like dropbox_env but with ntfy configured and polling effectively disabled.
+
+    Requires SMALL_SEA_DROPBOX_WORKSPACE and SMALL_SEA_NTFY_URL to be set.
+    Hubs start with SMALL_SEA_WATCHER_INTERVAL=300 so any fast notification
+    must come from ntfy, not the polling watcher.
+    """
+    workspace_str = os.environ.get("SMALL_SEA_DROPBOX_WORKSPACE")
+    ntfy_url = os.environ.get("SMALL_SEA_NTFY_URL")
+    if not workspace_str:
+        pytest.skip("SMALL_SEA_DROPBOX_WORKSPACE not set — skipping ntfy latency test")
+    if not ntfy_url:
+        pytest.skip("SMALL_SEA_NTFY_URL not set — skipping ntfy latency test")
+
+    workspace = pathlib.Path(workspace_str).expanduser().resolve()
+    if not workspace.exists():
+        pytest.skip(f"SMALL_SEA_DROPBOX_WORKSPACE path does not exist: {workspace}")
+
+    hexes = _discover_participants(workspace)
+    p0_hex, p1_hex = hexes
+
+    team_name = (
+        os.environ.get("SMALL_SEA_DROPBOX_TEAM")
+        or _discover_shared_team_name(workspace, hexes)
+    )
+    p0_nick = _get_nickname(workspace, p0_hex)
+    p1_nick = _get_nickname(workspace, p1_hex)
+    p0_member_id = _get_member_id_hex(workspace, p0_hex, team_name)
+    p1_member_id = _get_member_id_hex(workspace, p1_hex, team_name)
+
+    # Isolated Hub root dirs
+    hub0_root = pathlib.Path(tmp_path_factory.mktemp("hub0_ntfy"))
+    hub1_root = pathlib.Path(tmp_path_factory.mktemp("hub1_ntfy"))
+    shutil.copytree(
+        str(workspace / "Participants" / p0_hex),
+        str(hub0_root / "Participants" / p0_hex),
+    )
+    shutil.copytree(
+        str(workspace / "Participants" / p1_hex),
+        str(hub1_root / "Participants" / p1_hex),
+    )
+
+    # Configure ntfy in each copied workspace so the Hub publishes/subscribes.
+    from small_sea_manager.manager import TeamManager
+    for hub_root, participant_hex in [(hub0_root, p0_hex), (hub1_root, p1_hex)]:
+        TeamManager(str(hub_root), participant_hex).set_notification_service("ntfy", ntfy_url)
+
+    ep0 = f"http://localhost:{HUB_A_NTFY_PORT}"
+    ep1 = f"http://localhost:{HUB_B_NTFY_PORT}"
+
+    tmp = tmp_path_factory.mktemp("hub_ntfy_logs")
+    log0 = tmp / f"hub_{HUB_A_NTFY_PORT}.log"
+    log1 = tmp / f"hub_{HUB_B_NTFY_PORT}.log"
+
+    # Watcher interval = 300s — polling is effectively disabled.
+    # Any fast notification must come from ntfy.
+    proc0 = _start_hub(str(hub0_root), HUB_A_NTFY_PORT, log0, watcher_interval=300)
+    proc1 = _start_hub(str(hub1_root), HUB_B_NTFY_PORT, log1, watcher_interval=300)
+    try:
+        _wait_for_hub(ep0, proc0, log0)
+        _wait_for_hub(ep1, proc1, log1)
+
+        yield {
+            "team_name": team_name,
+            "p0_hex": p0_hex, "p0_nick": p0_nick, "p0_member_id": p0_member_id,
+            "p1_hex": p1_hex, "p1_nick": p1_nick, "p1_member_id": p1_member_id,
+            "ep0": ep0, "ep1": ep1,
+            "log0": log0, "log1": log1,
+            "ntfy_url": ntfy_url,
+        }
+    finally:
+        proc0.terminate()
+        proc1.terminate()
+        proc0.wait()
+        proc1.wait()
+
+
 # ---------------------------------------------------------------------------
 # Test
 # ---------------------------------------------------------------------------
@@ -535,6 +618,99 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     # ---- Report ----
     one_way_ms = (t_p1_received - t_start) * 1000
     round_trip_ms = (t_p0_received - t_start) * 1000
-    print(f"\n=== Dropbox Ping-Pong Latency (push notifications, watcher_interval=2s) ===")
+    print(f"\n=== Dropbox Ping-Pong Latency (Hub long-poll, watcher_interval=2s) ===")
+    print(f"  {p0_nick} → push → {p1_nick} notified: {one_way_ms:.0f} ms")
+    print(f"  Full round trip ({p0_nick} → {p1_nick} → {p0_nick}): {round_trip_ms:.0f} ms")
+
+
+def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
+    """Ping-pong via ntfy push notifications with polling effectively disabled.
+
+    Hubs run with SMALL_SEA_WATCHER_INTERVAL=300s. Any sub-minute round trip
+    proves notifications came from ntfy, not the polling watcher.
+
+    Requires SMALL_SEA_DROPBOX_WORKSPACE and SMALL_SEA_NTFY_URL.
+    """
+    team = dropbox_ntfy_env["team_name"]
+    p0_hex, p0_nick = dropbox_ntfy_env["p0_hex"], dropbox_ntfy_env["p0_nick"]
+    p1_hex, p1_nick = dropbox_ntfy_env["p1_hex"], dropbox_ntfy_env["p1_nick"]
+    p0_member_id = dropbox_ntfy_env["p0_member_id"]
+    p1_member_id = dropbox_ntfy_env["p1_member_id"]
+    ep0, ep1 = dropbox_ntfy_env["ep0"], dropbox_ntfy_env["ep1"]
+    ntfy_url = dropbox_ntfy_env["ntfy_url"]
+
+    print(f"\nParticipants: {p0_nick} ({p0_hex[:8]}…) and {p1_nick} ({p1_hex[:8]}…)")
+    print(f"Team: {team} | ntfy: {ntfy_url} | watcher_interval: 300s")
+
+    tok0 = _open_session(ep0, p0_nick, team)
+    tok1 = _open_session(ep1, p1_nick, team)
+
+    for ep, tok in [(ep0, tok0), (ep1, tok1)]:
+        requests.post(
+            f"{ep}/cloud/setup",
+            headers={"Authorization": f"Bearer {tok}"},
+        ).raise_for_status()
+
+    vault0 = str(tmp_path / "vault-p0")
+    vault1 = str(tmp_path / "vault-p1")
+    init_vault(vault0, p0_hex)
+    init_vault(vault1, p1_hex)
+
+    niche_name = "ping-pong-ntfy"
+    reg_pfx = f"vault/{team}/registry-ntfy/"
+    niche_pfx = f"vault/{team}/niches/{niche_name}/"
+
+    reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
+    niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
+    niche_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=niche_pfx)
+    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=reg_pfx)
+    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=niche_pfx)
+    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_member_id, base_url=ep0, path_prefix=niche_pfx)
+
+    create_niche(vault0, p0_hex, team, niche_name)
+    co0 = tmp_path / "checkout-p0"
+    add_checkout(vault0, p0_hex, team, niche_name, str(co0))
+    (co0 / "init.txt").write_text("initialised\n")
+    publish(vault0, p0_hex, team, niche_name, str(co0), message="init")
+    push_niche(vault0, p0_hex, team, niche_name, niche_remote0)
+
+    push_registry(vault0, p0_hex, team, reg_remote0)
+    pull_registry(vault1, p1_hex, team, p1_reads_p0_reg)
+
+    pull_niche(vault1, p1_hex, team, niche_name, p1_reads_p0_niche)
+    co1 = tmp_path / "checkout-p1"
+    add_checkout(vault1, p1_hex, team, niche_name, str(co1))
+
+    count_p0_before_ping = _get_peer_count(ep1, tok1, p0_member_id)
+    count_p1_before_pong = _get_peer_count(ep0, tok0, p1_member_id)
+
+    # ---- PING ----
+    t_start = time.time()
+    (co0 / "ping.txt").write_text(f"ping {t_start}\n")
+    publish(vault0, p0_hex, team, niche_name, str(co0), message="ping")
+    push_niche(vault0, p0_hex, team, niche_name, niche_remote0)
+
+    # ---- p1 waits for ntfy-driven notification ----
+    _wait_for_notification(ep1, tok1, p0_member_id, count_p0_before_ping)
+    t_p1_received = time.time()
+
+    pull_niche(vault1, p1_hex, team, niche_name, p1_reads_p0_niche)
+    assert (co1 / "ping.txt").exists(), f"{p1_nick} should see ping.txt after pull"
+
+    (co1 / "pong.txt").write_text(f"pong {t_p1_received}\n")
+    publish(vault1, p1_hex, team, niche_name, str(co1), message="pong")
+    push_niche(vault1, p1_hex, team, niche_name, niche_remote1)
+
+    # ---- p0 waits for ntfy-driven notification of pong ----
+    _wait_for_notification(ep0, tok0, p1_member_id, count_p1_before_pong)
+    t_p0_received = time.time()
+
+    pull_niche(vault0, p0_hex, team, niche_name, p0_reads_p1_niche)
+    assert (co0 / "pong.txt").exists(), f"{p0_nick} should see pong.txt after pull"
+
+    # ---- Report ----
+    one_way_ms = (t_p1_received - t_start) * 1000
+    round_trip_ms = (t_p0_received - t_start) * 1000
+    print(f"\n=== Dropbox Ping-Pong Latency (ntfy push, watcher_interval=300s) ===")
     print(f"  {p0_nick} → push → {p1_nick} notified: {one_way_ms:.0f} ms")
     print(f"  Full round trip ({p0_nick} → {p1_nick} → {p0_nick}): {round_trip_ms:.0f} ms")
