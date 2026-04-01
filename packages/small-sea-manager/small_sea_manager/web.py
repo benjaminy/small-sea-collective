@@ -142,6 +142,52 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         )
 
     # ------------------------------------------------------------------ #
+    # Cloud storage
+    # ------------------------------------------------------------------ #
+
+    def _cloud_storage_fragment(request, error=None):
+        providers = _mgr(request).list_cloud_storage()
+        return templates.TemplateResponse(
+            "fragments/cloud_storage.html",
+            {"request": request, "providers": providers, "error": error},
+        )
+
+    @app.get("/cloud-storage", response_class=HTMLResponse)
+    async def cloud_storage(request: Request):
+        return _cloud_storage_fragment(request)
+
+    @app.post("/cloud-storage", response_class=HTMLResponse)
+    async def add_cloud_storage(
+        request: Request,
+        protocol: str = Form(...),
+        url: str = Form(...),
+        access_key: str = Form(""),
+        secret_key: str = Form(""),
+    ):
+        mgr = _mgr(request)
+        try:
+            mgr.add_cloud_storage(
+                protocol=protocol,
+                url=url.strip(),
+                access_key=access_key.strip() or None,
+                secret_key=secret_key.strip() or None,
+            )
+            error = None
+        except Exception as e:
+            error = str(e)
+        return _cloud_storage_fragment(request, error=error)
+
+    @app.post("/cloud-storage/{storage_id}/remove", response_class=HTMLResponse)
+    async def remove_cloud_storage(request: Request, storage_id: str):
+        mgr = _mgr(request)
+        try:
+            mgr.remove_cloud_storage(storage_id)
+            error = None
+        except Exception as e:
+            error = str(e)
+        return _cloud_storage_fragment(request, error=error)
+
+    # ------------------------------------------------------------------ #
     # Accept invitation (invitee side — no team yet)
     # ------------------------------------------------------------------ #
 

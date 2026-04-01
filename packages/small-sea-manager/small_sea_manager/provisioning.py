@@ -935,6 +935,47 @@ def add_cloud_storage(
     engine.dispose()
 
 
+def list_cloud_storage(root_dir, participant_hex):
+    """Return all cloud storage configs as a list of dicts (credentials masked)."""
+    root_dir = pathlib.Path(root_dir)
+    nts_db_path = (
+        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{nts_db_path}")
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT id, protocol, url, access_key, client_id FROM cloud_storage ORDER BY rowid")
+        ).fetchall()
+    engine.dispose()
+    result = []
+    for row in rows:
+        storage_id = row[0].hex() if isinstance(row[0], bytes) else row[0]
+        result.append({
+            "id": storage_id,
+            "protocol": row[1],
+            "url": row[2],
+            "access_key": row[3],
+            "client_id": row[4],
+        })
+    return result
+
+
+def remove_cloud_storage(root_dir, participant_hex, storage_id_hex):
+    """Remove a cloud storage config by its hex ID."""
+    root_dir = pathlib.Path(root_dir)
+    nts_db_path = (
+        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
+    storage_id = bytes.fromhex(storage_id_hex)
+    engine = create_engine(f"sqlite:///{nts_db_path}")
+    with engine.begin() as conn:
+        conn.execute(
+            text("DELETE FROM cloud_storage WHERE id = :id"),
+            {"id": storage_id},
+        )
+    engine.dispose()
+
+
 def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
     """Set an invitation's status to 'revoked'. Raises ValueError if not pending."""
     root_dir = pathlib.Path(root_dir)

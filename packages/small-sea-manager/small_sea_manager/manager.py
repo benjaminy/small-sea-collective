@@ -40,6 +40,27 @@ class TeamManager:
         """Return the participant's primary cloud storage config dict."""
         return provisioning.get_cloud_storage(self.root_dir, self.participant_hex)
 
+    def list_cloud_storage(self):
+        """Return all cloud storage configs as a list of dicts."""
+        return provisioning.list_cloud_storage(self.root_dir, self.participant_hex)
+
+    def add_cloud_storage(self, protocol, url, access_key=None, secret_key=None,
+                          client_id=None, client_secret=None,
+                          refresh_token=None, access_token=None, token_expiry=None):
+        """Add a cloud storage configuration."""
+        provisioning.add_cloud_storage(
+            self.root_dir, self.participant_hex,
+            protocol=protocol, url=url,
+            access_key=access_key, secret_key=secret_key,
+            client_id=client_id, client_secret=client_secret,
+            refresh_token=refresh_token, access_token=access_token,
+            token_expiry=token_expiry,
+        )
+
+    def remove_cloud_storage(self, storage_id_hex):
+        """Remove a cloud storage config by its hex ID."""
+        provisioning.remove_cloud_storage(self.root_dir, self.participant_hex, storage_id_hex)
+
     def connect(self, team="NoteToSelf", pin_provider=None):
         """Open a Hub session for cloud sync on the given team station.
 

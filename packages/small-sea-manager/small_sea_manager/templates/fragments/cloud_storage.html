@@ -1,0 +1,58 @@
+<div id="cloud-storage-section">
+  {% if error %}
+  <p class="notice notice-err" style="margin:0.75rem 1rem">{{ error }}</p>
+  {% endif %}
+
+  {% if providers %}
+  <table>
+    <thead>
+      <tr>
+        <th>Protocol</th>
+        <th>URL</th>
+        <th>Credentials</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in providers %}
+      <tr>
+        <td><span class="badge badge-blue">{{ p.protocol }}</span></td>
+        <td class="mono">{{ p.url }}</td>
+        <td class="mono" style="color:#a8a29e">
+          {% if p.access_key %}
+            ****{{ p.access_key[-4:] }}
+          {% elif p.client_id %}
+            app: ****{{ p.client_id[-4:] }}
+          {% else %}
+            —
+          {% endif %}
+        </td>
+        <td style="text-align:right">
+          <button class="btn btn-danger"
+                  hx-post="/cloud-storage/{{ p.id }}/remove"
+                  hx-target="#cloud-storage-section"
+                  hx-swap="outerHTML"
+                  hx-confirm="Remove this cloud storage config?">Remove</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="padding:0.75rem 1rem; color:#78716c; font-size:0.88rem">No cloud storage configured.</p>
+  {% endif %}
+
+  <div style="padding:0.6rem 1rem; border-top:1px solid #f5f5f4">
+    <p style="font-size:0.82rem; color:#78716c; margin-bottom:0.5rem">Add S3 / MinIO provider</p>
+    <form class="inline-form"
+          hx-post="/cloud-storage"
+          hx-target="#cloud-storage-section"
+          hx-swap="outerHTML">
+      <input type="hidden" name="protocol" value="s3">
+      <input type="text" name="url" placeholder="Endpoint URL (e.g. http://localhost:9000)" required style="flex:2">
+      <input type="text" name="access_key" placeholder="Access key" required>
+      <input type="password" name="secret_key" placeholder="Secret key" required>
+      <button class="btn btn-primary" type="submit">Add</button>
+    </form>
+  </div>
+</div>
