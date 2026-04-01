@@ -47,6 +47,9 @@ NICHE = "ping-pong"
 HUB_STARTUP_TIMEOUT = 30   # seconds
 SIGNAL_POLL_TIMEOUT = 120  # seconds to wait for peer signal
 
+# Repo root: packages/shared-file-vault/tests/ → up three levels
+_REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.parent
+
 
 # ---------------------------------------------------------------------------
 # Workspace discovery helpers
@@ -92,16 +95,24 @@ def _get_member_id_hex(workspace: pathlib.Path, participant_hex: str, team_name:
     return row[0].hex()
 
 
-def _discover_team_name(workspace: pathlib.Path, participant_hex: str) -> str:
-    """Discover the non-NoteToSelf team name from a participant's directory."""
-    p_dir = workspace / "Participants" / participant_hex
-    team_dirs = [d.name for d in p_dir.iterdir() if d.is_dir() and d.name != "NoteToSelf"]
-    if len(team_dirs) != 1:
+def _discover_shared_team_name(workspace: pathlib.Path, hexes: list[str]) -> str:
+    """Find the team name present in all participants' directories (excluding NoteToSelf)."""
+    def _teams(hex_):
+        p_dir = workspace / "Participants" / hex_
+        return {d.name for d in p_dir.iterdir() if d.is_dir() and d.name != "NoteToSelf"}
+
+    shared = _teams(hexes[0])
+    for hex_ in hexes[1:]:
+        shared &= _teams(hex_)
+
+    if len(shared) == 0:
+        raise ValueError(f"No shared team found among participants {hexes}")
+    if len(shared) > 1:
         raise ValueError(
-            f"Expected exactly 1 team (besides NoteToSelf) for {participant_hex}, "
-            f"found: {team_dirs}"
+            f"Multiple shared teams found among participants {hexes}: {shared}. "
+            "Set SMALL_SEA_DROPBOX_TEAM to specify which one."
         )
-    return team_dirs[0]
+    return shared.pop()
 
 
 # ---------------------------------------------------------------------------
@@ -109,22 +120,43 @@ def _discover_team_name(workspace: pathlib.Path, participant_hex: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _start_hub(root_dir: str, port: int) -> subprocess.Popen:
+def _start_hub(root_dir: str, port: int, log_path: pathlib.Path) -> subprocess.Popen:
     env = os.environ.copy()
     env["SMALL_SEA_ROOT_DIR"] = root_dir
     env["SMALL_SEA_AUTO_APPROVE_SESSIONS"] = "1"
+    env["SMALL_SEA_LOG_LEVEL"] = "DEBUG"
     cmd = [
         "uv", "run", "fastapi", "dev",
         "packages/small-sea-hub/small_sea_hub/server.py",
         "--port", str(port),
     ]
-    return subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    log_fh = open(log_path, "w")
+    return subprocess.Popen(
+        cmd, env=env, stdout=log_fh, stderr=log_fh, cwd=str(_REPO_ROOT)
+    )
 
 
-def _wait_for_hub(endpoint: str, timeout: int = HUB_STARTUP_TIMEOUT) -> None:
-    """Poll until Hub responds or raise on timeout."""
+def _tail(path: pathlib.Path, lines: int = 40) -> str:
+    """Return the last N lines of a file, or a placeholder if unreadable."""
+    try:
+        text = path.read_text(errors="replace")
+        return "\n".join(text.splitlines()[-lines:])
+    except OSError:
+        return f"(could not read {path})"
+
+
+def _wait_for_hub(
+    endpoint: str, proc: subprocess.Popen, log_path: pathlib.Path,
+    timeout: int = HUB_STARTUP_TIMEOUT,
+) -> None:
+    """Poll until Hub responds. On failure, show the subprocess log."""
     deadline = time.time() + timeout
     while time.time() < deadline:
+        if proc.poll() is not None:
+            raise RuntimeError(
+                f"Hub at {endpoint} exited early (code {proc.returncode}).\n"
+                f"--- last lines of {log_path} ---\n{_tail(log_path)}"
+            )
         try:
             resp = requests.get(f"{endpoint}/docs", timeout=2)
             if resp.status_code < 500:
@@ -132,7 +164,10 @@ def _wait_for_hub(endpoint: str, timeout: int = HUB_STARTUP_TIMEOUT) -> None:
         except requests.exceptions.ConnectionError:
             pass
         time.sleep(0.5)
-    raise RuntimeError(f"Hub at {endpoint} did not start within {timeout}s")
+    raise RuntimeError(
+        f"Hub at {endpoint} did not respond within {timeout}s.\n"
+        f"--- last lines of {log_path} ---\n{_tail(log_path)}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +254,10 @@ def dropbox_env(tmp_path_factory):
     hexes = _discover_participants(workspace)
     p0_hex, p1_hex = hexes
 
-    team_name = _discover_team_name(workspace, p0_hex)
+    team_name = (
+        os.environ.get("SMALL_SEA_DROPBOX_TEAM")
+        or _discover_shared_team_name(workspace, hexes)
+    )
     p0_nick = _get_nickname(workspace, p0_hex)
     p1_nick = _get_nickname(workspace, p1_hex)
     p0_member_id = _get_member_id_hex(workspace, p0_hex, team_name)
@@ -240,22 +278,22 @@ def dropbox_env(tmp_path_factory):
     ep0 = f"http://localhost:{HUB_A_PORT}"
     ep1 = f"http://localhost:{HUB_B_PORT}"
 
-    proc0 = _start_hub(hub0_root, HUB_A_PORT)
-    proc1 = _start_hub(hub1_root, HUB_B_PORT)
-    try:
-        _wait_for_hub(ep0)
-        _wait_for_hub(ep1)
+    tmp = tmp_path_factory.mktemp("hub_logs")
+    log0 = tmp / f"hub_{HUB_A_PORT}.log"
+    log1 = tmp / f"hub_{HUB_B_PORT}.log"
 
-        if proc0.poll() is not None:
-            raise RuntimeError(f"Hub 0 exited early (code {proc0.returncode})")
-        if proc1.poll() is not None:
-            raise RuntimeError(f"Hub 1 exited early (code {proc1.returncode})")
+    proc0 = _start_hub(hub0_root, HUB_A_PORT, log0)
+    proc1 = _start_hub(hub1_root, HUB_B_PORT, log1)
+    try:
+        _wait_for_hub(ep0, proc0, log0)
+        _wait_for_hub(ep1, proc1, log1)
 
         yield {
             "team_name": team_name,
             "p0_hex": p0_hex, "p0_nick": p0_nick, "p0_member_id": p0_member_id,
             "p1_hex": p1_hex, "p1_nick": p1_nick, "p1_member_id": p1_member_id,
             "ep0": ep0, "ep1": ep1,
+            "log0": log0, "log1": log1,
         }
     finally:
         proc0.terminate()

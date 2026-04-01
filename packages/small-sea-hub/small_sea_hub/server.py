@@ -184,6 +184,7 @@ async def lifespan(app: FastAPI):
             root_dir=settings.get_root_dir(),
             auto_approve_sessions=settings.auto_approve_sessions,
             sandbox_mode=settings.sandbox_mode,
+            log_level=settings.log_level,
         )
     if not hasattr(app.state, "watched_sessions"):
         app.state.watched_sessions = {}   # session_hex → {station_id_hex, team_db_path}

@@ -152,7 +152,8 @@ class SmallSeaBackend:
 
     hub_schema_version: int = 47
 
-    def __init__(self, root_dir, auto_approve_sessions: bool = False, sandbox_mode: bool = False):
+    def __init__(self, root_dir, auto_approve_sessions: bool = False,
+                 sandbox_mode: bool = False, log_level: str = "INFO"):
         self.root_dir = pathlib.Path(root_dir)
         self.auto_approve_sessions = auto_approve_sessions
         self.sandbox_mode = sandbox_mode
@@ -160,7 +161,8 @@ class SmallSeaBackend:
         self.path_local_db = self.root_dir / "small_sea_collective_local.db"
         os.makedirs(self.root_dir / "Logging", exist_ok=True)
         log_path = self.root_dir / "Logging" / "small_sea_hub.log"
-        self.logger = setup_logging(log_file=log_path)
+        console_level = getattr(logging, log_level.upper(), logging.INFO)
+        self.logger = setup_logging(log_file=log_path, console_level=console_level)
         self._initialize_small_sea_db()
 
     def _initialize_small_sea_db(self):
