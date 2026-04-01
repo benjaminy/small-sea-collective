@@ -692,6 +692,7 @@ class SmallSeaBackend:
                 upload_ok, _, msg = adapter.upload_overwrite(self._SIGNAL_PATH, payload)
 
             if upload_ok:
+                self._ntfy_publish_signal(ss_session, signals[station_id_hex])
                 return
             # CAS conflict — re-read and retry
 
@@ -699,6 +700,24 @@ class SmallSeaBackend:
             f"_bump_signal: gave up after {self._SIGNAL_MAX_RETRIES} retries "
             f"(session {session_hex[:8]})"
         )
+
+    def _ntfy_publish_signal(self, ss_session, count):
+        """Fire-and-forget ntfy publish after a successful signal bump."""
+        try:
+            adapter = self._make_notification_adapter(ss_session)
+        except SmallSeaNotFoundExn:
+            return  # No notification service configured
+        except Exception as exc:
+            self.logger.debug(f"ntfy: no adapter ({exc})")
+            return
+        try:
+            import json
+            msg = json.dumps({"event": "push", "count": count})
+            ok, _, err = adapter.publish(msg)
+            if not ok:
+                self.logger.debug(f"ntfy publish failed: {err}")
+        except Exception as exc:
+            self.logger.debug(f"ntfy publish error: {exc}")
 
     def get_peer_signal(self, session_hex, member_id_hex):
         """Return (signals_dict, etag) from a peer's public signals.yaml.
@@ -831,10 +850,7 @@ class SmallSeaBackend:
 
         ns = self._get_notification_service(ss_session)
         if ns.protocol == "ntfy":
-            # Derive topic from team+app names so all participants on the same
-            # station share the same ntfy topic automatically.
-            station_key = f"{ss_session.team_name}/{ss_session.app_name}"
-            topic = "ss-" + hashlib.sha256(station_key.encode()).hexdigest()[:16]
+            topic = "ss-" + ss_session.station_id.hex()
             return SmallSeaNtfyAdapter(ns.url, topic)
         elif ns.protocol == "gotify":
             return SmallSeaGotifyAdapter(

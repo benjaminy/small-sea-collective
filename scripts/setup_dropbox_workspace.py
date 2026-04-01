@@ -33,6 +33,7 @@ if str(_scripts) not in sys.path:
 import cod_sync.protocol as CodSync
 import setup_dropbox_auth as _auth
 from dropbox_remote import DropboxCodSyncRemote
+from small_sea_manager.manager import TeamManager
 from small_sea_manager.provisioning import (
     accept_invitation,
     add_cloud_storage,
@@ -165,6 +166,33 @@ def _setup_team(
 
 
 # ---------------------------------------------------------------------------
+# ntfy configuration
+# ---------------------------------------------------------------------------
+
+
+def _configure_ntfy(workspace: Path, ntfy_url: str):
+    """Set the ntfy notification_service for every participant in the workspace.
+
+    Safe to run against an existing workspace: replaces any existing ntfy row
+    so repeated --ntfy-url invocations are idempotent.
+    """
+    participants_dir = workspace / "Participants"
+    if not participants_dir.exists():
+        print("No participants found — nothing to configure.")
+        return
+
+    for participant_hex in sorted(p.name for p in participants_dir.iterdir() if p.is_dir()):
+        db_path = (
+            participants_dir / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+        )
+        if not db_path.exists():
+            continue
+        manager = TeamManager(str(workspace), participant_hex)
+        manager.set_notification_service("ntfy", ntfy_url)
+        print(f"  ntfy configured for participant {participant_hex[:16]}... → {ntfy_url}")
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -195,9 +223,24 @@ def main():
         action="store_true",
         help="Stop after creating participants (no team or invitation flow).",
     )
+    parser.add_argument(
+        "--ntfy-url",
+        default=os.environ.get("SMALL_SEA_NTFY_URL"),
+        help=(
+            "Base URL of an ntfy server (e.g. http://localhost:2586). "
+            "When set, configures push notifications for each participant. "
+            "Can also be set via SMALL_SEA_NTFY_URL env var. "
+            "Can be re-run against an existing workspace to add/update ntfy config."
+        ),
+    )
     args = parser.parse_args()
 
     workspace = Path(args.workspace).expanduser().resolve()
+
+    # Allow re-running with --ntfy-url against an existing workspace.
+    if args.ntfy_url and workspace.exists() and any(workspace.iterdir()):
+        _configure_ntfy(workspace, args.ntfy_url)
+        sys.exit(0)
 
     if workspace.exists() and any(workspace.iterdir()):
         print(f"Workspace already exists and is not empty: {workspace}")
@@ -213,6 +256,9 @@ def main():
         alice_member_id_hex, bob_member_id_hex = _setup_team(
             workspace, alice_hex, alice_token, bob_hex, bob_token
         )
+
+    if args.ntfy_url:
+        _configure_ntfy(workspace, args.ntfy_url)
 
     print(f"\nWorkspace ready: {workspace}")
     print(f"  Alice: {alice_hex}")

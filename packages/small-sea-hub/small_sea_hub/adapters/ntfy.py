@@ -1,3 +1,5 @@
+import json
+
 import httpx
 
 
@@ -38,9 +40,30 @@ class SmallSeaNtfyAdapter:
         for line in resp.text.strip().splitlines():
             if not line:
                 continue
-            import json
-
             msg = json.loads(line)
             if msg.get("event") == "message":
                 messages.append(msg)
         return messages
+
+    async def subscribe(self):
+        """Async generator: yield message dicts from the station SSE stream.
+
+        Connects to {base_url}/{topic}/sse and yields each ntfy message event.
+        The caller is responsible for reconnect logic.
+        """
+        url = f"{self.base_url}/{self.topic}/sse"
+        async with httpx.AsyncClient(timeout=httpx.Timeout(None)) as client:
+            async with client.stream("GET", url) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data:"):
+                        continue
+                    raw = line[5:].strip()
+                    if not raw:
+                        continue
+                    try:
+                        msg = json.loads(raw)
+                    except json.JSONDecodeError:
+                        continue
+                    if msg.get("event") == "message":
+                        yield msg

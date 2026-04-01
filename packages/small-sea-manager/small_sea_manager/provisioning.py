@@ -840,6 +840,41 @@ def add_notification_service(
     return ns_id.hex()
 
 
+def set_notification_service(
+    root_dir, participant_hex, protocol, url,
+    access_key=None, access_token=None,
+):
+    """Upsert a notification service in a participant's NoteToSelf DB.
+
+    Replaces any existing row with the same protocol before inserting, so this
+    is safe to call multiple times (e.g. to update the URL).
+
+    Returns the new notification service ID hex.
+    """
+    known = {"ntfy", "gotify"}
+    if protocol not in known:
+        raise ValueError(f"Unknown notification protocol: {protocol}")
+
+    root_dir = pathlib.Path(root_dir)
+    user_db_path = (
+        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{user_db_path}")
+    ns_id = uuid7()
+    with Session(engine) as session:
+        session.query(NotificationService).filter_by(protocol=protocol).delete()
+        ns = NotificationService(
+            id=ns_id,
+            protocol=protocol,
+            url=url,
+            access_key=access_key,
+            access_token=access_token,
+        )
+        session.add(ns)
+        session.commit()
+    return ns_id.hex()
+
+
 def get_cloud_storage(root_dir, participant_hex):
     """Return the first cloud storage config from NoteToSelf DB as a dict.
 

@@ -102,6 +102,72 @@ def _send_peer_notification(app: FastAPI, session_hex: str, station_id_hex: str,
         )
 
 
+def _watcher_pass(app: FastAPI):
+    """Single poll round: refresh peer lists and check all peer signals for changes.
+
+    Called from both the polling loop (_peer_watcher_loop) and the ntfy push
+    listener (_ntfy_listener_loop) so that a push event triggers an immediate
+    signal check without waiting for the next poll interval.
+    """
+    logger = app.state.logger
+
+    # Refresh peer lists for all active sessions before polling signals.
+    for session_hex in list(app.state.watched_sessions):
+        _refresh_session_peers(app, session_hex)
+
+    peers = getattr(app.state, "watched_peers", {})
+    # Track which stations have already received a push notification this round
+    # so we send at most one notification per station regardless of how many
+    # sessions or peers triggered the change.
+    notified_stations: set = set()
+    for key, state in list(peers.items()):
+        session_hex, member_id_hex = key
+        station_id_hex = state.get("station_id_hex")
+        try:
+            signals, etag = app.state.backend.get_peer_signal(
+                session_hex, member_id_hex
+            )
+            if signals is None:
+                continue
+            if etag == state.get("etag"):
+                continue  # unchanged
+
+            prev = state.get("signals", {})
+            changed = False
+            for sid, count in signals.items():
+                if sid == "version":
+                    continue
+                if count > prev.get(sid, 0):
+                    # Key by the watching station (station_id_hex) so that
+                    # /notifications/watch _check() can find it by session.
+                    peer_key = (station_id_hex, member_id_hex)
+                    if count > app.state.peer_counts.get(peer_key, 0):
+                        app.state.peer_counts[peer_key] = count
+                    changed = True
+                    logger.info(
+                        f"Peer {member_id_hex[:8]} station {sid[:8]}: count={count}"
+                    )
+
+            state["etag"] = etag
+            state["signals"] = {k: v for k, v in signals.items() if k != "version"}
+
+            if changed and station_id_hex:
+                _pulse_station_event(app, station_id_hex)
+                if station_id_hex not in notified_stations:
+                    notified_stations.add(station_id_hex)
+                    _send_peer_notification(app, session_hex, station_id_hex, logger)
+
+        except SmallSeaNotFoundExn:
+            # Session expired — remove it and all its peers from the watcher.
+            app.state.watched_sessions.pop(session_hex, None)
+            stale_keys = [k for k in app.state.watched_peers if k[0] == session_hex]
+            for k in stale_keys:
+                app.state.watched_peers.pop(k, None)
+            logger.info(f"Removed expired session {session_hex[:8]} from watcher")
+        except Exception as exc:
+            logger.warning(f"Peer watcher error for {member_id_hex[:8]}: {exc}")
+
+
 async def _peer_watcher_loop(app: FastAPI):
     """Background task: poll registered peers' signal files for changes.
 
@@ -116,68 +182,36 @@ async def _peer_watcher_loop(app: FastAPI):
     The first pass runs immediately (no initial sleep) so that peer_counts is
     populated quickly after startup rather than after the full interval.
     """
-    logger = app.state.logger
     first_pass = True
     while True:
         if not first_pass:
             await asyncio.sleep(getattr(app.state, "watcher_interval", PEER_WATCHER_INTERVAL))
         first_pass = False
+        _watcher_pass(app)
 
-        # Refresh peer lists for all active sessions before polling signals.
-        for session_hex in list(app.state.watched_sessions):
-            _refresh_session_peers(app, session_hex)
 
-        peers = getattr(app.state, "watched_peers", {})
-        # Track which stations have already received a push notification this round
-        # so we send at most one notification per station regardless of how many
-        # sessions or peers triggered the change.
-        notified_stations: set = set()
-        for key, state in list(peers.items()):
-            session_hex, member_id_hex = key
-            station_id_hex = state.get("station_id_hex")
-            try:
-                signals, etag = app.state.backend.get_peer_signal(
-                    session_hex, member_id_hex
-                )
-                if signals is None:
-                    continue
-                if etag == state.get("etag"):
-                    continue  # unchanged
+async def _ntfy_listener_loop(app: FastAPI, ntfy_url: str, station_id_hex: str):
+    """Async task: subscribe to ntfy SSE for a station and trigger watcher passes on push.
 
-                prev = state.get("signals", {})
-                changed = False
-                for sid, count in signals.items():
-                    if sid == "version":
-                        continue
-                    if count > prev.get(sid, 0):
-                        # Key by the watching station (station_id_hex) so that
-                        # /notifications/watch _check() can find it by session.
-                        key = (station_id_hex, member_id_hex)
-                        if count > app.state.peer_counts.get(key, 0):
-                            app.state.peer_counts[key] = count
-                        changed = True
-                        logger.info(
-                            f"Peer {member_id_hex[:8]} station {sid[:8]}: count={count}"
-                        )
+    Reconnects automatically on error with a 5-second back-off. Runs until
+    cancelled (e.g. on Hub shutdown).
+    """
+    from small_sea_hub.adapters.ntfy import SmallSeaNtfyAdapter
 
-                state["etag"] = etag
-                state["signals"] = {k: v for k, v in signals.items() if k != "version"}
-
-                if changed and station_id_hex:
-                    _pulse_station_event(app, station_id_hex)
-                    if station_id_hex not in notified_stations:
-                        notified_stations.add(station_id_hex)
-                        _send_peer_notification(app, session_hex, station_id_hex, logger)
-
-            except SmallSeaNotFoundExn:
-                # Session expired — remove it and all its peers from the watcher.
-                app.state.watched_sessions.pop(session_hex, None)
-                stale_keys = [k for k in app.state.watched_peers if k[0] == session_hex]
-                for k in stale_keys:
-                    app.state.watched_peers.pop(k, None)
-                logger.info(f"Removed expired session {session_hex[:8]} from watcher")
-            except Exception as exc:
-                logger.warning(f"Peer watcher error for {member_id_hex[:8]}: {exc}")
+    logger = app.state.logger
+    topic = f"ss-{station_id_hex}"
+    logger.info(f"ntfy listener starting: {ntfy_url}/{topic}")
+    adapter = SmallSeaNtfyAdapter(ntfy_url, topic)
+    while True:
+        try:
+            async for _msg in adapter.subscribe():
+                logger.debug(f"ntfy push received on {topic}, running watcher pass")
+                _watcher_pass(app)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(f"ntfy listener error ({topic}), reconnecting in 5s: {exc}")
+            await asyncio.sleep(5)
 
 
 @asynccontextmanager
@@ -200,6 +234,8 @@ async def lifespan(app: FastAPI):
         app.state.peer_signal_events = {}  # station_id_hex → asyncio.Event
     if not hasattr(app.state, "watcher_interval"):
         app.state.watcher_interval = Settings().watcher_interval
+    if not hasattr(app.state, "ntfy_listener_tasks"):
+        app.state.ntfy_listener_tasks = {}  # station_id_hex → asyncio.Task
     app.state.logger = app.state.backend.logger
     logger = app.state.backend.logger
     logger.info("Starting up...")
@@ -214,7 +250,9 @@ async def lifespan(app: FastAPI):
     yield
 
     watcher_task.cancel()
-    print("Shutting down...")
+    for task in app.state.ntfy_listener_tasks.values():
+        task.cancel()
+    logger.info("Shutting down...")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -251,6 +289,27 @@ class SessionRequestReq(pydantic.BaseModel):
     client: str
 
 
+def _maybe_start_ntfy_listener(app: FastAPI, ss_session, station_id_hex: str):
+    """Start an ntfy SSE listener task for a station if ntfy is configured and not already running."""
+    ntfy_listener_tasks = getattr(app.state, "ntfy_listener_tasks", None)
+    if ntfy_listener_tasks is None:
+        return
+    if station_id_hex in ntfy_listener_tasks:
+        return  # already running for this station
+    try:
+        adapter = app.state.backend._make_notification_adapter(ss_session)
+        ntfy_url = adapter.base_url
+    except Exception:
+        return  # no ntfy configured — polling only
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return  # not in an async context (e.g. tests that skip lifespan)
+    task = loop.create_task(_ntfy_listener_loop(app, ntfy_url, station_id_hex))
+    ntfy_listener_tasks[station_id_hex] = task
+    app.state.logger.info(f"ntfy listener task started for station {station_id_hex[:8]}")
+
+
 def _register_session_peers(session_hex: str):
     """Register a session with the watcher after it is confirmed.
 
@@ -278,6 +337,8 @@ def _register_session_peers(session_hex: str):
         # Do an immediate peer refresh so watched_peers is populated now rather
         # than waiting for the first watcher round.
         _refresh_session_peers(app, session_hex)
+        # Start an ntfy listener for this station if one isn't already running.
+        _maybe_start_ntfy_listener(app, ss_session, station_id_hex)
     except Exception as exc:
         logger = getattr(app.state, "logger", None)
         if logger:

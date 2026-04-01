@@ -225,5 +225,20 @@ def set_role(ctx, team_name, member, role):
     click.echo(f"Set '{member}' role to '{role}' in '{team_name}'")
 
 
+@cli.command("set-notification-service")
+@click.argument("protocol", type=click.Choice(["ntfy", "gotify"]))
+@click.argument("url")
+@click.option("--access-key", default=None, help="Auth token (ntfy) or app token (gotify)")
+@click.option("--access-token", default=None, help="Client token (gotify subscribe)")
+@click.pass_context
+def set_notification_service(ctx, protocol, url, access_key, access_token):
+    """Configure a push notification service (replaces any existing entry of the same protocol)."""
+    manager = _make_manager(ctx)
+    ns_id = manager.set_notification_service(
+        protocol, url, access_key=access_key, access_token=access_token
+    )
+    click.echo(f"Notification service ({protocol}) set: {ns_id[:12]}…")
+
+
 if __name__ == "__main__":
     cli()

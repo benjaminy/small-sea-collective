@@ -180,6 +180,20 @@ class TeamManager:
             self.root_dir, self.participant_hex, team_name, acceptance_b64
         )
 
+    # --- Notification services ---
+
+    def set_notification_service(self, protocol, url, access_key=None, access_token=None):
+        """Upsert a notification service in this participant's NoteToSelf DB.
+
+        Replaces any existing row with the same protocol, so safe to call
+        repeatedly (e.g. to update the URL of an existing ntfy server).
+        Returns the new notification service ID hex.
+        """
+        return provisioning.set_notification_service(
+            self.root_dir, self.participant_hex, protocol, url,
+            access_key=access_key, access_token=access_token,
+        )
+
     # --- Sync ---
 
     def push(self, repo_dir) -> PushResult:
