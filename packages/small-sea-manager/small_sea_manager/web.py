@@ -141,6 +141,28 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             },
         )
 
+    # ------------------------------------------------------------------ #
+    # Accept invitation (invitee side — no team yet)
+    # ------------------------------------------------------------------ #
+
+    @app.post("/accept-invitation", response_class=HTMLResponse)
+    async def accept_invitation(request: Request, invitation_token: str = Form(...)):
+        mgr = _mgr(request)
+        try:
+            acceptance_token = mgr.accept_invitation(invitation_token.strip())
+            error = None
+        except Exception as e:
+            acceptance_token = None
+            error = str(e)
+        return templates.TemplateResponse(
+            "fragments/acceptance_token.html",
+            {
+                "request": request,
+                "acceptance_token": acceptance_token,
+                "error": error,
+            },
+        )
+
     @app.post("/teams/{team_name}/complete-acceptance", response_class=HTMLResponse)
     async def complete_acceptance(
         request: Request, team_name: str, acceptance_token: str = Form(...)

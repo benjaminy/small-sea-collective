@@ -13,4 +13,20 @@
   </div>
 </div>
 
+<div class="card">
+  <div class="card-header">Accept invitation</div>
+  <div class="detail-section">
+    <p class="token-instruction" style="margin-bottom:0.75rem">
+      Paste an invitation token you received from a teammate to join their team.
+    </p>
+    <div id="accept-invitation-result"></div>
+    <form hx-post="/accept-invitation"
+          hx-target="#accept-invitation-result"
+          hx-swap="innerHTML">
+      <textarea name="invitation_token" placeholder="Paste invitation token here…" required></textarea>
+      <button class="btn btn-primary" type="submit">Accept invitation</button>
+    </form>
+  </div>
+</div>
+
 {% endblock %}

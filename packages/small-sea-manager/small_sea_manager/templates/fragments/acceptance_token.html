@@ -1,0 +1,14 @@
+{% if error %}
+<p class="notice notice-err">{{ error }}</p>
+{% endif %}
+
+{% if acceptance_token %}
+<div style="border:1px solid #d6d3d1; border-radius:4px; padding:0.75rem; background:#fafaf9">
+  <p class="token-instruction"><strong>Step 2 done.</strong> Send this acceptance token back to the inviter out-of-band:</p>
+  <div class="token-box">{{ acceptance_token }}</div>
+  <p class="token-instruction" style="color:#78716c">
+    The inviter pastes this into the "Complete acceptance" form in their team's Members section.
+    Once they complete it, you will both be synced up.
+  </p>
+</div>
+{% endif %}
