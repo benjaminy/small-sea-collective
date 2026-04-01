@@ -684,33 +684,50 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     count_p0_before_ping = _get_peer_count(ep1, tok1, p0_member_id)
     count_p1_before_pong = _get_peer_count(ep0, tok0, p1_member_id)
 
+    def _ms(start, end=None):
+        return f"{((end or time.time()) - start) * 1000:.0f} ms"
+
     # ---- PING ----
     t_start = time.time()
     (co0 / "ping.txt").write_text(f"ping {t_start}\n")
     publish(vault0, p0_hex, team, niche_name, str(co0), message="ping")
+
+    t0 = time.time()
     push_niche(vault0, p0_hex, team, niche_name, niche_remote0)
+    t_push_done = time.time()
 
     # ---- p1 waits for ntfy-driven notification ----
     _wait_for_notification(ep1, tok1, p0_member_id, count_p0_before_ping)
-    t_p1_received = time.time()
+    t_p1_notified = time.time()
 
+    t1 = time.time()
     pull_niche(vault1, p1_hex, team, niche_name, p1_reads_p0_niche)
+    t_p1_pulled = time.time()
     assert (co1 / "ping.txt").exists(), f"{p1_nick} should see ping.txt after pull"
 
-    (co1 / "pong.txt").write_text(f"pong {t_p1_received}\n")
+    (co1 / "pong.txt").write_text(f"pong {t_p1_notified}\n")
     publish(vault1, p1_hex, team, niche_name, str(co1), message="pong")
+
+    t2 = time.time()
     push_niche(vault1, p1_hex, team, niche_name, niche_remote1)
+    t_pong_push_done = time.time()
 
     # ---- p0 waits for ntfy-driven notification of pong ----
     _wait_for_notification(ep0, tok0, p1_member_id, count_p1_before_pong)
-    t_p0_received = time.time()
+    t_p0_notified = time.time()
 
+    t3 = time.time()
     pull_niche(vault0, p0_hex, team, niche_name, p0_reads_p1_niche)
+    t_p0_pulled = time.time()
     assert (co0 / "pong.txt").exists(), f"{p0_nick} should see pong.txt after pull"
 
     # ---- Report ----
-    one_way_ms = (t_p1_received - t_start) * 1000
-    round_trip_ms = (t_p0_received - t_start) * 1000
     print(f"\n=== Dropbox Ping-Pong Latency (ntfy push, watcher_interval=300s) ===")
-    print(f"  {p0_nick} → push → {p1_nick} notified: {one_way_ms:.0f} ms")
-    print(f"  Full round trip ({p0_nick} → {p1_nick} → {p0_nick}): {round_trip_ms:.0f} ms")
+    print(f"  {p0_nick} push_niche (ping):          {_ms(t0, t_push_done)}")
+    print(f"  {p1_nick} wait_for_notification:       {_ms(t_push_done, t_p1_notified)}")
+    print(f"  {p1_nick} pull_niche (ping):           {_ms(t1, t_p1_pulled)}")
+    print(f"  {p1_nick} push_niche (pong):           {_ms(t2, t_pong_push_done)}")
+    print(f"  {p0_nick} wait_for_notification:       {_ms(t_pong_push_done, t_p0_notified)}")
+    print(f"  {p0_nick} pull_niche (pong):           {_ms(t3, t_p0_pulled)}")
+    print(f"  --- one-way ({p0_nick}→{p1_nick} notified): {_ms(t_start, t_p1_notified)}")
+    print(f"  --- round trip (push→push→notified):  {_ms(t_start, t_p0_notified)}")
