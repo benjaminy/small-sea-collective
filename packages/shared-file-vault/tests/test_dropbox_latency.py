@@ -350,18 +350,21 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=niche_pfx)
     p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_member_id, base_url=ep0, path_prefix=niche_pfx)
 
-    # p0 creates niche, pushes registry; p1 discovers via registry pull
+    # p0 creates niche and makes an initial commit so p1 has something to clone
     create_niche(vault0, p0_hex, team, NICHE)
+    co0 = tmp_path / "checkout-p0"
+    add_checkout(vault0, p0_hex, team, NICHE, str(co0))
+    (co0 / "init.txt").write_text("initialised\n")
+    publish(vault0, p0_hex, team, NICHE, str(co0), message="init")
+    push_niche(vault0, p0_hex, team, NICHE, niche_remote0)
+
+    # p0 pushes registry; p1 discovers via registry pull
     push_registry(vault0, p0_hex, team, reg_remote0)
     pull_registry(vault1, p1_hex, team, p1_reads_p0_reg)
 
-    # p1 pulls initial (empty) niche so its git dir is initialised
+    # p1 clones the niche (now has at least one commit) and sets up its checkout
     pull_niche(vault1, p1_hex, team, NICHE, p1_reads_p0_niche)
-
-    # Set up checkouts
-    co0 = tmp_path / "checkout-p0"
     co1 = tmp_path / "checkout-p1"
-    add_checkout(vault0, p0_hex, team, NICHE, str(co0))
     add_checkout(vault1, p1_hex, team, NICHE, str(co1))
 
     # Snapshot etags before the ping

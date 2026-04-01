@@ -209,7 +209,9 @@ def _cod_pull(git_dir, transit, remote):
             # appear as uncommitted deletions in the transit and block the merge.
             gitCmd(["checkout", "HEAD", "--", "."])
 
-        cod.fetch_from_remote(["main"])
+        fetch_result = cod.fetch_from_remote(["main"])
+        if fetch_result != 0:
+            raise RuntimeError(f"pull failed: could not fetch from remote (code {fetch_result})")
 
         if has_commits:
             exit_code = cod.merge_from_remote(["main"])

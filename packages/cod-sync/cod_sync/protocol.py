@@ -204,8 +204,17 @@ class CodSync:
             assert branch[0] == "main"
             prerequisites = {"main": branch[1]}
             tag = f"codsync_temp_tag_{'main'}"
-            self.gitCmd(["tag", tag, branch[1]])
-            bundle_spec = f"{tag}..main"
+            tag_result = self.gitCmd(["tag", tag, branch[1]], raise_on_error=False)
+            if tag_result.returncode != 0:
+                # Remote SHA not present locally (e.g. fresh clone pushing to existing bucket).
+                # Fall back to initial-snapshot: send full history.
+                latest_link = None
+                link_uid = "initial-snapshot"
+                link_uid_prev = "initial-snapshot"
+                prerequisites = {"main": "initial-snapshot"}
+                bundle_spec = "main"
+            else:
+                bundle_spec = f"{tag}..main"
 
         self.gitCmd(["bundle", "create", bundle_path_tmp, bundle_spec])
 
