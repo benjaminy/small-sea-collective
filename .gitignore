@@ -167,3 +167,5 @@ cython_debug/
 
 # MacOS
 .DS_Store
+
+Documentation/Images/wrasse-large.png
