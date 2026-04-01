@@ -337,19 +337,26 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     init_vault(vault0, p0_hex)
     init_vault(vault1, p1_hex)
 
-    # Remotes
-    remote0 = CS.SmallSeaRemote(tok0, base_url=ep0)
-    remote1 = CS.SmallSeaRemote(tok1, base_url=ep1)
-    p1_reads_p0 = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1)
-    p0_reads_p1 = CS.PeerSmallSeaRemote(tok0, p1_member_id, base_url=ep0)
+    # Remotes — each repo gets its own path prefix so it doesn't collide
+    # with the team sync repo or other vaults in the same Dropbox bucket.
+    reg_pfx = f"vault/{team}/registry/"
+    niche_pfx = f"vault/{team}/niches/{NICHE}/"
+
+    reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
+    reg_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=reg_pfx)
+    niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
+    niche_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=niche_pfx)
+    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=reg_pfx)
+    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=niche_pfx)
+    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_member_id, base_url=ep0, path_prefix=niche_pfx)
 
     # p0 creates niche, pushes registry; p1 discovers via registry pull
     create_niche(vault0, p0_hex, team, NICHE)
-    push_registry(vault0, p0_hex, team, remote0)
-    pull_registry(vault1, p1_hex, team, p1_reads_p0)
+    push_registry(vault0, p0_hex, team, reg_remote0)
+    pull_registry(vault1, p1_hex, team, p1_reads_p0_reg)
 
     # p1 pulls initial (empty) niche so its git dir is initialised
-    pull_niche(vault1, p1_hex, team, NICHE, p1_reads_p0)
+    pull_niche(vault1, p1_hex, team, NICHE, p1_reads_p0_niche)
 
     # Set up checkouts
     co0 = tmp_path / "checkout-p0"
@@ -365,24 +372,24 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     t_start = time.time()
     (co0 / "ping.txt").write_text(f"ping {t_start}\n")
     publish(vault0, p0_hex, team, NICHE, str(co0), message="ping")
-    push_niche(vault0, p0_hex, team, NICHE, remote0)
+    push_niche(vault0, p0_hex, team, NICHE, niche_remote0)
 
     # ---- p1 detects, pulls, writes pong, pushes ----
     _poll_for_signal_change(ep1, tok1, p0_member_id, etag_p0_before)
     t_p1_received = time.time()
 
-    pull_niche(vault1, p1_hex, team, NICHE, p1_reads_p0)
+    pull_niche(vault1, p1_hex, team, NICHE, p1_reads_p0_niche)
     assert (co1 / "ping.txt").exists(), f"{p1_nick} should see ping.txt after pull"
 
     (co1 / "pong.txt").write_text(f"pong {t_p1_received}\n")
     publish(vault1, p1_hex, team, NICHE, str(co1), message="pong")
-    push_niche(vault1, p1_hex, team, NICHE, remote1)
+    push_niche(vault1, p1_hex, team, NICHE, niche_remote1)
 
     # ---- p0 detects and pulls pong ----
     _poll_for_signal_change(ep0, tok0, p1_member_id, etag_p1_before)
     t_p0_received = time.time()
 
-    pull_niche(vault0, p0_hex, team, NICHE, p0_reads_p1)
+    pull_niche(vault0, p0_hex, team, NICHE, p0_reads_p1_niche)
     assert (co0 / "pong.txt").exists(), f"{p0_nick} should see pong.txt after pull"
 
     # ---- Report ----

@@ -573,11 +573,18 @@ class SmallSeaRemote(CodSyncRemote):
     """Hub-backed cloud storage remote.
 
     Talks to the hub's POST /cloud_file and GET /cloud_file endpoints.
+
+    path_prefix is prepended to every cloud path, allowing multiple
+    CodSync repos to coexist in the same bucket without namespace collision.
+    For example, path_prefix="vault/registry/" puts registry bundles under
+    that prefix while signals.yaml and team-sync data stay at the root.
     """
 
-    def __init__(self, session_hex, base_url="http://localhost:11437", client=None):
+    def __init__(self, session_hex, base_url="http://localhost:11437", client=None,
+                 path_prefix=""):
         self.session_hex = session_hex
         self._auth = {"Authorization": f"Bearer {session_hex}"}
+        self._path_prefix = path_prefix
 
         if client is not None:
             self._post = client.post
@@ -588,7 +595,7 @@ class SmallSeaRemote(CodSyncRemote):
 
     def _upload(self, cloud_path, data_bytes, expected_etag=None, notify=False):
         payload = {
-            "path": cloud_path,
+            "path": self._path_prefix + cloud_path,
             "data": base64.b64encode(data_bytes).decode(),
         }
         if expected_etag is not None:
@@ -607,7 +614,7 @@ class SmallSeaRemote(CodSyncRemote):
     def _download(self, cloud_path):
         resp = self._get(
             "/cloud_file",
-            params={"path": cloud_path},
+            params={"path": self._path_prefix + cloud_path},
             headers=self._auth,
         )
         if resp.status_code != 200:
@@ -665,12 +672,17 @@ class PeerSmallSeaRemote(CodSyncRemote):
 
     The Hub authenticates the session, looks up the peer's cloud URL, and proxies
     the data back — so the client never talks directly to cloud storage.
+
+    path_prefix is prepended to every cloud path, matching the prefix used
+    when the peer pushed the content via SmallSeaRemote.
     """
 
-    def __init__(self, session_hex, member_id_hex, base_url="http://localhost:11437", client=None):
+    def __init__(self, session_hex, member_id_hex, base_url="http://localhost:11437",
+                 client=None, path_prefix=""):
         self.session_hex = session_hex
         self.member_id_hex = member_id_hex
         self._auth = {"Authorization": f"Bearer {session_hex}"}
+        self._path_prefix = path_prefix
 
         if client is not None:
             self._get = client.get
@@ -680,7 +692,7 @@ class PeerSmallSeaRemote(CodSyncRemote):
     def _download(self, cloud_path):
         resp = self._get(
             "/peer_cloud_file",
-            params={"member_id": self.member_id_hex, "path": cloud_path},
+            params={"member_id": self.member_id_hex, "path": self._path_prefix + cloud_path},
             headers=self._auth,
         )
         if resp.status_code != 200:
