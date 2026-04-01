@@ -125,6 +125,7 @@ def _start_hub(root_dir: str, port: int, log_path: pathlib.Path) -> subprocess.P
     env["SMALL_SEA_ROOT_DIR"] = root_dir
     env["SMALL_SEA_AUTO_APPROVE_SESSIONS"] = "1"
     env["SMALL_SEA_LOG_LEVEL"] = "DEBUG"
+    env["SMALL_SEA_WATCHER_INTERVAL"] = "2"
     cmd = [
         "uv", "run", "fastapi", "dev",
         "packages/small-sea-hub/small_sea_hub/server.py",
@@ -234,6 +235,50 @@ def _poll_for_signal_change(
     raise TimeoutError(
         f"Signal for {member_id_hex[:8]}… did not change within {timeout}s"
     )
+
+
+# ---------------------------------------------------------------------------
+# Push notification helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_peer_count(endpoint: str, token: str, member_id_hex: str) -> int:
+    """Return the current max signal count for a peer, or 0 if not yet present."""
+    resp = requests.get(
+        f"{endpoint}/peer_signal",
+        params={"member_id": member_id_hex},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=5,
+    )
+    if resp.status_code == 404:
+        return 0
+    resp.raise_for_status()
+    stations = resp.json().get("stations", {})
+    return max(stations.values(), default=0)
+
+
+def _wait_for_notification(
+    endpoint: str, token: str, member_id_hex: str,
+    known_count: int, timeout: int = SIGNAL_POLL_TIMEOUT,
+) -> int:
+    """Long-poll until Hub watcher detects a new signal count for the peer.
+
+    Returns the new count.  Raises TimeoutError if the Hub does not report a
+    change within *timeout* seconds.
+    """
+    resp = requests.post(
+        f"{endpoint}/notifications/watch",
+        json={"known": {member_id_hex: known_count}, "timeout": timeout},
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=timeout + 10,
+    )
+    resp.raise_for_status()
+    updated = resp.json().get("updated", {})
+    if member_id_hex not in updated:
+        raise TimeoutError(
+            f"No push notification for {member_id_hex[:8]}… within {timeout}s"
+        )
+    return updated[member_id_hex]
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +443,98 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     # ---- Report ----
     one_way_ms = (t_p1_received - t_start) * 1000
     round_trip_ms = (t_p0_received - t_start) * 1000
-    print(f"\n=== Dropbox Ping-Pong Latency ===")
+    print(f"\n=== Dropbox Ping-Pong Latency (polling) ===")
     print(f"  {p0_nick} → push → {p1_nick} detects: {one_way_ms:.0f} ms")
+    print(f"  Full round trip ({p0_nick} → {p1_nick} → {p0_nick}): {round_trip_ms:.0f} ms")
+
+
+def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
+    """Like test_dropbox_ping_pong but uses /notifications/watch instead of polling.
+
+    The Hub's watcher (SMALL_SEA_WATCHER_INTERVAL=2s) detects changes and
+    wakes the long-poll call, so the test client never hammers /peer_signal.
+    """
+    team = dropbox_env["team_name"]
+    p0_hex, p0_nick = dropbox_env["p0_hex"], dropbox_env["p0_nick"]
+    p1_hex, p1_nick = dropbox_env["p1_hex"], dropbox_env["p1_nick"]
+    p0_member_id = dropbox_env["p0_member_id"]
+    p1_member_id = dropbox_env["p1_member_id"]
+    ep0, ep1 = dropbox_env["ep0"], dropbox_env["ep1"]
+
+    print(f"\nParticipants: {p0_nick} ({p0_hex[:8]}…) and {p1_nick} ({p1_hex[:8]}…)")
+    print(f"Team: {team}")
+
+    tok0 = _open_session(ep0, p0_nick, team)
+    tok1 = _open_session(ep1, p1_nick, team)
+
+    for ep, tok in [(ep0, tok0), (ep1, tok1)]:
+        requests.post(
+            f"{ep}/cloud/setup",
+            headers={"Authorization": f"Bearer {tok}"},
+        ).raise_for_status()
+
+    vault0 = str(tmp_path / "vault-p0")
+    vault1 = str(tmp_path / "vault-p1")
+    init_vault(vault0, p0_hex)
+    init_vault(vault1, p1_hex)
+
+    niche_name = "ping-pong-push"
+    reg_pfx = f"vault/{team}/registry-push/"
+    niche_pfx = f"vault/{team}/niches/{niche_name}/"
+
+    reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
+    niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
+    niche_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=niche_pfx)
+    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=reg_pfx)
+    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=niche_pfx)
+    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_member_id, base_url=ep0, path_prefix=niche_pfx)
+
+    # p0 creates niche, makes initial commit, pushes
+    create_niche(vault0, p0_hex, team, niche_name)
+    co0 = tmp_path / "checkout-p0"
+    add_checkout(vault0, p0_hex, team, niche_name, str(co0))
+    (co0 / "init.txt").write_text("initialised\n")
+    publish(vault0, p0_hex, team, niche_name, str(co0), message="init")
+    push_niche(vault0, p0_hex, team, niche_name, niche_remote0)
+
+    push_registry(vault0, p0_hex, team, reg_remote0)
+    pull_registry(vault1, p1_hex, team, p1_reads_p0_reg)
+
+    pull_niche(vault1, p1_hex, team, niche_name, p1_reads_p0_niche)
+    co1 = tmp_path / "checkout-p1"
+    add_checkout(vault1, p1_hex, team, niche_name, str(co1))
+
+    # Snapshot counts before ping so _wait_for_notification knows the baseline.
+    count_p0_before_ping = _get_peer_count(ep1, tok1, p0_member_id)
+    count_p1_before_pong = _get_peer_count(ep0, tok0, p1_member_id)
+
+    # ---- PING: p0 writes and pushes ----
+    t_start = time.time()
+    (co0 / "ping.txt").write_text(f"ping {t_start}\n")
+    publish(vault0, p0_hex, team, niche_name, str(co0), message="ping")
+    push_niche(vault0, p0_hex, team, niche_name, niche_remote0)
+
+    # ---- p1 waits for Hub push notification, then pulls and pongs ----
+    _wait_for_notification(ep1, tok1, p0_member_id, count_p0_before_ping)
+    t_p1_received = time.time()
+
+    pull_niche(vault1, p1_hex, team, niche_name, p1_reads_p0_niche)
+    assert (co1 / "ping.txt").exists(), f"{p1_nick} should see ping.txt after pull"
+
+    (co1 / "pong.txt").write_text(f"pong {t_p1_received}\n")
+    publish(vault1, p1_hex, team, niche_name, str(co1), message="pong")
+    push_niche(vault1, p1_hex, team, niche_name, niche_remote1)
+
+    # ---- p0 waits for push notification of pong ----
+    _wait_for_notification(ep0, tok0, p1_member_id, count_p1_before_pong)
+    t_p0_received = time.time()
+
+    pull_niche(vault0, p0_hex, team, niche_name, p0_reads_p1_niche)
+    assert (co0 / "pong.txt").exists(), f"{p0_nick} should see pong.txt after pull"
+
+    # ---- Report ----
+    one_way_ms = (t_p1_received - t_start) * 1000
+    round_trip_ms = (t_p0_received - t_start) * 1000
+    print(f"\n=== Dropbox Ping-Pong Latency (push notifications, watcher_interval=2s) ===")
+    print(f"  {p0_nick} → push → {p1_nick} notified: {one_way_ms:.0f} ms")
     print(f"  Full round trip ({p0_nick} → {p1_nick} → {p0_nick}): {round_trip_ms:.0f} ms")

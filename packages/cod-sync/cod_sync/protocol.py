@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import io
+import logging
 import os
 import pathlib
 import secrets
@@ -15,6 +16,8 @@ import requests
 import yaml
 
 program_title = "Cod Sync protocol Git remote helper work-a-like"
+
+logger = logging.getLogger("cod_sync")
 
 COD_SYNC_VERSION = "1.0.0"
 
@@ -94,7 +97,7 @@ def gitCmd(git_params, raise_on_error=True):
         if raise_on_error:
             raise exn
         else:
-            print(exn)
+            logger.debug(str(exn))
     return result
 
 
@@ -128,23 +131,23 @@ class CodSync:
         """
 
         self.gitCmd(["remote", "add", self.remote_name, f"codsync:{url}"])
-        print(f"Added remote '{self.remote_name}' ({url})")
+        logger.debug(f"Added remote '{self.remote_name}' ({url})")
 
         [bundle_remote, path] = self.bundle_tmp()
         self.gitCmd(["remote", "add", bundle_remote, f"{path}/fetch.bundle"])
-        print(f"Added remote '{bundle_remote}' ({path})")
+        logger.debug(f"Added remote '{bundle_remote}' ({path})")
 
     def remove_remote(self, dotdotdot):
         """Remove a Cod Sync remote"""
 
         result1 = self.gitCmd(["remote", "remove", self.remote_name], False)
         if result1.returncode == 0:
-            print(f"Removed remote '{self.remote_name}'")
+            logger.debug(f"Removed remote '{self.remote_name}'")
 
         [bundle_remote, _] = self.bundle_tmp()
         result2 = self.gitCmd(["remote", "remove", bundle_remote])
         if result2.returncode == 0:
-            print(f"Removed remote '{bundle_remote}'")
+            logger.debug(f"Removed remote '{bundle_remote}'")
 
         if result1.returncode != 0:
             return result1.returncode
@@ -166,14 +169,14 @@ class CodSync:
         remote_url = result.stdout.strip()
 
         if not remote_url.startswith("codsync:"):
-            print(f"ERROR: Wrong remote protocol '{remote_url}' ({program_title})")
+            logger.warning(f"Wrong remote protocol '{remote_url}' ({program_title})")
             return
 
         # Strip 'codsync:'
         self.url = remote_url[8:]
 
     def push_to_remote(self, branches, signing_key=None, member_id=None):
-        print(f"PUSH {self.remote_name} {self.url} '{branches}'")
+        logger.debug(f"push_to_remote {self.remote_name} {branches}")
 
         bundle_uid = CodSync.token_hex(8)
         [_, path_tmp] = self.bundle_tmp()
@@ -225,7 +228,7 @@ class CodSync:
             link_uid, link_uid_prev, bundle_uid, prerequisites,
             signing_key=signing_key, member_id=member_id,
         )
-        print(f"Pushing to Cod Sync clone {link_uid} '{bundle_path_tmp}' {blob}")
+        logger.debug(f"pushing link {link_uid} bundle {bundle_path_tmp}")
         return self.remote.upload_latest_link(
             link_uid, blob, bundle_uid, bundle_path_tmp, expected_etag=etag
         )
@@ -237,7 +240,7 @@ class CodSync:
         branches = []
         for branch in branch_names:
             branches.append([branch, self.get_branch_head_sha(branch)])
-        print(f"BRANCHES {branches}")
+        logger.debug(f"branches {branches}")
         bundles = [[bundle_uid, ["main", prerequisites["main"]]]]
         supplement = {"cod_version": COD_SYNC_VERSION}
 
@@ -249,13 +252,13 @@ class CodSync:
         return [link_ids, branches, bundles, supplement]
 
     def clone_from_remote(self, url, remote=None):
-        print(f"CLONE {self.remote_name} {url}")
+        logger.debug(f"clone_from_remote {self.remote_name} {url}")
 
         git_cmd = ["git", "rev-parse", "--show-toplevel"]
         result = subprocess.run(git_cmd, capture_output=True, text=True)
         if result.returncode == 0:
-            print(
-                f"ERROR. Trying to clone, but already in a repo '{os.getcwd()}' '{result.stdout.strip()}' ({program_title})"
+            logger.warning(
+                f"clone_from_remote: already in a repo '{os.getcwd()}' '{result.stdout.strip()}'"
             )
             return -1
 
@@ -269,7 +272,7 @@ class CodSync:
         else:
             latest_link, _etag = result
         if latest_link == None:
-            print(f"CLONE SADNESS")
+            logger.warning("clone_from_remote: no latest link found")
             return -1
 
         # Walk back through the link chain to collect all links from initial to latest
@@ -279,7 +282,7 @@ class CodSync:
             prev_link_uid = current[0][1]
             prev_link = self.remote.get_link(prev_link_uid)
             if prev_link is None:
-                print(f"CLONE BROKEN CHAIN at {prev_link_uid}")
+                logger.warning(f"clone_from_remote: broken chain at {prev_link_uid}")
                 return -1
             chain.append(prev_link)
             current = prev_link
@@ -290,7 +293,7 @@ class CodSync:
         # Clone from the initial snapshot bundle
         initial_link = chain[0]
         if len(initial_link[2]) != 1:
-            print(f"CLONE BS {initial_link[ 2 ]}")
+            logger.warning(f"clone_from_remote: unexpected initial link bundles {initial_link[2]}")
             return -1
         initial_bundle_uid = initial_link[2][0][0]
 
@@ -312,11 +315,11 @@ class CodSync:
             [tmp_remote, _] = self.bundle_tmp()
             self.gitCmd(["merge", f"{tmp_remote}/main"])
 
-        print(f"CLONE WORKED!!!")
+        logger.info(f"clone_from_remote: done")
         return 0
 
     def fetch_from_remote(self, branches):
-        print(f"FETCH {self.remote_name} {self.url} {branches}")
+        logger.debug(f"fetch_from_remote {self.remote_name} {branches}")
         result = self.remote.get_latest_link()
         if result is None:
             latest_link = None
@@ -324,7 +327,7 @@ class CodSync:
             latest_link, _etag = result
 
         if latest_link == None:
-            print(f"ERROR: Failed to fetch latest link ({program_title})")
+            logger.warning(f"fetch_from_remote: no latest link found")
             return -1
 
         return self.fetch_chain(latest_link, branches, False)
@@ -333,19 +336,19 @@ class CodSync:
         [link_ids, branches, bundles, supp_data] = link
 
         if len(bundles) != 1:
-            print(f"FETCH BS {bundles}")
+            logger.warning(f"fetch_chain: unexpected bundle count {bundles}")
             return -1
 
         bundle = bundles[0]
         bundle_uid = bundle[0]
         bundle_prereqs = bundle[1]
         if len(bundle_prereqs) != 1 or "main" not in bundle_prereqs.keys():
-            print(f"FETCH BSP {bundles}")
+            logger.warning(f"fetch_chain: unexpected bundle prerequisites {bundles}")
             return -1
 
         prereq = bundle_prereqs["main"]
         if prereq == "initial-snapshot":
-            print("ok?")
+            logger.debug("fetch_chain: initial snapshot")
         else:
             if doing_clone:
                 follow_chain = True
@@ -372,7 +375,7 @@ class CodSync:
         return 0
 
     def merge_from_remote(self, branches):
-        print(f"MERGE {self.remote_name} {branches}")
+        logger.debug(f"merge_from_remote {self.remote_name} {branches}")
         branch = branches[0]
 
         [tmp_remote, _] = self.bundle_tmp()
@@ -395,7 +398,7 @@ class CodSync:
         return []
 
     def get_branch_head_sha(self, branch):
-        print(f"MLERP {branch}")
+        logger.debug(f"get_branch_head_sha {branch}")
         result = self.gitCmd(["rev-parse", f"refs/heads/{branch}"], False)
         # cwd=repo_path,
 
@@ -416,8 +419,8 @@ class CodSync:
         os.chdir(git_dir)
         if pathlib.Path(git_dir).resolve() == pathlib.Path(os.getcwd()).resolve():
             return 0
-        print(
-            f"ERROR. Weird os.chdir() failure? {result.stdout} {os.getcwd()} ({program_title})"
+        logger.warning(
+            f"change_to_root_git_dir: unexpected chdir result {result.stdout} {os.getcwd()}"
         )
         return -1
 
@@ -507,7 +510,7 @@ class LocalFolderRemote(CodSyncRemote):
         self.path = None
 
         if not os.path.isdir(path):
-            print(f"ERROR: File URL not a folder '{path}' ({program_title})")
+            logger.warning(f"LocalFolderRemote: not a directory '{path}'")
             return -1
 
         self.path = path
@@ -559,7 +562,7 @@ class LocalFolderRemote(CodSyncRemote):
             path_link = f"{self.path}{os.path.sep}L-{uid}.yaml"
 
         if not os.path.exists(path_link):
-            print(f"FILE DOES NOT EXIST {path_link}")
+            logger.debug(f"LocalFolderRemote.get_link: not found {path_link}")
             return None
 
         with open(path_link, "r") as link_file_strm:
@@ -813,4 +816,4 @@ class ExplicitProxyRemote(CodSyncRemote):
 
 
 if __name__ == "__main__":
-    print("ERROR. This file contains no `main`")
+    logger.error("This file contains no main")

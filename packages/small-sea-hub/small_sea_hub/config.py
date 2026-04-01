@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     auto_approve_sessions: bool = False
     sandbox_mode: bool = False
     log_level: str = "INFO"  # console log level; file always gets DEBUG
+    watcher_interval: int = 60  # seconds between peer-signal poll rounds
 
     def get_root_dir(self) -> str:
         if self.root_dir:

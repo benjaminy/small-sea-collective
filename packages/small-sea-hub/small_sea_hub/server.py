@@ -120,7 +120,7 @@ async def _peer_watcher_loop(app: FastAPI):
     first_pass = True
     while True:
         if not first_pass:
-            await asyncio.sleep(PEER_WATCHER_INTERVAL)
+            await asyncio.sleep(getattr(app.state, "watcher_interval", PEER_WATCHER_INTERVAL))
         first_pass = False
 
         # Refresh peer lists for all active sessions before polling signals.
@@ -150,7 +150,11 @@ async def _peer_watcher_loop(app: FastAPI):
                     if sid == "version":
                         continue
                     if count > prev.get(sid, 0):
-                        app.state.peer_counts[(sid, member_id_hex)] = count
+                        # Key by the watching station (station_id_hex) so that
+                        # /notifications/watch _check() can find it by session.
+                        key = (station_id_hex, member_id_hex)
+                        if count > app.state.peer_counts.get(key, 0):
+                            app.state.peer_counts[key] = count
                         changed = True
                         logger.info(
                             f"Peer {member_id_hex[:8]} station {sid[:8]}: count={count}"
@@ -194,6 +198,8 @@ async def lifespan(app: FastAPI):
         app.state.peer_counts = {}        # (station_id_hex, member_id_hex) → int
     if not hasattr(app.state, "peer_signal_events"):
         app.state.peer_signal_events = {}  # station_id_hex → asyncio.Event
+    if not hasattr(app.state, "watcher_interval"):
+        app.state.watcher_interval = Settings().watcher_interval
     app.state.logger = app.state.backend.logger
     logger = app.state.backend.logger
     logger.info("Starting up...")
