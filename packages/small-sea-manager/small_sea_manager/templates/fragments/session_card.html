@@ -1,0 +1,45 @@
+<div id="session-card" class="card">
+  <div class="card-header">Hub session</div>
+  <div class="detail-section">
+
+  {% if session_status == "active" %}
+    <p class="notice notice-ok" style="margin-bottom:0.6rem">Session active — NoteToSelf</p>
+    <form hx-post="/session/close"
+          hx-target="#session-card"
+          hx-swap="outerHTML">
+      <button class="btn btn-secondary" type="submit">Close session</button>
+    </form>
+
+  {% elif session_status == "pending" %}
+    <p class="token-instruction" style="margin-bottom:0.5rem">
+      PIN sent via system notification. Enter it below:
+    </p>
+    {% if session_error %}
+    <p class="notice notice-err" style="margin-bottom:0.5rem">{{ session_error }}</p>
+    {% endif %}
+    <form class="inline-form"
+          hx-post="/session/confirm"
+          hx-target="#session-card"
+          hx-swap="outerHTML">
+      <input type="hidden" name="pending_id" value="{{ session_pending_id }}">
+      <input type="text" name="pin" placeholder="PIN" maxlength="6"
+             required autofocus style="width:6rem; font-size:1.1rem; letter-spacing:0.15em">
+      <button class="btn btn-primary" type="submit">Confirm</button>
+    </form>
+
+  {% else %}
+    {% if session_error %}
+    <p class="notice notice-err" style="margin-bottom:0.5rem">{{ session_error }}</p>
+    {% endif %}
+    <p class="token-instruction" style="margin-bottom:0.6rem; color:#78716c">
+      No active session. Hub operations require a confirmed session or auto-approve mode.
+    </p>
+    <form hx-post="/session/request"
+          hx-target="#session-card"
+          hx-swap="outerHTML">
+      <button class="btn btn-primary" type="submit">Request session</button>
+    </form>
+  {% endif %}
+
+  </div>
+</div>

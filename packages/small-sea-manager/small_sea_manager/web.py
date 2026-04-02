@@ -18,9 +18,17 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     """Create a configured FastAPI application."""
     app = FastAPI(title="Small Sea Manager")
     app.state.manager = TeamManager(root_dir, participant_hex, hub_port)
+    app.state.nts_session_token = None  # NoteToSelf session token, if established
 
     def _mgr(request: Request) -> TeamManager:
         return request.app.state.manager
+
+    def _session_card_ctx(request: Request, status: str, pending_id: str = None, error: str = None):
+        return templates.TemplateResponse(
+            "fragments/session_card.html",
+            {"request": request, "session_status": status,
+             "session_pending_id": pending_id, "session_error": error},
+        )
 
     # ------------------------------------------------------------------ #
     # Full pages
@@ -38,6 +46,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         nickname = mgr.get_nickname()
         participant_short = mgr.participant_hex[:8]
         teams = _teams_with_status(mgr)
+        session_status = "active" if request.app.state.nts_session_token else "none"
         return templates.TemplateResponse(
             "index.html",
             {
@@ -45,8 +54,48 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "nickname": nickname,
                 "participant_short": participant_short,
                 "teams": teams,
+                "session_status": session_status,
+                "session_pending_id": None,
+                "session_error": None,
             },
         )
+
+    # ------------------------------------------------------------------ #
+    # Hub session (PIN flow)
+    # ------------------------------------------------------------------ #
+
+    @app.post("/session/request", response_class=HTMLResponse)
+    async def session_request(request: Request):
+        mgr = _mgr(request)
+        try:
+            session, pending_id = mgr.client.start_session(
+                mgr.participant_hex, "SmallSeaCollectiveCore", "NoteToSelf", "ManagerUI"
+            )
+            if session is not None:
+                request.app.state.nts_session_token = session.token
+                return _session_card_ctx(request, "active")
+            return _session_card_ctx(request, "pending", pending_id=pending_id)
+        except Exception as e:
+            return _session_card_ctx(request, "none", error=str(e))
+
+    @app.post("/session/confirm", response_class=HTMLResponse)
+    async def session_confirm(
+        request: Request,
+        pending_id: str = Form(...),
+        pin: str = Form(...),
+    ):
+        mgr = _mgr(request)
+        try:
+            session = mgr.client.confirm_session(pending_id, pin.strip())
+            request.app.state.nts_session_token = session.token
+            return _session_card_ctx(request, "active")
+        except Exception as e:
+            return _session_card_ctx(request, "pending", pending_id=pending_id, error=str(e))
+
+    @app.post("/session/close", response_class=HTMLResponse)
+    async def session_close(request: Request):
+        request.app.state.nts_session_token = None
+        return _session_card_ctx(request, "none")
 
     # ------------------------------------------------------------------ #
     # Team list management (htmx fragments)

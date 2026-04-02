@@ -58,6 +58,25 @@ class SmallSeaClient:
         )
         return result["pending_id"]
 
+    def start_session(
+        self, participant: str, app: str, team: str, client_name: str
+    ) -> "tuple[SmallSeaSession | None, str | None]":
+        """Begin a session, handling both auto-approve and PIN modes in one call.
+
+        Makes one request to /sessions/request and branches on the response:
+        - Auto-approve: Hub returns token immediately → (session, None)
+        - PIN required: Hub returns only pending_id → (None, pending_id);
+          the Hub has already sent the PIN via OS notification; pass pending_id
+          and the PIN to confirm_session() to complete the flow.
+        """
+        result = self._post(
+            "/sessions/request",
+            {"participant": participant, "app": app, "team": team, "client": client_name},
+        )
+        if "token" in result:
+            return SmallSeaSession(self, result["token"]), None
+        return None, result["pending_id"]
+
     def open_session(
         self, participant: str, app: str, team: str, client_name: str
     ) -> "SmallSeaSession":
