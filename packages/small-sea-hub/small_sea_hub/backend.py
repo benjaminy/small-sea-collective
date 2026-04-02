@@ -336,7 +336,7 @@ class SmallSeaBackend:
         participant_hex = participant_dir.absolute().name
         self._resolve_station(participant_dir, team, app)  # validate existence
 
-        pin = str(secrets.randbelow(10000)).zfill(4)
+        pin = str(secrets.randbelow(1000)).zfill(3)
 
         if client != "Smoke Tests":
             try:
@@ -347,7 +347,7 @@ class SmallSeaBackend:
                     timeout=10,
                 )
             except Exception:
-                logger.warning(
+                self.logger.warning(
                     "OS notification failed — PIN for '%s' session request: %s", client, pin
                 )
 
