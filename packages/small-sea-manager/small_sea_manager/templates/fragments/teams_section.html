@@ -8,6 +8,7 @@
     <thead>
       <tr>
         <th>Team</th>
+        <th>Sync</th>
         <th></th>
       </tr>
     </thead>
@@ -19,6 +20,11 @@
                   hx-get="/teams/{{ team.name }}"
                   hx-target="#team-detail"
                   hx-swap="innerHTML">{{ team.name }}</button>
+        </td>
+        <td>
+          {% with team_name=team.name, status=team.sync_status %}
+            {% include "fragments/sync_badge.html" %}
+          {% endwith %}
         </td>
         <td style="text-align:right">
           <button class="btn btn-secondary"

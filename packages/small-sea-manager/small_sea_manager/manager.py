@@ -1,6 +1,7 @@
 # Top Matter
 
 import pathlib
+import subprocess
 from dataclasses import dataclass
 from typing import Optional
 
@@ -195,6 +196,35 @@ class TeamManager:
 
         return acceptance_b64
 
+    def _team_repo_dir(self, team_name: str) -> pathlib.Path:
+        return self.root_dir / "Participants" / self.participant_hex / team_name / "Sync"
+
+    def _git_head(self, repo_dir: pathlib.Path) -> Optional[str]:
+        try:
+            result = subprocess.run(
+                ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
+                capture_output=True, text=True, check=True,
+            )
+            return result.stdout.strip()
+        except Exception:
+            return None
+
+    def _push_status_file(self, team_name: str) -> pathlib.Path:
+        # Stored alongside (not inside) the Sync git repo to avoid polluting it.
+        return self.root_dir / "Participants" / self.participant_hex / team_name / ".ss_last_push"
+
+    def get_team_sync_status(self, team_name: str) -> str:
+        """Return 'synced', 'needs_push', or 'never_pushed'."""
+        repo_dir = self._team_repo_dir(team_name)
+        current_head = self._git_head(repo_dir)
+        if current_head is None:
+            return "never_pushed"
+        status_file = self._push_status_file(team_name)
+        if not status_file.exists():
+            return "never_pushed"
+        last_pushed = status_file.read_text().strip()
+        return "synced" if current_head == last_pushed else "needs_push"
+
     def push_team(self, team_name):
         """Push the team's Sync repo to the participant's cloud bucket.
 
@@ -207,10 +237,7 @@ class TeamManager:
         session = self.client.open_session(
             self.participant_hex, "SmallSeaCollectiveCore", team_name, "TeamManager"
         )
-        repo_dir = (
-            pathlib.Path(self.root_dir)
-            / "Participants" / self.participant_hex / team_name / "Sync"
-        )
+        repo_dir = self._team_repo_dir(team_name)
         remote = SmallSeaRemote(session.token, base_url=self.client._base_url)
         cs = CodSync("origin", repo_dir=repo_dir)
         cs.remote = remote
@@ -220,6 +247,9 @@ class TeamManager:
             raise RuntimeError(
                 "Push conflict — cloud is ahead of local. Pull from peers first."
             )
+        head = self._git_head(repo_dir)
+        if head:
+            self._push_status_file(team_name).write_text(head)
 
     def complete_invitation_acceptance(self, team_name, acceptance_b64):
         """Complete an acceptance (inviter side): add acceptor as member + peer."""

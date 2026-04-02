@@ -1,8 +1,12 @@
 <div class="detail-header">
   <h2>{{ team_name }}</h2>
+  {% with status=sync_status %}
+    {% include "fragments/sync_badge.html" %}
+  {% endwith %}
   <form hx-post="/teams/{{ team_name }}/push"
         hx-target="#sync-result"
-        hx-swap="outerHTML">
+        hx-swap="outerHTML"
+        hx-on::after-request="htmx.trigger('#sync-badge-{{ team_name }}', 'refresh')">
     <button class="btn btn-secondary" type="submit">Push to cloud</button>
   </form>
 </div>

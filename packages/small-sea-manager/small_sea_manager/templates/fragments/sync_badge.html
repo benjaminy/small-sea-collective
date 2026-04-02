@@ -1,0 +1,9 @@
+<span id="sync-badge-{{ team_name }}"
+      hx-get="/teams/{{ team_name }}/sync-status"
+      hx-trigger="every 15s, refresh"
+      hx-swap="outerHTML"
+      class="badge {% if status == 'synced' %}badge-green{% elif status == 'needs_push' %}badge-amber{% else %}badge-grey{% endif %}">
+  {% if status == "synced" %}synced
+  {% elif status == "needs_push" %}needs push
+  {% else %}not pushed{% endif %}
+</span>

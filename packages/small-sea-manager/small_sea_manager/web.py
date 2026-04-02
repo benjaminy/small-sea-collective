@@ -26,12 +26,18 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     # Full pages
     # ------------------------------------------------------------------ #
 
+    def _teams_with_status(mgr):
+        teams = [t for t in mgr.list_teams() if t["name"] != _NOTETOSELF]
+        for t in teams:
+            t["sync_status"] = mgr.get_team_sync_status(t["name"])
+        return teams
+
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         mgr = _mgr(request)
         nickname = mgr.get_nickname()
         participant_short = mgr.participant_hex[:8]
-        teams = [t for t in mgr.list_teams() if t["name"] != _NOTETOSELF]
+        teams = _teams_with_status(mgr)
         return templates.TemplateResponse(
             "index.html",
             {
@@ -54,7 +60,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             error = None
         except Exception as e:
             error = str(e)
-        teams = [t for t in mgr.list_teams() if t["name"] != _NOTETOSELF]
+        teams = _teams_with_status(mgr)
         return templates.TemplateResponse(
             "fragments/teams_section.html",
             {"request": request, "teams": teams, "error": error},
@@ -78,6 +84,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             roles = m.get("station_roles", [])
             m["core_role"] = roles[0]["role"] if roles else None
         invitations = mgr.list_invitations(team_name)
+        sync_status = mgr.get_team_sync_status(team_name)
         return templates.TemplateResponse(
             "fragments/team_detail.html",
             {
@@ -85,12 +92,22 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "team_name": team_name,
                 "members": members,
                 "invitations": invitations,
+                "sync_status": sync_status,
             },
         )
 
     # ------------------------------------------------------------------ #
     # Sync
     # ------------------------------------------------------------------ #
+
+    @app.get("/teams/{team_name}/sync-status", response_class=HTMLResponse)
+    async def team_sync_status(request: Request, team_name: str):
+        mgr = _mgr(request)
+        status = mgr.get_team_sync_status(team_name)
+        return templates.TemplateResponse(
+            "fragments/sync_badge.html",
+            {"request": request, "team_name": team_name, "status": status},
+        )
 
     @app.post("/teams/{team_name}/push", response_class=HTMLResponse)
     async def push_team(request: Request, team_name: str):
