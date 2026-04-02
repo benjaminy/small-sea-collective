@@ -1,0 +1,42 @@
+<div id="team-session-{{ team_name }}">
+{% if session_error %}
+<p class="notice notice-err" style="margin-bottom:0.4rem; font-size:0.8rem;">{{ session_error }}</p>
+{% endif %}
+
+{% if team_session_status == "active" %}
+  <div class="row" style="align-items:center; gap:0.5rem;">
+    <span class="badge badge-running" style="font-size:0.7rem;">session active</span>
+    <form hx-post="/teams/{{ team_name }}/session/close"
+          hx-target="#team-session-{{ team_name }}"
+          hx-swap="outerHTML">
+      <button class="btn btn-secondary btn-sm" type="submit" style="font-size:0.75rem;">Close</button>
+    </form>
+  </div>
+
+{% elif team_session_status == "pending" %}
+  <p class="token-instruction" style="margin-bottom:0.4rem; font-size:0.85rem;">
+    PIN sent via notification — enter it to confirm:
+  </p>
+  <form class="inline-form"
+        hx-post="/teams/{{ team_name }}/session/confirm"
+        hx-target="#team-session-{{ team_name }}"
+        hx-swap="outerHTML">
+    <input type="text" name="pin" placeholder="PIN" maxlength="3"
+           required autofocus style="width:4rem; font-size:1.1rem; letter-spacing:0.15em;">
+    <button class="btn btn-primary btn-sm" type="submit">Confirm</button>
+  </form>
+  <form hx-post="/teams/{{ team_name }}/session/resend-notification"
+        hx-target="#team-session-{{ team_name }}"
+        hx-swap="outerHTML"
+        style="margin-top:0.35rem;">
+    <button class="btn btn-secondary btn-sm" type="submit" style="font-size:0.75rem;">Resend notification</button>
+  </form>
+
+{% else %}
+  <form hx-post="/teams/{{ team_name }}/session/request"
+        hx-target="#team-session-{{ team_name }}"
+        hx-swap="outerHTML">
+    <button class="btn btn-secondary btn-sm" type="submit" style="font-size:0.8rem;">Request session</button>
+  </form>
+{% endif %}
+</div>

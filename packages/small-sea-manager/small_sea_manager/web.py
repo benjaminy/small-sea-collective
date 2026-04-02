@@ -20,9 +20,22 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     app.state.manager = TeamManager(root_dir, participant_hex, hub_port)
 
     _NTS = ("SmallSeaCollectiveCore", "NoteToSelf")  # the Manager's primary session scope
+    _CORE_APP = "SmallSeaCollectiveCore"  # app name used for all team sessions
 
     def _mgr(request: Request) -> TeamManager:
         return request.app.state.manager
+
+    def _team_session_ctx(request: Request, team_name: str, error: str = None):
+        mgr = _mgr(request)
+        return templates.TemplateResponse(
+            "fragments/team_session.html",
+            {
+                "request": request,
+                "team_name": team_name,
+                "team_session_status": mgr.session_state(_CORE_APP, team_name),
+                "session_error": error,
+            },
+        )
 
     def _session_card_ctx(request: Request, error: str = None):
         mgr = _mgr(request)
@@ -173,6 +186,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "members": members,
                 "invitations": invitations,
                 "sync_status": sync_status,
+                "team_session_status": mgr.session_state(_CORE_APP, team_name),
             },
         )
 
@@ -203,6 +217,55 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "fragments/sync_result.html",
             {"request": request, "team_name": team_name, "notice": notice, "error": error},
         )
+
+    # ------------------------------------------------------------------ #
+    # Team sessions (PIN flow per team)
+    # ------------------------------------------------------------------ #
+
+    @app.post("/teams/{team_name}/session/request", response_class=HTMLResponse)
+    async def team_session_request(request: Request, team_name: str):
+        mgr = _mgr(request)
+        try:
+            session, pending_id = mgr.client.start_session(
+                mgr.participant_hex, _CORE_APP, team_name, "ManagerUI"
+            )
+            if session is not None:
+                mgr.set_session(_CORE_APP, team_name, session.token)
+            else:
+                mgr.set_pending(_CORE_APP, team_name, pending_id)
+        except Exception as e:
+            return _team_session_ctx(request, team_name, error=str(e))
+        return _team_session_ctx(request, team_name)
+
+    @app.post("/teams/{team_name}/session/confirm", response_class=HTMLResponse)
+    async def team_session_confirm(
+        request: Request, team_name: str, pin: str = Form(...)
+    ):
+        mgr = _mgr(request)
+        pending_id = mgr.get_pending_id(_CORE_APP, team_name)
+        try:
+            session = mgr.client.confirm_session(pending_id, pin.strip())
+            mgr.set_session(_CORE_APP, team_name, session.token)
+        except Exception as e:
+            return _team_session_ctx(request, team_name, error=str(e))
+        return _team_session_ctx(request, team_name)
+
+    @app.post("/teams/{team_name}/session/resend-notification", response_class=HTMLResponse)
+    async def team_session_resend(request: Request, team_name: str):
+        mgr = _mgr(request)
+        pending_id = mgr.get_pending_id(_CORE_APP, team_name)
+        try:
+            if pending_id:
+                mgr.client.resend_notification(pending_id)
+        except Exception as e:
+            return _team_session_ctx(request, team_name, error=str(e))
+        return _team_session_ctx(request, team_name)
+
+    @app.post("/teams/{team_name}/session/close", response_class=HTMLResponse)
+    async def team_session_close(request: Request, team_name: str):
+        mgr = _mgr(request)
+        mgr.clear_session(_CORE_APP, team_name)
+        return _team_session_ctx(request, team_name)
 
     # ------------------------------------------------------------------ #
     # Invitations
