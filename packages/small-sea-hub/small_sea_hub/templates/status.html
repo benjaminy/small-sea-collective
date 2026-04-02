@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<!--
+  SECURITY — READ BEFORE MODIFYING THIS TEMPLATE
+  ================================================
+  This page is served over unauthenticated HTTP on localhost. Any process
+  running on this machine can fetch it without any credentials. It must
+  therefore be treated as fully public, readable by any local app.
+
+  What is safe to show:
+    - That the Hub is running
+    - The count of pending and active sessions
+    - The client_name of a pending session (a label chosen by the requesting
+      app, e.g. "ManagerUI") — not a secret
+    - A "Resend notification" button (re-fires the OS notification; the PIN
+      never appears in any HTTP response)
+
+  What must NEVER appear here:
+    - PINs — must only travel via OS notification, never via HTTP
+    - Team names or app names — private to participants
+    - Participant hex IDs or any other participant identifier
+    - Session tokens
+    - Cloud storage URLs, credentials, or any configuration
+    - Any data private to a team, app, or participant
+
+  The resend-notification endpoint is safe to call unauthenticated because
+  it cannot be used to learn the PIN: it only triggers another OS notification.
+  See backend.py resend_notification() and the session PIN design doc for the
+  full security rationale.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Small Sea Hub</title>
+  <style>
+    body { font-family: system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; padding: 0 1rem; color: #1c1917; }
+    h1 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.25rem; }
+    h2 { font-size: 0.9rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; color: #78716c; margin: 1.5rem 0 0.5rem; }
+    .badge { display: inline-block; padding: 0.15rem 0.5rem; border-radius: 0.25rem; font-size: 0.75rem; font-weight: 600; }
+    .badge-ok { background: #d1fae5; color: #065f46; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+    td, th { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid #e7e5e4; }
+    th { font-weight: 600; color: #78716c; font-size: 0.75rem; text-transform: uppercase; }
+    button { font-size: 0.8rem; padding: 0.2rem 0.6rem; border: 1px solid #d6d3d1; border-radius: 0.25rem; background: #fff; cursor: pointer; }
+    button:hover { background: #f5f5f4; }
+    .muted { color: #78716c; font-size: 0.8rem; }
+    .none { color: #a8a29e; font-style: italic; font-size: 0.85rem; }
+  </style>
+</head>
+<body>
+
+<h1>Small Sea Hub <span class="badge badge-ok">running</span></h1>
+<p class="muted">Local Hub status page. See source for security notes on what may appear here.</p>
+
+<h2>Pending session requests</h2>
+{% if pending %}
+<table>
+  <thead>
+    <tr>
+      <th>Requesting client</th>
+      <th>Expires</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for s in pending %}
+    <tr>
+      <td>{{ s.client_name }}</td>
+      <td class="muted">{{ s.expires_at[:19].replace("T", " ") }} UTC</td>
+      <td>
+        <form method="post" action="/sessions/{{ s.pending_id }}/resend-notification">
+          <button type="submit">Resend notification</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="none">No pending requests.</p>
+{% endif %}
+
+<h2>Active sessions</h2>
+<p class="muted">{{ active_count }} active session{% if active_count != 1 %}s{% endif %}.</p>
+
+</body>
+</html>

@@ -26,6 +26,13 @@
              required autofocus style="width:4rem; font-size:1.1rem; letter-spacing:0.15em">
       <button class="btn btn-primary" type="submit">Confirm</button>
     </form>
+    <form hx-post="/session/resend-notification"
+          hx-target="#session-card"
+          hx-swap="outerHTML"
+          style="margin-top:0.5rem;">
+      <input type="hidden" name="pending_id" value="{{ session_pending_id }}">
+      <button class="btn btn-secondary" type="submit" style="font-size:0.8rem;">Resend notification</button>
+    </form>
 
   {% else %}
     {% if session_error %}

@@ -92,6 +92,18 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         except Exception as e:
             return _session_card_ctx(request, "pending", pending_id=pending_id, error=str(e))
 
+    @app.post("/session/resend-notification", response_class=HTMLResponse)
+    async def session_resend_notification(
+        request: Request,
+        pending_id: str = Form(...),
+    ):
+        mgr = _mgr(request)
+        try:
+            mgr.client.resend_notification(pending_id)
+            return _session_card_ctx(request, "pending", pending_id=pending_id)
+        except Exception as e:
+            return _session_card_ctx(request, "pending", pending_id=pending_id, error=str(e))
+
     @app.post("/session/close", response_class=HTMLResponse)
     async def session_close(request: Request):
         request.app.state.nts_session_token = None

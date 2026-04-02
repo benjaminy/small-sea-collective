@@ -339,17 +339,7 @@ class SmallSeaBackend:
         pin = str(secrets.randbelow(1000)).zfill(3)
 
         if client != "Smoke Tests":
-            try:
-                plyer.notification.notify(
-                    title="Small Sea Access Request",
-                    message=f'PIN: {pin} — "{client}" requesting access to {team} → {app}',
-                    app_name="Small Sea Hub",
-                    timeout=10,
-                )
-            except Exception:
-                self.logger.warning(
-                    "OS notification failed — PIN for '%s' session request: %s", client, pin
-                )
+            self._send_os_notification(client, pin, team, app)
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=5)
@@ -425,6 +415,101 @@ class SmallSeaBackend:
             sess.commit()
 
         return token
+
+    def _send_os_notification(self, client: str, pin: str, team: str, app: str) -> None:
+        """Fire an OS notification carrying the session PIN.
+
+        Tries plyer first (cross-platform), then osascript (macOS fallback).
+        Logs a warning if both fail — the PIN will then only be visible in the
+        Hub status UI and the sandbox dashboard (if running).
+
+        The PIN must travel out-of-band from the requesting client. This method
+        must never return or log the PIN in a way that the requesting process
+        could intercept.
+        """
+        title = "Small Sea Access Request"
+        message = f'PIN: {pin} — "{client}" requesting access to {team} → {app}'
+        try:
+            plyer.notification.notify(
+                title=title,
+                message=message,
+                app_name="Small Sea Hub",
+                timeout=10,
+            )
+            return
+        except Exception:
+            pass
+        # plyer failed (common on macOS when the process lacks notification
+        # permission). Try osascript directly.
+        try:
+            import subprocess as _sp
+            _msg = f'PIN: {pin} — \\"{client}\\" requesting access to {team} → {app}'
+            _sp.run(
+                ["osascript", "-e",
+                 f'display notification "{_msg}" with title "{title}"'],
+                check=True, timeout=3,
+            )
+            return
+        except Exception:
+            pass
+        self.logger.warning(
+            "OS notification failed — PIN for '%s' session request: %s", client, pin
+        )
+
+    def resend_notification(self, pending_id_hex: str) -> None:
+        """Re-fire the OS notification for a pending session request.
+
+        Safe to expose over unauthenticated HTTP because the PIN is never
+        returned in the response — it only travels via the OS notification.
+        The worst a caller can do is annoy the user with repeat notifications.
+
+        Raises SmallSeaNotFoundExn if the pending session does not exist or
+        has already expired.
+        """
+        pending_id = bytes.fromhex(pending_id_hex)
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+        with Session(engine_local) as sess:
+            pending = (
+                sess.query(PendingSession)
+                .filter(PendingSession.id == pending_id)
+                .first()
+            )
+            if pending is None:
+                raise SmallSeaNotFoundExn("No pending session found")
+            now = datetime.now(timezone.utc)
+            if now > datetime.fromisoformat(pending.expires_at):
+                sess.delete(pending)
+                sess.commit()
+                raise SmallSeaNotFoundExn("Pending session has expired")
+            self._send_os_notification(
+                pending.client_name, pending.pin, pending.team_name, pending.app_name
+            )
+
+    def list_pending_sessions_safe(self) -> list[dict]:
+        """Return pending sessions WITHOUT PINs, for the Hub status UI.
+
+        Safe to expose over unauthenticated HTTP. The PIN field is intentionally
+        absent — it must only travel via OS notification, never via HTTP response.
+        Team and app names are also excluded: they are private to participants
+        and must not be readable by any process that can reach localhost.
+        """
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+        with Session(engine_local) as sess:
+            rows = sess.query(PendingSession).all()
+            return [
+                {
+                    "pending_id": r.id.hex(),
+                    "client_name": r.client_name,
+                    "expires_at": r.expires_at,
+                }
+                for r in rows
+            ]
+
+    def count_active_sessions(self) -> int:
+        """Return the number of currently active (confirmed) sessions."""
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+        with Session(engine_local) as sess:
+            return sess.query(SmallSeaSession).count()
 
     def list_pending_sessions(self) -> list[dict]:
         """Return all pending sessions with their PINs.

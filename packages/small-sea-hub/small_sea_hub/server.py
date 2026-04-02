@@ -6,11 +6,16 @@ import sys
 from contextlib import asynccontextmanager
 from typing import Optional, Union
 
+import pathlib
+
 import pydantic
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.templating import Jinja2Templates
 from small_sea_hub.backend import SmallSeaBackend, SmallSeaNotFoundExn
 from small_sea_hub.config import Settings
+
+_templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "templates"))
 
 PEER_WATCHER_INTERVAL = 60  # seconds between poll rounds
 
@@ -263,9 +268,30 @@ async def not_found_handler(request: Request, exc: SmallSeaNotFoundExn):
     return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
-@app.get("/")
-async def root():
-    return {"message": "Hello World"}
+@app.get("/", response_class=HTMLResponse)
+async def hub_status(request: Request):
+    backend = app.state.backend
+    return _templates.TemplateResponse(
+        request,
+        "status.html",
+        {
+            "request": request,
+            "pending": backend.list_pending_sessions_safe(),
+            "active_count": backend.count_active_sessions(),
+        },
+    )
+
+
+@app.post("/sessions/{pending_id}/resend-notification")
+async def resend_notification(pending_id: str):
+    """Re-fire the OS notification for a pending session request.
+
+    Safe to expose without authentication: the PIN never appears in the
+    response. Any process on localhost can call this, but the worst outcome
+    is the user seeing a repeated notification — not a PIN leak.
+    """
+    app.state.backend.resend_notification(pending_id)
+    return {"ok": True}
 
 
 # ---- Authorization ----

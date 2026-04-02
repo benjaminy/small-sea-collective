@@ -96,6 +96,16 @@ class SmallSeaClient:
             )
         return SmallSeaSession(self, result["token"])
 
+    def resend_notification(self, pending_id: str) -> None:
+        """Ask the Hub to re-fire the OS notification for a pending session.
+
+        Use this when the user missed the original PIN notification. The PIN
+        never appears in the HTTP response — it only travels via the OS
+        notification. Raises SmallSeaNotFound if the pending session has
+        expired or does not exist.
+        """
+        self._post(f"/sessions/{pending_id}/resend-notification", {})
+
     def confirm_session(self, pending_id: str, pin: str) -> "SmallSeaSession":
         """Complete the session flow with the PIN from the Hub notification.
 
