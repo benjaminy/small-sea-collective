@@ -129,31 +129,32 @@ class SandboxWorkspace:
     # ------------------------------------------------------------------ #
 
     def create_account(self, server_port: int, label: str) -> MinioAccountConfig:
-        """Create a MinIO IAM user and access key on the given server."""
+        """Create a MinIO IAM user on the given server and return its credentials.
+
+        In MinIO's IAM model the access_key IS the username; the secret_key is
+        the password we generate.  We attach the built-in 'readwrite' policy so
+        the Hub can create buckets and upload objects.
+        """
         server = next((s for s in self.minio_servers if s.api_port == server_port), None)
         if server is None:
             raise ValueError(f"No MinIO server on port {server_port}")
 
-        import boto3
-        from botocore.config import Config as BotoConfig
+        from minio.credentials import StaticProvider
+        from minio.minioadmin import MinioAdmin
 
-        iam = boto3.client(
-            "iam",
-            endpoint_url=f"http://localhost:{server.api_port}",
-            aws_access_key_id=server.root_user,
-            aws_secret_access_key=server.root_password,
-            config=BotoConfig(signature_version="s3v4"),
-            region_name="us-east-1",
+        admin = MinioAdmin(
+            endpoint=f"localhost:{server.api_port}",
+            credentials=StaticProvider(server.root_user, server.root_password),
+            secure=False,
         )
-        iam.create_user(UserName=label)
-        response = iam.create_access_key(UserName=label)
-        access_key = response["AccessKey"]["AccessKeyId"]
-        secret_key = response["AccessKey"]["SecretAccessKey"]
+        secret_key = secrets.token_urlsafe(24)
+        admin.user_add(label, secret_key)
+        admin.attach_policy(["readwrite"], user=label)
 
         account = MinioAccountConfig(
             server_port=server_port,
             label=label,
-            access_key=access_key,
+            access_key=label,   # MinIO access_key == username
             secret_key=secret_key,
         )
         self.minio_accounts.append(account)
