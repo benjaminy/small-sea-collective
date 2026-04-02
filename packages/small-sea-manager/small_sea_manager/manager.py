@@ -283,6 +283,7 @@ class TeamManager:
         from cod_sync.protocol import CodSync, SmallSeaRemote, CasConflictError
 
         session = self._get_or_open_session("SmallSeaCollectiveCore", team_name)
+        session.ensure_cloud_ready()
         repo_dir = self._team_repo_dir(team_name)
         remote = SmallSeaRemote(session.token, base_url=self.client._base_url)
         cs = CodSync("origin", repo_dir=repo_dir)

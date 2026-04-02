@@ -618,8 +618,12 @@ class SmallSeaRemote(CodSyncRemote):
         if resp.status_code == 409:
             raise CasConflictError(f"CAS conflict uploading {cloud_path}")
         if resp.status_code != 200:
+            try:
+                detail = resp.json().get("detail", resp.text)
+            except Exception:
+                detail = resp.text
             raise RuntimeError(
-                f"cloud upload failed ({resp.status_code}): {cloud_path}"
+                f"cloud upload failed ({resp.status_code}): {detail}"
             )
         return resp
 

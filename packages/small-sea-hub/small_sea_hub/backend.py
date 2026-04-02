@@ -629,9 +629,11 @@ class SmallSeaBackend:
         engine_core = create_engine(f"sqlite:///{core_path}")
         with Session(engine_core) as session:
             results = session.query(CloudStorage).all()
-            if len(results) != 1:
-                print(f"TODO: Other cases {len(results)}")
-                raise NotImplementedError()
+            if len(results) == 0:
+                raise SmallSeaNotFoundExn(
+                    "No cloud storage configured for this participant. "
+                    "Add a cloud storage account in the Manager before syncing."
+                )
             cloud = results[0]
         return cloud
 
