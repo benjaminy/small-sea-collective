@@ -72,7 +72,11 @@
         hx-target="#minio-server-{{ server.api_port }}"
         hx-swap="outerHTML">
     <input type="text" name="label" placeholder="Account label (e.g. alice)"
-           style="width:16rem" required>
-    <button class="btn btn-secondary btn-sm" type="submit">Create account</button>
+           style="width:16rem" required {{ 'disabled' if status != 'running' }}>
+    <button class="btn btn-secondary btn-sm" type="submit"
+            {{ 'disabled' if status != 'running' }}>Create account</button>
+    {% if status != "running" %}
+    <span class="muted">Start the server first</span>
+    {% endif %}
   </form>
 </div>

@@ -148,8 +148,16 @@ class SandboxWorkspace:
             secure=False,
         )
         secret_key = secrets.token_urlsafe(24)
-        admin.user_add(label, secret_key)
-        admin.attach_policy(["readwrite"], user=label)
+        try:
+            admin.user_add(label, secret_key)
+            admin.attach_policy(["readwrite"], user=label)
+        except Exception as exc:
+            msg = str(exc)
+            if "Connection refused" in msg or "Failed to establish" in msg:
+                raise RuntimeError(
+                    f"Cannot reach MinIO on port {server.api_port} — is the server running?"
+                ) from exc
+            raise
 
         account = MinioAccountConfig(
             server_port=server_port,
