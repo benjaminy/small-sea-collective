@@ -347,7 +347,9 @@ class SmallSeaBackend:
                     timeout=10,
                 )
             except Exception:
-                pass  # notification failure must not abort the session request
+                logger.warning(
+                    "OS notification failed — PIN for '%s' session request: %s", client, pin
+                )
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=5)

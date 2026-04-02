@@ -294,39 +294,6 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
             sessions=sessions,
         )
 
-    @app.post("/participants/{participant_hex}/sessions/confirm", response_class=HTMLResponse)
-    async def sessions_confirm(
-        request: Request,
-        participant_hex: str,
-        pending_id: str = Form(...),
-        pin: str = Form(...),
-    ):
-        """Confirm a pending Hub session from the sandbox dashboard."""
-        ws = request.app.state.workspace
-        p = next((x for x in ws.participants if x.hex == participant_hex), None)
-        sessions = []
-        if p:
-            try:
-                httpx.post(
-                    f"http://localhost:{p.hub_port}/sessions/confirm",
-                    json={"pending_id": pending_id, "pin": pin},
-                    timeout=2,
-                )
-                resp = httpx.get(
-                    f"http://localhost:{p.hub_port}/sessions/pending", timeout=2
-                )
-                if resp.status_code == 200:
-                    all_pending = resp.json()
-                    sessions = [s for s in all_pending if s["participant_hex"] == participant_hex]
-            except Exception:
-                pass
-        return _render(
-            "fragments/pending_sessions.html",
-            request,
-            participant_hex=participant_hex,
-            sessions=sessions,
-        )
-
     @app.post("/participants/{participant_hex}/manager/start", response_class=HTMLResponse)
     async def manager_start(request: Request, participant_hex: str):
         ws = request.app.state.workspace

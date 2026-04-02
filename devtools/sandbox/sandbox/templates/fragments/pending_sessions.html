@@ -8,12 +8,6 @@
       {{ s.client_name }} → {{ s.team_name }}
     </span>
     <code style="font-size:1rem; font-weight:bold; color:#064e3b; letter-spacing:0.15em;">{{ s.pin }}</code>
-    <form hx-post="/participants/{{ participant_hex }}/sessions/confirm"
-          hx-vals='{"pending_id": "{{ s.pending_id }}", "pin": "{{ s.pin }}"}'
-          hx-target="#sessions-panel-{{ participant_hex }}"
-          hx-swap="innerHTML">
-      <button class="btn btn-primary btn-sm">Approve</button>
-    </form>
   </div>
   {% endfor %}
 </div>
