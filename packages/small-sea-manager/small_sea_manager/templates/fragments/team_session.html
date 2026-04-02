@@ -5,7 +5,7 @@
 
 {% if team_session_status == "active" %}
   <div class="row" style="align-items:center; gap:0.5rem;">
-    <span class="badge badge-running" style="font-size:0.7rem;">session active</span>
+    <span class="badge badge-green" style="font-size:0.7rem;">session active</span>
     <form hx-post="/teams/{{ team_name }}/session/close"
           hx-target="#team-session-{{ team_name }}"
           hx-swap="outerHTML">
@@ -39,4 +39,15 @@
     <button class="btn btn-secondary btn-sm" type="submit" style="font-size:0.8rem;">Request session</button>
   </form>
 {% endif %}
+</div>
+
+{# OOB: keep the sidebar dot in sync whenever session state changes #}
+<div id="sidebar-team-{{ team_name }}" hx-swap-oob="true" class="sidebar-item">
+  <button class="team-link"
+          hx-get="/teams/{{ team_name }}"
+          hx-target="#team-detail"
+          hx-swap="innerHTML">
+    {{ team_name }}
+  </button>
+  <span class="session-dot dot-{{ team_session_status }}"></span>
 </div>

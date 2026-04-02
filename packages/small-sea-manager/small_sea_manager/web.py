@@ -3,7 +3,7 @@
 import pathlib
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from small_sea_manager.manager import TeamManager
@@ -25,6 +25,18 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     def _mgr(request: Request) -> TeamManager:
         return request.app.state.manager
 
+    def _hub_connection_ctx(request: Request, error: str = None):
+        mgr = _mgr(request)
+        app_name, team_name = _NTS
+        return templates.TemplateResponse(
+            "fragments/hub_connection.html",
+            {
+                "request": request,
+                "session_status": mgr.session_state(app_name, team_name),
+                "session_error": error,
+            },
+        )
+
     def _team_session_ctx(request: Request, team_name: str, error: str = None):
         mgr = _mgr(request)
         return templates.TemplateResponse(
@@ -37,23 +49,6 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             },
         )
 
-    def _session_card_ctx(request: Request, error: str = None):
-        mgr = _mgr(request)
-        app_name, team_name = _NTS
-        return templates.TemplateResponse(
-            "fragments/session_card.html",
-            {
-                "request": request,
-                "session_status": mgr.session_state(app_name, team_name),
-                "session_pending_id": mgr.get_pending_id(app_name, team_name),
-                "session_error": error,
-                "other_sessions": [
-                    s for s in mgr.active_sessions()
-                    if (s["app"], s["team"]) != _NTS
-                ],
-            },
-        )
-
     # ------------------------------------------------------------------ #
     # Full pages
     # ------------------------------------------------------------------ #
@@ -62,34 +57,27 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         teams = [t for t in mgr.list_teams() if t["name"] != _NOTETOSELF]
         for t in teams:
             t["sync_status"] = mgr.get_team_sync_status(t["name"])
+            t["session_status"] = mgr.session_state(_CORE_APP, t["name"])
         return teams
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         mgr = _mgr(request)
-        nickname = mgr.get_nickname()
-        participant_short = mgr.participant_hex[:8]
-        teams = _teams_with_status(mgr)
         app_name, team_name = _NTS
         return templates.TemplateResponse(
             "index.html",
             {
                 "request": request,
-                "nickname": nickname,
-                "participant_short": participant_short,
-                "teams": teams,
+                "nickname": mgr.get_nickname(),
+                "participant_short": mgr.participant_hex[:8],
+                "teams": _teams_with_status(mgr),
                 "session_status": mgr.session_state(app_name, team_name),
-                "session_pending_id": mgr.get_pending_id(app_name, team_name),
                 "session_error": None,
-                "other_sessions": [
-                    s for s in mgr.active_sessions()
-                    if (s["app"], s["team"]) != _NTS
-                ],
             },
         )
 
     # ------------------------------------------------------------------ #
-    # Hub session (PIN flow)
+    # Hub connection (NoteToSelf PIN flow)
     # ------------------------------------------------------------------ #
 
     @app.post("/session/request", response_class=HTMLResponse)
@@ -105,23 +93,20 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             else:
                 mgr.set_pending(app_name, team_name, pending_id)
         except Exception as e:
-            return _session_card_ctx(request, error=str(e))
-        return _session_card_ctx(request)
+            return _hub_connection_ctx(request, error=str(e))
+        return _hub_connection_ctx(request)
 
     @app.post("/session/confirm", response_class=HTMLResponse)
-    async def session_confirm(
-        request: Request,
-        pending_id: str = Form(...),
-        pin: str = Form(...),
-    ):
+    async def session_confirm(request: Request, pin: str = Form(...)):
         mgr = _mgr(request)
         app_name, team_name = _NTS
+        pending_id = mgr.get_pending_id(app_name, team_name)
         try:
             session = mgr.client.confirm_session(pending_id, pin.strip())
             mgr.set_session(app_name, team_name, session.token)
         except Exception as e:
-            return _session_card_ctx(request, error=str(e))
-        return _session_card_ctx(request)
+            return _hub_connection_ctx(request, error=str(e))
+        return _hub_connection_ctx(request)
 
     @app.post("/session/resend-notification", response_class=HTMLResponse)
     async def session_resend_notification(request: Request):
@@ -132,17 +117,17 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             if pending_id:
                 mgr.client.resend_notification(pending_id)
         except Exception as e:
-            return _session_card_ctx(request, error=str(e))
-        return _session_card_ctx(request)
+            return _hub_connection_ctx(request, error=str(e))
+        return _hub_connection_ctx(request)
 
     @app.post("/session/close", response_class=HTMLResponse)
     async def session_close(request: Request):
         mgr = _mgr(request)
         mgr.clear_session(*_NTS)
-        return _session_card_ctx(request)
+        return _hub_connection_ctx(request)
 
     # ------------------------------------------------------------------ #
-    # Team list management (htmx fragments)
+    # Teams
     # ------------------------------------------------------------------ #
 
     @app.post("/teams", response_class=HTMLResponse)
@@ -153,20 +138,18 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             error = None
         except Exception as e:
             error = str(e)
-        teams = _teams_with_status(mgr)
         return templates.TemplateResponse(
-            "fragments/teams_section.html",
-            {"request": request, "teams": teams, "error": error},
+            "fragments/sidebar_teams.html",
+            {"request": request, "teams": _teams_with_status(mgr), "error": error},
         )
 
     # ------------------------------------------------------------------ #
-    # Team detail (htmx fragment into #team-detail)
+    # Team detail
     # ------------------------------------------------------------------ #
 
     @app.get("/teams/{team_name}", response_class=HTMLResponse)
     async def team_detail(request: Request, team_name: str):
         mgr = _mgr(request)
-        # Annotate each member with whether they are "self"
         all_teams = mgr.list_teams()
         self_in_team = next(
             (t["self_in_team"] for t in all_teams if t["name"] == team_name), None
@@ -176,46 +159,16 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             m["is_self"] = m["id"] == self_in_team
             roles = m.get("station_roles", [])
             m["core_role"] = roles[0]["role"] if roles else None
-        invitations = mgr.list_invitations(team_name)
-        sync_status = mgr.get_team_sync_status(team_name)
         return templates.TemplateResponse(
             "fragments/team_detail.html",
             {
                 "request": request,
                 "team_name": team_name,
                 "members": members,
-                "invitations": invitations,
-                "sync_status": sync_status,
+                "invitations": mgr.list_invitations(team_name),
+                "sync_status": mgr.get_team_sync_status(team_name),
                 "team_session_status": mgr.session_state(_CORE_APP, team_name),
             },
-        )
-
-    # ------------------------------------------------------------------ #
-    # Sync
-    # ------------------------------------------------------------------ #
-
-    @app.get("/teams/{team_name}/sync-status", response_class=HTMLResponse)
-    async def team_sync_status(request: Request, team_name: str):
-        mgr = _mgr(request)
-        status = mgr.get_team_sync_status(team_name)
-        return templates.TemplateResponse(
-            "fragments/sync_badge.html",
-            {"request": request, "team_name": team_name, "status": status},
-        )
-
-    @app.post("/teams/{team_name}/push", response_class=HTMLResponse)
-    async def push_team(request: Request, team_name: str):
-        mgr = _mgr(request)
-        try:
-            mgr.push_team(team_name)
-            notice = "Pushed to cloud."
-            error = None
-        except Exception as e:
-            notice = None
-            error = str(e)
-        return templates.TemplateResponse(
-            "fragments/sync_result.html",
-            {"request": request, "team_name": team_name, "notice": notice, "error": error},
         )
 
     # ------------------------------------------------------------------ #
@@ -268,6 +221,34 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         return _team_session_ctx(request, team_name)
 
     # ------------------------------------------------------------------ #
+    # Sync
+    # ------------------------------------------------------------------ #
+
+    @app.get("/teams/{team_name}/sync-status", response_class=HTMLResponse)
+    async def team_sync_status(request: Request, team_name: str):
+        mgr = _mgr(request)
+        return templates.TemplateResponse(
+            "fragments/sync_badge.html",
+            {"request": request, "team_name": team_name,
+             "status": mgr.get_team_sync_status(team_name)},
+        )
+
+    @app.post("/teams/{team_name}/push", response_class=HTMLResponse)
+    async def push_team(request: Request, team_name: str):
+        mgr = _mgr(request)
+        try:
+            mgr.push_team(team_name)
+            notice = "Pushed to cloud."
+            error = None
+        except Exception as e:
+            notice = None
+            error = str(e)
+        return templates.TemplateResponse(
+            "fragments/sync_result.html",
+            {"request": request, "team_name": team_name, "notice": notice, "error": error},
+        )
+
+    # ------------------------------------------------------------------ #
     # Invitations
     # ------------------------------------------------------------------ #
 
@@ -291,12 +272,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             error = str(e)
         return templates.TemplateResponse(
             "fragments/invitation_token.html",
-            {
-                "request": request,
-                "team_name": team_name,
-                "token": token,
-                "error": error,
-            },
+            {"request": request, "team_name": team_name, "token": token, "error": error},
         )
 
     @app.post(
@@ -309,13 +285,12 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             error = None
         except Exception as e:
             error = str(e)
-        invitations = mgr.list_invitations(team_name)
         return templates.TemplateResponse(
             "fragments/invitations.html",
             {
                 "request": request,
                 "team_name": team_name,
-                "invitations": invitations,
+                "invitations": mgr.list_invitations(team_name),
                 "error": error,
             },
         )
@@ -367,7 +342,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         return _cloud_storage_fragment(request, error=error)
 
     # ------------------------------------------------------------------ #
-    # Accept invitation (invitee side — no team yet)
+    # Accept invitation (invitee side)
     # ------------------------------------------------------------------ #
 
     @app.post("/accept-invitation", response_class=HTMLResponse)
@@ -379,12 +354,15 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         except Exception as e:
             acceptance_token = None
             error = str(e)
+        # Pass updated teams list so acceptance_token.html can OOB-update #sidebar-teams
+        teams = _teams_with_status(mgr) if acceptance_token else []
         return templates.TemplateResponse(
             "fragments/acceptance_token.html",
             {
                 "request": request,
                 "acceptance_token": acceptance_token,
                 "error": error,
+                "teams": teams,
             },
         )
 

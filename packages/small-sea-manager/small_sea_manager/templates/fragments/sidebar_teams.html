@@ -1,0 +1,16 @@
+<div id="sidebar-teams">
+  {% for team in teams %}
+  <div id="sidebar-team-{{ team.name }}" class="sidebar-item">
+    <button class="team-link"
+            hx-get="/teams/{{ team.name }}"
+            hx-target="#team-detail"
+            hx-swap="innerHTML">
+      {{ team.name }}
+    </button>
+    <span class="session-dot dot-{{ team.session_status }}"></span>
+  </div>
+  {% endfor %}
+  {% if not teams %}
+  <p style="padding:0.4rem 0.75rem; font-size:0.82rem; color:#a8a29e;">No teams yet.</p>
+  {% endif %}
+</div>

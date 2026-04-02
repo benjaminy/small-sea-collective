@@ -1,0 +1,50 @@
+<div id="hub-connection">
+  <div class="hub-connection-header">
+    <span class="hub-connection-label">Hub connection</span>
+    <span class="session-dot dot-{{ session_status }}"></span>
+  </div>
+  <div class="hub-connection-body">
+
+  {% if session_status == "active" %}
+    <div class="row">
+      <span class="badge badge-green" style="font-size:0.72rem;">connected</span>
+      <form hx-post="/session/close"
+            hx-target="#hub-connection"
+            hx-swap="outerHTML">
+        <button class="btn btn-secondary btn-sm">Disconnect</button>
+      </form>
+    </div>
+
+  {% elif session_status == "pending" %}
+    {% if session_error %}
+    <p class="notice notice-err" style="font-size:0.8rem; margin-bottom:0.35rem;">{{ session_error }}</p>
+    {% endif %}
+    <p style="font-size:0.8rem; color:#78716c; margin-bottom:0.35rem;">Enter PIN from notification:</p>
+    <form class="inline-form"
+          hx-post="/session/confirm"
+          hx-target="#hub-connection"
+          hx-swap="outerHTML">
+      <input type="text" name="pin" placeholder="PIN" maxlength="3"
+             required autofocus style="width:4rem; letter-spacing:0.15em; font-size:1rem; min-width:0;">
+      <button class="btn btn-primary btn-sm">OK</button>
+    </form>
+    <form hx-post="/session/resend-notification"
+          hx-target="#hub-connection"
+          hx-swap="outerHTML"
+          style="margin-top:0.35rem;">
+      <button class="btn btn-secondary btn-sm" style="font-size:0.75rem;">Resend</button>
+    </form>
+
+  {% else %}
+    {% if session_error %}
+    <p class="notice notice-err" style="font-size:0.8rem; margin-bottom:0.35rem;">{{ session_error }}</p>
+    {% endif %}
+    <form hx-post="/session/request"
+          hx-target="#hub-connection"
+          hx-swap="outerHTML">
+      <button class="btn btn-primary btn-sm">Connect</button>
+    </form>
+  {% endif %}
+
+  </div>
+</div>

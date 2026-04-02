@@ -4,11 +4,29 @@
 
 {% if acceptance_token %}
 <div style="border:1px solid #d6d3d1; border-radius:4px; padding:0.75rem; background:#fafaf9">
-  <p class="token-instruction"><strong>Step 2 done.</strong> Send this acceptance token back to the inviter out-of-band:</p>
+  <p class="token-instruction"><strong>Accepted.</strong> Send this token back to the inviter:</p>
   <div class="token-box">{{ acceptance_token }}</div>
   <p class="token-instruction" style="color:#78716c">
     The inviter pastes this into the "Complete acceptance" form in their team's Members section.
     Once they complete it, you will both be synced up.
   </p>
+  <p class="token-instruction" style="color:#78716c; margin-top:0.5rem;">
+    The new team now appears in the sidebar. Open it to request a session, then push to cloud.
+  </p>
+</div>
+
+{# OOB: add the new team to the sidebar immediately #}
+<div id="sidebar-teams" hx-swap-oob="true">
+  {% for team in teams %}
+  <div id="sidebar-team-{{ team.name }}" class="sidebar-item">
+    <button class="team-link"
+            hx-get="/teams/{{ team.name }}"
+            hx-target="#team-detail"
+            hx-swap="innerHTML">
+      {{ team.name }}
+    </button>
+    <span class="session-dot dot-{{ team.session_status }}"></span>
+  </div>
+  {% endfor %}
 </div>
 {% endif %}
