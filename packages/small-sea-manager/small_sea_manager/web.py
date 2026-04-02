@@ -89,6 +89,25 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         )
 
     # ------------------------------------------------------------------ #
+    # Sync
+    # ------------------------------------------------------------------ #
+
+    @app.post("/teams/{team_name}/push", response_class=HTMLResponse)
+    async def push_team(request: Request, team_name: str):
+        mgr = _mgr(request)
+        try:
+            mgr.push_team(team_name)
+            notice = "Pushed to cloud."
+            error = None
+        except Exception as e:
+            notice = None
+            error = str(e)
+        return templates.TemplateResponse(
+            "fragments/sync_result.html",
+            {"request": request, "team_name": team_name, "notice": notice, "error": error},
+        )
+
+    # ------------------------------------------------------------------ #
     # Invitations
     # ------------------------------------------------------------------ #
 

@@ -1,5 +1,14 @@
 <div class="detail-header">
   <h2>{{ team_name }}</h2>
+  <form hx-post="/teams/{{ team_name }}/push"
+        hx-target="#sync-result"
+        hx-swap="outerHTML">
+    <button class="btn btn-secondary" type="submit">Push to cloud</button>
+  </form>
+</div>
+
+<div class="detail-section" style="padding-top:0.4rem; padding-bottom:0.4rem">
+  <div id="sync-result"></div>
 </div>
 
 <div class="detail-section">

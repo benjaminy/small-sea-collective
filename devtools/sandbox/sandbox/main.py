@@ -212,7 +212,11 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
         )
 
     @app.post("/participants/{participant_hex}/hub/start", response_class=HTMLResponse)
-    async def hub_start(request: Request, participant_hex: str):
+    async def hub_start(
+        request: Request,
+        participant_hex: str,
+        auto_approve: str = Form("1"),
+    ):
         ws = request.app.state.workspace
         p = next((x for x in ws.participants if x.hex == participant_hex), None)
         error = None
@@ -229,6 +233,8 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
                         "SMALL_SEA_ROOT_DIR": str(ws.workspace_dir),
                         "SMALL_SEA_SANDBOX_MODE": "1",
                     }
+                    if auto_approve == "1":
+                        env["SMALL_SEA_AUTO_APPROVE_SESSIONS"] = "1"
                     request.app.state.processes[key] = subprocess.Popen(
                         [
                             sys.executable, "-m", "uvicorn",

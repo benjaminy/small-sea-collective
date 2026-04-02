@@ -195,6 +195,32 @@ class TeamManager:
 
         return acceptance_b64
 
+    def push_team(self, team_name):
+        """Push the team's Sync repo to the participant's cloud bucket.
+
+        Opens a Hub session internally — works in auto-approve mode without a
+        PIN provider.  Raises RuntimeError on CAS conflict (cloud is ahead;
+        pull from peers first).
+        """
+        from cod_sync.protocol import CodSync, SmallSeaRemote, CasConflictError
+
+        session = self.client.open_session(
+            self.participant_hex, "SmallSeaCollectiveCore", team_name, "TeamManager"
+        )
+        repo_dir = (
+            pathlib.Path(self.root_dir)
+            / "Participants" / self.participant_hex / team_name / "Sync"
+        )
+        remote = SmallSeaRemote(session.token, base_url=self.client._base_url)
+        cs = CodSync("origin", repo_dir=repo_dir)
+        cs.remote = remote
+        try:
+            cs.push_to_remote(["main"])
+        except CasConflictError:
+            raise RuntimeError(
+                "Push conflict — cloud is ahead of local. Pull from peers first."
+            )
+
     def complete_invitation_acceptance(self, team_name, acceptance_b64):
         """Complete an acceptance (inviter side): add acceptor as member + peer."""
         provisioning.complete_invitation_acceptance(

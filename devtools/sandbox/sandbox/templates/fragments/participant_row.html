@@ -23,6 +23,10 @@
       <form hx-post="/participants/{{ p.hex }}/hub/start"
             hx-target="#participant-{{ p.hex }}"
             hx-swap="outerHTML">
+        <label style="font-size:0.75rem; display:inline-flex; align-items:center; gap:0.25rem; cursor:pointer">
+          <input type="checkbox" name="auto_approve" value="1" checked>
+          auto-approve
+        </label>
         <button class="btn btn-secondary btn-sm">Start</button>
       </form>
       {% endif %}
