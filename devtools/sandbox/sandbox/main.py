@@ -215,7 +215,7 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
     async def hub_start(
         request: Request,
         participant_hex: str,
-        auto_approve: str = Form("1"),
+        auto_approve: str = Form("0"),
     ):
         ws = request.app.state.workspace
         p = next((x for x in ws.participants if x.hex == participant_hex), None)
