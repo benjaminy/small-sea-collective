@@ -1,11 +1,10 @@
-"""Sandbox workspace: load/save sandbox.json, add participants, cloud storage setup."""
+"""Sandbox workspace: load/save sandbox.json, add participants, MinIO servers/accounts."""
 
 import json
 import pathlib
 import secrets
 import shutil
 import socket
-import sqlite3
 import tempfile
 from dataclasses import asdict, dataclass, field
 
@@ -16,11 +15,19 @@ SANDBOX_JSON = "sandbox.json"
 
 
 @dataclass
-class MinioConfig:
+class MinioServerConfig:
     api_port: int
     console_port: int
     root_user: str
     root_password: str
+
+
+@dataclass
+class MinioAccountConfig:
+    server_port: int
+    label: str
+    access_key: str
+    secret_key: str
 
 
 @dataclass
@@ -34,12 +41,14 @@ class ParticipantConfig:
 @dataclass
 class SandboxWorkspace:
     workspace_dir: pathlib.Path
-    minio: MinioConfig
-    participants: list = field(default_factory=list)  # list[ParticipantConfig]
+    minio_servers: list = field(default_factory=list)   # list[MinioServerConfig]
+    minio_accounts: list = field(default_factory=list)  # list[MinioAccountConfig]
+    participants: list = field(default_factory=list)    # list[ParticipantConfig]
 
     def save(self):
         data = {
-            "minio": asdict(self.minio),
+            "minio_servers": [asdict(s) for s in self.minio_servers],
+            "minio_accounts": [asdict(a) for a in self.minio_accounts],
             "participants": [asdict(p) for p in self.participants],
         }
         (self.workspace_dir / SANDBOX_JSON).write_text(json.dumps(data, indent=2))
@@ -50,19 +59,29 @@ class SandboxWorkspace:
         path = workspace_dir / SANDBOX_JSON
         if path.exists():
             data = json.loads(path.read_text())
-            minio = MinioConfig(**data["minio"])
+            # Migrate old format: {"minio": {...}} → {"minio_servers": [{...}]}
+            if "minio" in data and "minio_servers" not in data:
+                data["minio_servers"] = [data.pop("minio")]
+                data.setdefault("minio_accounts", [])
+            minio_servers = [MinioServerConfig(**s) for s in data.get("minio_servers", [])]
+            minio_accounts = [MinioAccountConfig(**a) for a in data.get("minio_accounts", [])]
             participants = [ParticipantConfig(**p) for p in data.get("participants", [])]
         else:
-            minio = MinioConfig(
-                api_port=9000,
-                console_port=9001,
-                root_user="sandboxadmin",
-                root_password=secrets.token_urlsafe(16),
-            )
+            minio_servers = []
+            minio_accounts = []
             participants = []
-        ws = cls(workspace_dir=workspace_dir, minio=minio, participants=participants)
+        ws = cls(
+            workspace_dir=workspace_dir,
+            minio_servers=minio_servers,
+            minio_accounts=minio_accounts,
+            participants=participants,
+        )
         ws.save()
         return ws
+
+    # ------------------------------------------------------------------ #
+    # Port allocation
+    # ------------------------------------------------------------------ #
 
     def _next_hub_port(self) -> int:
         used = {p.hub_port for p in self.participants}
@@ -78,17 +97,78 @@ class SandboxWorkspace:
             port += 1
         return port
 
+    def _next_minio_ports(self) -> tuple:
+        used_api = {s.api_port for s in self.minio_servers}
+        used_console = {s.console_port for s in self.minio_servers}
+        api_port = 9000
+        while api_port in used_api or api_port in used_console:
+            api_port += 2
+        console_port = api_port + 1
+        while console_port in used_console or console_port in used_api:
+            console_port += 2
+        return api_port, console_port
+
+    # ------------------------------------------------------------------ #
+    # MinIO servers
+    # ------------------------------------------------------------------ #
+
+    def add_minio_server(self) -> MinioServerConfig:
+        api_port, console_port = self._next_minio_ports()
+        server = MinioServerConfig(
+            api_port=api_port,
+            console_port=console_port,
+            root_user="sandboxadmin",
+            root_password=secrets.token_urlsafe(16),
+        )
+        self.minio_servers.append(server)
+        self.save()
+        return server
+
+    # ------------------------------------------------------------------ #
+    # MinIO accounts (per-user IAM credentials)
+    # ------------------------------------------------------------------ #
+
+    def create_account(self, server_port: int, label: str) -> MinioAccountConfig:
+        """Create a MinIO IAM user and access key on the given server."""
+        server = next((s for s in self.minio_servers if s.api_port == server_port), None)
+        if server is None:
+            raise ValueError(f"No MinIO server on port {server_port}")
+
+        import boto3
+        from botocore.config import Config as BotoConfig
+
+        iam = boto3.client(
+            "iam",
+            endpoint_url=f"http://localhost:{server.api_port}",
+            aws_access_key_id=server.root_user,
+            aws_secret_access_key=server.root_password,
+            config=BotoConfig(signature_version="s3v4"),
+            region_name="us-east-1",
+        )
+        iam.create_user(UserName=label)
+        response = iam.create_access_key(UserName=label)
+        access_key = response["AccessKey"]["AccessKeyId"]
+        secret_key = response["AccessKey"]["SecretAccessKey"]
+
+        account = MinioAccountConfig(
+            server_port=server_port,
+            label=label,
+            access_key=access_key,
+            secret_key=secret_key,
+        )
+        self.minio_accounts.append(account)
+        self.save()
+        return account
+
+    # ------------------------------------------------------------------ #
+    # Participants
+    # ------------------------------------------------------------------ #
+
     def add_participant(self, nickname: str) -> ParticipantConfig:
+        """Create a new participant. Cloud storage must be configured separately."""
         hub_port = self._next_hub_port()
         manager_port = self._next_manager_port()
         participant_hex = create_new_participant(self.workspace_dir, nickname)
-        _setup_cloud_storage(
-            self.workspace_dir,
-            participant_hex,
-            minio_url=f"http://localhost:{self.minio.api_port}",
-            access_key=self.minio.root_user,
-            secret_key=self.minio.root_password,
-        )
         p = ParticipantConfig(
             hex=participant_hex,
             nickname=nickname,
@@ -98,24 +178,6 @@ class SandboxWorkspace:
         self.participants.append(p)
         self.save()
         return p
-
-
-def _setup_cloud_storage(root_dir, participant_hex, minio_url, access_key, secret_key):
-    """Write a cloud_storage row directly to the participant's NoteToSelf DB."""
-    root_dir = pathlib.Path(root_dir)
-    db_path = (
-        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute(
-            "INSERT INTO cloud_storage (id, protocol, url, access_key, secret_key) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (uuid7(), "s3", minio_url, access_key, secret_key),
-        )
-        conn.commit()
-    finally:
-        conn.close()
 
 
 def create_temp_workspace() -> pathlib.Path:

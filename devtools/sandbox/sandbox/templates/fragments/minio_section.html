@@ -1,0 +1,23 @@
+<div id="minio-section" class="card">
+  <h2>MinIO servers</h2>
+
+  {% if not minio_ok %}
+  <p class="error-msg" style="margin-bottom:0.75rem">⚠ <strong>minio</strong> not found in PATH.</p>
+  {% endif %}
+
+  {% for entry in minio_servers %}
+    {% set server = entry.server %}
+    {% set status = entry.status %}
+    {% set accounts = entry.accounts %}
+    {% set error = none %}
+    {% include "fragments/minio_server.html" %}
+  {% else %}
+  <p class="muted" style="margin-bottom:0.75rem">No MinIO servers configured.</p>
+  {% endfor %}
+
+  <form hx-post="/minio-servers"
+        hx-target="#minio-section"
+        hx-swap="outerHTML">
+    <button class="btn btn-secondary btn-sm" type="submit">Add MinIO server</button>
+  </form>
+</div>

@@ -1,0 +1,78 @@
+<div id="minio-server-{{ server.api_port }}" class="card" style="margin-bottom:0.5rem">
+  <div class="row" style="margin-bottom:0.5rem">
+    <h3 style="margin:0">MinIO :{{ server.api_port }}</h3>
+    <span class="badge {{ 'badge-running' if status == 'running' else 'badge-stopped' }}">
+      {{ status }}
+    </span>
+    {% if status == "running" %}
+    <form hx-post="/minio-servers/{{ server.api_port }}/stop"
+          hx-target="#minio-server-{{ server.api_port }}"
+          hx-swap="outerHTML">
+      <button class="btn btn-danger btn-sm">Stop</button>
+    </form>
+    <a href="http://localhost:{{ server.console_port }}" target="_blank"
+       class="btn btn-secondary btn-sm">Console ↗</a>
+    {% else %}
+    <form hx-post="/minio-servers/{{ server.api_port }}/start"
+          hx-target="#minio-server-{{ server.api_port }}"
+          hx-swap="outerHTML">
+      <button class="btn btn-primary btn-sm">Start</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <table style="width:auto; margin-bottom:0.75rem; font-size:0.85rem">
+    <tr>
+      <th>Endpoint</th>
+      <td class="mono">http://localhost:{{ server.api_port }}</td>
+    </tr>
+    <tr>
+      <th>Root user</th>
+      <td>{{ server.root_user }}</td>
+    </tr>
+    <tr>
+      <th>Root password</th>
+      <td class="mono">{{ server.root_password }}</td>
+    </tr>
+  </table>
+
+  {% if error %}
+  <p class="error-msg">{{ error }}</p>
+  {% endif %}
+
+  <h3>Accounts</h3>
+
+  {% if accounts %}
+  <table style="margin-bottom:0.75rem">
+    <thead>
+      <tr>
+        <th>Label</th>
+        <th>Endpoint</th>
+        <th>Access key</th>
+        <th>Secret key</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for a in accounts %}
+      <tr>
+        <td>{{ a.label }}</td>
+        <td class="mono">http://localhost:{{ server.api_port }}</td>
+        <td class="mono">{{ a.access_key }}</td>
+        <td class="mono">{{ a.secret_key }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted" style="margin-bottom:0.75rem">No accounts yet.</p>
+  {% endif %}
+
+  <form class="row"
+        hx-post="/minio-servers/{{ server.api_port }}/accounts"
+        hx-target="#minio-server-{{ server.api_port }}"
+        hx-swap="outerHTML">
+    <input type="text" name="label" placeholder="Account label (e.g. alice)"
+           style="width:16rem" required>
+    <button class="btn btn-secondary btn-sm" type="submit">Create account</button>
+  </form>
+</div>

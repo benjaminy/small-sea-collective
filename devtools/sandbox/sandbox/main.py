@@ -51,6 +51,19 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
             return "running"
         return "stopped"
 
+    def _minio_server_ctx(app, ws, server):
+        return {
+            "server": server,
+            "status": _process_status(app, f"minio:{server.api_port}"),
+            "accounts": [a for a in ws.minio_accounts if a.server_port == server.api_port],
+        }
+
+    def _minio_section_ctx(app, ws):
+        return {
+            "minio_ok": minio_available(),
+            "minio_servers": [_minio_server_ctx(app, ws, s) for s in ws.minio_servers],
+        }
+
     # ------------------------------------------------------------------
     # Index
     # ------------------------------------------------------------------
@@ -64,8 +77,7 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
             "index.html",
             request,
             workspace=ws,
-            minio_ok=minio_available(),
-            minio_status=_process_status(request.app, "minio"),
+            **_minio_section_ctx(request.app, ws),
             participants=[
                 {
                     "config": p,
@@ -94,68 +106,88 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
         return RedirectResponse("/", status_code=303)
 
     # ------------------------------------------------------------------
-    # MinIO
+    # MinIO servers
     # ------------------------------------------------------------------
 
-    @app.post("/minio/start", response_class=HTMLResponse)
-    async def minio_start(request: Request):
+    def _render_minio_section(request):
         ws = request.app.state.workspace
-        key = "minio"
-        proc = request.app.state.processes.get(key)
+        return _render(
+            "fragments/minio_section.html",
+            request,
+            workspace=ws,
+            **_minio_section_ctx(request.app, ws),
+        )
+
+    def _render_minio_server(request, server, error=None):
+        ws = request.app.state.workspace
+        ctx = _minio_server_ctx(request.app, ws, server)
+        return _render("fragments/minio_server.html", request, error=error, **ctx)
+
+    @app.post("/minio-servers", response_class=HTMLResponse)
+    async def add_minio_server(request: Request):
+        ws = request.app.state.workspace
+        ws.add_minio_server()
+        return _render_minio_section(request)
+
+    @app.post("/minio-servers/{port}/start", response_class=HTMLResponse)
+    async def minio_start(request: Request, port: int):
+        ws = request.app.state.workspace
+        server = next((s for s in ws.minio_servers if s.api_port == port), None)
         error = None
 
         if not minio_available():
             error = "minio not found in PATH"
-        elif proc is None or proc.poll() is not None:
-            for port in (ws.minio.api_port, ws.minio.console_port):
-                if is_port_in_use(port):
-                    error = f"Port {port} is already in use"
-                    break
-            if not error:
-                data_dir = ws.workspace_dir / "minio-data"
-                data_dir.mkdir(exist_ok=True)
-                env = {
-                    **os.environ,
-                    "MINIO_ROOT_USER": ws.minio.root_user,
-                    "MINIO_ROOT_PASSWORD": ws.minio.root_password,
-                }
-                request.app.state.processes[key] = subprocess.Popen(
-                    [
-                        "minio",
-                        "server",
-                        str(data_dir),
-                        "--address",
-                        f":{ws.minio.api_port}",
-                        "--console-address",
-                        f":{ws.minio.console_port}",
-                    ],
-                    env=env,
-                )
+        elif server:
+            key = f"minio:{port}"
+            proc = request.app.state.processes.get(key)
+            if proc is None or proc.poll() is not None:
+                for p in (server.api_port, server.console_port):
+                    if is_port_in_use(p):
+                        error = f"Port {p} is already in use"
+                        break
+                if not error:
+                    data_dir = ws.workspace_dir / f"minio-data-{port}"
+                    data_dir.mkdir(exist_ok=True)
+                    env = {
+                        **os.environ,
+                        "MINIO_ROOT_USER": server.root_user,
+                        "MINIO_ROOT_PASSWORD": server.root_password,
+                    }
+                    request.app.state.processes[key] = subprocess.Popen(
+                        [
+                            "minio", "server", str(data_dir),
+                            "--address", f":{server.api_port}",
+                            "--console-address", f":{server.console_port}",
+                        ],
+                        env=env,
+                    )
 
-        return _render(
-            "fragments/minio_card.html",
-            request,
-            workspace=ws,
-            minio_ok=minio_available(),
-            minio_status=_process_status(request.app, key),
-            error=error,
-        )
+        return _render_minio_server(request, server, error=error)
 
-    @app.post("/minio/stop", response_class=HTMLResponse)
-    async def minio_stop(request: Request):
+    @app.post("/minio-servers/{port}/stop", response_class=HTMLResponse)
+    async def minio_stop(request: Request, port: int):
         ws = request.app.state.workspace
-        key = "minio"
+        server = next((s for s in ws.minio_servers if s.api_port == port), None)
+        key = f"minio:{port}"
         proc = request.app.state.processes.get(key)
         if proc and proc.poll() is None:
             proc.terminate()
-        return _render(
-            "fragments/minio_card.html",
-            request,
-            workspace=ws,
-            minio_ok=minio_available(),
-            minio_status=_process_status(request.app, key),
-            error=None,
-        )
+        return _render_minio_server(request, server)
+
+    # ------------------------------------------------------------------
+    # MinIO accounts
+    # ------------------------------------------------------------------
+
+    @app.post("/minio-servers/{port}/accounts", response_class=HTMLResponse)
+    async def create_account(request: Request, port: int, label: str = Form(...)):
+        ws = request.app.state.workspace
+        server = next((s for s in ws.minio_servers if s.api_port == port), None)
+        error = None
+        try:
+            ws.create_account(port, label.strip())
+        except Exception as e:
+            error = str(e)
+        return _render_minio_server(request, server, error=error)
 
     # ------------------------------------------------------------------
     # Participants
