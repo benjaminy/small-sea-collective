@@ -31,7 +31,59 @@ class TeamManager:
         self.root_dir = pathlib.Path(root_dir)
         self.participant_hex = participant_hex
         self.client = SmallSeaClient(port=hub_port, _http_client=_http_client)
-        self.session = None
+        # Confirmed sessions, keyed by (app, team).
+        self._sessions: dict[tuple[str, str], "SmallSeaSession"] = {}
+        # Pending PIN requests awaiting confirmation, keyed by (app, team).
+        self._pending: dict[tuple[str, str], str] = {}
+
+    # ------------------------------------------------------------------ #
+    # Session state management
+    # ------------------------------------------------------------------ #
+
+    def set_session(self, app: str, team: str, token: str) -> None:
+        """Store a confirmed session token for (app, team)."""
+        from small_sea_client.client import SmallSeaSession
+        key = (app, team)
+        self._sessions[key] = SmallSeaSession(self.client, token)
+        self._pending.pop(key, None)
+
+    def clear_session(self, app: str, team: str) -> None:
+        """Remove the confirmed session for (app, team)."""
+        self._sessions.pop((app, team), None)
+
+    def set_pending(self, app: str, team: str, pending_id: str) -> None:
+        """Record a pending PIN request for (app, team)."""
+        self._pending[(app, team)] = pending_id
+
+    def clear_pending(self, app: str, team: str) -> None:
+        self._pending.pop((app, team), None)
+
+    def session_state(self, app: str, team: str) -> str:
+        """Return 'active', 'pending', or 'none' for the given (app, team)."""
+        if (app, team) in self._sessions:
+            return "active"
+        if (app, team) in self._pending:
+            return "pending"
+        return "none"
+
+    def get_pending_id(self, app: str, team: str) -> str | None:
+        return self._pending.get((app, team))
+
+    def active_sessions(self) -> list[dict]:
+        """Return a list of {app, team} dicts for all confirmed sessions."""
+        return [{"app": app, "team": team} for (app, team) in self._sessions]
+
+    def _get_or_open_session(self, app: str, team: str) -> "SmallSeaSession":
+        """Return a confirmed session for (app, team).
+
+        Uses the cached session if one has been established (e.g. via PIN
+        flow). Otherwise opens a new session via open_session, which requires
+        the Hub to be in auto-approve mode.
+        """
+        key = (app, team)
+        if key in self._sessions:
+            return self._sessions[key]
+        return self.client.open_session(self.participant_hex, app, team, "TeamManager")
 
     def get_nickname(self):
         """Return the participant's first nickname, or a short hex fallback."""
@@ -157,11 +209,9 @@ class TeamManager:
         inviter_cloud = token["inviter_cloud"]
         inviter_bucket = token["inviter_bucket"]
 
-        # Open NoteToSelf session to access /cloud_proxy for the inviter's bucket.
-        # Bob doesn't have a team session yet — the NoteToSelf session provides auth.
-        nts_session = self.client.open_session(
-            self.participant_hex, "SmallSeaCollectiveCore", "NoteToSelf", "TeamManager"
-        )
+        # NoteToSelf session to access /cloud_proxy for the inviter's bucket.
+        # Bob doesn't have a team session yet — NoteToSelf provides auth.
+        nts_session = self._get_or_open_session("SmallSeaCollectiveCore", "NoteToSelf")
         http = self.client._http_client  # None in production; injected TestClient in tests
         proxy_remote = ExplicitProxyRemote(
             nts_session.token,
@@ -179,9 +229,7 @@ class TeamManager:
         )
 
         # Push to acceptor's own cloud via a team Hub session.
-        team_session = self.client.open_session(
-            self.participant_hex, "SmallSeaCollectiveCore", team_name, "TeamManager"
-        )
+        team_session = self._get_or_open_session("SmallSeaCollectiveCore", team_name)
         team_session.ensure_cloud_ready()
         team_repo_dir = (
             self.root_dir / "Participants" / self.participant_hex / team_name / "Sync"
@@ -234,9 +282,7 @@ class TeamManager:
         """
         from cod_sync.protocol import CodSync, SmallSeaRemote, CasConflictError
 
-        session = self.client.open_session(
-            self.participant_hex, "SmallSeaCollectiveCore", team_name, "TeamManager"
-        )
+        session = self._get_or_open_session("SmallSeaCollectiveCore", team_name)
         repo_dir = self._team_repo_dir(team_name)
         remote = SmallSeaRemote(session.token, base_url=self.client._base_url)
         cs = CodSync("origin", repo_dir=repo_dir)

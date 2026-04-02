@@ -18,16 +18,27 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     """Create a configured FastAPI application."""
     app = FastAPI(title="Small Sea Manager")
     app.state.manager = TeamManager(root_dir, participant_hex, hub_port)
-    app.state.nts_session_token = None  # NoteToSelf session token, if established
+
+    _NTS = ("SmallSeaCollectiveCore", "NoteToSelf")  # the Manager's primary session scope
 
     def _mgr(request: Request) -> TeamManager:
         return request.app.state.manager
 
-    def _session_card_ctx(request: Request, status: str, pending_id: str = None, error: str = None):
+    def _session_card_ctx(request: Request, error: str = None):
+        mgr = _mgr(request)
+        app_name, team_name = _NTS
         return templates.TemplateResponse(
             "fragments/session_card.html",
-            {"request": request, "session_status": status,
-             "session_pending_id": pending_id, "session_error": error},
+            {
+                "request": request,
+                "session_status": mgr.session_state(app_name, team_name),
+                "session_pending_id": mgr.get_pending_id(app_name, team_name),
+                "session_error": error,
+                "other_sessions": [
+                    s for s in mgr.active_sessions()
+                    if (s["app"], s["team"]) != _NTS
+                ],
+            },
         )
 
     # ------------------------------------------------------------------ #
@@ -46,7 +57,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         nickname = mgr.get_nickname()
         participant_short = mgr.participant_hex[:8]
         teams = _teams_with_status(mgr)
-        session_status = "active" if request.app.state.nts_session_token else "none"
+        app_name, team_name = _NTS
         return templates.TemplateResponse(
             "index.html",
             {
@@ -54,9 +65,13 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "nickname": nickname,
                 "participant_short": participant_short,
                 "teams": teams,
-                "session_status": session_status,
-                "session_pending_id": None,
+                "session_status": mgr.session_state(app_name, team_name),
+                "session_pending_id": mgr.get_pending_id(app_name, team_name),
                 "session_error": None,
+                "other_sessions": [
+                    s for s in mgr.active_sessions()
+                    if (s["app"], s["team"]) != _NTS
+                ],
             },
         )
 
@@ -67,16 +82,18 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/session/request", response_class=HTMLResponse)
     async def session_request(request: Request):
         mgr = _mgr(request)
+        app_name, team_name = _NTS
         try:
             session, pending_id = mgr.client.start_session(
-                mgr.participant_hex, "SmallSeaCollectiveCore", "NoteToSelf", "ManagerUI"
+                mgr.participant_hex, app_name, team_name, "ManagerUI"
             )
             if session is not None:
-                request.app.state.nts_session_token = session.token
-                return _session_card_ctx(request, "active")
-            return _session_card_ctx(request, "pending", pending_id=pending_id)
+                mgr.set_session(app_name, team_name, session.token)
+            else:
+                mgr.set_pending(app_name, team_name, pending_id)
         except Exception as e:
-            return _session_card_ctx(request, "none", error=str(e))
+            return _session_card_ctx(request, error=str(e))
+        return _session_card_ctx(request)
 
     @app.post("/session/confirm", response_class=HTMLResponse)
     async def session_confirm(
@@ -85,29 +102,31 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         pin: str = Form(...),
     ):
         mgr = _mgr(request)
+        app_name, team_name = _NTS
         try:
             session = mgr.client.confirm_session(pending_id, pin.strip())
-            request.app.state.nts_session_token = session.token
-            return _session_card_ctx(request, "active")
+            mgr.set_session(app_name, team_name, session.token)
         except Exception as e:
-            return _session_card_ctx(request, "pending", pending_id=pending_id, error=str(e))
+            return _session_card_ctx(request, error=str(e))
+        return _session_card_ctx(request)
 
     @app.post("/session/resend-notification", response_class=HTMLResponse)
-    async def session_resend_notification(
-        request: Request,
-        pending_id: str = Form(...),
-    ):
+    async def session_resend_notification(request: Request):
         mgr = _mgr(request)
+        app_name, team_name = _NTS
+        pending_id = mgr.get_pending_id(app_name, team_name)
         try:
-            mgr.client.resend_notification(pending_id)
-            return _session_card_ctx(request, "pending", pending_id=pending_id)
+            if pending_id:
+                mgr.client.resend_notification(pending_id)
         except Exception as e:
-            return _session_card_ctx(request, "pending", pending_id=pending_id, error=str(e))
+            return _session_card_ctx(request, error=str(e))
+        return _session_card_ctx(request)
 
     @app.post("/session/close", response_class=HTMLResponse)
     async def session_close(request: Request):
-        request.app.state.nts_session_token = None
-        return _session_card_ctx(request, "none")
+        mgr = _mgr(request)
+        mgr.clear_session(*_NTS)
+        return _session_card_ctx(request)
 
     # ------------------------------------------------------------------ #
     # Team list management (htmx fragments)

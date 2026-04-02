@@ -30,7 +30,6 @@
           hx-target="#session-card"
           hx-swap="outerHTML"
           style="margin-top:0.5rem;">
-      <input type="hidden" name="pending_id" value="{{ session_pending_id }}">
       <button class="btn btn-secondary" type="submit" style="font-size:0.8rem;">Resend notification</button>
     </form>
 
@@ -46,6 +45,15 @@
           hx-swap="outerHTML">
       <button class="btn btn-primary" type="submit">Request session</button>
     </form>
+  {% endif %}
+
+  {% if other_sessions %}
+  <div style="margin-top:0.75rem; border-top:1px solid #e7e5e4; padding-top:0.5rem;">
+    <div style="font-size:0.7rem; text-transform:uppercase; color:#6c757d; margin-bottom:0.25rem;">Other active sessions</div>
+    {% for s in other_sessions %}
+    <div class="muted" style="font-size:0.8rem;">{{ s.team }} / {{ s.app }}</div>
+    {% endfor %}
+  </div>
   {% endif %}
 
   </div>
