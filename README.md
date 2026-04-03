@@ -2,33 +2,17 @@
 
 ### Local-_First_, General-Purpose Services _Second_
 
-Around 2020 the local-first community coalesced around discontent with cloud-oriented software architectures and SaaS business models.
-"[Local-first software](https://www.inkandswitch.com/essay/local-first/)" from Ink & Switch is widely seen as the community's founding manifesto.
-(If you're unfamiliar with local-first, skimming that essay helps contextualize the Small Sea project.)
+Small Sea Collective is a framework that brings the [local-first](https://www.inkandswitch.com/essay/local-first/) paradigm to team collaboration. We aim to enable the deployment of applications that people can use without depending on some company's bespoke service; with confidence that their ongoing use of the application doesn't depend on some business unit keeping the lights on.
 
-Many have commented on a pragmatist-idealist spectrum in local-first.
-On the pragmatist end, the backend architectures and business models are similar to the dominant cloud-first models.
-The _local-first_ part is focused on caching and lazy synchronization to support offline mode and less waiting for remote services (No Spinners!).
-Pragmatic local-first is better than a poke in the eye with a sharp stick, but it doesn't address some of the community's more ambitious ideals.
-
-The Small Sea project is firmly on the idealist side.
-We want applications that work without depending on some company's bespoke service.
-We aim to enable the deployment of applications that people can use without fear of misuse of their data; with confidence that their ongoing use of the application doesn't depend on some business unit keeping the lights on.
-But of course network services are essential for many features that we expect from software.
-(Local-_first_ is not local-_only_.)
-
-And every _bespoke_ service available from only one specific vendor makes these local-first ideals harder to achieve.
-So the challenge this project takes on is making it possible to build rich applications with _general-purpose_ serivices; decoupling applications from services.
-We are building frameworks that allow a combination of client-side logic and _general-purpose_ services to play roles that are filled by application-specific backends today.
-By general-purpose services, we mean things like:
+Our challenge is making it possible to build rich applications with _general-purpose_ services, decoupling applications from services. These general-purpose services include:
 
 - Internet service providers
-- Storage (Dropbox, S3, etc)
-- Notifications (ntfy, SuprSend, etc)
-- Peer-to-peer streaming connections (Tailscale, ZeroTier, etc)
+- Storage (Dropbox, S3, etc.)
+- Notifications (ntfy, SuprSend, etc.)
+- Peer-to-peer streaming connections (Tailscale, ZeroTier, etc.)
 - Identity verification (certificate authorities)
 
-To put it in visual terms, conventional SaaS application architectures look something like:
+In visual terms, while conventional SaaS application architectures look like this:
 
 <table>
 <tr>
@@ -86,176 +70,30 @@ To put it in visual terms, conventional SaaS application architectures look some
        style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
 </div></td>
 </tr>
-<tr>
-<td><img src="./Documentation/Images/discord-logo.png" alt="Discord logo" title="Discord"></td>
-<td><div>
-  <img src="./Documentation/Images/discord-logo.png">
-  <img src="./Documentation/Images/cloud-storage.png"
-       style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
-</div></td>
-<td><div>
-  <img src="./Documentation/Images/discord-logo.png">
-  <img src="./Documentation/Images/meeple-team.png"
-       style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
-</div></td>
-<td><div>
-  <img src="./Documentation/Images/discord-logo.png">
-  <img src="./Documentation/Images/notifications.png"
-       style="position: relative; top: 5px; left: -20px; width: 25px; height: auto;">
-</div></td>
-<td><div>
-  <img src="./Documentation/Images/discord-logo.png">
-  <img src="./Documentation/Images/sync-engine.png"
-       style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
-</div></td>
-<td><div>
-  <img src="./Documentation/Images/discord-logo.png">
-  <img src="./Documentation/Images/streaming-media.png"
-       style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
-</div></td>
-<td><div>
-  <img src="./Documentation/Images/discord-logo.png">
-  <img src="./Documentation/Images/security-etc.png"
-       style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
-</div></td>
-</tr>
-<tr>
-<td><img src="./Documentation/Images/ms-teams-logo.png" alt="MS Teams logo" title="MS Teams"></td>
-<td><div>
-  <img src="./Documentation/Images/ms-teams-logo.png">
-  <img src="./Documentation/Images/cloud-storage.png"
-       style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
-</div></td>
-<td><div>
-  <img src="./Documentation/Images/ms-teams-logo.png">
-  <img src="./Documentation/Images/meeple-team.png"
-       style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
-</div></td>
-<td><div>
-  <img src="./Documentation/Images/ms-teams-logo.png">
-  <img src="./Documentation/Images/notifications.png"
-       style="position: relative; top: 5px; left: -20px; width: 25px; height: auto;">
-</div></td>
-<td><div>
-  <img src="./Documentation/Images/ms-teams-logo.png">
-  <img src="./Documentation/Images/sync-engine.png"
-       style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
-</div></td>
-<td><div>
-  <img src="./Documentation/Images/ms-teams-logo.png">
-  <img src="./Documentation/Images/streaming-media.png"
-       style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
-</div></td>
-<td><div>
-  <img src="./Documentation/Images/ms-teams-logo.png">
-  <img src="./Documentation/Images/security-etc.png"
-       style="position: relative; top: 5px; left: -20px; width: 30px; height: auto;">
-</div></td>
-</tr>
 </table>
 
-Custom versions of more or less standard services are made to support each application.
-The application and its services are bundled as a single thing.
-If the opperator pulls the plug on the services, the application ceases to exist.
-
-In the Small Sea framework, the Small Sea Hub provides a collection of generic services to applications and implements those with whatever general-purpose services users subscribe to.
-Application development and service operation are two different businesses.
+The Small Sea Hub provides a collection of generic services to applications and implements those with whatever general-purpose services users subscribe to.
 
 <img src="./Documentation/Images/small-sea-hub.png" alt="Small Sea Hub" title="Small Sea Hub">
 
-The Small Sea Hub is **not** a remote service.
-Rather it's software that runs on client devices and translates local application requests into appropriate general-purpose service interactions.
-In some cases this translation is a simple pass-through; in some cases the Hub provides quite a lot of protocol smarts on top of the generic service.
+The Small Sea Hub is **not** a remote service. Rather, it is software that runs on client devices and translates local application requests into appropriate general-purpose service interactions.
 
-## Two Technical Pillars: Team Management and Snapshot-Based 3-Way Merge
+## Why?
 
-One of the known hard problems in local-first is identity/team management.
-People want apps that share things with other people over the internet.
-But except for the special case of totally global public sharing, it gets hard to control who gets to read and write what resources.
-This is an extremely important role played by big services like MS Teams, Google Workspace, etc.
+Small Sea Collective addresses two big challenges for local-first software:
+1.  **Identity and Sharing**: Decentralized identity linked to team membership, allowing people to share resources securely without a central authority.
+2.  **Synchronization**: A reliable, safe synchronization framework ("Cod Sync") based on git, allowing applications to be built on top of familiar version-control metaphors.
 
-The first pillar of the Small Sea project is fully decentralized team management.
-Each team member publishes their modifications of the team's data to their own cloud storage location.
-Signal-inspired [cryptographic](https://signal.org/docs/specifications/x3dh/) [protocols](https://signal.org/docs/specifications/doubleratchet/) ensure only team members can read the team's data.
-New members are added with a multi-step invitation process.
-When members leave, key rotation ensures that they can't read future modifications.
-Periodic out-of-band certificate validation helps ensure impostors aren't impersonating team members.
+For more technical details, see [Architecture](architecture.md).
 
-And a central goal is to wrap all this crypto and protocol fanciness up with an approachable UI/UX, because we know Johnny Can't Encrypt.
+## What Small Sea is Not
 
-Synchronizing/merging/reconciling concurrent modifications to some document/database is arguably the central technical focus of the local-first community.
-For example, it is one of the most common topics on the [Local-First Podcast](https://www.localfirst.fm/).
-The dominant framework for sync seems to be CRDTs.
-CRDTs are cool, but relying on them makes me nervous.
-It feels like it's too easy to make a mistake with them that could lead to data corruption in corner cases.
-And CRDTs require too much from-scratch thinking on the part of application programmers.
-Schema evolution remains a not-entirely-solved problem.
+- **Real-time feeds**: Small Sea is not for stock prices, traffic, or weather.
+- **E-commerce**: Small Sea is not for public shopping platforms.
+- **Broadcast social media**: Small Sea is not for broadcasting to the universe (e.g. X/Twitter).
 
-The baseline sync method in Small Sea is another old friend: snapshot-based 3-way merge.
-In other words, `git`.
-This approach to sync is slow.
-It can get very inefficient in the face of lots of transient data churn.
-It's not appropriate for real-time concurrent editing of some doc where users want to see each others' edits immediately.
-But for situations where occasional, slow sync is sufficient it has some compelling advantages:
-
-- Full-environment snapshots are the basic unit, so it's relatively easy to avoid mixing edits together in a way that breaks some data relationship invariant (even accidental invariants)
-- When reconciling concurrent changes in a clever, fine-grained way gets hard, it is easy to fall back to _pick yours_ or _pick mine_
-- It's relatively easy to incrementally adapt existing software, starting with coarse yours-or-mine reconciliation and improving automatic merge logic as needed
-
-So to refine the motivating question: How much application functionality can be implemented by stitching together general-purpose services like these, instead of the application creator providing them directly?
-
-### Why?
-
-There has been a little explosion of projects in this space, and a couple of challenges have emerged as especially tricky:
-
-- Identity, especially as it relates to sharing.
-  In cloud architectures, it's natural for people to register accounts with central services.
-  It's then natural for these accounts to be used as digital identities.
-  Especially popular services have become de facto identity providers for a great many applications.
-  Sharing between different identities within a particular ecosystem can be managed in a straightforward way by the service provider.
-  In local-first architectures it's not obvious how to handle digital identity and manage sharing.
-- Synchronization was recognized very early as a big challenge.
-  Research on CRDTs was some of the first work in the local-first space.
-  But decentralized data synchronization in its full generality is a very hard problem that is unlikely to have a one-size-fits-all solution any time soon.
-
-The Small Sea projects leans in hard to using git as its synchronization framework.
-
-General Purpose Services
-
-<img src="./Documentation/Images/wrasse-small.png">
-<img src="./Documentation/Images/wrasse-small2.png">
-
-## Obvious Caveat: General-Purpose Services Can't Do Everything
-
-For many applications/features there's no obvious way to implement them with only general-purpose services:
-
-- Anything with specific real-time data feeds (traffic, weather, stock prices, etc)
-- E-commerce
-- Broadcast-to-the-universe style social media
-
-Small Sea is not an attempt to re-implement these things in a different style.
-It's for apps where small groups of people share and collaborate among each other.
-
-## If Not SaaS, What's the Business Model for App Development?
-
-SaaS business models are overwhelmingly dominant in software development today, but it has not always been thus.
-I am not opposed to developers getting paid for their efforts.
-But I don't think SaaS models are the only way.
-If Small Sea is successful, maybe new models will emerge.
-And a nice feature of the model is that it requires no operating costs on the part of application authors.
-So even if the model is only modestly successful, it might open the door to some applications that aren't getting made today.
-
-## What About My Favorite Sync Engine?
-
-In the local-first community, sync engines are a common topic of conversation.
-Details vary somewhat, but what I mean is any service that facilitates synchronization between nodes that are concurrently modifying some document/database.
-I'm not sure it's feasible to make a sync server that does not see the contents of the data it's syncing.
-And that's something I'm really trying to avoid.
-Maybe in the future a really hands-off general purpose sync engine protocol will emerge.
-But for the time being, I don't think such a thing exists.
+It is designed for small groups of people who share and collaborate among themselves.
 
 ## The Name 'Small Sea Collective'
 
-Some day we'll all be connected _through_ the overlapping groups that we're deeply connected to (family, work, faith, neighborhood, hobby) in one big web.
-Making the great big interwebs into a small sea.
-Also there are several words for which "small 'c' ___" is an appropriate description of the project.
+Some day we'll all be connected _through_ the overlapping groups that we're deeply connected to (family, work, faith, neighborhood, hobby) in one big web. Making the great big interwebs into a small sea.
