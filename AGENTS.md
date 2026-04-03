@@ -8,6 +8,9 @@ As an AI agent working in this repository, you must follow these rules to mainta
 - The typical workflow should be:
    1. Make a branch for the current task
    2. Iterate on the branch-plan.md document
+      - AIs are not reliable. The plan had better have really excellent validation. How are you going to convince a bright critic that this plan:
+         1. Accomplishes the goals of the branch
+	 2. Maintains or improves the general integrity of the repo
    3. Implement, debug, optimize
    4. If anything significant changed while working, update branch-plan.md and move it to Archive/branch-plan-{BRANCH_NAME}.md
    5. Merge to main
