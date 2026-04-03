@@ -7,32 +7,41 @@ priority: medium
 
 ## Context
 
-There is currently no way to configure cloud storage from the Manager web UI or
-CLI. `add_cloud_storage` exists in the provisioning layer and is called by the
-setup scripts (`setup_dropbox_workspace.py`, `setup_dropbox_auth.py`), but the
-`TeamManager` class and the web UI do not expose it. A user starting fresh must
-drop to a script to wire up their cloud provider before any sync can happen.
+This issue is partially implemented and needs to be updated to reflect the
+current Manager UI.
+
+What is already present:
+
+- The Manager index page has a "Cloud storage" card.
+- `TeamManager` exposes `add_cloud_storage`, `list_cloud_storage`, and
+  `remove_cloud_storage`.
+- The web UI exposes `GET /cloud-storage`, `POST /cloud-storage`, and
+  `POST /cloud-storage/{id}/remove`.
+- The current fragment supports adding S3 / MinIO credentials and removing
+  existing providers.
+
+This means the original "no way to configure cloud storage from the Manager web
+UI" statement is no longer true for the S3 / MinIO path.
+
+What remains is finishing the more polished and broader provider story, most
+notably Dropbox OAuth.
 
 ## Phases
 
-### Phase 1 — S3 / MinIO (simple credential form)
+### Phase 1 — S3 / MinIO form polish
 
-S3-compatible providers (including the local MinIO dev server) only need static
-credentials: endpoint URL, access key, and secret key. No OAuth dance required.
+The basic S3 / MinIO flow is already implemented and usable for local dev and
+MinIO-backed demos.
 
-Add to the Manager web UI:
-- A "Cloud storage" card on the index page showing the currently configured
-  provider(s) (protocol, URL, masked credentials).
-- A form to add an S3/MinIO provider: endpoint URL, access key, secret key.
-- A remove/replace action (one active provider at a time is the common case).
+Remaining follow-up questions:
 
-Backend:
-- Expose `add_cloud_storage` / `list_cloud_storage` / `remove_cloud_storage` on
-  `TeamManager` (thin wrappers over provisioning).
-- Add corresponding `POST /cloud-storage` and `DELETE /cloud-storage/{id}`
-  routes in `web.py`.
+- Should the UI enforce a single active provider, or is multiple-provider
+  support intentional?
+- Should "replace" be a first-class action, or is remove-then-add sufficient?
+- Should the route shape be normalized later (for example true `DELETE`) or is
+  the current htmx-friendly `POST .../remove` fine?
 
-This unblocks local dev and MinIO-backed demo setups without any OAuth work.
+This phase is no longer the primary missing work.
 
 ### Phase 2 — Dropbox OAuth callback
 
@@ -51,6 +60,10 @@ The Manager's redirect URI must be registered in the Dropbox app settings
 can be entered in the UI before starting the flow, or pre-configured in
 `~/.config/small-sea/manager.toml`.
 
+This appears to be the main missing feature in this issue. The provisioning
+layer and Hub already have Dropbox-related fields and token-refresh support,
+but the Manager web UI does not yet expose a Dropbox start/callback flow.
+
 ### Phase 3 — Additional providers
 
 Once the S3 form and Dropbox OAuth path exist, further providers (Google Drive,
@@ -66,6 +79,10 @@ function.
 
 ## References
 
+- `packages/small-sea-manager/small_sea_manager/templates/fragments/cloud_storage.html`
+  — current S3 / MinIO form and provider list
+- `packages/small-sea-manager/small_sea_manager/manager.py` —
+  `add_cloud_storage`, `list_cloud_storage`, `remove_cloud_storage`
 - `packages/small-sea-manager/small_sea_manager/provisioning.py` —
   `add_cloud_storage`
 - `scripts/setup_dropbox_auth.py` — existing Dropbox OAuth flow (for reference)
