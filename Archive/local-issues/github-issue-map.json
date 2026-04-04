@@ -1,0 +1,387 @@
+{
+  "issues": [
+    {
+      "github_issue_number": 3,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/3",
+      "labels": [
+        "type:task",
+        "priority:high"
+      ],
+      "legacy_local_id": "0015",
+      "source_path": "Issues/0015-task-sync-orchestration.md",
+      "state": "open",
+      "title": "Sync orchestration \u2014 triggers, app API, conflict handling"
+    },
+    {
+      "github_issue_number": 4,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/4",
+      "labels": [
+        "type:design",
+        "priority:high"
+      ],
+      "legacy_local_id": "0017",
+      "source_path": "Issues/0017-design-cuttlefish-integration.md",
+      "state": "open",
+      "title": "Cuttlefish integration with Hub and Manager"
+    },
+    {
+      "github_issue_number": 5,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/5",
+      "labels": [
+        "type:task",
+        "priority:high"
+      ],
+      "legacy_local_id": "0026",
+      "source_path": "Issues/0026-task-shared-file-vault-sync.md",
+      "state": "open",
+      "title": "SharedFileVault \u2014 wire push/pull sync through the Hub"
+    },
+    {
+      "github_issue_number": 6,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/6",
+      "labels": [
+        "type:question",
+        "priority:medium"
+      ],
+      "legacy_local_id": "0007",
+      "source_path": "Issues/0007-question-identity-multi-device.md",
+      "state": "open",
+      "title": "Settle identity model for NoteToSelf and multi-device"
+    },
+    {
+      "github_issue_number": 7,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/7",
+      "labels": [
+        "type:question",
+        "priority:medium"
+      ],
+      "legacy_local_id": "0014",
+      "source_path": "Issues/0014-question-macos-deps.md",
+      "state": "open",
+      "title": "Address macOS-only dependencies"
+    },
+    {
+      "github_issue_number": 8,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/8",
+      "labels": [
+        "type:task",
+        "priority:medium"
+      ],
+      "legacy_local_id": "0020",
+      "source_path": "Issues/0020-task-hub-app-config-api.md",
+      "state": "open",
+      "title": "Hub read-only API for app self-configuration"
+    },
+    {
+      "github_issue_number": 9,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/9",
+      "labels": [
+        "type:task",
+        "priority:medium"
+      ],
+      "legacy_local_id": "0024",
+      "source_path": "Issues/0024-task-cloud-storage-adapter-abstraction.md",
+      "state": "open",
+      "title": "Clean up cloud storage adapter abstraction in Hub backend"
+    },
+    {
+      "github_issue_number": 10,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/10",
+      "labels": [
+        "type:task",
+        "priority:medium"
+      ],
+      "legacy_local_id": "0027",
+      "source_path": "Issues/0027-task-cloud-storage-config-ui.md",
+      "state": "open",
+      "title": "Cloud storage configuration in the Manager web UI"
+    },
+    {
+      "github_issue_number": 11,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/11",
+      "labels": [
+        "type:task",
+        "priority:medium"
+      ],
+      "legacy_local_id": "0028",
+      "source_path": "Issues/0028-task-cod-sync-local-pruning-api.md",
+      "state": "open",
+      "title": "Cod Sync local pruning API"
+    },
+    {
+      "github_issue_number": 12,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/12",
+      "labels": [
+        "type:question",
+        "priority:medium"
+      ],
+      "legacy_local_id": "0029",
+      "source_path": "Issues/0029-question-safe-pruning-boundary-determination.md",
+      "state": "open",
+      "title": "Safe pruning boundary determination"
+    },
+    {
+      "github_issue_number": 13,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/13",
+      "labels": [
+        "type:task",
+        "priority:medium"
+      ],
+      "legacy_local_id": "0030",
+      "source_path": "Issues/0030-task-vault-peer-update-ux.md",
+      "state": "open",
+      "title": "SharedFileVault \u2014 teammate update detection and pull UX"
+    },
+    {
+      "github_issue_number": 14,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/14",
+      "labels": [
+        "type:task",
+        "priority:low"
+      ],
+      "legacy_local_id": "0008",
+      "source_path": "Issues/0008-task-cuttlefish-cryptography.md",
+      "state": "open",
+      "title": "Implement Cuttlefish cryptography (ratchet, sender keys, signing)"
+    },
+    {
+      "github_issue_number": 15,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/15",
+      "labels": [
+        "type:bug",
+        "priority:low"
+      ],
+      "legacy_local_id": "0009",
+      "source_path": "Issues/0009-bug-future-db-version.md",
+      "state": "open",
+      "title": "Replace \"DB FROM THE FUTURE\" print with real error handling"
+    },
+    {
+      "github_issue_number": 16,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/16",
+      "labels": [
+        "type:task",
+        "priority:low"
+      ],
+      "legacy_local_id": "0010",
+      "source_path": "Issues/0010-task-hub-permissions.md",
+      "state": "open",
+      "title": "Add permission checks to Hub cloud location methods"
+    },
+    {
+      "github_issue_number": 17,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/17",
+      "labels": [
+        "type:task",
+        "priority:low"
+      ],
+      "legacy_local_id": "0011",
+      "source_path": "Issues/0011-task-conftest-sleep.md",
+      "state": "open",
+      "title": "Replace sleep hack in Hub startup fixture"
+    },
+    {
+      "github_issue_number": 18,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/18",
+      "labels": [
+        "type:idea",
+        "priority:low"
+      ],
+      "legacy_local_id": "0012",
+      "source_path": "Issues/0012-idea-package-structure.md",
+      "state": "open",
+      "title": "Reconsider top-level package and directory structure"
+    },
+    {
+      "github_issue_number": 19,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/19",
+      "labels": [
+        "type:idea",
+        "priority:low"
+      ],
+      "legacy_local_id": "0013",
+      "source_path": "Issues/0013-idea-hub-backend-decompose.md",
+      "state": "open",
+      "title": "Decompose hub/backend.py into smaller modules"
+    },
+    {
+      "github_issue_number": 20,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/20",
+      "labels": [
+        "type:task",
+        "priority:low"
+      ],
+      "legacy_local_id": "0018",
+      "source_path": "Issues/0018-task-cloud-chain-compaction.md",
+      "state": "open",
+      "title": "Cloud chain compaction (rebase to new initial snapshot)"
+    },
+    {
+      "github_issue_number": 21,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/21",
+      "labels": [
+        "type:task",
+        "priority:low"
+      ],
+      "legacy_local_id": "0022",
+      "source_path": "Issues/0022-task-sandbox-restart.md",
+      "state": "open",
+      "title": "Sandbox \u2014 reconnect to existing workspace on restart"
+    },
+    {
+      "github_issue_number": 22,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/22",
+      "labels": [
+        "type:task",
+        "priority:low"
+      ],
+      "legacy_local_id": "0025",
+      "source_path": "Issues/0025-task-push-latency-optimizations.md",
+      "state": "open",
+      "title": "Reduce push/pull round-trip latency"
+    },
+    {
+      "github_issue_number": 23,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/23",
+      "labels": [
+        "type:task",
+        "priority:high",
+        "legacy"
+      ],
+      "legacy_local_id": "0001",
+      "source_path": "Issues/Done/0001-task-sync-orchestration.md",
+      "state": "closed",
+      "title": "Wire Cod Sync through the Hub API"
+    },
+    {
+      "github_issue_number": 24,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/24",
+      "labels": [
+        "type:task",
+        "priority:high",
+        "legacy"
+      ],
+      "legacy_local_id": "0002",
+      "source_path": "Issues/Done/0002-task-invitation-acceptance.md",
+      "state": "closed",
+      "title": "Complete invitation acceptance round-trip"
+    },
+    {
+      "github_issue_number": 25,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/25",
+      "labels": [
+        "type:task",
+        "priority:high",
+        "legacy"
+      ],
+      "legacy_local_id": "0004",
+      "source_path": "Issues/Done/0004-task-cod-sync-implementation.md",
+      "state": "closed",
+      "title": "Complete Cod Sync sketch implementation"
+    },
+    {
+      "github_issue_number": 26,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/26",
+      "labels": [
+        "type:task",
+        "priority:high",
+        "legacy"
+      ],
+      "legacy_local_id": "0015",
+      "source_path": "Issues/Done/0015-task-client-library-cleanup.md",
+      "state": "closed",
+      "title": "Rewrite small-sea-client: fix session flow, add tests"
+    },
+    {
+      "github_issue_number": 27,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/27",
+      "labels": [
+        "type:task",
+        "priority:high",
+        "legacy"
+      ],
+      "legacy_local_id": "0023",
+      "source_path": "Issues/Done/0023-task-sync-signal-file.md",
+      "state": "closed",
+      "title": "Sync signal file \u2014 per-member push counter for cheap polling"
+    },
+    {
+      "github_issue_number": 28,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/28",
+      "labels": [
+        "type:task",
+        "priority:medium",
+        "legacy"
+      ],
+      "legacy_local_id": "0003",
+      "source_path": "Issues/Done/0003-task-manager-hub-integration.md",
+      "state": "closed",
+      "title": "Wire small-sea-manager stubs to Hub"
+    },
+    {
+      "github_issue_number": 29,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/29",
+      "labels": [
+        "type:spec",
+        "priority:medium",
+        "legacy"
+      ],
+      "legacy_local_id": "0005",
+      "source_path": "Issues/Done/0005-spec-hub-spec-gaps.md",
+      "state": "closed",
+      "title": "Fill in Hub spec gaps"
+    },
+    {
+      "github_issue_number": 30,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/30",
+      "labels": [
+        "type:spec",
+        "priority:low",
+        "legacy"
+      ],
+      "legacy_local_id": "0006",
+      "source_path": "Issues/Done/0006-spec-manager-spec.md",
+      "state": "closed",
+      "title": "Fill in small-sea-manager spec skeleton"
+    },
+    {
+      "github_issue_number": 31,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/31",
+      "labels": [
+        "type:task",
+        "priority:low",
+        "legacy"
+      ],
+      "legacy_local_id": "0019",
+      "source_path": "Issues/Done/0019-task-git-history-pruning.md",
+      "state": "closed",
+      "title": "Git history pruning (squash old commits to bound repo size)"
+    },
+    {
+      "github_issue_number": 32,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/32",
+      "labels": [
+        "type:task",
+        "priority:low",
+        "legacy"
+      ],
+      "legacy_local_id": "0021",
+      "source_path": "Issues/Done/0021-task-sandbox-pin-flows.md",
+      "state": "closed",
+      "title": "Sandbox \u2014 PIN confirmation flow for Hub sessions"
+    },
+    {
+      "github_issue_number": 33,
+      "github_issue_url": "https://github.com/benjaminy/small-sea-collective/issues/33",
+      "labels": [
+        "type:bug",
+        "legacy"
+      ],
+      "legacy_local_id": "0016",
+      "source_path": "Issues/Done/0016-bug-teammanager-connect.md",
+      "state": "closed",
+      "title": "TeamManager.connect() calls non-existent method"
+    }
+  ],
+  "repo": "benjaminy/small-sea-collective"
+}
