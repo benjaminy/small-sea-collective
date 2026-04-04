@@ -220,7 +220,7 @@ Inserts a pending `invitation` row in the team DB. Produces a token for out-of-b
 
 Inputs: `team_name`, optional `invitee_label` (human note for who this is for), `role` (default: admin).
 
-Token contents: invitation ID, nonce, team name, inviter member ID, inviter cloud endpoint (protocol + URL only — no credentials), inviter bucket name. Privacy is provided by E2E encryption (issue #0008), not by keeping the bucket private.
+Token contents: invitation ID, nonce, team name, inviter member ID, inviter display name, inviter cloud endpoint (protocol + URL only — no credentials), inviter bucket name. Privacy is provided by E2E encryption (issue #0008), not by keeping the bucket private.
 
 #### List invitations
 
@@ -519,8 +519,10 @@ CREATE TABLE IF NOT EXISTS invitation (
 CREATE TABLE IF NOT EXISTS peer (
     id        BLOB PRIMARY KEY,
     member_id BLOB NOT NULL,
+    display_name TEXT,
     protocol  TEXT NOT NULL,
     url       TEXT NOT NULL,
+    bucket    TEXT,
     -- no credential columns: credentials stay in the local Hub, never shared
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 );

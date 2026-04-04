@@ -148,6 +148,7 @@ class Peer(Base):
 
     id = Column(LargeBinary, primary_key=True)
     member_id = Column(LargeBinary, nullable=False)
+    display_name = Column(String, nullable=True)
     protocol = Column(String, nullable=False)
     url = Column(String, nullable=False)
     bucket = Column(String, nullable=True)
@@ -158,7 +159,7 @@ class Peer(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 49
+USER_SCHEMA_VERSION = 50
 
 
 # ---- Provisioning functions ----
@@ -262,6 +263,48 @@ def _migrate_user_db(conn, from_version):
         conn.execute(text("ALTER TABLE notification_service ADD COLUMN access_token TEXT"))
     if from_version < 49:
         pass  # peer.bucket added to team DB schema; NoteToSelf schema unchanged
+    if from_version < 50:
+        pass  # peer.display_name added to team DB schema; NoteToSelf schema unchanged
+
+
+def _migrate_team_db(conn, from_version):
+    """Apply incremental migrations to bring a team DB up to USER_SCHEMA_VERSION."""
+    if from_version < 49:
+        conn.execute(text("ALTER TABLE peer ADD COLUMN bucket TEXT"))
+    if from_version < 50:
+        conn.execute(text("ALTER TABLE peer ADD COLUMN display_name TEXT"))
+
+
+def ensure_team_db_schema(db_path):
+    """Upgrade an existing team DB in place if needed."""
+    engine = create_engine(f"sqlite:///{db_path}")
+    try:
+        with engine.begin() as conn:
+            user_version = conn.execute(text("PRAGMA user_version")).scalar()
+            if user_version == USER_SCHEMA_VERSION:
+                return
+            if (0 != user_version) and (user_version < USER_SCHEMA_VERSION):
+                _migrate_team_db(conn, user_version)
+                conn.execute(text(f"PRAGMA user_version = {USER_SCHEMA_VERSION}"))
+                return
+            if user_version > USER_SCHEMA_VERSION:
+                raise NotImplementedError("TODO: DB FROM THE FUTURE!")
+    finally:
+        engine.dispose()
+
+
+def migrate_participant_team_dbs(root_dir, participant_hex):
+    """Ensure all existing team DBs for a participant are on the current schema."""
+    root_dir = pathlib.Path(root_dir)
+    for team in list_teams(root_dir, participant_hex):
+        team_name = team["name"]
+        if team_name == "NoteToSelf":
+            continue
+        team_db_path = (
+            root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
+        )
+        if team_db_path.exists():
+            ensure_team_db_schema(team_db_path)
 
 
 def _initialize_core_note_to_self_schema(conn):
@@ -492,6 +535,7 @@ def create_invitation(
     with team_engine.begin() as conn:
         row = conn.execute(text("SELECT id FROM member LIMIT 1")).fetchone()
         inviter_member_id = row[0]
+    inviter_display_name = get_nickname(root_dir, participant_hex) or None
 
     # Look up the station ID from the team DB (to derive the bucket name).
     # Station structural data lives in the team DB, not NoteToSelf.
@@ -527,6 +571,7 @@ def create_invitation(
         "nonce": nonce.hex(),
         "team_name": team_name,
         "inviter_member_id": inviter_member_id.hex(),
+        "inviter_display_name": inviter_display_name,
         "inviter_cloud": {"protocol": inviter_cloud["protocol"], "url": inviter_cloud["url"]},
         "inviter_bucket": inviter_bucket,
     }
@@ -572,6 +617,7 @@ def accept_invitation(
     inviter_member_id = bytes.fromhex(token["inviter_member_id"])
     inviter_cloud = token["inviter_cloud"]  # protocol + url only, no credentials
     inviter_bucket = token["inviter_bucket"]
+    inviter_display_name = token.get("inviter_display_name") or None
     invitation_id = bytes.fromhex(token["invitation_id"])
     nonce = bytes.fromhex(token["nonce"])
 
@@ -615,6 +661,7 @@ def accept_invitation(
 
     # --- Add acceptor as member in the cloned DB ---
     team_db_path = team_sync_dir / "core.db"
+    ensure_team_db_schema(team_db_path)
     team_engine = create_engine(f"sqlite:///{team_db_path}")
 
     with team_engine.begin() as conn:
@@ -624,12 +671,13 @@ def accept_invitation(
         # Store inviter's cloud location as a peer (URL only, no credentials)
         conn.execute(
             text(
-                "INSERT INTO peer (id, member_id, protocol, url, bucket) "
-                "VALUES (:id, :member_id, :protocol, :url, :bucket)"
+                "INSERT INTO peer (id, member_id, display_name, protocol, url, bucket) "
+                "VALUES (:id, :member_id, :display_name, :protocol, :url, :bucket)"
             ),
             {
                 "id": uuid7(),
                 "member_id": inviter_member_id,
+                "display_name": inviter_display_name,
                 "protocol": inviter_cloud["protocol"],
                 "url": inviter_cloud["url"],
                 "bucket": inviter_bucket,
@@ -722,11 +770,12 @@ def complete_invitation_acceptance(
 
     # Find and validate the invitation in the inviter's team DB
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
+    ensure_team_db_schema(team_db_path)
     engine = create_engine(f"sqlite:///{team_db_path}")
 
     with engine.begin() as conn:
         row = conn.execute(
-            text("SELECT nonce, status FROM invitation WHERE id = :id"),
+            text("SELECT nonce, status, invitee_label FROM invitation WHERE id = :id"),
             {"id": invitation_id},
         ).fetchone()
 
@@ -765,12 +814,13 @@ def complete_invitation_acceptance(
         )
         conn.execute(
             text(
-                "INSERT INTO peer (id, member_id, protocol, url, bucket) "
-                "VALUES (:id, :member_id, :protocol, :url, :bucket)"
+                "INSERT INTO peer (id, member_id, display_name, protocol, url, bucket) "
+                "VALUES (:id, :member_id, :display_name, :protocol, :url, :bucket)"
             ),
             {
                 "id": uuid7(),
                 "member_id": acceptor_member_id,
+                "display_name": row[2],
                 "protocol": acceptor_cloud["protocol"],
                 "url": acceptor_cloud["url"],
                 "bucket": acceptor_bucket,

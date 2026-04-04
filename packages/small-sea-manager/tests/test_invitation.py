@@ -205,11 +205,14 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert alice_member_id_hex in member_ids
     assert bob_member_id_hex in member_ids
 
-    peers = aconn.execute("SELECT member_id, protocol, url FROM peer").fetchall()
+    peers = aconn.execute(
+        "SELECT member_id, display_name, protocol, url FROM peer"
+    ).fetchall()
     assert len(peers) == 1
     assert peers[0][0] == bytes.fromhex(bob_member_id_hex)
-    assert peers[0][1] == "s3"
-    assert peers[0][2] == bob_minio["endpoint"]
+    assert peers[0][1] == "Bob"
+    assert peers[0][2] == "s3"
+    assert peers[0][3] == bob_minio["endpoint"]
 
     roles = aconn.execute("SELECT member_id, role FROM station_role").fetchall()
     assert len(roles) == 2
@@ -227,11 +230,14 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert alice_member_id_hex in member_ids
     assert bob_member_id_hex in member_ids
 
-    peers = bconn.execute("SELECT member_id, protocol, url FROM peer").fetchall()
+    peers = bconn.execute(
+        "SELECT member_id, display_name, protocol, url FROM peer"
+    ).fetchall()
     assert len(peers) == 1
     assert peers[0][0] == bytes.fromhex(alice_member_id_hex)
-    assert peers[0][1] == "s3"
-    assert peers[0][2] == alice_minio["endpoint"]
+    assert peers[0][1] == "Alice"
+    assert peers[0][2] == "s3"
+    assert peers[0][3] == alice_minio["endpoint"]
     bconn.close()
 
     # --- Verify Bob's NoteToSelf has the team pointer but NOT a TeamAppStation for ProjectX ---

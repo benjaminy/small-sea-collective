@@ -1,0 +1,39 @@
+<div id="team-session-{{ team_name }}">
+  {% if session_error %}
+  <p class="notice notice-err" style="margin-bottom:0.5rem">{{ session_error }}</p>
+  {% endif %}
+
+  {% if team_session_status == "active" %}
+  <div class="inline-form" style="margin-bottom:0.75rem">
+    <span class="badge badge-clean">session active</span>
+    <form hx-post="/teams/{{ team_name }}/session/close"
+          hx-target="#team-session-{{ team_name }}"
+          hx-swap="outerHTML">
+      <button class="btn btn-secondary" type="submit">Close session</button>
+    </form>
+  </div>
+  {% elif team_session_status == "pending" %}
+  <p style="color:#78716c; font-size:0.88rem; margin-bottom:0.5rem">
+    PIN sent via notification. Enter it to confirm this team session:
+  </p>
+  <form class="inline-form"
+        hx-post="/teams/{{ team_name }}/session/confirm"
+        hx-target="#team-session-{{ team_name }}"
+        hx-swap="outerHTML"
+        style="margin-bottom:0.5rem">
+    <input type="text" name="pin" placeholder="PIN" maxlength="4" required style="width:6rem">
+    <button class="btn btn-primary" type="submit">Confirm</button>
+  </form>
+  <form hx-post="/teams/{{ team_name }}/session/resend-notification"
+        hx-target="#team-session-{{ team_name }}"
+        hx-swap="outerHTML">
+    <button class="btn btn-secondary" type="submit">Resend notification</button>
+  </form>
+  {% else %}
+  <form hx-post="/teams/{{ team_name }}/session/request"
+        hx-target="#team-session-{{ team_name }}"
+        hx-swap="outerHTML">
+    <button class="btn btn-secondary" type="submit">Request team session</button>
+  </form>
+  {% endif %}
+</div>

@@ -7,12 +7,10 @@ priority: high
 
 ## Context
 
-SharedFileVault's web UI and CLI have no sync capability. The vault library
-(`vault.py`) provides `push_niche`, `pull_niche`, `push_registry`,
-`pull_registry` but they require caller-supplied `SmallSeaRemote` /
-`PeerSmallSeaRemote` objects. Neither the web UI nor the CLI construct those
-remotes or hold Hub sessions. Sync is only exercised in the latency tests,
-which build remotes manually.
+SharedFileVault's web UI and CLI have no sync capability.
+The vault library (`vault.py`) provides `push_niche`, `pull_niche`, `push_registry`, `pull_registry` but they require caller-supplied `SmallSeaRemote` / `PeerSmallSeaRemote` objects.
+Neither the web UI nor the CLI construct those remotes or hold Hub sessions.
+Sync is only exercised in the latency tests, which build remotes manually.
 
 ## What needs to happen
 

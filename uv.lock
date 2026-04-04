@@ -1070,6 +1070,7 @@ dependencies = [
     { name = "cod-sync" },
     { name = "fastapi", extra = ["standard"] },
     { name = "jinja2" },
+    { name = "small-sea-client" },
 ]
 
 [package.metadata]
@@ -1078,6 +1079,7 @@ requires-dist = [
     { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.118.0" },
     { name = "jinja2", specifier = ">=3.1" },
+    { name = "small-sea-client", editable = "packages/small-sea-client" },
 ]
 
 [[package]]

@@ -27,6 +27,14 @@ import cod_sync.protocol as CS
 from cod_sync.protocol import gitCmd
 
 
+class MergeConflictError(RuntimeError):
+    """Raised when a pull leaves unresolved merge conflicts."""
+
+    def __init__(self, paths):
+        self.paths = paths
+        super().__init__("Merge conflict during pull")
+
+
 def uuid7():
     """Generate a UUIDv7 (time-ordered, random) as 16 bytes."""
     timestamp_ms = int(time.time() * 1000)
@@ -153,6 +161,18 @@ def _refresh_work_tree(git_dir, dest):
     ])
 
 
+def _conflict_paths(git_dir, work_tree):
+    """Return unresolved merge-conflict paths for a git/work tree pair."""
+    result = gitCmd(
+        [
+            "--git-dir", str(git_dir), "--work-tree", str(work_tree),
+            "diff", "--name-only", "--diff-filter=U",
+        ],
+        raise_on_error=False,
+    )
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
 # ---------------------------------------------------------------------------
 # Registry helpers (internal)
 # ---------------------------------------------------------------------------
@@ -216,7 +236,7 @@ def _cod_pull(git_dir, transit, remote):
         if has_commits:
             exit_code = cod.merge_from_remote(["main"])
             if exit_code != 0:
-                raise RuntimeError("Merge conflict during pull")
+                raise MergeConflictError(_conflict_paths(git_dir, transit))
         else:
             gitCmd(["checkout", "main"])
     finally:
@@ -466,3 +486,17 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
     # Refresh all user checkouts
     for checkout in list_checkouts(vault_root, participant_hex, team_name, niche_name):
         _refresh_work_tree(git_dir, checkout)
+
+
+def registry_conflict_paths(vault_root, participant_hex, team_name):
+    """Return unresolved conflict paths for the team's registry repo."""
+    git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
+    checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
+    return _conflict_paths(git_dir, checkout)
+
+
+def niche_conflict_paths(vault_root, participant_hex, team_name, niche_name):
+    """Return unresolved conflict paths for a niche repo's transit work tree."""
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
+    return _conflict_paths(git_dir, transit)

@@ -1,6 +1,8 @@
 """Tests for the two-step PIN-based session approval flow."""
 
 from datetime import datetime, timedelta, timezone
+import pathlib
+import sqlite3
 
 import pytest
 import small_sea_hub.backend as SmallSea
@@ -232,7 +234,7 @@ def test_pending_sessions_lists_with_pin(playground_dir):
     assert pending[0]["pending_id"] == pending_id
     assert pending[0]["client_name"] == "TestClient"
     assert pending[0]["team_name"] == "NoteToSelf"
-    assert len(pending[0]["pin"]) == 4  # 4-digit PIN
+    assert len(pending[0]["pin"]) == 3  # current Hub implementation uses 3-digit PINs
 
 
 def test_session_info_via_client(playground_dir):
@@ -252,3 +254,52 @@ def test_session_info_via_client(playground_dir):
     assert info["participant_hex"] == alice_hex
     assert info["team_name"] == "NoteToSelf"
     assert len(info["station_id"]) == 32
+
+
+def test_session_peers(playground_dir):
+    """GET /session/peers returns peer metadata for a team session."""
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    alice_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    bob_member_id = bytes.fromhex("11" * 16)
+    team_db = (
+        pathlib.Path(playground_dir)
+        / "Participants"
+        / alice_hex
+        / "ProjectX"
+        / "Sync"
+        / "core.db"
+    )
+    conn = sqlite3.connect(str(team_db))
+    try:
+        conn.execute("INSERT INTO member (id) VALUES (?)", (bob_member_id,))
+        conn.execute(
+            "INSERT INTO peer (id, member_id, display_name, protocol, url, bucket) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                Provisioning.uuid7(),
+                bob_member_id,
+                "Bob",
+                "s3",
+                "http://localhost:9001",
+                "ss-test",
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    app.state.backend = backend
+    client = TestClient(app)
+
+    session_hex = _request_and_confirm(client, team="ProjectX")
+    resp = client.get(
+        "/session/peers",
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+    assert resp.status_code == 200
+    peers = resp.json()["peers"]
+    assert len(peers) == 1
+    assert peers[0]["member_id"] == bob_member_id.hex()
+    assert peers[0]["name"] == "Bob"
+    assert peers[0]["label"] == "Bob"

@@ -8,6 +8,48 @@
   {% include "fragments/checkouts.html" %}
 </div>
 
+<div class="detail-section">
+  <h3>Sync</h3>
+  {% include "fragments/team_session.html" %}
+  {% if sync_notice %}
+  <p class="notice notice-ok" style="margin-bottom:0.75rem">{{ sync_notice }}</p>
+  {% endif %}
+  {% if sync_error %}
+  <p class="notice notice-err" style="margin-bottom:0.75rem">{{ sync_error }}</p>
+  {% endif %}
+  <div class="inline-form" style="margin-bottom:0.75rem">
+    <form class="inline-form"
+          hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/push"
+          hx-target="#niche-detail"
+          hx-swap="innerHTML">
+      <button class="btn btn-primary" type="submit">Push</button>
+    </form>
+  </div>
+  {% if team_session_status == "active" %}
+    {% if peers %}
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.75rem">
+      {% for peer in peers %}
+      <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/pull"
+            hx-target="#niche-detail"
+            hx-swap="innerHTML">
+        <input type="hidden" name="from_member_id" value="{{ peer.member_id }}">
+        <button class="btn btn-secondary" type="submit">
+          Pull From {{ peer.label }}
+        </button>
+      </form>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p style="color:#78716c; font-size:0.88rem; margin-bottom:0.75rem">
+      No teammates are currently discoverable for this team session.
+    </p>
+    {% endif %}
+  {% endif %}
+  <p style="color:#78716c; font-size:0.88rem">
+    Push and pull go through the Hub using this team session.
+  </p>
+</div>
+
 {% if status_by_checkout %}
   {% for item in status_by_checkout %}
   <div class="detail-section">

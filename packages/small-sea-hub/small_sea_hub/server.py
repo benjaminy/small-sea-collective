@@ -438,6 +438,28 @@ async def session_info(session_hex: str = Depends(_require_session)):
     }
 
 
+@app.get("/session/peers")
+async def session_peers(session_hex: str = Depends(_require_session)):
+    """Return peers visible to the current team session."""
+    small_sea = app.state.backend
+    ss_session = small_sea._lookup_session(session_hex)
+    station_id_hex = ss_session.station_id.hex()
+    peer_counts = getattr(app.state, "peer_counts", {})
+    peers = []
+    for peer in small_sea.list_peers(session_hex):
+        member_id_hex = peer["member_id"]
+        name = peer.get("name")
+        peers.append(
+            {
+                "member_id": member_id_hex,
+                "name": name,
+                "label": name or f"Teammate {member_id_hex[:8]}...",
+                "signal_count": peer_counts.get((station_id_hex, member_id_hex), 0),
+            }
+        )
+    return {"peers": peers}
+
+
 # ---- Cloud storage ----
 
 

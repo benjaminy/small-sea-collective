@@ -733,6 +733,57 @@ class SmallSeaBackend:
         """Download a file from a peer's public cloud bucket via the Hub proxy."""
         return self._download_peer_file(session_hex, member_id_hex, path)
 
+    def list_peers(self, session_hex):
+        """Return peer details visible to the current team session.
+
+        Prefers the team DB's peer.display_name when present. Falls back to
+        accepted invitation labels for older team DBs.
+        """
+        ss_session = self._lookup_session(session_hex)
+
+        if ss_session.team_name == "NoteToSelf":
+            return []
+
+        team_db_path = str(ss_session.participant_path / ss_session.team_name / "Sync" / "core.db")
+        conn = sqlite3.connect(team_db_path)
+        try:
+            try:
+                rows = conn.execute(
+                    "SELECT member_id, display_name FROM peer ORDER BY member_id"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                rows = [
+                    (member_id, None)
+                    for (member_id,) in conn.execute(
+                        "SELECT member_id FROM peer ORDER BY member_id"
+                    ).fetchall()
+                ]
+            name_rows = conn.execute(
+                "SELECT accepted_by, invitee_label "
+                "FROM invitation "
+                "WHERE accepted_by IS NOT NULL AND invitee_label IS NOT NULL"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        names_by_member = {}
+        for member_id, invitee_label in name_rows:
+            if member_id is None or not invitee_label:
+                continue
+            names_by_member[member_id.hex()] = invitee_label
+
+        result = []
+        for row in rows:
+            member_id_hex = row[0].hex()
+            display_name = row[1]
+            result.append(
+                {
+                    "member_id": member_id_hex,
+                    "name": display_name or names_by_member.get(member_id_hex),
+                }
+            )
+        return result
+
     def upload_to_cloud(self, session_hex, path, data, expected_etag=None):
         ss_session = self._lookup_session(session_hex)
         adapter = self._make_storage_adapter(ss_session)
