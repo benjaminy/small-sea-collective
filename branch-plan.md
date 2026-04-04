@@ -42,9 +42,7 @@ This branch succeeds if, at the end:
 - keep fetch and merge as separate app-facing operations
 - choose and document a stable ref naming scheme
 - update `CodSync` so fetch can report the fetched SHA and pin it to a ref
-- store the minimum app-local metadata needed to know:
-  - what peer tip is currently parked
-  - whether it has already been merged
+- store the minimum app-local metadata needed to show parked-update state
 - prove the pattern in the Shared File Vault web UI
 - preserve current Hub boundaries and git correctness
 
@@ -63,9 +61,7 @@ Follow-on work is tracked in GitHub issues `#35` and `#36`:
 - notification-driven parked-update UX
 - preview and auto-merge policy for parked peer updates
 
-## Narrowed Product Shape
-
-The branch target is deliberately smaller than the broader long-term UX vision.
+## Product Shape
 
 First-version user flow:
 
@@ -74,16 +70,16 @@ First-version user flow:
 3. the UI can show "fetched and ready to merge"
 4. the user chooses when to merge
 
-The important honesty rule is:
+Important honesty rule:
 
 - a Hub signal is only an update hint
 - a parked ref is a concrete fetched git state
 
 This branch should not claim to know more than that.
 
-## Core Technical Design
+## Core Technical Decisions
 
-### 1. Ref Namespace & Lifecycle
+### 1. Ref Namespace
 
 Use a durable peer namespace inside each local git repo:
 
@@ -91,46 +87,50 @@ Use a durable peer namespace inside each local git repo:
 
 For the first version, `<branch>` will normally be `main`.
 
-**Lifecycle Rules:**
-- **Fetch:** Creating or updating a parked ref is a "latest wins" operation.
-- **Merge Success:** Keep the parked ref after a successful merge. The ancestry check (`merge-base --is-ancestor`) will correctly identify it as "already merged."
-- **Merge Failure:** Keep the parked ref. The user may need it to re-attempt the merge after aborting or resolving conflicts.
-- **Pruning:** Define a strategy for pruning refs when a peer is removed from the team or a niche is deleted.
-
 Important clarification:
 
 - niche repos and the registry repo are separate repos
-- the registry should therefore use the same peer-ref shape inside its own repo,
-  not a special pseudo-branch like `registry`
+- the registry should use the same peer-ref shape inside its own repo, not a
+  special pseudo-branch like `registry`
 
-### 2. Primitive Ownership
+### 2. Ref Lifecycle
 
-Keep the low-level git primitive in `CodSync`, but keep app-specific teammate
-state in Shared File Vault.
+Keep the lifecycle simple:
+
+- fetch updates the parked ref using a latest-wins policy
+- successful merge does not delete the parked ref
+- failed merge does not delete the parked ref
+
+That keeps git state inspectable and lets ancestry answer whether the parked
+tip has already been integrated.
+
+### 3. Primitive Ownership
+
+Keep the low-level git primitive in `CodSync`, but keep teammate-facing state in
+Shared File Vault.
 
 That likely means:
 
 - `CodSync.fetch_from_remote(..., pin_to_ref=...)` or an equivalent helper that
   returns the fetched SHA
 - `CodSync.merge_from_ref(ref_name)` or an equivalent merge helper
-- Vault-level code owns teammate-facing status and metadata
+- Vault-level code owns parked-update status and UI metadata
 
-### 3. "Already Merged" Detection
+### 4. "Already Merged" Detection
 
 Use git ancestry rather than only comparing stored markers:
 
 - `git merge-base --is-ancestor <parked_sha> HEAD`
 
 That gives a solid definition of "already merged" even if app-local metadata
-gets stale. This also naturally handles "obsolete" parked refs if `HEAD` has 
-moved past them due to other merges or local commits.
+gets stale.
 
-### 4. App-Local Metadata (UI Cache)
+### 5. App-Local Metadata
 
-Keep this minimal and app-local.
+Keep metadata minimal and treat it as a UI cache, not as the source of truth.
 
-For Vault, the most likely home is a new table in `checkouts.db` or another
-small adjacent app-local SQLite table, with enough scope to distinguish:
+For Vault, the most likely home is a new table in `checkouts.db` or a small
+adjacent app-local SQLite table with enough scope to distinguish:
 
 - team
 - repo kind (`niche` vs `registry`)
@@ -139,9 +139,8 @@ small adjacent app-local SQLite table, with enough scope to distinguish:
 - last fetched SHA
 - last merged SHA
 
-**Source of Truth:** The git ref is the source of truth for the merge operation. 
-The database is a UI cache used to drive status indicators (e.g., "Update 
-Available").
+The git ref is the source of truth for merge behavior. The database only helps
+drive teammate-facing status in the UI.
 
 ## Deliverables
 
@@ -166,9 +165,8 @@ Expose separate operations for:
 - inspect parked peer-update state
 - merge parked peer update
 
-**Multi-Repo Coordination:** In Shared File Vault, the Registry should usually 
-be merged before Niches to ensure any member/permission changes are applied 
-first.
+Existing callers that want the old immediate-merge behavior should still be
+able to keep using a simple path.
 
 ### 3. Shared File Vault Web Flow
 
@@ -179,7 +177,7 @@ That slice should show:
 - peer update awareness
 - fetch without merge
 - merge later from the parked ref
-- existing conflict surfacing still works (and preserves the parked ref)
+- existing conflict surfacing still works
 
 In the web UI, the first-version flow should be closer to:
 
@@ -187,22 +185,28 @@ In the web UI, the first-version flow should be closer to:
 - parked update status once a peer tip is fetched
 - explicit "Merge Changes" action later
 
-## Implementation Plan
+## Implementation Order
 
 ### Phase 0: Lock the semantics
 
-Before deeper code changes, write down:
+Write down the answers to these before editing much code:
 
-- the chosen parked-ref namespace
-- what commit SHA the caller gets back after fetch
+- exact parked-ref naming
+- what SHA fetch returns
 - what counts as "already merged"
 - what happens to parked state after successful merge
-- what happens to parked state after failed merge (conflicts/aborts)
+- what happens to parked state after failed merge
 - how Vault scopes parked state for niche repos vs the registry repo
 
-### Phase 1: Add durable peer refs
+### Phase 1: CodSync primitive
 
-Implement the parked-fetch primitive.
+Start in [`packages/cod-sync/cod_sync/protocol.py`](/Users/ben8/Repos/small-sea-collective/packages/cod-sync/cod_sync/protocol.py).
+
+Implement:
+
+- fetch that pins to a durable ref
+- fetch that returns the fetched SHA
+- merge from a named local ref
 
 Required behavior:
 
@@ -210,23 +214,37 @@ Required behavior:
 - fetching peer B does not disturb peer A's parked ref
 - the parked ref resolves to a commit in the local repo
 - merge can target the parked ref directly
-- fetch reports the fetched SHA back to the caller
-- "latest wins" policy for repeated fetches
 
-### Phase 2: Add minimal app-local state
+### Phase 2: Vault storage and core flow
 
-Add only enough metadata to support honest UI:
+Then update [`packages/shared-file-vault/shared_file_vault/vault.py`](/Users/ben8/Repos/small-sea-collective/packages/shared-file-vault/shared_file_vault/vault.py).
 
-- fetched commit
-- merged commit
-- scope fields sufficient to distinguish niche vs registry state
+Implement:
 
-Avoid building a larger "notification center" in this branch. Ensure the 
-metadata is treated as a cache of the git state.
+- minimal parked-update metadata storage
+- fetch and merge as separate Vault-level operations
+- ancestry-based "already merged" checks
 
-### Phase 3: Wire one app flow
+Keep the metadata clearly subordinate to git state.
 
-In Shared File Vault, change the web flow from:
+### Phase 3: Vault sync layer
+
+Then update [`packages/shared-file-vault/shared_file_vault/sync.py`](/Users/ben8/Repos/small-sea-collective/packages/shared-file-vault/shared_file_vault/sync.py).
+
+Expose:
+
+- fetch-via-Hub without merge
+- merge of an already parked peer ref
+- a simple status model the web layer can consume
+
+### Phase 4: Web UI
+
+Then update:
+
+- [`packages/shared-file-vault/shared_file_vault/web.py`](/Users/ben8/Repos/small-sea-collective/packages/shared-file-vault/shared_file_vault/web.py)
+- [`packages/shared-file-vault/shared_file_vault/templates/fragments/niche_detail.html`](/Users/ben8/Repos/small-sea-collective/packages/shared-file-vault/shared_file_vault/templates/fragments/niche_detail.html)
+
+Change the web flow from:
 
 - fetch and immediately merge
 
@@ -235,11 +253,10 @@ to:
 - fetch and park
 - show parked update state
 - merge on explicit user action
-- handle merge conflicts by preserving the parked ref for retry/investigation
 
 This should stay intentionally manual in the first version.
 
-### Phase 4: Validate and document
+### Phase 5: Validation and write-up
 
 Add micro tests and tighten the write-up so a skeptical reader can see exactly
 what is now guaranteed and what is still future work.
