@@ -48,17 +48,21 @@ The two clusters have **zero cross-imports** today:
 
 1. Create `packages/wrasse-trust/` with:
    - `pyproject.toml` (same shape as cuttlefish: hatchling, cryptography dep)
-   - `wrasse_trust/` package directory with `__init__.py`
+   - `wrasse_trust/` package directory with `__init__.py` (exposing core types)
    - `tests/` directory
 2. Move the four identity/trust modules into `wrasse_trust/`, updating
-   intra-package imports (e.g. `from .keys import ...` stays the same since
-   the relative structure is preserved).
+   intra-package imports.
 3. Move `test_identity.py` to `wrasse-trust/tests/`, updating its imports
    from `cuttlefish.*` to `wrasse_trust.*`.
-4. Verify no edits needed to the cuttlefish `pyproject.toml` — hatchling
+4. Update `packages/cuttlefish/cuttlefish/__init__.py` to export core session crypto types.
+5. Split `packages/cuttlefish/README.md`:
+   - Keep encryption/ratchet/group sections in `cuttlefish`.
+   - Move identity/trust/ceremony/wot sections to `wrasse-trust/README.md`.
+   - Update "Module Map" and "Status" in both.
+6. Add a clarifying comment in `cuttlefish/prekeys.py` regarding its `IdentityKeyPair` vs `wrasse-trust` identity.
+7. Verify no edits needed to the cuttlefish `pyproject.toml` — hatchling
    auto-discovers modules, so removing files just works.
-5. Tighten any awkward boundaries revealed by the move rather than trying to
-   solve every crypto design question in the same branch.
+8. Tighten any awkward boundaries revealed by the move.
 
 ## Identity ↔ Encryption Binding (Future Work)
 
