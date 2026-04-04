@@ -33,62 +33,54 @@ Move to `wrasse-trust` (identity and trust):
 - `ceremony.py` — key signing ceremony helpers
 - `trust.py` — trust chain traversal and cert graph
 
-### Why the boundary is clean
+### Why the boundary is workable
 
-The two clusters have **zero cross-imports** today:
-- The identity cluster (`keys` → `identity` → `ceremony`, `trust`) is
-  self-contained.
-- The session-crypto cluster (`prekeys` → `x3dh`, `ratchet`, `group`) is
-  self-contained.
-- `prekeys.py` defines X25519/Ed25519 key pairs for X3DH session bootstrap —
-  these are conceptually different from the BURIED/GUARDED/DAILY identity
-  hierarchy in `keys.py`, despite both being "identity keys."
+- The identity/trust modules are already a self-contained cluster:
+  `keys`, `identity`, `ceremony`, `trust`.
+- The session-crypto modules are already a self-contained cluster:
+  `prekeys`, `x3dh`, `ratchet`, `group`.
+- `prekeys.py` stays in `cuttlefish` for now because it is part of X3DH
+  session bootstrap, even though its `IdentityKeyPair` name overlaps with
+  the broader trust-side notion of identity.
 
 ## Approach
 
 1. Create `packages/wrasse-trust/` with:
    - `pyproject.toml` (same shape as cuttlefish: hatchling, cryptography dep)
-   - `wrasse_trust/` package directory with `__init__.py` (exposing core types)
+   - `wrasse_trust/` package directory with `__init__.py`
    - `tests/` directory
 2. Move the four identity/trust modules into `wrasse_trust/`, updating
    intra-package imports.
 3. Move `test_identity.py` to `wrasse-trust/tests/`, updating its imports
    from `cuttlefish.*` to `wrasse_trust.*`.
-4. Update `packages/cuttlefish/cuttlefish/__init__.py` to export core session crypto types.
-5. Split `packages/cuttlefish/README.md`:
-   - Keep encryption/ratchet/group sections in `cuttlefish`.
-   - Move identity/trust/ceremony/wot sections to `wrasse-trust/README.md`.
-   - Update "Module Map" and "Status" in both.
-6. Add a clarifying comment in `cuttlefish/prekeys.py` regarding its `IdentityKeyPair` vs `wrasse-trust` identity.
-7. Verify no edits needed to the cuttlefish `pyproject.toml` — hatchling
-   auto-discovers modules, so removing files just works.
-8. Tighten any awkward boundaries revealed by the move.
-
-## Identity ↔ Encryption Binding (Future Work)
-
-Today the identity system (wrasse-trust) and the session-crypto system
-(cuttlefish) are fully independent — there is no code that cryptographically
-links "this encrypted message was sent by this identity." In the long run this
-binding is essential: teammates need to verify that data pushed, sent, or
-posted is authentically tied to a specific identity in the trust graph.
-
-This branch is **not** the place to design that binding, but we should be
-aware that the clean split also means neither package currently depends on
-the other. When the binding is built, it will likely live in a third
-integration point (or one package will gain an optional dependency on the
-other). The split should not make that future integration harder — and
-since both clusters are already independent today, it doesn't.
+4. Update docs to match the new boundary:
+   - `packages/cuttlefish/README.md`
+   - `packages/wrasse-trust/README.md`
+   - `architecture.md`
+5. Add one short clarifying note in `cuttlefish/prekeys.py` about its
+   X3DH bootstrap identity keys vs the broader trust-side identity model.
+6. Make this a clean break:
+   - do not leave compatibility imports in `cuttlefish`
+   - do not add transitional re-exports or alias packages
+   - update all in-repo imports to the new package names directly
+7. Tighten any awkward boundaries revealed by the move, but do not redesign
+   identity/encryption binding in this branch.
 
 ## Validation
 
-- `cuttlefish` tests still pass after the split (`test_ratchet`, `test_x3dh`,
-  `test_group`)
-- new `wrasse-trust` tests pass (`test_identity` moved and updated)
-- no Small Sea package is left importing moved modules from the old location
-- README / architecture language still matches the actual package boundaries
+- `uv run pytest packages/cuttlefish/tests/test_ratchet.py`
+- `uv run pytest packages/cuttlefish/tests/test_x3dh.py`
+- `uv run pytest packages/cuttlefish/tests/test_group.py`
+- `uv run pytest packages/wrasse-trust/tests/test_identity.py`
+- `rg "from cuttlefish\\.(keys|identity|ceremony|trust)|import cuttlefish\\.(keys|identity|ceremony|trust)" packages`
+  finds no remaining imports
+- the moved modules no longer exist under `packages/cuttlefish/cuttlefish/`
+- `README.md`, `architecture.md`, and the two package READMEs no longer
+  describe `cuttlefish` as owning both encryption and trust
 
 ## Risks To Watch
 
+- `prekeys.py` may still feel ambiguously named after the split
 - docs may still describe `cuttlefish` as containing both concerns
-- if any package starts importing from cuttlefish before this lands, those
-  imports will need updating (currently no external consumers exist)
+- the hard break means any new in-repo imports must be updated in the same
+  branch rather than carried through compatibility shims
