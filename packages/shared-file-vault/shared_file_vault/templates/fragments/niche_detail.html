@@ -27,16 +27,40 @@
   </div>
   {% if team_session_status == "active" %}
     {% if peers %}
-    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-bottom:0.75rem">
+    <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:0.75rem">
       {% for peer in peers %}
-      <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/pull"
-            hx-target="#niche-detail"
-            hx-swap="innerHTML">
-        <input type="hidden" name="from_member_id" value="{{ peer.member_id }}">
-        <button class="btn btn-secondary" type="submit">
-          Pull From {{ peer.label }}
-        </button>
-      </form>
+      <div style="border:1px solid #d6d3d1; border-radius:0.75rem; padding:0.75rem; min-width:15rem">
+        <div style="font-weight:600; margin-bottom:0.5rem">{{ peer.label }}</div>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
+          <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/fetch"
+                hx-target="#niche-detail"
+                hx-swap="innerHTML">
+            <input type="hidden" name="from_member_id" value="{{ peer.member_id }}">
+            <button class="btn btn-secondary" type="submit">
+              Check For Updates
+            </button>
+          </form>
+          {% if peer.update_status.ready_to_merge %}
+          <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/merge"
+                hx-target="#niche-detail"
+                hx-swap="innerHTML">
+            <input type="hidden" name="from_member_id" value="{{ peer.member_id }}">
+            <button class="btn btn-primary" type="submit">
+              Merge Changes
+            </button>
+          </form>
+          {% endif %}
+        </div>
+        {% if peer.update_status.ready_to_merge and peer.update_status.parked_sha %}
+        <p style="color:#57534e; font-size:0.88rem; margin:0.5rem 0 0">
+          Fetched {{ peer.update_status.parked_sha[:8] }} and ready to merge.
+        </p>
+        {% elif peer.update_status.already_merged and peer.update_status.parked_sha %}
+        <p style="color:#57534e; font-size:0.88rem; margin:0.5rem 0 0">
+          Latest fetched {{ peer.update_status.parked_sha[:8] }} is already merged.
+        </p>
+        {% endif %}
+      </div>
       {% endfor %}
     </div>
     {% else %}
@@ -46,7 +70,7 @@
     {% endif %}
   {% endif %}
   <p style="color:#78716c; font-size:0.88rem">
-    Push and pull go through the Hub using this team session.
+    Push, fetch, and merge go through the Hub using this team session.
   </p>
 </div>
 

@@ -282,12 +282,57 @@ Add app-level tests for the chosen Vault slice that prove:
 - "already merged" detection is driven by actual git ancestry, not only cached
   metadata
 
+## What Landed
+
+The branch now implements the core fetch-then-merge primitive:
+
+- `CodSync.fetch_from_remote(..., pin_to_ref=...)` can return the fetched SHA
+  and pin it to a durable local ref
+- `CodSync.merge_from_ref(ref_name)` can merge an already parked ref
+- Shared File Vault splits peer sync into fetch and merge steps
+- parked refs live under `refs/peers/<member_id_hex>/main`
+- Vault stores minimal peer sync metadata in app-local SQLite as a UI cache
+- "already merged" is determined from git ancestry rather than only cached
+  metadata
+- the Shared File Vault web UI now exposes a fetch-first, merge-later flow
+
+Compatibility paths were kept where practical:
+
+- the older immediate pull path still exists as a wrapper that does fetch then
+  merge
+- manager invitation and pull flows were updated to work with the new
+  `fetch_from_remote()` return value
+
+## Validation Completed
+
+The following targeted micro tests passed after implementation:
+
+- `uv run pytest packages/cod-sync/tests/test_roundtrip.py`
+- `uv run pytest packages/shared-file-vault/tests/test_hub_sync.py`
+- `uv run pytest packages/shared-file-vault/tests/test_web_sync.py`
+- `uv run pytest packages/small-sea-manager/tests/test_merge_conflict.py packages/small-sea-manager/tests/test_hub_invitation_flow.py`
+
 ## Risks
 
 - choosing a ref namespace that becomes awkward later
 - letting app-specific UX leak down into Cod Sync
 - confusing "signal noticed" with "fetched and ready"
 - overbuilding metadata before the core primitive is proven
+
+## Discussion
+
+Nothing here looks like a blocker for this branch.
+
+The remaining discussion topics are follow-on policy or cleanup choices:
+
+- whether and when to prune parked refs after peer removal or niche deletion
+- whether the registry should always be fetched or merged ahead of niches in
+  every caller and UI path
+- whether the current UI wording is the exact language we want for "Check For
+  Updates" versus "Fetch"
+- whether to archive this plan into
+  `Archive/branch-plan-better-fetch-merge-separation.md` immediately before
+  merge, per repo habit
 
 ## Recommendation
 

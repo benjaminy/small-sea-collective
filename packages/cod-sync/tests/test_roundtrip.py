@@ -64,12 +64,15 @@ def test_roundtrip(scratch_dir):
     assert (bob_pub / "latest-link.yaml").exists()
     assert len(list(bob_pub.glob("B-*.bundle"))) == 1
 
-    # ---- 3. Alice fetches and merges Bob's changes ----
+    # ---- 3. Alice fetches and merges Bob's changes via a parked ref ----
     alice_cod = make_cod_sync(alice_clone, "bob")
     alice_cod.remote = CS.LocalFolderRemote(str(bob_pub))
     alice_cod.add_remote(f"file://{bob_pub}", [])
-    alice_cod.fetch_from_remote(["main"])
-    alice_cod.merge_from_remote(["main"])
+    parked_ref = "refs/peers/bob/main"
+    fetched_sha = alice_cod.fetch_from_remote(["main"], pin_to_ref=parked_ref)
+    parked_sha = CS.gitCmd(["-C", str(alice_clone), "rev-parse", parked_ref]).stdout.strip()
+    assert fetched_sha == parked_sha
+    alice_cod.merge_from_ref(parked_ref)
 
     # ---- 4. Verify the two working trees match ----
     alice_files = working_tree_files(alice_clone)

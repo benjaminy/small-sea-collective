@@ -318,7 +318,7 @@ class CodSync:
         logger.info(f"clone_from_remote: done")
         return 0
 
-    def fetch_from_remote(self, branches):
+    def fetch_from_remote(self, branches, pin_to_ref=None):
         logger.debug(f"fetch_from_remote {self.remote_name} {branches}")
         result = self.remote.get_latest_link()
         if result is None:
@@ -328,9 +328,21 @@ class CodSync:
 
         if latest_link == None:
             logger.warning(f"fetch_from_remote: no latest link found")
-            return -1
+            return None
 
-        return self.fetch_chain(latest_link, branches, False)
+        result = self.fetch_chain(latest_link, branches, False)
+        if result != 0:
+            return None
+
+        branch_name = branches[0]
+        fetched_sha = self._link_branch_sha(latest_link, branch_name)
+        if fetched_sha is None:
+            return None
+
+        if pin_to_ref is not None:
+            self.gitCmd(["update-ref", pin_to_ref, fetched_sha])
+
+        return fetched_sha
 
     def fetch_chain(self, link, branches, doing_clone):
         [link_ids, branches, bundles, supp_data] = link
@@ -374,6 +386,14 @@ class CodSync:
 
         return 0
 
+    def _link_branch_sha(self, link, branch_name):
+        _link_ids, branches, _bundles, _supp_data = link
+        for branch, sha in branches:
+            if branch == branch_name:
+                return sha
+        logger.warning(f"_link_branch_sha: branch not found in link: {branch_name}")
+        return None
+
     def merge_from_remote(self, branches):
         logger.debug(f"merge_from_remote {self.remote_name} {branches}")
         branch = branches[0]
@@ -381,6 +401,11 @@ class CodSync:
         [tmp_remote, _] = self.bundle_tmp()
 
         result = self.gitCmd(["merge", f"{tmp_remote}/{branch}"], raise_on_error=False)
+        return result.returncode
+
+    def merge_from_ref(self, ref_name):
+        logger.debug(f"merge_from_ref {self.remote_name} {ref_name}")
+        result = self.gitCmd(["merge", ref_name], raise_on_error=False)
         return result.returncode
 
     def get_branches(self):

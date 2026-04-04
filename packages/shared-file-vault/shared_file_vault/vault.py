@@ -110,6 +110,16 @@ CREATE TABLE IF NOT EXISTS checkout (
     checkout_path TEXT NOT NULL,
     created_at    TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS peer_sync (
+    team_name        TEXT NOT NULL,
+    repo_kind        TEXT NOT NULL,
+    niche_name       TEXT NOT NULL,
+    member_id        TEXT NOT NULL,
+    last_fetched_sha TEXT,
+    last_merged_sha  TEXT,
+    updated_at       TEXT NOT NULL,
+    PRIMARY KEY (team_name, repo_kind, niche_name, member_id)
+);
 """
 
 
@@ -117,7 +127,98 @@ def _connect_checkouts(vault_root, participant_hex):
     db = _checkouts_db_path(vault_root, participant_hex)
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
+    conn.executescript(_CHECKOUTS_SCHEMA)
     return conn
+
+
+def _peer_sync_niche_key(repo_kind, niche_name=None):
+    if repo_kind == "registry":
+        return ""
+    return niche_name or ""
+
+
+def _record_peer_fetch(
+    vault_root,
+    participant_hex,
+    team_name,
+    repo_kind,
+    niche_name,
+    member_id,
+    fetched_sha,
+):
+    conn = _connect_checkouts(vault_root, participant_hex)
+    conn.execute(
+        """
+        INSERT INTO peer_sync (
+            team_name, repo_kind, niche_name, member_id,
+            last_fetched_sha, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(team_name, repo_kind, niche_name, member_id)
+        DO UPDATE SET
+            last_fetched_sha = excluded.last_fetched_sha,
+            updated_at = excluded.updated_at
+        """,
+        (
+            team_name,
+            repo_kind,
+            _peer_sync_niche_key(repo_kind, niche_name),
+            member_id,
+            fetched_sha,
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _record_peer_merge(
+    vault_root,
+    participant_hex,
+    team_name,
+    repo_kind,
+    niche_name,
+    member_id,
+    merged_sha,
+):
+    conn = _connect_checkouts(vault_root, participant_hex)
+    conn.execute(
+        """
+        INSERT INTO peer_sync (
+            team_name, repo_kind, niche_name, member_id,
+            last_fetched_sha, last_merged_sha, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(team_name, repo_kind, niche_name, member_id)
+        DO UPDATE SET
+            last_fetched_sha = excluded.last_fetched_sha,
+            last_merged_sha = excluded.last_merged_sha,
+            updated_at = excluded.updated_at
+        """,
+        (
+            team_name,
+            repo_kind,
+            _peer_sync_niche_key(repo_kind, niche_name),
+            member_id,
+            merged_sha,
+            merged_sha,
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _peer_sync_row(vault_root, participant_hex, team_name, repo_kind, niche_name, member_id):
+    conn = _connect_checkouts(vault_root, participant_hex)
+    row = conn.execute(
+        """
+        SELECT team_name, repo_kind, niche_name, member_id, last_fetched_sha, last_merged_sha
+        FROM peer_sync
+        WHERE team_name = ? AND repo_kind = ? AND niche_name = ? AND member_id = ?
+        """,
+        (team_name, repo_kind, _peer_sync_niche_key(repo_kind, niche_name), member_id),
+    ).fetchone()
+    conn.close()
+    return row
 
 
 # ---------------------------------------------------------------------------
@@ -171,6 +272,31 @@ def _conflict_paths(git_dir, work_tree):
         raise_on_error=False,
     )
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def _resolve_ref(git_dir, work_tree, ref_name):
+    result = gitCmd(
+        ["--git-dir", str(git_dir), "--work-tree", str(work_tree), "rev-parse", "--verify", ref_name],
+        raise_on_error=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip()
+
+
+def _is_ancestor(git_dir, work_tree, maybe_ancestor, descendant="HEAD"):
+    result = gitCmd(
+        [
+            "--git-dir", str(git_dir), "--work-tree", str(work_tree),
+            "merge-base", "--is-ancestor", maybe_ancestor, descendant,
+        ],
+        raise_on_error=False,
+    )
+    return result.returncode == 0
+
+
+def _peer_ref_name(member_id, branch="main"):
+    return f"refs/peers/{member_id}/{branch}"
 
 
 # ---------------------------------------------------------------------------
@@ -230,8 +356,8 @@ def _cod_pull(git_dir, transit, remote):
             gitCmd(["checkout", "HEAD", "--", "."])
 
         fetch_result = cod.fetch_from_remote(["main"])
-        if fetch_result != 0:
-            raise RuntimeError(f"pull failed: could not fetch from remote (code {fetch_result})")
+        if fetch_result is None:
+            raise RuntimeError("pull failed: could not fetch from remote")
 
         if has_commits:
             exit_code = cod.merge_from_remote(["main"])
@@ -239,6 +365,38 @@ def _cod_pull(git_dir, transit, remote):
                 raise MergeConflictError(_conflict_paths(git_dir, transit))
         else:
             gitCmd(["checkout", "main"])
+    finally:
+        os.chdir(saved)
+
+
+def _cod_fetch(git_dir, transit, remote, pin_to_ref):
+    saved = os.getcwd()
+    try:
+        os.chdir(transit)
+        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir))
+        cod.remote = remote
+        return cod.fetch_from_remote(["main"], pin_to_ref=pin_to_ref)
+    finally:
+        os.chdir(saved)
+
+
+def _cod_merge_ref(git_dir, transit, ref_name):
+    saved = os.getcwd()
+    try:
+        os.chdir(transit)
+        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir))
+
+        has_commits = _has_commits(git_dir)
+        if has_commits:
+            # Keep the transit work tree aligned with HEAD before merging.
+            gitCmd(["checkout", "HEAD", "--", "."])
+
+        if has_commits:
+            exit_code = cod.merge_from_ref(ref_name)
+            if exit_code != 0:
+                raise MergeConflictError(_conflict_paths(git_dir, transit))
+        else:
+            gitCmd(["checkout", "-B", "main", ref_name])
     finally:
         os.chdir(saved)
 
@@ -446,6 +604,41 @@ def pull_registry(vault_root, participant_hex, team_name, remote):
     _cod_pull(git_dir, checkout, remote)
 
 
+def fetch_registry(vault_root, participant_hex, team_name, member_id, remote):
+    """Fetch the registry from a peer and pin it to a durable local ref."""
+    _ensure_registry(vault_root, participant_hex, team_name)
+    git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
+    checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
+    ref_name = _peer_ref_name(member_id)
+    fetched_sha = _cod_fetch(git_dir, checkout, remote, ref_name)
+    if fetched_sha is not None:
+        _record_peer_fetch(
+            vault_root, participant_hex, team_name, "registry", None, member_id, fetched_sha
+        )
+    return fetched_sha
+
+
+def merge_registry(vault_root, participant_hex, team_name, member_id):
+    """Merge a previously parked registry ref from a peer."""
+    _ensure_registry(vault_root, participant_hex, team_name)
+    git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
+    checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
+    ref_name = _peer_ref_name(member_id)
+    parked_sha = _resolve_ref(git_dir, checkout, ref_name)
+    if parked_sha is None:
+        return None
+    if _has_commits(git_dir) and _is_ancestor(git_dir, checkout, parked_sha, "HEAD"):
+        _record_peer_merge(
+            vault_root, participant_hex, team_name, "registry", None, member_id, parked_sha
+        )
+        return parked_sha
+    _cod_merge_ref(git_dir, checkout, ref_name)
+    _record_peer_merge(
+        vault_root, participant_hex, team_name, "registry", None, member_id, parked_sha
+    )
+    return parked_sha
+
+
 def push_niche(vault_root, participant_hex, team_name, niche_name, remote):
     """Push a niche to cloud storage via Cod Sync."""
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
@@ -488,6 +681,49 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
         _refresh_work_tree(git_dir, checkout)
 
 
+def fetch_niche(vault_root, participant_hex, team_name, niche_name, member_id, remote):
+    """Fetch a niche from a peer and pin it to a durable local ref."""
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    if not git_dir.exists():
+        git_dir.mkdir(parents=True)
+        _init_git_dir(git_dir)
+
+    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
+    if not transit.exists():
+        _make_work_tree(git_dir, transit)
+
+    ref_name = _peer_ref_name(member_id)
+    fetched_sha = _cod_fetch(git_dir, transit, remote, ref_name)
+    if fetched_sha is not None:
+        _record_peer_fetch(
+            vault_root, participant_hex, team_name, "niche", niche_name, member_id, fetched_sha
+        )
+    return fetched_sha
+
+
+def merge_niche(vault_root, participant_hex, team_name, niche_name, member_id):
+    """Merge a previously parked niche ref from a peer."""
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
+    ref_name = _peer_ref_name(member_id)
+    parked_sha = _resolve_ref(git_dir, transit, ref_name)
+    if parked_sha is None:
+        return None
+    if _has_commits(git_dir) and _is_ancestor(git_dir, transit, parked_sha, "HEAD"):
+        _record_peer_merge(
+            vault_root, participant_hex, team_name, "niche", niche_name, member_id, parked_sha
+        )
+        return parked_sha
+    _cod_merge_ref(git_dir, transit, ref_name)
+    _record_peer_merge(
+        vault_root, participant_hex, team_name, "niche", niche_name, member_id, parked_sha
+    )
+
+    for checkout in list_checkouts(vault_root, participant_hex, team_name, niche_name):
+        _refresh_work_tree(git_dir, checkout)
+    return parked_sha
+
+
 def registry_conflict_paths(vault_root, participant_hex, team_name):
     """Return unresolved conflict paths for the team's registry repo."""
     git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
@@ -500,3 +736,57 @@ def niche_conflict_paths(vault_root, participant_hex, team_name, niche_name):
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
     return _conflict_paths(git_dir, transit)
+
+
+def peer_update_status(
+    vault_root, participant_hex, team_name, repo_kind, niche_name, member_id
+):
+    """Return parked-ref status for one peer/repo pair."""
+    if repo_kind == "registry":
+        _ensure_registry(vault_root, participant_hex, team_name)
+        git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
+        work_tree = _registry_checkout_dir(vault_root, participant_hex, team_name)
+    else:
+        git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+        work_tree = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
+        if not git_dir.exists() or not work_tree.exists():
+            row = _peer_sync_row(
+                vault_root, participant_hex, team_name, repo_kind, niche_name, member_id
+            )
+            return {
+                "member_id": member_id,
+                "repo_kind": repo_kind,
+                "parked_ref": _peer_ref_name(member_id),
+                "parked_sha": None,
+                "ready_to_merge": False,
+                "already_merged": False,
+                "last_fetched_sha": row["last_fetched_sha"] if row else None,
+                "last_merged_sha": row["last_merged_sha"] if row else None,
+            }
+
+    ref_name = _peer_ref_name(member_id)
+    parked_sha = _resolve_ref(git_dir, work_tree, ref_name)
+    row = _peer_sync_row(vault_root, participant_hex, team_name, repo_kind, niche_name, member_id)
+    if parked_sha is None:
+        return {
+            "member_id": member_id,
+            "repo_kind": repo_kind,
+            "parked_ref": ref_name,
+            "parked_sha": None,
+            "ready_to_merge": False,
+            "already_merged": False,
+            "last_fetched_sha": row["last_fetched_sha"] if row else None,
+            "last_merged_sha": row["last_merged_sha"] if row else None,
+        }
+
+    already_merged = _has_commits(git_dir) and _is_ancestor(git_dir, work_tree, parked_sha, "HEAD")
+    return {
+        "member_id": member_id,
+        "repo_kind": repo_kind,
+        "parked_ref": ref_name,
+        "parked_sha": parked_sha,
+        "ready_to_merge": not already_merged,
+        "already_merged": already_merged,
+        "last_fetched_sha": row["last_fetched_sha"] if row else None,
+        "last_merged_sha": row["last_merged_sha"] if row else None,
+    }

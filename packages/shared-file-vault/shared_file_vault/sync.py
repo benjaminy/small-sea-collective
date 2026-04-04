@@ -55,6 +55,32 @@ class PullConflictError(VaultSyncError):
 
 
 @dataclass
+class FetchResult:
+    member_id: str
+    registry_sha: str | None
+    niche_sha: str | None
+
+
+@dataclass
+class MergeResult:
+    member_id: str
+    registry_sha: str | None
+    niche_sha: str | None
+
+
+@dataclass
+class PeerUpdateStatus:
+    member_id: str
+    parked_sha: str | None
+    ready_to_merge: bool
+    already_merged: bool
+    registry_sha: str | None
+    niche_sha: str | None
+    last_fetched_sha: str | None
+    last_merged_sha: str | None
+
+
+@dataclass
 class LoginResult:
     session_token: str
     session_info: dict
@@ -328,27 +354,129 @@ def pull_via_hub(
     _http_client=None,
 ) -> None:
     """Pull a registry and niche from a peer through the Hub."""
+    fetch_via_hub(
+        vault_root,
+        participant_hex,
+        team_name,
+        niche_name,
+        from_member_id,
+        hub_port=hub_port,
+        _http_client=_http_client,
+    )
+    merge_via_hub(
+        vault_root,
+        participant_hex,
+        team_name,
+        niche_name,
+        from_member_id,
+        hub_port=hub_port,
+        _http_client=_http_client,
+    )
+
+
+def fetch_via_hub(
+    vault_root: str,
+    participant_hex: str,
+    team_name: str,
+    niche_name: str,
+    from_member_id: str,
+    *,
+    hub_port: int = SmallSeaClient.DEFAULT_PORT,
+    _http_client=None,
+) -> FetchResult:
+    """Fetch a registry and niche from a peer through the Hub without merging."""
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+    registry_sha = vault.fetch_registry(
+        vault_root,
+        participant_hex,
+        team_name,
+        from_member_id,
+        make_peer_registry_remote(team_name, from_member_id, session),
+    )
+    niche_sha = vault.fetch_niche(
+        vault_root,
+        participant_hex,
+        team_name,
+        niche_name,
+        from_member_id,
+        make_peer_niche_remote(team_name, niche_name, from_member_id, session),
+    )
+    return FetchResult(
+        member_id=from_member_id,
+        registry_sha=registry_sha,
+        niche_sha=niche_sha,
+    )
+
+
+def merge_via_hub(
+    vault_root: str,
+    participant_hex: str,
+    team_name: str,
+    niche_name: str,
+    from_member_id: str,
+    *,
+    hub_port: int = SmallSeaClient.DEFAULT_PORT,
+    _http_client=None,
+) -> MergeResult:
+    """Merge already-fetched peer refs for a registry and niche."""
+    _session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
     try:
-        vault.pull_registry(
+        registry_sha = vault.merge_registry(
             vault_root,
             participant_hex,
             team_name,
-            make_peer_registry_remote(team_name, from_member_id, session),
+            from_member_id,
         )
     except vault.MergeConflictError as exc:
         raise PullConflictError("registry", exc.paths) from exc
 
     try:
-        vault.pull_niche(
+        niche_sha = vault.merge_niche(
             vault_root,
             participant_hex,
             team_name,
             niche_name,
-            make_peer_niche_remote(team_name, niche_name, from_member_id, session),
+            from_member_id,
         )
     except vault.MergeConflictError as exc:
         raise PullConflictError("niche", exc.paths) from exc
+
+    return MergeResult(
+        member_id=from_member_id,
+        registry_sha=registry_sha,
+        niche_sha=niche_sha,
+    )
+
+
+def peer_update_status(
+    vault_root: str,
+    participant_hex: str,
+    team_name: str,
+    niche_name: str,
+    member_id: str,
+) -> PeerUpdateStatus:
+    """Return combined registry+niche parked-update state for one peer."""
+    registry_status = vault.peer_update_status(
+        vault_root, participant_hex, team_name, "registry", None, member_id
+    )
+    niche_status = vault.peer_update_status(
+        vault_root, participant_hex, team_name, "niche", niche_name, member_id
+    )
+    parked_sha = niche_status["parked_sha"] or registry_status["parked_sha"]
+    ready_to_merge = (
+        registry_status["ready_to_merge"] or niche_status["ready_to_merge"]
+    )
+    already_merged = bool(parked_sha) and not ready_to_merge
+    return PeerUpdateStatus(
+        member_id=member_id,
+        parked_sha=parked_sha,
+        ready_to_merge=ready_to_merge,
+        already_merged=already_merged,
+        registry_sha=registry_status["parked_sha"],
+        niche_sha=niche_status["parked_sha"],
+        last_fetched_sha=niche_status["last_fetched_sha"] or registry_status["last_fetched_sha"],
+        last_merged_sha=niche_status["last_merged_sha"] or registry_status["last_merged_sha"],
+    )
 
 
 def require_value(value, name: str) -> str:

@@ -648,7 +648,7 @@ def accept_invitation(
         cod = CodSync.CodSync("inviter")
         cod.remote = inviter_remote
         result = cod.fetch_from_remote(["main"])
-        if result != 0:
+        if result is None:
             inviter_url = (
                 f"{inviter_cloud['protocol']}://{inviter_cloud['url']}/{inviter_bucket}"
             )
