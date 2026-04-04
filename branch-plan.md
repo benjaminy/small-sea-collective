@@ -15,6 +15,7 @@ This branch is about making "fetch now, merge later" real and trustworthy.
 ## Why This Branch Exists
 
 The repo is already close to this model:
+
 - the Hub already notices peer updates and exposes notification/watch APIs
 - Cod Sync already has separate fetch and merge steps
 - peer reads already go through `PeerSmallSeaRemote`
@@ -32,14 +33,19 @@ This branch succeeds if, at the end:
 2. later fetches do not overwrite parked refs for other peers
 3. a caller can merge the parked ref later and get the same merge behavior as
    the current immediate-merge path
-4. the Shared File Vault web UI demonstrates the "Fetch then Merge" flow
+4. the Shared File Vault web UI demonstrates the fetch-then-merge flow
 5. micro tests make the guarantees convincing
 
 ## In Scope
 
-- add a durable local ref for fetched peer state: `refs/peers/<member_id>/<branch>`
-- update `CodSync` to return the fetched SHA and support pinning to a ref
-- store minimal local metadata in `checkouts.db` to track sync state
+- add a durable local ref for fetched peer state
+- keep fetch and merge as separate app-facing operations
+- choose and document a stable ref naming scheme
+- update `CodSync` so fetch can report the fetched SHA and pin it to a ref
+- store the minimum app-local metadata needed to know:
+  - what peer tip is currently parked
+  - whether it has already been merged
+- prove the pattern in the Shared File Vault web UI
 - preserve current Hub boundaries and git correctness
 
 ## Out of Scope
@@ -47,60 +53,218 @@ This branch succeeds if, at the end:
 - automatic background fetch
 - automatic merge
 - change previews
+- "benign change" heuristics
 - rich conflict-resolution UI
+- redesigning Hub notifications
 - broad rollout to every app in this branch
+
+Follow-on work is tracked in GitHub issues `#35` and `#36`:
+
+- notification-driven parked-update UX
+- preview and auto-merge policy for parked peer updates
+
+## Narrowed Product Shape
+
+The branch target is deliberately smaller than the broader long-term UX vision.
+
+First-version user flow:
+
+1. the app can tell that a peer may have updates
+2. the app can fetch and park that peer's latest state without merging it
+3. the UI can show "fetched and ready to merge"
+4. the user chooses when to merge
+
+The important honesty rule is:
+
+- a Hub signal is only an update hint
+- a parked ref is a concrete fetched git state
+
+This branch should not claim to know more than that.
 
 ## Core Technical Design
 
 ### 1. Ref Namespace
-Durable parked state will live in:
-- `refs/peers/<member_id_hex>/main` (for Niches)
-- `refs/peers/<member_id_hex>/registry` (for the Registry)
 
-### 2. "Already Merged" Detection
-Determined by:
-`git merge-base --is-ancestor <parked_sha> HEAD`
+Use a durable peer namespace inside each local git repo:
 
-### 3. Metadata Storage
-Shared File Vault's `checkouts.db` will gain a `peer_sync` table:
-- `team_name`, `niche_name`, `member_id` (PK)
-- `last_fetched_sha`: tip of the parked ref
-- `last_merged_sha`: last successfully merged SHA from this peer
+- `refs/peers/<member_id_hex>/<branch>`
+
+For the first version, `<branch>` will normally be `main`.
+
+Important clarification:
+
+- niche repos and the registry repo are separate repos
+- the registry should therefore use the same peer-ref shape inside its own repo,
+  not a special pseudo-branch like `registry`
+
+### 2. Primitive Ownership
+
+Keep the low-level git primitive in `CodSync`, but keep app-specific teammate
+state in Shared File Vault.
+
+That likely means:
+
+- `CodSync.fetch_from_remote(..., pin_to_ref=...)` or an equivalent helper that
+  returns the fetched SHA
+- `CodSync.merge_from_ref(ref_name)` or an equivalent merge helper
+- Vault-level code owns teammate-facing status and metadata
+
+### 3. "Already Merged" Detection
+
+Use git ancestry rather than only comparing stored markers:
+
+- `git merge-base --is-ancestor <parked_sha> HEAD`
+
+That gives a solid definition of "already merged" even if app-local metadata
+gets stale.
+
+### 4. App-Local Metadata
+
+Keep this minimal and app-local.
+
+For Vault, the most likely home is a new table in `checkouts.db` or another
+small adjacent app-local SQLite table, with enough scope to distinguish:
+
+- team
+- repo kind (`niche` vs `registry`)
+- niche name when applicable
+- peer member ID
+- last fetched SHA
+- last merged SHA
+
+The branch should not store this in shared team state unless a stronger reason
+appears.
 
 ## Deliverables
 
-### 1. Enhanced CodSync API
-Update `CodSync` in `packages/cod-sync/cod_sync/protocol.py`:
-- `fetch_from_remote(branches, pin_to_ref=None) -> str | None`: Returns the fetched SHA.
-- `merge_from_ref(ref_name) -> int`: Merges a specific local ref.
+### 1. Enhanced CodSync Primitive
 
-### 2. Shared File Vault "Fetch then Merge" UI
-Update `niche_detail.html`:
-- Replace immediate "Pull" with "Check for Updates" (Fetch).
-- If updates are parked and not yet merged, show a "Merge Changes" button with the SHA.
+A caller should be able to:
+
+- fetch peer Alice through the Hub
+- learn which commit is now parked for Alice
+- merge that parked commit later
+
+The likely API shape is:
+
+- `fetch_from_remote(branches, pin_to_ref=None) -> fetched_sha | None`
+- `merge_from_ref(ref_name) -> exit_code`
+
+### 2. Split App-Facing Operations
+
+Expose separate operations for:
+
+- fetch peer update without merge
+- inspect parked peer-update state
+- merge parked peer update
+
+Existing callers that want the old immediate-merge behavior should still be
+able to keep using a simple path.
+
+### 3. Shared File Vault Web Flow
+
+Use Shared File Vault as the proving ground.
+
+That slice should show:
+
+- peer update awareness
+- fetch without merge
+- merge later from the parked ref
+- existing conflict surfacing still works
+
+In the web UI, the first-version flow should be closer to:
+
+- "Check for Updates" or equivalent fetch action
+- parked update status once a peer tip is fetched
+- explicit "Merge Changes" action later
 
 ## Implementation Plan
 
-### Phase 1: Cod Sync Primitives
-- Update `CodSync.fetch_from_remote` to return the fetched commit SHA.
-- Implement `pin_to_ref` logic in `fetch_chain` to update a durable local ref.
-- Add `CodSync.merge_from_ref`.
+### Phase 0: Lock the semantics
 
-### Phase 2: Metadata & Vault Logic
-- Add `peer_sync` table to `vault.py`'s SQLite schema.
-- Split `vault.pull_niche` and `vault.pull_registry` into `fetch_*` and `merge_*` variants.
-- Implement the "is merged" check in `vault.py`.
+Before deeper code changes, write down:
 
-### Phase 3: Web UI Wire-up
-- Update `sync.py` to expose the new fetch/merge operations to the web layer.
-- Update `templates/fragments/niche_detail.html` to show the multi-step flow.
-- Ensure the Registry also follows the fetch-then-merge pattern.
+- the chosen parked-ref namespace
+- what commit SHA the caller gets back after fetch
+- what counts as "already merged"
+- what happens to parked state after successful merge
+- what happens to parked state after failed merge
+- how Vault scopes parked state for niche repos vs the registry repo
 
-### Phase 4: Validation
-- **Micro tests:** Prove `refs/peers/` refs are created and persist correctly.
-- **Integration tests:** Prove `merge-base` accurately reflects the "ready to merge" state.
-- **UI tests:** Confirm the "Merge Changes" button only appears after a successful fetch of new data.
+### Phase 1: Add durable peer refs
+
+Implement the parked-fetch primitive.
+
+Required behavior:
+
+- fetching peer A creates or updates only peer A's parked ref
+- fetching peer B does not disturb peer A's parked ref
+- the parked ref resolves to a commit in the local repo
+- merge can target the parked ref directly
+- fetch reports the fetched SHA back to the caller
+
+### Phase 2: Add minimal app-local state
+
+Add only enough metadata to support honest UI:
+
+- fetched commit
+- merged commit
+- scope fields sufficient to distinguish niche vs registry state
+
+Avoid building a larger "notification center" in this branch.
+
+### Phase 3: Wire one app flow
+
+In Shared File Vault, change the web flow from:
+
+- fetch and immediately merge
+
+to:
+
+- fetch and park
+- show parked update state
+- merge on explicit user action
+
+This should stay intentionally manual in the first version.
+
+### Phase 4: Validate and document
+
+Add micro tests and tighten the write-up so a skeptical reader can see exactly
+what is now guaranteed and what is still future work.
+
+## Validation
+
+Add micro tests that prove:
+
+- parked fetch creates a durable ref
+- parked refs for different peers do not collide
+- re-fetching one peer updates only that peer's ref
+- the fetched SHA returned to the caller matches the parked ref tip
+- merge from the parked ref works in the happy path
+- merge conflicts are still surfaced when merging from a parked ref
+- the parked ref remains usable after a failed merge unless we deliberately
+  clear it
+
+Add app-level tests for the chosen Vault slice that prove:
+
+- the app can show "update available to merge"
+- the app can merge later without re-fetching
+- the flow still goes through the Hub rather than direct cloud access
+- "already merged" detection is driven by actual git ancestry, not only cached
+  metadata
 
 ## Risks
-- **Ref Collisions:** Ensuring `<member_id>` is unique and correctly derived.
-- **Git State:** Handling merges that fail and leave the repo in a "merging" state (Standard SFV conflict handling should apply).
+
+- choosing a ref namespace that becomes awkward later
+- letting app-specific UX leak down into Cod Sync
+- confusing "signal noticed" with "fetched and ready"
+- overbuilding metadata before the core primitive is proven
+
+## Recommendation
+
+Keep this branch about one thing:
+
+- durable parked peer fetches plus explicit later merge
+
+Once that is solid, the notification-driven automation and richer decision
+support become much easier to reason about as standalone GitHub issues.
