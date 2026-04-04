@@ -30,6 +30,7 @@ class TeamManager:
     def __init__(self, root_dir, participant_hex, hub_port=11437, _http_client=None):
         self.root_dir = pathlib.Path(root_dir)
         self.participant_hex = participant_hex
+        provisioning.migrate_participant_team_dbs(self.root_dir, self.participant_hex)
         self.client = SmallSeaClient(port=hub_port, _http_client=_http_client)
         # Confirmed sessions, keyed by (app, team).
         self._sessions: dict[tuple[str, str], "SmallSeaSession"] = {}

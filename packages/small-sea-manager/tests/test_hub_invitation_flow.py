@@ -149,6 +149,11 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
     bob_member_id_hex = acceptance["acceptor_member_id"]
 
+    # ---- Bob: push accepted team repo via Hub ----
+    bob_team_token = _open_session(http, "Bob", "ProjectX")
+    bob_team_sync = root / "Participants" / bob_hex / "ProjectX" / "Sync"
+    _push_via_hub(http, bob_team_token, bob_team_sync)
+
     # ---- Alice: complete the acceptance (local) ----
     Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
 
@@ -161,10 +166,13 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     assert alice_member_id_hex in member_ids
     assert bob_member_id_hex in member_ids
 
-    peers = aconn.execute("SELECT member_id, protocol, url FROM peer").fetchall()
+    peers = aconn.execute(
+        "SELECT member_id, display_name, protocol, url FROM peer"
+    ).fetchall()
     assert len(peers) == 1
     assert peers[0][0].hex() == bob_member_id_hex
-    assert peers[0][1] == "s3"
+    assert peers[0][1] == "Bob"
+    assert peers[0][2] == "s3"
     aconn.close()
 
     # ---- Verify Bob's team DB ----
@@ -175,10 +183,13 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
     assert bob_member_id_hex in member_ids
-    peers = bconn.execute("SELECT member_id, protocol, url FROM peer").fetchall()
+    peers = bconn.execute(
+        "SELECT member_id, display_name, protocol, url FROM peer"
+    ).fetchall()
     assert len(peers) == 1
     assert peers[0][0].hex() == alice_member_id_hex
-    assert peers[0][1] == "s3"
+    assert peers[0][1] == "Alice"
+    assert peers[0][2] == "s3"
     bconn.close()
 
     # ---- Verify Bob's repo was pushed to his MinIO ----

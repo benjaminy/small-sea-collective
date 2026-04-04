@@ -177,6 +177,11 @@ class SmallSeaSession:
         """Return metadata for this session: participant_hex, team_name, app_name, station_id, client."""
         return self._client._get("/session/info", token=self._token)
 
+    def session_peers(self) -> list[dict]:
+        """Return peers visible to this session, with best-effort labels."""
+        result = self._client._get("/session/peers", token=self._token)
+        return result.get("peers", [])
+
     # ---- Cloud storage ----
 
     def ensure_cloud_ready(self) -> None:

@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS invitation (
 CREATE TABLE IF NOT EXISTS peer (
     id BLOB PRIMARY KEY,
     member_id BLOB NOT NULL,
+    display_name TEXT,
     protocol TEXT NOT NULL,
     url TEXT NOT NULL,
     bucket TEXT,
