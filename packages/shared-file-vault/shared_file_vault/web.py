@@ -85,6 +85,14 @@ def create_app(
                     hub_port=_hub_port(request),
                     _http_client=_http_client(request),
                 )
+                for peer in peers:
+                    peer["update_status"] = sync.peer_update_status(
+                        vr,
+                        ph,
+                        team_name,
+                        niche_name,
+                        peer["member_id"],
+                    )
             except sync.VaultSyncError:
                 peers = []
         else:
@@ -327,9 +335,9 @@ def create_app(
         )
 
     @app.post(
-        "/teams/{team_name}/niches/{niche_name}/pull", response_class=HTMLResponse
+        "/teams/{team_name}/niches/{niche_name}/fetch", response_class=HTMLResponse
     )
-    async def pull_sync(
+    async def fetch_sync(
         request: Request,
         team_name: str,
         niche_name: str,
@@ -343,7 +351,7 @@ def create_app(
         )
         member_id = from_member_id.strip()
         try:
-            sync.pull_via_hub(
+            sync.fetch_via_hub(
                 vr,
                 ph,
                 team_name,
@@ -352,17 +360,63 @@ def create_app(
                 hub_port=hub_port,
                 _http_client=http_client,
             )
-            notice = f"Pulled niche and registry from {member_id}."
+            status = sync.peer_update_status(vr, ph, team_name, niche_name, member_id)
+            if status.ready_to_merge:
+                notice = f"Fetched changes from {member_id}. They are ready to merge."
+            elif status.already_merged:
+                notice = f"Fetched the latest changes from {member_id}. They are already merged."
+            else:
+                notice = f"Checked {member_id} for updates."
+            error = None
+        except sync.VaultSyncError as exc:
+            notice = None
+            error = str(exc)
+        return _niche_detail_response(
+            request,
+            team_name,
+            niche_name,
+            sync_notice=notice,
+            sync_error=error,
+            from_member_id=member_id,
+        )
+
+    @app.post(
+        "/teams/{team_name}/niches/{niche_name}/merge", response_class=HTMLResponse
+    )
+    async def merge_sync(
+        request: Request,
+        team_name: str,
+        niche_name: str,
+        from_member_id: str = Form(...),
+    ):
+        vr, ph, hub_port, http_client = (
+            _vr(request),
+            _ph(request),
+            _hub_port(request),
+            _http_client(request),
+        )
+        member_id = from_member_id.strip()
+        try:
+            sync.merge_via_hub(
+                vr,
+                ph,
+                team_name,
+                niche_name,
+                member_id,
+                hub_port=hub_port,
+                _http_client=http_client,
+            )
+            notice = f"Merged parked changes from {member_id}."
             error = None
         except sync.PullConflictError as exc:
             notice = None
             if exc.paths:
                 error = (
-                    f"Pull left unresolved conflicts in the {exc.scope}: "
+                    f"Merge left unresolved conflicts in the {exc.scope}: "
                     + ", ".join(exc.paths)
                 )
             else:
-                error = f"Pull left unresolved conflicts in the {exc.scope}."
+                error = f"Merge left unresolved conflicts in the {exc.scope}."
         except sync.VaultSyncError as exc:
             notice = None
             error = str(exc)

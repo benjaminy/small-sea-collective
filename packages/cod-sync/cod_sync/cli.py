@@ -40,7 +40,7 @@ def main(remote, cmd, dotdotdot):
     if cmd == "push":
         return cod.push_to_remote(dotdotdot)
     elif cmd == "fetch":
-        return cod.fetch_from_remote(dotdotdot)
+        return 0 if cod.fetch_from_remote(dotdotdot) is not None else -1
     elif cmd == "merge":
         return cod.merge_from_remote(dotdotdot)
     else:

@@ -344,6 +344,7 @@ class TeamManager:
 
         cs = CodSync("peer", repo_dir=pathlib.Path(repo_dir))
         cs.remote = remote
-        cs.fetch_from_remote(["main"])
+        if cs.fetch_from_remote(["main"]) is None:
+            return PullResult(has_conflicts=True)
         exit_code = cs.merge_from_remote(["main"])
         return PullResult(has_conflicts=(exit_code != 0))

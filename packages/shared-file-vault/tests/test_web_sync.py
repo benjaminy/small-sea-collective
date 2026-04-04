@@ -262,7 +262,7 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     alice_client = TestClient(alice_app)
     detail_resp = alice_client.get("/teams/ProjectX/niches/docs")
     assert detail_resp.status_code == 200
-    assert "Pull From Bob" in detail_resp.text
+    assert "Check For Updates" in detail_resp.text
     assert 'placeholder="Peer member ID hex"' not in detail_resp.text
 
     push_resp = alice_client.post("/teams/ProjectX/niches/docs/push")
@@ -292,13 +292,23 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     bob_client = TestClient(bob_app)
     detail_resp = bob_client.get("/teams/ProjectX/niches/docs")
     assert detail_resp.status_code == 200
-    assert "Pull From Alice" in detail_resp.text
+    assert "Check For Updates" in detail_resp.text
     assert 'placeholder="Peer member ID hex"' not in detail_resp.text
+    assert "Merge Changes" not in detail_resp.text
 
-    pull_resp = bob_client.post(
-        "/teams/ProjectX/niches/docs/pull",
+    fetch_resp = bob_client.post(
+        "/teams/ProjectX/niches/docs/fetch",
         data={"from_member_id": env["alice_member_id_hex"]},
     )
-    assert pull_resp.status_code == 200
-    assert f"Pulled niche and registry from {env['alice_member_id_hex']}." in pull_resp.text
+    assert fetch_resp.status_code == 200
+    assert f"Fetched changes from {env['alice_member_id_hex']}. They are ready to merge." in fetch_resp.text
+    assert "Merge Changes" in fetch_resp.text
+    assert (bob_checkout / "notes.txt").read_text() == "hello from web\n"
+
+    merge_resp = bob_client.post(
+        "/teams/ProjectX/niches/docs/merge",
+        data={"from_member_id": env["alice_member_id_hex"]},
+    )
+    assert merge_resp.status_code == 200
+    assert f"Merged parked changes from {env['alice_member_id_hex']}." in merge_resp.text
     assert (bob_checkout / "notes.txt").read_text() == "hello again\n"
