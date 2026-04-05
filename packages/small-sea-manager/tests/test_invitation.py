@@ -152,7 +152,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     # -- Alice: create team and push via Hub --
     team_result = create_team(root, alice_hex, "ProjectX")
     alice_member_id_hex = team_result["member_id_hex"]
-    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
+    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
@@ -196,7 +196,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert len(invitations) == 1
     assert invitations[0]["status"] == "accepted"
 
-    # --- Verify Alice's team DB has 2 members, a peer (Bob), and 2 station_roles ---
+    # --- Verify Alice's team DB has 2 members, a peer (Bob), and 2 berth_roles ---
     alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     aconn = sqlite3.connect(str(alice_team_db))
     members = aconn.execute("SELECT id FROM member").fetchall()
@@ -214,7 +214,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert peers[0][2] == "s3"
     assert peers[0][3] == bob_minio["endpoint"]
 
-    roles = aconn.execute("SELECT member_id, role FROM station_role").fetchall()
+    roles = aconn.execute("SELECT member_id, role FROM berth_role").fetchall()
     assert len(roles) == 2
     role_map = {row[0].hex(): row[1] for row in roles}
     assert role_map[alice_member_id_hex] == "read-write"
@@ -240,7 +240,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert peers[0][3] == alice_minio["endpoint"]
     bconn.close()
 
-    # --- Verify Bob's NoteToSelf has the team pointer but NOT a TeamAppStation for ProjectX ---
+    # --- Verify Bob's NoteToSelf has the team pointer but NOT a TeamAppBerth for ProjectX ---
     bob_user_db = root / "Participants" / bob_hex / "NoteToSelf" / "Sync" / "core.db"
     buconn = sqlite3.connect(str(bob_user_db))
     buconn.row_factory = sqlite3.Row
@@ -248,12 +248,12 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert len(teams) == 1
     assert teams[0]["self_in_team"] == bytes.fromhex(bob_member_id_hex)
 
-    other_stations = buconn.execute(
-        "SELECT tas.* FROM team_app_station tas "
-        "JOIN team t ON tas.team_id = t.id "
+    other_berths = buconn.execute(
+        "SELECT tab.* FROM team_app_berth tab "
+        "JOIN team t ON tab.team_id = t.id "
         "WHERE t.name = 'ProjectX'"
     ).fetchall()
-    assert len(other_stations) == 0
+    assert len(other_berths) == 0
     buconn.close()
 
     # --- Verify Bob's team dir has a git repo with correct commit ---
@@ -305,7 +305,7 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
 
     # -- Alice: create team, push, create invitation --
     team_result = create_team(root, alice_hex, "ProjectX")
-    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
+    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"

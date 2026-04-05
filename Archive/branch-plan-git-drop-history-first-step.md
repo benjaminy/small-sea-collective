@@ -307,7 +307,7 @@ Those should remain separate follow-up branches because they solve different pro
 Any follow-up design inspired by this branch must keep these repository rules intact:
 
 - Production network access must still go through the Hub
-- Only Small Sea Manager should directly touch the core station database
+- Only Small Sea Manager should directly touch the core berth database
 - Testing should remain local-only wherever possible
 
 For this branch specifically, all experiments should use local file-backed repos and local bundle operations only. No network behavior needs to be introduced to validate the pruning idea itself.

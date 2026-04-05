@@ -54,7 +54,7 @@ class SmallSeaSession(Base):
     team_name = Column(String, nullable=False)
     app_id = Column(LargeBinary, nullable=False)
     app_name = Column(String, nullable=False)
-    station_id = Column(LargeBinary, nullable=False)
+    berth_id = Column(LargeBinary, nullable=False)
     client = Column(String, nullable=False)
 
     def __repr__(self):
@@ -99,8 +99,8 @@ class App(Base):
     name = Column(String, nullable=False)
 
 
-class TeamAppStation(Base):
-    __tablename__ = "team_app_station"
+class TeamAppBerth(Base):
+    __tablename__ = "team_app_berth"
 
     id = Column(LargeBinary, primary_key=True)
     team_id = Column(LargeBinary, nullable=True)  # absent in team DBs (table is team-scoped)
@@ -269,17 +269,17 @@ class SmallSeaBackend:
                     matching.append((d, engine))
         return matching
 
-    def _resolve_station(self, participant_dir, team_name, app_name):
-        """Return (team_id, app_id, station_id) as bytes.
+    def _resolve_berth(self, participant_dir, team_name, app_name):
+        """Return (team_id, app_id, berth_id) as bytes.
 
         The team row is always read from the participant's NoteToSelf DB.
-        For NoteToSelf, app and station are also in that DB.
-        For all other teams, app and station are in the team DB at
+        For NoteToSelf, app and berth are also in that DB.
+        For all other teams, app and berth are in the team DB at
         Participants/{hex}/{team_name}/Sync/core.db.
 
-        Uses raw SQL for the app/station lookup to stay compatible with both
-        the NoteToSelf schema (team_app_station has team_id) and the team DB
-        schema (team_app_station intentionally omits team_id).
+        Uses raw SQL for the app/berth lookup to stay compatible with both
+        the NoteToSelf schema (team_app_berth has team_id) and the team DB
+        schema (team_app_berth intentionally omits team_id).
         """
         note_to_self_db = str(participant_dir / "NoteToSelf" / "Sync" / "core.db")
         conn = sqlite3.connect(note_to_self_db)
@@ -295,11 +295,11 @@ class SmallSeaBackend:
         team_id = row[0]
 
         if team_name == "NoteToSelf":
-            station_db = note_to_self_db
+            berth_db = note_to_self_db
         else:
-            station_db = str(participant_dir / team_name / "Sync" / "core.db")
+            berth_db = str(participant_dir / team_name / "Sync" / "core.db")
 
-        conn = sqlite3.connect(station_db)
+        conn = sqlite3.connect(berth_db)
         try:
             app_row = conn.execute(
                 "SELECT id FROM app WHERE name = ?", (app_name,)
@@ -308,18 +308,18 @@ class SmallSeaBackend:
                 raise SmallSeaNotFoundExn(f"App '{app_name}' not found in '{team_name}'")
             app_id = app_row[0]
 
-            station_row = conn.execute(
-                "SELECT id FROM team_app_station WHERE app_id = ?", (app_id,)
+            berth_row = conn.execute(
+                "SELECT id FROM team_app_berth WHERE app_id = ?", (app_id,)
             ).fetchone()
-            if station_row is None:
+            if berth_row is None:
                 raise SmallSeaNotFoundExn(
-                    f"No station for app '{app_name}' in team '{team_name}'"
+                    f"No berth for app '{app_name}' in team '{team_name}'"
                 )
-            station_id = station_row[0]
+            berth_id = berth_row[0]
         finally:
             conn.close()
 
-        return team_id, app_id, station_id
+        return team_id, app_id, berth_id
 
     def request_session(self, nickname, app, team, client):
         """Step 1 of session approval: generate PIN, write pending row, send OS notification.
@@ -334,7 +334,7 @@ class SmallSeaBackend:
 
         participant_dir, engine = matching[0]
         participant_hex = participant_dir.absolute().name
-        self._resolve_station(participant_dir, team, app)  # validate existence
+        self._resolve_berth(participant_dir, team, app)  # validate existence
 
         pin = str(secrets.randbelow(1000)).zfill(3)
 
@@ -393,7 +393,7 @@ class SmallSeaBackend:
             participant_dir = (
                 self.root_dir / "Participants" / pending.participant_hex
             )
-            team_id, app_id, station_id = self._resolve_station(
+            team_id, app_id, berth_id = self._resolve_berth(
                 participant_dir, pending.team_name, pending.app_name
             )
 
@@ -407,7 +407,7 @@ class SmallSeaBackend:
                 team_name=pending.team_name,
                 app_id=app_id,
                 app_name=pending.app_name,
-                station_id=station_id,
+                berth_id=berth_id,
                 client=pending.client_name,
             )
             sess.add(ss_session)
@@ -682,7 +682,7 @@ class SmallSeaBackend:
         import boto3
         from botocore.config import Config as BotoConfig
 
-        bucket_name = f"ss-{ss_session.station_id.hex()[:16]}"
+        bucket_name = f"ss-{ss_session.berth_id.hex()[:16]}"
 
         s3_client = boto3.client(
             "s3",
@@ -802,14 +802,14 @@ class SmallSeaBackend:
     _SIGNAL_MAX_RETRIES = 5
 
     def _bump_signal(self, session_hex):
-        """Atomically increment the station counter in this session's signals.yaml.
+        """Atomically increment the berth counter in this session's signals.yaml.
 
         Uses a CAS retry loop. On network failure after all retries, logs a
         warning and returns — teammates will catch up on the next push.
         Over-counting (from concurrent device pushes) is acceptable.
         """
         ss_session = self._lookup_session(session_hex)
-        station_id_hex = ss_session.station_id.hex()
+        berth_id_hex = ss_session.berth_id.hex()
         adapter = self._make_storage_adapter(ss_session)
 
         for attempt in range(self._SIGNAL_MAX_RETRIES):
@@ -823,7 +823,7 @@ class SmallSeaBackend:
                 etag = None
 
             signals.setdefault("version", 1)
-            signals[station_id_hex] = signals.get(station_id_hex, 0) + 1
+            signals[berth_id_hex] = signals.get(berth_id_hex, 0) + 1
 
             payload = yaml.dump(signals, default_flow_style=False).encode("utf-8")
             if etag is not None:
@@ -832,7 +832,7 @@ class SmallSeaBackend:
                 upload_ok, _, msg = adapter.upload_overwrite(self._SIGNAL_PATH, payload)
 
             if upload_ok:
-                self._ntfy_publish_signal(ss_session, signals[station_id_hex])
+                self._ntfy_publish_signal(ss_session, signals[berth_id_hex])
                 return
             # CAS conflict — re-read and retry
 
@@ -946,7 +946,7 @@ class SmallSeaBackend:
             from botocore import UNSIGNED
             from botocore.config import Config as BotoConfig
 
-            bucket_name = bucket or f"ss-{ss_session.station_id.hex()[:16]}"
+            bucket_name = bucket or f"ss-{ss_session.berth_id.hex()[:16]}"
             s3_client = boto3.client(
                 "s3",
                 endpoint_url=url,
@@ -990,7 +990,7 @@ class SmallSeaBackend:
 
         ns = self._get_notification_service(ss_session)
         if ns.protocol == "ntfy":
-            topic = "ss-" + ss_session.station_id.hex()
+            topic = "ss-" + ss_session.berth_id.hex()
             return SmallSeaNtfyAdapter(ns.url, topic)
         elif ns.protocol == "gotify":
             return SmallSeaGotifyAdapter(

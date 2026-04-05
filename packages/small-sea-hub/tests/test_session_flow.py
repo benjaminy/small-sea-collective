@@ -111,7 +111,7 @@ def test_pending_row_deleted_after_confirm(test_env):
     assert row is None
 
 
-def test_session_for_team_station(playground_dir):
+def test_session_for_team_berth(playground_dir):
     """Sessions can be opened for non-NoteToSelf teams."""
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
     alice_hex = Provisioning.create_new_participant(playground_dir, "alice")
@@ -195,7 +195,7 @@ def test_session_info(playground_dir):
     assert info["participant_hex"] == alice_hex
     assert info["team_name"] == "ProjectX"
     assert info["app_name"] == "SmallSeaCollectiveCore"
-    assert len(info["station_id"]) == 32  # 16 bytes hex
+    assert len(info["berth_id"]) == 32  # 16 bytes hex
     assert info["client"] == "Smoke Tests"
 
 
@@ -253,7 +253,7 @@ def test_session_info_via_client(playground_dir):
 
     assert info["participant_hex"] == alice_hex
     assert info["team_name"] == "NoteToSelf"
-    assert len(info["station_id"]) == 32
+    assert len(info["berth_id"]) == 32
 
 
 def test_session_peers(playground_dir):

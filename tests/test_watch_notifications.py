@@ -12,7 +12,7 @@ import logging
 import httpx
 import pytest
 
-from small_sea_hub.server import app, _pulse_station_event
+from small_sea_hub.server import app, _pulse_berth_event
 
 
 # ---------------------------------------------------------------------------
@@ -20,8 +20,8 @@ from small_sea_hub.server import app, _pulse_station_event
 # ---------------------------------------------------------------------------
 
 class _StubSession:
-    def __init__(self, station_id_hex):
-        self.station_id = bytes.fromhex(station_id_hex)
+    def __init__(self, berth_id_hex):
+        self.berth_id = bytes.fromhex(berth_id_hex)
         self.team_name = "NoteToSelf"
         self.participant_path = None
 
@@ -33,8 +33,8 @@ class _StubBackend:
     def __init__(self):
         self._sessions = {}
 
-    def register(self, token_hex, station_id_hex):
-        self._sessions[token_hex] = _StubSession(station_id_hex)
+    def register(self, token_hex, berth_id_hex):
+        self._sessions[token_hex] = _StubSession(berth_id_hex)
 
     def _lookup_session(self, session_hex):
         if session_hex not in self._sessions:
@@ -77,8 +77,8 @@ def stub_app():
 # Test constants  (all 32-hex = 16-byte IDs matching the real system)
 # ---------------------------------------------------------------------------
 
-STATION_A = "aa" * 16
-STATION_B = "bb" * 16
+BERTH_A   = "aa" * 16
+BERTH_B   = "bb" * 16
 SESSION_1 = "11" * 16
 SESSION_2 = "22" * 16
 PEER_BOB  = "b0" * 16
@@ -107,8 +107,8 @@ def _auth(token_hex):
 def test_returns_immediately_if_already_stale(stub_app):
     """Hub already knows about a higher count — returns without blocking."""
     application, stub = stub_app
-    stub.register(SESSION_1, STATION_A)
-    application.state.peer_counts[(STATION_A, PEER_BOB)] = 5
+    stub.register(SESSION_1, BERTH_A)
+    application.state.peer_counts[(BERTH_A, PEER_BOB)] = 5
 
     async def _run():
         async with _client(application) as c:
@@ -126,8 +126,8 @@ def test_returns_immediately_if_already_stale(stub_app):
 def test_blocks_then_wakes_on_count_increase(stub_app):
     """Waiter blocks until peer_counts is incremented and event is pulsed."""
     application, stub = stub_app
-    stub.register(SESSION_1, STATION_A)
-    application.state.peer_counts[(STATION_A, PEER_BOB)] = 3
+    stub.register(SESSION_1, BERTH_A)
+    application.state.peer_counts[(BERTH_A, PEER_BOB)] = 3
 
     async def _run():
         async with _client(application) as c:
@@ -138,8 +138,8 @@ def test_blocks_then_wakes_on_count_increase(stub_app):
             ))
             await asyncio.sleep(0.05)  # let the watch start waiting
 
-            application.state.peer_counts[(STATION_A, PEER_BOB)] = 4
-            _pulse_station_event(application, STATION_A)
+            application.state.peer_counts[(BERTH_A, PEER_BOB)] = 4
+            _pulse_berth_event(application, BERTH_A)
 
             resp = await asyncio.wait_for(watch, timeout=5)
         assert resp.json()["updated"] == {PEER_BOB: 4}
@@ -150,8 +150,8 @@ def test_blocks_then_wakes_on_count_increase(stub_app):
 def test_timeout_returns_empty(stub_app):
     """No change within the timeout window → returns empty updated dict."""
     application, stub = stub_app
-    stub.register(SESSION_1, STATION_A)
-    application.state.peer_counts[(STATION_A, PEER_BOB)] = 3
+    stub.register(SESSION_1, BERTH_A)
+    application.state.peer_counts[(BERTH_A, PEER_BOB)] = 3
 
     async def _run():
         async with _client(application) as c:
@@ -166,12 +166,12 @@ def test_timeout_returns_empty(stub_app):
     asyncio.run(_run())
 
 
-def test_multiple_sessions_same_station_both_notified(stub_app):
-    """Two sessions on the same station both wake when the event is pulsed."""
+def test_multiple_sessions_same_berth_both_notified(stub_app):
+    """Two sessions on the same berth both wake when the event is pulsed."""
     application, stub = stub_app
-    stub.register(SESSION_1, STATION_A)
-    stub.register(SESSION_2, STATION_A)
-    application.state.peer_counts[(STATION_A, PEER_BOB)] = 3
+    stub.register(SESSION_1, BERTH_A)
+    stub.register(SESSION_2, BERTH_A)
+    application.state.peer_counts[(BERTH_A, PEER_BOB)] = 3
 
     async def _run():
         async with _client(application) as c:
@@ -187,8 +187,8 @@ def test_multiple_sessions_same_station_both_notified(stub_app):
             ))
             await asyncio.sleep(0.05)
 
-            application.state.peer_counts[(STATION_A, PEER_BOB)] = 4
-            _pulse_station_event(application, STATION_A)
+            application.state.peer_counts[(BERTH_A, PEER_BOB)] = 4
+            _pulse_berth_event(application, BERTH_A)
 
             r1, r2 = await asyncio.wait_for(asyncio.gather(w1, w2), timeout=5)
         assert r1.json()["updated"] == {PEER_BOB: 4}
@@ -198,14 +198,14 @@ def test_multiple_sessions_same_station_both_notified(stub_app):
 
 
 def test_local_push_notifies_other_local_session(stub_app):
-    """A notify=True upload pulses the station event, waking other local sessions.
+    """A notify=True upload pulses the berth event, waking other local sessions.
 
     The woken session receives updated={} (no specific peers to report) — the
     correct signal to re-enumerate peers before the next watch call.
     """
     application, stub = stub_app
-    stub.register(SESSION_1, STATION_A)
-    stub.register(SESSION_2, STATION_A)
+    stub.register(SESSION_1, BERTH_A)
+    stub.register(SESSION_2, BERTH_A)
 
     async def _run():
         async with _client(application) as c:
@@ -239,7 +239,7 @@ def test_membership_change_causes_spurious_wakeup(stub_app):
     This is the correct signal for the app to re-enumerate its peer list.
     """
     application, stub = stub_app
-    stub.register(SESSION_1, STATION_A)
+    stub.register(SESSION_1, BERTH_A)
 
     async def _run():
         async with _client(application) as c:
@@ -251,7 +251,7 @@ def test_membership_change_causes_spurious_wakeup(stub_app):
             await asyncio.sleep(0.05)
 
             # Simulate _refresh_session_peers discovering a new peer
-            _pulse_station_event(application, STATION_A)
+            _pulse_berth_event(application, BERTH_A)
 
             resp = await asyncio.wait_for(watch, timeout=5)
         assert resp.status_code == 200
@@ -264,13 +264,13 @@ def test_membership_change_causes_spurious_wakeup(stub_app):
 # Negative tests
 # ---------------------------------------------------------------------------
 
-def test_no_crosstalk_between_stations(stub_app):
-    """Pulsing station A does not wake a waiter on station B."""
+def test_no_crosstalk_between_berths(stub_app):
+    """Pulsing berth A does not wake a waiter on berth B."""
     application, stub = stub_app
-    stub.register(SESSION_1, STATION_A)
-    stub.register(SESSION_2, STATION_B)
-    application.state.peer_counts[(STATION_A, PEER_BOB)] = 3
-    application.state.peer_counts[(STATION_B, PEER_BOB)] = 3
+    stub.register(SESSION_1, BERTH_A)
+    stub.register(SESSION_2, BERTH_B)
+    application.state.peer_counts[(BERTH_A, PEER_BOB)] = 3
+    application.state.peer_counts[(BERTH_B, PEER_BOB)] = 3
 
     async def _run():
         async with _client(application) as c:
@@ -281,11 +281,11 @@ def test_no_crosstalk_between_stations(stub_app):
             ))
             await asyncio.sleep(0.05)
 
-            # Update and pulse station A only
-            application.state.peer_counts[(STATION_A, PEER_BOB)] = 4
-            _pulse_station_event(application, STATION_A)
+            # Update and pulse berth A only
+            application.state.peer_counts[(BERTH_A, PEER_BOB)] = 4
+            _pulse_berth_event(application, BERTH_A)
 
-            # Station B's waiter should time out, not wake
+            # Berth B's waiter should time out, not wake
             resp = await watch_b
         assert resp.json()["updated"] == {}
 
@@ -300,8 +300,8 @@ def test_peer_with_higher_count_not_in_known_is_not_returned(stub_app):
     membership change (test above) gives the app a chance to add them to known.
     """
     application, stub = stub_app
-    stub.register(SESSION_1, STATION_A)
-    application.state.peer_counts[(STATION_A, PEER_EVE)] = 5  # Eve pushed
+    stub.register(SESSION_1, BERTH_A)
+    application.state.peer_counts[(BERTH_A, PEER_EVE)] = 5  # Eve pushed
 
     async def _run():
         async with _client(application) as c:
@@ -321,8 +321,8 @@ def test_peer_with_higher_count_not_in_known_is_not_returned(stub_app):
 def test_count_at_known_value_does_not_trigger(stub_app):
     """Hub count equal to known count is not stale — waiter blocks until timeout."""
     application, stub = stub_app
-    stub.register(SESSION_1, STATION_A)
-    application.state.peer_counts[(STATION_A, PEER_BOB)] = 7  # same as known
+    stub.register(SESSION_1, BERTH_A)
+    application.state.peer_counts[(BERTH_A, PEER_BOB)] = 7  # same as known
 
     async def _run():
         async with _client(application) as c:

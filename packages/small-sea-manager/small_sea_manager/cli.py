@@ -133,7 +133,7 @@ def list_members(ctx, team_name):
         click.echo(f"No members in '{team_name}'.")
         return
     for member in members:
-        roles = member.get("station_roles", [])
+        roles = member.get("berth_roles", [])
         role_str = roles[0]["role"] if roles else "no role"
         click.echo(f"  {member['id'][:12]}…  {role_str}")
 

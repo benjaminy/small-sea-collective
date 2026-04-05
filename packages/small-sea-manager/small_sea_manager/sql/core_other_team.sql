@@ -11,19 +11,19 @@ CREATE TABLE IF NOT EXISTS app (
 );
 
 -- team_id is intentionally absent here: in a team DB the team is implicit.
-CREATE TABLE IF NOT EXISTS team_app_station (
+CREATE TABLE IF NOT EXISTS team_app_berth (
     id BLOB PRIMARY KEY,
     app_id BLOB NOT NULL,
     FOREIGN KEY (app_id) REFERENCES app(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS station_role (
+CREATE TABLE IF NOT EXISTS berth_role (
     id BLOB PRIMARY KEY,
     member_id BLOB NOT NULL,
-    station_id BLOB NOT NULL,
+    berth_id BLOB NOT NULL,
     role TEXT NOT NULL CHECK(role IN ('read-only', 'read-write')),
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE,
-    FOREIGN KEY (station_id) REFERENCES team_app_station(id) ON DELETE CASCADE
+    FOREIGN KEY (berth_id) REFERENCES team_app_berth(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS invitation (

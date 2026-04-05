@@ -159,7 +159,7 @@ class SmallSeaClient:
 
 
 class SmallSeaSession:
-    """An authenticated session with the Hub, scoped to one station."""
+    """An authenticated session with the Hub, scoped to one berth."""
 
     def __init__(self, client: SmallSeaClient, token: str):
         self._client = client
@@ -174,7 +174,7 @@ class SmallSeaSession:
     # ---- Session info ----
 
     def session_info(self) -> dict:
-        """Return metadata for this session: participant_hex, team_name, app_name, station_id, client."""
+        """Return metadata for this session: participant_hex, team_name, app_name, berth_id, client."""
         return self._client._get("/session/info", token=self._token)
 
     def session_peers(self) -> list[dict]:
@@ -262,7 +262,7 @@ class SmallSeaSession:
     # ---- ntfy Notifications ----
 
     def send_notification(self, message: str, title: Optional[str] = None) -> str:
-        """Send a notification to all station members. Returns the message id."""
+        """Send a notification to all berth members. Returns the message id."""
         body: dict = {"message": message}
         if title is not None:
             body["title"] = title

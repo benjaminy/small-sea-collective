@@ -100,7 +100,7 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
 
     # -- Alice: create team, push, invite Bob --
     team_info = Provisioning.create_team(root, alice_hex, "ProjectX")
-    team_bucket = f"ss-{team_info['station_id_hex'][:16]}"
+    team_bucket = f"ss-{team_info['berth_id_hex'][:16]}"
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
@@ -165,7 +165,7 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     assert poll_result["ok"] is True
     messages = poll_result["messages"]
 
-    # Bob should see Alice's message (same station = same ntfy topic)
+    # Bob should see Alice's message (same berth = same ntfy topic)
     assert len(messages) >= 1
     texts = [m.get("message") for m in messages]
     assert "new data available" in texts
