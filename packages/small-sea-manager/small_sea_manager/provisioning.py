@@ -360,7 +360,7 @@ def _init_team_db(db_path):
 
 
 def _install_sqlite_merge_driver(team_sync_dir):
-    """Install the harmonic-sqlite-merge git merge driver for core.db.
+    """Install the splice-sqlite-merge git merge driver for core.db.
 
     Writes .gitattributes (tracked) and configures the merge driver
     command in .git/config (local only).
@@ -369,13 +369,13 @@ def _install_sqlite_merge_driver(team_sync_dir):
 
     # .gitattributes — tracked by git, cloned automatically
     gitattributes = team_sync_dir / ".gitattributes"
-    gitattributes.write_text("core.db merge=harmonic-sqlite\n")
+    gitattributes.write_text("core.db merge=splice-sqlite\n")
 
-    # Find the harmonic-sqlite-merge executable
-    merge_bin = shutil.which("harmonic-sqlite-merge")
+    # Find the splice-sqlite-merge executable
+    merge_bin = shutil.which("splice-sqlite-merge")
     if merge_bin is None:
         # Fallback: try to find it via the Python that's running us
-        merge_bin = "harmonic-sqlite-merge"
+        merge_bin = "splice-sqlite-merge"
 
     driver_cmd = f"{merge_bin} %O %A %B %L %P"
     CodSync.gitCmd(
@@ -383,7 +383,7 @@ def _install_sqlite_merge_driver(team_sync_dir):
             "-C",
             str(team_sync_dir),
             "config",
-            "merge.harmonic-sqlite.driver",
+            "merge.splice-sqlite.driver",
             driver_cmd,
         ]
     )

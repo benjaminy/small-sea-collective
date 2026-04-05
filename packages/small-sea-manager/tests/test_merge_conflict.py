@@ -78,7 +78,7 @@ def test_concurrent_invitations_merge(playground_dir):
     _create_invitation_on_device(team_sync_2, "Carol")
 
     # 7. Device 2: fetch + merge from cloud
-    #    This should trigger the harmonic-sqlite-merge driver
+    #    This should trigger the splice-sqlite-merge driver
     cod2 = _make_cod_sync(team_sync_2, "cloud")
     cod2.remote = CS.LocalFolderRemote(str(cloud_dir))
     cod2.fetch_from_remote(["main"])
