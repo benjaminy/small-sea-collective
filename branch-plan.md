@@ -58,8 +58,9 @@ Defer for later:
 ## Resolved Design Decisions
 
 - **What gets encrypted in this branch**: normal team-app berth payloads that
-  flow through the Hub. NoteToSelf remains passthrough. Notifications and
-  future pairwise/key-management channels are out of scope here.
+  flow through the Hub. NoteToSelf remains passthrough. Notifications are left
+  plaintext in this branch. Future pairwise/key-management channels are out of
+  scope here.
 - **Group granularity**: one sender-key group per team. The team ID is used as
   the `group_id`. Apps sharing a team share the same sender-key infrastructure.
 - **Sender-key storage**: the minimal sender-key state for this branch lives in
@@ -89,13 +90,15 @@ Defer for later:
 In NoteToSelf `core.db` (`core_note_to_self_schema.sql`), add:
 
 - `team_sender_key`
-  Stores my `cuttlefish.group.SenderKeyRecord` state for one team.
+  Stores the full `cuttlefish.group.SenderKeyRecord` shape for my own sender
+  key for one team. The natural key is `team_id`.
 - `peer_sender_key`
-  Stores the state needed to decrypt one peer's sender-key messages for one
-  team, including skipped-message state.
+  Stores the full `cuttlefish.group.SenderKeyRecord` shape for one peer's
+  sender key for one team, including skipped-message state.
 
 Do **not** add team-wide sender-key secret storage to the team DB.
 Do **not** add static X25519 encryption-key tables in this branch.
+Bump the NoteToSelf schema version accordingly.
 
 ### 2. Provisioning and Invitation Bootstrap
 
@@ -131,6 +134,9 @@ session-mode concept now so future pairwise channels have a clean home.
 
 Add a small Hub-side adapter around `cuttlefish.group`:
 
+- choose one concrete `GroupMessage` serialization format and keep it local to
+  the Hub crypto seam; it does not need to be human-readable
+
 - on upload for encrypted sessions:
   - read my `team_sender_key`
   - encrypt plaintext into a serialized `GroupMessage`
@@ -142,6 +148,12 @@ Add a small Hub-side adapter around `cuttlefish.group`:
   - persist the advanced peer state
 
 NoteToSelf sessions bypass this logic.
+
+The expected integration points in `backend.py` are:
+
+- `upload_to_cloud`
+- `download_from_cloud`
+- `download_from_peer`
 
 ### 5. End-to-End Proof
 
@@ -176,47 +188,3 @@ The branch is successful if all of the following are true:
   future pairwise channels will require repainting this work
 - this branch should not expand into redesigning bundle signing, trust policy,
   or pairwise ratchet transport
-
-## Notes for Discussion
-
-A few things that might be worth tightening up before implementation:
-
-1. **Skipped-message state on own sender key**: Step 1 mentions "including
-   skipped-message state" for `peer_sender_key`, which is good. But the
-   `team_sender_key` description doesn't mention it. In `cuttlefish`,
-   `SenderKeyRecord` carries `skipped_message_keys` on both own and peer
-   records (even though own records won't accumulate skipped keys in
-   practice). Might be clearest to say both tables store the full
-   `SenderKeyRecord` shape.
-
-2. **Natural key for own sender key**: The plan says "one row per team,"
-   which is correct since there's one participant per NoteToSelf DB. But
-   explicitly noting the natural key is `team_id` would prevent confusion
-   during implementation — `SenderKeyRecord` is keyed by
-   `(group_id, sender_participant_id)` in cuttlefish, and collapsing out
-   the participant dimension is a storage-level choice worth calling out.
-
-3. **GroupMessage serialization**: The old plan specified a binary wire
-   format for `GroupMessage`. The new plan dropped that, but it's a real
-   decision that needs to happen — `cuttlefish.group` produces/consumes
-   Python dataclasses, and the Hub needs to serialize those to/from bytes
-   for cloud storage. Worth at least noting that a serialization choice
-   needs to be made in Step 4.
-
-4. **Where the crypto adapter hooks into `backend.py`**: Step 4 describes
-   the adapter but doesn't say where it plugs in. Looking at the Hub,
-   the integration points are `upload_to_cloud` (encrypt before storage),
-   `download_from_cloud` (decrypt after fetch), and `download_from_peer`
-   (also needs decryption — Bob pulls Alice's data from Alice's cloud,
-   and the `GroupMessage` envelope identifies the sender). Might be worth
-   naming these explicitly so the seam is clear.
-
-5. **Notification encryption in the defer list**: Minor consistency thing —
-   "notification encryption" is in the defer list but isn't mentioned in
-   the "What gets encrypted" decision. The old plan explicitly called out
-   ntfy being left plaintext. The current "Notifications ... are out of
-   scope here" covers it, but less explicitly.
-
-6. **Schema versioning**: The existing NoteToSelf schema doesn't seem to
-   have version tracking, but if there's any migration machinery, the plan
-   should note a version bump for the new tables.
