@@ -47,7 +47,7 @@ Each Manager/Hub installation serves exactly one participant. There is no multi-
       NoteToSelf/
         Sync/                    ← git repo
           core.db                ← NoteToSelf DB (see schema below)
-          .gitattributes         ← harmonic-sqlite merge driver config
+          .gitattributes         ← splice-sqlite merge driver config
       {TeamName}/
         Sync/                    ← git repo
           core.db                ← Team DB (see schema below)
@@ -85,7 +85,7 @@ Schema version is tracked via SQLite `PRAGMA user_version`. Current: `USER_SCHEM
 
 ### Team DB (`{TeamName}/Sync/core.db`)
 
-Stores the shared state for one team. All members maintain their own copy; changes are merged via Cod Sync and the harmonic-sqlite merge driver.
+Stores the shared state for one team. All members maintain their own copy; changes are merged via Cod Sync and the splice-sqlite merge driver.
 
 | Table | Purpose |
 |-------|---------|
@@ -235,7 +235,7 @@ Updates `invitation.status` to `revoked` for a pending invitation. Commits.
 Takes an out-of-band token. All cloud I/O goes through the Hub:
 
 1. Opens a NoteToSelf Hub session, calls `GET /cloud_proxy` (using an `ExplicitProxyRemote`) to download the inviter's team bundle chain. The Hub proxies the bytes using appropriate credentials — the Manager never contacts cloud storage directly.
-2. Clones the team repo locally, adds self as a member, installs the harmonic-sqlite merge driver. Adds a Team pointer to NoteToSelf DB. (All local DB/git ops; no network.)
+2. Clones the team repo locally, adds self as a member, installs the splice-sqlite merge driver. Adds a Team pointer to NoteToSelf DB. (All local DB/git ops; no network.)
 3. Opens a team Hub session, calls `POST /cloud/setup` to create the acceptor's bucket, then pushes via Cod Sync through the Hub.
 
 Returns an acceptance token for out-of-band delivery back to the inviter.

@@ -1,12 +1,11 @@
-"""Unit tests for harmonic_merge.core (delta-based merge)."""
+"""Micro tests for splice_merge.core (delta-based merge)."""
 
 import pathlib
 import shutil
 import sqlite3
 import tempfile
 
-from harmonic_merge.core import (apply_delta, compute_delta, reconcile_deltas,
-                                 sqlite_to_json)
+from splice_merge.core import apply_delta, compute_delta, reconcile_deltas, sqlite_to_json
 
 SCHEMA_PATH = (
     pathlib.Path(__file__).resolve().parent.parent.parent

@@ -55,7 +55,7 @@ Removal is made effective by key rotation — the departing member is not given 
 - **[Cuttlefish](packages/cuttlefish/)**: Session-crypto layer. In production, the Hub uses Cuttlefish to encrypt and obscure team communication with cloud services.
 - **[Wrasse Trust](packages/wrasse-trust/)**: Identity and trust layer. Provides key hierarchies, certificates, ceremonies, revocations, and trust-chain evaluation for the web-of-trust model.
 - **[Cod Sync](packages/cod-sync/)**: Git-based synchronization protocol. Encodes deltas as a chain of git bundles uploaded to cloud storage.
-- **[harmonic-merge](packages/harmonic-merge/)**: Library for merging concurrent changes and resolving conflicts when automatic merging is not possible.
+- **[splice-merge](packages/splice-merge/)**: Library for merging concurrent changes and resolving conflicts when automatic merging is not possible.
 - **[Small Sea Client](packages/small-sea-client/)**: Utility library for applications communicating with the Hub. Manages sessions and common workflows.
 - **[Small Sea Manager](packages/small-sea-manager/)**: The essential built-in application. Manages team membership, devices, cloud storage accounts, invitations, and the SmallSeaCollectiveCore database.
 - **[Shared File Vault](packages/shared-file-vault/)**: Example application — team file sharing built on Small Sea.

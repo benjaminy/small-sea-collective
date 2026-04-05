@@ -1,11 +1,11 @@
 [project]
-name = "harmonic-merge"
+name = "splice-merge"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = []
 
 [project.scripts]
-harmonic-sqlite-merge = "harmonic_merge.cli:main"
+splice-sqlite-merge = "splice_merge.cli:main"
 
 [build-system]
 requires = ["hatchling"]
