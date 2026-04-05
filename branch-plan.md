@@ -97,6 +97,28 @@ The replacement term should ideally:
     - It is long.
     - It feels heavier and more geographic than the concept probably needs.
 
+- Cove
+  - Strengths:
+    - Strong nautical fit. A cove is a small, sheltered body of water — naturally bounded.
+    - Short and pleasant in code and prose.
+    - Does not collide with existing technical jargon.
+    - The "sheltered" connotation maps well to the access-control aspect.
+  - Weaknesses:
+    - It is geographic rather than structural — a natural feature, not an assigned unit.
+    - It does not carry the sense of _assignment_ that "berth" or "slip" does. Nobody assigns you a cove.
+    - It might sound too pastoral for an access-control boundary.
+
+- Hold
+  - Strengths:
+    - Very nautical. A ship's hold is where cargo lives — a contained, bounded space.
+    - Short and distinctive in code.
+    - The "containment" and "storage" connotations fit well: each station has a database and is a resource boundary.
+    - Maps naturally to the idea of allocated space within a larger vessel.
+  - Weaknesses:
+    - The verb "hold" creates ambiguity in prose. "The hold" is fine; "hold permissions" reads strangely.
+    - It implies storage more than activity. A station is not just a container; sessions run there.
+    - Compound forms are sometimes awkward: "hold role" could mean "hold onto a role."
+
 - Instance
   - Strengths:
     - Immediately legible to developers.
@@ -115,15 +137,49 @@ Early front-runners:
 - `Station` remains a reasonable fallback if we decide the rename cost is not justified by the alternatives.
 - `Slip` is interesting, but probably riskier because fewer developers will immediately know the intended meaning.
 
-## Quick validation ideas
+## Validation: front-runners in common phrases
 
-Before committing to a rename, we should test promising candidates in common phrases:
+The document proposed testing candidates in common phrases. Here is that exercise for the three strongest contenders.
 
-- "request access to a ___"
-- "all stations in a team" -> "all ___s in a team"
-- "the Core station" -> "the Core ___"
-- "the `{Team}/{App}` station"
-- "station permissions"
-- "station database"
+| Phrase pattern                      | Berth                              | Slip                                | Mooring                              |
+|-------------------------------------|------------------------------------|--------------------------------------|--------------------------------------|
+| "request access to a ___"           | request access to a berth ✓        | request access to a slip ✓           | request access to a mooring ✓        |
+| "all ___s in a team"                | all berths in a team ✓             | all slips in a team ✓                | all moorings in a team ✓             |
+| "the Core ___"                      | the Core berth ✓                   | the Core slip ✓                      | the Core mooring — slightly heavy    |
+| "the `{Team}/{App}` ___"           | the `{Team}/{App}` berth ✓         | the `{Team}/{App}` slip ✓            | the `{Team}/{App}` mooring — long    |
+| "___ permissions"                   | berth permissions ✓                | slip permissions — ambiguous?        | mooring permissions — clunky         |
+| "___ database"                      | berth database ✓                   | slip database ✓                      | mooring database — ok                |
+| "___ role"                          | berth role ✓                       | slip role — odd                      | mooring role — ok                    |
+| "open a session for the ___"        | open a session for the berth ✓     | open a session for the slip ✓        | open a session for the mooring — ok  |
+| Class: `TeamApp___`                 | `TeamAppBerth` ✓                   | `TeamAppSlip` ✓                      | `TeamAppMooring` — long              |
+| SQL column: `____id`                | `berth_id` ✓                       | `slip_id` ✓                          | `mooring_id` — ok                    |
+| SQL table: `____role`               | `berth_role` ✓                     | `slip_role` ✓                        | `mooring_role` — ok                  |
 
-If a candidate sounds awkward in these phrases, that is probably a stronger signal than whether it sounds clever in isolation.
+Observations:
+- **Berth** passes every phrase cleanly. No awkward readings. Compound forms are concise.
+- **Slip** is nearly as good, but "slip permissions" and "slip role" have a faint verb-interference problem ("let something slip," "slip into a role").
+- **Mooring** works semantically but adds syllables everywhere. In code, `mooring_id` and `TeamAppMooring` are noticeably longer than their berth/slip equivalents. Over hundreds of occurrences, that weight adds up.
+
+## Code-level rename considerations
+
+The rename touches more than prose. Some patterns worth noting:
+
+- **Class names**: `TeamAppStation` (in both `provisioning.py` and `backend.py`) → `TeamAppBerth` (or whichever term wins). This is the most structurally important rename.
+- **SQL tables and columns**: `team_app_station`, `station_id`, `station_role` all need migration scripts or at minimum careful search-and-replace with schema validation.
+- **Variable names**: `station`, `station_id`, `ss_session.station_id` appear throughout Manager, Hub, and Client code.
+- **Prose in specs and docs**: `architecture.md`, `packages/small-sea-hub/spec.md`, `packages/small-sea-manager/spec.md`, `Documentation/apps-and-teams.md`, and various issue files.
+- **HTML templates**: `members.html` mentions "Core station role" in a table header.
+- **Test assertions**: Several tests reference `TeamAppStation` by name or check for station-related strings.
+- **AGENTS.md**: Mentions "Stations" as a core concept.
+
+The rename is mechanical but wide: roughly 40 files contain "station" in some form. A staged approach — rename code first, then docs, then archive files — would keep diffs reviewable.
+
+## Updated assessment
+
+Berth remains the clear front-runner after the phrase-testing exercise. It is the only candidate that:
+1. passes all validation phrases without any awkward readings,
+2. is short enough for comfortable use in code (5 chars vs. station's 7),
+3. carries the right semantic weight — an assigned, bounded, specific place, and
+4. fits the maritime theme without being obscure.
+
+The main remaining question is whether the sleeping-berth association bothers enough people to matter. In practice, context will disambiguate instantly — nobody reading `berth_role` or `TeamAppBerth` will think of bunk beds. And in maritime usage, "berth" meaning "an assigned docking place" is at least as common as the sleeping sense.
