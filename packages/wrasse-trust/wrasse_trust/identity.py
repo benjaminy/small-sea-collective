@@ -1,4 +1,4 @@
-# Cuttlefish — Certificates and the CA-style key hierarchy
+# Wrasse Trust — Certificates and the CA-style key hierarchy
 #
 # A certificate is a signed statement: "I (signer) vouch that this public key
 # belongs to this participant." All certs are published publicly to cloud
@@ -14,34 +14,32 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
-from cryptography.exceptions import InvalidSignature
 
-from .keys import ParticipantKey, ProtectionLevel
+from .keys import ParticipantKey
 
 
 @dataclass
 class KeyCertificate:
     """A signed vouching statement from one key to another."""
 
-    cert_id: bytes             # Random unique identifier
-    subject_key_id: bytes      # The key being vouched for
-    subject_public_key: bytes  # The public key being vouched for
-    issuer_key_id: bytes       # The key doing the vouching
-    issuer_participant_id: bytes  # Who is issuing the cert
+    cert_id: bytes
+    subject_key_id: bytes
+    subject_public_key: bytes
+    issuer_key_id: bytes
+    issuer_participant_id: bytes
     issued_at_iso: str
-    claims: dict               # Structured claims (e.g. "hierarchy", "ceremony", "rotation")
-
-    signature: bytes           # Ed25519 signature over the canonical cert bytes
+    claims: dict
+    signature: bytes
 
 
 @dataclass
@@ -50,11 +48,10 @@ class RevocationCertificate:
 
     cert_id: bytes
     revoked_key_id: bytes
-    issuer_key_id: bytes       # Must be GUARDED or BURIED
+    issuer_key_id: bytes
     issuer_participant_id: bytes
     issued_at_iso: str
-    reason: str                # e.g. "device stolen", "key rotated"
-
+    reason: str
     signature: bytes
 
 

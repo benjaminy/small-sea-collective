@@ -1,6 +1,6 @@
-"""Tests for keys, identity, ceremony, and trust modules."""
+"""Micro tests for keys, identity, ceremony, and trust modules."""
 
-from cuttlefish.ceremony import (
+from wrasse_trust.ceremony import (
     complete_ceremony,
     decode_ceremony_payload,
     extract_hierarchy_certs,
@@ -8,27 +8,23 @@ from cuttlefish.ceremony import (
     generate_ceremony_payload,
     verify_ceremony_payload,
 )
-from cuttlefish.identity import (
+from wrasse_trust.identity import (
     build_hierarchy_certs,
     issue_cert,
     issue_revocation,
     verify_cert,
     verify_revocation,
 )
-from cuttlefish.keys import (
-    ParticipantKeyCollection,
+from wrasse_trust.keys import (
     ProtectionLevel,
     generate_hierarchy,
     generate_key_pair,
 )
-from cuttlefish.trust import CertGraph, find_trust_paths
+from wrasse_trust.trust import CertGraph, find_trust_paths
 
 ALICE_ID = b"alice-id-bytes00"
 BOB_ID = b"bob-id-bytes0000"
 CAROL_ID = b"carol-id-bytes00"
-
-
-# --- keys.py tests ---
 
 
 def test_generate_key_pair():
@@ -78,9 +74,6 @@ def test_current_daily_key():
     assert daily.protection_level == ProtectionLevel.DAILY
 
 
-# --- identity.py tests ---
-
-
 def test_issue_and_verify_cert():
     collection, privates = generate_hierarchy(ALICE_ID)
     buried = collection.buried_keys()[0]
@@ -106,7 +99,6 @@ def test_cert_verification_fails_with_wrong_key():
         guarded, buried, privates[buried.key_id], ALICE_ID,
     )
 
-    # Verify with daily key (wrong issuer) should fail
     assert not verify_cert(cert, daily.public_key)
 
 
@@ -146,11 +138,7 @@ def test_issue_and_verify_revocation():
     assert not verify_revocation(rev, daily.public_key)
 
 
-# --- ceremony.py tests ---
-
-
 def test_ceremony_roundtrip():
-    """Alice generates a ceremony payload, Bob verifies and issues a cert."""
     alice_coll, alice_privs = generate_hierarchy(ALICE_ID)
     bob_coll, bob_privs = generate_hierarchy(BOB_ID)
 
@@ -158,19 +146,16 @@ def test_ceremony_roundtrip():
     alice_guarded = alice_coll.guarded_keys()[0]
     alice_daily = alice_coll.daily_keys()[0]
 
-    # Alice builds her hierarchy certs
     cert_bg, cert_gd = build_hierarchy_certs(
         alice_buried, alice_privs[alice_buried.key_id],
         alice_guarded, alice_daily, alice_privs[alice_guarded.key_id],
         ALICE_ID,
     )
 
-    # Alice generates ceremony payload (presenting her GUARDED key)
     payload_bytes = generate_ceremony_payload(
         ALICE_ID, alice_guarded, [cert_bg, cert_gd],
     )
 
-    # Bob decodes and verifies
     payload = decode_ceremony_payload(payload_bytes)
     target = extract_target_key(payload)
     assert target.key_id == alice_guarded.key_id
@@ -178,11 +163,8 @@ def test_ceremony_roundtrip():
 
     hierarchy_certs = extract_hierarchy_certs(payload)
     assert len(hierarchy_certs) == 2
-
-    # Verify internal consistency of the chain
     assert verify_ceremony_payload(payload)
 
-    # Bob issues a cert for Alice's GUARDED key
     bob_guarded = bob_coll.guarded_keys()[0]
     cross_cert = complete_ceremony(
         payload, bob_guarded, bob_privs[bob_guarded.key_id], BOB_ID,
@@ -194,12 +176,8 @@ def test_ceremony_roundtrip():
     assert cross_cert.claims["type"] == "ceremony"
 
 
-# --- trust.py tests ---
-
-
 def test_direct_trust_path():
-    """Bob certifies Alice's key -> direct trust path exists."""
-    alice_coll, alice_privs = generate_hierarchy(ALICE_ID)
+    alice_coll, _ = generate_hierarchy(ALICE_ID)
     bob_coll, bob_privs = generate_hierarchy(BOB_ID)
 
     alice_guarded = alice_coll.guarded_keys()[0]
@@ -223,8 +201,7 @@ def test_direct_trust_path():
 
 
 def test_transitive_trust_path():
-    """Carol certifies Alice, Bob certifies Carol -> Bob trusts Alice transitively."""
-    alice_coll, alice_privs = generate_hierarchy(ALICE_ID)
+    alice_coll, _ = generate_hierarchy(ALICE_ID)
     bob_coll, bob_privs = generate_hierarchy(BOB_ID)
     carol_coll, carol_privs = generate_hierarchy(CAROL_ID)
 
@@ -232,11 +209,9 @@ def test_transitive_trust_path():
     bob_guarded = bob_coll.guarded_keys()[0]
     carol_guarded = carol_coll.guarded_keys()[0]
 
-    # Carol certifies Alice
     cert_ca = issue_cert(
         alice_guarded, carol_guarded, carol_privs[carol_guarded.key_id], CAROL_ID,
     )
-    # Bob certifies Carol
     cert_bc = issue_cert(
         carol_guarded, bob_guarded, bob_privs[bob_guarded.key_id], BOB_ID,
     )
@@ -268,8 +243,7 @@ def test_no_trust_path():
 
 
 def test_revoked_key_blocks_path():
-    """A revoked intermediate key should block the trust path."""
-    alice_coll, alice_privs = generate_hierarchy(ALICE_ID)
+    alice_coll, _ = generate_hierarchy(ALICE_ID)
     bob_coll, bob_privs = generate_hierarchy(BOB_ID)
     carol_coll, carol_privs = generate_hierarchy(CAROL_ID)
 
@@ -284,7 +258,6 @@ def test_revoked_key_blocks_path():
         carol_guarded, bob_guarded, bob_privs[bob_guarded.key_id], BOB_ID,
     )
 
-    # Revoke Carol's key
     carol_buried = carol_coll.buried_keys()[0]
     rev = issue_revocation(
         carol_guarded, carol_buried, carol_privs[carol_buried.key_id], CAROL_ID,
@@ -302,31 +275,25 @@ def test_revoked_key_blocks_path():
 
 
 def test_hierarchy_trust_path():
-    """Trust flows through the local hierarchy: buried -> guarded -> daily."""
     alice_coll, alice_privs = generate_hierarchy(ALICE_ID)
     bob_coll, bob_privs = generate_hierarchy(BOB_ID)
 
     alice_buried = alice_coll.buried_keys()[0]
     alice_guarded = alice_coll.guarded_keys()[0]
     alice_daily = alice_coll.daily_keys()[0]
-
     bob_guarded = bob_coll.guarded_keys()[0]
 
-    # Alice's internal hierarchy
     cert_bg, cert_gd = build_hierarchy_certs(
         alice_buried, alice_privs[alice_buried.key_id],
         alice_guarded, alice_daily, alice_privs[alice_guarded.key_id],
         ALICE_ID,
     )
 
-    # Bob certifies Alice's GUARDED key
     cert_cross = issue_cert(
         alice_guarded, bob_guarded, bob_privs[bob_guarded.key_id], BOB_ID,
     )
 
     graph = CertGraph(certs=[cert_bg, cert_gd, cert_cross])
-
-    # Can Bob trust Alice's DAILY key? Path: bob_guarded -> alice_guarded -> alice_daily
     paths = find_trust_paths(
         alice_daily.key_id,
         {bob_guarded.key_id},
@@ -339,8 +306,7 @@ def test_hierarchy_trust_path():
 
 
 def test_multiple_trust_paths():
-    """Both Bob and Carol certify Alice -> two trust paths from either anchor."""
-    alice_coll, alice_privs = generate_hierarchy(ALICE_ID)
+    alice_coll, _ = generate_hierarchy(ALICE_ID)
     bob_coll, bob_privs = generate_hierarchy(BOB_ID)
     carol_coll, carol_privs = generate_hierarchy(CAROL_ID)
 
