@@ -95,10 +95,10 @@ def hub_env(playground_dir, minio, hub_server_gen):
     assert resp.status_code == 200
     session_hex = resp.json()
 
-    # Derive bucket name from station_id and pre-create it in MinIO.
+    # Derive bucket name from berth_id and pre-create it in MinIO.
     ss = SmallSea.SmallSeaBackend(root_dir=root_dir)
     ss_session = ss._lookup_session(session_hex)
-    bucket_name = f"ss-{ss_session.station_id.hex()[:16]}"
+    bucket_name = f"ss-{ss_session.berth_id.hex()[:16]}"
 
     s3 = boto3.client(
         "s3",

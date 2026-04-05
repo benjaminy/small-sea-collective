@@ -157,7 +157,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         members = mgr.list_members(team_name)
         for m in members:
             m["is_self"] = m["id"] == self_in_team
-            roles = m.get("station_roles", [])
+            roles = m.get("berth_roles", [])
             m["core_role"] = roles[0]["role"] if roles else None
         return templates.TemplateResponse(
             "fragments/team_detail.html",
@@ -385,7 +385,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         members = mgr.list_members(team_name)
         for m in members:
             m["is_self"] = m["id"] == self_in_team
-            roles = m.get("station_roles", [])
+            roles = m.get("berth_roles", [])
             m["core_role"] = roles[0]["role"] if roles else None
         return templates.TemplateResponse(
             "fragments/members.html",

@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS app (
     name TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS team_app_station (
+CREATE TABLE IF NOT EXISTS team_app_berth (
     id BLOB PRIMARY KEY,
     app_id BLOB NOT NULL,
     team_id BLOB NOT NULL,

@@ -108,7 +108,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     # -- Alice: create team --
     team_result = create_team(root, alice_hex, "ProjectX")
     alice_member_id_hex = team_result["member_id_hex"]
-    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
+    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
     # -- Read Alice's signing key --
     alice_priv, alice_pub = get_team_signing_key(root, alice_hex, "ProjectX")

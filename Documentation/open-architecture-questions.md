@@ -13,7 +13,7 @@ The Hub-as-chokepoint architecture exists to enable transparent E2E encryption, 
 ### Settled Decisions
 
 - **Hub is the transparent crypto proxy** — apps interact with the Hub using plaintext (file upload/download, notifications, VPN send/receive). The Hub transparently negotiates session keys and encrypts/decrypts at the boundary. Apps are crypto-naive; they never touch key material or the Cuttlefish library.
-- **Hub = user's crypto identity on this device** — the existing session context (team/app/station) already tells the Hub which team's keys to use for any operation. No additional routing information is needed.
+- **Hub = user's crypto identity on this device** — the existing session context (team/app/berth) already tells the Hub which team's keys to use for any operation. No additional routing information is needed.
 - **Cloud storage sees only ciphertext** — link blobs and git bundles are encrypted before leaving the Hub. Service providers can affect availability but nothing else. Security comes from E2E encryption, not access control (consistent with Section 2).
 - **Cuttlefish is a Hub-internal library** — the protocol stack is PQXDH → Double Ratchet (1:1) / Sender Keys (group). See `packages/cuttlefish/README.md` for primitives and PQC choices.
 - **Key storage follows protection levels** — DAILY keys may be unlocked at Hub startup (biometric/device PIN). GUARDED keys are loaded on-demand with an explicit user prompt. BURIED keys are never loaded into Hub memory during normal operation; they are used only for offline root-of-trust ceremonies (signing, revocation).
@@ -41,7 +41,7 @@ Explicitly TBD in the Hub spec. Hub needs to read team membership/permissions to
 - **Sessions in Hub-only DB** — sessions live in `small_sea_collective_local.db` (separate from `core.db`). Other apps access sessions through the Hub API only.
 - **Single-user-per-Hub** — one Hub per device/user; no multi-participant file-watcher complexity needed.
 - **Hub and Small Sea Manager stay version-locked** — they are the core infrastructure and update together; no cross-version compatibility needed.
-- **Permissions are per-station, two-table schema** — `member(id)` (per-team identity) + `station_role(id, member_id, station_id, role)` where role ∈ `{read-only, read-write}`. "Admin" simply means read-write on the TeamManager station. The `member` table will eventually carry key/cert material.
+- **Permissions are per-berth, two-table schema** — `member(id)` (per-team identity) + `berth_role(id, member_id, berth_id, role)` where role ∈ `{read-only, read-write}`. "Admin" simply means read-write on the TeamManager berth. The `member` table will eventually carry key/cert material.
 - **Local permissions are authoritative** — Hub only incorporates changes from teammates who have read-write permission in its own local copy. Permission-change race conditions (e.g. Alice upgrades Bob mid-sync) are implementation details, not architecture.
 - **Teammate cloud locations belong to member** — stored linked to the `member` record (set via invitation flow). Multiple locations per member deferred.
 - **Data is globally readable; privacy via encryption** — Hub reads teammates' Cod Sync chains without special credentials (just the URL). Security comes from E2E encryption, not access control.
@@ -51,9 +51,9 @@ Explicitly TBD in the Hub spec. Hub needs to read team membership/permissions to
 
 - **Hub monitoring API** — apps may need a way to register/deregister cloud locations for the Hub to watch, rather than hard-coding assumptions into the Hub. Shape TBD.
 - **Hub's `/cloud_locations` endpoint** — needs to be removed; currently writes to `core.db` directly which is Small Sea Manager's domain.
-- **Hub `open_session` for non-NoteToSelf teams** — currently reads `App`/`TeamAppStation` from NoteToSelf/core.db; needs updating to read from the team DB for non-NoteToSelf sessions.
+- **Hub `open_session` for non-NoteToSelf teams** — currently reads `App`/`TeamAppBerth` from NoteToSelf/core.db; needs updating to read from the team DB for non-NoteToSelf sessions.
 - **`member` key/cert material** — schema placeholder exists; contents TBD (tied to Section 1 encryption decisions).
-- **NoteToSelf/[App] stations** — per-app personal state that's more app-specific than team-specific; useful but not yet designed.
+- **NoteToSelf/[App] berths** — per-app personal state that's more app-specific than team-specific; useful but not yet designed.
 
 
 ---
@@ -69,17 +69,17 @@ Sessions are the primary API surface every client app uses.
 - **PIN-based approval, two-step flow** — (1) App calls `POST /sessions/request` with `(participant, team, app, client_name)`; Hub generates a 4-digit PIN, writes a `pending_session` row, fires a native OS notification (via plyer), and returns the pending ID. (2) User reads the PIN from the notification and types it into the requesting app. App calls `POST /sessions/confirm` with `(pending_id, pin)`; Hub validates and returns the session token.
 - **Notification format** — PIN leads for truncation safety: `PIN: 1234 — "ClientName" requesting access to TeamName → AppName`. The Small Sea resource name (team/app) is Hub-authoritative; the client name is self-reported and shown in quotes.
 - **Session token** — 32-byte random, opaque. Presented as `Authorization: Bearer <token-hex>` on all subsequent requests. Hub looks it up in its local DB on each call.
-- **Session scope** — per-station, identified by `(team_name, app_name)` as human-readable strings. Hub resolves to the station ID. Multi-station sessions (all teams for an app) are a later UX enhancement.
+- **Session scope** — per-berth, identified by `(team_name, app_name)` as human-readable strings. Hub resolves to the berth ID. Multi-berth sessions (all teams for an app) are a later UX enhancement.
 - **App identity** — PIN proves user intent. No process-level binding for now. Future elaborations (signed app certs, etc.) deferred.
 - **Pending PIN TTL** — 5 minutes. Pending row is deleted on successful confirm or when an expired confirm is attempted.
-- **Session record** — stores `(id, token, station_id, client_name, created_at, duration_sec)`. `client_name` is preserved for a future "manage active sessions" UI.
+- **Session record** — stores `(id, token, berth_id, client_name, created_at, duration_sec)`. `client_name` is preserved for a future "manage active sessions" UI.
 - **Session expiry** — deferred. Schema has `duration_sec` as a placeholder.
 - **Hub-only DB** — Hub is the only process that accesses the session DB. Caching the lookup is a later optimization if needed.
 
 ### Remaining Open Items
 
 - **Session expiry policy** — when and how sessions expire (time, logout, device removal) is TBD. Schema has `duration_sec` as a placeholder.
-- **Multi-station sessions** — one session spanning all stations for a given app; deferred as a UX enhancement.
+- **Multi-berth sessions** — one session spanning all berths for a given app; deferred as a UX enhancement.
 - **Stale pending session cleanup** — no background cleanup job exists yet; expired rows are only removed when a confirm attempt hits the TTL check.
 - **Session management UI** — Hub needs an endpoint to list/revoke active sessions; Small Sea Manager needs a UI for it. Neither is implemented yet.
 
@@ -110,9 +110,9 @@ These questions were worked through in detail and are now captured in the [Cod S
 
 ---
 
-## 5. Identity Model: NoteToSelf Station & Multi-Device
+## 5. Identity Model: NoteToSelf Berth & Multi-Device
 
-The `NoteToSelf-SmallSeaCore` station holds personal keys and device info. The open question "can a single Hub serve multiple users?" is related.
+The `NoteToSelf-SmallSeaCore` berth holds personal keys and device info. The open question "can a single Hub serve multiple users?" is related.
 
 **Questions to answer:**
 - Is identity device-local or portable? Two devices = two identities, or one?

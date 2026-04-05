@@ -46,7 +46,7 @@ class SmallSeaNtfyAdapter:
         return messages
 
     async def subscribe(self):
-        """Async generator: yield message dicts from the station SSE stream.
+        """Async generator: yield message dicts from the ntfy SSE stream.
 
         Connects to {base_url}/{topic}/sse and yields each ntfy message event.
         The caller is responsible for reconnect logic.

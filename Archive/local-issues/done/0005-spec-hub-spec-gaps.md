@@ -26,15 +26,15 @@ The following items are **ready to document** — the implementation is complete
   responds 409 on conflict. See `server.py`.
 - **Shared database contract** (line 37): Hub reads from Manager-written DBs at
   `Participants/{hex}/NoteToSelf/Sync/core.db` (tables: `nickname`, `team`, `app`,
-  `team_app_station`, `cloud_storage`, `notification_service`) and
-  `Participants/{hex}/{team_name}/Sync/core.db` (tables: `app`, `team_app_station`) for non-NoteToSelf
+  `team_app_berth`, `cloud_storage`, `notification_service`) and
+  `Participants/{hex}/{team_name}/Sync/core.db` (tables: `app`, `team_app_berth`) for non-NoteToSelf
   teams. Hub writes only to its own local DB. See `backend.py` comment: "duplicated in team manager —
   the DB is the contract".
 - **Local database schema and on-disk directory layout** (line 75): Hub local DB is at
   `{root_dir}/small_sea_collective_local.db`; schema in `sql/hub_local_schema.sql` (tables:
   `session`, `pending_session`). Logs at `{root_dir}/Logging/small_sea_hub.log`.
 - **Cloud storage adapters** (line 46): S3 (boto3, signature v4, bucket derived as
-  `ss-{station_id[:16]}`), Google Drive (OAuth2, token refresh), Dropbox (OAuth2, token refresh).
+  `ss-{berth_id[:16]}`), Google Drive (OAuth2, token refresh), Dropbox (OAuth2, token refresh).
   Credentials in NoteToSelf `cloud_storage` table.
 - **Notifications** (line 57): The spec says "not yet implemented" — this is wrong. ntfy is
   implemented. Topic derived as `ss-{sha256(team/app)[:16]}`. `POST /notifications` publishes;

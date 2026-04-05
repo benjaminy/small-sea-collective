@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS session (
     team_name TEXT NOT NULL,
     app_id BLOB NOT NULL,
     app_name TEXT NOT NULL,
-    station_id BLOB NOT NULL,
+    berth_id BLOB NOT NULL,
     client TEXT NOT NULL
 );
 

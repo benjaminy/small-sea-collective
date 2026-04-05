@@ -12,7 +12,7 @@ Apps never access these services directly; they go through the Hub.
 
 The Hub has two main jobs:
 1. Mediate access to general-purpose cloud services (storage, notifications, VPN, etc.) on behalf of apps.
-2. Gate that access through sessions, so users can control which apps access which stations.
+2. Gate that access through sessions, so users can control which apps access which berths.
 
 Currently the Hub serves its API over HTTP.
 There could be a reason for a different protocol in the future (direct IPC or something).
@@ -23,7 +23,7 @@ If apps have a need for low-latency communication among teammates, they should o
 ## Sessions
 
 Sessions are how apps gain access to Hub services.
-A session is scoped to exactly one station (one team + one app).
+A session is scoped to exactly one berth (one team + one app).
 
 Opening a session is a two-step flow that requires user approval:
 
@@ -105,7 +105,7 @@ The shared databases are the contract between them.
 |---|---|
 | `nickname` | Resolving a participant by human name during session request |
 | `team` | Looking up team ID for any session (including non-NoteToSelf teams) |
-| `app`, `team_app_station` | NoteToSelf app/station lookup |
+| `app`, `team_app_berth` | NoteToSelf app/berth lookup |
 | `cloud_storage` | Routing cloud uploads/downloads for any session |
 | `notification_service` | Routing notifications for any session |
 
@@ -113,18 +113,18 @@ The shared databases are the contract between them.
 
 | Table | Used for |
 |---|---|
-| `app`, `team_app_station` | App/station lookup for non-NoteToSelf team sessions |
+| `app`, `team_app_berth` | App/berth lookup for non-NoteToSelf team sessions |
 
 ## Cloud Storage
 
 The Hub's primary implemented service today is cloud storage.
-Apps upload and download opaque files; the Hub routes them to the correct bucket/folder based on the session's station.
+Apps upload and download opaque files; the Hub routes them to the correct bucket/folder based on the session's berth.
 
 ### Supported Protocols
 
 **S3-compatible** (`protocol = "s3"`): Any S3-compatible endpoint (AWS, MinIO, etc.).
 Requires `url`, `access_key`, `secret_key` in the `cloud_storage` row.
-Bucket name is derived as `ss-{station_id_hex[:16]}`.
+Bucket name is derived as `ss-{berth_id_hex[:16]}`.
 Uses AWS Signature Version 4.
 
 **Google Drive** (`protocol = "gdrive"`): OAuth2.
@@ -159,7 +159,7 @@ present in the participant's NoteToSelf DB (managed by Small Sea Manager).
 
 **ntfy** (`protocol = "ntfy"`): Self-hosted or public pub/sub service.
 Requires `url` (ntfy server base URL). The ntfy topic is derived automatically as
-`ss-{sha256("{team}/{app}")[:16]}`, so all participants sharing a station converge on the
+`ss-{sha256("{team}/{app}")[:16]}`, so all participants sharing a berth converge on the
 same topic without any configuration. Set `access_key` if your ntfy server requires auth.
 
 `POST /notifications` publishes; `GET /notifications` long-polls with `since` (ntfy message ID
@@ -175,7 +175,7 @@ not long-poll — use Gotify's WebSocket stream (`/stream`) for real-time delive
 
 When the peer watcher detects that a teammate's push count has increased, it fires a push
 notification to the participant's configured service ("A teammate has pushed new data").
-At most one notification is sent per station per watcher round, regardless of how many
+At most one notification is sent per berth per watcher round, regardless of how many
 sessions or peers triggered the change. If no notification service is configured, the watcher
 skips silently.
 
@@ -252,8 +252,8 @@ Response: `{ "ok": true }`
 ```
 
 `notify` (default `false`): when `true` and the upload succeeds, the Hub atomically increments
-`signals.yaml` in the session's cloud bucket and pulses the station event so other sessions on
-the same station are notified without waiting for the next watcher round.
+`signals.yaml` in the session's cloud bucket and pulses the berth event so other sessions on
+the same berth are notified without waiting for the next watcher round.
 Cod Sync sets `notify=true` when uploading `latest-link.yaml`.
 
 Response:
@@ -290,7 +290,7 @@ Errors: `404` if peer not found or file not found.
 
 Response:
 ```json
-{ "version": 1, "stations": { "<station_id_hex>": <count>, ... }, "etag": "<etag>" }
+{ "version": 1, "berths": { "<berth_id_hex>": <count>, ... }, "etag": "<etag>" }
 ```
 
 Returns `304` if `If-None-Match` header matches current etag.
@@ -316,7 +316,7 @@ Response:
 ```
 
 `updated` is empty on timeout or on a structural change (membership update, local `notify=True`
-upload from another session on the same station). An empty response is not an error — it is the
+upload from another session on the same berth). An empty response is not an error — it is the
 signal to re-enumerate the current peer list before the next watch call.
 
 ---
@@ -362,7 +362,7 @@ migrations.
 | `participant_id` | BLOB | Matches `Participants/{hex}` directory name |
 | `team_id`, `team_name` | BLOB / TEXT | From Manager's `team` table |
 | `app_id`, `app_name` | BLOB / TEXT | From Manager's `app` table |
-| `station_id` | BLOB | Drives bucket naming for S3 |
+| `berth_id` | BLOB | Drives bucket naming for S3 |
 | `client` | TEXT | Human name of the requesting client |
 
 The `notification_service` table lives in the participant's NoteToSelf DB (managed by Small Sea

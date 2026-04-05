@@ -22,14 +22,14 @@ an app developer can actually use.
 The signal file + peer watcher (issue 0023) together provide the incoming
 trigger path. The Hub background task (`_peer_watcher_loop`) polls each
 teammate's `signals.yaml` every 60 seconds; on a count increase it updates
-`peer_counts` and pulses the station's `asyncio.Event`. The `POST
+`peer_counts` and pulses the berth's `asyncio.Event`. The `POST
 /notifications/watch` long-poll endpoint allows apps to block until a
 teammate's count exceeds a known value, receiving updated counts immediately
 or after the next watcher round.
 
 Outgoing trigger: `SmallSeaRemote` sets `notify=true` when uploading
 `latest-link.yaml`, causing the Hub to atomically bump `signals.yaml` and
-pulse the local station event so same-station sessions are notified without
+pulse the local berth event so same-berth sessions are notified without
 waiting for the next watcher round.
 
 ### ✅ 2. App-facing push/pull API
@@ -90,8 +90,8 @@ existing complete-acceptance form).
 
 ### 6. `GET /session/info` endpoint (pending)
 
-Clients currently have to read SQLite directly to retrieve their `station_id`.
-A lightweight `/session/info` endpoint returning `{station_id, team_name, ...}`
+Clients currently have to read SQLite directly to retrieve their `berth_id`.
+A lightweight `/session/info` endpoint returning `{berth_id, team_name, ...}`
 would let clients get this from the Hub session they already hold, and is a
 prerequisite for wiring Manager flows that don't have direct DB access.
 

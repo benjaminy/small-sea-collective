@@ -96,11 +96,11 @@ def sync_env(playground_dir, minio, hub):
     _add_cloud(alice_hex)
     _add_cloud(bob_hex)
 
-    # Alice creates the team; the team DB gets a fresh station_id.
+    # Alice creates the team; the team DB gets a fresh berth_id.
     alice_team = Provisioning.create_team(root_dir, alice_hex, "SyncTest")
-    station_id_hex = alice_team["station_id_hex"]
+    berth_id_hex = alice_team["berth_id_hex"]
     alice_member_id_hex = alice_team["member_id_hex"]
-    station_id = bytes.fromhex(station_id_hex)
+    berth_id = bytes.fromhex(berth_id_hex)
 
     # Replicate Alice's team DB for Bob (simulate the invitation/clone flow).
     alice_team_sync = (
@@ -111,7 +111,7 @@ def sync_env(playground_dir, minio, hub):
     )
     shutil.copytree(str(alice_team_sync), str(bob_team_sync))
 
-    # Add team row to Bob's NoteToSelf so Hub can resolve his station.
+    # Add team row to Bob's NoteToSelf so Hub can resolve his berth.
     bob_member_id = os.urandom(16)
     bob_nts_db = (
         pathlib.Path(root_dir)
@@ -134,8 +134,8 @@ def sync_env(playground_dir, minio, hub):
             {"id": bob_member_id},
         )
         conn.execute(
-            text("INSERT INTO station_role (id, member_id, station_id, role) VALUES (:id, :mid, :sid, :role)"),
-            {"id": os.urandom(16), "mid": bob_member_id, "sid": station_id, "role": "read-write"},
+            text("INSERT INTO berth_role (id, member_id, berth_id, role) VALUES (:id, :mid, :bid, :role)"),
+            {"id": os.urandom(16), "mid": bob_member_id, "bid": berth_id, "role": "read-write"},
         )
         # Alice is the peer Bob will pull from.
         conn.execute(
@@ -166,7 +166,7 @@ def sync_env(playground_dir, minio, hub):
         "alice_token": alice_token,
         "bob_token": bob_token,
         "alice_member_id_hex": alice_member_id_hex,
-        "station_id_hex": station_id_hex,
+        "berth_id_hex": berth_id_hex,
     }
 
 

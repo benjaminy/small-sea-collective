@@ -116,7 +116,7 @@ class TeamManager:
         provisioning.remove_cloud_storage(self.root_dir, self.participant_hex, storage_id_hex)
 
     def connect(self, team="NoteToSelf", pin_provider=None):
-        """Open a Hub session for cloud sync on the given team station.
+        """Open a Hub session for cloud sync on the given team berth.
 
         pin_provider: callable(pending_id) → pin string.  The Hub sends the PIN
         via OS notification; pin_provider is responsible for collecting it from

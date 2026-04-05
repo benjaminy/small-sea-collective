@@ -98,15 +98,15 @@ class App(Base):
         return f"<App(id='{self.id.hex()}')>"
 
 
-class TeamAppStation(Base):
-    __tablename__ = "team_app_station"
+class TeamAppBerth(Base):
+    __tablename__ = "team_app_berth"
 
     id = Column(LargeBinary, primary_key=True)
     team_id = Column(LargeBinary, nullable=False)
     app_id = Column(LargeBinary, nullable=False)
 
     def __repr__(self):
-        return f"<TeamAppStation(id='{self.id.hex()}')>"
+        return f"<TeamAppBerth(id='{self.id.hex()}')>"
 
 
 class NotificationService(Base):
@@ -208,7 +208,7 @@ def _initialize_user_db(root_dir, ident, nickname, device):
             app1 = App(id=uuid7(), name="SmallSeaCollectiveCore")
             session.add_all([nick1, team1, app1])
             session.flush()
-            team_app = TeamAppStation(id=uuid7(), team_id=team1.id, app_id=app1.id)
+            team_app = TeamAppBerth(id=uuid7(), team_id=team1.id, app_id=app1.id)
             session.add_all([team_app])
             session.commit()
 
@@ -245,7 +245,7 @@ def _migrate_user_db(conn, from_version):
             )
         )
     if from_version < 46:
-        pass  # team DB schema updated (app, team_app_station, station_role); NoteToSelf schema unchanged
+        pass  # team DB schema updated (app, team_app_berth, berth_role); NoteToSelf schema unchanged
     if from_version < 47:
         conn.execute(
             text(
@@ -447,7 +447,7 @@ def get_team_signing_key(root_dir, participant_hex, team_name):
 def create_team(root_dir, participant_hex, team_name):
     """Create a new team for an existing participant.
 
-    Adds team + team_app_station rows to the user's NoteToSelf/Sync/core.db,
+    Adds team + team_app_berth rows to the user's NoteToSelf/Sync/core.db,
     creates the team directory with its own core.db (member table),
     and initializes a git repo for the team sync directory.
 
@@ -461,7 +461,7 @@ def create_team(root_dir, participant_hex, team_name):
 
     # --- Update the user's NoteToSelf core.db ---
     # Only a lightweight membership pointer goes here; structural team data
-    # (App, TeamAppStation, StationRole) lives in the team's own DB.
+    # (App, TeamAppBerth, BerthRole) lives in the team's own DB.
     user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
     engine = create_engine(f"sqlite:///{user_db_path}")
 
@@ -480,9 +480,9 @@ def create_team(root_dir, participant_hex, team_name):
     team_db_path = team_sync_dir / "core.db"
     team_engine = _init_team_db(team_db_path)
 
-    # Populate the team DB: creator member, app, station, and creator's role.
+    # Populate the team DB: creator member, app, berth, and creator's role.
     app_id = uuid7()
-    station_id = uuid7()
+    berth_id = uuid7()
     with team_engine.begin() as conn:
         conn.execute(
             text("INSERT INTO member (id, public_key) VALUES (:id, :pub)"),
@@ -493,15 +493,15 @@ def create_team(root_dir, participant_hex, team_name):
             {"id": app_id, "name": "SmallSeaCollectiveCore"},
         )
         conn.execute(
-            text("INSERT INTO team_app_station (id, app_id) VALUES (:id, :app_id)"),
-            {"id": station_id, "app_id": app_id},
+            text("INSERT INTO team_app_berth (id, app_id) VALUES (:id, :app_id)"),
+            {"id": berth_id, "app_id": app_id},
         )
         conn.execute(
             text(
-                "INSERT INTO station_role (id, member_id, station_id, role) "
-                "VALUES (:id, :mid, :sid, :role)"
+                "INSERT INTO berth_role (id, member_id, berth_id, role) "
+                "VALUES (:id, :mid, :bid, :role)"
             ),
-            {"id": uuid7(), "mid": member_id, "sid": station_id, "role": "read-write"},
+            {"id": uuid7(), "mid": member_id, "bid": berth_id, "role": "read-write"},
         )
 
     # --- Git init ---
@@ -513,7 +513,7 @@ def create_team(root_dir, participant_hex, team_name):
     return {
         "team_id_hex": team_id.hex(),
         "member_id_hex": member_id.hex(),
-        "station_id_hex": station_id.hex(),
+        "berth_id_hex": berth_id.hex(),
     }
 
 
@@ -537,19 +537,19 @@ def create_invitation(
         inviter_member_id = row[0]
     inviter_display_name = get_nickname(root_dir, participant_hex) or None
 
-    # Look up the station ID from the team DB (to derive the bucket name).
-    # Station structural data lives in the team DB, not NoteToSelf.
+    # Look up the berth ID from the team DB (to derive the bucket name).
+    # Berth structural data lives in the team DB, not NoteToSelf.
     with team_engine.begin() as conn:
-        station_row = conn.execute(
-            text("SELECT id FROM team_app_station LIMIT 1")
+        berth_row = conn.execute(
+            text("SELECT id FROM team_app_berth LIMIT 1")
         ).fetchone()
-    if station_row is None:
-        raise ValueError(f"No station found in team DB for '{team_name}'")
-    station_id_hex = station_row[0].hex()
+    if berth_row is None:
+        raise ValueError(f"No berth found in team DB for '{team_name}'")
+    berth_id_hex = berth_row[0].hex()
     if inviter_cloud["protocol"] == "dropbox":
         inviter_bucket = f"ss-{inviter_member_id.hex()[:16]}"
     else:
-        inviter_bucket = f"ss-{station_id_hex[:16]}"
+        inviter_bucket = f"ss-{berth_id_hex[:16]}"
 
     # Create invitation row
     inv_id = uuid7()
@@ -691,7 +691,7 @@ def accept_invitation(
 
     # --- Add team membership pointer to acceptor's NoteToSelf ---
     # Only a lightweight Team reference goes in NoteToSelf; structural data
-    # (App, TeamAppStation, StationRole) lives in the team DB, which was cloned above.
+    # (App, TeamAppBerth, BerthRole) lives in the team DB, which was cloned above.
     user_db_path = acceptor_dir / "NoteToSelf" / "Sync" / "core.db"
     user_engine = create_engine(f"sqlite:///{user_db_path}")
 
@@ -727,10 +727,10 @@ def accept_invitation(
         acceptor_bucket = f"ss-{acceptor_member_id.hex()[:16]}"
     else:
         with team_engine.begin() as conn:
-            station_row = conn.execute(
-                text("SELECT id FROM team_app_station LIMIT 1")
+            berth_row = conn.execute(
+                text("SELECT id FROM team_app_berth LIMIT 1")
             ).fetchone()
-        acceptor_bucket = f"ss-{station_row[0].hex()[:16]}"
+        acceptor_bucket = f"ss-{berth_row[0].hex()[:16]}"
 
     # --- Build and return acceptance response (no credentials) ---
     acceptance_data = {
@@ -827,21 +827,21 @@ def complete_invitation_acceptance(
             },
         )
 
-        # Grant the acceptor read-write on all stations (default).
+        # Grant the acceptor read-write on all berths (default).
         # The inviter (admin) can change this later.
-        station_row = conn.execute(
-            text("SELECT id FROM team_app_station LIMIT 1")
+        berth_row = conn.execute(
+            text("SELECT id FROM team_app_berth LIMIT 1")
         ).fetchone()
-        if station_row is not None:
+        if berth_row is not None:
             conn.execute(
                 text(
-                    "INSERT INTO station_role (id, member_id, station_id, role) "
-                    "VALUES (:id, :mid, :sid, :role)"
+                    "INSERT INTO berth_role (id, member_id, berth_id, role) "
+                    "VALUES (:id, :mid, :bid, :role)"
                 ),
                 {
                     "id": uuid7(),
                     "mid": acceptor_member_id,
-                    "sid": station_row[0],
+                    "bid": berth_row[0],
                     "role": "read-write",
                 },
             )
@@ -1086,7 +1086,7 @@ def list_teams(root_dir, participant_hex):
 
 
 def list_members(root_dir, participant_hex, team_name):
-    """List members of a team with their station roles. Returns list of dicts."""
+    """List members of a team with their berth roles. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
     team_db_path = (
         root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
@@ -1096,7 +1096,7 @@ def list_members(root_dir, participant_hex, team_name):
     with engine.begin() as conn:
         members = conn.execute(text("SELECT id FROM member")).fetchall()
         role_rows = conn.execute(
-            text("SELECT member_id, station_id, role FROM station_role")
+            text("SELECT member_id, berth_id, role FROM berth_role")
         ).fetchall()
 
     engine.dispose()
@@ -1105,11 +1105,11 @@ def list_members(root_dir, participant_hex, team_name):
     for r in role_rows:
         key = r[0].hex()
         roles_by_member.setdefault(key, []).append(
-            {"station_id": r[1].hex(), "role": r[2]}
+            {"berth_id": r[1].hex(), "role": r[2]}
         )
 
     return [
-        {"id": row[0].hex(), "station_roles": roles_by_member.get(row[0].hex(), [])}
+        {"id": row[0].hex(), "berth_roles": roles_by_member.get(row[0].hex(), [])}
         for row in members
     ]
 

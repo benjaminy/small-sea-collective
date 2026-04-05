@@ -258,8 +258,8 @@ def _get_peer_count(endpoint: str, token: str, member_id_hex: str) -> int:
     if resp.status_code == 404:
         return 0
     resp.raise_for_status()
-    stations = resp.json().get("stations", {})
-    return max(stations.values(), default=0)
+    berths = resp.json().get("berths", {})
+    return max(berths.values(), default=0)
 
 
 def _wait_for_notification(

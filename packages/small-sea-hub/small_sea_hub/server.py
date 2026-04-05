@@ -20,13 +20,13 @@ _templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "temp
 PEER_WATCHER_INTERVAL = 60  # seconds between poll rounds
 
 
-def _pulse_station_event(app: FastAPI, station_id_hex: str):
-    """Wake all waiters on a station by replacing its Event and setting the old one."""
+def _pulse_berth_event(app: FastAPI, berth_id_hex: str):
+    """Wake all waiters on a berth by replacing its Event and setting the old one."""
     events = getattr(app.state, "peer_signal_events", None)
     if events is None:
         return  # Watcher state not yet initialized
-    old_event = events.get(station_id_hex)
-    events[station_id_hex] = asyncio.Event()
+    old_event = events.get(berth_id_hex)
+    events[berth_id_hex] = asyncio.Event()
     if old_event:
         old_event.set()
 
@@ -34,7 +34,7 @@ def _pulse_station_event(app: FastAPI, station_id_hex: str):
 def _refresh_session_peers(app: FastAPI, session_hex: str):
     """Re-read the team DB peer list for a session and sync watched_peers.
 
-    Adds new peers (pulsing the station event so waiters wake and re-enumerate)
+    Adds new peers (pulsing the berth event so waiters wake and re-enumerate)
     and removes peers that are no longer in the DB.
     """
     import sqlite3 as _sqlite3
@@ -43,7 +43,7 @@ def _refresh_session_peers(app: FastAPI, session_hex: str):
     if session_info is None:
         return
 
-    station_id_hex = session_info["station_id_hex"]
+    berth_id_hex = session_info["berth_id_hex"]
     team_db_path = session_info["team_db_path"]
 
     try:
@@ -69,20 +69,20 @@ def _refresh_session_peers(app: FastAPI, session_hex: str):
         app.state.watched_peers[key] = {
             "etag": None,
             "signals": {},
-            "station_id_hex": station_id_hex,
+            "berth_id_hex": berth_id_hex,
         }
         app.state.logger.info(
-            f"Watcher: new peer {member_id_hex[:8]} on station {station_id_hex[:8]}"
+            f"Watcher: new peer {member_id_hex[:8]} on berth {berth_id_hex[:8]}"
         )
 
     for member_id_hex in removed_members:
         app.state.watched_peers.pop((session_hex, member_id_hex), None)
 
     if new_members:
-        _pulse_station_event(app, station_id_hex)
+        _pulse_berth_event(app, berth_id_hex)
 
 
-def _send_peer_notification(app: FastAPI, session_hex: str, station_id_hex: str, logger):
+def _send_peer_notification(app: FastAPI, session_hex: str, berth_id_hex: str, logger):
     """Fire a push notification when a peer's signal count increases.
 
     Silently skips if no notification service is configured for the session.
@@ -97,13 +97,13 @@ def _send_peer_notification(app: FastAPI, session_hex: str, station_id_hex: str,
         )
         if not ok:
             logger.warning(
-                f"Push notification failed for station {station_id_hex[:8]}: {err}"
+                f"Push notification failed for berth {berth_id_hex[:8]}: {err}"
             )
     except _NotFound:
         pass  # no notification service configured — normal
     except Exception as exc:
         logger.warning(
-            f"Push notification error for station {station_id_hex[:8]}: {exc}"
+            f"Push notification error for berth {berth_id_hex[:8]}: {exc}"
         )
 
 
@@ -121,13 +121,13 @@ def _watcher_pass(app: FastAPI):
         _refresh_session_peers(app, session_hex)
 
     peers = getattr(app.state, "watched_peers", {})
-    # Track which stations have already received a push notification this round
-    # so we send at most one notification per station regardless of how many
+    # Track which berths have already received a push notification this round
+    # so we send at most one notification per berth regardless of how many
     # sessions or peers triggered the change.
-    notified_stations: set = set()
+    notified_berths: set = set()
     for key, state in list(peers.items()):
         session_hex, member_id_hex = key
-        station_id_hex = state.get("station_id_hex")
+        berth_id_hex = state.get("berth_id_hex")
         try:
             signals, etag = app.state.backend.get_peer_signal(
                 session_hex, member_id_hex
@@ -139,28 +139,28 @@ def _watcher_pass(app: FastAPI):
 
             prev = state.get("signals", {})
             changed = False
-            for sid, count in signals.items():
-                if sid == "version":
+            for bid, count in signals.items():
+                if bid == "version":
                     continue
-                if count > prev.get(sid, 0):
-                    # Key by the watching station (station_id_hex) so that
+                if count > prev.get(bid, 0):
+                    # Key by the watching berth (berth_id_hex) so that
                     # /notifications/watch _check() can find it by session.
-                    peer_key = (station_id_hex, member_id_hex)
+                    peer_key = (berth_id_hex, member_id_hex)
                     if count > app.state.peer_counts.get(peer_key, 0):
                         app.state.peer_counts[peer_key] = count
                     changed = True
                     logger.info(
-                        f"Peer {member_id_hex[:8]} station {sid[:8]}: count={count}"
+                        f"Peer {member_id_hex[:8]} berth {bid[:8]}: count={count}"
                     )
 
             state["etag"] = etag
             state["signals"] = {k: v for k, v in signals.items() if k != "version"}
 
-            if changed and station_id_hex:
-                _pulse_station_event(app, station_id_hex)
-                if station_id_hex not in notified_stations:
-                    notified_stations.add(station_id_hex)
-                    _send_peer_notification(app, session_hex, station_id_hex, logger)
+            if changed and berth_id_hex:
+                _pulse_berth_event(app, berth_id_hex)
+                if berth_id_hex not in notified_berths:
+                    notified_berths.add(berth_id_hex)
+                    _send_peer_notification(app, session_hex, berth_id_hex, logger)
 
         except SmallSeaNotFoundExn:
             # Session expired — remove it and all its peers from the watcher.
@@ -182,7 +182,7 @@ async def _peer_watcher_loop(app: FastAPI):
     and can re-enumerate the current member list.
 
     When a peer's signal count increases, updates peer_counts and pulses the
-    station event to wake /notifications/watch waiters.
+    berth event to wake /notifications/watch waiters.
 
     The first pass runs immediately (no initial sleep) so that peer_counts is
     populated quickly after startup rather than after the full interval.
@@ -195,8 +195,8 @@ async def _peer_watcher_loop(app: FastAPI):
         _watcher_pass(app)
 
 
-async def _ntfy_listener_loop(app: FastAPI, ntfy_url: str, station_id_hex: str):
-    """Async task: subscribe to ntfy SSE for a station and trigger watcher passes on push.
+async def _ntfy_listener_loop(app: FastAPI, ntfy_url: str, berth_id_hex: str):
+    """Async task: subscribe to ntfy SSE for a berth and trigger watcher passes on push.
 
     Reconnects automatically on error with a 5-second back-off. Runs until
     cancelled (e.g. on Hub shutdown).
@@ -204,7 +204,7 @@ async def _ntfy_listener_loop(app: FastAPI, ntfy_url: str, station_id_hex: str):
     from small_sea_hub.adapters.ntfy import SmallSeaNtfyAdapter
 
     logger = app.state.logger
-    topic = f"ss-{station_id_hex}"
+    topic = f"ss-{berth_id_hex}"
     logger.info(f"ntfy listener starting: {ntfy_url}/{topic}")
     adapter = SmallSeaNtfyAdapter(ntfy_url, topic)
     while True:
@@ -230,17 +230,17 @@ async def lifespan(app: FastAPI):
             log_level=settings.log_level,
         )
     if not hasattr(app.state, "watched_sessions"):
-        app.state.watched_sessions = {}   # session_hex → {station_id_hex, team_db_path}
+        app.state.watched_sessions = {}   # session_hex → {berth_id_hex, team_db_path}
     if not hasattr(app.state, "watched_peers"):
         app.state.watched_peers = {}      # (session_hex, member_id_hex) → state
     if not hasattr(app.state, "peer_counts"):
-        app.state.peer_counts = {}        # (station_id_hex, member_id_hex) → int
+        app.state.peer_counts = {}        # (berth_id_hex, member_id_hex) → int
     if not hasattr(app.state, "peer_signal_events"):
-        app.state.peer_signal_events = {}  # station_id_hex → asyncio.Event
+        app.state.peer_signal_events = {}  # berth_id_hex → asyncio.Event
     if not hasattr(app.state, "watcher_interval"):
         app.state.watcher_interval = Settings().watcher_interval
     if not hasattr(app.state, "ntfy_listener_tasks"):
-        app.state.ntfy_listener_tasks = {}  # station_id_hex → asyncio.Task
+        app.state.ntfy_listener_tasks = {}  # berth_id_hex → asyncio.Task
     app.state.logger = app.state.backend.logger
     logger = app.state.backend.logger
     logger.info("Starting up...")
@@ -315,13 +315,13 @@ class SessionRequestReq(pydantic.BaseModel):
     client: str
 
 
-def _maybe_start_ntfy_listener(app: FastAPI, ss_session, station_id_hex: str):
-    """Start an ntfy SSE listener task for a station if ntfy is configured and not already running."""
+def _maybe_start_ntfy_listener(app: FastAPI, ss_session, berth_id_hex: str):
+    """Start an ntfy SSE listener task for a berth if ntfy is configured and not already running."""
     ntfy_listener_tasks = getattr(app.state, "ntfy_listener_tasks", None)
     if ntfy_listener_tasks is None:
         return
-    if station_id_hex in ntfy_listener_tasks:
-        return  # already running for this station
+    if berth_id_hex in ntfy_listener_tasks:
+        return  # already running for this berth
     try:
         adapter = app.state.backend._make_notification_adapter(ss_session)
         ntfy_url = adapter.base_url
@@ -331,15 +331,15 @@ def _maybe_start_ntfy_listener(app: FastAPI, ss_session, station_id_hex: str):
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return  # not in an async context (e.g. tests that skip lifespan)
-    task = loop.create_task(_ntfy_listener_loop(app, ntfy_url, station_id_hex))
-    ntfy_listener_tasks[station_id_hex] = task
-    app.state.logger.info(f"ntfy listener task started for station {station_id_hex[:8]}")
+    task = loop.create_task(_ntfy_listener_loop(app, ntfy_url, berth_id_hex))
+    ntfy_listener_tasks[berth_id_hex] = task
+    app.state.logger.info(f"ntfy listener task started for berth {berth_id_hex[:8]}")
 
 
 def _register_session_peers(session_hex: str):
     """Register a session with the watcher after it is confirmed.
 
-    Records the team DB path and station so the watcher can re-read the peer
+    Records the team DB path and berth so the watcher can re-read the peer
     list on every round, picking up membership changes automatically.
     No-ops silently if the watcher state has not been initialized yet (e.g.
     in tests that do not run the full lifespan).
@@ -351,20 +351,20 @@ def _register_session_peers(session_hex: str):
         ss_session = app.state.backend._lookup_session(session_hex)
         if ss_session.team_name == "NoteToSelf":
             return  # NoteToSelf has no peers
-        station_id_hex = ss_session.station_id.hex()
+        berth_id_hex = ss_session.berth_id.hex()
         team_db_path = str(
             ss_session.participant_path / ss_session.team_name / "Sync" / "core.db"
         )
         watched_sessions[session_hex] = {
-            "station_id_hex": station_id_hex,
+            "berth_id_hex": berth_id_hex,
             "team_db_path": team_db_path,
         }
-        app.state.peer_signal_events.setdefault(station_id_hex, asyncio.Event())
+        app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
         # Do an immediate peer refresh so watched_peers is populated now rather
         # than waiting for the first watcher round.
         _refresh_session_peers(app, session_hex)
-        # Start an ntfy listener for this station if one isn't already running.
-        _maybe_start_ntfy_listener(app, ss_session, station_id_hex)
+        # Start an ntfy listener for this berth if one isn't already running.
+        _maybe_start_ntfy_listener(app, ss_session, berth_id_hex)
     except Exception as exc:
         logger = getattr(app.state, "logger", None)
         if logger:
@@ -425,7 +425,7 @@ async def list_pending_sessions():
 async def session_info(session_hex: str = Depends(_require_session)):
     """Return metadata for the current session.
 
-    Allows apps to discover their station_id and team context from a session
+    Allows apps to discover their berth_id and team context from a session
     token, without reading the SmallSeaCollectiveCore SQLite database directly.
     """
     ss_session = app.state.backend._lookup_session(session_hex)
@@ -433,7 +433,7 @@ async def session_info(session_hex: str = Depends(_require_session)):
         "participant_hex": ss_session.participant_id.hex(),
         "team_name": ss_session.team_name,
         "app_name": ss_session.app_name,
-        "station_id": ss_session.station_id.hex(),
+        "berth_id": ss_session.berth_id.hex(),
         "client": ss_session.client,
     }
 
@@ -443,7 +443,7 @@ async def session_peers(session_hex: str = Depends(_require_session)):
     """Return peers visible to the current team session."""
     small_sea = app.state.backend
     ss_session = small_sea._lookup_session(session_hex)
-    station_id_hex = ss_session.station_id.hex()
+    berth_id_hex = ss_session.berth_id.hex()
     peer_counts = getattr(app.state, "peer_counts", {})
     peers = []
     for peer in small_sea.list_peers(session_hex):
@@ -454,7 +454,7 @@ async def session_peers(session_hex: str = Depends(_require_session)):
                 "member_id": member_id_hex,
                 "name": name,
                 "label": name or f"Teammate {member_id_hex[:8]}...",
-                "signal_count": peer_counts.get((station_id_hex, member_id_hex), 0),
+                "signal_count": peer_counts.get((berth_id_hex, member_id_hex), 0),
             }
         )
     return {"peers": peers}
@@ -494,14 +494,14 @@ async def upload_to_cloud(
         except Exception as exc:
             if _logger:
                 _logger.warning(f"_bump_signal failed: {exc}")
-        # Pulse the local station event so other sessions on this station
+        # Pulse the local berth event so other sessions on this berth
         # (e.g. a second browser tab) are also notified.
         try:
             ss_session = small_sea._lookup_session(session_hex)
-            _pulse_station_event(app, ss_session.station_id.hex())
+            _pulse_berth_event(app, ss_session.berth_id.hex())
         except Exception as exc:
             if _logger:
-                _logger.warning(f"local station pulse failed: {exc}")
+                _logger.warning(f"local berth pulse failed: {exc}")
     return {"ok": True, "etag": etag, "message": msg}
 
 
@@ -574,7 +574,7 @@ async def get_peer_signal(
     if if_none_match and etag == if_none_match:
         from fastapi.responses import Response
         return Response(status_code=304)
-    return {"version": signals.get("version", 1), "stations": {
+    return {"version": signals.get("version", 1), "berths": {
         k: v for k, v in signals.items() if k != "version"
     }, "etag": etag}
 
@@ -602,12 +602,12 @@ async def watch_notifications(
     timeout.
     """
     ss_session = app.state.backend._lookup_session(session_hex)
-    station_id_hex = ss_session.station_id.hex()
+    berth_id_hex = ss_session.berth_id.hex()
 
     def _check():
         updated = {}
         for member_id_hex, known_count in req.known.items():
-            current = app.state.peer_counts.get((station_id_hex, member_id_hex), 0)
+            current = app.state.peer_counts.get((berth_id_hex, member_id_hex), 0)
             if current > known_count:
                 updated[member_id_hex] = current
         return updated
@@ -619,7 +619,7 @@ async def watch_notifications(
 
     # Grab the current event before sleeping — the watcher may replace it
     # while we wait, but we hold the reference so set() still wakes us.
-    event = app.state.peer_signal_events.setdefault(station_id_hex, asyncio.Event())
+    event = app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
     try:
         await asyncio.wait_for(event.wait(), timeout=req.timeout)
     except asyncio.TimeoutError:
