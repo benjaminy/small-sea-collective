@@ -167,6 +167,22 @@ The test should prove:
 4. Bob pulls through the Hub and gets the original plaintext back.
 5. The test would fail if Hub encryption/decryption were bypassed.
 
+### 6. Create Follow-Up Issues
+
+At the end of this branch, file GitHub issues for the deferred work that this
+milestone makes concrete:
+
+- encrypted sender-key rotation over cloud channels
+- full X3DH / Double Ratchet integration with Manager workflows
+- full `wrasse-trust` web-of-trust integration
+- multi-device key transfer and revocation flows
+- post-quantum variants
+- notification encryption
+- revisit sender-key storage location once multi-device story is clearer
+
+Also file issues for anything that comes up during implementation that we
+intentionally punt on.
+
 ## Validation
 
 The branch is successful if all of the following are true:
