@@ -11,6 +11,9 @@
 # Identity keys have two components:
 #   - X25519 key pair (for DH in the X3DH protocol)
 #   - Ed25519 key pair (for signing prekeys)
+# These bootstrap-only session identity keys are distinct from the broader
+# BURIED/GUARDED/DAILY trust-side identity model, which now lives in the
+# separate wrasse-trust package.
 # These are separate key pairs. Signal uses XEdDSA to sign with a Curve25519
 # key directly; we avoid that complexity by carrying both public keys in the
 # bundle.

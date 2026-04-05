@@ -46,17 +46,23 @@ Move to `wrasse-trust` (identity and trust):
 ## Approach
 
 1. Create `packages/wrasse-trust/` with:
-   - `pyproject.toml` (same shape as cuttlefish: hatchling, cryptography dep)
-   - `wrasse_trust/` package directory with `__init__.py`
+   - `pyproject.toml` (same shape as cuttlefish: hatchling, cryptography dep;
+     distribution name `wrasse-trust`, importable package `wrasse_trust`)
+   - `wrasse_trust/` package directory with `__init__.py` (initially empty,
+     same as cuttlefish's)
    - `tests/` directory
 2. Move the four identity/trust modules into `wrasse_trust/`, updating
    intra-package imports.
 3. Move `test_identity.py` to `wrasse-trust/tests/`, updating its imports
-   from `cuttlefish.*` to `wrasse_trust.*`.
+   from `cuttlefish.*` to `wrasse_trust.*`. Check first that the test file
+   doesn't also cover anything staying in cuttlefish; split if needed.
 4. Update docs to match the new boundary:
-   - `packages/cuttlefish/README.md`
-   - `packages/wrasse-trust/README.md`
-   - `architecture.md`
+   - `packages/cuttlefish/README.md` — most of section 2 (Key-Based Identity,
+     key hierarchy, WoT, ceremonies, revocation) plus related prior art and
+     open questions move to wrasse-trust. This is roughly 60–70% of the file.
+   - `packages/wrasse-trust/README.md` — new home for the moved sections.
+   - `architecture.md` — line 55 currently describes cuttlefish as owning both
+     encryption and web-of-trust identity; update to reflect the split.
 5. Add one short clarifying note in `cuttlefish/prekeys.py` about its
    X3DH bootstrap identity keys vs the broader trust-side identity model.
 6. Make this a clean break:

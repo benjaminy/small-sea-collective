@@ -1,4 +1,4 @@
-# Cuttlefish — Key types and participant key collection
+# Wrasse Trust — Key types and participant key collection
 #
 # Each participant holds a *collection* of key-pairs that vary along two
 # dimensions:
@@ -144,8 +144,12 @@ def generate_hierarchy(
     Returns (collection, private_keys) where private_keys maps key_id -> private_key_bytes.
     """
     buried, buried_priv = generate_key_pair(ProtectionLevel.BURIED)
-    guarded, guarded_priv = generate_key_pair(ProtectionLevel.GUARDED, parent_key_id=buried.key_id)
-    daily, daily_priv = generate_key_pair(ProtectionLevel.DAILY, parent_key_id=guarded.key_id)
+    guarded, guarded_priv = generate_key_pair(
+        ProtectionLevel.GUARDED, parent_key_id=buried.key_id,
+    )
+    daily, daily_priv = generate_key_pair(
+        ProtectionLevel.DAILY, parent_key_id=guarded.key_id,
+    )
 
     collection = ParticipantKeyCollection(
         participant_id=participant_id,
