@@ -43,9 +43,9 @@ The current `team_signing_key` (NoteToSelf) and `member.public_key`
 
 **Key question: pairwise ratchet state is device-local.** This is the
 first piece of data in Small Sea that is device-specific and does not
-sync. Everything else either syncs via NoteToSelf or via team stations.
+sync. Everything else either syncs via NoteToSelf or via team berths.
 Where does this live? Options:
-- A new device-local SQLite DB outside the NoteToSelf station
+- A new device-local SQLite DB outside the NoteToSelf berth
 - A table in NoteToSelf that is explicitly excluded from sync
 - A separate "device state" directory alongside NoteToSelf
 
@@ -118,7 +118,7 @@ CREATE TABLE own_sender_key (
 );
 ```
 
-**Team DB (syncs via team station):**
+**Team DB (syncs via team berth):**
 ```sql
 -- Peers' sender keys (received via pairwise channels)
 CREATE TABLE peer_sender_key (

@@ -1,7 +1,7 @@
 """Git merge driver entry point for SQLite files.
 
 Git invokes this as:
-    harmonic-sqlite-merge %O %A %B %L %P
+    splice-sqlite-merge %O %A %B %L %P
 
 Where %O=ancestor, %A=ours (result written here), %B=theirs,
 %L=conflict-marker-size, %P=pathname.
@@ -14,7 +14,7 @@ from .core import apply_delta, compute_delta, reconcile_deltas, sqlite_to_json
 
 def main():
     if len(sys.argv) < 4:
-        print("usage: harmonic-sqlite-merge %O %A %B [%L] [%P]", file=sys.stderr)
+        print("usage: splice-sqlite-merge %O %A %B [%L] [%P]", file=sys.stderr)
         sys.exit(1)
 
     ancestor_path = sys.argv[1]
@@ -33,7 +33,7 @@ def main():
         cleaned = reconcile_deltas(ours_delta, theirs_delta)
         apply_delta(ours_path, cleaned)
     except Exception as e:
-        print(f"harmonic-sqlite-merge failed for {pathname}: {e}", file=sys.stderr)
+        print(f"splice-sqlite-merge failed for {pathname}: {e}", file=sys.stderr)
         sys.exit(1)
 
     sys.exit(0)

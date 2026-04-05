@@ -10,12 +10,12 @@ resolution-markers = [
 members = [
     "cod-sync",
     "cuttlefish",
-    "harmonic-merge",
     "shared-file-vault",
     "small-sea-client",
     "small-sea-hub",
     "small-sea-manager",
     "small-sea-sandbox",
+    "splice-merge",
     "wrasse-trust",
 ]
 
@@ -23,13 +23,13 @@ members = [
 dev = [
     { name = "boto3", specifier = ">=1.40.53" },
     { name = "cod-sync", editable = "packages/cod-sync" },
-    { name = "harmonic-merge", editable = "packages/harmonic-merge" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "respx", specifier = ">=0.22.0" },
     { name = "shared-file-vault", editable = "packages/shared-file-vault" },
     { name = "small-sea-client", editable = "packages/small-sea-client" },
     { name = "small-sea-hub", editable = "packages/small-sea-hub" },
     { name = "small-sea-manager", editable = "packages/small-sea-manager" },
+    { name = "splice-merge", editable = "packages/splice-merge" },
 ]
 
 [[package]]
@@ -472,11 +472,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/01/ee/02a2c011bdab74c6f
 wheels = [
     { url = "https://files.pythonhosted.org/packages/04/4b/29cac41a4d98d144bf5f6d33995617b185d14b22401f75ca86f384e87ff1/h11-0.16.0-py3-none-any.whl", hash = "sha256:63cf8bbe7522de3bf65932fda1d9c2772064ffb3dae62d55932da54b31cb6c86", size = 37515, upload-time = "2025-04-24T03:35:24.344Z" },
 ]
-
-[[package]]
-name = "harmonic-merge"
-version = "0.1.0"
-source = { editable = "packages/harmonic-merge" }
 
 [[package]]
 name = "httpcore"
@@ -1155,10 +1150,10 @@ dependencies = [
     { name = "cod-sync" },
     { name = "cryptography" },
     { name = "fastapi", extra = ["standard"] },
-    { name = "harmonic-merge" },
     { name = "jinja2" },
     { name = "plyer" },
     { name = "small-sea-client" },
+    { name = "splice-merge" },
     { name = "sqlalchemy" },
 ]
 
@@ -1168,10 +1163,10 @@ requires-dist = [
     { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "cryptography", specifier = ">=46.0.3" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.118.0" },
-    { name = "harmonic-merge", editable = "packages/harmonic-merge" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "plyer", specifier = ">=2.1.0" },
     { name = "small-sea-client", editable = "packages/small-sea-client" },
+    { name = "splice-merge", editable = "packages/splice-merge" },
     { name = "sqlalchemy", specifier = ">=2.0.44" },
 ]
 
@@ -1208,6 +1203,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e0
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2", size = 10235, upload-time = "2024-02-25T23:20:01.196Z" },
 ]
+
+[[package]]
+name = "splice-merge"
+version = "0.1.0"
+source = { editable = "packages/splice-merge" }
 
 [[package]]
 name = "sqlalchemy"

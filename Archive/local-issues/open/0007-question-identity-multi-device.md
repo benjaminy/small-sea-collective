@@ -74,7 +74,7 @@ recovery).
 ## Remaining Open Questions
 
 - How does a user establish identity on a new device? (Key import? QR code? PIN-based device link?)
-- What is the exact relationship between the NoteToSelf station and per-device keys?
+- What is the exact relationship between the NoteToSelf berth and per-device keys?
 - When a new device joins, what does it get access to retroactively?
 - How are device revocations handled?
 - Pairwise channel bucket naming scheme (must not leak cross-team identity for per-team-scoped channels)

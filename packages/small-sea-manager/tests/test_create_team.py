@@ -31,13 +31,13 @@ def test_create_team(playground_dir):
     assert teams[0]["id"] == bytes.fromhex(team_id_hex)
     assert teams[0]["self_in_team"] == bytes.fromhex(member_id_hex)
 
-    # TeamAppStation for CoolProject must NOT be in NoteToSelf — it belongs in the team DB.
-    other_team_stations = conn.execute(
-        "SELECT tas.* FROM team_app_station tas "
-        "JOIN team t ON tas.team_id = t.id "
+    # TeamAppBerth for CoolProject must NOT be in NoteToSelf — it belongs in the team DB.
+    other_team_berths = conn.execute(
+        "SELECT tab.* FROM team_app_berth tab "
+        "JOIN team t ON tab.team_id = t.id "
         "WHERE t.name = 'CoolProject'"
     ).fetchall()
-    assert len(other_team_stations) == 0
+    assert len(other_team_berths) == 0
     conn.close()
 
     # --- Verify team directory and its core.db ---
@@ -51,23 +51,23 @@ def test_create_team(playground_dir):
     assert len(members) == 1
     assert members[0][0] == bytes.fromhex(member_id_hex)
 
-    # app + team_app_station live here now
+    # app + team_app_berth live here now
     apps = tconn.execute("SELECT * FROM app").fetchall()
     assert len(apps) == 1
     assert apps[0][1] == "SmallSeaCollectiveCore"
 
-    stations = tconn.execute("SELECT * FROM team_app_station").fetchall()
-    assert len(stations) == 1
-    station_id_hex = result["station_id_hex"]
-    assert stations[0][0] == bytes.fromhex(station_id_hex)
+    berths = tconn.execute("SELECT * FROM team_app_berth").fetchall()
+    assert len(berths) == 1
+    berth_id_hex = result["berth_id_hex"]
+    assert berths[0][0] == bytes.fromhex(berth_id_hex)
 
-    # Alice has read-write on the station
+    # Alice has read-write on the berth
     roles = tconn.execute(
-        "SELECT member_id, station_id, role FROM station_role"
+        "SELECT member_id, berth_id, role FROM berth_role"
     ).fetchall()
     assert len(roles) == 1
     assert roles[0][0] == bytes.fromhex(member_id_hex)
-    assert roles[0][1] == bytes.fromhex(station_id_hex)
+    assert roles[0][1] == bytes.fromhex(berth_id_hex)
     assert roles[0][2] == "read-write"
 
     tconn.close()

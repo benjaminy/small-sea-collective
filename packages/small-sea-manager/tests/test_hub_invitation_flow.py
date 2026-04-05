@@ -114,7 +114,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     # ---- Alice: create team (local) ----
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
     alice_member_id_hex = team_result["member_id_hex"]
-    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
+    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
     # ---- Alice: push team repo via Hub ----
     alice_team_token = _open_session(http, "Alice", "ProjectX")
@@ -201,7 +201,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
         config=BotoConfig(signature_version="s3v4"),
         region_name="us-east-1",
     )
-    bob_team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
+    bob_team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
     objects = bob_s3.list_objects_v2(Bucket=bob_team_bucket)
     keys = {obj["Key"] for obj in objects.get("Contents", [])}
     assert "latest-link.yaml" in keys

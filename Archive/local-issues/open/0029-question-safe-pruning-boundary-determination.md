@@ -31,7 +31,7 @@ What is the right way for Small Sea to determine or approximate a safe pruning b
 2. What data already exists that could inform the boundary?
    - peer chain heads
    - sync metadata
-   - hub-visible station state
+   - hub-visible berth state
 3. Which approach is the right first implementation?
    - manual boundary supplied by user/admin
    - conservative fixed window

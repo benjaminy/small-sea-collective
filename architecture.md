@@ -6,7 +6,7 @@ Small Sea Collective is a framework for building collaborative team applications
 
 - **Team**: The primary unit of collaboration. In Small Sea, teams are decentralized; there is no central registry.
 - **Application (App)**: A way to organize resources like storage, notifications, and identity. Apps are not specific client software but logical groupings of resources.
-- **Station**: The intersection of a specific **Team** and a specific **App**. It is the fundamental unit of resource allocation and access control.
+- **Berth**: The intersection of a specific **Team** and a specific **App**. It is the fundamental unit of resource allocation and access control.
 - **Client**: Any software (GUI, CLI, agent) that accesses resources through the Small Sea Hub.
 - **Hub**: A local service that mediates all access to general-purpose cloud services. It acts as a security gateway and protocol translator.
 
@@ -30,7 +30,7 @@ The baseline synchronization method is snapshot-based 3-way merge, utilizing `gi
 **Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
 
 ### Security: PIN-Based Access
-Before a client can access a station, it must request access from the Hub. The Hub generates a PIN and sends it to the user via OS notifications. The user must enter this PIN into the client to complete the handshake, ensuring that only authorized software can access team data.
+Before a client can access a berth, it must request access from the Hub. The Hub generates a PIN and sends it to the user via OS notifications. The user must enter this PIN into the client to complete the handshake, ensuring that only authorized software can access team data.
 
 ## Terminology
 
@@ -38,13 +38,13 @@ Before a client can access a station, it must request access from the Hub. The H
 
 ## Permissions
 
-For each station, a member can have either **read-only** or **read-write** access.
+For each berth, a member can have either **read-only** or **read-write** access.
 These are enforced as a social contract via encryption and sync conventions rather than by a central authority.
 A common way of organizing permissions:
 
-- **Admin**: Read-write to all stations, including the team's Core station (team metadata).
-- **Member**: Read-write to all stations _except_ Core (their changes to team metadata are ignored by other members).
-- **Observer**: Read-only to all stations.
+- **Admin**: Read-write to all berths, including the team's Core berth (team metadata).
+- **Member**: Read-write to all berths _except_ Core (their changes to team metadata are ignored by other members).
+- **Observer**: Read-only to all berths.
 
 Any admin can invite new members or remove existing ones.
 Removal is made effective by key rotation — the departing member is not given the new keys.
@@ -55,14 +55,14 @@ Removal is made effective by key rotation — the departing member is not given 
 - **[Cuttlefish](packages/cuttlefish/)**: Session-crypto layer. In production, the Hub uses Cuttlefish to encrypt and obscure team communication with cloud services.
 - **[Wrasse Trust](packages/wrasse-trust/)**: Identity and trust layer. Provides key hierarchies, certificates, ceremonies, revocations, and trust-chain evaluation for the web-of-trust model.
 - **[Cod Sync](packages/cod-sync/)**: Git-based synchronization protocol. Encodes deltas as a chain of git bundles uploaded to cloud storage.
-- **[harmonic-merge](packages/harmonic-merge/)**: Library for merging concurrent changes and resolving conflicts when automatic merging is not possible.
+- **[splice-merge](packages/splice-merge/)**: Library for merging concurrent changes and resolving conflicts when automatic merging is not possible.
 - **[Small Sea Client](packages/small-sea-client/)**: Utility library for applications communicating with the Hub. Manages sessions and common workflows.
 - **[Small Sea Manager](packages/small-sea-manager/)**: The essential built-in application. Manages team membership, devices, cloud storage accounts, invitations, and the SmallSeaCollectiveCore database.
 - **[Shared File Vault](packages/shared-file-vault/)**: Example application — team file sharing built on Small Sea.
 
 ## Typical Application Flow
 
-1. **Session Start**: Client requests access to a station from the local Hub.
+1. **Session Start**: Client requests access to a berth from the local Hub.
 2. **User Authorization**: User confirms access (via PIN/OS notification).
 3. **Local Work**: Client performs operations on local state (e.g., a git repo).
 4. **Bundle Creation**: Client creates a git bundle of new commits.

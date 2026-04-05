@@ -18,7 +18,7 @@ Sync is only exercised in the latency tests, which build remotes manually.
 
 ### 1. Hub session management in SharedFileVault
 
-The vault needs a Hub session (token) per team station. Options:
+The vault needs a Hub session (token) per team berth. Options:
 
 - **Config file** — store `hub_port` and `session_token` in a per-participant
   config alongside the vault root. Simple; session tokens are already

@@ -22,12 +22,12 @@ a flag on upload; everything else happens inside the Hub.
 
 ## Signal file format
 
-Initial (simple) form — a flat map of station ID → push count:
+Initial (simple) form — a flat map of berth ID → push count:
 
 ```yaml
 version: 1
-{station_id_hex}: 5
-{station_id_hex}: 2
+{berth_id_hex}: 5
+{berth_id_hex}: 2
 ```
 
 The file lives at the well-known path `signals.yaml` in the participant's own
@@ -41,7 +41,7 @@ not just their own counts but their last-known counts for all teammates:
 
 ```yaml
 version: 2
-{station_id_hex}:
+{berth_id_hex}:
   {alice_member_id_hex}: 5   # Alice's own push count
   {bob_member_id_hex}: 3     # Alice's last-seen count for Bob
   {eve_member_id_hex}: 7     # Alice's last-seen count for Eve
@@ -62,7 +62,7 @@ change. Implement v1 now; v2 is deferred.
 
 Add an optional boolean field `notify` to the `CloudUploadReq` model (default
 `false`). When `true` and the upload succeeds, the Hub bumps `signals.yaml` for
-the session's station before returning.
+the session's berth before returning.
 
 ```json
 {
@@ -85,7 +85,7 @@ When `notify=true` on a successful upload, the Hub performs an atomic
 increment of `signals.yaml`:
 
 - Download current `signals.yaml` + etag (if absent, start from empty)
-- Increment `{station_id_hex}: N`
+- Increment `{berth_id_hex}: N`
 - Re-upload with `expected_etag` (CAS)
 - On 409 conflict: re-read and retry
 
@@ -96,7 +96,7 @@ extra unnecessary poll by teammates, which is a minor performance issue, not
 a correctness problem. If the signal bump fails entirely after retries (network
 failure), teammates miss this notification but will catch up on the next push.
 
-The station ID is already available from `ss_session.station_id` inside the Hub.
+The berth ID is already available from `ss_session.berth_id` inside the Hub.
 No client involvement required.
 
 ### 3. Hub-internal peer watcher
@@ -120,7 +120,7 @@ forwarding the S3 etag so clients can do conditional polls:
 
 ```
 GET /peer_signal?member_id={hex}
-→ {"version": 1, "stations": {"{station_id_hex}": N, ...}, "etag": "..."}
+→ {"version": 1, "berths": {"{berth_id_hex}": N, ...}, "etag": "..."}
 ```
 
 This lets apps (or the Manager) check peer signal state without going through

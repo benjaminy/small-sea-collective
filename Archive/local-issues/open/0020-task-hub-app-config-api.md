@@ -22,7 +22,7 @@ data to other apps.
 ## Access boundary principle
 
 Only the Manager and the Hub should directly access
-`{Team}/SmallSeaCollectiveCore` stations (i.e. `core.db` files). All other
+`{Team}/SmallSeaCollectiveCore` berths (i.e. `core.db` files). All other
 apps must use the Hub API described here.
 
 ## Proposed endpoints
@@ -51,11 +51,11 @@ manual config.
 ### Tier 2 — Requires a SmallSeaCollectiveCore session
 
 Full team details are more sensitive (member identities, roles) and require
-a session scoped to the team's Core station.
+a session scoped to the team's Core berth.
 
 ```
 GET /teams/{team_name}
-→ { name, members: [{ id, role }], stations: [{ app_name, id }] }
+→ { name, members: [{ id, role }], berths: [{ app_name, id }] }
 ```
 
 The session must be for `{team_name}/SmallSeaCollectiveCore`. The Hub

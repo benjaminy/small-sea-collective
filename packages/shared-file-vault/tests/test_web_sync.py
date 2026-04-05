@@ -114,7 +114,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
 
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
     alice_member_id_hex = team_result["member_id_hex"]
-    team_bucket = f"ss-{team_result['station_id_hex'][:16]}"
+    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
