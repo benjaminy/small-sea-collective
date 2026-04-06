@@ -100,8 +100,10 @@ still normal team traffic and should use encrypted team sessions.
   `SessionRequestReq`; pass it through to `request_session`; add `mode` to
   `/session/info` response
 - Session approval / notification text — `_send_os_notification`, pending-session
-  list, and the Manager's active team-session UI (`team_session.html`) visibly
-  mark passthrough team sessions
+  list (`devtools/sandbox/sandbox/templates/fragments/pending_sessions.html`),
+  approval card (`packages/small-sea-manager/small_sea_manager/templates/fragments/session_card.html`),
+  and the Manager's active team-session UI (`team_session.html`) visibly mark
+  passthrough team sessions
 - `packages/small-sea-client/small_sea_client/client.py` — session open/request
   helpers accept `mode` parameter (default `"encrypted"`)
 - `packages/small-sea-manager/small_sea_manager/manager.py` — session cache key
