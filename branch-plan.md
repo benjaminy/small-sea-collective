@@ -5,62 +5,60 @@ follow-up comment.
 
 ## Branch Goal
 
-Generalize Hub encryption beyond the current `vault/` special case so normal
-team-app traffic uses standard team encryption by default, while still allowing
-explicit passthrough exceptions for onboarding, bootstrap, and future
-intentionally public paths.
+Make Hub encryption a session-level choice: encrypted by default, passthrough
+only when explicitly requested at session creation time. Replace the current
+hard-coded `vault/` path prefix check with this policy.
 
 ## Why This Branch Exists
 
-Right now the Hub already marks normal team sessions as `encrypted`, but the
-actual crypto seam in `small_sea_hub/crypto.py` only activates for `vault/`
-paths. That is enough for Shared File Vault, but it is not yet a real Hub-level
-encryption policy.
+The Hub already does group encryption, but only for paths starting with
+`vault/`. All other traffic — including NoteToSelf and non-vault team traffic —
+passes through in plaintext despite going through third-party cloud storage.
 
-The issue comment sharpens the product requirement:
+The encryption decision should not depend on path naming conventions. It should
+be an explicit, per-session policy set at creation time.
 
-- default team traffic should be wrapped in standard team encryption
-- some traffic must remain plaintext by explicit choice
-- the API needs real options, not accidental behavior from path conventions
+## Design
+
+- Session mode (`encrypted` / `passthrough`) is chosen by the caller at session
+  creation time. Default is `encrypted`.
+- The Hub applies crypto based solely on session mode — no path inspection.
+- If an app needs both encrypted and plaintext traffic, it opens two sessions.
+- `path_uses_group_crypto` and `_ENCRYPTED_PREFIXES` go away.
 
 ## Branch Success
 
-This branch succeeds if, at the end:
-
-1. Hub encryption handling is an explicit policy surface, not a hard-coded
-   `vault/` prefix check
-2. normal team-app traffic can opt into the standard encrypted path without
-   inventing app-specific naming tricks
-3. invitation/bootstrap flows still work because passthrough cases are
-   deliberate and documented
-4. micro tests make the encrypted-vs-passthrough behavior easy to trust
-
-## Likely Shape
-
-- replace `_ENCRYPTED_PREFIXES` with an explicit Hub encryption policy
-- keep `NoteToSelf` traffic passthrough
-- make standard team traffic encrypted by default
-- add a narrow way for callers to request passthrough for bootstrap/public
-  cases
-- update current Hub callers that rely on plaintext team-repo bootstrap paths
+1. Session mode is a caller choice at creation time, defaulting to encrypted
+2. Hub encrypt/decrypt is driven entirely by session mode, not path
+3. Existing vault traffic still works (now encrypted because the session is,
+   not because the path starts with `vault/`)
+4. Invitation/bootstrap flows still work via passthrough sessions
+5. Micro tests cover both encrypted and passthrough session behavior
 
 ## Likely Touch Points
 
-- `packages/small-sea-hub/small_sea_hub/crypto.py`
-- `packages/small-sea-hub/small_sea_hub/backend.py`
-- `packages/cod-sync/cod_sync/protocol.py`
-- Manager invitation/bootstrap flows and the related micro tests
+- `packages/small-sea-hub/small_sea_hub/crypto.py` — remove path-based check
+- `packages/small-sea-hub/small_sea_hub/backend.py` — session creation accepts
+  mode from caller, defaults to `encrypted`; upload/download uses session mode
+  directly
+- `packages/small-sea-hub/small_sea_hub/server.py` — pass mode through the
+  session creation API
+- `packages/small-sea-manager/small_sea_manager/manager.py` — invitation flow
+  explicitly requests passthrough
+- Docs: add a brief encryption policy note
 
 ## Out Of Scope
 
-- redesigning invitation tokens or membership flows
-- changing sender-key storage or ratchet architecture
-- solving every future public-sharing product case in this branch
+- Redesigning invitation tokens or membership flows
+- Changing sender-key storage or ratchet architecture
+- Multiple encryption flavors (future work; mode is a string, not a bool,
+  so it extends naturally)
 
 ## Validation
 
-- existing Shared File Vault encrypted flow still passes
-- invitation acceptance bootstrap still passes end to end
-- a new micro test proves a non-`vault/` team path can use encryption
-- a new micro test proves explicitly passthrough team traffic stays plaintext
+- Existing Shared File Vault encrypted flow still passes
+- Invitation acceptance bootstrap still passes end to end
+- A new micro test proves a non-`vault/` team path uses encryption on an
+  encrypted session
+- A new micro test proves a passthrough session stays plaintext
 - Hub remains the only Small Sea component doing network I/O
