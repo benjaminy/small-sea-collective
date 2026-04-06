@@ -538,7 +538,7 @@ CREATE TABLE IF NOT EXISTS peer (
 | **Deep device unification** | Merging team memberships across two separate participant identities is not designed. Shallow unification (NoteToSelf-level only) is the current scope. |
 | **Key transfer between devices** | How DAILY/GUARDED/BURIED keys are shared with a newly linked device is TBD, pending Cuttlefish integration. |
 | **`make_device_link_invitation()`** | Currently a stub (`pass`). The primary device-linking flow is not yet implemented. |
-| **`manager.py` sessions** | `TeamManager.connect()` always opens a NoteToSelf session. It should open sessions for each relevant berth lazily as needed. |
+| **`manager.py` sessions** | The Manager now tracks berth-scoped Hub sessions lazily via its `_sessions` cache and the web/UI PIN flow. What is still missing is the broader multi-device `NoteToSelf` sync and update-awareness story. |
 | **`participant` / `participant_unification` tables** | Not yet in the SQL schema; needs to be designed and added to NoteToSelf DB. |
 | **NoteToSelf/{App} berths** | Per-app personal state outside of team context. Not yet designed; stub only. |
 | **Sync mailbox API** | Hub needs a mailbox abstraction to notify the Manager (and other apps) when incoming changes arrive from the internet. Shape TBD. |

@@ -6,7 +6,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from small_sea_manager.manager import TeamManager
+from small_sea_manager.manager import TeamManager, _CORE_APP
 
 _template_dir = pathlib.Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=_template_dir)
@@ -19,8 +19,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     app = FastAPI(title="Small Sea Manager")
     app.state.manager = TeamManager(root_dir, participant_hex, hub_port)
 
-    _NTS = ("SmallSeaCollectiveCore", "NoteToSelf")  # the Manager's primary session scope
-    _CORE_APP = "SmallSeaCollectiveCore"  # app name used for all team sessions
+    _NTS_TEAM = "NoteToSelf"
     _ENCRYPTED = "encrypted"
     _PASSTHROUGH = "passthrough"
 
@@ -32,12 +31,11 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
 
     def _hub_connection_ctx(request: Request, error: str = None):
         mgr = _mgr(request)
-        app_name, team_name = _NTS
         return templates.TemplateResponse(
             "fragments/hub_connection.html",
             {
                 "request": request,
-                "session_status": mgr.session_state(app_name, team_name, _PASSTHROUGH),
+                "session_status": mgr.session_state(_NTS_TEAM, _PASSTHROUGH),
                 "session_error": error,
                 "session_mode_badge": _mode_badge(_PASSTHROUGH),
             },
@@ -50,7 +48,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             {
                 "request": request,
                 "team_name": team_name,
-                "team_session_status": mgr.session_state(_CORE_APP, team_name, _ENCRYPTED),
+                "team_session_status": mgr.session_state(team_name, _ENCRYPTED),
                 "session_error": error,
                 "team_session_mode_badge": _mode_badge(_ENCRYPTED),
             },
@@ -64,13 +62,12 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         teams = [t for t in mgr.list_teams() if t["name"] != _NOTETOSELF]
         for t in teams:
             t["sync_status"] = mgr.get_team_sync_status(t["name"])
-            t["session_status"] = mgr.session_state(_CORE_APP, t["name"], _ENCRYPTED)
+            t["session_status"] = mgr.session_state(t["name"], _ENCRYPTED)
         return teams
 
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         mgr = _mgr(request)
-        app_name, team_name = _NTS
         return templates.TemplateResponse(
             "index.html",
             {
@@ -78,7 +75,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "nickname": mgr.get_nickname(),
                 "participant_short": mgr.participant_hex[:8],
                 "teams": _teams_with_status(mgr),
-                "session_status": mgr.session_state(app_name, team_name, _PASSTHROUGH),
+                "session_status": mgr.session_state(_NTS_TEAM, _PASSTHROUGH),
                 "session_error": None,
             },
         )
@@ -90,15 +87,14 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/session/request", response_class=HTMLResponse)
     async def session_request(request: Request):
         mgr = _mgr(request)
-        app_name, team_name = _NTS
         try:
             session, pending_id = mgr.client.start_session(
-                mgr.participant_hex, app_name, team_name, "ManagerUI", mode=_PASSTHROUGH
+                mgr.participant_hex, _CORE_APP, _NTS_TEAM, "ManagerUI", mode=_PASSTHROUGH
             )
             if session is not None:
-                mgr.set_session(app_name, team_name, session.token, mode=_PASSTHROUGH)
+                mgr.set_session(_NTS_TEAM, session.token, mode=_PASSTHROUGH)
             else:
-                mgr.set_pending(app_name, team_name, pending_id, mode=_PASSTHROUGH)
+                mgr.set_pending(_NTS_TEAM, pending_id, mode=_PASSTHROUGH)
         except Exception as e:
             return _hub_connection_ctx(request, error=str(e))
         return _hub_connection_ctx(request)
@@ -106,11 +102,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/session/confirm", response_class=HTMLResponse)
     async def session_confirm(request: Request, pin: str = Form(...)):
         mgr = _mgr(request)
-        app_name, team_name = _NTS
-        pending_id = mgr.get_pending_id(app_name, team_name, _PASSTHROUGH)
+        pending_id = mgr.get_pending_id(_NTS_TEAM, _PASSTHROUGH)
         try:
             session = mgr.client.confirm_session(pending_id, pin.strip())
-            mgr.set_session(app_name, team_name, session.token, mode=_PASSTHROUGH)
+            mgr.set_session(_NTS_TEAM, session.token, mode=_PASSTHROUGH)
         except Exception as e:
             return _hub_connection_ctx(request, error=str(e))
         return _hub_connection_ctx(request)
@@ -118,8 +113,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/session/resend-notification", response_class=HTMLResponse)
     async def session_resend_notification(request: Request):
         mgr = _mgr(request)
-        app_name, team_name = _NTS
-        pending_id = mgr.get_pending_id(app_name, team_name, _PASSTHROUGH)
+        pending_id = mgr.get_pending_id(_NTS_TEAM, _PASSTHROUGH)
         try:
             if pending_id:
                 mgr.client.resend_notification(pending_id)
@@ -130,7 +124,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/session/close", response_class=HTMLResponse)
     async def session_close(request: Request):
         mgr = _mgr(request)
-        mgr.clear_session(*_NTS, mode=_PASSTHROUGH)
+        mgr.clear_session(_NTS_TEAM, mode=_PASSTHROUGH)
         return _hub_connection_ctx(request)
 
     # ------------------------------------------------------------------ #
@@ -174,7 +168,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "members": members,
                 "invitations": mgr.list_invitations(team_name),
                 "sync_status": mgr.get_team_sync_status(team_name),
-                "team_session_status": mgr.session_state(_CORE_APP, team_name, _ENCRYPTED),
+                "team_session_status": mgr.session_state(team_name, _ENCRYPTED),
                 "team_session_mode_badge": _mode_badge(_ENCRYPTED),
             },
         )
@@ -191,9 +185,9 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 mgr.participant_hex, _CORE_APP, team_name, "ManagerUI", mode=_ENCRYPTED
             )
             if session is not None:
-                mgr.set_session(_CORE_APP, team_name, session.token, mode=_ENCRYPTED)
+                mgr.set_session(team_name, session.token, mode=_ENCRYPTED)
             else:
-                mgr.set_pending(_CORE_APP, team_name, pending_id, mode=_ENCRYPTED)
+                mgr.set_pending(team_name, pending_id, mode=_ENCRYPTED)
         except Exception as e:
             return _team_session_ctx(request, team_name, error=str(e))
         return _team_session_ctx(request, team_name)
@@ -203,10 +197,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         request: Request, team_name: str, pin: str = Form(...)
     ):
         mgr = _mgr(request)
-        pending_id = mgr.get_pending_id(_CORE_APP, team_name, _ENCRYPTED)
+        pending_id = mgr.get_pending_id(team_name, _ENCRYPTED)
         try:
             session = mgr.client.confirm_session(pending_id, pin.strip())
-            mgr.set_session(_CORE_APP, team_name, session.token, mode=_ENCRYPTED)
+            mgr.set_session(team_name, session.token, mode=_ENCRYPTED)
         except Exception as e:
             return _team_session_ctx(request, team_name, error=str(e))
         return _team_session_ctx(request, team_name)
@@ -214,7 +208,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/teams/{team_name}/session/resend-notification", response_class=HTMLResponse)
     async def team_session_resend(request: Request, team_name: str):
         mgr = _mgr(request)
-        pending_id = mgr.get_pending_id(_CORE_APP, team_name, _ENCRYPTED)
+        pending_id = mgr.get_pending_id(team_name, _ENCRYPTED)
         try:
             if pending_id:
                 mgr.client.resend_notification(pending_id)
@@ -225,7 +219,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/teams/{team_name}/session/close", response_class=HTMLResponse)
     async def team_session_close(request: Request, team_name: str):
         mgr = _mgr(request)
-        mgr.clear_session(_CORE_APP, team_name, mode=_ENCRYPTED)
+        mgr.clear_session(team_name, mode=_ENCRYPTED)
         return _team_session_ctx(request, team_name)
 
     # ------------------------------------------------------------------ #
