@@ -66,7 +66,39 @@ solely to manage cache state.
 Do **not** add an adapter layer above the client lib just to hide the core app
 name. This branch should centralize the constant, not invent a new abstraction.
 
-### 3. Validation and tests
+### 3. Remove legacy `self.session` / `connect()` / `push()` / `pull()`
+
+The singular `self.session` attribute is redundant with the `_sessions` dict.
+It is set only by `connect()` and consumed only by the legacy `push()` and
+`pull()` methods. No production code calls any of these three methods; the web
+UI uses `_sessions` exclusively, and `push_team()` already replaced `push()`.
+
+**Remove from `manager.py`:**
+- `connect(team, pin_provider, mode)` method (~15 lines) — sets `self.session`
+  via `request_session` + `confirm_session`. The same flow is handled by the
+  web PIN path (`session_request` / `session_confirm` in `web.py`) which stores
+  results in `_sessions`.
+- `push(repo_dir)` method (~20 lines) — uses `self.session`. Superseded by
+  `push_team(team_name)` which uses `_get_or_open_session`.
+- `pull(repo_dir, from_member_id)` method (~15 lines) — uses `self.session`.
+  No replacement exists yet, but no code calls it either; when peer-pull is
+  needed it can be built on top of `_sessions` directly.
+- All references to `self.session` (the attribute is never initialized in
+  `__init__`, only assigned in `connect()`).
+
+**Update tests (`test_cloud_roundtrip.py`):**
+- `test_connect_pin_flow` and `test_connect_requires_pin_provider` are the only
+  callers of `connect()`. Remove or rewrite them:
+  - The PIN-flow semantics will be covered by the new web PIN-flow micro test
+    added in step 4 (request → pending → confirm → active).
+  - The "requires pin_provider" guard disappears with `connect()`.
+
+**Why now:** The rest of this branch already touches every session-cache method
+signature. Carrying the dead `self.session` path forward means updating it for
+the new key shape only to delete it later. Removing it in the same branch keeps
+the diff self-contained.
+
+### 4. Validation and tests
 
 Add focused micro tests so this branch proves the cache shape changed safely,
 rather than relying only on broader integration coverage.
@@ -99,6 +131,7 @@ layer.
 Success criteria:
 - No Manager cache method or cache key includes `app`
 - All remaining protocol-level Hub calls still pass `_CORE_APP`
+- No `self.session` attribute; no `connect()`, `push()`, or `pull()` methods
 - No other package is made to depend on Manager-only session-cache internals
 - All focused micro tests and regression tests pass
 
@@ -110,12 +143,14 @@ Success criteria:
   `small-sea-client` as part of this branch
 - Do **not** fold in any `opt-in-opt-out-crypto` (#42) changes — this should
   land on `main` independently
-- Do **not** address the redundancy between `self.session` and `_sessions` yet;
-  flag for future cleanup.
+- ~~Do **not** address the redundancy between `self.session` and `_sessions` yet;
+  flag for future cleanup.~~ → Included as step 5 below.
 
 ## Order of operations
 
 1. Update `manager.py` (shared `_CORE_APP`, cache key, method signatures, remove dead code)
 2. Update `web.py` (import `_CORE_APP`, fix all cache-method call sites)
-3. Add focused micro tests for cache semantics and the web PIN flow
-4. Run focused micro tests, then the regression suite, and fix any breakage
+3. Remove legacy `self.session` / `connect()` / `push()` / `pull()` from `manager.py`
+4. Update `test_cloud_roundtrip.py` (remove/rewrite `connect()`-dependent tests)
+5. Add focused micro tests for cache semantics and the web PIN flow
+6. Run focused micro tests, then the regression suite, and fix any breakage
