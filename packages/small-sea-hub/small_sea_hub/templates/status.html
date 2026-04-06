@@ -11,6 +11,9 @@
     - The count of pending and active sessions
     - The client_name of a pending session (a label chosen by the requesting
       app, e.g. "ManagerUI") — not a secret
+    - A generic session-mode or warning marker (for example encrypted vs a
+      special passthrough warning), as long as it does not reveal the team or
+      app behind the request
     - A "Resend notification" button (re-fires the OS notification; the PIN
       never appears in any HTTP response)
 
@@ -65,7 +68,7 @@
   <tbody>
     {% for s in pending %}
     <tr>
-      <td>{{ s.client_name }}</td>
+      <td>{% if s.mode_warning %}{{ s.mode_warning }} {% endif %}{{ s.client_name }}</td>
       <td class="muted">{{ s.expires_at[:19].replace("T", " ") }} UTC</td>
       <td>
         <form method="post" action="/sessions/{{ s.pending_id }}/resend-notification">

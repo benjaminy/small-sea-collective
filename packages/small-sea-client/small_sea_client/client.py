@@ -44,7 +44,12 @@ class SmallSeaClient:
         self._http_client = _http_client
 
     def request_session(
-        self, participant: str, app: str, team: str, client_name: str
+        self,
+        participant: str,
+        app: str,
+        team: str,
+        client_name: str,
+        mode: str = "encrypted",
     ) -> str:
         """Begin the two-step session flow.
 
@@ -54,12 +59,23 @@ class SmallSeaClient:
         """
         result = self._post(
             "/sessions/request",
-            {"participant": participant, "app": app, "team": team, "client": client_name},
+            {
+                "participant": participant,
+                "app": app,
+                "team": team,
+                "client": client_name,
+                "mode": mode,
+            },
         )
         return result["pending_id"]
 
     def start_session(
-        self, participant: str, app: str, team: str, client_name: str
+        self,
+        participant: str,
+        app: str,
+        team: str,
+        client_name: str,
+        mode: str = "encrypted",
     ) -> "tuple[SmallSeaSession | None, str | None]":
         """Begin a session, handling both auto-approve and PIN modes in one call.
 
@@ -71,14 +87,25 @@ class SmallSeaClient:
         """
         result = self._post(
             "/sessions/request",
-            {"participant": participant, "app": app, "team": team, "client": client_name},
+            {
+                "participant": participant,
+                "app": app,
+                "team": team,
+                "client": client_name,
+                "mode": mode,
+            },
         )
         if "token" in result:
             return SmallSeaSession(self, result["token"]), None
         return None, result["pending_id"]
 
     def open_session(
-        self, participant: str, app: str, team: str, client_name: str
+        self,
+        participant: str,
+        app: str,
+        team: str,
+        client_name: str,
+        mode: str = "encrypted",
     ) -> "SmallSeaSession":
         """Open a session when the Hub is running in auto-approve mode.
 
@@ -88,7 +115,13 @@ class SmallSeaClient:
         """
         result = self._post(
             "/sessions/request",
-            {"participant": participant, "app": app, "team": team, "client": client_name},
+            {
+                "participant": participant,
+                "app": app,
+                "team": team,
+                "client": client_name,
+                "mode": mode,
+            },
         )
         if "token" not in result:
             raise SmallSeaError(

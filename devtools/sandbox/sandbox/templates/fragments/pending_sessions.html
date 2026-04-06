@@ -5,7 +5,7 @@
   <div class="row" style="margin-bottom:0.3rem; flex-wrap:nowrap;">
     <span class="muted" style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;"
           title="{{ s.app_name }} / {{ s.team_name }}">
-      {{ s.client_name }} → {{ s.team_name }}
+      {% if s.mode_warning %}{{ s.mode_warning }} {% endif %}{{ s.client_name }} → {{ s.team_name }}
     </span>
     <code style="font-size:1rem; font-weight:bold; color:#064e3b; letter-spacing:0.15em;">{{ s.pin }}</code>
   </div>

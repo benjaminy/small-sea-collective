@@ -15,7 +15,7 @@ from small_sea_manager.provisioning import (
     create_invitation, create_new_participant, create_team, list_invitations)
 
 
-def _open_session(http, nickname, team):
+def _open_session(http, nickname, team, mode="encrypted"):
     resp = http.post(
         "/sessions/request",
         json={
@@ -23,6 +23,7 @@ def _open_session(http, nickname, team):
             "app": "SmallSeaCollectiveCore",
             "team": team,
             "client": "Smoke Tests",
+            "mode": mode,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -139,13 +140,13 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     bob_hex = create_new_participant(root, "Bob")
 
     # -- Register cloud storage via Hub --
-    alice_nts = _open_session(http, "Alice", "NoteToSelf")
+    alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         alice_nts, "s3", alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
     )
-    bob_nts = _open_session(http, "Bob", "NoteToSelf")
+    bob_nts = _open_session(http, "Bob", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         bob_nts, "s3", bob_minio["endpoint"],
         access_key=bob_minio["access_key"],
@@ -157,7 +158,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     alice_member_id_hex = team_result["member_id_hex"]
     team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
-    alice_team_token = _open_session(http, "Alice", "ProjectX")
+    alice_team_token = _open_session(http, "Alice", "ProjectX", mode="passthrough")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     _push_via_hub(http, alice_team_token, alice_team_sync)
 
@@ -321,19 +322,19 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
     carol_hex = create_new_participant(root, "Carol")
 
     # -- Register cloud storage via Hub --
-    alice_nts = _open_session(http, "Alice", "NoteToSelf")
+    alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         alice_nts, "s3", alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
     )
-    bob_nts = _open_session(http, "Bob", "NoteToSelf")
+    bob_nts = _open_session(http, "Bob", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         bob_nts, "s3", bob_minio["endpoint"],
         access_key=bob_minio["access_key"],
         secret_key=bob_minio["secret_key"],
     )
-    carol_nts = _open_session(http, "Carol", "NoteToSelf")
+    carol_nts = _open_session(http, "Carol", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         carol_nts, "s3", carol_minio["endpoint"],
         access_key=carol_minio["access_key"],
@@ -344,7 +345,7 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
     team_result = create_team(root, alice_hex, "ProjectX")
     team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
-    alice_team_token = _open_session(http, "Alice", "ProjectX")
+    alice_team_token = _open_session(http, "Alice", "ProjectX", mode="passthrough")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     _push_via_hub(http, alice_team_token, alice_team_sync)
 

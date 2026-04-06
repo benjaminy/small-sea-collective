@@ -21,7 +21,7 @@ def _free_port():
         return sock.getsockname()[1]
 
 
-def _open_session(http, nickname, team):
+def _open_session(http, nickname, team, mode="encrypted"):
     resp = http.post(
         "/sessions/request",
         json={
@@ -29,6 +29,7 @@ def _open_session(http, nickname, team):
             "app": "SmallSeaCollectiveCore",
             "team": team,
             "client": "Smoke Tests",
+            "mode": mode,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -95,7 +96,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     alice_hex = Provisioning.create_new_participant(root, "Alice")
     bob_hex = Provisioning.create_new_participant(root, "Bob")
 
-    alice_nts = _open_session(http, "Alice", "NoteToSelf")
+    alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         alice_nts,
         "s3",
@@ -103,7 +104,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
     )
-    bob_nts = _open_session(http, "Bob", "NoteToSelf")
+    bob_nts = _open_session(http, "Bob", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         bob_nts,
         "s3",

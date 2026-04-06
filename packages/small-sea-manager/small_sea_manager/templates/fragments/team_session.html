@@ -6,6 +6,9 @@
 {% if team_session_status == "active" %}
   <div class="row" style="align-items:center; gap:0.5rem;">
     <span class="badge badge-green" style="font-size:0.7rem;">session active</span>
+    {% if team_session_mode_badge %}
+    <span class="badge" style="font-size:0.7rem; background:#fee2e2; color:#991b1b;">{{ team_session_mode_badge }}</span>
+    {% endif %}
     <form hx-post="/teams/{{ team_name }}/session/close"
           hx-target="#team-session-{{ team_name }}"
           hx-swap="outerHTML">
@@ -15,7 +18,7 @@
 
 {% elif team_session_status == "pending" %}
   <p class="token-instruction" style="margin-bottom:0.4rem; font-size:0.85rem;">
-    PIN sent via notification — enter it to confirm:
+    {% if team_session_mode_badge %}{{ team_session_mode_badge }} {% endif %}PIN sent via notification — enter it to confirm:
   </p>
   <form class="inline-form"
         hx-post="/teams/{{ team_name }}/session/confirm"

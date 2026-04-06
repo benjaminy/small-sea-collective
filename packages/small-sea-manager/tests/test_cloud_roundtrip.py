@@ -25,6 +25,7 @@ def _open_session(client):
             "app": "SmallSeaCollectiveCore",
             "team": "NoteToSelf",
             "client": "Smoke Tests",
+            "mode": "passthrough",
         },
     )
     assert resp.status_code == 200
@@ -124,8 +125,8 @@ def test_team_manager_connect(playground_dir):
     captured = {}
     _orig = backend.request_session
 
-    def _capturing(participant, app_name, team, client):
-        pid, pin = _orig(participant, app_name, team, client)
+    def _capturing(participant, app_name, team, client, mode=None):
+        pid, pin = _orig(participant, app_name, team, client, mode=mode)
         captured["pin"] = pin
         return pid, pin
 

@@ -784,12 +784,14 @@ class ExplicitProxyRemote(CodSyncRemote):
     """
 
     def __init__(self, session_hex, protocol, url, bucket,
-                 base_url="http://localhost:11437", client=None):
+                 base_url="http://localhost:11437", client=None,
+                 download_transform=None):
         self.session_hex = session_hex
         self._auth = {"Authorization": f"Bearer {session_hex}"}
         self._protocol = protocol
         self._url = url
         self._bucket = bucket
+        self._download_transform = download_transform
 
         if client is not None:
             self._get = client.get
@@ -811,6 +813,8 @@ class ExplicitProxyRemote(CodSyncRemote):
             return (None, None)
         body = resp.json()
         data = base64.b64decode(body["data"])
+        if self._download_transform is not None:
+            data = self._download_transform(data)
         etag = body.get("etag")
         return (data, etag)
 

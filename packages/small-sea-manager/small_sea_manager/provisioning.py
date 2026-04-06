@@ -28,7 +28,13 @@ import subprocess
 import cod_sync.protocol as CodSync
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-from cuttlefish.group import create_sender_key
+from cuttlefish.group import (
+    GroupMessage,
+    _advance_chain_key,
+    _derive_message_key,
+    create_sender_key,
+    group_decrypt,
+)
 from small_sea_manager.sender_keys import (
     deserialize_distribution_message,
     distribution_message_from_record,
@@ -469,6 +475,58 @@ def _initialize_team_sender_key_state(user_db_path, team_id, member_id):
         receiver_record_from_distribution(distribution),
     )
     return distribution
+
+
+def _deserialize_group_message(payload: bytes) -> GroupMessage:
+    data = json.loads(payload.decode("utf-8"))
+    return GroupMessage(
+        sender_participant_id=bytes.fromhex(data["sender_participant_id"]),
+        sender_chain_id=bytes.fromhex(data["sender_chain_id"]),
+        iteration=int(data["iteration"]),
+        iv=bytes.fromhex(data["iv"]),
+        ciphertext=bytes.fromhex(data["ciphertext"]),
+        signature=bytes.fromhex(data["signature"]),
+    )
+
+
+def _message_key_for(message: GroupMessage, sender_key) -> bytes:
+    target_iteration = message.iteration
+
+    if target_iteration < sender_key.iteration:
+        message_key = sender_key.skipped_message_keys.get(target_iteration)
+        if message_key is None:
+            raise ValueError(
+                f"No skipped key for iteration {target_iteration} "
+                f"(current iteration: {sender_key.iteration})"
+            )
+        return message_key
+
+    if target_iteration == sender_key.iteration:
+        return _derive_message_key(sender_key.chain_key)
+
+    chain_key = sender_key.chain_key
+    for _ in range(sender_key.iteration, target_iteration):
+        chain_key = _advance_chain_key(chain_key)
+    return _derive_message_key(chain_key)
+
+
+def decrypt_invitation_bootstrap_payload(
+    inviter_sender_key, payload: bytes
+) -> bytes:
+    """Decrypt invitation bootstrap bytes when they were published in team mode.
+
+    Some bootstrap artifacts may still be plaintext. In that case, return them
+    unchanged so the invitation flow can consume either representation.
+    """
+    try:
+        message = _deserialize_group_message(payload)
+    except Exception:
+        return payload
+
+    sender_key = receiver_record_from_distribution(inviter_sender_key)
+    _message_key_for(message, sender_key)
+    _next_sender_key, plaintext = group_decrypt(message, sender_key)
+    return plaintext
 
 
 def get_team_signing_key(root_dir, participant_hex, team_name):

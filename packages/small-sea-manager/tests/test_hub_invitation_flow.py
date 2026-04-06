@@ -23,7 +23,7 @@ ALICE_MINIO_PORT = 19650
 BOB_MINIO_PORT = 19750
 
 
-def _open_session(http, nickname, team):
+def _open_session(http, nickname, team, mode="encrypted"):
     resp = http.post(
         "/sessions/request",
         json={
@@ -31,6 +31,7 @@ def _open_session(http, nickname, team):
             "app": "SmallSeaCollectiveCore",
             "team": team,
             "client": "Smoke Tests",
+            "mode": mode,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -96,7 +97,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     bob_hex = Provisioning.create_new_participant(root, "Bob")
 
     # ---- Register cloud storage for Alice (NoteToSelf Hub session) ----
-    alice_nts_token = _open_session(http, "Alice", "NoteToSelf")
+    alice_nts_token = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         alice_nts_token, "s3", alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
@@ -104,7 +105,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     )
 
     # ---- Register cloud storage for Bob (NoteToSelf Hub session) ----
-    bob_nts_token = _open_session(http, "Bob", "NoteToSelf")
+    bob_nts_token = _open_session(http, "Bob", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         bob_nts_token, "s3", bob_minio["endpoint"],
         access_key=bob_minio["access_key"],
@@ -117,7 +118,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
     # ---- Alice: push team repo via Hub ----
-    alice_team_token = _open_session(http, "Alice", "ProjectX")
+    alice_team_token = _open_session(http, "Alice", "ProjectX", mode="passthrough")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     _push_via_hub(http, alice_team_token, alice_team_sync)
 
