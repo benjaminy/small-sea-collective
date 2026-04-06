@@ -34,26 +34,32 @@ not as evidence that normal team sessions should stay path- or convention-based.
 ## Design
 
 - Session mode (`encrypted` / `passthrough`) is chosen by the caller in
-  `/sessions/request`, stored on the pending session, and carried through
-  `/sessions/confirm`.
-- `NoteToSelf` stays `passthrough` in this branch.
-- Non-`NoteToSelf` team sessions default to `encrypted`.
-- Callers may explicitly request `passthrough` for narrow bootstrap/public
-  cases.
+  `/sessions/request`, stored on the `PendingSession` row, and carried through
+  `/sessions/confirm` into the real `SmallSeaSession`.
+- Both the Hub HTTP API and the small-sea-client library default to `encrypted`
+  when the caller omits mode. The Hub's defaulting logic says nothing about
+  particular teams or apps — any app is free to request any mode for any team.
 - Once created, a session's mode does not change for the life of that token.
 - The Hub applies crypto based solely on session mode — no path inspection.
 - If an app needs both encrypted and plaintext traffic for one team, it opens
-  two sessions.
-- Session caches/helpers therefore need to key by `(app, team, mode)`, not just
-  `(app, team)`.
-- Session metadata should expose `mode` so a resumed token can report which
-  policy it carries.
+  two sessions. There is no "one session per berth" rule — the Hub allows
+  multiple concurrent sessions for the same app+team.
+- The Manager's session cache currently keys by `(app, team)`. For this branch,
+  the cache key widens to include mode so the Manager can hold both an
+  encrypted and a passthrough session for the same team. (The `app` dimension
+  in the cache key is redundant — the Manager always uses
+  `SmallSeaCollectiveCore` — but simplifying that is a separate cleanup;
+  see issue #46.)
+- Add `mode` to the existing `/session/info` response dict so a resumed token
+  can report which policy it carries.
 - Passthrough team sessions are a convention-backed escape hatch, not a proof
   that plaintext is impossible to request. The safety improvement in this branch
   is that the choice is explicit, visible, and fixed at session creation time.
-- Non-standard team sessions should be visibly special during approval. For this
-  branch, a temporary alarming marker such as `[unsafe]` in the PIN prompt /
-  approval text is good enough, even if the final wording changes later.
+- Non-standard passthrough team sessions should be visibly special during
+  approval. For this branch, a temporary alarming marker such as `[unsafe]`
+  should appear in the OS notification text, the pending-session list in the
+  sandbox dashboard, and the session approval card HTML. Final wording can
+  change later.
 - Per-request encryption toggles are out of scope for this branch.
 - `path_uses_group_crypto` and `_ENCRYPTED_PREFIXES` go away.
 
@@ -71,18 +77,21 @@ not as evidence that normal team sessions should stay path- or convention-based.
 
 ## Likely Touch Points
 
-- `packages/small-sea-hub/small_sea_hub/crypto.py` — remove path-based check
-- `packages/small-sea-hub/small_sea_hub/backend.py` — session creation accepts
-  mode from caller, defaults to `encrypted`; upload/download uses session mode
-  directly
-- `packages/small-sea-hub/small_sea_hub/server.py` — pass mode through the
-  session creation API and expose mode in session metadata
-- Session approval / notification text — visibly mark non-standard passthrough
-  team sessions
+- `packages/small-sea-hub/small_sea_hub/crypto.py` — remove `path_uses_group_crypto`,
+  `_ENCRYPTED_PREFIXES`; upload/download just checks `ss_session.mode`
+- `packages/small-sea-hub/small_sea_hub/backend.py` — add `mode` parameter to
+  `request_session` (default `"encrypted"`); add `mode` column to
+  `PendingSession`; `confirm_session` copies mode from pending row instead of
+  computing it; `open_session` smoke-test shortcut accepts and passes `mode`
+- `packages/small-sea-hub/small_sea_hub/server.py` — add `mode` field to
+  `SessionRequestReq`; pass it through to `request_session`; add `mode` to
+  `/session/info` response
+- Session approval / notification text — `_send_os_notification`, pending-session
+  list, and `session_card.html` visibly mark passthrough team sessions
 - `packages/small-sea-client/small_sea_client/client.py` — session open/request
-  helpers need to carry mode and recover it from session metadata
-- `packages/small-sea-manager/small_sea_manager/manager.py` — invitation flow
-  and session caching need to handle explicit mode
+  helpers accept `mode` parameter (default `"encrypted"`)
+- `packages/small-sea-manager/small_sea_manager/manager.py` — session cache key
+  widens to include mode; invitation flow requests passthrough explicitly
 - Docs: add a brief encryption policy note
 
 ## Out Of Scope
@@ -96,13 +105,15 @@ not as evidence that normal team sessions should stay path- or convention-based.
 
 - Existing Shared File Vault encrypted flow still passes
 - Invitation acceptance bootstrap still passes end to end
-- A session opened without an explicit mode defaults to encrypted for a normal
-  team berth
+- A session opened without an explicit mode defaults to encrypted
 - A session's mode cannot silently change after creation
 - A new micro test proves a non-`vault/` team path uses encryption on an
   encrypted session
 - A new micro test proves a passthrough session stays plaintext
 - A new micro test proves request/confirm preserves the requested mode
-- A passthrough team session is visibly marked in approval / PIN text
-- A resumed token can report its mode correctly through session metadata
+- Smoke tests exercise both encrypted and passthrough modes with appropriate
+  expectations for each
+- A passthrough team session is visibly marked in OS notification, pending list,
+  and approval card
+- A resumed token can report its mode correctly via `/session/info`
 - Hub remains the only Small Sea component doing network I/O
