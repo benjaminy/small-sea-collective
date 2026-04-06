@@ -21,6 +21,11 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
 
     _NTS = ("SmallSeaCollectiveCore", "NoteToSelf")  # the Manager's primary session scope
     _CORE_APP = "SmallSeaCollectiveCore"  # app name used for all team sessions
+    _ENCRYPTED = "encrypted"
+    _PASSTHROUGH = "passthrough"
+
+    def _mode_badge(mode: str) -> str | None:
+        return "[unsafe]" if mode == _PASSTHROUGH else None
 
     def _mgr(request: Request) -> TeamManager:
         return request.app.state.manager
@@ -32,8 +37,9 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "fragments/hub_connection.html",
             {
                 "request": request,
-                "session_status": mgr.session_state(app_name, team_name),
+                "session_status": mgr.session_state(app_name, team_name, _PASSTHROUGH),
                 "session_error": error,
+                "session_mode_badge": _mode_badge(_PASSTHROUGH),
             },
         )
 
@@ -44,8 +50,9 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             {
                 "request": request,
                 "team_name": team_name,
-                "team_session_status": mgr.session_state(_CORE_APP, team_name),
+                "team_session_status": mgr.session_state(_CORE_APP, team_name, _ENCRYPTED),
                 "session_error": error,
+                "team_session_mode_badge": _mode_badge(_ENCRYPTED),
             },
         )
 
@@ -57,7 +64,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         teams = [t for t in mgr.list_teams() if t["name"] != _NOTETOSELF]
         for t in teams:
             t["sync_status"] = mgr.get_team_sync_status(t["name"])
-            t["session_status"] = mgr.session_state(_CORE_APP, t["name"])
+            t["session_status"] = mgr.session_state(_CORE_APP, t["name"], _ENCRYPTED)
         return teams
 
     @app.get("/", response_class=HTMLResponse)
@@ -71,7 +78,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "nickname": mgr.get_nickname(),
                 "participant_short": mgr.participant_hex[:8],
                 "teams": _teams_with_status(mgr),
-                "session_status": mgr.session_state(app_name, team_name),
+                "session_status": mgr.session_state(app_name, team_name, _PASSTHROUGH),
                 "session_error": None,
             },
         )
@@ -86,12 +93,12 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         app_name, team_name = _NTS
         try:
             session, pending_id = mgr.client.start_session(
-                mgr.participant_hex, app_name, team_name, "ManagerUI"
+                mgr.participant_hex, app_name, team_name, "ManagerUI", mode=_PASSTHROUGH
             )
             if session is not None:
-                mgr.set_session(app_name, team_name, session.token)
+                mgr.set_session(app_name, team_name, session.token, mode=_PASSTHROUGH)
             else:
-                mgr.set_pending(app_name, team_name, pending_id)
+                mgr.set_pending(app_name, team_name, pending_id, mode=_PASSTHROUGH)
         except Exception as e:
             return _hub_connection_ctx(request, error=str(e))
         return _hub_connection_ctx(request)
@@ -100,10 +107,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     async def session_confirm(request: Request, pin: str = Form(...)):
         mgr = _mgr(request)
         app_name, team_name = _NTS
-        pending_id = mgr.get_pending_id(app_name, team_name)
+        pending_id = mgr.get_pending_id(app_name, team_name, _PASSTHROUGH)
         try:
             session = mgr.client.confirm_session(pending_id, pin.strip())
-            mgr.set_session(app_name, team_name, session.token)
+            mgr.set_session(app_name, team_name, session.token, mode=_PASSTHROUGH)
         except Exception as e:
             return _hub_connection_ctx(request, error=str(e))
         return _hub_connection_ctx(request)
@@ -112,7 +119,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     async def session_resend_notification(request: Request):
         mgr = _mgr(request)
         app_name, team_name = _NTS
-        pending_id = mgr.get_pending_id(app_name, team_name)
+        pending_id = mgr.get_pending_id(app_name, team_name, _PASSTHROUGH)
         try:
             if pending_id:
                 mgr.client.resend_notification(pending_id)
@@ -123,7 +130,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/session/close", response_class=HTMLResponse)
     async def session_close(request: Request):
         mgr = _mgr(request)
-        mgr.clear_session(*_NTS)
+        mgr.clear_session(*_NTS, mode=_PASSTHROUGH)
         return _hub_connection_ctx(request)
 
     # ------------------------------------------------------------------ #
@@ -167,7 +174,8 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "members": members,
                 "invitations": mgr.list_invitations(team_name),
                 "sync_status": mgr.get_team_sync_status(team_name),
-                "team_session_status": mgr.session_state(_CORE_APP, team_name),
+                "team_session_status": mgr.session_state(_CORE_APP, team_name, _ENCRYPTED),
+                "team_session_mode_badge": _mode_badge(_ENCRYPTED),
             },
         )
 
@@ -180,12 +188,12 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         mgr = _mgr(request)
         try:
             session, pending_id = mgr.client.start_session(
-                mgr.participant_hex, _CORE_APP, team_name, "ManagerUI"
+                mgr.participant_hex, _CORE_APP, team_name, "ManagerUI", mode=_ENCRYPTED
             )
             if session is not None:
-                mgr.set_session(_CORE_APP, team_name, session.token)
+                mgr.set_session(_CORE_APP, team_name, session.token, mode=_ENCRYPTED)
             else:
-                mgr.set_pending(_CORE_APP, team_name, pending_id)
+                mgr.set_pending(_CORE_APP, team_name, pending_id, mode=_ENCRYPTED)
         except Exception as e:
             return _team_session_ctx(request, team_name, error=str(e))
         return _team_session_ctx(request, team_name)
@@ -195,10 +203,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         request: Request, team_name: str, pin: str = Form(...)
     ):
         mgr = _mgr(request)
-        pending_id = mgr.get_pending_id(_CORE_APP, team_name)
+        pending_id = mgr.get_pending_id(_CORE_APP, team_name, _ENCRYPTED)
         try:
             session = mgr.client.confirm_session(pending_id, pin.strip())
-            mgr.set_session(_CORE_APP, team_name, session.token)
+            mgr.set_session(_CORE_APP, team_name, session.token, mode=_ENCRYPTED)
         except Exception as e:
             return _team_session_ctx(request, team_name, error=str(e))
         return _team_session_ctx(request, team_name)
@@ -206,7 +214,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/teams/{team_name}/session/resend-notification", response_class=HTMLResponse)
     async def team_session_resend(request: Request, team_name: str):
         mgr = _mgr(request)
-        pending_id = mgr.get_pending_id(_CORE_APP, team_name)
+        pending_id = mgr.get_pending_id(_CORE_APP, team_name, _ENCRYPTED)
         try:
             if pending_id:
                 mgr.client.resend_notification(pending_id)
@@ -217,7 +225,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/teams/{team_name}/session/close", response_class=HTMLResponse)
     async def team_session_close(request: Request, team_name: str):
         mgr = _mgr(request)
-        mgr.clear_session(_CORE_APP, team_name)
+        mgr.clear_session(_CORE_APP, team_name, mode=_ENCRYPTED)
         return _team_session_ctx(request, team_name)
 
     # ------------------------------------------------------------------ #

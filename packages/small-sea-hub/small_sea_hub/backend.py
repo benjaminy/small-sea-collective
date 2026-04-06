@@ -29,7 +29,6 @@ from small_sea_hub.adapters.oauth import (is_token_expired,
                                           refresh_google_token)
 from small_sea_hub.crypto import (commit_encrypted_upload,
                                   decrypt_group_payload,
-                                  path_uses_group_crypto,
                                   prepare_encrypted_upload)
 from small_sea_manager.provisioning import uuid7
 
@@ -74,6 +73,7 @@ class PendingSession(Base):
     team_name = Column(String, nullable=False)
     app_name = Column(String, nullable=False)
     client_name = Column(String, nullable=False)
+    mode = Column(String, nullable=False)
     pin = Column(String, nullable=False)
     created_at = Column(String, nullable=False)
     expires_at = Column(String, nullable=False)
@@ -155,7 +155,7 @@ class SmallSeaBackend:
     small-sea-manager package (provisioning.py).
     """
 
-    hub_schema_version: int = 48
+    hub_schema_version: int = 49
 
     def __init__(self, root_dir, auto_approve_sessions: bool = False,
                  sandbox_mode: bool = False, log_level: str = "INFO"):
@@ -232,6 +232,13 @@ class SmallSeaBackend:
                 )
                 user_version = 48
                 print("Hub DB migrated to v48.")
+
+            if user_version == 48:
+                cursor.execute(
+                    "ALTER TABLE pending_session ADD COLUMN mode TEXT NOT NULL DEFAULT 'encrypted'"
+                )
+                user_version = 49
+                print("Hub DB migrated to v49.")
 
             cursor.execute(
                 f"PRAGMA user_version = {SmallSeaBackend.hub_schema_version}"
@@ -333,7 +340,19 @@ class SmallSeaBackend:
 
         return team_id, app_id, berth_id
 
-    def request_session(self, nickname, app, team, client):
+    @staticmethod
+    def _normalize_mode(mode: Optional[str]) -> str:
+        if mode is None:
+            return "encrypted"
+        if mode not in ("encrypted", "passthrough"):
+            raise SmallSeaBackendExn(f"Unknown session mode: {mode}")
+        return mode
+
+    @staticmethod
+    def _mode_warning_marker(mode: str) -> str:
+        return "[unsafe] " if mode == "passthrough" else ""
+
+    def request_session(self, nickname, app, team, client, mode: Optional[str] = None):
         """Step 1 of session approval: generate PIN, write pending row, send OS notification.
 
         Returns (pending_id_hex, pin). For normal clients, pin should not be shown to
@@ -343,6 +362,7 @@ class SmallSeaBackend:
         matching = self._find_participant(nickname)
         if not matching:
             raise SmallSeaNotFoundExn()
+        mode = self._normalize_mode(mode)
 
         participant_dir, engine = matching[0]
         participant_hex = participant_dir.absolute().name
@@ -351,7 +371,7 @@ class SmallSeaBackend:
         pin = str(secrets.randbelow(1000)).zfill(3)
 
         if client != "Smoke Tests":
-            self._send_os_notification(client, pin, team, app)
+            self._send_os_notification(client, pin, team, app, mode)
 
         now = datetime.now(timezone.utc)
         expires_at = now + timedelta(minutes=5)
@@ -365,6 +385,7 @@ class SmallSeaBackend:
                 team_name=team,
                 app_name=app,
                 client_name=client,
+                mode=mode,
                 pin=pin,
                 created_at=now.isoformat(),
                 expires_at=expires_at.isoformat(),
@@ -410,7 +431,6 @@ class SmallSeaBackend:
             )
 
             token = secrets.token_bytes(32)
-            session_mode = "passthrough" if pending.team_name == "NoteToSelf" else "encrypted"
             ss_session = SmallSeaSession(
                 id=uuid7(),
                 token=token,
@@ -421,7 +441,7 @@ class SmallSeaBackend:
                 app_id=app_id,
                 app_name=pending.app_name,
                 berth_id=berth_id,
-                mode=session_mode,
+                mode=pending.mode,
                 client=pending.client_name,
             )
             sess.add(ss_session)
@@ -430,7 +450,9 @@ class SmallSeaBackend:
 
         return token
 
-    def _send_os_notification(self, client: str, pin: str, team: str, app: str) -> None:
+    def _send_os_notification(
+        self, client: str, pin: str, team: str, app: str, mode: str
+    ) -> None:
         """Fire an OS notification carrying the session PIN.
 
         Tries plyer first (cross-platform), then osascript (macOS fallback).
@@ -442,7 +464,8 @@ class SmallSeaBackend:
         could intercept.
         """
         title = "Small Sea Access Request"
-        message = f'PIN: {pin} — "{client}" requesting access to {team} → {app}'
+        marker = self._mode_warning_marker(mode)
+        message = f'PIN: {pin} — {marker}"{client}" requesting access to {team} → {app}'
         try:
             plyer.notification.notify(
                 title=title,
@@ -457,7 +480,9 @@ class SmallSeaBackend:
         # permission). Try osascript directly.
         try:
             import subprocess as _sp
-            _msg = f'PIN: {pin} — \\"{client}\\" requesting access to {team} → {app}'
+            _msg = (
+                f'PIN: {pin} — {marker}\\"{client}\\" requesting access to {team} → {app}'
+            )
             _sp.run(
                 ["osascript", "-e",
                  f'display notification "{_msg}" with title "{title}"'],
@@ -496,7 +521,11 @@ class SmallSeaBackend:
                 sess.commit()
                 raise SmallSeaNotFoundExn("Pending session has expired")
             self._send_os_notification(
-                pending.client_name, pending.pin, pending.team_name, pending.app_name
+                pending.client_name,
+                pending.pin,
+                pending.team_name,
+                pending.app_name,
+                pending.mode,
             )
 
     def list_pending_sessions_safe(self) -> list[dict]:
@@ -514,6 +543,8 @@ class SmallSeaBackend:
                 {
                     "pending_id": r.id.hex(),
                     "client_name": r.client_name,
+                    "mode": r.mode,
+                    "mode_warning": self._mode_warning_marker(r.mode).strip(),
                     "expires_at": r.expires_at,
                 }
                 for r in rows
@@ -540,20 +571,24 @@ class SmallSeaBackend:
                     "team_name": r.team_name,
                     "app_name": r.app_name,
                     "client_name": r.client_name,
+                    "mode": r.mode,
+                    "mode_warning": self._mode_warning_marker(r.mode).strip(),
                     "pin": r.pin,
                     "expires_at": r.expires_at,
                 }
                 for r in rows
             ]
 
-    def open_session(self, nickname, app, team, client) -> bytes:
+    def open_session(
+        self, nickname, app, team, client, mode: Optional[str] = None
+    ) -> bytes:
         """Smoke-test shortcut: request + auto-confirm in one call.
 
         Only for use with client='Smoke Tests'. Real clients use the
         request_session / confirm_session two-step flow via the HTTP API.
         """
         assert client == "Smoke Tests", "open_session is only for smoke tests"
-        pending_id_hex, pin = self.request_session(nickname, app, team, client)
+        pending_id_hex, pin = self.request_session(nickname, app, team, client, mode=mode)
         return self.confirm_session(pending_id_hex, pin)
 
     def _lookup_session(self, session_hex):
@@ -747,7 +782,7 @@ class SmallSeaBackend:
         """Download a file from a peer's public cloud bucket via the Hub proxy."""
         ss_session = self._lookup_session(session_hex)
         ok, data, etag = self._download_peer_file(session_hex, member_id_hex, path)
-        if ok and path_uses_group_crypto(ss_session, path):
+        if ok and ss_session.mode == "encrypted":
             data = decrypt_group_payload(ss_session, data)
         return ok, data, etag
 
@@ -805,7 +840,7 @@ class SmallSeaBackend:
     def upload_to_cloud(self, session_hex, path, data, expected_etag=None):
         ss_session = self._lookup_session(session_hex)
         adapter = self._make_storage_adapter(ss_session)
-        if path_uses_group_crypto(ss_session, path):
+        if ss_session.mode == "encrypted":
             next_sender_key, data = prepare_encrypted_upload(ss_session, data)
         else:
             next_sender_key = None
@@ -821,7 +856,7 @@ class SmallSeaBackend:
         ss_session = self._lookup_session(session_hex)
         adapter = self._make_storage_adapter(ss_session)
         ok, data, etag = adapter.download(path)
-        if ok and path_uses_group_crypto(ss_session, path):
+        if ok and ss_session.mode == "encrypted":
             data = decrypt_group_payload(ss_session, data)
         return ok, data, etag
 

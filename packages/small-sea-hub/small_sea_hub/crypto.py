@@ -11,15 +11,6 @@ from small_sea_manager.sender_keys import (
 )
 
 
-_ENCRYPTED_PREFIXES = ("vault/",)
-
-
-def path_uses_group_crypto(ss_session, path: str) -> bool:
-    return ss_session.mode == "encrypted" and any(
-        path.startswith(prefix) for prefix in _ENCRYPTED_PREFIXES
-    )
-
-
 def serialize_group_message(message: GroupMessage) -> bytes:
     return json.dumps(
         {

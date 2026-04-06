@@ -82,6 +82,7 @@ def hub_env(playground_dir, minio, hub_server_gen):
         "app": "SmallSeaCollectiveCore",
         "team": "NoteToSelf",
         "client": "Smoke Tests",
+        "mode": "passthrough",
     })
     assert resp.status_code == 200
     data = resp.json()

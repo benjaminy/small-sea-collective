@@ -60,7 +60,21 @@ def test_request_session_sends_correct_body(client):
         "app": "MyApp",
         "team": "MyTeam",
         "client": "TestClient",
+        "mode": "encrypted",
     }
+
+
+@respx.mock
+def test_request_session_can_override_mode(client):
+    route = respx.post(f"{BASE_URL}/sessions/request").mock(
+        return_value=httpx.Response(200, json={"pending_id": "p2"})
+    )
+    client.request_session("alice", "MyApp", "MyTeam", "TestClient", mode="passthrough")
+
+    import json
+
+    body = json.loads(route.calls[0].request.content)
+    assert body["mode"] == "passthrough"
 
 
 @respx.mock

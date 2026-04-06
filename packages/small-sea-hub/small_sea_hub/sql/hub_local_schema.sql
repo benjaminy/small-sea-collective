@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS pending_session (
     team_name TEXT NOT NULL,
     app_name TEXT NOT NULL,
     client_name TEXT NOT NULL,
+    mode TEXT NOT NULL,
     pin TEXT NOT NULL,
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL

@@ -43,6 +43,7 @@ def hub_env(playground_dir, minio):
             "app": "SmallSeaCollectiveCore",
             "team": "NoteToSelf",
             "client": "Smoke Tests",
+            "mode": "passthrough",
         },
     )
     assert resp.status_code == 200

@@ -28,6 +28,7 @@ def _request_and_confirm(
     app_name="SmallSeaCollectiveCore",
     team="NoteToSelf",
     client_name="Smoke Tests",
+    mode="encrypted",
 ):
     resp = client.post(
         "/sessions/request",
@@ -36,6 +37,7 @@ def _request_and_confirm(
             "app": app_name,
             "team": team,
             "client": client_name,
+            "mode": mode,
         },
     )
     assert resp.status_code == 200
@@ -51,7 +53,7 @@ def _request_and_confirm(
 def test_two_step_flow(test_env):
     """Happy path: request then confirm yields a usable session token."""
     client = test_env["client"]
-    session_hex = _request_and_confirm(client)
+    session_hex = _request_and_confirm(client, mode="passthrough")
     assert isinstance(session_hex, str)
     assert len(session_hex) == 64  # 32 bytes
 
@@ -60,7 +62,7 @@ def test_wrong_pin_rejected(test_env):
     """Confirming with the wrong PIN raises an error."""
     backend = test_env["backend"]
     pending_id_hex, correct_pin = backend.request_session(
-        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests"
+        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests", mode="passthrough"
     )
 
     wrong_pin = str((int(correct_pin) + 1) % 10000).zfill(4)
@@ -72,7 +74,7 @@ def test_expired_pin_rejected(test_env):
     """A pending session past its TTL is rejected."""
     backend = test_env["backend"]
     pending_id_hex, pin = backend.request_session(
-        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests"
+        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests", mode="passthrough"
     )
 
     # Manually backdate the expires_at in the DB
@@ -96,7 +98,7 @@ def test_pending_row_deleted_after_confirm(test_env):
     """The pending_session row is cleaned up after successful confirmation."""
     backend = test_env["backend"]
     pending_id_hex, pin = backend.request_session(
-        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests"
+        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests", mode="passthrough"
     )
     backend.confirm_session(pending_id_hex, pin)
 
@@ -197,6 +199,105 @@ def test_session_info(playground_dir):
     assert info["app_name"] == "SmallSeaCollectiveCore"
     assert len(info["berth_id"]) == 32  # 16 bytes hex
     assert info["client"] == "Smoke Tests"
+    assert info["mode"] == "encrypted"
+
+
+def test_session_mode_defaults_to_encrypted_without_request_field(playground_dir):
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    alice_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    resp = client.post(
+        "/sessions/request",
+        json={
+            "participant": "alice",
+            "app": "SmallSeaCollectiveCore",
+            "team": "ProjectX",
+            "client": "Smoke Tests",
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()
+    resp = client.post(
+        "/sessions/confirm",
+        json={"pending_id": result["pending_id"], "pin": result["pin"]},
+    )
+    session_hex = resp.json()
+
+    info = client.get(
+        "/session/info", headers={"Authorization": f"Bearer {session_hex}"}
+    ).json()
+    assert info["mode"] == "encrypted"
+
+
+def test_notetoself_has_no_special_default_mode(playground_dir):
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    Provisioning.create_new_participant(playground_dir, "alice")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    resp = client.post(
+        "/sessions/request",
+        json={
+            "participant": "alice",
+            "app": "SmallSeaCollectiveCore",
+            "team": "NoteToSelf",
+            "client": "Smoke Tests",
+        },
+    )
+    assert resp.status_code == 200
+    result = resp.json()
+    resp = client.post(
+        "/sessions/confirm",
+        json={"pending_id": result["pending_id"], "pin": result["pin"]},
+    )
+    session_hex = resp.json()
+
+    info = client.get(
+        "/session/info", headers={"Authorization": f"Bearer {session_hex}"}
+    ).json()
+    assert info["mode"] == "encrypted"
+
+
+def test_request_confirm_preserves_passthrough_mode(playground_dir):
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir, sandbox_mode=True)
+    Provisioning.create_new_participant(playground_dir, "alice")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    resp = client.post(
+        "/sessions/request",
+        json={
+            "participant": "alice",
+            "app": "SmallSeaCollectiveCore",
+            "team": "NoteToSelf",
+            "client": "TestClient",
+            "mode": "passthrough",
+        },
+    )
+    assert resp.status_code == 200
+    pending_id = resp.json()["pending_id"]
+
+    pending = client.get("/sessions/pending").json()
+    assert pending[0]["mode"] == "passthrough"
+    assert pending[0]["mode_warning"] == "[unsafe]"
+
+    with SASession(create_engine(f"sqlite:///{backend.path_local_db}")) as sess:
+        row = (
+            sess.query(SmallSea.PendingSession)
+            .filter(SmallSea.PendingSession.id == bytes.fromhex(pending_id))
+            .first()
+        )
+        pin = row.pin
+
+    resp = client.post("/sessions/confirm", json={"pending_id": pending_id, "pin": pin})
+    session_hex = resp.json()
+    info = client.get(
+        "/session/info", headers={"Authorization": f"Bearer {session_hex}"}
+    ).json()
+    assert info["mode"] == "passthrough"
 
 
 def test_pending_sessions_requires_sandbox_mode(test_env):
@@ -222,7 +323,7 @@ def test_pending_sessions_lists_with_pin(playground_dir):
     resp = client.post(
         "/sessions/request",
         json={"participant": "alice", "app": "SmallSeaCollectiveCore",
-              "team": "NoteToSelf", "client": "TestClient"},
+              "team": "NoteToSelf", "client": "TestClient", "mode": "passthrough"},
     )
     assert resp.status_code == 200
     pending_id = resp.json()["pending_id"]
@@ -234,6 +335,8 @@ def test_pending_sessions_lists_with_pin(playground_dir):
     assert pending[0]["pending_id"] == pending_id
     assert pending[0]["client_name"] == "TestClient"
     assert pending[0]["team_name"] == "NoteToSelf"
+    assert pending[0]["mode"] == "passthrough"
+    assert pending[0]["mode_warning"] == "[unsafe]"
     assert len(pending[0]["pin"]) == 3  # current Hub implementation uses 3-digit PINs
 
 
@@ -246,7 +349,7 @@ def test_session_info_via_client(playground_dir):
     app.state.backend = backend
     http = TestClient(app)
 
-    session_hex = _request_and_confirm(http)
+    session_hex = _request_and_confirm(http, mode="passthrough")
     sc = SmallSeaClient(_http_client=http)
     session = SmallSeaSession(sc, session_hex)
     info = session.session_info()
@@ -254,6 +357,7 @@ def test_session_info_via_client(playground_dir):
     assert info["participant_hex"] == alice_hex
     assert info["team_name"] == "NoteToSelf"
     assert len(info["berth_id"]) == 32
+    assert info["mode"] == "passthrough"
 
 
 def test_session_peers(playground_dir):

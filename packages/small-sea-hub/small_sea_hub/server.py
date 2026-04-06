@@ -313,6 +313,7 @@ class SessionRequestReq(pydantic.BaseModel):
     app: str
     team: str
     client: str
+    mode: str = "encrypted"
 
 
 def _maybe_start_ntfy_listener(app: FastAPI, ss_session, berth_id_hex: str):
@@ -381,7 +382,7 @@ async def request_session(req: SessionRequestReq):
         else req.client
     )
     pending_id_hex, pin = small_sea.request_session(
-        req.participant, req.app, req.team, effective_client
+        req.participant, req.app, req.team, effective_client, mode=req.mode
     )
     if app.state.backend.auto_approve_sessions:
         token = small_sea.confirm_session(pending_id_hex, pin)
@@ -435,6 +436,7 @@ async def session_info(session_hex: str = Depends(_require_session)):
         "app_name": ss_session.app_name,
         "berth_id": ss_session.berth_id.hex(),
         "client": ss_session.client,
+        "mode": ss_session.mode,
     }
 
 

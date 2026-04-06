@@ -40,7 +40,7 @@ def test_env(playground_dir, minio):
     }
 
 
-def _open_session(client):
+def _open_session(client, mode="passthrough"):
     resp = client.post(
         "/sessions/request",
         json={
@@ -48,6 +48,7 @@ def _open_session(client):
             "app": "SmallSeaCollectiveCore",
             "team": "NoteToSelf",
             "client": "Smoke Tests",
+            "mode": mode,
         },
     )
     assert resp.status_code == 200
@@ -76,15 +77,7 @@ def _derive_bucket_name(playground_dir, session_hex):
     """Derive the bucket name using the same logic as the backend."""
     ss = SmallSea.SmallSeaBackend(root_dir=playground_dir)
     ss_session = ss._lookup_session(session_hex)
-    core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
-    engine = create_engine(f"sqlite:///{core_path}")
-    with Session(engine) as session:
-        berth = (
-            session.query(SmallSea.TeamAppBerth)
-            .filter(SmallSea.TeamAppBerth.id == ss_session.berth_id)
-            .first()
-        )
-    return f"ss-{berth.id.hex()[:16]}"
+    return f"ss-{ss_session.berth_id.hex()[:16]}"
 
 
 def _create_bucket(minio, bucket_name):
@@ -97,6 +90,18 @@ def _create_bucket(minio, bucket_name):
         region_name="us-east-1",
     )
     s3.create_bucket(Bucket=bucket_name)
+
+
+def _read_bucket_object(minio, bucket_name, key):
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=minio["endpoint"],
+        aws_access_key_id=minio["access_key"],
+        aws_secret_access_key=minio["secret_key"],
+        config=BotoConfig(signature_version="s3v4"),
+        region_name="us-east-1",
+    )
+    return s3.get_object(Bucket=bucket_name, Key=key)["Body"].read()
 
 
 def test_upload_and_download(test_env):
@@ -171,3 +176,53 @@ def test_upload_and_download(test_env):
 
     resp = client.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)
     assert base64.b64decode(resp.json()["data"]) == new_content
+
+    raw = _read_bucket_object(minio, bucket_name, "greeting.txt")
+    assert raw == new_content
+
+
+def test_non_vault_team_path_uses_encryption(test_env):
+    client = test_env["client"]
+    backend = test_env["backend"]
+    minio = test_env["minio"]
+    playground_dir = test_env["playground_dir"]
+
+    alice_hex = backend._find_participant("alice")[0][0].name
+    Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+
+    nts_session = _open_session(client, mode="passthrough")
+    _register_cloud(backend, nts_session, minio)
+
+    team_resp = client.post(
+        "/sessions/request",
+        json={
+            "participant": "alice",
+            "app": "SmallSeaCollectiveCore",
+            "team": "ProjectX",
+            "client": "Smoke Tests",
+        },
+    )
+    assert team_resp.status_code == 200
+    team_pending = team_resp.json()
+    team_confirm = client.post(
+        "/sessions/confirm",
+        json={"pending_id": team_pending["pending_id"], "pin": team_pending["pin"]},
+    )
+    team_session_hex = team_confirm.json()
+    bucket_name = _derive_bucket_name(playground_dir, team_session_hex)
+    _create_bucket(minio, bucket_name)
+
+    auth = {"Authorization": f"Bearer {team_session_hex}"}
+    plaintext = b"team data that should be encrypted"
+    resp = client.post(
+        "/cloud_file",
+        json={"path": "greeting.txt", "data": base64.b64encode(plaintext).decode()},
+        headers=auth,
+    )
+    assert resp.status_code == 200
+
+    raw = _read_bucket_object(minio, bucket_name, "greeting.txt")
+    assert raw != plaintext
+    payload = raw.decode("utf-8")
+    assert "\"ciphertext\"" in payload
+    assert "\"signature\"" in payload

@@ -19,7 +19,7 @@ def test_create_user(playground_dir):
 
 def helper_add_cloud(small_sea, username, cloud_port):
     session_bytes = small_sea.open_session(
-        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests"
+        "alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests", mode="passthrough"
     )
 
     session = session_bytes.hex()

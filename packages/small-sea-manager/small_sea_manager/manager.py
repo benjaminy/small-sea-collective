@@ -32,59 +32,73 @@ class TeamManager:
         self.participant_hex = participant_hex
         provisioning.migrate_participant_team_dbs(self.root_dir, self.participant_hex)
         self.client = SmallSeaClient(port=hub_port, _http_client=_http_client)
-        # Confirmed sessions, keyed by (app, team).
-        self._sessions: dict[tuple[str, str], "SmallSeaSession"] = {}
-        # Pending PIN requests awaiting confirmation, keyed by (app, team).
-        self._pending: dict[tuple[str, str], str] = {}
+        # Confirmed sessions, keyed by (app, team, mode).
+        self._sessions: dict[tuple[str, str, str], "SmallSeaSession"] = {}
+        # Pending PIN requests awaiting confirmation, keyed by (app, team, mode).
+        self._pending: dict[tuple[str, str, str], str] = {}
 
     # ------------------------------------------------------------------ #
     # Session state management
     # ------------------------------------------------------------------ #
 
-    def set_session(self, app: str, team: str, token: str) -> None:
-        """Store a confirmed session token for (app, team)."""
+    @staticmethod
+    def _session_key(app: str, team: str, mode: str = "encrypted") -> tuple[str, str, str]:
+        return (app, team, mode)
+
+    def set_session(self, app: str, team: str, token: str, mode: str = "encrypted") -> None:
+        """Store a confirmed session token for (app, team, mode)."""
         from small_sea_client.client import SmallSeaSession
-        key = (app, team)
+        key = self._session_key(app, team, mode)
         self._sessions[key] = SmallSeaSession(self.client, token)
         self._pending.pop(key, None)
 
-    def clear_session(self, app: str, team: str) -> None:
-        """Remove the confirmed session for (app, team)."""
-        self._sessions.pop((app, team), None)
+    def clear_session(self, app: str, team: str, mode: str = "encrypted") -> None:
+        """Remove the confirmed session for (app, team, mode)."""
+        self._sessions.pop(self._session_key(app, team, mode), None)
 
-    def set_pending(self, app: str, team: str, pending_id: str) -> None:
-        """Record a pending PIN request for (app, team)."""
-        self._pending[(app, team)] = pending_id
+    def set_pending(
+        self, app: str, team: str, pending_id: str, mode: str = "encrypted"
+    ) -> None:
+        """Record a pending PIN request for (app, team, mode)."""
+        self._pending[self._session_key(app, team, mode)] = pending_id
 
-    def clear_pending(self, app: str, team: str) -> None:
-        self._pending.pop((app, team), None)
+    def clear_pending(self, app: str, team: str, mode: str = "encrypted") -> None:
+        self._pending.pop(self._session_key(app, team, mode), None)
 
-    def session_state(self, app: str, team: str) -> str:
-        """Return 'active', 'pending', or 'none' for the given (app, team)."""
-        if (app, team) in self._sessions:
+    def session_state(self, app: str, team: str, mode: str = "encrypted") -> str:
+        """Return 'active', 'pending', or 'none' for the given (app, team, mode)."""
+        key = self._session_key(app, team, mode)
+        if key in self._sessions:
             return "active"
-        if (app, team) in self._pending:
+        if key in self._pending:
             return "pending"
         return "none"
 
-    def get_pending_id(self, app: str, team: str) -> str | None:
-        return self._pending.get((app, team))
+    def get_pending_id(self, app: str, team: str, mode: str = "encrypted") -> str | None:
+        return self._pending.get(self._session_key(app, team, mode))
 
     def active_sessions(self) -> list[dict]:
-        """Return a list of {app, team} dicts for all confirmed sessions."""
-        return [{"app": app, "team": team} for (app, team) in self._sessions]
+        """Return a list of {app, team, mode} dicts for all confirmed sessions."""
+        return [
+            {"app": app, "team": team, "mode": mode}
+            for (app, team, mode) in self._sessions
+        ]
 
-    def _get_or_open_session(self, app: str, team: str) -> "SmallSeaSession":
-        """Return a confirmed session for (app, team).
+    def _get_or_open_session(
+        self, app: str, team: str, mode: str = "encrypted"
+    ) -> "SmallSeaSession":
+        """Return a confirmed session for (app, team, mode).
 
         Uses the cached session if one has been established (e.g. via PIN
         flow). Otherwise opens a new session via open_session, which requires
         the Hub to be in auto-approve mode.
         """
-        key = (app, team)
+        key = self._session_key(app, team, mode)
         if key in self._sessions:
             return self._sessions[key]
-        return self.client.open_session(self.participant_hex, app, team, "TeamManager")
+        return self.client.open_session(
+            self.participant_hex, app, team, "TeamManager", mode=mode
+        )
 
     def get_nickname(self):
         """Return the participant's first nickname, or a short hex fallback."""
@@ -115,7 +129,7 @@ class TeamManager:
         """Remove a cloud storage config by its hex ID."""
         provisioning.remove_cloud_storage(self.root_dir, self.participant_hex, storage_id_hex)
 
-    def connect(self, team="NoteToSelf", pin_provider=None):
+    def connect(self, team="NoteToSelf", pin_provider=None, mode: str = "encrypted"):
         """Open a Hub session for cloud sync on the given team berth.
 
         pin_provider: callable(pending_id) → pin string.  The Hub sends the PIN
@@ -124,7 +138,11 @@ class TeamManager:
         Raises RuntimeError if pin_provider is None (no production default yet).
         """
         pending_id = self.client.request_session(
-            self.participant_hex, "SmallSeaCollectiveCore", team, "TeamManager"
+            self.participant_hex,
+            "SmallSeaCollectiveCore",
+            team,
+            "TeamManager",
+            mode=mode,
         )
         if pin_provider is None:
             raise RuntimeError(
@@ -209,10 +227,15 @@ class TeamManager:
         token = _json.loads(_b64.b64decode(token_b64))
         inviter_cloud = token["inviter_cloud"]
         inviter_bucket = token["inviter_bucket"]
+        inviter_sender_key = provisioning.deserialize_distribution_message(
+            token["inviter_sender_key"]
+        )
 
         # NoteToSelf session to access /cloud_proxy for the inviter's bucket.
         # The acceptor doesn't have a team session yet — NoteToSelf provides auth.
-        nts_session = self._get_or_open_session("SmallSeaCollectiveCore", "NoteToSelf")
+        nts_session = self._get_or_open_session(
+            "SmallSeaCollectiveCore", "NoteToSelf", mode="passthrough"
+        )
         http = self.client._http_client  # None in production; injected TestClient in tests
         proxy_remote = ExplicitProxyRemote(
             nts_session.token,
@@ -221,6 +244,9 @@ class TeamManager:
             inviter_bucket,
             base_url=self.client._base_url,
             client=http,
+            download_transform=lambda payload: provisioning.decrypt_invitation_bootstrap_payload(
+                inviter_sender_key, payload
+            ),
         )
 
         # Clone + local DB writes. No cloud push happens here.

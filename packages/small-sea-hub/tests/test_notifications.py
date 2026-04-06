@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from small_sea_manager.manager import TeamManager
 
 
-def _open_session(http, nickname, team):
+def _open_session(http, nickname, team, mode="encrypted"):
     resp = http.post(
         "/sessions/request",
         json={
@@ -17,6 +17,7 @@ def _open_session(http, nickname, team):
             "app": "SmallSeaCollectiveCore",
             "team": team,
             "client": "Smoke Tests",
+            "mode": mode,
         },
     )
     assert resp.status_code == 200, resp.text
@@ -85,13 +86,13 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     bob_hex = Provisioning.create_new_participant(root, "Bob")
 
     # -- Register cloud storage via Hub --
-    alice_nts = _open_session(http, "Alice", "NoteToSelf")
+    alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         alice_nts, "s3", alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
     )
-    bob_nts = _open_session(http, "Bob", "NoteToSelf")
+    bob_nts = _open_session(http, "Bob", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
         bob_nts, "s3", bob_minio["endpoint"],
         access_key=bob_minio["access_key"],
@@ -102,7 +103,7 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     team_info = Provisioning.create_team(root, alice_hex, "ProjectX")
     team_bucket = f"ss-{team_info['berth_id_hex'][:16]}"
 
-    alice_team_token = _open_session(http, "Alice", "ProjectX")
+    alice_team_token = _open_session(http, "Alice", "ProjectX", mode="passthrough")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     _push_via_hub(http, alice_team_token, alice_team_sync)
 
