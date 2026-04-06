@@ -22,8 +22,8 @@ solely to manage cache state.
 ### 1. `manager.py` — Cache and method signatures
 
 **Remove:**
-- `_session_key(app, team, mode)` helper — replace with `(team, mode)` tuple
-  directly, or a simplified `_session_key(team, mode)`
+- `_session_key(app, team, mode)` helper — use `(team, mode)` tuple directly
+- `active_sessions()` method — confirmed dead code (no external callers)
 - `app` parameter from: `set_session`, `clear_session`, `set_pending`,
   `clear_pending`, `session_state`, `get_pending_id`, `_get_or_open_session`
 
@@ -33,10 +33,9 @@ solely to manage cache state.
 - `_sessions` type annotation: `dict[tuple[str, str], SmallSeaSession]`
   (keyed by `(team, mode)`)
 - `_pending` type annotation: `dict[tuple[str, str], str]`
-- `active_sessions()` return value, if retained, should drop `"app"` from the
-  dicts and keep `{"team": ..., "mode": ...}`
 - `_get_or_open_session(team, mode)` — still passes `_CORE_APP` to
   `client.open_session` internally
+- `connect(team, ...)` — use `_CORE_APP` for its `request_session` protocol call
 - `accept_invitation` call to `_get_or_open_session` — drop app arg
 - `push_team` call to `_get_or_open_session` — drop app arg
 
@@ -67,15 +66,7 @@ solely to manage cache state.
 Do **not** add an adapter layer above the client lib just to hide the core app
 name. This branch should centralize the constant, not invent a new abstraction.
 
-### 3. `active_sessions()` callers
-
-- Confirm whether anything outside `manager.py` calls `active_sessions()`.
-- Current expectation: no templates or other packages depend on it, so this may
-  be a no-op outside `manager.py`.
-- If a caller is found during implementation, update it to consume only
-  `{"team": ..., "mode": ...}`; otherwise skip template/UI changes.
-
-### 4. Validation and tests
+### 3. Validation and tests
 
 Add focused micro tests so this branch proves the cache shape changed safely,
 rather than relying only on broader integration coverage.
@@ -85,11 +76,14 @@ rather than relying only on broader integration coverage.
   setting `"ProjectX"` encrypted does not affect `"ProjectX"` passthrough or
   `"NoteToSelf"` passthrough
 - `set_session(...)` clears only the matching pending entry
-- `active_sessions()` (if retained) returns only `team` and `mode`
 - A small `small_sea_manager.web` PIN-flow test:
   request session -> pending state -> confirm session -> active state
   This should exercise `create_app(...)` route wiring so broken call sites in
   `session_state`, `set_session`, `set_pending`, and `get_pending_id` are caught
+
+**Test location consideration:**
+- These micro tests could be added to `packages/small-sea-manager/tests/test_cloud_roundtrip.py`
+  or a new `packages/small-sea-manager/tests/test_manager.py`.
 
 The existing `_open_session` helpers in tests call the **Hub** directly, not the
 Manager cache, so they should still keep passing the app string at the protocol
@@ -116,12 +110,12 @@ Success criteria:
   `small-sea-client` as part of this branch
 - Do **not** fold in any `opt-in-opt-out-crypto` (#42) changes — this should
   land on `main` independently
+- Do **not** address the redundancy between `self.session` and `_sessions` yet;
+  flag for future cleanup.
 
 ## Order of operations
 
-1. Update `manager.py` (shared `_CORE_APP`, cache key, method signatures)
+1. Update `manager.py` (shared `_CORE_APP`, cache key, method signatures, remove dead code)
 2. Update `web.py` (import `_CORE_APP`, fix all cache-method call sites)
-3. Confirm whether `active_sessions()` has external callers; only update UI code
-   if a real caller exists
-4. Add focused micro tests for cache semantics and the web PIN flow
-5. Run focused micro tests, then the regression suite, and fix any breakage
+3. Add focused micro tests for cache semantics and the web PIN flow
+4. Run focused micro tests, then the regression suite, and fix any breakage
