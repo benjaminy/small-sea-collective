@@ -95,7 +95,7 @@ UI uses `_sessions` exclusively, and `push_team()` already replaced `push()`.
   `test_team_manager_connect_requires_pin_provider` are the only callers of
   `connect()`. Remove or rewrite them:
   - The PIN-flow semantics will be covered by the new web PIN-flow micro test
-    added in step 4 (request → pending → confirm → active).
+    added in step 5 (request → pending → confirm → active).
   - The "requires pin_provider" guard disappears with `connect()`.
 
 **Why now:** The rest of this branch already touches every session-cache method

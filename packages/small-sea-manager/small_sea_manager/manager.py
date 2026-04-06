@@ -1,24 +1,11 @@
-# Top Matter
-
 import pathlib
 import subprocess
-from dataclasses import dataclass
 from typing import Optional
 
 from small_sea_client.client import SmallSeaClient
 from small_sea_manager import provisioning
 
-
-@dataclass
-class PushResult:
-    ok: bool
-    reason: Optional[str] = None  # e.g. "behind" on CAS conflict
-
-
-@dataclass
-class PullResult:
-    has_conflicts: bool
-
+_CORE_APP = "SmallSeaCollectiveCore"
 
 class TeamManager:
     """Business logic for team management operations.
@@ -32,72 +19,57 @@ class TeamManager:
         self.participant_hex = participant_hex
         provisioning.migrate_participant_team_dbs(self.root_dir, self.participant_hex)
         self.client = SmallSeaClient(port=hub_port, _http_client=_http_client)
-        # Confirmed sessions, keyed by (app, team, mode).
-        self._sessions: dict[tuple[str, str, str], "SmallSeaSession"] = {}
-        # Pending PIN requests awaiting confirmation, keyed by (app, team, mode).
-        self._pending: dict[tuple[str, str, str], str] = {}
+        # Confirmed sessions, keyed by (team, mode).
+        self._sessions: dict[tuple[str, str], "SmallSeaSession"] = {}
+        # Pending PIN requests awaiting confirmation, keyed by (team, mode).
+        self._pending: dict[tuple[str, str], str] = {}
 
     # ------------------------------------------------------------------ #
     # Session state management
     # ------------------------------------------------------------------ #
 
-    @staticmethod
-    def _session_key(app: str, team: str, mode: str = "encrypted") -> tuple[str, str, str]:
-        return (app, team, mode)
-
-    def set_session(self, app: str, team: str, token: str, mode: str = "encrypted") -> None:
-        """Store a confirmed session token for (app, team, mode)."""
+    def set_session(self, team: str, token: str, mode: str = "encrypted") -> None:
+        """Store a confirmed session token for (team, mode)."""
         from small_sea_client.client import SmallSeaSession
-        key = self._session_key(app, team, mode)
+        key = (team, mode)
         self._sessions[key] = SmallSeaSession(self.client, token)
         self._pending.pop(key, None)
 
-    def clear_session(self, app: str, team: str, mode: str = "encrypted") -> None:
-        """Remove the confirmed session for (app, team, mode)."""
-        self._sessions.pop(self._session_key(app, team, mode), None)
+    def clear_session(self, team: str, mode: str = "encrypted") -> None:
+        """Remove the confirmed session for (team, mode)."""
+        self._sessions.pop((team, mode), None)
 
-    def set_pending(
-        self, app: str, team: str, pending_id: str, mode: str = "encrypted"
-    ) -> None:
-        """Record a pending PIN request for (app, team, mode)."""
-        self._pending[self._session_key(app, team, mode)] = pending_id
+    def set_pending(self, team: str, pending_id: str, mode: str = "encrypted") -> None:
+        """Record a pending PIN request for (team, mode)."""
+        self._pending[(team, mode)] = pending_id
 
-    def clear_pending(self, app: str, team: str, mode: str = "encrypted") -> None:
-        self._pending.pop(self._session_key(app, team, mode), None)
+    def clear_pending(self, team: str, mode: str = "encrypted") -> None:
+        self._pending.pop((team, mode), None)
 
-    def session_state(self, app: str, team: str, mode: str = "encrypted") -> str:
-        """Return 'active', 'pending', or 'none' for the given (app, team, mode)."""
-        key = self._session_key(app, team, mode)
+    def session_state(self, team: str, mode: str = "encrypted") -> str:
+        """Return 'active', 'pending', or 'none' for the given (team, mode)."""
+        key = (team, mode)
         if key in self._sessions:
             return "active"
         if key in self._pending:
             return "pending"
         return "none"
 
-    def get_pending_id(self, app: str, team: str, mode: str = "encrypted") -> str | None:
-        return self._pending.get(self._session_key(app, team, mode))
+    def get_pending_id(self, team: str, mode: str = "encrypted") -> str | None:
+        return self._pending.get((team, mode))
 
-    def active_sessions(self) -> list[dict]:
-        """Return a list of {app, team, mode} dicts for all confirmed sessions."""
-        return [
-            {"app": app, "team": team, "mode": mode}
-            for (app, team, mode) in self._sessions
-        ]
-
-    def _get_or_open_session(
-        self, app: str, team: str, mode: str = "encrypted"
-    ) -> "SmallSeaSession":
-        """Return a confirmed session for (app, team, mode).
+    def _get_or_open_session(self, team: str, mode: str = "encrypted") -> "SmallSeaSession":
+        """Return a confirmed session for (team, mode).
 
         Uses the cached session if one has been established (e.g. via PIN
         flow). Otherwise opens a new session via open_session, which requires
         the Hub to be in auto-approve mode.
         """
-        key = self._session_key(app, team, mode)
+        key = (team, mode)
         if key in self._sessions:
             return self._sessions[key]
         return self.client.open_session(
-            self.participant_hex, app, team, "TeamManager", mode=mode
+            self.participant_hex, _CORE_APP, team, "TeamManager", mode=mode
         )
 
     def get_nickname(self):
@@ -128,29 +100,6 @@ class TeamManager:
     def remove_cloud_storage(self, storage_id_hex):
         """Remove a cloud storage config by its hex ID."""
         provisioning.remove_cloud_storage(self.root_dir, self.participant_hex, storage_id_hex)
-
-    def connect(self, team="NoteToSelf", pin_provider=None, mode: str = "encrypted"):
-        """Open a Hub session for cloud sync on the given team berth.
-
-        pin_provider: callable(pending_id) → pin string.  The Hub sends the PIN
-        via OS notification; pin_provider is responsible for collecting it from
-        the user and returning it.  Pass a backend-aware lambda in tests.
-        Raises RuntimeError if pin_provider is None (no production default yet).
-        """
-        pending_id = self.client.request_session(
-            self.participant_hex,
-            "SmallSeaCollectiveCore",
-            team,
-            "TeamManager",
-            mode=mode,
-        )
-        if pin_provider is None:
-            raise RuntimeError(
-                "connect() requires a pin_provider callable(pending_id) → pin. "
-                "Approve the session via the Hub UI or pass pin_provider in tests."
-            )
-        pin = pin_provider(pending_id)
-        self.session = self.client.confirm_session(pending_id, pin)
 
     # --- Team CRUD ---
 
@@ -233,9 +182,7 @@ class TeamManager:
 
         # NoteToSelf session to access /cloud_proxy for the inviter's bucket.
         # The acceptor doesn't have a team session yet — NoteToSelf provides auth.
-        nts_session = self._get_or_open_session(
-            "SmallSeaCollectiveCore", "NoteToSelf", mode="passthrough"
-        )
+        nts_session = self._get_or_open_session("NoteToSelf", mode="passthrough")
         http = self.client._http_client  # None in production; injected TestClient in tests
         proxy_remote = ExplicitProxyRemote(
             nts_session.token,
@@ -293,7 +240,7 @@ class TeamManager:
         """
         from cod_sync.protocol import CodSync, SmallSeaRemote, CasConflictError
 
-        session = self._get_or_open_session("SmallSeaCollectiveCore", team_name)
+        session = self._get_or_open_session(team_name)
         session.ensure_cloud_ready()
         repo_dir = self._team_repo_dir(team_name)
         remote = SmallSeaRemote(session.token, base_url=self.client._base_url)
@@ -328,49 +275,3 @@ class TeamManager:
             self.root_dir, self.participant_hex, protocol, url,
             access_key=access_key, access_token=access_token,
         )
-
-    # --- Sync ---
-
-    def push(self, repo_dir) -> PushResult:
-        """Push the local git repo to this participant's cloud bucket.
-
-        Requires an active session (call connect() first).
-        Returns PushResult(ok=False, reason="behind") if the cloud has moved on
-        since the last push (CAS conflict); the caller should pull and retry.
-        """
-        from cod_sync.protocol import CodSync, SmallSeaRemote, CasConflictError
-
-        assert self.session is not None, "call connect() before push()"
-
-        self.session.ensure_cloud_ready()
-
-        remote = SmallSeaRemote(self.session.token, base_url=self.client._base_url)
-
-        cs = CodSync("origin", repo_dir=pathlib.Path(repo_dir))
-        cs.remote = remote
-        try:
-            cs.push_to_remote(["main"])
-        except CasConflictError:
-            return PushResult(ok=False, reason="behind")
-        return PushResult(ok=True)
-
-    def pull(self, repo_dir, from_member_id: str) -> PullResult:
-        """Fetch and merge from a peer's cloud bucket.
-
-        Requires an active session (call connect() first).
-        Returns PullResult(has_conflicts=True) if git merge left unresolved conflicts.
-        """
-        from cod_sync.protocol import CodSync, PeerSmallSeaRemote
-
-        assert self.session is not None, "call connect() before pull()"
-
-        remote = PeerSmallSeaRemote(
-            self.session.token, from_member_id, base_url=self.client._base_url
-        )
-
-        cs = CodSync("peer", repo_dir=pathlib.Path(repo_dir))
-        cs.remote = remote
-        if cs.fetch_from_remote(["main"]) is None:
-            return PullResult(has_conflicts=True)
-        exit_code = cs.merge_from_remote(["main"])
-        return PullResult(has_conflicts=(exit_code != 0))
