@@ -31,6 +31,25 @@ def test_create_team(playground_dir):
     assert teams[0]["id"] == bytes.fromhex(team_id_hex)
     assert teams[0]["self_in_team"] == bytes.fromhex(member_id_hex)
 
+    sender_key = conn.execute(
+        "SELECT team_id, sender_participant_id, signing_private_key "
+        "FROM team_sender_key WHERE team_id = ?",
+        (bytes.fromhex(team_id_hex),),
+    ).fetchone()
+    assert sender_key is not None
+    assert sender_key[0] == bytes.fromhex(team_id_hex)
+    assert sender_key[1] == bytes.fromhex(member_id_hex)
+    assert sender_key[2] is not None
+
+    self_receiver_key = conn.execute(
+        "SELECT sender_participant_id, signing_private_key "
+        "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
+        (bytes.fromhex(team_id_hex), bytes.fromhex(member_id_hex)),
+    ).fetchone()
+    assert self_receiver_key is not None
+    assert self_receiver_key[0] == bytes.fromhex(member_id_hex)
+    assert self_receiver_key[1] is None
+
     # TeamAppBerth for CoolProject must NOT be in NoteToSelf — it belongs in the team DB.
     other_team_berths = conn.execute(
         "SELECT tab.* FROM team_app_berth tab "

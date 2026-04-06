@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS session (
     app_id BLOB NOT NULL,
     app_name TEXT NOT NULL,
     berth_id BLOB NOT NULL,
+    mode TEXT NOT NULL,
     client TEXT NOT NULL
 );
 

@@ -20,4 +20,5 @@ small-sea-client = { workspace = true }
 small-sea-manager = { workspace = true }
 shared-file-vault = { workspace = true }
 cod-sync = { workspace = true }
+cuttlefish = { workspace = true }
 splice-merge = { workspace = true }

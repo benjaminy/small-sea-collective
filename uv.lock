@@ -1113,12 +1113,14 @@ version = "0.1.0"
 source = { editable = "packages/small-sea-hub" }
 dependencies = [
     { name = "botocore" },
+    { name = "cuttlefish" },
     { name = "fastapi", extra = ["standard"] },
     { name = "httpx" },
     { name = "platformdirs" },
     { name = "plyer" },
     { name = "pydantic-settings", extra = ["toml"] },
     { name = "pyobjus" },
+    { name = "small-sea-manager" },
     { name = "sqlalchemy" },
 ]
 
@@ -1130,6 +1132,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "botocore", specifier = ">=1.40.43" },
+    { name = "cuttlefish", editable = "packages/cuttlefish" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.118.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "platformdirs", specifier = ">=4.4.0" },
@@ -1137,6 +1140,7 @@ requires-dist = [
     { name = "pydantic-settings", extras = ["toml"], specifier = ">=2.11.0" },
     { name = "pyobjus", specifier = ">=1.2.3" },
     { name = "respx", marker = "extra == 'test'", specifier = ">=0.21.0" },
+    { name = "small-sea-manager", editable = "packages/small-sea-manager" },
     { name = "sqlalchemy", specifier = ">=2.0.44" },
 ]
 provides-extras = ["test"]
@@ -1149,6 +1153,7 @@ dependencies = [
     { name = "click" },
     { name = "cod-sync" },
     { name = "cryptography" },
+    { name = "cuttlefish" },
     { name = "fastapi", extra = ["standard"] },
     { name = "jinja2" },
     { name = "plyer" },
@@ -1162,6 +1167,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.0" },
     { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "cryptography", specifier = ">=46.0.3" },
+    { name = "cuttlefish", editable = "packages/cuttlefish" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.118.0" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "plyer", specifier = ">=2.1.0" },

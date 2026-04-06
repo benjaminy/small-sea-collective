@@ -27,6 +27,10 @@ from small_sea_hub.adapters import (SmallSeaDropboxAdapter,
 from small_sea_hub.adapters.oauth import (is_token_expired,
                                           refresh_dropbox_token,
                                           refresh_google_token)
+from small_sea_hub.crypto import (commit_encrypted_upload,
+                                  decrypt_group_payload,
+                                  path_uses_group_crypto,
+                                  prepare_encrypted_upload)
 from small_sea_manager.provisioning import uuid7
 
 
@@ -55,6 +59,7 @@ class SmallSeaSession(Base):
     app_id = Column(LargeBinary, nullable=False)
     app_name = Column(String, nullable=False)
     berth_id = Column(LargeBinary, nullable=False)
+    mode = Column(String, nullable=False)
     client = Column(String, nullable=False)
 
     def __repr__(self):
@@ -150,7 +155,7 @@ class SmallSeaBackend:
     small-sea-manager package (provisioning.py).
     """
 
-    hub_schema_version: int = 47
+    hub_schema_version: int = 48
 
     def __init__(self, root_dir, auto_approve_sessions: bool = False,
                  sandbox_mode: bool = False, log_level: str = "INFO"):
@@ -220,6 +225,13 @@ class SmallSeaBackend:
                 # Hub doesn't read it, just needs to accept the version bump.
                 user_version = 47
                 print("Hub DB migrated to v47.")
+
+            if user_version == 47:
+                cursor.execute(
+                    "ALTER TABLE session ADD COLUMN mode TEXT NOT NULL DEFAULT 'passthrough'"
+                )
+                user_version = 48
+                print("Hub DB migrated to v48.")
 
             cursor.execute(
                 f"PRAGMA user_version = {SmallSeaBackend.hub_schema_version}"
@@ -398,6 +410,7 @@ class SmallSeaBackend:
             )
 
             token = secrets.token_bytes(32)
+            session_mode = "passthrough" if pending.team_name == "NoteToSelf" else "encrypted"
             ss_session = SmallSeaSession(
                 id=uuid7(),
                 token=token,
@@ -408,6 +421,7 @@ class SmallSeaBackend:
                 app_id=app_id,
                 app_name=pending.app_name,
                 berth_id=berth_id,
+                mode=session_mode,
                 client=pending.client_name,
             )
             sess.add(ss_session)
@@ -731,7 +745,11 @@ class SmallSeaBackend:
 
     def download_from_peer(self, session_hex, member_id_hex, path):
         """Download a file from a peer's public cloud bucket via the Hub proxy."""
-        return self._download_peer_file(session_hex, member_id_hex, path)
+        ss_session = self._lookup_session(session_hex)
+        ok, data, etag = self._download_peer_file(session_hex, member_id_hex, path)
+        if ok and path_uses_group_crypto(ss_session, path):
+            data = decrypt_group_payload(ss_session, data)
+        return ok, data, etag
 
     def list_peers(self, session_hex):
         """Return peer details visible to the current team session.
@@ -787,14 +805,25 @@ class SmallSeaBackend:
     def upload_to_cloud(self, session_hex, path, data, expected_etag=None):
         ss_session = self._lookup_session(session_hex)
         adapter = self._make_storage_adapter(ss_session)
+        if path_uses_group_crypto(ss_session, path):
+            next_sender_key, data = prepare_encrypted_upload(ss_session, data)
+        else:
+            next_sender_key = None
         if expected_etag is not None:
-            return adapter.upload_if_match(path, data, expected_etag)
-        return adapter.upload_overwrite(path, data)
+            result = adapter.upload_if_match(path, data, expected_etag)
+        else:
+            result = adapter.upload_overwrite(path, data)
+        if result[0] and next_sender_key is not None:
+            commit_encrypted_upload(ss_session, next_sender_key)
+        return result
 
     def download_from_cloud(self, session_hex, path):
         ss_session = self._lookup_session(session_hex)
         adapter = self._make_storage_adapter(ss_session)
-        return adapter.download(path)
+        ok, data, etag = adapter.download(path)
+        if ok and path_uses_group_crypto(ss_session, path):
+            data = decrypt_group_payload(ss_session, data)
+        return ok, data, etag
 
     # ---- Signal file ----
 
