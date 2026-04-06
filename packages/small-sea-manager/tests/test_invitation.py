@@ -117,6 +117,9 @@ def test_create_invitation_includes_bucket(playground_dir):
     assert "inviter_bucket" in token
     assert token["inviter_bucket"].startswith("ss-")
     assert len(token["inviter_bucket"]) == 3 + 16  # "ss-" + 16 hex chars
+    assert len(token["team_id"]) == 32
+    assert token["inviter_sender_key"]["group_id"] == token["team_id"]
+    assert token["inviter_sender_key"]["sender_participant_id"] == token["inviter_member_id"]
 
 
 def test_full_invitation_flow(playground_dir, minio_server_gen):
@@ -187,6 +190,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     bob_member_id_hex = acceptance["acceptor_member_id"]
     assert bob_member_id_hex != bob_hex
     assert len(bob_member_id_hex) == 32
+    assert acceptance["team_id"] == token_data["team_id"]
+    assert acceptance["acceptor_sender_key"]["group_id"] == token_data["team_id"]
+    assert acceptance["acceptor_sender_key"]["sender_participant_id"] == bob_member_id_hex
 
     # -- Alice: complete the acceptance --
     complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
@@ -246,7 +252,26 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     buconn.row_factory = sqlite3.Row
     teams = buconn.execute("SELECT * FROM team WHERE name = 'ProjectX'").fetchall()
     assert len(teams) == 1
+    assert teams[0]["id"] == bytes.fromhex(token_data["team_id"])
     assert teams[0]["self_in_team"] == bytes.fromhex(bob_member_id_hex)
+
+    alice_peer_sender_key = buconn.execute(
+        "SELECT sender_participant_id, signing_private_key "
+        "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
+        (bytes.fromhex(token_data["team_id"]), bytes.fromhex(alice_member_id_hex)),
+    ).fetchone()
+    assert alice_peer_sender_key is not None
+    assert alice_peer_sender_key[0] == bytes.fromhex(alice_member_id_hex)
+    assert alice_peer_sender_key[1] is None
+
+    bob_team_sender_key = buconn.execute(
+        "SELECT sender_participant_id, signing_private_key "
+        "FROM team_sender_key WHERE team_id = ?",
+        (bytes.fromhex(token_data["team_id"]),),
+    ).fetchone()
+    assert bob_team_sender_key is not None
+    assert bob_team_sender_key[0] == bytes.fromhex(bob_member_id_hex)
+    assert bob_team_sender_key[1] is not None
 
     other_berths = buconn.execute(
         "SELECT tab.* FROM team_app_berth tab "
@@ -255,6 +280,18 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     ).fetchall()
     assert len(other_berths) == 0
     buconn.close()
+
+    alice_user_db = root / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
+    auconn = sqlite3.connect(str(alice_user_db))
+    bob_peer_sender_key = auconn.execute(
+        "SELECT sender_participant_id, signing_private_key "
+        "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
+        (bytes.fromhex(token_data["team_id"]), bytes.fromhex(bob_member_id_hex)),
+    ).fetchone()
+    assert bob_peer_sender_key is not None
+    assert bob_peer_sender_key[0] == bytes.fromhex(bob_member_id_hex)
+    assert bob_peer_sender_key[1] is None
+    auconn.close()
 
     # --- Verify Bob's team dir has a git repo with correct commit ---
     bob_sync = root / "Participants" / bob_hex / "ProjectX" / "Sync"

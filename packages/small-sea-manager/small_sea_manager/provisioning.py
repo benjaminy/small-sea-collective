@@ -28,6 +28,16 @@ import subprocess
 import cod_sync.protocol as CodSync
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cuttlefish.group import create_sender_key
+from small_sea_manager.sender_keys import (
+    deserialize_distribution_message,
+    distribution_message_from_record,
+    load_team_sender_key,
+    receiver_record_from_distribution,
+    save_peer_sender_key,
+    save_team_sender_key,
+    serialize_distribution_message,
+)
 
 # ---- UUIDv7 ----
 
@@ -159,7 +169,7 @@ class Peer(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 50
+USER_SCHEMA_VERSION = 51
 
 
 # ---- Provisioning functions ----
@@ -265,6 +275,38 @@ def _migrate_user_db(conn, from_version):
         pass  # peer.bucket added to team DB schema; NoteToSelf schema unchanged
     if from_version < 50:
         pass  # peer.display_name added to team DB schema; NoteToSelf schema unchanged
+    if from_version < 51:
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS team_sender_key ("
+                "team_id BLOB PRIMARY KEY, "
+                "group_id BLOB NOT NULL, "
+                "sender_participant_id BLOB NOT NULL, "
+                "chain_id BLOB NOT NULL, "
+                "chain_key BLOB NOT NULL, "
+                "iteration INTEGER NOT NULL, "
+                "signing_public_key BLOB NOT NULL, "
+                "signing_private_key BLOB, "
+                "skipped_message_keys TEXT NOT NULL DEFAULT '{}', "
+                "FOREIGN KEY (team_id) REFERENCES team(id))"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS peer_sender_key ("
+                "team_id BLOB NOT NULL, "
+                "group_id BLOB NOT NULL, "
+                "sender_participant_id BLOB NOT NULL, "
+                "chain_id BLOB NOT NULL, "
+                "chain_key BLOB NOT NULL, "
+                "iteration INTEGER NOT NULL, "
+                "signing_public_key BLOB NOT NULL, "
+                "signing_private_key BLOB, "
+                "skipped_message_keys TEXT NOT NULL DEFAULT '{}', "
+                "PRIMARY KEY (team_id, sender_participant_id), "
+                "FOREIGN KEY (team_id) REFERENCES team(id))"
+            )
+        )
 
 
 def _migrate_team_db(conn, from_version):
@@ -418,6 +460,17 @@ def _generate_team_signing_key(nts_engine, team_id):
     return private_key_bytes, public_key_bytes
 
 
+def _initialize_team_sender_key_state(user_db_path, team_id, member_id):
+    sender_key, distribution = create_sender_key(team_id, member_id)
+    save_team_sender_key(user_db_path, team_id, sender_key)
+    save_peer_sender_key(
+        user_db_path,
+        team_id,
+        receiver_record_from_distribution(distribution),
+    )
+    return distribution
+
+
 def get_team_signing_key(root_dir, participant_hex, team_name):
     """Return the signing key for a team as (private_key_bytes, public_key_bytes).
 
@@ -472,6 +525,7 @@ def create_team(root_dir, participant_hex, team_name):
 
     # --- Generate team signing key (stored in NoteToSelf) ---
     _priv, pub = _generate_team_signing_key(engine, team_id)
+    _initialize_team_sender_key_state(user_db_path, team_id, member_id)
 
     # --- Create team directory and its core.db ---
     team_sync_dir = participant_dir / team_name / "Sync"
@@ -531,11 +585,26 @@ def create_invitation(
     # Look up the inviter's member ID from the team DB
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
     team_engine = create_engine(f"sqlite:///{team_db_path}")
+    user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
+    user_engine = create_engine(f"sqlite:///{user_db_path}")
 
     with team_engine.begin() as conn:
         row = conn.execute(text("SELECT id FROM member LIMIT 1")).fetchone()
         inviter_member_id = row[0]
     inviter_display_name = get_nickname(root_dir, participant_hex) or None
+
+    with user_engine.begin() as conn:
+        team_row = conn.execute(
+            text("SELECT id FROM team WHERE name = :team_name"),
+            {"team_name": team_name},
+        ).fetchone()
+    if team_row is None:
+        raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
+    team_id = team_row[0]
+
+    inviter_sender_key = load_team_sender_key(user_db_path, team_id)
+    if inviter_sender_key is None:
+        raise ValueError(f"No sender key found for team '{team_name}'")
 
     # Look up the berth ID from the team DB (to derive the bucket name).
     # Berth structural data lives in the team DB, not NoteToSelf.
@@ -569,11 +638,15 @@ def create_invitation(
     token_data = {
         "invitation_id": inv_id.hex(),
         "nonce": nonce.hex(),
+        "team_id": team_id.hex(),
         "team_name": team_name,
         "inviter_member_id": inviter_member_id.hex(),
         "inviter_display_name": inviter_display_name,
         "inviter_cloud": {"protocol": inviter_cloud["protocol"], "url": inviter_cloud["url"]},
         "inviter_bucket": inviter_bucket,
+        "inviter_sender_key": serialize_distribution_message(
+            distribution_message_from_record(inviter_sender_key)
+        ),
     }
     token_json = json.dumps(token_data)
     token_b64 = base64.b64encode(token_json.encode()).decode()
@@ -614,10 +687,12 @@ def accept_invitation(
     token_json = base64.b64decode(token_b64).decode()
     token = json.loads(token_json)
     team_name = token["team_name"]
+    team_id = bytes.fromhex(token["team_id"])
     inviter_member_id = bytes.fromhex(token["inviter_member_id"])
     inviter_cloud = token["inviter_cloud"]  # protocol + url only, no credentials
     inviter_bucket = token["inviter_bucket"]
     inviter_display_name = token.get("inviter_display_name") or None
+    inviter_sender_key = deserialize_distribution_message(token["inviter_sender_key"])
     invitation_id = bytes.fromhex(token["invitation_id"])
     nonce = bytes.fromhex(token["nonce"])
 
@@ -696,13 +771,20 @@ def accept_invitation(
     user_engine = create_engine(f"sqlite:///{user_db_path}")
 
     with Session(user_engine) as session:
-        team_id = uuid7()
         team_row = Team(id=team_id, name=team_name, self_in_team=acceptor_member_id)
         session.add(team_row)
         session.commit()
 
     # --- Generate team signing key (stored in NoteToSelf) ---
     _priv, acceptor_public_key = _generate_team_signing_key(user_engine, team_id)
+    save_peer_sender_key(
+        user_db_path,
+        team_id,
+        receiver_record_from_distribution(inviter_sender_key),
+    )
+    acceptor_sender_key = _initialize_team_sender_key_state(
+        user_db_path, team_id, acceptor_member_id
+    )
 
     # --- Store public key in team DB member row ---
     team_db_path = team_sync_dir / "core.db"
@@ -736,10 +818,12 @@ def accept_invitation(
     acceptance_data = {
         "invitation_id": invitation_id.hex(),
         "nonce": nonce.hex(),
+        "team_id": team_id.hex(),
         "acceptor_member_id": acceptor_member_id.hex(),
         "acceptor_public_key": acceptor_public_key.hex(),
         "acceptor_cloud": acceptor_cloud,
         "acceptor_bucket": acceptor_bucket,
+        "acceptor_sender_key": serialize_distribution_message(acceptor_sender_key),
     }
     acceptance_json = json.dumps(acceptance_data)
     acceptance_b64 = base64.b64encode(acceptance_json.encode()).decode()
@@ -763,10 +847,12 @@ def complete_invitation_acceptance(
     acceptance = json.loads(acceptance_json)
     invitation_id = bytes.fromhex(acceptance["invitation_id"])
     nonce = bytes.fromhex(acceptance["nonce"])
+    team_id = bytes.fromhex(acceptance["team_id"])
     acceptor_member_id = bytes.fromhex(acceptance["acceptor_member_id"])
     acceptor_public_key = bytes.fromhex(acceptance["acceptor_public_key"])
     acceptor_cloud = acceptance["acceptor_cloud"]
     acceptor_bucket = acceptance["acceptor_bucket"]
+    acceptor_sender_key = deserialize_distribution_message(acceptance["acceptor_sender_key"])
 
     # Find and validate the invitation in the inviter's team DB
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
@@ -852,6 +938,13 @@ def complete_invitation_acceptance(
     team_sync_dir = participant_dir / team_name / "Sync"
     CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
     CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Accepted invitation"])
+
+    user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
+    save_peer_sender_key(
+        user_db_path,
+        team_id,
+        receiver_record_from_distribution(acceptor_sender_key),
+    )
 
 
 def add_notification_service(

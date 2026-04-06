@@ -65,6 +65,18 @@ def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
     )
 
 
+def _read_s3_object(endpoint, access_key, secret_key, bucket_name, key):
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint,
+        aws_access_key_id=access_key,
+        aws_secret_access_key=secret_key,
+        config=BotoConfig(signature_version="s3v4"),
+        region_name="us-east-1",
+    )
+    return s3.get_object(Bucket=bucket_name, Key=key)["Body"].read()
+
+
 def _push_team_repo_via_hub(http, session_hex, repo_dir):
     auth = {"Authorization": f"Bearer {session_hex}"}
     resp = http.post("/cloud/setup", headers=auth)
@@ -145,10 +157,12 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     return {
         "root": root,
         "http": http,
+        "alice_minio": alice_minio,
         "alice_hex": alice_hex,
         "bob_hex": bob_hex,
         "alice_member_id_hex": alice_member_id_hex,
         "bob_member_id_hex": bob_member_id_hex,
+        "team_bucket": team_bucket,
     }
 
 
@@ -274,6 +288,16 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
     sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     sync.push_via_hub(alice_vault_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
+
+    raw_latest_link = _read_s3_object(
+        env["alice_minio"]["endpoint"],
+        env["alice_minio"]["access_key"],
+        env["alice_minio"]["secret_key"],
+        env["team_bucket"],
+        "vault/ProjectX/niches/docs/latest-link.yaml",
+    )
+    assert b"notes.txt" not in raw_latest_link
+    assert b"v1\n" not in raw_latest_link
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
     sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")

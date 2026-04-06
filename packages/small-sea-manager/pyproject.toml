@@ -5,6 +5,7 @@ requires-python = ">=3.12"
 dependencies = [
     "small-sea-client",
     "cod-sync",
+    "cuttlefish",
     "splice-merge",
     "click>=8.0",
     "cryptography>=46.0.3",
@@ -20,6 +21,7 @@ small-sea-manage = "small_sea_manager.cli:cli"
 [tool.uv.sources]
 small-sea-client = { workspace = true }
 cod-sync = { workspace = true }
+cuttlefish = { workspace = true }
 splice-merge = { workspace = true }
 
 [build-system]

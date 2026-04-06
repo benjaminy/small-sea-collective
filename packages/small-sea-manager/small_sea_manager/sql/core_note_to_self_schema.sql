@@ -62,3 +62,30 @@ CREATE TABLE IF NOT EXISTS team_signing_key (
     created_at  TEXT NOT NULL,
     FOREIGN KEY (team_id) REFERENCES team(id)
 );
+
+CREATE TABLE IF NOT EXISTS team_sender_key (
+    team_id              BLOB PRIMARY KEY,
+    group_id             BLOB NOT NULL,
+    sender_participant_id BLOB NOT NULL,
+    chain_id             BLOB NOT NULL,
+    chain_key            BLOB NOT NULL,
+    iteration            INTEGER NOT NULL,
+    signing_public_key   BLOB NOT NULL,
+    signing_private_key  BLOB,
+    skipped_message_keys TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY (team_id) REFERENCES team(id)
+);
+
+CREATE TABLE IF NOT EXISTS peer_sender_key (
+    team_id              BLOB NOT NULL,
+    group_id             BLOB NOT NULL,
+    sender_participant_id BLOB NOT NULL,
+    chain_id             BLOB NOT NULL,
+    chain_key            BLOB NOT NULL,
+    iteration            INTEGER NOT NULL,
+    signing_public_key   BLOB NOT NULL,
+    signing_private_key  BLOB,
+    skipped_message_keys TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (team_id, sender_participant_id),
+    FOREIGN KEY (team_id) REFERENCES team(id)
+);
