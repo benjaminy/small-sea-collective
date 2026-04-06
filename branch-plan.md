@@ -35,7 +35,6 @@ solely to manage cache state.
 - `_pending` type annotation: `dict[tuple[str, str], str]`
 - `_get_or_open_session(team, mode)` — still passes `_CORE_APP` to
   `client.open_session` internally
-- `connect(team, ...)` — use `_CORE_APP` for its `request_session` protocol call
 - `accept_invitation` call to `_get_or_open_session` — drop app arg
 - `push_team` call to `_get_or_open_session` — drop app arg
 
@@ -44,6 +43,8 @@ solely to manage cache state.
 **Remove:**
 - `_NTS` tuple `("SmallSeaCollectiveCore", "NoteToSelf")` — replace with a
   plain string constant `_NTS_TEAM = "NoteToSelf"`
+- Local `_CORE_APP` definition (line 23) — delete it; import `_CORE_APP` from
+  `manager.py` instead so there is a single source of truth
 
 **Update every call site** (approx 13 sites) to drop the app argument:
 - `_hub_connection_ctx`: `session_state("NoteToSelf", _PASSTHROUGH)`
@@ -74,6 +75,8 @@ It is set only by `connect()` and consumed only by the legacy `push()` and
 UI uses `_sessions` exclusively, and `push_team()` already replaced `push()`.
 
 **Remove from `manager.py`:**
+- `PushResult` and `PullResult` dataclasses — they are only returned by the
+  legacy `push()` / `pull()` methods and have no remaining callers
 - `connect(team, pin_provider, mode)` method (~15 lines) — sets `self.session`
   via `request_session` + `confirm_session`. The same flow is handled by the
   web PIN path (`session_request` / `session_confirm` in `web.py`) which stores
@@ -82,13 +85,15 @@ UI uses `_sessions` exclusively, and `push_team()` already replaced `push()`.
   `push_team(team_name)` which uses `_get_or_open_session`.
 - `pull(repo_dir, from_member_id)` method (~15 lines) — uses `self.session`.
   No replacement exists yet, but no code calls it either; when peer-pull is
-  needed it can be built on top of `_sessions` directly.
+  needed it can be built on top of berth-scoped sessions and `PeerSmallSeaRemote`
+  directly.
 - All references to `self.session` (the attribute is never initialized in
   `__init__`, only assigned in `connect()`).
 
 **Update tests (`test_cloud_roundtrip.py`):**
-- `test_connect_pin_flow` and `test_connect_requires_pin_provider` are the only
-  callers of `connect()`. Remove or rewrite them:
+- `test_team_manager_connect` and
+  `test_team_manager_connect_requires_pin_provider` are the only callers of
+  `connect()`. Remove or rewrite them:
   - The PIN-flow semantics will be covered by the new web PIN-flow micro test
     added in step 4 (request → pending → confirm → active).
   - The "requires pin_provider" guard disappears with `connect()`.
@@ -98,7 +103,17 @@ signature. Carrying the dead `self.session` path forward means updating it for
 the new key shape only to delete it later. Removing it in the same branch keeps
 the diff self-contained.
 
-### 4. Validation and tests
+### 4. Spec/doc cleanup
+
+- Update `packages/small-sea-manager/spec.md` so it no longer describes
+  `TeamManager.connect()` as an active open issue.
+- Replace that note with the current direction: Manager session handling is
+  berth-scoped and lazy, with the web/UI PIN flow storing confirmed sessions in
+  `_sessions`.
+- Confirm there are no remaining repo docs that describe `connect()`, `push()`,
+  `pull()`, `PushResult`, or `PullResult` as current Manager APIs.
+
+### 5. Validation and tests
 
 Add focused micro tests so this branch proves the cache shape changed safely,
 rather than relying only on broader integration coverage.
@@ -132,7 +147,9 @@ Success criteria:
 - No Manager cache method or cache key includes `app`
 - All remaining protocol-level Hub calls still pass `_CORE_APP`
 - No `self.session` attribute; no `connect()`, `push()`, or `pull()` methods
+- No `PushResult` or `PullResult` dataclasses
 - No other package is made to depend on Manager-only session-cache internals
+- `packages/small-sea-manager/spec.md` no longer describes removed Manager APIs
 - All focused micro tests and regression tests pass
 
 ## Non-goals
@@ -143,14 +160,13 @@ Success criteria:
   `small-sea-client` as part of this branch
 - Do **not** fold in any `opt-in-opt-out-crypto` (#42) changes — this should
   land on `main` independently
-- ~~Do **not** address the redundancy between `self.session` and `_sessions` yet;
-  flag for future cleanup.~~ → Included as step 5 below.
 
 ## Order of operations
 
 1. Update `manager.py` (shared `_CORE_APP`, cache key, method signatures, remove dead code)
 2. Update `web.py` (import `_CORE_APP`, fix all cache-method call sites)
 3. Remove legacy `self.session` / `connect()` / `push()` / `pull()` from `manager.py`
-4. Update `test_cloud_roundtrip.py` (remove/rewrite `connect()`-dependent tests)
-5. Add focused micro tests for cache semantics and the web PIN flow
-6. Run focused micro tests, then the regression suite, and fix any breakage
+4. Update `packages/small-sea-manager/spec.md` to remove stale `connect()` documentation
+5. Update `test_cloud_roundtrip.py` (remove/rewrite `connect()`-dependent tests)
+6. Add focused micro tests for cache semantics and the web PIN flow
+7. Run focused micro tests, then the regression suite, and fix any breakage
