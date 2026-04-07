@@ -8,6 +8,7 @@
 # schema is the shared contract between the two packages.
 
 import base64
+import hashlib
 import json
 import os
 import pathlib
@@ -44,6 +45,12 @@ from small_sea_manager.sender_keys import (
     save_team_sender_key,
     serialize_distribution_message,
 )
+from wrasse_trust.identity import (
+    KeyCertificate,
+    issue_device_binding_cert,
+    verify_device_binding_cert,
+)
+from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
 # ---- UUIDv7 ----
 
@@ -68,6 +75,82 @@ def uuid7():
     b += bytes([(0x70 | (rand_bytes[0] & 0x0F)), rand_bytes[1]])  # ver + rand_a
     b += bytes([0x80 | (rand_bytes[2] & 0x3F)]) + rand_bytes[3:10]  # variant + rand_b
     return b
+
+
+def _serialize_cert(cert: KeyCertificate) -> dict:
+    return {
+        "cert_id": cert.cert_id.hex(),
+        "cert_type": cert.cert_type,
+        "team_id": cert.team_id.hex() if cert.team_id is not None else None,
+        "subject_key_id": cert.subject_key_id.hex(),
+        "subject_public_key": cert.subject_public_key.hex(),
+        "issuer_key_id": cert.issuer_key_id.hex(),
+        "issuer_participant_id": cert.issuer_participant_id.hex(),
+        "issued_at_iso": cert.issued_at_iso,
+        "claims": cert.claims,
+        "signature": cert.signature.hex(),
+    }
+
+
+def _deserialize_cert(data: dict) -> KeyCertificate:
+    return KeyCertificate(
+        cert_id=bytes.fromhex(data["cert_id"]),
+        cert_type=data.get("cert_type", "generic"),
+        team_id=bytes.fromhex(data["team_id"]) if data.get("team_id") else None,
+        subject_key_id=bytes.fromhex(data["subject_key_id"]),
+        subject_public_key=bytes.fromhex(data["subject_public_key"]),
+        issuer_key_id=bytes.fromhex(data["issuer_key_id"]),
+        issuer_participant_id=bytes.fromhex(data["issuer_participant_id"]),
+        issued_at_iso=data["issued_at_iso"],
+        claims=data["claims"],
+        signature=bytes.fromhex(data["signature"]),
+    )
+
+
+def _fake_enclave_dir(root_dir, participant_hex) -> pathlib.Path:
+    return pathlib.Path(root_dir) / "Participants" / participant_hex / "FakeEnclave"
+
+
+def _team_device_key_path(root_dir, participant_hex, team_id: bytes, device_id: bytes) -> pathlib.Path:
+    return _fake_enclave_dir(root_dir, participant_hex) / (
+        f"team-device-{team_id.hex()}-{device_id.hex()}.key"
+    )
+
+
+def _current_device_row(conn):
+    row = conn.execute(
+        text("SELECT id, key FROM user_device ORDER BY id LIMIT 1")
+    ).fetchone()
+    if row is None:
+        raise ValueError("No local device registered in user_device")
+    return row
+
+
+def wrap_team_identity_key(private_key: bytes, device_id: bytes) -> bytes:
+    """Placeholder wrapper for the team-membership private key."""
+    payload = {
+        "wrapper_version": "placeholder-v1",
+        "device_id": device_id.hex(),
+        "private_key": private_key.hex(),
+    }
+    return json.dumps(payload, sort_keys=True).encode("utf-8")
+
+
+def unwrap_team_identity_key(wrapped_private_key: bytes, device_id: bytes) -> bytes:
+    """Placeholder unwrap for the team-membership private key."""
+    payload = json.loads(wrapped_private_key.decode("utf-8"))
+    if payload.get("device_id") != device_id.hex():
+        raise ValueError("Wrapped team identity key is not for this device")
+    return bytes.fromhex(payload["private_key"])
+
+
+def _write_local_secret(path: pathlib.Path, value: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(value)
+
+
+def _read_local_secret(path: pathlib.Path) -> bytes:
+    return path.read_bytes()
 
 
 # ---- SQLAlchemy models for per-user core.db ----
@@ -175,7 +258,7 @@ class Peer(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 51
+USER_SCHEMA_VERSION = 53
 
 
 # ---- Provisioning functions ----
@@ -186,17 +269,6 @@ def create_new_participant(root_dir, nickname, device=None):
     root_dir = pathlib.Path(root_dir)
     ident = uuid7()
     ident_dir = root_dir / "Participants" / ident.hex()
-
-    device_key = Ed25519PrivateKey.generate()
-    device_public_key = device_key.public_key()
-    device_key_bytes = device_key.private_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    device_public_key_bytes = device_public_key.public_bytes(
-        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
-    )
 
     try:
         os.makedirs(ident_dir / "NoteToSelf" / "Sync", exist_ok=False)
@@ -214,15 +286,26 @@ def create_new_participant(root_dir, nickname, device=None):
 def _initialize_user_db(root_dir, ident, nickname, device):
     path = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync" / "core.db"
     engine = create_engine(f"sqlite:///{path}")
+    device_id = uuid7()
+    device_key = Ed25519PrivateKey.generate()
+    device_key_bytes = device_key.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    device_public_key_bytes = device_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
+    )
     try:
         with engine.begin() as conn:
             _initialize_core_note_to_self_schema(conn)
 
         with Session(engine) as session:
             nick1 = Nickname(id=uuid7(), name=nickname)
+            device1 = UserDevice(id=device_id, key=device_public_key_bytes)
             team1 = Team(id=uuid7(), name="NoteToSelf", self_in_team=b"0")
             app1 = App(id=uuid7(), name="SmallSeaCollectiveCore")
-            session.add_all([nick1, team1, app1])
+            session.add_all([nick1, device1, team1, app1])
             session.flush()
             team_app = TeamAppBerth(id=uuid7(), team_id=team1.id, app_id=app1.id)
             session.add_all([team_app])
@@ -230,6 +313,9 @@ def _initialize_user_db(root_dir, ident, nickname, device):
 
     except sqlite3.Error as e:
         print("SQLite error occurred:", e)
+
+    device_key_path = _fake_enclave_dir(root_dir, ident.hex()) / f"device-{device_id.hex()}.key"
+    _write_local_secret(device_key_path, device_key_bytes)
 
     repo_dir = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
     CodSync.gitCmd(["init", "-b", "main", str(repo_dir)])
@@ -297,6 +383,45 @@ def _migrate_user_db(conn, from_version):
                 "FOREIGN KEY (team_id) REFERENCES team(id))"
             )
         )
+    if from_version < 52:
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS team_identity ("
+                "team_id BLOB PRIMARY KEY, "
+                "member_id BLOB NOT NULL, "
+                "public_key BLOB NOT NULL, "
+                "created_at TEXT NOT NULL, "
+                "FOREIGN KEY (team_id) REFERENCES team(id))"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS wrapped_team_identity_key ("
+                "team_id BLOB NOT NULL, "
+                "device_id BLOB NOT NULL, "
+                "wrapped_private_key BLOB NOT NULL, "
+                "wrapper_version TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, "
+                "revoked_at TEXT, "
+                "PRIMARY KEY (team_id, device_id), "
+                "FOREIGN KEY (team_id) REFERENCES team(id), "
+                "FOREIGN KEY (device_id) REFERENCES user_device(id))"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS team_device_key ("
+                "team_id BLOB NOT NULL, "
+                "device_id BLOB NOT NULL, "
+                "public_key BLOB NOT NULL, "
+                "private_key_ref TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, "
+                "revoked_at TEXT, "
+                "PRIMARY KEY (team_id, device_id), "
+                "FOREIGN KEY (team_id) REFERENCES team(id), "
+                "FOREIGN KEY (device_id) REFERENCES user_device(id))"
+            )
+        )
         conn.execute(
             text(
                 "CREATE TABLE IF NOT EXISTS peer_sender_key ("
@@ -321,6 +446,24 @@ def _migrate_team_db(conn, from_version):
         conn.execute(text("ALTER TABLE peer ADD COLUMN bucket TEXT"))
     if from_version < 50:
         conn.execute(text("ALTER TABLE peer ADD COLUMN display_name TEXT"))
+    if from_version < 52:
+        conn.execute(text("ALTER TABLE member RENAME COLUMN public_key TO device_public_key"))
+        conn.execute(text("ALTER TABLE member ADD COLUMN identity_public_key BLOB"))
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS key_certificate ("
+                "cert_id BLOB PRIMARY KEY, "
+                "cert_type TEXT NOT NULL, "
+                "subject_key_id BLOB NOT NULL, "
+                "subject_public_key BLOB NOT NULL, "
+                "issuer_key_id BLOB NOT NULL, "
+                "issuer_member_id BLOB NOT NULL, "
+                "issued_at TEXT NOT NULL, "
+                "claims TEXT NOT NULL, "
+                "signature BLOB NOT NULL, "
+                "FOREIGN KEY (issuer_member_id) REFERENCES member(id) ON DELETE CASCADE)"
+            )
+        )
 
 
 def ensure_team_db_schema(db_path):
@@ -477,6 +620,112 @@ def _initialize_team_sender_key_state(user_db_path, team_id, member_id):
     return distribution
 
 
+def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes) -> None:
+    conn.execute(
+        text(
+            "INSERT INTO key_certificate ("
+            "cert_id, cert_type, subject_key_id, subject_public_key, "
+            "issuer_key_id, issuer_member_id, issued_at, claims, signature"
+            ") VALUES ("
+            ":cert_id, :cert_type, :subject_key_id, :subject_public_key, "
+            ":issuer_key_id, :issuer_member_id, :issued_at, :claims, :signature)"
+        ),
+        {
+            "cert_id": cert.cert_id,
+            "cert_type": cert.cert_type,
+            "subject_key_id": cert.subject_key_id,
+            "subject_public_key": cert.subject_public_key,
+            "issuer_key_id": cert.issuer_key_id,
+            "issuer_member_id": issuer_member_id,
+            "issued_at": cert.issued_at_iso,
+            "claims": json.dumps(cert.claims, sort_keys=True),
+            "signature": cert.signature,
+        },
+    )
+
+
+def _generate_team_identity_and_device_key(
+    root_dir,
+    participant_hex: str,
+    nts_engine,
+    team_id: bytes,
+    member_id: bytes,
+):
+    """Create the local team identity, current device key, and binding cert."""
+    now = datetime.now(timezone.utc).isoformat()
+    with nts_engine.begin() as conn:
+        device_row = _current_device_row(conn)
+        device_id = device_row[0]
+
+    identity_key, identity_private_key = generate_key_pair(ProtectionLevel.GUARDED)
+    device_key, device_private_key = generate_key_pair(ProtectionLevel.DAILY)
+    wrapped_identity_key = wrap_team_identity_key(identity_private_key, device_id)
+    device_key_path = _team_device_key_path(root_dir, participant_hex, team_id, device_id)
+    _write_local_secret(device_key_path, device_private_key)
+
+    with nts_engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO team_identity (team_id, member_id, public_key, created_at) "
+                "VALUES (:team_id, :member_id, :public_key, :created_at)"
+            ),
+            {
+                "team_id": team_id,
+                "member_id": member_id,
+                "public_key": identity_key.public_key,
+                "created_at": now,
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO wrapped_team_identity_key ("
+                "team_id, device_id, wrapped_private_key, wrapper_version, created_at"
+                ") VALUES ("
+                ":team_id, :device_id, :wrapped_private_key, :wrapper_version, :created_at)"
+            ),
+            {
+                "team_id": team_id,
+                "device_id": device_id,
+                "wrapped_private_key": wrapped_identity_key,
+                "wrapper_version": "placeholder-v1",
+                "created_at": now,
+            },
+        )
+        conn.execute(
+            text(
+                "INSERT INTO team_device_key ("
+                "team_id, device_id, public_key, private_key_ref, created_at"
+                ") VALUES ("
+                ":team_id, :device_id, :public_key, :private_key_ref, :created_at)"
+            ),
+            {
+                "team_id": team_id,
+                "device_id": device_id,
+                "public_key": device_key.public_key,
+                "private_key_ref": str(device_key_path),
+                "created_at": now,
+            },
+        )
+
+    device_binding_cert = issue_device_binding_cert(
+        subject_key=device_key,
+        issuer_key=identity_key,
+        issuer_private_key=identity_private_key,
+        team_id=team_id,
+        member_id=member_id,
+    )
+
+    return {
+        "device_id": device_id,
+        "identity_key": identity_key,
+        "device_key": device_key,
+        "identity_private_key": identity_private_key,
+        "device_private_key": device_private_key,
+        "device_binding_cert": device_binding_cert,
+        "device_key_path": device_key_path,
+    }
+
+
 def _deserialize_group_message(payload: bytes) -> GroupMessage:
     data = json.loads(payload.decode("utf-8"))
     return GroupMessage(
@@ -530,29 +779,31 @@ def decrypt_invitation_bootstrap_payload(
 
 
 def get_team_signing_key(root_dir, participant_hex, team_name):
-    """Return the signing key for a team as (private_key_bytes, public_key_bytes).
-
-    Looks up the team by name in NoteToSelf, then fetches the key from team_signing_key.
-    Raises ValueError if no key is found.
-    """
+    """Return the current device team key as (private_key_bytes, public_key_bytes)."""
     root_dir = pathlib.Path(root_dir)
     nts_db_path = (
         root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
     )
     engine = create_engine(f"sqlite:///{nts_db_path}")
-    with engine.begin() as conn:
-        row = conn.execute(
-            text(
-                "SELECT tsk.private_key, tsk.public_key FROM team_signing_key tsk "
-                "JOIN team t ON tsk.team_id = t.id "
-                "WHERE t.name = :team_name LIMIT 1"
-            ),
-            {"team_name": team_name},
-        ).fetchone()
-    engine.dispose()
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT tdk.private_key_ref, tdk.public_key "
+                    "FROM team_device_key tdk "
+                    "JOIN team t ON tdk.team_id = t.id "
+                    "JOIN user_device ud ON tdk.device_id = ud.id "
+                    "WHERE t.name = :team_name "
+                    "AND tdk.revoked_at IS NULL "
+                    "ORDER BY tdk.created_at DESC LIMIT 1"
+                ),
+                {"team_name": team_name},
+            ).fetchone()
+    finally:
+        engine.dispose()
     if row is None:
-        raise ValueError(f"No signing key found for team '{team_name}'")
-    return row[0], row[1]
+        raise ValueError(f"No current device key found for team '{team_name}'")
+    return _read_local_secret(pathlib.Path(row[0])), row[1]
 
 
 def create_team(root_dir, participant_hex, team_name):
@@ -581,8 +832,10 @@ def create_team(root_dir, participant_hex, team_name):
         session.add(team_row)
         session.commit()
 
-    # --- Generate team signing key (stored in NoteToSelf) ---
-    _priv, pub = _generate_team_signing_key(engine, team_id)
+    # --- Generate local team identity and current device key ---
+    team_keys = _generate_team_identity_and_device_key(
+        root_dir, participant_hex, engine, team_id, member_id
+    )
     _initialize_team_sender_key_state(user_db_path, team_id, member_id)
 
     # --- Create team directory and its core.db ---
@@ -597,8 +850,18 @@ def create_team(root_dir, participant_hex, team_name):
     berth_id = uuid7()
     with team_engine.begin() as conn:
         conn.execute(
-            text("INSERT INTO member (id, public_key) VALUES (:id, :pub)"),
-            {"id": member_id, "pub": pub},
+            text(
+                "INSERT INTO member (id, identity_public_key, device_public_key) "
+                "VALUES (:id, :identity_public_key, :device_public_key)"
+            ),
+            {
+                "id": member_id,
+                "identity_public_key": team_keys["identity_key"].public_key,
+                "device_public_key": team_keys["device_key"].public_key,
+            },
+        )
+        _store_team_certificate(
+            conn, team_keys["device_binding_cert"], issuer_member_id=member_id
         )
         conn.execute(
             text("INSERT INTO app (id, name) VALUES (:id, :name)"),
@@ -833,8 +1096,10 @@ def accept_invitation(
         session.add(team_row)
         session.commit()
 
-    # --- Generate team signing key (stored in NoteToSelf) ---
-    _priv, acceptor_public_key = _generate_team_signing_key(user_engine, team_id)
+    # --- Generate local team identity and current device key ---
+    team_keys = _generate_team_identity_and_device_key(
+        root_dir, acceptor_participant_hex, user_engine, team_id, acceptor_member_id
+    )
     save_peer_sender_key(
         user_db_path,
         team_id,
@@ -844,13 +1109,23 @@ def accept_invitation(
         user_db_path, team_id, acceptor_member_id
     )
 
-    # --- Store public key in team DB member row ---
+    # --- Store current local identity/device proof in the team DB ---
     team_db_path = team_sync_dir / "core.db"
     team_engine2 = create_engine(f"sqlite:///{team_db_path}")
     with team_engine2.begin() as conn:
         conn.execute(
-            text("UPDATE member SET public_key = :pub WHERE id = :id"),
-            {"pub": acceptor_public_key, "id": acceptor_member_id},
+            text(
+                "UPDATE member SET identity_public_key = :identity_public_key, "
+                "device_public_key = :device_public_key WHERE id = :id"
+            ),
+            {
+                "identity_public_key": team_keys["identity_key"].public_key,
+                "device_public_key": team_keys["device_key"].public_key,
+                "id": acceptor_member_id,
+            },
+        )
+        _store_team_certificate(
+            conn, team_keys["device_binding_cert"], issuer_member_id=acceptor_member_id
         )
     team_engine2.dispose()
 
@@ -878,7 +1153,9 @@ def accept_invitation(
         "nonce": nonce.hex(),
         "team_id": team_id.hex(),
         "acceptor_member_id": acceptor_member_id.hex(),
-        "acceptor_public_key": acceptor_public_key.hex(),
+        "acceptor_identity_public_key": team_keys["identity_key"].public_key.hex(),
+        "acceptor_device_public_key": team_keys["device_key"].public_key.hex(),
+        "acceptor_device_binding_cert": _serialize_cert(team_keys["device_binding_cert"]),
         "acceptor_cloud": acceptor_cloud,
         "acceptor_bucket": acceptor_bucket,
         "acceptor_sender_key": serialize_distribution_message(acceptor_sender_key),
@@ -907,10 +1184,21 @@ def complete_invitation_acceptance(
     nonce = bytes.fromhex(acceptance["nonce"])
     team_id = bytes.fromhex(acceptance["team_id"])
     acceptor_member_id = bytes.fromhex(acceptance["acceptor_member_id"])
-    acceptor_public_key = bytes.fromhex(acceptance["acceptor_public_key"])
+    acceptor_identity_public_key = bytes.fromhex(acceptance["acceptor_identity_public_key"])
+    acceptor_device_public_key = bytes.fromhex(acceptance["acceptor_device_public_key"])
+    acceptor_device_binding_cert = _deserialize_cert(acceptance["acceptor_device_binding_cert"])
     acceptor_cloud = acceptance["acceptor_cloud"]
     acceptor_bucket = acceptance["acceptor_bucket"]
     acceptor_sender_key = deserialize_distribution_message(acceptance["acceptor_sender_key"])
+
+    if not verify_device_binding_cert(
+        acceptor_device_binding_cert,
+        issuer_public_key=acceptor_identity_public_key,
+        team_id=team_id,
+        member_id=acceptor_member_id,
+        subject_public_key=acceptor_device_public_key,
+    ):
+        raise ValueError("Acceptance contains an invalid device binding cert")
 
     # Find and validate the invitation in the inviter's team DB
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
@@ -953,8 +1241,18 @@ def complete_invitation_acceptance(
 
         # Add acceptor as member + peer in inviter's team DB (URL only, no credentials)
         conn.execute(
-            text("INSERT INTO member (id, public_key) VALUES (:id, :pub)"),
-            {"id": acceptor_member_id, "pub": acceptor_public_key},
+            text(
+                "INSERT INTO member (id, identity_public_key, device_public_key) "
+                "VALUES (:id, :identity_public_key, :device_public_key)"
+            ),
+            {
+                "id": acceptor_member_id,
+                "identity_public_key": acceptor_identity_public_key,
+                "device_public_key": acceptor_device_public_key,
+            },
+        )
+        _store_team_certificate(
+            conn, acceptor_device_binding_cert, issuer_member_id=acceptor_member_id
         )
         conn.execute(
             text(

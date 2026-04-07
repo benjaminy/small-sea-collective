@@ -1,9 +1,12 @@
+import json
 import pathlib
 import sqlite3
 import subprocess
 
+from small_sea_manager.provisioning import _deserialize_cert
 from small_sea_manager.provisioning import (create_new_participant,
                                                  create_team)
+from wrasse_trust.identity import verify_device_binding_cert
 
 
 def test_create_team(playground_dir):
@@ -50,6 +53,30 @@ def test_create_team(playground_dir):
     assert self_receiver_key[0] == bytes.fromhex(member_id_hex)
     assert self_receiver_key[1] is None
 
+    team_identity = conn.execute(
+        "SELECT member_id, public_key FROM team_identity WHERE team_id = ?",
+        (bytes.fromhex(team_id_hex),),
+    ).fetchone()
+    assert team_identity is not None
+    assert team_identity[0] == bytes.fromhex(member_id_hex)
+    assert len(team_identity[1]) == 32
+
+    wrapped_identity = conn.execute(
+        "SELECT wrapped_private_key, wrapper_version FROM wrapped_team_identity_key "
+        "WHERE team_id = ?",
+        (bytes.fromhex(team_id_hex),),
+    ).fetchone()
+    assert wrapped_identity is not None
+    assert wrapped_identity[1] == "placeholder-v1"
+
+    team_device_key = conn.execute(
+        "SELECT public_key, private_key_ref FROM team_device_key WHERE team_id = ?",
+        (bytes.fromhex(team_id_hex),),
+    ).fetchone()
+    assert team_device_key is not None
+    assert len(team_device_key[0]) == 32
+    assert pathlib.Path(team_device_key[1]).exists()
+
     # TeamAppBerth for CoolProject must NOT be in NoteToSelf — it belongs in the team DB.
     other_team_berths = conn.execute(
         "SELECT tab.* FROM team_app_berth tab "
@@ -69,6 +96,35 @@ def test_create_team(playground_dir):
     members = tconn.execute("SELECT * FROM member").fetchall()
     assert len(members) == 1
     assert members[0][0] == bytes.fromhex(member_id_hex)
+    assert members[0][1] == team_identity[1]
+    assert members[0][2] == team_device_key[0]
+
+    cert_row = tconn.execute(
+        "SELECT cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, "
+        "issuer_member_id, issued_at, claims, signature FROM key_certificate"
+    ).fetchone()
+    assert cert_row is not None
+    cert = _deserialize_cert(
+        {
+            "cert_id": cert_row[0].hex(),
+            "cert_type": cert_row[1],
+            "team_id": team_id_hex,
+            "subject_key_id": cert_row[2].hex(),
+            "subject_public_key": cert_row[3].hex(),
+            "issuer_key_id": cert_row[4].hex(),
+            "issuer_participant_id": cert_row[5].hex(),
+            "issued_at_iso": cert_row[6],
+            "claims": json.loads(cert_row[7]),
+            "signature": cert_row[8].hex(),
+        }
+    )
+    assert verify_device_binding_cert(
+        cert,
+        issuer_public_key=team_identity[1],
+        team_id=bytes.fromhex(team_id_hex),
+        member_id=bytes.fromhex(member_id_hex),
+        subject_public_key=team_device_key[0],
+    )
 
     # app + team_app_berth live here now
     apps = tconn.execute("SELECT * FROM app").fetchall()

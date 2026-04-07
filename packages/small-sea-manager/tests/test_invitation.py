@@ -6,6 +6,7 @@ import subprocess
 
 import pytest
 import small_sea_hub.backend as SmallSea
+import small_sea_manager.provisioning as provisioning
 from cod_sync.protocol import CodSync, SmallSeaRemote
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
@@ -13,6 +14,7 @@ from small_sea_manager.manager import TeamManager
 from small_sea_manager.provisioning import (
     complete_invitation_acceptance,
     create_invitation, create_new_participant, create_team, list_invitations)
+from wrasse_trust.identity import verify_device_binding_cert
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -192,6 +194,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert bob_member_id_hex != bob_hex
     assert len(bob_member_id_hex) == 32
     assert acceptance["team_id"] == token_data["team_id"]
+    assert len(acceptance["acceptor_identity_public_key"]) == 64
+    assert len(acceptance["acceptor_device_public_key"]) == 64
+    assert acceptance["acceptor_device_binding_cert"]["cert_type"] == "device_binding"
     assert acceptance["acceptor_sender_key"]["group_id"] == token_data["team_id"]
     assert acceptance["acceptor_sender_key"]["sender_participant_id"] == bob_member_id_hex
 
@@ -206,11 +211,26 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     # --- Verify Alice's team DB has 2 members, a peer (Bob), and 2 berth_roles ---
     alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     aconn = sqlite3.connect(str(alice_team_db))
-    members = aconn.execute("SELECT id FROM member").fetchall()
+    members = aconn.execute(
+        "SELECT id, identity_public_key, device_public_key FROM member"
+    ).fetchall()
     assert len(members) == 2
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
     assert bob_member_id_hex in member_ids
+    bob_member_row = next(row for row in members if row[0] == bytes.fromhex(bob_member_id_hex))
+    assert bob_member_row[1] == bytes.fromhex(acceptance["acceptor_identity_public_key"])
+    assert bob_member_row[2] == bytes.fromhex(acceptance["acceptor_device_public_key"])
+
+    bob_cert_row = aconn.execute(
+        "SELECT cert_type, subject_public_key, issuer_member_id, claims "
+        "FROM key_certificate WHERE issuer_member_id = ?",
+        (bytes.fromhex(bob_member_id_hex),),
+    ).fetchone()
+    assert bob_cert_row is not None
+    assert bob_cert_row[0] == "device_binding"
+    assert bob_cert_row[1] == bytes.fromhex(acceptance["acceptor_device_public_key"])
+    assert json.loads(bob_cert_row[3])["member_id"] == bob_member_id_hex
 
     peers = aconn.execute(
         "SELECT member_id, display_name, protocol, url FROM peer"
@@ -231,11 +251,21 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     # --- Verify Bob's team DB has 2 members and a peer (Alice) ---
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
-    members = bconn.execute("SELECT id FROM member").fetchall()
+    members = bconn.execute(
+        "SELECT id, identity_public_key, device_public_key FROM member"
+    ).fetchall()
     assert len(members) == 2
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
     assert bob_member_id_hex in member_ids
+    bob_member_row = next(row for row in members if row[0] == bytes.fromhex(bob_member_id_hex))
+    assert verify_device_binding_cert(
+        provisioning._deserialize_cert(acceptance["acceptor_device_binding_cert"]),
+        issuer_public_key=bob_member_row[1],
+        team_id=bytes.fromhex(token_data["team_id"]),
+        member_id=bytes.fromhex(bob_member_id_hex),
+        subject_public_key=bob_member_row[2],
+    )
 
     peers = bconn.execute(
         "SELECT member_id, display_name, protocol, url FROM peer"
