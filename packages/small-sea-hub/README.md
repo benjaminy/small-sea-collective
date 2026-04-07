@@ -1,3 +1,5 @@
+<img src="../../Documentation/Images/hub-octo.png">
+
 # Small Sea Hub
 
 The Hub is the connector between Small Sea clients and internet services (cloud storage, notifications, VPNs, etc).
