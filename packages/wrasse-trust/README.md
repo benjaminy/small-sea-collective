@@ -49,7 +49,8 @@ The ambition is not merely "this account can sign this blob." The ambition is
 closer to:
 
 - teammates can vouch for people and their devices
-- teams can become first-class principals, not just bags of member rows
+- teams can be reasoned about as derived principals built from member and admin
+  history
 - trust can survive routine key rotation
 - trust and authorization can be expressed as a graph rather than a central
   directory
@@ -88,11 +89,61 @@ This design has important properties:
   all of Alice's other team memberships
 - **Flexibility**: pseudonymous participation is naturally supported
 
+Per-team identity is a **privacy and isolation feature, not a technical
+convenience**. The failure mode to avoid is building per-team identities at the
+protocol layer and then having the UI silently collapse them into a single
+"Alice" by default — that gives all the costs of the design with none of the
+benefits. The UX layer must keep the scoping legible (see "Display Convention"
+below), and cross-team linking must always be a deliberate, visible act rather
+than an automatic default.
+
+### Display Convention
+
+The default display name for a participant is **`Name/Team`**, e.g.
+`Bob/prayer-group` or `Alice/Sharks`, not bare `Alice`. This is a deliberate
+UX commitment that makes the per-team scoping visible to users instead of
+hiding it as plumbing. It rhymes with the way Mastodon's `@user@instance`
+teaches federation: the visual format teaches the trust model.
+
+Consequences:
+
+- Linking two team-membership identities is a deliberate user act. When a link
+  exists, the UI shows it as an explicit claim ("verified same person as
+  Alice/Jets") rather than silently merging the two identities.
+- Nickname collisions across teams are not a problem — `Bob/prayer-group` and
+  `Bob/d&d-night` are simply different entries, with no need for global
+  disambiguation suffixes.
+- Team renames become a UX event because the team name is part of displayed
+  identity.
+
 NoteToSelf plays a special role: it is the one "team" that is always
 single-participant, so it serves as the **device management context**. Device
 provisioning, device key rotation, and cross-team identity linking are
 operations that happen within NoteToSelf. NoteToSelf identity material never
 appears on another team's chain, preventing accidental cross-team linkage.
+
+### Teams Are Derived Principals
+
+For version 1, a team does **not** need a special shared private key.
+
+Instead, the team is a derived principal represented by the history in its
+`{Team}/SmallSeaCollectiveCore` berth:
+
+- who was admitted
+- who currently has admin authority
+- who was removed or revoked
+- who certified which devices and keys
+
+In that sense, "Sharks" is the admin chain plus the membership and revocation
+history, not a separate secret sitting somewhere called "the Sharks private
+key."
+
+This is important because it keeps the team model practical:
+
+- no shared team secret needs to be copied around
+- team authority can be understood from history
+- future quorum or threshold governance can be layered onto the history model
+  without replacing it
 
 ### Independent Key Properties
 
@@ -121,8 +172,9 @@ Wrasse Trust reasons about these subjects:
   (e.g., "Alice/Sharks"). This is the primary subject.
 - `device`: one concrete installation or hardware endpoint. Devices are managed
   through NoteToSelf but provisioned into team contexts.
-- `team`: the team itself as a collective principal (the set of membership
-  statements, admin authority, etc.)
+- `team`: a **derived** collective principal represented by membership,
+  authority, and revocation history rather than, in version 1, by a dedicated
+  team private key
 
 A participant's "global" identity, to the extent it exists, is their
 NoteToSelf identity plus whatever cross-team links they choose to publish.
@@ -134,14 +186,14 @@ a way that does not scale. The design direction is to name keys by purpose.
 
 | Key | Purpose | Typical Protection | Rotation |
 |-----|---------|-------------------|----------|
-| **Identity root** | Signs everything else for this team-membership; is the anchor others certify | Offline / hardware / high-entropy passphrase | Rarely (years) |
-| **Device key** | Proves a specific device; generated on-device | Hardware-backed where available | Per device lifetime |
-| **Signing key** | Routine content signatures, cert issuance for own sub-keys | Biometric/PIN | Periodic (months) |
-| **Encryption key** | Receiving encrypted content | Device-local or synced | Periodic, with overlap for decryption continuity |
+| **Team-membership identity key** | Rare-use certifying key for `Alice/Sharks`; signs device bindings, succession, and revocation | Encrypted in NoteToSelf with per-device wrappers; preferably hardware-unlocked only briefly | Rarely |
+| **Team-device key** | Routine signing key for one concrete device in one team, e.g. `Alice/Sharks/phone` | Device-local, enclave-backed where available | Per device lifetime / reprovisioning |
+| **Encryption key** | Receiving encrypted content for a team context or epoch | Device-local or synced per policy | Periodic, with overlap for decryption continuity |
 
 Each team-membership identity (Alice/Sharks, Alice/Jets, Alice/NoteToSelf) has
-its own identity root. Device keys are generated once per device but are
-provisioned into team contexts via NoteToSelf (see
+its own certifying identity key. Each physical device gets its own distinct
+per-team team-device key. Device keys are generated locally and provisioned
+into team contexts via NoteToSelf (see
 [device_provisioning_todo.md](device_provisioning_todo.md)).
 
 The protection level of each key is a separate concern:
@@ -151,6 +203,27 @@ The protection level of each key is a separate concern:
 - secure enclave or other device-bound hardware
 - offline custody
 - threshold or quorum control
+
+### Where Private Keys Live
+
+Near-term recommendation:
+
+- the private key for a team-membership identity like `Alice/Sharks` lives in
+  `NoteToSelf`, not in the Sharks team repo
+- it should never be stored there in plaintext
+- it should be stored as encrypted key material with one additional wrapper per
+  authorized device
+- routine signing should be done by per-device per-team keys, not by the
+  team-membership identity key itself
+
+That makes `NoteToSelf` the local control plane and inventory for private key
+material, while the team repo remains the proof surface for public certs and
+trust history.
+
+This is not perfect security. If an authorized device is fully compromised, the
+wrapped team-membership key may become exposed through that device. That is why
+the team-membership identity key should be rare-use and why device removal may
+need substantial rotation.
 
 ### Append-Only Trust Log (Sigchains in Git)
 
@@ -167,6 +240,8 @@ git history provides the hash-linked chain. This means:
   trust chain — the commit DAG structure is preserved even when old content is
   pruned
 - No separate sigchain format is needed — git IS the sigchain
+- Public certs and authority history live in the team repo; private key blobs
+  and device-specific wrappers live only in NoteToSelf
 
 This is a significant architectural advantage. Systems like Keybase had to
 build their own Merkle tree infrastructure; Small Sea gets it from the
@@ -199,6 +274,34 @@ system should prefer a sharp break.
 for version 1. Overlapping validity windows can be added later without changing
 the cert format.
 
+## Epochs, Removal, and Splits
+
+Any removal is a serious event in a decentralized system.
+
+- removing a teammate should always advance the team membership epoch and rotate
+  the content and session material that teammate could read
+- removing a device should revoke that device key and rotate anything that
+  device could read or certify
+- if a removed device could unwrap a team-membership identity key, that key may
+  need to be re-wrapped or rotated as well
+
+The hard truth is that a fully decentralized system cannot reliably prevent
+splits under partition. A stale device or removed member may continue making
+local progress while disconnected.
+
+The design goal is therefore not "prevent every fork." The design goal is:
+
+- make epoch changes explicit
+- detect stale branches quickly
+- reject ordinary writes from stale epochs once a newer epoch is known
+- make fork resolution an explicit administrative or human action rather than a
+  silent merge
+
+One candidate invariant for version 1:
+
+- membership changes and removals advance the epoch before any further normal
+  writes are accepted
+
 ## Certificates
 
 Wrasse Trust supports several certificate types rather than treating every
@@ -208,8 +311,9 @@ signed edge as the same thing.
 
 - `self_binding`: this identity root signs its own sub-keys (signing key,
   encryption key)
-- `device_binding`: a NoteToSelf identity root signs a device key into a
-  team-membership context
+- `device_binding`: a team-membership identity signs a per-team device key into
+  that team context; NoteToSelf may orchestrate this, but the proof visible to
+  teammates is team-local
 - `cross_certification`: I sign your identity root (the ceremony output)
 - `membership`: an admin (or quorum) certifies that a participant identity
   belongs to this team
@@ -248,15 +352,23 @@ This is a critical constraint that prevents nonsensical trust chains:
 | Cert Type | Valid Issuers |
 |-----------|--------------|
 | `self_binding` | Own identity root only |
-| `device_binding` | NoteToSelf identity root |
-| `cross_certification` | Any identity root or signing key |
-| `membership` | Team admin identity root (or quorum) |
-| `succession` | The key being superseded |
+| `device_binding` | Team-membership identity key only |
+| `cross_certification` | Identity roots or team-membership identity keys, not routine device keys |
+| `membership` | Current admin chain (or future quorum) |
+| `succession` | The key being superseded, or its certifying parent |
 | `identity_link` | Either of the two identity roots being linked |
 | `ambient_proximity` | Device keys (low-stakes, automatic) |
-| `revocation` | Identity root, or the key's own parent in the hierarchy |
+| `revocation` | Identity root, team-membership identity key, current admin chain, or the key's own parent |
 
 This table is preliminary and will need refinement as the protocol solidifies.
+
+The **concept** of typed certs is standard — X.509 has key usage extensions,
+SPKI/SDSI has typed authorization, and Keybase sigchain links have explicit
+types that constrain what can sign what. The **specific vocabulary** above is a
+Small Sea invention tailored to the per-team identity model and ambient
+proximity trust, with Keybase's sigchain link types as the closest ancestor.
+The lesson from PGP's untyped web of trust is that signatures whose meaning
+isn't explicit are impossible to reason about; typed certs are the fix.
 
 ## Team Membership and Authority
 
@@ -293,7 +405,7 @@ useful. The cert format should be flexible enough to accommodate them later.
 
 ### Team Authority via Admin Chains (Not Shared Keys)
 
-The team does not have a single shared private key. Instead:
+For version 1, the team does not have a single shared private key. Instead:
 
 - The team has an **admin chain**: a sequence of membership + role certs in
   the git history that records who has admin authority
@@ -360,10 +472,11 @@ concrete device provisioning design and implementation plan.
 
 Summary:
 
-- Devices are managed through NoteToSelf
-- Each device generates its own device key locally
-- An existing device (or identity root) signs a device_binding cert to
-  provision a new device into a team context
+- Devices are managed through NoteToSelf, which tracks encrypted team identity
+  material and device-specific wrappers
+- Each device generates its own per-team device key locally
+- An existing trusted context uses the team-membership identity key to sign a
+  `device_binding` cert for the new per-team device key
 - Hardware-backed or enclave-backed attestations are expressible as certs
 
 This lets Small Sea describe not just "who is Alice/Sharks?" but also "which
@@ -455,7 +568,10 @@ Current code reality:
 Design direction:
 
 - per-team identities with NoteToSelf as device management context
-- purpose-based key types (identity root, device, signing, encryption)
+- team as a derived principal from admin and membership history, not a shared
+  team private key
+- purpose-based key types (team-membership identity, team-device, encryption)
+- wrapped storage for team-membership private keys in NoteToSelf
 - typed certificates with issuer constraints
 - trust log via git commit DAG (no separate sigchain infrastructure needed)
 - ambient proximity cross-signing for continuous trust reinforcement
@@ -471,22 +587,29 @@ Design direction:
 - Key overlap/validity windows (hard rotation is fine)
 - Ambient proximity signing (requires Bluetooth protocol work)
 - Cross-team identity linking (per-team isolation is the default)
+- Offline roots and paper-key style recovery flows
 
 ## What Cannot Be Deferred
 
 - Typed certificates (the format must support types from the start)
 - Device provisioning (multi-device is fundamental to Small Sea)
-- Identity root / device / signing key split
+- Team-membership identity / team-device / signing split
 - Membership certificates (proving team membership is core)
 - Trust log via git (this is already in place)
+- Epoch transitions and stale-epoch rejection rules for removals
+- Encrypted, wrapped storage for team-membership private keys in NoteToSelf
 
 ## Open Questions
 
 - What exactly goes into a NoteToSelf sigchain entry for device provisioning?
   What fields, what format?
-- How should device keys be provisioned into team contexts? Does the
-  NoteToSelf identity root sign a cert that the team can verify, or does the
-  team-membership identity root sign the device key directly?
+- What exact wrapper format should NoteToSelf use for encrypted
+  team-membership private keys, and what metadata must be stored with each
+  device-specific wrapper?
+- For device removal, when is re-wrapping enough and when must the
+  team-membership identity key itself rotate?
+- What exact epoch data must be committed so stale writes are unambiguously
+  detectable?
 - For ambient proximity: what Bluetooth protocol? How to handle relay attacks?
   What aggregation window is meaningful?
 - Should ambient certs be stored in team git repos (visible to all members) or
