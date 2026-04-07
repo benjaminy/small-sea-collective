@@ -73,6 +73,9 @@ entire sync stack in one jump.
 - contested team governance or quorum signing
 - epoch enforcement on sync writes
 - teammate removal and device removal rotation logic
+- revocation certificate handling (no `revocation` cert issuance or
+  enforcement in this branch — implied by the "no removal" exclusion above,
+  but called out so reviewers don't have to infer it)
 - replacing the entire existing Wrasse Trust model in one branch
 
 This branch is a foundation for device registration, not device registration
@@ -91,10 +94,24 @@ branch should make it concrete enough for team-local device bindings.
 - add explicit team scoping to certificates (`team_id` or equivalent)
 - keep `claims` for extensibility, but do not use it as the primary type system
 - add helper(s) for issuing and verifying `device_binding` certs
+- switch `cert_id` from random bytes to a content-addressed hash of the
+  canonical signed bytes. This makes certs immutable by construction, makes
+  dedup automatic, and turns `cert_id` into a meaningful reference rather than
+  an opaque tag. Cheap to do now, annoying to retrofit once certs are flowing
+  through DBs.
 
 **Constraint for this branch:**
 
 - only the team-membership identity key may issue a `device_binding` cert
+
+**Canonical signing scope (important):**
+
+- the canonical signed bytes for a `device_binding` cert **must include
+  `team_id`**, even though the team DB does not store `team_id` as a column on
+  the cert table (team scope is implicit at the DB level). Without this, a cert
+  signed for team Sharks could be lifted into team Jets' DB and would verify
+  cleanly. The verification helper's "wrong team scope" test must exercise
+  exactly this lift.
 
 This is the first place where the cert model stops being an abstract graph and
 starts reflecting a concrete protocol rule.
@@ -108,7 +125,10 @@ Add minimal synced/private metadata tables to
 
 - `team_identity`
   - `team_id`
-  - `member_id`
+  - `member_id` — the participant's **per-team** member ID for this team. This
+    is not a NoteToSelf-global handle and must not be reused across teams; the
+    whole per-team isolation story depends on this column never becoming a
+    cross-team identifier.
   - `public_key`
   - `created_at`
 - `wrapped_team_identity_key`
@@ -141,6 +161,22 @@ Reusing `FakeEnclave/` as the local-only placeholder is preferable to teaching
 the repo the wrong lesson by syncing per-device private keys through
 `NoteToSelf/core.db`.
 
+**Wrapping helper rule:**
+
+All production and consumption of `wrapped_team_identity_key` rows must go
+through exactly one `wrap_team_identity_key(...)` and one
+`unwrap_team_identity_key(...)` helper. No inline wrapping logic in
+`create_team`, `accept_invitation`, or anywhere else. The wrapper format is a
+labeled placeholder for this branch, and funneling all use through a single
+pair of helpers is what makes the eventual real-crypto swap a one-file edit
+instead of a hunt.
+
+**Migration files:**
+
+Add **new** migration files for the schema changes rather than editing
+existing ones, even though no production DBs exist. New files are the pattern
+future contributors will copy, and they keep the migration history honest.
+
 ### 3. Team DB schema — public trust state teammates can inspect
 
 The team repo needs enough public material to prove:
@@ -153,7 +189,10 @@ The team repo needs enough public material to prove:
 Update `small_sea_manager/sql/core_other_team.sql` and migrations:
 
 - extend `member` with `identity_public_key`
-- keep `member.public_key` as the current operational device key for now
+- **rename** `member.public_key` to `member.device_public_key` to reflect its
+  new meaning (the current device's per-team operational key, not a
+  participant-global key). Keeping the old name would actively mislead future
+  readers; this branch is the right moment to pay the rename churn.
 - add `key_certificate` (or `trust_certificate`) table with typed cert fields
 
 Suggested fields:
@@ -207,21 +246,26 @@ shape without requiring multi-device support.
 The goal is that both sides' copies of the team repo converge on the same
 public proof structure.
 
-### 5. Operational signing lookup — keep existing behavior, narrow the meaning
+### 5. Operational signing lookup — rename and narrow the meaning
 
 Today `get_team_signing_key(...)` returns the per-team private/public key used
-for bundle signing.
+for bundle signing. Its meaning is changing: it now returns the **current
+device's** per-team operational key, not a team-wide signing key. The old name
+would lie about that.
 
 For this branch:
 
-- keep the function name to minimize churn
+- **rename** `get_team_signing_key(...)` to `get_current_device_team_key(...)`
+  (or similarly explicit). Update all call sites.
 - change its backing storage so it returns the current device's per-team
   operational key, not the team-membership identity key
-- keep `member.public_key` aligned with this current device key so existing
+- align `member.device_public_key` with this current device key so existing
   signed-bundle tests and Cod Sync integration still make sense
 
-This is an intentionally conservative compatibility move. The branch changes the
-trust model under the hood without forcing a large Cod Sync protocol rewrite.
+The implementation stays conservative — Cod Sync still uses one per-device
+key for bundle signing — but the names now match the new trust model. This
+branch is the moment to pay the rename churn; doing it later means doing it
+on top of more call sites.
 
 ### 6. Verification helpers — prove the public history is meaningful
 
@@ -252,7 +296,7 @@ integration coverage.
   - one `team_identity` row in NoteToSelf
   - one `wrapped_team_identity_key` row for the current device
   - one local `team_device_key` record
-  - one `member` row with both `identity_public_key` and `public_key`
+  - one `member` row with both `identity_public_key` and `device_public_key`
   - one valid `device_binding` cert in the team DB
 - `accept_invitation` + `complete_invitation_acceptance` persist the same
   public shape for the joining member on both sides
@@ -261,7 +305,9 @@ integration coverage.
   - wrong issuer
   - wrong subject key
   - wrong member binding
-  - wrong team scope
+  - wrong team scope — exercised by signing a `device_binding` cert with
+    `team_id = A` and attempting to verify it as a cert for `team_id = B`.
+    This must fail because `team_id` is part of the canonical signed bytes.
 
 ### Regression tests to keep passing
 
@@ -300,13 +346,20 @@ A bright critic should be convinced that this branch:
 
 ## Order of Operations
 
-1. Extend `wrasse_trust.identity` for typed, team-scoped certs
+1. Extend `wrasse_trust.identity` for typed, team-scoped certs (including
+   `team_id` in canonical signed bytes and content-addressed `cert_id`)
 2. Add NoteToSelf schema for `team_identity`, `wrapped_team_identity_key`, and
-   `team_device_key`
-3. Add local-only placeholder storage for current per-team device private keys
-4. Add team DB public fields: `member.identity_public_key` + cert table
+   `team_device_key` (as new migration files)
+3. Add the single `wrap_team_identity_key` / `unwrap_team_identity_key` helper
+   pair and the local-only placeholder storage for current per-team device
+   private keys
+4. Add team DB public fields: rename `member.public_key` to
+   `member.device_public_key`, add `member.identity_public_key`, and add the
+   typed cert table
 5. Update `create_team(...)`
 6. Update `accept_invitation(...)` and `complete_invitation_acceptance(...)`
-7. Update `get_team_signing_key(...)` to return the current device key
-8. Add verification helpers and focused micro tests
+7. Rename `get_team_signing_key(...)` to `get_current_device_team_key(...)`
+   and point it at the current device key; update all call sites
+8. Add verification helpers and focused micro tests (including the
+   cross-team-lift rejection test)
 9. Run the regression suite and fix any fallout
