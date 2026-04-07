@@ -39,6 +39,8 @@ def generate_ceremony_payload(
         "hierarchy_certs": [
             {
                 "cert_id": c.cert_id.hex(),
+                "cert_type": c.cert_type,
+                "team_id": c.team_id.hex() if c.team_id is not None else None,
                 "subject_key_id": c.subject_key_id.hex(),
                 "subject_public_key": c.subject_public_key.hex(),
                 "issuer_key_id": c.issuer_key_id.hex(),
@@ -79,6 +81,8 @@ def extract_hierarchy_certs(payload: dict) -> list[KeyCertificate]:
     for c in payload["hierarchy_certs"]:
         result.append(KeyCertificate(
             cert_id=bytes.fromhex(c["cert_id"]),
+            cert_type=c.get("cert_type", "generic"),
+            team_id=bytes.fromhex(c["team_id"]) if c.get("team_id") else None,
             subject_key_id=bytes.fromhex(c["subject_key_id"]),
             subject_public_key=bytes.fromhex(c["subject_public_key"]),
             issuer_key_id=bytes.fromhex(c["issuer_key_id"]),

@@ -51,6 +51,38 @@ Existing bundle-signature behavior should keep working. For now,
 device. The new trust data sits alongside that path rather than replacing the
 entire sync stack in one jump.
 
+## Outcome
+
+This branch landed the narrow first slice successfully.
+
+Implemented:
+
+- team-scoped typed certificates in `wrasse-trust`, including `device_binding`
+- NoteToSelf storage for `team_identity`, `wrapped_team_identity_key`, and
+  `team_device_key`
+- local-only current-device private key storage via `FakeEnclave/`
+- team DB member rows with both `identity_public_key` and `device_public_key`
+- team DB `key_certificate` storage for public trust proofs
+- `create_team(...)` flow that creates a team identity, a current device key,
+  and the initial `device_binding` cert
+- invitation acceptance flow that carries and verifies the same public proof
+  shape for a newly joining member
+- micro tests covering create-team, invitation flow, and signed bundle
+  verification with the new current-device key model
+
+Validation completed:
+
+- `uv run pytest packages/small-sea-manager/tests/test_create_team.py packages/small-sea-manager/tests/test_invitation.py packages/small-sea-manager/tests/test_signed_bundles.py`
+- Result: `6 passed`
+
+Not finished on this branch:
+
+- second-device registration flow
+- revocation and rotation enforcement
+- epoch enforcement
+- cleanup of old `team_signing_key` schema/spec leftovers
+- full spec/doc convergence across the repo
+
 ## Concrete Scope
 
 ### In scope

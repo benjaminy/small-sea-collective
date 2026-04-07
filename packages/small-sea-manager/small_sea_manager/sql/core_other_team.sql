@@ -2,7 +2,8 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS member (
     id BLOB PRIMARY KEY,
-    public_key BLOB
+    identity_public_key BLOB,
+    device_public_key BLOB
 );
 
 CREATE TABLE IF NOT EXISTS app (
@@ -47,4 +48,17 @@ CREATE TABLE IF NOT EXISTS peer (
     url TEXT NOT NULL,
     bucket TEXT,
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS key_certificate (
+    cert_id BLOB PRIMARY KEY,
+    cert_type TEXT NOT NULL,
+    subject_key_id BLOB NOT NULL,
+    subject_public_key BLOB NOT NULL,
+    issuer_key_id BLOB NOT NULL,
+    issuer_member_id BLOB NOT NULL,
+    issued_at TEXT NOT NULL,
+    claims TEXT NOT NULL,
+    signature BLOB NOT NULL,
+    FOREIGN KEY (issuer_member_id) REFERENCES member(id) ON DELETE CASCADE
 );

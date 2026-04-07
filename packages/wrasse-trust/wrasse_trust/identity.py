@@ -14,8 +14,8 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -33,6 +33,8 @@ class KeyCertificate:
     """A signed vouching statement from one key to another."""
 
     cert_id: bytes
+    cert_type: str
+    team_id: bytes | None
     subject_key_id: bytes
     subject_public_key: bytes
     issuer_key_id: bytes
@@ -56,7 +58,8 @@ class RevocationCertificate:
 
 
 def _canonical_cert_bytes(
-    cert_id: bytes,
+    cert_type: str,
+    team_id: bytes | None,
     subject_key_id: bytes,
     subject_public_key: bytes,
     issuer_key_id: bytes,
@@ -66,7 +69,8 @@ def _canonical_cert_bytes(
 ) -> bytes:
     """Produce the deterministic byte string that is signed for a cert."""
     obj = {
-        "cert_id": cert_id.hex(),
+        "cert_type": cert_type,
+        "team_id": team_id.hex() if team_id is not None else None,
         "subject_key_id": subject_key_id.hex(),
         "subject_public_key": subject_public_key.hex(),
         "issuer_key_id": issuer_key_id.hex(),
@@ -102,23 +106,27 @@ def issue_cert(
     issuer_key: ParticipantKey,
     issuer_private_key: bytes,
     issuer_participant_id: bytes,
+    cert_type: str = "generic",
+    team_id: bytes | None = None,
     claims: dict | None = None,
 ) -> KeyCertificate:
     """Sign subject_key with issuer_key, returning a certificate."""
-    cert_id = os.urandom(16)
     now = datetime.now(timezone.utc).isoformat()
     claims = claims or {}
 
     canonical = _canonical_cert_bytes(
-        cert_id, subject_key.key_id, subject_key.public_key,
+        cert_type, team_id, subject_key.key_id, subject_key.public_key,
         issuer_key.key_id, issuer_participant_id, now, claims,
     )
+    cert_id = hashlib.sha256(canonical).digest()[:16]
 
     private_key = Ed25519PrivateKey.from_private_bytes(issuer_private_key)
     signature = private_key.sign(canonical)
 
     return KeyCertificate(
         cert_id=cert_id,
+        cert_type=cert_type,
+        team_id=team_id,
         subject_key_id=subject_key.key_id,
         subject_public_key=subject_key.public_key,
         issuer_key_id=issuer_key.key_id,
@@ -132,16 +140,59 @@ def issue_cert(
 def verify_cert(cert: KeyCertificate, issuer_public_key: bytes) -> bool:
     """Verify the signature on a certificate. Returns True if valid."""
     canonical = _canonical_cert_bytes(
-        cert.cert_id, cert.subject_key_id, cert.subject_public_key,
+        cert.cert_type, cert.team_id, cert.subject_key_id, cert.subject_public_key,
         cert.issuer_key_id, cert.issuer_participant_id,
         cert.issued_at_iso, cert.claims,
     )
+    expected_cert_id = hashlib.sha256(canonical).digest()[:16]
+    if expected_cert_id != cert.cert_id:
+        return False
     public_key = Ed25519PublicKey.from_public_bytes(issuer_public_key)
     try:
         public_key.verify(cert.signature, canonical)
         return True
     except InvalidSignature:
         return False
+
+
+def issue_device_binding_cert(
+    subject_key: ParticipantKey,
+    issuer_key: ParticipantKey,
+    issuer_private_key: bytes,
+    team_id: bytes,
+    member_id: bytes,
+) -> KeyCertificate:
+    """Issue a team-scoped device-binding cert for one member's device key."""
+    return issue_cert(
+        subject_key,
+        issuer_key,
+        issuer_private_key,
+        issuer_participant_id=member_id,
+        cert_type="device_binding",
+        team_id=team_id,
+        claims={"member_id": member_id.hex()},
+    )
+
+
+def verify_device_binding_cert(
+    cert: KeyCertificate,
+    issuer_public_key: bytes,
+    team_id: bytes,
+    member_id: bytes,
+    subject_public_key: bytes,
+) -> bool:
+    """Verify a device-binding cert against explicit team/member constraints."""
+    if cert.cert_type != "device_binding":
+        return False
+    if cert.team_id != team_id:
+        return False
+    if cert.subject_public_key != subject_public_key:
+        return False
+    if cert.issuer_participant_id != member_id:
+        return False
+    if cert.claims.get("member_id") != member_id.hex():
+        return False
+    return verify_cert(cert, issuer_public_key)
 
 
 def issue_revocation(
@@ -203,10 +254,12 @@ def build_hierarchy_certs(
     """
     buried_signs_guarded = issue_cert(
         guarded_key, buried_key, buried_private_key, participant_id,
+        cert_type="self_binding",
         claims={"type": "hierarchy", "relationship": "buried_signs_guarded"},
     )
     guarded_signs_daily = issue_cert(
         daily_key, guarded_key, guarded_private_key, participant_id,
+        cert_type="self_binding",
         claims={"type": "hierarchy", "relationship": "guarded_signs_daily"},
     )
     return buried_signs_guarded, guarded_signs_daily
