@@ -1,3 +1,6 @@
+<img src="../../Documentation/Images/splice-knot-1.png">
+<img src="../../Documentation/Images/splice-knot-2.png">
+
 # Splice Merge
 
 The purpose of this package is to support 3-way merge of nontrivial data formats.

@@ -1,3 +1,5 @@
+<img src="../../Documentation/Images/cuttlefish.png">
+
 # Cuttlefish — Small Sea Session Crypto
 
 Cuttlefish is the Small Sea package for session and transport cryptography.

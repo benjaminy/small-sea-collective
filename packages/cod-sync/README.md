@@ -1,3 +1,7 @@
+<img src="../../Documentation/Images/cod-sync.png">
+
+# Cod Sync
+
 The Cod Sync protocol is a relatively simple hash chain thing designed to work with git.
 (It can probably stretch to git-like things, but for now we are focused on git specifically.)
 "COD" is an abbreviation of chain of deltas.
