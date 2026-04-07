@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 """
-Git history pruning experiment for Cod Sync.
+Exact-snapshot tag-aware git history pruning experiment for Cod Sync.
 
 This script builds deterministic local repos, creates blobless partial clones,
-rehydrates a chosen boundary-to-HEAD window, severs the promisor remote, and
-records what still works afterward.
-
-The experiment is intentionally local-only. It uses `file://` remotes and
-enables `uploadpack.allowFilter=true` on generated source repos so that local
-partial clones actually honor `--filter=blob:none`.
+rehydrates a fixed recent boundary-to-HEAD window plus selected tagged exact
+snapshots, severs the promisor remote, and records how storage and behavior
+change across a grid of tag-density / tag-placement scenarios.
 """
 
 from __future__ import annotations
@@ -16,18 +13,20 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
+import math
 import pathlib
 import random
 import shutil
 import subprocess
 import sys
 import tempfile
-import time
+import tarfile
 from dataclasses import asdict, dataclass, field
 
 
-ROOT = pathlib.Path(__file__).resolve().parent
+KEEP_COMMITS_DEFAULT = 20
+DENSITIES = [0.0, 0.10, 0.25, 0.50, 1.0]
+PLACEMENTS = ["recent-biased", "evenly-spaced", "old-biased", "binary-heavy-milestones"]
 
 
 class GitError(RuntimeError):
@@ -35,16 +34,16 @@ class GitError(RuntimeError):
         self.repo_dir = repo_dir
         self.args = args
         self.result = result
-        summary = [
+        bits = [
             f"git command failed in {repo_dir}",
             f"args: {' '.join(args)}",
             f"exit: {result.returncode}",
         ]
         if result.stdout.strip():
-            summary.append(f"stdout:\n{result.stdout.strip()}")
+            bits.append(f"stdout:\n{result.stdout.strip()}")
         if result.stderr.strip():
-            summary.append(f"stderr:\n{result.stderr.strip()}")
-        super().__init__("\n".join(summary))
+            bits.append(f"stderr:\n{result.stderr.strip()}")
+        super().__init__("\n".join(bits))
 
 
 @dataclass
@@ -56,40 +55,43 @@ class CommandOutcome:
 
 
 @dataclass
-class StrategyResult:
-    name: str
-    ok: bool
-    elapsed_seconds: float
-    missing_before: int
-    missing_after: int
-    pack_kib_before: int
-    pack_kib_after: int
+class ScenarioResult:
+    scenario_name: str
+    density_label: str
+    placement: str
+    retained_tag_count: int
+    retained_tag_count_outside_window: int
+    selected_commits: list[str]
+    selected_tags: dict[str, str]
+    source_git_kib: int
+    pruned_git_kib: int
+    size_saved_kib: int
+    savings_retained_vs_baseline_ratio: float | None
+    unique_protected_blob_count: int
+    unique_protected_blob_inflated_bytes: int
+    compressed_snapshot_corpus_kib: int
+    pruned_to_compressed_snapshot_ratio: float | None
+    overlap_blob_count: int
+    overlap_blob_inflated_bytes: int
+    commit_hashes_match: bool
+    branches_match: bool
+    tags_match: bool
+    kept_window_access_ok: bool
+    retained_snapshot_access_ok: bool
+    old_blob_missing_ok: bool
+    old_blob_absence_proven: bool
+    representative_failures: dict[str, CommandOutcome] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
 
 
 @dataclass
 class RepoExperimentResult:
     repo_name: str
-    boundary: str
     keep_commits: int
+    mainline_commit_count: int
     source_git_kib: int
-    pruned_git_kib: int
-    size_saved_kib: int
-    commit_hashes_match: bool
-    branches_match: bool
-    tags_match: bool
-    kept_window_access_ok: bool
-    old_blob_missing_ok: bool
-    old_blob_absence_proven: bool
-    bundle_within_window_ok: bool
-    full_to_pruned_bundle_ok: bool
-    out_of_window_bundle_failed: bool
-    merge_within_window_ok: bool
-    merge_outside_window_failed: bool
-    old_command_failures: dict[str, CommandOutcome]
-    strategies: list[StrategyResult]
-    edge_cases: dict[str, bool] = field(default_factory=dict)
-    notes: list[str] = field(default_factory=list)
+    baseline_boundary: str
+    scenarios: list[ScenarioResult]
 
 
 def git(
@@ -97,13 +99,22 @@ def git(
     *args: str,
     input_text: str | None = None,
     check: bool = True,
-) -> subprocess.CompletedProcess[str]:
-    cmd = ["git", "-C", str(repo_dir), *args]
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
+    return _git(repo_dir, *args, input_text=input_text, check=check, as_text=True)
+
+
+def _git(
+    repo_dir: pathlib.Path,
+    *args: str,
+    input_text: str | None = None,
+    check: bool = True,
+    as_text: bool = True,
+) -> subprocess.CompletedProcess[str] | subprocess.CompletedProcess[bytes]:
     result = subprocess.run(
-        cmd,
+        ["git", "-C", str(repo_dir), *args],
         input=input_text,
         capture_output=True,
-        text=True,
+        text=as_text,
     )
     if check and result.returncode != 0:
         raise GitError(repo_dir, list(args), result)
@@ -132,6 +143,10 @@ def write_bytes(path: pathlib.Path, data: bytes) -> None:
     path.write_bytes(data)
 
 
+def deterministic_bytes(rng: random.Random, size: int) -> bytes:
+    return bytes(rng.getrandbits(8) for _ in range(size))
+
+
 def configure_repo(repo_dir: pathlib.Path) -> None:
     git(repo_dir, "config", "user.name", "Codex Experiment")
     git(repo_dir, "config", "user.email", "codex@example.com")
@@ -148,22 +163,10 @@ def init_repo(repo_dir: pathlib.Path) -> None:
     configure_repo(repo_dir)
 
 
-def deterministic_bytes(rng: random.Random, size: int) -> bytes:
-    return bytes(rng.getrandbits(8) for _ in range(size))
-
-
 def commit_all(repo_dir: pathlib.Path, message: str) -> str:
     git(repo_dir, "add", "-A")
     git(repo_dir, "commit", "-qm", message)
     return git(repo_dir, "rev-parse", "HEAD").stdout.strip()
-
-
-def first_existing_file(repo_dir: pathlib.Path, commit: str) -> str:
-    result = git(repo_dir, "ls-tree", "-r", "--name-only", commit)
-    for line in result.stdout.splitlines():
-        if line.strip():
-            return line.strip()
-    raise RuntimeError(f"no files found in commit {commit}")
 
 
 def get_commit_list(repo_dir: pathlib.Path, rev: str = "HEAD", first_parent: bool = False) -> list[str]:
@@ -176,26 +179,27 @@ def get_commit_list(repo_dir: pathlib.Path, rev: str = "HEAD", first_parent: boo
 
 def get_branch_map(repo_dir: pathlib.Path) -> dict[str, str]:
     result = git(repo_dir, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/heads")
-    branches = {}
+    data: dict[str, str] = {}
     for line in result.stdout.splitlines():
-        name, sha = line.split()
-        branches[name] = sha
-    return branches
+        if line.strip():
+            name, sha = line.split()
+            data[name] = sha
+    return data
 
 
 def get_tag_map(repo_dir: pathlib.Path) -> dict[str, str]:
     result = git(repo_dir, "for-each-ref", "--format=%(refname:short) %(objectname)", "refs/tags")
-    tags = {}
+    data: dict[str, str] = {}
     for line in result.stdout.splitlines():
-        name, sha = line.split()
-        tags[name] = sha
-    return tags
+        if line.strip():
+            name, sha = line.split()
+            data[name] = sha
+    return data
 
 
 def git_size_kib(repo_dir: pathlib.Path) -> int:
-    git_dir = repo_dir / ".git"
     total = 0
-    for path in git_dir.rglob("*"):
+    for path in (repo_dir / ".git").rglob("*"):
         if path.is_file():
             total += path.stat().st_size
     return total // 1024
@@ -203,43 +207,7 @@ def git_size_kib(repo_dir: pathlib.Path) -> int:
 
 def count_missing_objects(repo_dir: pathlib.Path) -> int:
     result = git(repo_dir, "rev-list", "--objects", "--missing=print", "--all")
-    count = 0
-    for line in result.stdout.splitlines():
-        if line.startswith("?"):
-            count += 1
-    return count
-
-
-def pack_kib(repo_dir: pathlib.Path) -> int:
-    pack_dir = repo_dir / ".git" / "objects" / "pack"
-    total = 0
-    if pack_dir.exists():
-        for path in pack_dir.glob("*.pack"):
-            total += path.stat().st_size
-    return total // 1024
-
-
-def is_ancestor(repo_dir: pathlib.Path, ancestor: str, descendant: str) -> bool:
-    result = git(repo_dir, "merge-base", "--is-ancestor", ancestor, descendant, check=False)
-    return result.returncode == 0
-
-
-def compute_boundary(repo_dir: pathlib.Path, keep_commits: int) -> tuple[str, str | None, list[str], list[str]]:
-    main_commits = get_commit_list(repo_dir, "main", first_parent=True)
-    if not main_commits:
-        raise RuntimeError(f"{repo_dir} has no commits on main")
-    boundary_index = max(0, len(main_commits) - keep_commits)
-    boundary = main_commits[boundary_index]
-    boundary_parent = main_commits[boundary_index - 1] if boundary_index > 0 else None
-    all_reachable = get_commit_list(repo_dir, "HEAD")
-    if boundary_parent is None:
-        window_commits = all_reachable
-    else:
-        window_set = set(get_commit_list(repo_dir, f"HEAD", first_parent=False))
-        old_set = set(get_commit_list(repo_dir, boundary_parent, first_parent=False))
-        window_commits = [sha for sha in all_reachable if sha in window_set and sha not in old_set]
-    old_commits = [sha for sha in all_reachable if sha not in set(window_commits)]
-    return boundary, boundary_parent, window_commits, old_commits
+    return sum(1 for line in result.stdout.splitlines() if line.startswith("?"))
 
 
 def mirror_local_refs(source_repo: pathlib.Path, clone_dir: pathlib.Path) -> None:
@@ -251,165 +219,28 @@ def mirror_local_refs(source_repo: pathlib.Path, clone_dir: pathlib.Path) -> Non
 
 def make_blobless_clone(source_repo: pathlib.Path, clone_dir: pathlib.Path) -> None:
     clone_dir.parent.mkdir(parents=True, exist_ok=True)
-    run_cmd(
-        ["git", "clone", "--filter=blob:none", f"file://{source_repo}", str(clone_dir)],
-        cwd=clone_dir.parent,
-    )
+    run_cmd(["git", "clone", "--filter=blob:none", f"file://{source_repo}", str(clone_dir)], cwd=clone_dir.parent)
     git(clone_dir, "config", "commit.gpgsign", "false")
     git(clone_dir, "config", "tag.gpgSign", "false")
     mirror_local_refs(source_repo, clone_dir)
 
 
-def rehydrate_checkout(repo_dir: pathlib.Path, boundary: str, window_commits: list[str]) -> StrategyResult:
-    start = time.perf_counter()
-    before_missing = count_missing_objects(repo_dir)
-    before_pack = pack_kib(repo_dir)
-    notes: list[str] = []
-    try:
-        original_head = git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
-        for sha in window_commits:
-            git(repo_dir, "checkout", "--detach", "--force", sha)
-        git(repo_dir, "checkout", "--force", original_head)
-        ok = True
-    except Exception as exc:  # pragma: no cover - exercised in experiment runtime
-        ok = False
-        notes.append(str(exc))
-    return StrategyResult(
-        name="checkout",
-        ok=ok,
-        elapsed_seconds=time.perf_counter() - start,
-        missing_before=before_missing,
-        missing_after=count_missing_objects(repo_dir),
-        pack_kib_before=before_pack,
-        pack_kib_after=pack_kib(repo_dir),
-        notes=notes,
-    )
-
-
-def window_object_ids(repo_dir: pathlib.Path, window_commits: list[str]) -> list[str]:
-    result = git(repo_dir, "rev-list", "--objects", *window_commits)
-    object_ids = []
-    seen = set()
-    for line in result.stdout.splitlines():
-        sha = line.split()[0]
-        if sha not in seen:
-            seen.add(sha)
-            object_ids.append(sha)
-    return object_ids
-
-
-def rehydrate_rev_list(repo_dir: pathlib.Path, boundary: str, window_commits: list[str]) -> StrategyResult:
-    start = time.perf_counter()
-    before_missing = count_missing_objects(repo_dir)
-    before_pack = pack_kib(repo_dir)
-    notes: list[str] = []
-    try:
-        object_ids = window_object_ids(repo_dir, window_commits)
-        proc = subprocess.run(
-            ["git", "-C", str(repo_dir), "cat-file", "--batch"],
-            input="\n".join(object_ids) + "\n",
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or "cat-file --batch failed")
-        ok = True
-        notes.append(f"requested {len(object_ids)} objects")
-    except Exception as exc:  # pragma: no cover - exercised in experiment runtime
-        ok = False
-        notes.append(str(exc))
-    return StrategyResult(
-        name="rev-list-cat-file",
-        ok=ok,
-        elapsed_seconds=time.perf_counter() - start,
-        missing_before=before_missing,
-        missing_after=count_missing_objects(repo_dir),
-        pack_kib_before=before_pack,
-        pack_kib_after=pack_kib(repo_dir),
-        notes=notes,
-    )
-
-
-def rehydrate_pack_objects(repo_dir: pathlib.Path, boundary: str, window_commits: list[str]) -> StrategyResult:
-    start = time.perf_counter()
-    before_missing = count_missing_objects(repo_dir)
-    before_pack = pack_kib(repo_dir)
-    notes: list[str] = []
-    try:
-        object_ids = window_object_ids(repo_dir, window_commits)
-        pack_prefix = repo_dir / ".git" / "objects" / "pack" / "rehydrated-window"
-        proc = subprocess.run(
-            ["git", "-C", str(repo_dir), "pack-objects", "--quiet", str(pack_prefix)],
-            input="\n".join(object_ids) + "\n",
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(proc.stderr.strip() or "pack-objects failed")
-        ok = True
-        notes.append(f"packed {len(object_ids)} objects")
-    except Exception as exc:  # pragma: no cover - exercised in experiment runtime
-        ok = False
-        notes.append(str(exc))
-    return StrategyResult(
-        name="pack-objects",
-        ok=ok,
-        elapsed_seconds=time.perf_counter() - start,
-        missing_before=before_missing,
-        missing_after=count_missing_objects(repo_dir),
-        pack_kib_before=before_pack,
-        pack_kib_after=pack_kib(repo_dir),
-        notes=notes,
-    )
-
-
-def rehydrate_diff_tree(repo_dir: pathlib.Path, boundary: str, window_commits: list[str]) -> StrategyResult:
-    start = time.perf_counter()
-    before_missing = count_missing_objects(repo_dir)
-    before_pack = pack_kib(repo_dir)
-    notes: list[str] = []
-    fetched = 0
-    try:
-        seen = set()
-        for sha in window_commits:
-            result = git(repo_dir, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", sha)
-            for path in result.stdout.splitlines():
-                key = (sha, path)
-                if not path or key in seen:
-                    continue
-                seen.add(key)
-                show = subprocess.run(
-                    ["git", "-C", str(repo_dir), "show", f"{sha}:{path}"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.PIPE,
-                )
-                if show.returncode == 0:
-                    fetched += 1
-        ok = True
-        notes.append(f"touched {fetched} changed paths")
-    except Exception as exc:  # pragma: no cover - exercised in experiment runtime
-        ok = False
-        notes.append(str(exc))
-    return StrategyResult(
-        name="diff-tree",
-        ok=ok,
-        elapsed_seconds=time.perf_counter() - start,
-        missing_before=before_missing,
-        missing_after=count_missing_objects(repo_dir),
-        pack_kib_before=before_pack,
-        pack_kib_after=pack_kib(repo_dir),
-        notes=notes,
-    )
-
-
-STRATEGIES = {
-    "checkout": rehydrate_checkout,
-    "rev-list-cat-file": rehydrate_rev_list,
-    "pack-objects": rehydrate_pack_objects,
-    "diff-tree": rehydrate_diff_tree,
-}
+def compute_boundary(repo_dir: pathlib.Path, keep_commits: int) -> tuple[str, str | None, list[str], list[str], list[str]]:
+    mainline_commits = get_commit_list(repo_dir, "main", first_parent=True)
+    if not mainline_commits:
+        raise RuntimeError(f"{repo_dir} has no commits on main")
+    boundary_index = max(0, len(mainline_commits) - keep_commits)
+    boundary = mainline_commits[boundary_index]
+    boundary_parent = mainline_commits[boundary_index - 1] if boundary_index > 0 else None
+    all_reachable = get_commit_list(repo_dir, "HEAD")
+    if boundary_parent is None:
+        window_commits = all_reachable
+    else:
+        window_set = set(get_commit_list(repo_dir, "HEAD"))
+        old_set = set(get_commit_list(repo_dir, boundary_parent))
+        window_commits = [sha for sha in all_reachable if sha in window_set and sha not in old_set]
+    old_commits = [sha for sha in all_reachable if sha not in set(window_commits)]
+    return boundary, boundary_parent, mainline_commits, window_commits, old_commits
 
 
 def finalize_pruned_repo(repo_dir: pathlib.Path) -> list[str]:
@@ -418,13 +249,7 @@ def finalize_pruned_repo(repo_dir: pathlib.Path) -> list[str]:
     cleanup_filter_dir.mkdir(parents=True, exist_ok=True)
     for args in [
         ["remote", "remove", "origin"],
-        [
-            "repack",
-            "-a",
-            "-d",
-            "--filter=blob:none",
-            f"--filter-to={cleanup_filter_dir}",
-        ],
+        ["repack", "-a", "-d", "--filter=blob:none", f"--filter-to={cleanup_filter_dir}"],
         ["prune", "--expire", "now"],
     ]:
         result = git(repo_dir, *args, check=False)
@@ -432,34 +257,273 @@ def finalize_pruned_repo(repo_dir: pathlib.Path) -> list[str]:
             stderr = (result.stderr or result.stdout).strip()
             if args[:2] == ["remote", "remove"] and "No such remote" in stderr:
                 continue
-            notes.append(
-                f"{' '.join(args)} failed with exit {result.returncode}: "
-                f"{stderr}"
-            )
+            notes.append(f"{' '.join(args)} failed with exit {result.returncode}: {stderr}")
     shutil.rmtree(cleanup_filter_dir, ignore_errors=True)
     return notes
 
 
 def file_digest(repo_dir: pathlib.Path, revspec: str) -> str:
-    result = git(repo_dir, "show", revspec)
-    return hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
+    result = _git(repo_dir, "show", revspec, as_text=False)
+    return hashlib.sha256(result.stdout).hexdigest()
 
 
-def verify_kept_window_access(source_repo: pathlib.Path, pruned_repo: pathlib.Path, window_commits: list[str]) -> bool:
+def ls_tree_entries(repo_dir: pathlib.Path, rev: str) -> list[dict[str, object]]:
+    result = git(repo_dir, "ls-tree", "-r", "-l", rev)
+    entries: list[dict[str, object]] = []
+    for line in result.stdout.splitlines():
+        if not line.strip():
+            continue
+        meta, path = line.split("\t", 1)
+        mode, obj_type, sha, size = meta.split()
+        size_value = 0 if size == "-" else int(size)
+        entries.append(
+            {
+                "mode": mode,
+                "type": obj_type,
+                "sha": sha,
+                "size": size_value,
+                "path": path,
+            }
+        )
+    return entries
+
+
+def representative_paths(repo_dir: pathlib.Path, rev: str, include_largest_blob: bool) -> list[str]:
+    entries = [entry for entry in ls_tree_entries(repo_dir, rev) if entry["type"] == "blob"]
+    if not entries:
+        return []
+    entries.sort(key=lambda entry: entry["path"])
+    paths = [entries[0]["path"], entries[-1]["path"]]
+    if include_largest_blob:
+        largest = max(entries, key=lambda entry: (entry["size"], entry["path"]))
+        paths.append(largest["path"])
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for path in paths:
+        if path not in seen:
+            seen.add(path)
+            ordered.append(path)
+    return ordered
+
+
+def snapshot_blob_map(repo_dir: pathlib.Path, commits: list[str]) -> dict[str, int]:
+    blobs: dict[str, int] = {}
+    for commit in commits:
+        for entry in ls_tree_entries(repo_dir, commit):
+            if entry["type"] != "blob":
+                continue
+            blobs.setdefault(entry["sha"], int(entry["size"]))
+    return blobs
+
+
+def changed_blob_bytes_by_commit(repo_dir: pathlib.Path, mainline_commits: list[str]) -> dict[str, int]:
+    sizes: dict[str, int] = {}
+    for index, commit in enumerate(mainline_commits):
+        parent = mainline_commits[index - 1] if index > 0 else None
+        args = ["diff-tree", "--root", "-r", "--name-only", "--no-commit-id", commit]
+        if parent is not None:
+            args.append(parent)
+            args.append(commit)
+            args = ["diff-tree", "--root", "-r", "--name-only", "--no-commit-id", parent, commit]
+        result = git(repo_dir, *args)
+        changed_paths = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+        total = 0
+        for path in changed_paths:
+            ls_tree = git(repo_dir, "ls-tree", "-l", commit, path, check=False)
+            if ls_tree.returncode != 0 or not ls_tree.stdout.strip():
+                continue
+            meta, _path = ls_tree.stdout.strip().split("\t", 1)
+            _mode, obj_type, _sha, size = meta.split()
+            if obj_type == "blob" and size != "-":
+                total += int(size)
+        sizes[commit] = total
+    return sizes
+
+
+def export_commit_snapshot(repo_dir: pathlib.Path, commit: str, target_dir: pathlib.Path) -> None:
+    target_dir.mkdir(parents=True, exist_ok=True)
+    archive = subprocess.run(
+        ["git", "-C", str(repo_dir), "archive", commit],
+        capture_output=True,
+        check=True,
+    )
+    proc = subprocess.run(
+        ["tar", "-xf", "-", "-C", str(target_dir)],
+        input=archive.stdout,
+        capture_output=True,
+        check=True,
+    )
+    _ = proc
+
+
+def compressed_snapshot_corpus_kib(
+    repo_dir: pathlib.Path,
+    snapshot_commits: list[str],
+    corpus_root: pathlib.Path,
+) -> int:
+    if corpus_root.exists():
+        shutil.rmtree(corpus_root)
+    corpus_root.mkdir(parents=True, exist_ok=True)
+    snapshots_dir = corpus_root / "snapshots"
+    for index, commit in enumerate(snapshot_commits, start=1):
+        export_commit_snapshot(repo_dir, commit, snapshots_dir / f"{index:03d}-{commit[:12]}")
+    tar_path = corpus_root / "snapshots.tar.bz2"
+    with tarfile.open(tar_path, "w:bz2") as tar:
+        tar.add(snapshots_dir, arcname="snapshots")
+    return tar_path.stat().st_size // 1024
+
+
+def evenly_spaced_selection(commits: list[str], count: int) -> list[str]:
+    if count <= 0:
+        return []
+    if count >= len(commits):
+        return list(commits)
+    if count == 1:
+        return [commits[len(commits) // 2]]
+    picks: list[str] = []
+    for idx in range(count):
+        pos = round(idx * (len(commits) - 1) / (count - 1))
+        picks.append(commits[pos])
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for commit in picks:
+        if commit not in seen:
+            seen.add(commit)
+            deduped.append(commit)
+    if len(deduped) < count:
+        for commit in commits:
+            if commit not in seen:
+                seen.add(commit)
+                deduped.append(commit)
+            if len(deduped) == count:
+                break
+    return deduped
+
+
+def count_for_density(mainline_count: int, density: float) -> int:
+    if density <= 0.0:
+        return 0
+    if density >= 1.0:
+        return mainline_count
+    return max(1, min(mainline_count, int(round(mainline_count * density))))
+
+
+def select_retained_commits(
+    mainline_commits: list[str],
+    density: float,
+    placement: str,
+    keep_commits: int,
+    changed_blob_bytes: dict[str, int],
+) -> list[str]:
+    count = count_for_density(len(mainline_commits), density)
+    if count == 0:
+        return []
+    if count >= len(mainline_commits):
+        return list(mainline_commits)
+    if placement == "evenly-spaced":
+        return evenly_spaced_selection(mainline_commits, count)
+    if placement == "recent-biased":
+        tail_width = min(len(mainline_commits), max(keep_commits, count * 3))
+        return evenly_spaced_selection(mainline_commits[-tail_width:], count)
+    if placement == "old-biased":
+        head_width = min(len(mainline_commits), max(keep_commits, count * 3))
+        return evenly_spaced_selection(mainline_commits[:head_width], count)
+    if placement == "binary-heavy-milestones":
+        ranked = sorted(
+            mainline_commits,
+            key=lambda commit: (changed_blob_bytes.get(commit, 0), commit),
+            reverse=True,
+        )
+        return sorted(ranked[:count], key=lambda commit: mainline_commits.index(commit))
+    raise ValueError(f"unknown placement: {placement}")
+
+
+def scenario_definitions() -> list[tuple[str, float, str]]:
+    items: list[tuple[str, float, str]] = [("baseline-0pct", 0.0, "none")]
+    for density in DENSITIES:
+        if density in {0.0, 1.0}:
+            continue
+        pct = int(round(density * 100))
+        for placement in PLACEMENTS:
+            items.append((f"{pct:02d}pct-{placement}", density, placement))
+    items.append(("all-mainline-100pct", 1.0, "all-mainline"))
+    return items
+
+
+def add_scenario_tags(repo_dir: pathlib.Path, selected_commits: list[str]) -> dict[str, str]:
+    tags: dict[str, str] = {}
+    for index, commit in enumerate(selected_commits, start=1):
+        name = f"snapshot-{index:03d}"
+        if index % 2 == 0:
+            git(repo_dir, "tag", "-a", name, commit, "-m", f"snapshot tag {index:03d}")
+        else:
+            git(repo_dir, "tag", name, commit)
+        tags[name] = commit
+    return tags
+
+
+def clone_repo(source_repo: pathlib.Path, clone_dir: pathlib.Path) -> pathlib.Path:
+    if clone_dir.exists():
+        shutil.rmtree(clone_dir)
+    clone_dir.parent.mkdir(parents=True, exist_ok=True)
+    run_cmd(["git", "clone", "--quiet", str(source_repo), str(clone_dir)], cwd=clone_dir.parent)
+    configure_repo(clone_dir)
+    return clone_dir
+
+
+def rehydrate_exact_snapshots(repo_dir: pathlib.Path, refs: list[str]) -> list[str]:
+    notes: list[str] = []
+    original_head = git(repo_dir, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
+    try:
+        for ref in refs:
+            result = git(repo_dir, "checkout", "--detach", "--force", ref, check=False)
+            if result.returncode != 0:
+                notes.append(f"checkout failed for {ref}: {(result.stderr or result.stdout).strip()}")
+    finally:
+        git(repo_dir, "checkout", "--force", original_head, check=False)
+    return notes
+
+
+def verify_kept_window_access(source_repo: pathlib.Path, pruned_repo: pathlib.Path, window_commits: list[str], repo_name: str) -> bool:
     sample_commits = window_commits[-min(len(window_commits), 6):]
-    for sha in sample_commits:
-        path = first_existing_file(source_repo, sha)
-        if git(pruned_repo, "checkout", "--detach", "--force", sha, check=False).returncode != 0:
+    include_largest = repo_name in {"repo_a_typical", "repo_c_large_files"}
+    for commit in sample_commits:
+        paths = representative_paths(source_repo, commit, include_largest)
+        if git(pruned_repo, "checkout", "--detach", "--force", commit, check=False).returncode != 0:
             return False
-        if git(pruned_repo, "show", f"{sha}:{path}", check=False).returncode != 0:
-            return False
-        if file_digest(source_repo, f"{sha}:{path}") != file_digest(pruned_repo, f"{sha}:{path}"):
-            return False
-    git(pruned_repo, "checkout", "--force", "main")
+        for path in paths:
+            if _git(pruned_repo, "show", f"{commit}:{path}", check=False, as_text=False).returncode != 0:
+                return False
+            if file_digest(source_repo, f"{commit}:{path}") != file_digest(pruned_repo, f"{commit}:{path}"):
+                return False
+    git(pruned_repo, "checkout", "--force", "main", check=False)
     return True
 
 
-def check_old_blob_failures(source_repo: pathlib.Path, pruned_repo: pathlib.Path, old_commits: list[str]) -> tuple[bool, dict[str, CommandOutcome]]:
+def verify_retained_snapshot_access(
+    source_repo: pathlib.Path,
+    pruned_repo: pathlib.Path,
+    selected_tags: dict[str, str],
+    repo_name: str,
+) -> bool:
+    include_largest = repo_name in {"repo_a_typical", "repo_c_large_files"}
+    for tag_name in selected_tags:
+        if git(pruned_repo, "checkout", "--detach", "--force", tag_name, check=False).returncode != 0:
+            return False
+        for path in representative_paths(source_repo, tag_name, include_largest):
+            if _git(pruned_repo, "show", f"{tag_name}:{path}", check=False, as_text=False).returncode != 0:
+                return False
+            if file_digest(source_repo, f"{tag_name}:{path}") != file_digest(pruned_repo, f"{tag_name}:{path}"):
+                return False
+    git(pruned_repo, "checkout", "--force", "main", check=False)
+    return True
+
+
+def check_old_blob_failures(
+    source_repo: pathlib.Path,
+    pruned_repo: pathlib.Path,
+    old_commits: list[str],
+) -> tuple[bool, dict[str, CommandOutcome]]:
     if not old_commits:
         return True, {}
     all_objects = git(pruned_repo, "rev-list", "--objects", "--missing=print", "--all").stdout.splitlines()
@@ -513,130 +577,14 @@ def check_old_blob_failures(source_repo: pathlib.Path, pruned_repo: pathlib.Path
 
 def prove_old_blob_absence(source_repo: pathlib.Path, pruned_repo: pathlib.Path) -> bool:
     all_objects = git(pruned_repo, "rev-list", "--objects", "--missing=print", "--all").stdout.splitlines()
-    missing_blob_sha = None
     for line in all_objects:
-        if line.startswith("?"):
-            missing_blob_sha = line[1:].split()[0]
-            break
-    if not missing_blob_sha:
-        return False
-    source_has_blob = git(source_repo, "cat-file", "-e", missing_blob_sha, check=False).returncode == 0
-    pruned_missing_blob = git(pruned_repo, "cat-file", "-e", missing_blob_sha, check=False).returncode != 0
-    return source_has_blob and pruned_missing_blob
-
-
-def verify_bundle_within_window(source_repo: pathlib.Path, pruned_repo: pathlib.Path, boundary: str, scratch_dir: pathlib.Path) -> bool:
-    bundle_path = scratch_dir / "within-window.bundle"
-    receiver = scratch_dir / "bundle-receiver"
-    git(pruned_repo, "branch", "-f", "window-tip", "HEAD")
-    git(pruned_repo, "bundle", "create", str(bundle_path), "window-tip", f"^{boundary}")
-    run_cmd(["git", "clone", str(source_repo), str(receiver)])
-    result = git(receiver, "fetch", str(bundle_path), "window-tip:window-tip-from-pruned", check=False)
-    if result.returncode != 0:
-        return False
-    fetched_sha = git(receiver, "rev-parse", "window-tip-from-pruned").stdout.strip()
-    head_sha = git(pruned_repo, "rev-parse", "HEAD").stdout.strip()
-    return fetched_sha == head_sha
-
-
-def verify_full_to_pruned_bundle(source_repo: pathlib.Path, pruned_repo: pathlib.Path, boundary: str, scratch_dir: pathlib.Path) -> bool:
-    bundle_path = scratch_dir / "full-to-pruned.bundle"
-    git(source_repo, "branch", "-f", "window-tip", "HEAD")
-    git(source_repo, "bundle", "create", str(bundle_path), "window-tip", f"^{boundary}")
-    result = git(pruned_repo, "fetch", str(bundle_path), "window-tip:window-tip-from-full", check=False)
-    if result.returncode != 0:
-        return False
-    fetched_sha = git(pruned_repo, "rev-parse", "window-tip-from-full").stdout.strip()
-    source_sha = git(source_repo, "rev-parse", "HEAD").stdout.strip()
-    return fetched_sha == source_sha
-
-
-def verify_out_of_window_bundle_fails(pruned_repo: pathlib.Path, scratch_dir: pathlib.Path) -> bool:
-    bundle_path = scratch_dir / "out-of-window.bundle"
-    result = git(pruned_repo, "bundle", "create", str(bundle_path), "legacy-feature", check=False)
-    return result.returncode != 0
-
-
-def commit_local_change(repo_dir: pathlib.Path, rel_path: str, content: str, message: str) -> str:
-    write_text(repo_dir / rel_path, content)
-    return commit_all(repo_dir, message)
-
-
-def verify_merge_within_window(pruned_repo: pathlib.Path) -> bool:
-    base = git(pruned_repo, "rev-parse", "HEAD~2").stdout.strip()
-    git(pruned_repo, "checkout", "--force", "-B", "merge-left", base)
-    commit_local_change(
-        pruned_repo,
-        "merge/left.txt",
-        "left side\n",
-        "merge-left change",
-    )
-    git(pruned_repo, "checkout", "--force", "main")
-    commit_local_change(
-        pruned_repo,
-        "merge/right.txt",
-        "right side\n",
-        "merge-right change",
-    )
-    result = git(pruned_repo, "merge", "--no-edit", "merge-left", check=False)
-    if result.returncode != 0:
-        git(pruned_repo, "merge", "--abort", check=False)
-        return False
-    git(pruned_repo, "checkout", "--force", "main")
-    return True
-
-
-def verify_merge_outside_window_fails(pruned_repo: pathlib.Path) -> bool:
-    git(pruned_repo, "checkout", "--force", "main")
-    result = git(pruned_repo, "merge", "--no-edit", "legacy-feature", check=False)
-    if result.returncode == 0:
-        git(pruned_repo, "merge", "--abort", check=False)
-        return False
-    git(pruned_repo, "merge", "--abort", check=False)
-    return True
-
-
-def run_edge_case_checks(source_repo: pathlib.Path, workspace: pathlib.Path) -> dict[str, bool]:
-    cases: dict[str, bool] = {}
-
-    def build_case_clone(name: str, boundary: str, window_commits: list[str]) -> pathlib.Path:
-        clone = workspace / "edge-cases" / source_repo.name / name
-        if clone.exists():
-            shutil.rmtree(clone)
-        make_blobless_clone(source_repo, clone)
-        checkout_result = rehydrate_checkout(clone, boundary, window_commits)
-        cases[f"{name}_checkout_ok"] = checkout_result.ok
-        finalize_pruned_repo(clone)
-        return clone
-
-    # Boundary equals HEAD: maximum pruning while preserving the tip.
-    head_boundary = git(source_repo, "rev-parse", "HEAD").stdout.strip()
-    head_clone = build_case_clone("boundary-head", head_boundary, [head_boundary])
-    cases["boundary_equals_head_tip_access"] = (
-        git(head_clone, "show", "HEAD:journal/main.txt", check=False).returncode == 0
-    )
-    cases["boundary_equals_head_has_missing"] = count_missing_objects(head_clone) > 0
-
-    # Boundary covers all history: should behave close to a full clone.
-    all_history_boundary = get_commit_list(source_repo, "main", first_parent=True)[0]
-    all_commits = get_commit_list(source_repo, "--all")
-    full_clone = build_case_clone("boundary-all-history", all_history_boundary, all_commits)
-    cases["boundary_all_history_no_missing"] = count_missing_objects(full_clone) == 0
-
-    # Prune twice: the second finalize should preserve behavior and not explode.
-    twice_clone = build_case_clone("prune-twice", head_boundary, [head_boundary])
-    before_missing = count_missing_objects(twice_clone)
-    second_notes = finalize_pruned_repo(twice_clone)
-    after_missing = count_missing_objects(twice_clone)
-    cases["prune_twice_stable"] = before_missing == after_missing and len(second_notes) == 0
-
-    return cases
-
-
-def compare_commit_hashes(source_repo: pathlib.Path, pruned_repo: pathlib.Path) -> bool:
-    left = git(source_repo, "rev-list", "--topo-order", "HEAD").stdout.splitlines()
-    right = git(pruned_repo, "rev-list", "--topo-order", "HEAD").stdout.splitlines()
-    return left == right
+        if not line.startswith("?"):
+            continue
+        missing_blob_sha = line[1:].split()[0]
+        source_has_blob = git(source_repo, "cat-file", "-e", missing_blob_sha, check=False).returncode == 0
+        pruned_missing_blob = git(pruned_repo, "cat-file", "-e", missing_blob_sha, check=False).returncode != 0
+        return source_has_blob and pruned_missing_blob
+    return False
 
 
 def seed_typical_app_repo(repo_dir: pathlib.Path, rng: random.Random, commit_count: int) -> None:
@@ -646,71 +594,86 @@ def seed_typical_app_repo(repo_dir: pathlib.Path, rng: random.Random, commit_cou
     write_bytes(repo_dir / "assets" / "logo.bin", deterministic_bytes(rng, 4096))
     commit_all(repo_dir, "initial fixture")
 
-    main_commit_shas = [git(repo_dir, "rev-parse", "HEAD").stdout.strip()]
-    for idx in range(1, 20):
+    main_count = max(commit_count, 80)
+    main_shas = [git(repo_dir, "rev-parse", "HEAD").stdout.strip()]
+    for idx in range(1, 56):
         write_text(repo_dir / "journal" / "main.txt", f"main-{idx:03d}\n")
-        write_text(repo_dir / "notes" / "todo.txt", f"todo-{idx:03d}\n")
-        if idx == 5:
-            git(repo_dir, "tag", "v0.1-lightweight")
-        if idx == 8:
-            git(repo_dir, "tag", "-a", "v0.2-annotated", "-m", "annotated tag")
-        if idx == 10:
+        if idx < 10:
+            write_text(repo_dir / "notes" / "todo.txt", f"todo-{idx:03d}\n")
+        elif idx == 10:
             write_text(repo_dir / "docs" / "renamed-from-notes.txt", "renamed file begins here\n")
             git(repo_dir, "rm", "-q", "-f", "notes/todo.txt")
-        if idx > 10:
+        else:
             write_text(repo_dir / "docs" / "renamed-from-notes.txt", f"renamed-{idx:03d}\n")
-        if idx == 12:
-            write_bytes(repo_dir / "assets" / "logo.bin", deterministic_bytes(rng, 8192))
-        main_commit_shas.append(commit_all(repo_dir, f"main commit {idx:03d}"))
+        if idx in {12, 34, 52}:
+            write_bytes(repo_dir / "assets" / "logo.bin", deterministic_bytes(random.Random(1000 + idx), 8192 + idx * 64))
+        if idx in {18, 41}:
+            write_bytes(repo_dir / "assets" / f"milestone-{idx:03d}.bin", deterministic_bytes(random.Random(2000 + idx), 24 * 1024))
+        main_shas.append(commit_all(repo_dir, f"main commit {idx:03d}"))
 
-    legacy_base = main_commit_shas[8]
-    git(repo_dir, "checkout", "--force", "-B", "legacy-feature", legacy_base)
-    write_text(repo_dir / "journal" / "main.txt", "legacy-feature-change\n")
+    git(repo_dir, "checkout", "--force", "-B", "legacy-feature", main_shas[20])
+    write_text(repo_dir / "journal" / "legacy.txt", "legacy branch state\n")
     commit_all(repo_dir, "legacy feature diverges outside kept window")
 
     git(repo_dir, "checkout", "--force", "main")
+    for idx in range(56, 72):
+        write_text(repo_dir / "journal" / "main.txt", f"main-{idx:03d}\n")
+        write_text(repo_dir / "docs" / "renamed-from-notes.txt", f"renamed-{idx:03d}\n")
+        if idx in {60, 68}:
+            write_bytes(repo_dir / "assets" / "logo.bin", deterministic_bytes(random.Random(3000 + idx), 12 * 1024))
+        main_shas.append(commit_all(repo_dir, f"main commit {idx:03d}"))
+
     git(repo_dir, "checkout", "--force", "-B", "recent-feature", "HEAD~4")
-    for idx in range(20, commit_count):
+    for idx in range(72, 78):
         write_text(repo_dir / "feature" / "notes.txt", f"feature branch {idx:03d}\n")
+        if idx in {74, 77}:
+            write_bytes(repo_dir / "feature" / f"artifact-{idx:03d}.bin", deterministic_bytes(random.Random(4000 + idx), 16 * 1024))
         commit_all(repo_dir, f"recent feature {idx:03d}")
 
     git(repo_dir, "checkout", "--force", "main")
-    write_text(repo_dir / "journal" / "main.txt", "main-before-merge\n")
-    commit_all(repo_dir, "main before recent merge")
+    for idx in range(78, main_count - 2):
+        write_text(repo_dir / "journal" / "main.txt", f"main-{idx:03d}\n")
+        write_text(repo_dir / "docs" / "renamed-from-notes.txt", f"renamed-{idx:03d}\n")
+        if idx in {84, 88}:
+            write_bytes(repo_dir / "assets" / "release.bin", deterministic_bytes(random.Random(5000 + idx), 32 * 1024))
+        main_shas.append(commit_all(repo_dir, f"main commit {idx:03d}"))
+
     git(repo_dir, "merge", "--no-ff", "--no-edit", "recent-feature")
-    write_text(repo_dir / "journal" / "main.txt", "main-after-merge\n")
-    commit_all(repo_dir, "main after recent merge")
+    main_shas.append(git(repo_dir, "rev-parse", "HEAD").stdout.strip())
+    write_text(repo_dir / "journal" / "main.txt", f"main-{main_count - 1:03d}\n")
+    write_text(repo_dir / "docs" / "renamed-from-notes.txt", f"renamed-{main_count - 1:03d}\n")
+    commit_all(repo_dir, f"main commit {main_count - 1:03d}")
 
 
 def seed_many_small_files_repo(repo_dir: pathlib.Path, rng: random.Random, commit_count: int) -> None:
-    for idx in range(100):
+    for idx in range(120):
         write_text(repo_dir / "small" / f"file-{idx:03d}.txt", f"seed {idx:03d}\n")
     write_text(repo_dir / "journal" / "main.txt", "small-000\n")
     commit_all(repo_dir, "initial small files fixture")
-
     for commit_idx in range(1, commit_count):
-        touched = rng.sample(range(100), 20)
+        touched = rng.sample(range(120), 30)
         for idx in touched:
-            write_text(
-                repo_dir / "small" / f"file-{idx:03d}.txt",
-                f"commit {commit_idx:03d} file {idx:03d}\n",
-            )
+            write_text(repo_dir / "small" / f"file-{idx:03d}.txt", f"commit {commit_idx:03d} file {idx:03d}\n")
         write_text(repo_dir / "journal" / "main.txt", f"small-{commit_idx:03d}\n")
         commit_all(repo_dir, f"small files commit {commit_idx:03d}")
 
 
 def seed_large_files_repo(repo_dir: pathlib.Path, rng: random.Random, commit_count: int) -> None:
-    for idx in range(3):
-        write_bytes(repo_dir / "large" / f"blob-{idx}.bin", deterministic_bytes(rng, 64 * 1024))
+    for idx in range(4):
+        write_bytes(repo_dir / "large" / f"blob-{idx}.bin", deterministic_bytes(rng, 96 * 1024))
     write_text(repo_dir / "journal" / "main.txt", "large-000\n")
     commit_all(repo_dir, "initial large files fixture")
-
     for commit_idx in range(1, commit_count):
-        target = commit_idx % 3
+        target = commit_idx % 4
         write_bytes(
             repo_dir / "large" / f"blob-{target}.bin",
-            deterministic_bytes(random.Random(1000 + commit_idx), 64 * 1024),
+            deterministic_bytes(random.Random(7000 + commit_idx), 96 * 1024),
         )
+        if commit_idx % 9 == 0:
+            write_bytes(
+                repo_dir / "large" / "release.bin",
+                deterministic_bytes(random.Random(9000 + commit_idx), 48 * 1024),
+            )
         write_text(repo_dir / "journal" / "main.txt", f"large-{commit_idx:03d}\n")
         commit_all(repo_dir, f"large files commit {commit_idx:03d}")
 
@@ -727,82 +690,194 @@ def build_repo(workspace: pathlib.Path, repo_name: str, commit_count: int, seed:
         seed_many_small_files_repo(repo_dir, rng, commit_count)
     elif repo_name == "repo_c_large_files":
         seed_large_files_repo(repo_dir, rng, commit_count)
-    else:  # pragma: no cover - protected by caller
+    else:
         raise ValueError(f"unknown repo fixture {repo_name}")
     git(repo_dir, "checkout", "--force", "main")
     return repo_dir
 
 
-def benchmark_strategies(
-    source_repo: pathlib.Path,
+def run_scenario(
+    repo_name: str,
+    base_source_repo: pathlib.Path,
     workspace: pathlib.Path,
-    boundary: str,
-    window_commits: list[str],
-    strategies: list[str],
-) -> list[StrategyResult]:
-    results: list[StrategyResult] = []
-    for strategy_name in strategies:
-        clone_dir = workspace / "benchmarks" / source_repo.name / strategy_name
-        if clone_dir.exists():
-            shutil.rmtree(clone_dir)
-        make_blobless_clone(source_repo, clone_dir)
-        strategy = STRATEGIES[strategy_name]
-        results.append(strategy(clone_dir, boundary, window_commits))
-    return results
-
-
-def run_repo_a_validations(
-    source_repo: pathlib.Path,
-    workspace: pathlib.Path,
-    boundary: str,
+    keep_commits: int,
+    scenario_name: str,
+    density: float,
+    placement: str,
+    mainline_commits: list[str],
     window_commits: list[str],
     old_commits: list[str],
-) -> tuple[pathlib.Path, dict[str, object]]:
-    pruned_repo = workspace / "validated" / source_repo.name
+    changed_blob_bytes: dict[str, int],
+    baseline_blob_map: dict[str, int],
+    baseline_saved_kib: int | None,
+) -> ScenarioResult:
+    selected_commits = select_retained_commits(mainline_commits, density, placement, keep_commits, changed_blob_bytes)
+    scenario_source = clone_repo(base_source_repo, workspace / "scenario-sources" / repo_name / scenario_name)
+    selected_tags = add_scenario_tags(scenario_source, selected_commits)
+
+    pruned_repo = workspace / "pruned" / repo_name / scenario_name
     if pruned_repo.exists():
         shutil.rmtree(pruned_repo)
-    make_blobless_clone(source_repo, pruned_repo)
-    checkout_result = rehydrate_checkout(pruned_repo, boundary, window_commits)
-    cleanup_notes = finalize_pruned_repo(pruned_repo)
+    make_blobless_clone(scenario_source, pruned_repo)
 
-    validation_scratch = workspace / "validation-scratch"
-    validation_scratch.mkdir(parents=True, exist_ok=True)
-    validation = {
-        "checkout_strategy": checkout_result,
-        "commit_hashes_match": compare_commit_hashes(source_repo, pruned_repo),
-        "branches_match": get_branch_map(source_repo) == get_branch_map(pruned_repo),
-        "tags_match": get_tag_map(source_repo) == get_tag_map(pruned_repo),
-        "kept_window_access_ok": verify_kept_window_access(source_repo, pruned_repo, window_commits),
+    rehydrate_refs = list(window_commits) + list(selected_tags.keys())
+    notes = rehydrate_exact_snapshots(pruned_repo, rehydrate_refs)
+    notes.extend(finalize_pruned_repo(pruned_repo))
+
+    tag_blob_map = snapshot_blob_map(scenario_source, selected_commits)
+    protected_blob_map = dict(baseline_blob_map)
+    for sha, size in tag_blob_map.items():
+        protected_blob_map.setdefault(sha, size)
+    overlap_shas = set(baseline_blob_map) & set(tag_blob_map)
+    overlap_bytes = sum(baseline_blob_map[sha] for sha in overlap_shas)
+    retained_outside_window = [sha for sha in selected_commits if sha not in set(mainline_commits[-keep_commits:])]
+    old_unretained = [sha for sha in old_commits if sha not in set(selected_commits)]
+    old_blob_missing_ok, failures = check_old_blob_failures(scenario_source, pruned_repo, old_unretained)
+    protected_snapshots = list(dict.fromkeys(window_commits + selected_commits))
+    compressed_corpus_kib = compressed_snapshot_corpus_kib(
+        scenario_source,
+        protected_snapshots,
+        workspace / "compressed-corpus" / repo_name / scenario_name,
+    )
+
+    pruned_git_kib = git_size_kib(pruned_repo)
+    source_git_kib = git_size_kib(scenario_source)
+    size_saved_kib = source_git_kib - pruned_git_kib
+    ratio = None if baseline_saved_kib in {None, 0} else round(size_saved_kib / baseline_saved_kib, 4)
+    compressed_ratio = None if compressed_corpus_kib == 0 else round(pruned_git_kib / compressed_corpus_kib, 4)
+
+    return ScenarioResult(
+        scenario_name=scenario_name,
+        density_label="baseline" if density == 0.0 else ("100%" if density == 1.0 else f"{int(round(density * 100))}%"),
+        placement=placement,
+        retained_tag_count=len(selected_tags),
+        retained_tag_count_outside_window=len(retained_outside_window),
+        selected_commits=selected_commits,
+        selected_tags=selected_tags,
+        source_git_kib=source_git_kib,
+        pruned_git_kib=pruned_git_kib,
+        size_saved_kib=size_saved_kib,
+        savings_retained_vs_baseline_ratio=ratio,
+        unique_protected_blob_count=len(protected_blob_map),
+        unique_protected_blob_inflated_bytes=sum(protected_blob_map.values()),
+        compressed_snapshot_corpus_kib=compressed_corpus_kib,
+        pruned_to_compressed_snapshot_ratio=compressed_ratio,
+        overlap_blob_count=len(overlap_shas),
+        overlap_blob_inflated_bytes=overlap_bytes,
+        commit_hashes_match=get_commit_list(scenario_source, "HEAD") == get_commit_list(pruned_repo, "HEAD"),
+        branches_match=get_branch_map(scenario_source) == get_branch_map(pruned_repo),
+        tags_match=get_tag_map(scenario_source) == get_tag_map(pruned_repo),
+        kept_window_access_ok=verify_kept_window_access(scenario_source, pruned_repo, window_commits, repo_name),
+        retained_snapshot_access_ok=verify_retained_snapshot_access(scenario_source, pruned_repo, selected_tags, repo_name),
+        old_blob_missing_ok=old_blob_missing_ok,
+        old_blob_absence_proven=prove_old_blob_absence(scenario_source, pruned_repo),
+        representative_failures=failures,
+        notes=notes,
+    )
+
+
+def run_experiment(workspace: pathlib.Path, keep_commits: int, commit_count: int, repo_names: list[str]) -> dict[str, object]:
+    all_repos = [
+        ("repo_a_typical", 101),
+        ("repo_b_small_files", 202),
+        ("repo_c_large_files", 303),
+    ]
+    repos = [item for item in all_repos if item[0] in repo_names]
+    workspace.mkdir(parents=True, exist_ok=True)
+    results: list[RepoExperimentResult] = []
+
+    for repo_name, seed in repos:
+        source_repo = build_repo(workspace, repo_name, commit_count, seed)
+        boundary, _boundary_parent, mainline_commits, window_commits, old_commits = compute_boundary(source_repo, keep_commits)
+        baseline_blob_map = snapshot_blob_map(source_repo, window_commits)
+        changed_blob_bytes = changed_blob_bytes_by_commit(source_repo, mainline_commits)
+        scenarios: list[ScenarioResult] = []
+        baseline_saved_kib: int | None = None
+        for scenario_name, density, placement in scenario_definitions():
+            scenario_result = run_scenario(
+                repo_name=repo_name,
+                base_source_repo=source_repo,
+                workspace=workspace,
+                keep_commits=keep_commits,
+                scenario_name=scenario_name,
+                density=density,
+                placement=placement,
+                mainline_commits=mainline_commits,
+                window_commits=window_commits,
+                old_commits=old_commits,
+                changed_blob_bytes=changed_blob_bytes,
+                baseline_blob_map=baseline_blob_map,
+                baseline_saved_kib=baseline_saved_kib,
+            )
+            scenarios.append(scenario_result)
+            if scenario_name == "baseline-0pct":
+                baseline_saved_kib = scenario_result.size_saved_kib
+        results.append(
+            RepoExperimentResult(
+                repo_name=repo_name,
+                keep_commits=keep_commits,
+                mainline_commit_count=len(mainline_commits),
+                source_git_kib=git_size_kib(source_repo),
+                baseline_boundary=boundary,
+                scenarios=scenarios,
+            )
+        )
+
+    return {
+        "workspace": str(workspace),
+        "keep_commits": keep_commits,
+        "commit_count": commit_count,
+        "scenario_definitions": [
+            {"scenario_name": name, "density": density, "placement": placement}
+            for name, density, placement in scenario_definitions()
+        ],
+        "summary_notes": [
+            "Candidate retained tags are limited to first-parent mainline commits on main.",
+            "The retained guarantee is exact snapshot readability only, not tagged-to-HEAD history usability.",
+            "The baseline kept window is fixed at the most recent keep_commits first-parent commits on main.",
+        ],
+        "repo_results": results,
     }
-    validation_notes: list[str] = []
-    old_blob_missing_ok, failures = check_old_blob_failures(source_repo, pruned_repo, old_commits)
-    validation["old_blob_missing_ok"] = old_blob_missing_ok
-    validation["old_blob_absence_proven"] = prove_old_blob_absence(source_repo, pruned_repo)
-    validation["old_command_failures"] = failures
-    for key, func in [
-        (
-            "bundle_within_window_ok",
-            lambda: verify_bundle_within_window(source_repo, pruned_repo, boundary, validation_scratch),
-        ),
-        (
-            "full_to_pruned_bundle_ok",
-            lambda: verify_full_to_pruned_bundle(source_repo, pruned_repo, boundary, validation_scratch),
-        ),
-        (
-            "out_of_window_bundle_failed",
-            lambda: verify_out_of_window_bundle_fails(pruned_repo, validation_scratch),
-        ),
-        ("merge_within_window_ok", lambda: verify_merge_within_window(pruned_repo)),
-        ("merge_outside_window_failed", lambda: verify_merge_outside_window_fails(pruned_repo)),
-    ]:
-        try:
-            validation[key] = func()
-        except Exception as exc:  # pragma: no cover - exercised in experiment runtime
-            validation[key] = False
-            validation_notes.append(f"{key} raised: {exc}")
-    validation["cleanup_notes"] = cleanup_notes
-    validation["validation_notes"] = validation_notes
-    return pruned_repo, validation
+
+
+def render_human_summary(results: dict[str, object]) -> str:
+    lines = [
+        "Exact-Snapshot Tag-Aware Git History Pruning Experiment",
+        "=======================================================",
+        f"workspace: {results['workspace']}",
+        f"keep_commits: {results['keep_commits']}",
+        f"commit_count: {results['commit_count']}",
+        "",
+    ]
+    for note in results["summary_notes"]:
+        lines.append(f"- {note}")
+    lines.append("")
+    for repo_result in results["repo_results"]:
+        lines.append(f"{repo_result.repo_name}:")
+        lines.append(f"  mainline_commit_count: {repo_result.mainline_commit_count}")
+        lines.append(f"  baseline_boundary: {repo_result.baseline_boundary}")
+        baseline = next(item for item in repo_result.scenarios if item.scenario_name == "baseline-0pct")
+        lines.append(
+            f"  baseline: pruned_git_kib={baseline.pruned_git_kib} size_saved_kib={baseline.size_saved_kib} "
+            f"protected_blobs={baseline.unique_protected_blob_count}"
+        )
+        lines.append("  scenarios:")
+        for scenario in repo_result.scenarios:
+            ratio = "n/a" if scenario.savings_retained_vs_baseline_ratio is None else f"{scenario.savings_retained_vs_baseline_ratio:.3f}"
+            lines.append(
+                "    "
+                f"{scenario.scenario_name}: tags={scenario.retained_tag_count} "
+                f"outside_window={scenario.retained_tag_count_outside_window} "
+                f"pruned_git_kib={scenario.pruned_git_kib} saved={scenario.size_saved_kib} "
+                f"compressed_corpus_kib={scenario.compressed_snapshot_corpus_kib} "
+                f"pruned_to_corpus={scenario.pruned_to_compressed_snapshot_ratio if scenario.pruned_to_compressed_snapshot_ratio is not None else 'n/a'} "
+                f"saved_vs_baseline={ratio} protected_blobs={scenario.unique_protected_blob_count} "
+                f"protected_inflated_bytes={scenario.unique_protected_blob_inflated_bytes} "
+                f"overlap_blobs={scenario.overlap_blob_count} retained_ok={scenario.retained_snapshot_access_ok} "
+                f"old_missing={scenario.old_blob_missing_ok}"
+            )
+        lines.append("")
+    return "\n".join(lines)
 
 
 def to_jsonable(obj: object) -> object:
@@ -815,161 +890,6 @@ def to_jsonable(obj: object) -> object:
     return obj
 
 
-def run_experiment(
-    workspace: pathlib.Path,
-    keep_commits: int,
-    commit_count: int,
-    strategies: list[str],
-    repo_names: list[str],
-) -> dict[str, object]:
-    all_repos = [
-        ("repo_a_typical", 101),
-        ("repo_b_small_files", 202),
-        ("repo_c_large_files", 303),
-    ]
-    repos = [item for item in all_repos if item[0] in repo_names]
-    workspace.mkdir(parents=True, exist_ok=True)
-    results: list[RepoExperimentResult] = []
-    summary_notes = [
-        "Source repos are configured with uploadpack.allowFilter=true so local file:// partial clone honors blob filtering.",
-        "Repo A gets the full validation pass; Repos B and C are used mainly for rehydration benchmarks and size checks.",
-    ]
-
-    for repo_name, seed in repos:
-        source_repo = build_repo(workspace, repo_name, commit_count, seed)
-        boundary, _boundary_parent, window_commits, old_commits = compute_boundary(source_repo, keep_commits)
-        source_git_kib = git_size_kib(source_repo)
-        strategy_results = benchmark_strategies(source_repo, workspace, boundary, window_commits, strategies)
-
-        if repo_name == "repo_a_typical":
-            pruned_repo, validation = run_repo_a_validations(
-                source_repo, workspace, boundary, window_commits, old_commits
-            )
-            pruned_git_kib = git_size_kib(pruned_repo)
-            repo_result = RepoExperimentResult(
-                repo_name=repo_name,
-                boundary=boundary,
-                keep_commits=keep_commits,
-                source_git_kib=source_git_kib,
-                pruned_git_kib=pruned_git_kib,
-                size_saved_kib=source_git_kib - pruned_git_kib,
-                commit_hashes_match=validation["commit_hashes_match"],
-                branches_match=validation["branches_match"],
-                tags_match=validation["tags_match"],
-                kept_window_access_ok=validation["kept_window_access_ok"],
-                old_blob_missing_ok=validation["old_blob_missing_ok"],
-                old_blob_absence_proven=validation["old_blob_absence_proven"],
-                bundle_within_window_ok=validation["bundle_within_window_ok"],
-                full_to_pruned_bundle_ok=validation["full_to_pruned_bundle_ok"],
-                out_of_window_bundle_failed=validation["out_of_window_bundle_failed"],
-                merge_within_window_ok=validation["merge_within_window_ok"],
-                merge_outside_window_failed=validation["merge_outside_window_failed"],
-                old_command_failures=validation["old_command_failures"],
-                strategies=strategy_results,
-                edge_cases=run_edge_case_checks(source_repo, workspace),
-                notes=validation["checkout_strategy"].notes
-                + validation["cleanup_notes"]
-                + validation["validation_notes"],
-            )
-        else:
-            best = min(strategy_results, key=lambda item: item.elapsed_seconds)
-            size_probe_repo = workspace / "size-probe" / source_repo.name
-            if size_probe_repo.exists():
-                shutil.rmtree(size_probe_repo)
-            make_blobless_clone(source_repo, size_probe_repo)
-            rehydrate_checkout(size_probe_repo, boundary, window_commits)
-            finalize_pruned_repo(size_probe_repo)
-            pruned_git_kib = git_size_kib(size_probe_repo)
-            repo_result = RepoExperimentResult(
-                repo_name=repo_name,
-                boundary=boundary,
-                keep_commits=keep_commits,
-                source_git_kib=source_git_kib,
-                pruned_git_kib=pruned_git_kib,
-                size_saved_kib=source_git_kib - pruned_git_kib,
-                commit_hashes_match=True,
-                branches_match=True,
-                tags_match=True,
-                kept_window_access_ok=best.ok,
-                old_blob_missing_ok=True,
-                old_blob_absence_proven=False,
-                bundle_within_window_ok=False,
-                full_to_pruned_bundle_ok=False,
-                out_of_window_bundle_failed=False,
-                merge_within_window_ok=False,
-                merge_outside_window_failed=False,
-                old_command_failures={},
-                strategies=strategy_results,
-                edge_cases={},
-                notes=["Benchmark-only fixture"],
-            )
-        results.append(repo_result)
-
-    strategy_leaders = {}
-    for strategy_name in strategies:
-        times = [
-            next(item.elapsed_seconds for item in repo_result.strategies if item.name == strategy_name)
-            for repo_result in results
-        ]
-        strategy_leaders[strategy_name] = round(sum(times) / len(times), 4)
-
-    return {
-        "workspace": str(workspace),
-        "keep_commits": keep_commits,
-        "commit_count": commit_count,
-        "strategies": strategies,
-        "summary_notes": summary_notes,
-        "strategy_average_seconds": strategy_leaders,
-        "repo_results": results,
-    }
-
-
-def render_human_summary(results: dict[str, object]) -> str:
-    lines = [
-        "Git History Pruning Experiment",
-        "==============================",
-        f"workspace: {results['workspace']}",
-        f"keep_commits: {results['keep_commits']}",
-        f"strategies: {', '.join(results['strategies'])}",
-        "",
-    ]
-    for note in results["summary_notes"]:
-        lines.append(f"- {note}")
-    lines.append("")
-    for repo_result in results["repo_results"]:
-        lines.append(f"{repo_result.repo_name}:")
-        lines.append(f"  boundary: {repo_result.boundary}")
-        lines.append(f"  source_git_kib: {repo_result.source_git_kib}")
-        if repo_result.pruned_git_kib:
-            lines.append(f"  pruned_git_kib: {repo_result.pruned_git_kib}")
-            lines.append(f"  size_saved_kib: {repo_result.size_saved_kib}")
-            lines.append(f"  commit_hashes_match: {repo_result.commit_hashes_match}")
-            lines.append(f"  branches_match: {repo_result.branches_match}")
-            lines.append(f"  tags_match: {repo_result.tags_match}")
-            lines.append(f"  kept_window_access_ok: {repo_result.kept_window_access_ok}")
-            lines.append(f"  old_blob_missing_ok: {repo_result.old_blob_missing_ok}")
-            lines.append(f"  old_blob_absence_proven: {repo_result.old_blob_absence_proven}")
-            lines.append(f"  bundle_within_window_ok: {repo_result.bundle_within_window_ok}")
-            lines.append(f"  full_to_pruned_bundle_ok: {repo_result.full_to_pruned_bundle_ok}")
-            lines.append(f"  out_of_window_bundle_failed: {repo_result.out_of_window_bundle_failed}")
-            lines.append(f"  merge_within_window_ok: {repo_result.merge_within_window_ok}")
-            lines.append(f"  merge_outside_window_failed: {repo_result.merge_outside_window_failed}")
-            if repo_result.edge_cases:
-                lines.append("  edge_cases:")
-                for name, ok in sorted(repo_result.edge_cases.items()):
-                    lines.append(f"    {name}: {ok}")
-        lines.append("  strategies:")
-        for strategy in repo_result.strategies:
-            lines.append(
-                "    "
-                f"{strategy.name}: ok={strategy.ok} elapsed={strategy.elapsed_seconds:.3f}s "
-                f"missing {strategy.missing_before}->{strategy.missing_after} "
-                f"pack_kib {strategy.pack_kib_before}->{strategy.pack_kib_after}"
-            )
-        lines.append("")
-    return "\n".join(lines)
-
-
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -980,19 +900,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--keep-commits",
         type=int,
-        default=10,
+        default=KEEP_COMMITS_DEFAULT,
         help="How many first-parent main commits to keep in the recent window.",
     )
     parser.add_argument(
         "--commit-count",
         type=int,
-        default=28,
-        help="Approximate commit count for generated fixtures.",
-    )
-    parser.add_argument(
-        "--strategies",
-        default="checkout,rev-list-cat-file,pack-objects,diff-tree",
-        help="Comma-separated list of rehydration strategies to benchmark.",
+        default=96,
+        help="Approximate mainline commit count for generated fixtures.",
     )
     parser.add_argument(
         "--repos",
@@ -1014,15 +929,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
-    if args.commit_count < 24:
-        print("--commit-count must be at least 24 for the typical-app fixture", file=sys.stderr)
+    if args.keep_commits < 1:
+        print("--keep-commits must be at least 1", file=sys.stderr)
         return 2
-    strategies = [name.strip() for name in args.strategies.split(",") if name.strip()]
+    if args.commit_count < 80:
+        print("--commit-count must be at least 80 so the 20-commit kept window is a meaningful minority of history", file=sys.stderr)
+        return 2
+
     repo_names = [name.strip() for name in args.repos.split(",") if name.strip()]
-    unknown = [name for name in strategies if name not in STRATEGIES]
-    if unknown:
-        print(f"unknown strategies: {', '.join(unknown)}", file=sys.stderr)
-        return 2
     allowed_repos = {"repo_a_typical", "repo_b_small_files", "repo_c_large_files"}
     unknown_repos = [name for name in repo_names if name not in allowed_repos]
     if unknown_repos:
@@ -1030,9 +944,9 @@ def main(argv: list[str]) -> int:
         return 2
 
     auto_workspace = args.workspace is None
-    temp_dir = None
+    temp_dir: tempfile.TemporaryDirectory[str] | None = None
     if auto_workspace:
-        temp_dir = tempfile.TemporaryDirectory(prefix="git-history-pruning-")
+        temp_dir = tempfile.TemporaryDirectory(prefix="git-history-pruning-tags-")
         workspace = pathlib.Path(temp_dir.name)
     else:
         workspace = args.workspace.resolve()
@@ -1042,11 +956,9 @@ def main(argv: list[str]) -> int:
             workspace=workspace,
             keep_commits=args.keep_commits,
             commit_count=args.commit_count,
-            strategies=strategies,
             repo_names=repo_names,
         )
-        summary = render_human_summary(results)
-        print(summary)
+        print(render_human_summary(results))
         if args.json_out:
             args.json_out.parent.mkdir(parents=True, exist_ok=True)
             args.json_out.write_text(
@@ -1056,7 +968,6 @@ def main(argv: list[str]) -> int:
     finally:
         if temp_dir is not None and not args.keep_workspace:
             temp_dir.cleanup()
-
     return 0
 
 

@@ -1,77 +1,125 @@
-# Git History Pruning Experiment
+# Exact-Snapshot Tag-Aware Git History Pruning Experiment
 
-This directory contains the first implementation of the git-history-pruning experiment described in [branch-plan.md](../../branch-plan.md).
+This directory contains the current local-only git-history-pruning experiment
+described by the branch plan for `experiment-git-history-tags`.
 
 ## Purpose
 
-The experiment is trying to answer a narrow question:
+This round answers a narrower question than the first pruning experiment:
 
-> Can we preserve the full commit DAG and commit SHAs of a git repo while retaining blob data only for a recent boundary-to-HEAD window that still supports recent operations?
+> If an app can mark exact historical states for future reference, and those
+> app-level tags map down to git/Cod Sync tags, how quickly do those retained
+> snapshots erode the storage savings of history pruning?
 
-This is intentionally a local-only experiment. It does not change Cod Sync's protocol or production behavior.
+The branch deliberately treats retained tags as **exact snapshot retention
+only**. A retained tag means:
+
+- the tag ref survives
+- `git checkout <tag>` still works
+- representative `git show <tag>:path` still works
+
+It does **not** mean:
+
+- full tagged-to-`HEAD` history usability
+- `git bundle create <tag>..main`
+- old merges whose needed bases fall outside the kept window
+
+This is intentionally a local-only experiment. It does not change Cod Sync's
+protocol or production behavior.
 
 ## Contents
 
-- `run_experiment.py`: builds deterministic local repos, creates blobless clones, rehydrates a kept window, severs the promisor remote, and records what still works afterward
+- `run_experiment.py`
+  Builds deterministic fixture repos, creates blobless clones, rehydrates a
+  fixed recent window plus retained exact snapshots, prunes, and records the
+  resulting storage/behavior metrics across a scenario grid.
 
 ## How To Run
 
 From the repository root:
 
 ```bash
-python3 Experiments/git_history_pruning/run_experiment.py --keep-workspace
+python3 Experiments/git_history_pruning/run_experiment.py \
+  --workspace /tmp/git-history-pruning-tags \
+  --json-out /tmp/git-history-pruning-tags/results.json
 ```
 
 Useful options:
 
 ```bash
 python3 Experiments/git_history_pruning/run_experiment.py \
-  --workspace /tmp/git-history-pruning \
-  --keep-commits 10 \
-  --commit-count 28 \
+  --workspace /tmp/git-history-pruning-tags \
+  --keep-commits 20 \
+  --commit-count 96 \
   --repos repo_a_typical,repo_b_small_files,repo_c_large_files \
-  --json-out /tmp/git-history-pruning/results.json
+  --json-out /tmp/git-history-pruning-tags/results.json
 ```
+
+The current branch findings below come from a run that also computed a
+compressed exact-snapshot corpus for each scenario:
+
+- workspace: `/tmp/git-history-pruning-tags-corpus`
+- json: `/tmp/git-history-pruning-tags-corpus/results.json`
 
 ## Important Local-Only Detail
 
-Plain local `file://` clones do not always honor `--filter=blob:none` by default. The experiment works around that by configuring each generated source repo with:
+Plain local `file://` clones do not always honor `--filter=blob:none` by
+default. The experiment configures each generated source repo with:
 
 - `uploadpack.allowFilter=true`
 - `uploadpack.allowAnySHA1InWant=true`
 
-That makes the local partial-clone behavior match the scenario we actually want to test.
+That makes the local partial-clone behavior match the scenario we actually
+want to test.
 
 ## What The Script Currently Covers
 
 - Deterministic fixture repos:
-  - Typical app history with tags, renames, binaries, a recent merge, and an old diverged branch
-  - Many-small-files history
-  - Few-large-files history
-- Rehydration strategies:
-  - `checkout`
-  - `rev-list-cat-file`
-  - `pack-objects`
-  - `diff-tree`
-- Validation on the "typical app" repo:
-  - Commit hash preservation
-  - Branch/tag preservation
-  - Kept-window content access
-  - Out-of-window blob access failure
-  - Bundle creation/application inside the kept window
-  - Merge behavior inside and outside the kept window
+  - `repo_a_typical`
+    Typical app history with renames, binaries, a merge, and an old diverged
+    branch
+  - `repo_b_small_files`
+    Many-small-files history
+  - `repo_c_large_files`
+    Few-large-files history
+- A fixed baseline kept window:
+  - the most recent 20 first-parent commits on `main`
+- Retained-tag candidate universe:
+  - first-parent mainline commits on `main` only
+- Tag density levels:
+  - `0%`
+  - about `10%`
+  - about `25%`
+  - about `50%`
+  - `100%` of first-parent mainline commits
+- Tag placement scenarios:
+  - `recent-biased`
+  - `evenly-spaced`
+  - `old-biased`
+  - `binary-heavy-milestones`
+- Validation in every scenario:
+  - commit hash preservation
+  - branch/tag preservation
+  - kept-window access
+  - retained-snapshot access
+  - clean old-blob failures for unretained history
+- Storage metrics:
+  - `.git` size before/after pruning
+  - savings vs source repo
+  - savings retained vs the no-tag baseline
+  - protected blob counts / inflated blob bytes
+  - overlap with the baseline kept window
+  - compressed exact-snapshot corpus size
+  - `pruned_git_kib / compressed_snapshot_corpus_kib`
 
-## Result
+## Current Pruning Recipe
 
-This experiment supports a narrow recommendation:
+The current best local pruning recipe remains:
 
-- Proceed to a future local-only pruning API design branch
-- Do not yet proceed to Cod Sync protocol changes for pruned-chain remotes
-
-The strongest current recipe is:
-
-1. Create a blobless clone from a local `file://` source whose upload-pack filter support is enabled
-2. Rehydrate the kept window using repeated `checkout`
+1. Create a blobless clone from a local `file://` source whose upload-pack
+   filter support is enabled
+2. Rehydrate the kept window and retained exact snapshots using repeated
+   `checkout`
 3. Remove the promisor remote
 4. Run:
 
@@ -80,130 +128,227 @@ git repack -a -d --filter=blob:none --filter-to=<temp-dir>
 git prune --expire=now
 ```
 
-Do not include `git gc --prune=now` in the current recipe. In these runs it still triggered an unfiltered repack and failed on missing historical blobs.
+Do not include `git gc --prune=now` in the current recipe. In these runs it
+would obscure which cleanup step actually freed space, and in the earlier
+experiment it also triggered unfiltered repack behavior.
+
+## Result
+
+This experiment supports a narrow recommendation:
+
+- proceed with a future local-only pruning API that can retain named **exact
+  snapshots**
+- do not yet proceed to Cod Sync protocol changes for long-lived retained tags
+
+## One-Sentence Summary
+
+Adding exact snapshot tags degrades pruning savings as expected, and the
+degradation can be quite fast once tags spread across older or low-overlap
+history; but whether that cost is mostly "inevitable retained payload" or
+"representation overhead" depends strongly on the fixture shape.
 
 ## Evidence Summary
 
-- Commit hashes, branches, and tags were preserved on the validated Repo A flow.
-- Kept-window file access, within-window merge, and within-window bundle creation all worked.
-- Old blob access failed outside the retained window, and blob absence was directly proven with `git cat-file -e` on a known missing blob SHA.
-- The kept window must be defined as the full DAG closure after the chosen boundary, not merely the first-parent slice on `main`.
-- The filtered repack plus prune cleanup path preserved validated behavior and produced meaningful savings on the large-file fixture.
-
-## Strategy Comparison
-
-### Recommended baseline
-
-- `checkout`
-  - Fastest or near-fastest in the targeted runs
-  - Preserved partiality instead of over-hydrating the repo
-  - Simplest behavior to reason about so far
-
-### Worth further refinement
-
-- `diff-tree`
-  - Often competitive with `checkout`
-  - Preserved many missing objects
-  - More selective in principle, but still somewhat more complex and brittle
-
-### Poor default pruning candidates
-
-- `rev-list-cat-file`
-  - Usually rehydrated almost everything
-  - Slow on the many-small-files fixture
-- `pack-objects`
-  - Also tended to over-hydrate
-  - Inflated pack size more than the other approaches
-
-## Targeted Benchmarks
-
-- Repo A typical:
-  - `checkout` about `0.5s`
-  - `diff-tree` about `0.7s`
-  - `rev-list-cat-file` about `2.0s`
-  - `pack-objects` about `2.0s`
-- Repo B many small files:
-  - `checkout` about `0.34s`
-  - `diff-tree` about `3.5s`
-  - `rev-list-cat-file` about `19.0s`
-  - `pack-objects` about `18.8s`
-- Repo C few large files:
-  - `checkout` about `0.36s`
-  - `diff-tree` about `0.5s`
-  - `rev-list-cat-file` about `1.8s`
-  - `pack-objects` about `2.0s`
+- Retained exact snapshots worked in every reported scenario:
+  - `git checkout <tag>` succeeded
+  - representative `git show <tag>:path` checks succeeded
+- Unretained historical blob access still failed cleanly in every reported
+  scenario.
+- Recent-biased tags were often cheap mainly because many landed inside or
+  near the already-kept 20-commit window.
+- Evenly spaced and old-biased tags were much more expensive than recent-biased
+  tags on churny histories, especially the large-file fixture.
+- Raw tag count was not the best predictor of cost; overlap with the kept
+  window and unique protected blob payload mattered much more.
+- The compressed exact-snapshot corpus comparison sharpened the interpretation:
+  - large-file history often looks like an unavoidable payload cost
+  - many-small-files history looks much more dominated by git/object overhead
 
 ## Size Snapshot
 
-- Repo A typical:
-  - Essentially neutral in this small fixture
-- Repo C large files:
-  - About `1709 KiB -> 490 KiB`
-  - About `1219 KiB` saved
+### Repo A: Typical app history
 
-## Edge Cases
+- baseline pruning:
+  - `257 KiB`
+  - `19 KiB` saved
+- `10% recent-biased`:
+  - `261 KiB`
+  - `16 KiB` saved
+- `25% evenly-spaced`:
+  - `303 KiB`
+  - `25 KiB` worse than source
+- `100% mainline tagged`:
+  - `347 KiB`
+  - `61 KiB` worse than source
 
-- Boundary equals `HEAD`:
-  - Worked
-  - Tip content remained readable
-  - Old missing objects remained absent
-- Boundary covers all history:
-  - Worked
-  - Missing-object count dropped to zero as expected
-- Prune twice:
-  - Current filtered-repack cleanup path was stable in the targeted run
+Interpretation:
+
+- This fixture is small enough that pack/repo overhead dominates.
+- It is directionally useful, but not a strong fixture for absolute size
+  conclusions.
+
+### Repo B: Many small files
+
+- baseline pruning:
+  - `212 KiB`
+  - `235 KiB` saved
+- `10% recent-biased`:
+  - `243 KiB`
+  - `206 KiB` saved
+- `25% evenly-spaced`:
+  - `366 KiB`
+  - `84 KiB` saved
+- `50% evenly-spaced`:
+  - `404 KiB`
+  - `49 KiB` saved
+- `100% mainline tagged`:
+  - `423 KiB`
+  - `35 KiB` saved
+
+Interpretation:
+
+- Savings degrade steadily but do not disappear immediately.
+- Exact snapshot retention still leaves room for pruning benefit here, even at
+  high tag densities.
+
+### Repo C: Few large files
+
+- baseline pruning:
+  - `2434 KiB`
+  - `7628 KiB` saved
+- `10% recent-biased`:
+  - `3448 KiB`
+  - `6615 KiB` saved
+- `25% evenly-spaced`:
+  - `9894 KiB`
+  - `170 KiB` saved
+- `50% evenly-spaced`:
+  - `10106 KiB`
+  - `39 KiB` worse than source
+- `100% mainline tagged`:
+  - `10128 KiB`
+  - `56 KiB` worse than source
+
+Interpretation:
+
+- This is the sharpest "degrades quickly" case.
+- Sparse old snapshots in a large-blob history can wipe out most of the
+  pruning benefit well before 100% tag density.
+
+## Compressed Snapshot Corpus Comparison
+
+To separate "inevitable cost of keeping multiple exact snapshots" from possible
+representation inefficiency, the experiment also compares:
+
+- pruned git repo size
+- compressed archive of the exact snapshots we promise to preserve
+
+Metric:
+
+- `pruned_to_compressed_snapshot_ratio`
+  = `pruned_git_kib / compressed_snapshot_corpus_kib`
+
+### Repo A
+
+- ratio range:
+  - about `0.359` to `0.474`
+
+Interpretation:
+
+- Fairly stable.
+- Mostly consistent with "we are just paying to preserve more snapshots,"
+  with some noise from repo/pack overhead.
+
+### Repo B
+
+- ratio range:
+  - about `8.294` to `21.2`
+
+Interpretation:
+
+- Very unstable, and always high.
+- This strongly suggests representation/object overhead dominates in the
+  many-small-files fixture.
+- That makes Repo B the clearest sign that there may be an interesting
+  efficiency opportunity later.
+
+### Repo C
+
+- ratio range:
+  - about `0.334` to `0.671`
+
+Interpretation:
+
+- The ratio moves, but in a meaningful way rather than random noise.
+- Old or evenly spaced retained snapshots are expensive because the repo must
+  preserve lots of real large-blob payload.
+- At `100%`, the ratio drops again, suggesting git's packed representation is
+  actually quite efficient once we are effectively keeping everything.
 
 ## What Passed
 
-- Local blobless clone using `file://` plus source-repo `uploadpack.allowFilter=true`
-- Checkout-based rehydration for the kept window
-- HEAD-history commit-hash preservation on the validated fixture
-- Branch preservation on the validated fixture
-- Tag preservation on the validated fixture
+- Local blobless clone using `file://` plus source-repo
+  `uploadpack.allowFilter=true`
+- Checkout-based rehydration for:
+  - the fixed recent kept window
+  - retained exact snapshots
+- Commit-hash preservation
+- Branch preservation
+- Tag preservation
 - Kept-window file access
-- Clean out-of-window blob failures
+- Retained-snapshot file access
+- Clean out-of-window blob failures for unretained history
 - Direct blob-absence proof on a known missing blob SHA
-- Bundle creation from the pruned repo for a within-window range
-- Merge inside the kept window
-- Fetching a full-repo-created window bundle into the pruned repo
 - Filtered repack plus prune as a workable cleanup path
-- Meaningful size savings on the large-file fixture
-- Edge-case checks for boundary=`HEAD`, full-history boundary, and prune-twice stability
+- Cross-scenario size and overlap comparisons
+- Compressed exact-snapshot corpus comparison
 
-## What Failed
+## What Failed Or Remains Weak
 
 - Strong size reduction in the tiny Repo A fixture
-- Naive repack / gc cleanup after removing the promisor remote
-- Using `git gc --prune=now` after filtered repack, because `gc` still tries to run an unfiltered repack
-- `rev-list-cat-file` as a pruning strategy, because it tends to rehydrate the entire repo
-- `pack-objects` as a pruning strategy, because it tends to rehydrate the entire repo and inflates pack size heavily
+- Any claim that raw tag count alone predicts storage cost well
+- Any claim that exact snapshot retention should preserve full old
+  tagged-to-`HEAD` chain behavior
+- Any conclusion yet about distributed retained-tag semantics in the protocol
 
 ## Clarifications Answered
 
-- **What is the right window definition?**
-  Use the full DAG closure of commits that must remain available after the chosen boundary, not just the first-parent ancestry slice of `main`.
-- **Which git behaviors matter most for Cod Sync?**
-  The experiment currently treats these as the practical minimum:
-  - kept-window file access
-  - within-window bundle creation
-  - within-window merge
-  - clean failure for old blob access outside the retained window
-- **Does bundle creation only depend on the requested range?**
-  Not safely. The first implementation failed until merged side-branch commits inside the retained window were included in the kept set.
-- **Can we prove old blobs are really absent?**
-  Yes, the experiment now checks missing objects directly with `git rev-list --objects --missing=print --all` and uses that to drive old-blob failure probes.
-- **Is there a rehydration strategy that is both fast and maintainable?**
-  `checkout` is the current best answer. It is the fastest or near-fastest in the targeted runs and preserves partiality better than the object-enumeration approaches.
+- **What is the candidate tag universe in this branch?**
+  First-parent mainline commits on `main` only.
+- **What does `100%` mean?**
+  Every first-parent mainline commit on `main` is tagged, not every commit in
+  the full DAG.
+- **Can recent-biased tags land inside the already-kept window?**
+  Yes. The experiment records both total retained tags and retained tags
+  outside the baseline window so those "already free" tags are visible.
+- **Do tags necessarily degrade pruning savings?**
+  Yes. Retaining more exact snapshots means preserving more data.
+- **How quickly does the degradation happen?**
+  It depends strongly on overlap and blob shape:
+  - gradual on the many-small-files fixture
+  - very fast on the few-large-files fixture once tags spread into older
+    history
+- **Is the observed cost just inevitable payload, or is there efficiency
+  headroom?**
+  The compressed snapshot corpus comparison suggests:
+  - Repo C is often mostly inevitable payload cost
+  - Repo B likely has meaningful representation overhead
 
 ## Recommendation
 
-- The experiment is now strong enough to justify a cautious "proceed to local pruning API design" recommendation, but not yet a protocol-change recommendation.
-- Treat `filtered repack + prune` as the current best cleanup candidate.
-- Do not treat `git gc` as part of the current pruning recipe.
-- Treat `checkout` as the current correctness baseline and likely frontrunner.
-- Treat `diff-tree` as the next-most-interesting strategy to refine, since it appears to preserve partiality better than the object-enumeration approaches.
-- Treat `rev-list-cat-file` and `pack-objects` as poor default candidates for pruning, even though they technically succeed at materialization.
-- Keep future work split cleanly:
-  - local pruning API first
-  - protocol changes later, only if needed
-  - safe distributed boundary selection as a separate problem
+- Proceed to a future local pruning API that can:
+  - prune with an explicit recent boundary
+  - optionally retain named refs as exact snapshots
+  - warn when requested retained snapshots are old, low-overlap, or
+    blob-heavy
+- Do not yet treat exact snapshot tags as a protocol feature.
+- Treat the current results as support for two different future questions:
+  - local pruning API design for exact snapshot retention
+  - possible later efficiency work for small-file-heavy histories
+
+## Likely Follow-On
+
+- Encode exact-snapshot retention into a future `cod-sync` local pruning API
+- Surface cost-model hints or warnings to callers
+- Decide later whether small-file-heavy histories justify a separate
+  representation-efficiency experiment
