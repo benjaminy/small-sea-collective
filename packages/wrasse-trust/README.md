@@ -1,3 +1,5 @@
+<img src="../../Documentation/Images/wrasse-trust.png">
+
 # Wrasse Trust
 
 Wrasse Trust is Small Sea's package for identity-oriented keys and certificates.
