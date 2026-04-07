@@ -2,8 +2,20 @@
 
 # Wrasse Trust
 
-Wrasse Trust is Small Sea's package for identity-oriented keys and certificates.
-It is the layer that helps answer:
+Wrasse Trust is Small Sea's cryptographic identity and trust layer.
+It helps connect keys to devices, teammates, teams, etc.
+Wrasse Trust is inspired by projects like Signal, Matrix, Keybase.
+But Small Sea has its own particular architectural foundations.
+In particular:
+
+- Small Sea is obsessively team-oriented
+   - "Alice/Accounting" is a more natural identity than just "Alice"
+   - Copious cross-signing within and between teams creates a novel kind of trust web
+- Small Sea strictly avoids dependence on any special-purpose internet services
+   - Where my trust roots at?
+   - Real trust emerges over time from team activities
+
+Wrasse Trust helps answer:
 
 - which signing key belongs to which team member
 - which device keys are currently vouched for
