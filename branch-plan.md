@@ -122,6 +122,10 @@ These are branch-scoped choices, not final product decisions:
     freed space; this branch wants to attribute savings to pruning itself)
 - Place experiment-retained tags on commits reachable from `main`, so the
   storage question stays legible before we add side-branch semantics.
+- More specifically, define the candidate tag universe for this branch as the
+  **first-parent mainline commits of `main` only**. Do not place experimental
+  retained tags on merged side-branch-only commits in this round. That keeps
+  density and placement easy to interpret.
 - Fix the baseline kept window at **the most recent 20 commits on `main`**
   for all scenarios in this branch. Sweeping the boundary depth is a separate
   question; holding it constant here keeps the tag-cost curve interpretable.
@@ -277,6 +281,9 @@ a retained tag**. Test the following levels:
 Exact tag counts are derived deterministically from each fixture's mainline
 length and recorded in the scenario output.
 
+For clarity, the 100% endpoint in this branch means **every first-parent
+mainline commit on `main` is tagged**, not every commit in the full DAG.
+
 ### Tag placement scenarios
 
 At minimum, compare:
@@ -288,6 +295,21 @@ At minimum, compare:
 
 This is important because a 10% tag density can be cheap or expensive depending
 on where those tags land.
+
+For `recent-biased`, tags **may** land inside the already-kept 20-commit
+baseline window. When that happens, scenario output should report both:
+
+- total retained tag count
+- retained tag count outside the baseline window
+
+That keeps us from mistaking "already free because it was inside the kept
+window" for "cheap to retain anywhere."
+
+For `binary-heavy milestones`, if there are fewer obvious milestone commits
+than needed for the requested density, fall back deterministically to a ranking
+of first-parent mainline commits by **inflated bytes of changed blobs in that
+commit**. Select from the top of that ranking and record the chosen commits in
+the scenario output.
 
 ### Scenario comparison
 
@@ -375,12 +397,14 @@ At minimum, capture:
 - size saved vs source
 - savings retained vs the no-tag pruning baseline
 - count of retained tags
+- count of retained tags outside the baseline window
 - count of unique protected blobs
 - total **inflated** size of unique protected blobs (sum of logical blob
   sizes, not on-disk packed size; packed size is reported separately as
   pruned `.git` size)
 - overlap between tag-protected blobs and baseline-window blobs, reported
   as both blob count and inflated byte count
+- exact selected retained-tag commits for each scenario
 - marginal storage cost as tags get older or more blob-heavy
 
 If one metric emerges as the best predictor of storage degradation, the README
