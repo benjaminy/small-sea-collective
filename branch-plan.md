@@ -204,16 +204,25 @@ But it does **not** have enough information to decide whether the issuer was an
 "identity root", "team-membership identity", "device key", or "admin chain".
 That higher-level meaning depends on context the current API does not have.
 
-So this branch should enforce typed semantics only where the caller has enough
-context:
+**Fail fast and loud on reserved-but-unsupported types.** `verify_cert` only
+accepts the three cert types this branch actually emits:
+`SELF_BINDING`, `DEVICE_BINDING`, and `CROSS_CERTIFICATION`. A cert whose
+`cert_type` is any other reserved member (`MEMBERSHIP`, `SUCCESSION`,
+`IDENTITY_LINK`, `ATTESTATION`, `AMBIENT_PROXIMITY`, `REVOCATION`) is rejected
+at verification time, even if the signature is mathematically valid. Those
+names are reserved vocabulary, not enabled trust paths. There is no
+deployment yet; it is better to make the boundary between "reserved" and
+"supported" loud now than to discover later that a forged-intent `MEMBERSHIP`
+cert "verified" in isolation.
+
+Typed semantic enforcement continues to live in the higher-level verifiers
+that have enough context:
 
 - `verify_device_binding_cert(...)` continues to be the meaningful verifier for
   `DEVICE_BINDING`, because it already receives `team_id`, `member_id`, and the
   expected subject key
 - ceremony helpers should verify explicit `CROSS_CERTIFICATION` use rather than
   relying on an unlabeled cert
-- unsupported reserved types should not gain loose "accept anything" behavior;
-  they remain reserved names, not newly enabled trust paths
 
 This keeps the branch honest: stricter and safer now, without pretending to
 finish the whole trust-policy problem prematurely.
@@ -276,6 +285,16 @@ meant to close:
   shape as before
 - **ceremony type explicitness:** `complete_ceremony(...)` emits
   `CROSS_CERTIFICATION`, not an unlabeled generic cert
+- **reserved-but-unsupported rejection:** for each reserved `CertType` member
+  this branch does not emit (`MEMBERSHIP`, `SUCCESSION`, `IDENTITY_LINK`,
+  `ATTESTATION`, `AMBIENT_PROXIMITY`, `REVOCATION`), construct a cert with a
+  valid signature and assert `verify_cert(...)` rejects it. This makes the
+  "reserved, not enabled" boundary visible in the test suite.
+- **serialize/deserialize round-trip property:** for every `CertType` this
+  branch emits, assert
+  `_deserialize_cert(_serialize_cert(cert)) == cert`. Locks the Manager
+  boundary without expanding scope and guards against any subtle field drift
+  introduced by the strict-parsing sweep.
 
 ### Regression suite to keep passing
 
@@ -309,16 +328,28 @@ A bright critic should be convinced that this branch:
 - accidentally changing an enum string value and breaking existing stored certs
 - conflating reserved `CertType.REVOCATION` vocabulary with the still-separate
   `RevocationCertificate` implementation
+- **latent pre-existing bug to check during the sweep:**
+  `wrasse_trust.identity.issue_revocation(...)` calls `os.urandom(16)` but
+  `os` does not appear to be imported in that module. Either the path is
+  untested or there is an import elsewhere that is easy to miss. Confirm
+  during the test sweep; do **not** fix in this branch (revocation is out of
+  scope), just note the finding.
+- strict-parsing sweep may surface test fixtures that embed
+  `cert_type: "generic"` as literals; the resulting failures are expected, not
+  regressions
 
 ## Migration / Compatibility
 
-- Pre-alpha: backward compatibility for arbitrary free-form `cert_type` strings
-  is **not** a goal
-- existing stored `device_binding` rows should remain valid because their
-  string value stays `"device_binding"`
-- ceremony payloads or Manager payloads missing `cert_type` should fail after
-  this branch by design
-- DB schema remains unchanged; only parsing and construction become stricter
+There is no deployment and no data worth preserving. All testing starts from
+a fresh sandbox. Any dev DB, ceremony payload, or cert blob produced before
+this branch is assumed discarded.
+
+In particular: ceremony certs produced before this branch were signed over
+canonical bytes containing `"generic"`, and after this branch they are signed
+over `"cross_certification"`. Their signatures and `cert_id`s therefore
+change. This is intentional and requires no shim — regenerate everything.
+
+DB schema remains unchanged; only parsing and construction become stricter.
 
 ## Order of Operations
 
