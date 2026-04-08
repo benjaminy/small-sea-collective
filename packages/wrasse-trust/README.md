@@ -3,74 +3,64 @@
 # Wrasse Trust
 
 Wrasse Trust is Small Sea's cryptographic identity and trust layer.
-It helps connect keys to devices, teammates, teams.
-Wrasse Trust is inspired by projects like Signal, Matrix, Keybase.
-But Small Sea has its own particular architectural foundations.
+It answers questions like:
 
-- Small Sea is obsessively team-oriented
-   - "Alice/Accounting" and "Alice/parent teacher assoc" are more important identities than just "Alice"
-   - Copious cross-signing within and between teams creates a novel kind of trust web
-- Small Sea strictly avoids dependence on any special-purpose internet services
-   - Where my trust roots at?
-   - Real trust emerges over time from team activities
-
-Wrasse Trust helps answer:
-
-- which signing key belongs to which team member
-- which device keys are currently vouched for
-- which public certificates should be checked before trusting a signature
+- which team-device key is speaking right now
+- which per-team participant UUID that device speaks for
+- which public certificates and revocations should be believed
+- how trust should flow through team history, device enrollment, and time
 
 Wrasse Trust does not handle message transport or session encryption.
 That work lives elsewhere, especially in `cuttlefish`.
 
-## What Is Solid So Far
+## Current Reality
 
-The current implementation supports a narrow, team-local trust model:
+The code currently implements an earlier **layered** model:
 
 - each member has a per-team identity key
-- each device has its own per-team device key
-- device keys are certified by that member's per-team identity key
-- those public device-binding certificates are stored in the team history
-- private team-identity material lives in `NoteToSelf`, not in the shared team repo
+- each device has a separate per-team device key
+- `device_binding` certs link device keys to the per-team identity key
+- wrapped private identity-key material is stored via `NoteToSelf`
 
-In practice, this means Small Sea can already model:
-
-- `Alice/Sharks` as a team-local member identity
-- `Alice/Sharks/phone` as a concrete device signing key
-- a `device_binding` certificate that says the phone key is vouched for by
-  Alice's current Sharks identity
-
-## Current Package Responsibilities
-
-Wrasse Trust currently provides:
-
-- key generation helpers with basic protection-level labels
-- certificate issuance and verification helpers
-- team-scoped `device_binding` certificates
-- ceremony serialization helpers used by the manager
-
-## What Is Still In Motion
-
-Important parts of the long-term trust model are still being worked out:
-
-- how much identity should remain strictly per-team versus optionally linked
-  across teams
-- how key rotation, revocation, and epoch changes should interact
-- how second-device provisioning should evolve
-- whether offline or threshold-controlled keys should become part of the core model
-- how broad the certificate vocabulary should become beyond the current narrow slice
-
-Those open design notes now live in
-[README-brain-storming.md](README-brain-storming.md).
+That shape was a useful first slice, but it is no longer the intended
+long-term model.
 
 ## Current Direction
 
-The near-term direction is intentionally narrow:
+The design direction has shifted to a **device-only, per-team** model:
 
-- keep team trust local to team history
-- use per-team device keys for routine signing
-- use the per-team identity key rarely, mainly for certifying devices
-- keep public proof material in the team repo and private key custody in `NoteToSelf`
+- there is no global participant identity in the protocol
+- each team membership gets its own fresh per-team participant UUID
+- the only private signing keys are **team-device keys**
+- "Alice/Accounting" means "this per-team UUID plus the device keys that
+  validly speak for it"
+- `membership` certs admit per-team participant UUIDs and name their
+  founding device keys
+- `device_link` certs expand an existing member's device set within one team
+- NoteToSelf is socially useful for bookkeeping, but it is not
+  cryptographically privileged
+- "admin" remains a social sync concept, not a special key role
 
-That is enough to support the current device-registration work without freezing
-the entire future trust architecture too early.
+This direction is simpler, preserves per-team isolation more honestly,
+and avoids syncing wrapped higher-level private keys around the system.
+
+## What Is Implemented Today
+
+Wrasse Trust already provides useful building blocks that survive the rethink:
+
+- typed certificate infrastructure
+- certificate issuance and verification helpers
+- ceremony serialization helpers used by Manager
+- trust-graph traversal primitives
+
+Some of the currently implemented cert families and key structures will change
+as the device-only model is pushed into code. Pre-alpha rules apply here:
+clarity beats compatibility.
+
+## Where To Read Next
+
+- [README-brain-storming.md](README-brain-storming.md) is the live design
+  note for the identity/trust rethink
+- [device_provisioning_todo.md](device_provisioning_todo.md) captures the
+  older provisioning plan and is currently a transitional reference, not the
+  active intended design

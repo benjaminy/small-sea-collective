@@ -1,11 +1,30 @@
 # Device Provisioning — Design and Implementation Plan
 
+> [!WARNING]
+> This document reflects the older **layered** identity model
+> (`team-membership identity key` + wrapped private key material in
+> `NoteToSelf` + `device_binding` certs beneath it).
+>
+> The current design direction in
+> [README-brain-storming.md](README-brain-storming.md) is a simpler
+> **device-only** model:
+>
+> - no per-team private key above device keys
+> - no wrapped shared private key material synced through `NoteToSelf`
+> - `membership` admits a per-team participant UUID and names its founding
+>   device key
+> - `device_link` expands that UUID's device set within one team
+>
+> Keep this file as historical design context for now, but do not treat its
+> wrapped-key flow as the active plan for new implementation work.
+
 > Referenced from [README.md](README.md). This will become a GitHub issue once
 > the design solidifies.
 >
 > Working status: this document is now past pure brainstorming, but it is still
-> not a settled spec. The current direction is "advance device registration
-> first, keep offline-root sophistication for later."
+> not a settled spec. Within the older layered model it was converging on
+> "advance device registration first, keep offline-root sophistication for
+> later."
 
 ## The Problem
 
