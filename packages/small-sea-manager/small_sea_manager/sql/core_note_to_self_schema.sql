@@ -54,35 +54,6 @@ CREATE TABLE IF NOT EXISTS notification_service (
     access_token TEXT   -- Gotify client token (poll/subscribe)
 );
 
-CREATE TABLE IF NOT EXISTS team_signing_key (
-    id          BLOB PRIMARY KEY,
-    team_id     BLOB NOT NULL,
-    public_key  BLOB NOT NULL,
-    private_key BLOB NOT NULL,
-    created_at  TEXT NOT NULL,
-    FOREIGN KEY (team_id) REFERENCES team(id)
-);
-
-CREATE TABLE IF NOT EXISTS team_identity (
-    team_id     BLOB PRIMARY KEY,
-    member_id   BLOB NOT NULL,
-    public_key  BLOB NOT NULL,
-    created_at  TEXT NOT NULL,
-    FOREIGN KEY (team_id) REFERENCES team(id)
-);
-
-CREATE TABLE IF NOT EXISTS wrapped_team_identity_key (
-    team_id             BLOB NOT NULL,
-    device_id           BLOB NOT NULL,
-    wrapped_private_key BLOB NOT NULL,
-    wrapper_version     TEXT NOT NULL,
-    created_at          TEXT NOT NULL,
-    revoked_at          TEXT,
-    PRIMARY KEY (team_id, device_id),
-    FOREIGN KEY (team_id) REFERENCES team(id),
-    FOREIGN KEY (device_id) REFERENCES user_device(id)
-);
-
 CREATE TABLE IF NOT EXISTS team_device_key (
     team_id          BLOB NOT NULL,
     device_id        BLOB NOT NULL,

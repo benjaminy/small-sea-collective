@@ -14,7 +14,7 @@ from small_sea_manager.manager import TeamManager
 from small_sea_manager.provisioning import (
     complete_invitation_acceptance,
     create_invitation, create_new_participant, create_team, list_invitations)
-from wrasse_trust.identity import verify_device_binding_cert
+from wrasse_trust.identity import verify_membership_cert
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -194,9 +194,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert bob_member_id_hex != bob_hex
     assert len(bob_member_id_hex) == 32
     assert acceptance["team_id"] == token_data["team_id"]
-    assert len(acceptance["acceptor_identity_public_key"]) == 64
     assert len(acceptance["acceptor_device_public_key"]) == 64
-    assert acceptance["acceptor_device_binding_cert"]["cert_type"] == "device_binding"
     assert acceptance["acceptor_sender_key"]["group_id"] == token_data["team_id"]
     assert acceptance["acceptor_sender_key"]["sender_participant_id"] == bob_member_id_hex
 
@@ -212,25 +210,51 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     aconn = sqlite3.connect(str(alice_team_db))
     members = aconn.execute(
-        "SELECT id, identity_public_key, device_public_key FROM member"
+        "SELECT id, device_public_key FROM member"
     ).fetchall()
     assert len(members) == 2
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
     assert bob_member_id_hex in member_ids
     bob_member_row = next(row for row in members if row[0] == bytes.fromhex(bob_member_id_hex))
-    assert bob_member_row[1] == bytes.fromhex(acceptance["acceptor_identity_public_key"])
-    assert bob_member_row[2] == bytes.fromhex(acceptance["acceptor_device_public_key"])
+    assert bob_member_row[1] == bytes.fromhex(acceptance["acceptor_device_public_key"])
 
     bob_cert_row = aconn.execute(
-        "SELECT cert_type, subject_public_key, issuer_member_id, claims "
-        "FROM key_certificate WHERE issuer_member_id = ?",
-        (bytes.fromhex(bob_member_id_hex),),
+        "SELECT cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, "
+        "issuer_member_id, issued_at, claims, signature "
+        "FROM key_certificate WHERE subject_public_key = ?",
+        (bytes.fromhex(acceptance["acceptor_device_public_key"]),),
     ).fetchone()
     assert bob_cert_row is not None
-    assert bob_cert_row[0] == "device_binding"
-    assert bob_cert_row[1] == bytes.fromhex(acceptance["acceptor_device_public_key"])
-    assert json.loads(bob_cert_row[3])["member_id"] == bob_member_id_hex
+    assert bob_cert_row[1] == "membership"
+    assert bob_cert_row[3] == bytes.fromhex(acceptance["acceptor_device_public_key"])
+    assert bob_cert_row[5] == bytes.fromhex(alice_member_id_hex)
+    assert json.loads(bob_cert_row[7])["member_id"] == bob_member_id_hex
+    bob_membership_cert = provisioning._deserialize_cert(
+        {
+            "cert_id": bob_cert_row[0].hex(),
+            "cert_type": bob_cert_row[1],
+            "team_id": token_data["team_id"],
+            "subject_key_id": bob_cert_row[2].hex(),
+            "subject_public_key": bob_cert_row[3].hex(),
+            "issuer_key_id": bob_cert_row[4].hex(),
+            "issuer_participant_id": bob_cert_row[5].hex(),
+            "issued_at_iso": bob_cert_row[6],
+            "claims": json.loads(bob_cert_row[7]),
+            "signature": bob_cert_row[8].hex(),
+        }
+    )
+    alice_device_public_key = next(
+        row[1] for row in members if row[0] == bytes.fromhex(alice_member_id_hex)
+    )
+    assert verify_membership_cert(
+        bob_membership_cert,
+        issuer_public_key=alice_device_public_key,
+        team_id=bytes.fromhex(token_data["team_id"]),
+        issuer_member_id=bytes.fromhex(alice_member_id_hex),
+        admitted_member_id=bytes.fromhex(bob_member_id_hex),
+        subject_public_key=bytes.fromhex(acceptance["acceptor_device_public_key"]),
+    )
 
     peers = aconn.execute(
         "SELECT member_id, display_name, protocol, url FROM peer"
@@ -248,24 +272,16 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert role_map[bob_member_id_hex] == "read-write"
     aconn.close()
 
-    # --- Verify Bob's team DB has 2 members and a peer (Alice) ---
+    # --- Verify Bob's team DB is still provisional: Alice exists, Bob does not yet ---
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
     members = bconn.execute(
-        "SELECT id, identity_public_key, device_public_key FROM member"
+        "SELECT id, device_public_key FROM member"
     ).fetchall()
-    assert len(members) == 2
+    assert len(members) == 1
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
-    assert bob_member_id_hex in member_ids
-    bob_member_row = next(row for row in members if row[0] == bytes.fromhex(bob_member_id_hex))
-    assert verify_device_binding_cert(
-        provisioning._deserialize_cert(acceptance["acceptor_device_binding_cert"]),
-        issuer_public_key=bob_member_row[1],
-        team_id=bytes.fromhex(token_data["team_id"]),
-        member_id=bytes.fromhex(bob_member_id_hex),
-        subject_public_key=bob_member_row[2],
-    )
+    assert bob_member_id_hex not in member_ids
 
     peers = bconn.execute(
         "SELECT member_id, display_name, protocol, url FROM peer"

@@ -256,7 +256,7 @@ Expected work:
 - update `accept_invitation(...)`
 - update `complete_invitation_acceptance(...)`
 - update acceptance-token fields and verification logic
-- rename `get_team_signing_key(...)` to
+- rename `get_current_team_device_key(...)` to
   `get_current_team_device_key(...)` and update its call sites
 
 ### 3. NoteToSelf schema and migration logic

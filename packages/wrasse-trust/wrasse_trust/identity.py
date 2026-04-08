@@ -45,8 +45,8 @@ class CertType(StrEnum):
 SUPPORTED_CERT_TYPES = frozenset(
     {
         CertType.SELF_BINDING,
-        CertType.DEVICE_BINDING,
         CertType.CROSS_CERTIFICATION,
+        CertType.MEMBERSHIP,
     }
 )
 
@@ -215,6 +215,26 @@ def issue_device_binding_cert(
     )
 
 
+def issue_membership_cert(
+    subject_key: ParticipantKey,
+    issuer_key: ParticipantKey,
+    issuer_private_key: bytes,
+    team_id: bytes,
+    issuer_member_id: bytes,
+    admitted_member_id: bytes,
+) -> KeyCertificate:
+    """Issue a team-scoped membership cert for one member's initial device key."""
+    return issue_cert(
+        subject_key,
+        issuer_key,
+        issuer_private_key,
+        issuer_participant_id=issuer_member_id,
+        cert_type=CertType.MEMBERSHIP,
+        team_id=team_id,
+        claims={"member_id": admitted_member_id.hex()},
+    )
+
+
 def verify_device_binding_cert(
     cert: KeyCertificate,
     issuer_public_key: bytes,
@@ -232,6 +252,28 @@ def verify_device_binding_cert(
     if cert.issuer_participant_id != member_id:
         return False
     if cert.claims.get("member_id") != member_id.hex():
+        return False
+    return verify_cert(cert, issuer_public_key)
+
+
+def verify_membership_cert(
+    cert: KeyCertificate,
+    issuer_public_key: bytes,
+    team_id: bytes,
+    issuer_member_id: bytes,
+    admitted_member_id: bytes,
+    subject_public_key: bytes,
+) -> bool:
+    """Verify a membership cert against explicit team/member/device constraints."""
+    if cert.cert_type != CertType.MEMBERSHIP:
+        return False
+    if cert.team_id != team_id:
+        return False
+    if cert.subject_public_key != subject_public_key:
+        return False
+    if cert.issuer_participant_id != issuer_member_id:
+        return False
+    if cert.claims.get("member_id") != admitted_member_id.hex():
         return False
     return verify_cert(cert, issuer_public_key)
 

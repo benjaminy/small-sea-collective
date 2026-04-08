@@ -8,7 +8,7 @@ import pytest
 from small_sea_manager.provisioning import _deserialize_cert, _serialize_cert
 from small_sea_manager.provisioning import (create_new_participant,
                                                  create_team)
-from wrasse_trust.identity import CertType, issue_cert, verify_device_binding_cert
+from wrasse_trust.identity import CertType, issue_cert, verify_membership_cert
 from wrasse_trust.keys import generate_hierarchy
 
 
@@ -109,21 +109,18 @@ def test_create_team(playground_dir):
     assert self_receiver_key[0] == bytes.fromhex(member_id_hex)
     assert self_receiver_key[1] is None
 
-    team_identity = conn.execute(
-        "SELECT member_id, public_key FROM team_identity WHERE team_id = ?",
-        (bytes.fromhex(team_id_hex),),
-    ).fetchone()
-    assert team_identity is not None
-    assert team_identity[0] == bytes.fromhex(member_id_hex)
-    assert len(team_identity[1]) == 32
+    with pytest.raises(sqlite3.OperationalError):
+        conn.execute(
+            "SELECT member_id, public_key FROM team_identity WHERE team_id = ?",
+            (bytes.fromhex(team_id_hex),),
+        ).fetchone()
 
-    wrapped_identity = conn.execute(
-        "SELECT wrapped_private_key, wrapper_version FROM wrapped_team_identity_key "
-        "WHERE team_id = ?",
-        (bytes.fromhex(team_id_hex),),
-    ).fetchone()
-    assert wrapped_identity is not None
-    assert wrapped_identity[1] == "placeholder-v1"
+    with pytest.raises(sqlite3.OperationalError):
+        conn.execute(
+            "SELECT wrapped_private_key, wrapper_version FROM wrapped_team_identity_key "
+            "WHERE team_id = ?",
+            (bytes.fromhex(team_id_hex),),
+        ).fetchone()
 
     team_device_key = conn.execute(
         "SELECT public_key, private_key_ref FROM team_device_key WHERE team_id = ?",
@@ -152,8 +149,7 @@ def test_create_team(playground_dir):
     members = tconn.execute("SELECT * FROM member").fetchall()
     assert len(members) == 1
     assert members[0][0] == bytes.fromhex(member_id_hex)
-    assert members[0][1] == team_identity[1]
-    assert members[0][2] == team_device_key[0]
+    assert members[0][1] == team_device_key[0]
 
     cert_row = tconn.execute(
         "SELECT cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, "
@@ -174,11 +170,12 @@ def test_create_team(playground_dir):
             "signature": cert_row[8].hex(),
         }
     )
-    assert verify_device_binding_cert(
+    assert verify_membership_cert(
         cert,
-        issuer_public_key=team_identity[1],
+        issuer_public_key=team_device_key[0],
         team_id=bytes.fromhex(team_id_hex),
-        member_id=bytes.fromhex(member_id_hex),
+        issuer_member_id=bytes.fromhex(member_id_hex),
+        admitted_member_id=bytes.fromhex(member_id_hex),
         subject_public_key=team_device_key[0],
     )
 

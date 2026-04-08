@@ -176,14 +176,14 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     assert peers[0][2] == "s3"
     aconn.close()
 
-    # ---- Verify Bob's team DB ----
+    # ---- Verify Bob's team DB stays provisional until a later sync ----
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
     members = bconn.execute("SELECT id FROM member").fetchall()
-    assert len(members) == 2
+    assert len(members) == 1
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
-    assert bob_member_id_hex in member_ids
+    assert bob_member_id_hex not in member_ids
     peers = bconn.execute(
         "SELECT member_id, display_name, protocol, url FROM peer"
     ).fetchall()

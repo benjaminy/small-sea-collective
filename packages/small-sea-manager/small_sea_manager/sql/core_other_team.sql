@@ -2,7 +2,6 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS member (
     id BLOB PRIMARY KEY,
-    identity_public_key BLOB,
     device_public_key BLOB
 );
 
