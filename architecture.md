@@ -51,14 +51,14 @@ Removal is made effective by key rotation — the departing member is not given 
 
 ## Components
 
-- **[Small Sea Hub](packages/small-sea-hub/)**: Local service that mediates all access to general-purpose cloud services. Manages sessions, cloud storage proxying, notifications, and access control.
-- **[Cuttlefish](packages/cuttlefish/)**: Session-crypto layer. In production, the Hub uses Cuttlefish to encrypt and obscure team communication with cloud services.
-- **[Wrasse Trust](packages/wrasse-trust/)**: Identity and trust layer. Provides key hierarchies, certificates, ceremonies, revocations, and trust-chain evaluation for the web-of-trust model.
-- **[Cod Sync](packages/cod-sync/)**: Git-based synchronization protocol. Encodes deltas as a chain of git bundles uploaded to cloud storage.
-- **[splice-merge](packages/splice-merge/)**: Library for merging concurrent changes and resolving conflicts when automatic merging is not possible.
-- **[Small Sea Client](packages/small-sea-client/)**: Utility library for applications communicating with the Hub. Manages sessions and common workflows.
-- **[Small Sea Manager](packages/small-sea-manager/)**: The essential built-in application. Manages team membership, devices, cloud storage accounts, invitations, and the SmallSeaCollectiveCore database.
-- **[Shared File Vault](packages/shared-file-vault/)**: Example application — team file sharing built on Small Sea.
+- **[Small Sea Hub](packages/small-sea-hub/README.md)**: Local service that mediates all access to general-purpose cloud services. Manages sessions, cloud storage proxying, notifications, and access control.
+- **[Cuttlefish](packages/cuttlefish/README.md)**: Session-crypto layer. In production, the Hub uses Cuttlefish to encrypt and obscure team communication with cloud services.
+- **[Wrasse Trust](packages/wrasse-trust/README.md)**: Identity and trust layer. Provides key hierarchies, certificates, ceremonies, revocations, and trust-chain evaluation for the web-of-trust model.
+- **[Cod Sync](packages/cod-sync/README.md)**: Git-based synchronization protocol. Encodes deltas as a chain of git bundles uploaded to cloud storage.
+- **[splice-merge](packages/splice-merge/README.md)**: Library for merging concurrent changes and resolving conflicts when automatic merging is not possible.
+- **[Small Sea Client](packages/small-sea-client/README.md)**: Utility library for applications communicating with the Hub. Manages sessions and common workflows.
+- **[Small Sea Manager](packages/small-sea-manager/README.md)**: The essential built-in application. Manages team membership, devices, cloud storage accounts, invitations, and the SmallSeaCollectiveCore database.
+- **[Shared File Vault](packages/shared-file-vault/README.md)**: Example application — team file sharing built on Small Sea.
 
 ## Typical Application Flow
 
