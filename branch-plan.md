@@ -21,6 +21,10 @@ The docs now describe a **device-only, per-team** identity model:
 - each device enrolled in that team has its own team-device key
 - `membership` admits a per-team participant UUID and names its initial
   device key
+- the initial device named in a `membership` proof has no lasting special
+  authority — it is only the first admitted device because some device has
+  to be first; after later `device_link` operations all enrolled devices
+  for that UUID are peers
 - `device_link` later expands the device set for an existing UUID
 
 The code still implements the older **layered** model:
@@ -55,7 +59,8 @@ After this branch lands:
    participant UUID plus a founding team-device key
 4. the layered per-team identity-key storage (`team_identity`,
    `wrapped_team_identity_key`, and `member.identity_public_key`) is removed
-   from the live path
+   from the live schema and runtime code (old migration files may remain as
+   historical scaffolding)
 5. the legacy `team_signing_key` table is removed from NoteToSelf
 6. the codebase is positioned for a later branch to add `device_link` for
    second-device enrollment
@@ -116,11 +121,6 @@ Concrete direction:
 - keep `DEVICE_BINDING` parseable for transitional deserialization only if the
   branch needs it for test fixtures or upgrade paths, but stop emitting it in
   all live flows
-
-Important clarification: the initial device named in the `membership` proof is
-not meant to have lasting special authority. It is only the first admitted
-device because some device has to be first. After later `device_link`
-operations, all enrolled devices for that UUID are peers.
 
 ### 2. Remove synced private team-identity storage from NoteToSelf
 
@@ -195,22 +195,23 @@ model clearly wants a different split.
 
 This implies an honest provisional state on the invitee side:
 
-- the invitee may have cloned the team and prepared their local device key
-- but they are not fully admitted until the inviter's `membership` cert comes
-  back through sync
-- the invitee should **not** create a `member` row for itself prematurely
-- inviter-side in-progress state can live in the team DB's existing
-  `invitation` table until the invitation is completed and admitted
-- the invitee's local clone should treat the team as provisional until the
-  inviter-issued `membership` cert arrives via sync
+- the invitee generates a per-team UUID and an initial device key locally,
+  but its only job during the invitation is to get that public material
+  back to the inviter — no other team member knows the invitee's cloud
+  location yet, so there is no one to sync with
+- the invitee should **not** create a `member` row for itself, and should
+  not write any team-DB state on the invitee's behalf, until the
+  inviter-issued `membership` cert arrives via sync after admission
+- inviter-side in-progress state belongs in an `invitation` table in the
+  team DB. **Investigation required:** confirm whether such a table already
+  exists; if not, this branch should add one as the natural home for
+  in-progress invitations rather than smuggling that state into `member`
 
 ### 6. Keep signed bundle verification working
 
 The current path in `test_signed_bundles.py` assumes:
 
 - `get_team_signing_key(...)` returns the current team-device signing key
-- the helper should be renamed now to something clearer, e.g.
-  `get_current_team_device_key(...)`
 - the team DB `member` row exposes the public key Bob uses to verify Alice's
   pushed link
 
@@ -220,7 +221,9 @@ cleaned up.
 ## Out of Scope
 
 - second-device enrollment UI or protocol
-- `device_link` issuance in live flows
+- all `device_link` work, including issuance, verification, and adding
+  `CertType.DEVICE_LINK` to `SUPPORTED_CERT_TYPES` (deferred to a later
+  branch in the identity/trust series)
 - cross-team `identity_link`
 - revocation and transitive revocation logic
 - epoch enforcement
@@ -300,9 +303,10 @@ shape. It may resist a simple field swap more than expected.
 
 ### 2. Schema churn can spill into unrelated manager logic
 
-`identity_public_key`, `team_identity`, and `wrapped_team_identity_key` appear
-in tests, provisioning helpers, and specs. This branch should keep the live
-code slice small even if some doc cleanup is needed.
+`identity_public_key`, `team_identity`, `wrapped_team_identity_key`, and
+`team_signing_key` appear in tests, provisioning helpers, and specs. This
+branch should keep the live code slice small even if some doc cleanup is
+needed.
 
 ### 3. `membership` semantics are broader than this first slice
 
@@ -319,6 +323,9 @@ This branch is successful if:
 - team creation and invitation acceptance emit `membership` certs instead of
   `device_binding`
 - the current device key remains sufficient for signed-bundle verification
+- the invitee writes no team-DB state on its own behalf during invitation;
+  its `member` row appears only after the inviter's `membership` cert syncs
+  back
 - the updated micro tests pass
 
 **IMPORTANT:** Before running tests, reset your sandbox workspace (see
@@ -359,4 +366,6 @@ Rationale:
 - it matches the current docs for "joining an existing team"
 - it keeps `membership` semantics crisp
 - it avoids smuggling a second meaning into invitee-generated certs
-- it makes the provisional invitee state explicit instead of hidden
+- it makes the provisional invitee state explicit instead of hidden (see
+  §5 for where that state actually lives: nowhere on the invitee's team DB
+  during the invitation, and in an `invitation` table on the inviter side)
