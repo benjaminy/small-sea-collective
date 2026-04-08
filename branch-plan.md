@@ -78,8 +78,8 @@ After this branch lands:
    verification boundaries; `"generic"` disappears
 4. the current codebase only emits the cert types it can honestly support now:
    `SELF_BINDING`, `DEVICE_BINDING`, and `CROSS_CERTIFICATION`
-5. existing `device_binding` certs remain byte-for-byte stable on the wire
-   because the frozen enum value stays `"device_binding"`
+5. from this branch forward, `device_binding` remains pinned to the wire string
+   `"device_binding"` so later refactors do not silently change its signed bytes
 6. no DB schema changes, Hub API changes, network-behavior changes, or
    Cuttlefish behavior changes are required
 
@@ -124,6 +124,14 @@ _To be filled in when the branch lands._
 Add a small `CertType` definition in `wrasse_trust.identity` using `StrEnum`
 so the enum values are also plain strings at JSON/DB boundaries.
 
+Make the internal type change explicit:
+
+- `KeyCertificate.cert_type` becomes `CertType`
+- `_canonical_cert_bytes(...)` takes `cert_type: CertType` and serializes
+  `cert_type.value`
+- JSON/DB boundaries continue to store strings, but in-memory cert objects use
+  the enum rather than raw ad hoc text
+
 Members should cover every family named in the brainstorming README:
 
 - `SELF_BINDING = "self_binding"`
@@ -153,6 +161,19 @@ Update `issue_cert(...)` so:
 - `cert_type` is required
 - callers pass `CertType`, not bare ad hoc strings
 - there is no default fallback
+- it refuses to issue reserved-but-unsupported cert types in this branch
+
+Concretely, `issue_cert(...)` should only mint the three cert types this branch
+actually supports end to end:
+
+- `SELF_BINDING`
+- `DEVICE_BINDING`
+- `CROSS_CERTIFICATION`
+
+Attempting to issue `MEMBERSHIP`, `SUCCESSION`, `IDENTITY_LINK`,
+`ATTESTATION`, `AMBIENT_PROXIMITY`, or `REVOCATION` should fail loudly
+(`ValueError` or equivalent) rather than creating certs that the same branch
+will later refuse to verify.
 
 That forces every call site to declare intent.
 
@@ -214,6 +235,10 @@ names are reserved vocabulary, not enabled trust paths. There is no
 deployment yet; it is better to make the boundary between "reserved" and
 "supported" loud now than to discover later that a forged-intent `MEMBERSHIP`
 cert "verified" in isolation.
+
+Tests for this path do not need issuance support. They can construct a
+`KeyCertificate` directly or sign canonical bytes manually so the branch can
+prove the verification boundary without weakening the issuance boundary.
 
 Typed semantic enforcement continues to live in the higher-level verifiers
 that have enough context:
@@ -281,8 +306,8 @@ meant to close:
 - **Manager strict parsing:** `_deserialize_cert(...)` rejects missing or
   unknown `cert_type`
 - **device_binding wire stability:** an emitted `device_binding` cert still
-  serializes `"device_binding"` and produces the same canonical bytes / `cert_id`
-  shape as before
+  serializes `"device_binding"` and keeps that string pinned in its canonical
+  bytes / `cert_id` derivation
 - **ceremony type explicitness:** `complete_ceremony(...)` emits
   `CROSS_CERTIFICATION`, not an unlabeled generic cert
 - **reserved-but-unsupported rejection:** for each reserved `CertType` member
@@ -310,7 +335,7 @@ A bright critic should be convinced that this branch:
 
 1. freezes the cert vocabulary before more real data accumulates
 2. removes the silent `"generic"` escape hatch from live code paths
-3. keeps existing `device_binding` wire bytes stable
+3. keeps `device_binding` wire bytes stable from this branch forward
 4. makes ceremony and Manager cert parsing fail closed
 5. reserves future cert names now without accidentally enabling half-designed
    trust flows
@@ -342,12 +367,15 @@ A bright critic should be convinced that this branch:
 
 There is no deployment and no data worth preserving. All testing starts from
 a fresh sandbox. Any dev DB, ceremony payload, or cert blob produced before
-this branch is assumed discarded.
+this branch is assumed discarded and regenerated.
 
 In particular: ceremony certs produced before this branch were signed over
 canonical bytes containing `"generic"`, and after this branch they are signed
 over `"cross_certification"`. Their signatures and `cert_id`s therefore
 change. This is intentional and requires no shim — regenerate everything.
+
+New certs emitted after this branch should use the frozen strings from
+`CertType`, with `"device_binding"` remaining pinned for that family.
 
 DB schema remains unchanged; only parsing and construction become stricter.
 
