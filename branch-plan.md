@@ -106,7 +106,8 @@ cert is `MEMBERSHIP`, not `DEVICE_BINDING`.
 Concrete direction:
 
 - add `CertType.MEMBERSHIP` to `SUPPORTED_CERT_TYPES`
-- add `CertType.DEVICE_LINK` as scaffolding (unissued in this branch)
+- add `CertType.DEVICE_LINK` to `SUPPORTED_CERT_TYPES` with verification
+  support, but no live issuance in this branch
 - add helper(s) to issue and verify a founding-device `membership` cert
 - the minimum useful claim shape should include:
   - `member_id`
@@ -123,7 +124,10 @@ Delete the live use of:
 
 - `team_identity`
 - `wrapped_team_identity_key`
-- `team_signing_key` (legacy migration 47 artifact)
+- `team_signing_key` (legacy migration 47 artifact — verify it is unused
+  before removal; current references in `provisioning.py`,
+  `test_signed_bundles.py`, and `small_sea_hub/backend.py` need to be
+  audited and cleaned up)
 
 Keep:
 
@@ -190,8 +194,10 @@ This implies an honest provisional state on the invitee side:
 - the invitee may have cloned the team and prepared their local device key
 - but they are not fully admitted until the inviter's `membership` cert comes
   back through sync
-- the invitee's local `member` row for themselves will exist, but the
-  `key_certificate` table will be empty until the sync completes.
+- the invitee should **not** create a `member` row for itself prematurely.
+  In-progress join state belongs in a separate `invitation` (or equivalent)
+  table on the invitee side. The `member` row is created only when the
+  inviter-issued `membership` cert arrives via sync.
 
 ### 6. Keep signed bundle verification working
 
@@ -249,9 +255,9 @@ Expected work:
 Expected work:
 
 - remove `team_identity`, `wrapped_team_identity_key`, and `team_signing_key`
-  from the schema and migration path
+  from the schema and migration path (with the `team_signing_key` audit
+  noted above)
 - keep `team_device_key`
-- update `USER_SCHEMA_VERSION` and reset sandboxes
 
 ### 4. Team schema and migration logic
 
@@ -308,13 +314,13 @@ This branch is successful if:
 - the current device key remains sufficient for signed-bundle verification
 - the updated micro tests pass
 
-**IMPORTANT:** Before running tests, reset any existing sandbox data:
-`rm -rf /Users/ben8/.gemini/tmp/small-sea-collective/Scratch/Sandbox` (or equivalent)
+**IMPORTANT:** Before running tests, reset your sandbox workspace (see
+`devtools/sandbox/`), since the schema change is destructive and existing
+sandboxes will not migrate.
 
 Suggested validation command:
 
 `uv run pytest packages/wrasse-trust/tests/test_identity.py packages/small-sea-manager/tests/test_create_team.py packages/small-sea-manager/tests/test_invitation.py packages/small-sea-manager/tests/test_signed_bundles.py`
-
 
 ## Questions To Resolve Before Locking Scope
 
