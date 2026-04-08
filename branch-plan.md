@@ -37,7 +37,7 @@ The code still implements the older **layered** model:
 
 Trying to convert all of that at once would be a large risky branch.
 
-The smallest meaningful implementation step is to convert the **founding-device
+The smallest meaningful implementation step is to convert the **initial-device
 flow** first:
 
 - team creation
@@ -52,11 +52,11 @@ cross-team identity linking.
 
 After this branch lands:
 
-1. the founding trust proof for a member is a `membership` cert, not a
+1. the initial trust proof for a member is a `membership` cert, not a
    `device_binding` cert
 2. the current device remains the signing key used for bundle signatures
 3. team creation and invitation acceptance generate only a per-team
-   participant UUID plus a founding team-device key
+   participant UUID plus an initial team-device key
 4. the layered per-team identity-key storage (`team_identity`,
    `wrapped_team_identity_key`, and `member.identity_public_key`) is removed
    from the live schema and runtime code (old migration files may remain as
@@ -80,9 +80,9 @@ After this branch lands:
   cleaner inviter/acceptor split falls naturally out of the `membership` model,
   take it. Pre-1.0 is the right time to do that.
 - **Allow opportunistic `device_link` scaffolding, but avoid scope creep.** If
-  a small amount of scaffolding naturally fits while doing the founding-device
+  a small amount of scaffolding naturally fits while doing the initial-device
   refactor, that's welcome. The branch should still be judged on the
-  founding-device flow, not on second-device support.
+  initial-device flow, not on second-device support.
 
 ## Why This Slice
 
@@ -105,7 +105,7 @@ while preserving the rest of the current operational flow:
 
 ## In Scope
 
-### 1. Replace founding `device_binding` with `membership`
+### 1. Replace initial `device_binding` with `membership`
 
 Update `wrasse_trust.identity` so the first actually-supported team-admission
 cert is `MEMBERSHIP`, not `DEVICE_BINDING`.
@@ -113,14 +113,13 @@ cert is `MEMBERSHIP`, not `DEVICE_BINDING`.
 Concrete direction:
 
 - add `CertType.MEMBERSHIP` to `SUPPORTED_CERT_TYPES`
-- add helper(s) to issue and verify a founding-device `membership` cert
-- the minimum useful claim shape should include:
+- add helper(s) to issue and verify an initial-device `membership` cert
+- for this branch, the cert subject key is the admitted initial device key
+- for this branch, the required claim shape is just:
   - `member_id`
-  - and likely nothing else, since `team_id` and the admitted device public key
-    can already live in the cert envelope
-- keep `DEVICE_BINDING` parseable for transitional deserialization only if the
-  branch needs it for test fixtures or upgrade paths, but stop emitting it in
-  all live flows
+- keep `DEVICE_BINDING` parseable at low-level deserialization boundaries if
+  that is nearly free, but remove it from all live issuance and live happy-path
+  verification helpers
 
 ### 2. Remove synced private team-identity storage from NoteToSelf
 
@@ -149,7 +148,7 @@ Update the team DB so `member` records no longer carry both:
 - `identity_public_key`
 - `device_public_key`
 
-Instead, the member row should carry only the current founding/current device
+Instead, the member row should carry only the current initial/current device
 public key needed for current operations, plus the cert history in
 `key_certificate`.
 
@@ -168,7 +167,7 @@ fake higher-level identity key around after the docs have killed it.
 - mint a fresh per-team member UUID
 - generate one team-device key for the current device
 - store that key in `team_device_key`
-- emit a self-issued `membership` cert whose subject is the founding
+- emit a self-issued `membership` cert whose subject is the initial
   device key and whose claims bind the new member UUID into the team
 - store the member row with that device key as its current public key
 - store the `membership` cert in `key_certificate`
@@ -202,16 +201,15 @@ This implies an honest provisional state on the invitee side:
 - the invitee should **not** create a `member` row for itself, and should
   not write any team-DB state on the invitee's behalf, until the
   inviter-issued `membership` cert arrives via sync after admission
-- inviter-side in-progress state belongs in an `invitation` table in the
-  team DB. **Investigation required:** confirm whether such a table already
-  exists; if not, this branch should add one as the natural home for
-  in-progress invitations rather than smuggling that state into `member`
+- inviter-side in-progress state belongs in the existing `invitation` table in
+  the team DB rather than being smuggled into `member`
 
 ### 6. Keep signed bundle verification working
 
 The current path in `test_signed_bundles.py` assumes:
 
-- `get_team_signing_key(...)` returns the current team-device signing key
+- `get_current_team_device_key(...)` returns the current team-device signing
+  key
 - the team DB `member` row exposes the public key Bob uses to verify Alice's
   pushed link
 
@@ -227,7 +225,7 @@ cleaned up.
 - cross-team `identity_link`
 - revocation and transitive revocation logic
 - epoch enforcement
-- trust graph traversal beyond the founding-device happy path
+- trust graph traversal beyond the initial-device happy path
 - invitation/governance redesign beyond what is needed to swap in
   `membership` certs
 - broad cleanup of every doc mentioning old schema names
@@ -241,16 +239,17 @@ Expected work:
 - add `MEMBERSHIP` to supported live cert types
 - add `issue_membership_cert(...)`
 - add `verify_membership_cert(...)`
-- decide what to do with `DEVICE_BINDING`:
-  - ideally stop issuing it entirely
-  - possibly keep deserializing/verifying it for transitional tolerance
+- stop issuing `DEVICE_BINDING` entirely
+- remove `DEVICE_BINDING` from live happy-path verifier usage
+- optionally keep low-level deserialization support for `DEVICE_BINDING` if it
+  is nearly free and helps with historical tolerance
 
 ### 2. `small_sea_manager.provisioning`
 
 Expected work:
 
 - replace `_generate_team_identity_and_device_key(...)` with a device-only
-  helper that creates only the current team-device key and founding
+  helper that creates only the current team-device key and initial
   `membership` cert
 - update `_store_team_certificate(...)` call sites
 - update `create_team(...)`
@@ -276,7 +275,7 @@ Expected work:
 - remove `identity_public_key` from `member`
 - keep `device_public_key`
 - leave `key_certificate` in place, but change its live contents from
-  founding `device_binding` certs to founding `membership` certs
+  initial `device_binding` certs to initial `membership` certs
 
 ### 5. Micro tests
 
@@ -291,7 +290,7 @@ Add or update micro tests so they prove:
 
 - no wrapped team-identity key is created
 - no `identity_public_key` is required in the team DB happy path
-- founding membership proofs verify correctly
+- initial membership proofs verify correctly
 - bundle-signature verification still uses the current device public key
 
 ## Risks
@@ -312,14 +311,14 @@ needed.
 
 Long-term, `membership` interacts with governance, forked local views, and
 epoch transitions. This branch should not pretend to solve all of that. It only
-needs a correct founding-device happy path.
+needs a correct initial-device happy path.
 
 ## Validation
 
 This branch is successful if:
 
 - the code no longer creates or relies on per-team private identity keys in the
-  founding-device flow
+  initial-device flow
 - team creation and invitation acceptance emit `membership` certs instead of
   `device_binding`
 - the current device key remains sufficient for signed-bundle verification
