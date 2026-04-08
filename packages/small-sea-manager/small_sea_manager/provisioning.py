@@ -46,8 +46,10 @@ from small_sea_manager.sender_keys import (
     serialize_distribution_message,
 )
 from wrasse_trust.identity import (
+    CertType,
     KeyCertificate,
     issue_device_binding_cert,
+    parse_cert_type,
     verify_device_binding_cert,
 )
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair
@@ -80,7 +82,7 @@ def uuid7():
 def _serialize_cert(cert: KeyCertificate) -> dict:
     return {
         "cert_id": cert.cert_id.hex(),
-        "cert_type": cert.cert_type,
+        "cert_type": cert.cert_type.value,
         "team_id": cert.team_id.hex() if cert.team_id is not None else None,
         "subject_key_id": cert.subject_key_id.hex(),
         "subject_public_key": cert.subject_public_key.hex(),
@@ -95,7 +97,7 @@ def _serialize_cert(cert: KeyCertificate) -> dict:
 def _deserialize_cert(data: dict) -> KeyCertificate:
     return KeyCertificate(
         cert_id=bytes.fromhex(data["cert_id"]),
-        cert_type=data.get("cert_type", "generic"),
+        cert_type=parse_cert_type(data["cert_type"]),
         team_id=bytes.fromhex(data["team_id"]) if data.get("team_id") else None,
         subject_key_id=bytes.fromhex(data["subject_key_id"]),
         subject_public_key=bytes.fromhex(data["subject_public_key"]),

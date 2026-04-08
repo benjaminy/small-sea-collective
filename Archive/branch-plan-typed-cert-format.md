@@ -85,7 +85,36 @@ After this branch lands:
 
 ## Outcome
 
-_To be filled in when the branch lands._
+Implemented as planned. 41 tests pass.
+
+- `CertType` StrEnum added to `wrasse_trust.identity` with all 9 families;
+  `SUPPORTED_CERT_TYPES` frozenset covers `SELF_BINDING`, `DEVICE_BINDING`,
+  `CROSS_CERTIFICATION`
+- `KeyCertificate.cert_type` is now `CertType`; `__post_init__` coerces on
+  construction so DB-deserialized strings are immediately typed
+- `_canonical_cert_bytes` takes `CertType` and serializes `.value`, pinning
+  `"device_binding"` on the wire
+- `issue_cert` requires `cert_type` with no default; raises `ValueError` for
+  reserved-but-unsupported types
+- `verify_cert` rejects non-`CertType` values and unsupported reserved types
+  before touching the signature
+- `ceremony.py` serializes `.value` and parses strictly via `parse_cert_type`;
+  `complete_ceremony` emits `CROSS_CERTIFICATION`
+- `_serialize_cert` writes `.value`; `_deserialize_cert` parses strictly with
+  no `"generic"` fallback
+- `"generic"` appears only in two rejection tests, never in live code paths
+- Confirmed `os` is imported in `identity.py`; `issue_revocation` bug noted in
+  plan was already resolved
+
+Validation:
+```
+uv run pytest packages/wrasse-trust/tests/test_identity.py \
+  packages/small-sea-manager/tests/test_create_team.py \
+  packages/small-sea-manager/tests/test_invitation.py \
+  packages/small-sea-manager/tests/test_signed_bundles.py \
+  packages/small-sea-manager/tests/test_hub_invitation_flow.py
+```
+Result: `41 passed`
 
 ## Concrete Scope
 

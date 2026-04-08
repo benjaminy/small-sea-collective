@@ -3,10 +3,66 @@ import pathlib
 import sqlite3
 import subprocess
 
-from small_sea_manager.provisioning import _deserialize_cert
+import pytest
+
+from small_sea_manager.provisioning import _deserialize_cert, _serialize_cert
 from small_sea_manager.provisioning import (create_new_participant,
                                                  create_team)
-from wrasse_trust.identity import verify_device_binding_cert
+from wrasse_trust.identity import CertType, issue_cert, verify_device_binding_cert
+from wrasse_trust.keys import generate_hierarchy
+
+
+ALICE_ID = b"alice-id-bytes00"
+
+
+def test_serialize_deserialize_cert_round_trip():
+    collection, privates = generate_hierarchy(ALICE_ID)
+    buried = collection.buried_keys()[0]
+    guarded = collection.guarded_keys()[0]
+
+    cert = issue_cert(
+        guarded,
+        buried,
+        privates[buried.key_id],
+        ALICE_ID,
+        cert_type=CertType.SELF_BINDING,
+        claims={"type": "hierarchy"},
+    )
+
+    assert _deserialize_cert(_serialize_cert(cert)) == cert
+
+
+def test_deserialize_cert_requires_known_cert_type():
+    with pytest.raises(KeyError):
+        _deserialize_cert(
+            {
+                "cert_id": "00" * 16,
+                "team_id": None,
+                "subject_key_id": "11" * 16,
+                "subject_public_key": "22" * 32,
+                "issuer_key_id": "33" * 16,
+                "issuer_participant_id": "44" * 16,
+                "issued_at_iso": "2026-04-07T00:00:00+00:00",
+                "claims": {},
+                "signature": "55" * 64,
+            }
+        )
+
+    with pytest.raises(ValueError):
+        _deserialize_cert(
+            {
+                "cert_id": "00" * 16,
+                "cert_type": "generic",
+                "team_id": None,
+                "subject_key_id": "11" * 16,
+                "subject_public_key": "22" * 32,
+                "issuer_key_id": "33" * 16,
+                "issuer_participant_id": "44" * 16,
+                "issued_at_iso": "2026-04-07T00:00:00+00:00",
+                "claims": {},
+                "signature": "55" * 64,
+            }
+        )
 
 
 def test_create_team(playground_dir):

@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import StrEnum
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -28,12 +30,40 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 from .keys import ParticipantKey
 
 
+class CertType(StrEnum):
+    SELF_BINDING = "self_binding"
+    DEVICE_BINDING = "device_binding"
+    CROSS_CERTIFICATION = "cross_certification"
+    MEMBERSHIP = "membership"
+    SUCCESSION = "succession"
+    IDENTITY_LINK = "identity_link"
+    ATTESTATION = "attestation"
+    AMBIENT_PROXIMITY = "ambient_proximity"
+    REVOCATION = "revocation"
+
+
+SUPPORTED_CERT_TYPES = frozenset(
+    {
+        CertType.SELF_BINDING,
+        CertType.DEVICE_BINDING,
+        CertType.CROSS_CERTIFICATION,
+    }
+)
+
+
+def parse_cert_type(value: CertType | str) -> CertType:
+    """Parse one canonical certificate type string into a CertType enum."""
+    if isinstance(value, CertType):
+        return value
+    return CertType(value)
+
+
 @dataclass
 class KeyCertificate:
     """A signed vouching statement from one key to another."""
 
     cert_id: bytes
-    cert_type: str
+    cert_type: CertType
     team_id: bytes | None
     subject_key_id: bytes
     subject_public_key: bytes
@@ -42,6 +72,9 @@ class KeyCertificate:
     issued_at_iso: str
     claims: dict
     signature: bytes
+
+    def __post_init__(self):
+        self.cert_type = parse_cert_type(self.cert_type)
 
 
 @dataclass
@@ -58,7 +91,7 @@ class RevocationCertificate:
 
 
 def _canonical_cert_bytes(
-    cert_type: str,
+    cert_type: CertType,
     team_id: bytes | None,
     subject_key_id: bytes,
     subject_public_key: bytes,
@@ -69,7 +102,7 @@ def _canonical_cert_bytes(
 ) -> bytes:
     """Produce the deterministic byte string that is signed for a cert."""
     obj = {
-        "cert_type": cert_type,
+        "cert_type": cert_type.value,
         "team_id": team_id.hex() if team_id is not None else None,
         "subject_key_id": subject_key_id.hex(),
         "subject_public_key": subject_public_key.hex(),
@@ -106,11 +139,14 @@ def issue_cert(
     issuer_key: ParticipantKey,
     issuer_private_key: bytes,
     issuer_participant_id: bytes,
-    cert_type: str = "generic",
+    cert_type: CertType,
     team_id: bytes | None = None,
     claims: dict | None = None,
 ) -> KeyCertificate:
     """Sign subject_key with issuer_key, returning a certificate."""
+    if cert_type not in SUPPORTED_CERT_TYPES:
+        raise ValueError(f"Unsupported cert type for issuance: {cert_type.value}")
+
     now = datetime.now(timezone.utc).isoformat()
     claims = claims or {}
 
@@ -139,6 +175,11 @@ def issue_cert(
 
 def verify_cert(cert: KeyCertificate, issuer_public_key: bytes) -> bool:
     """Verify the signature on a certificate. Returns True if valid."""
+    if not isinstance(cert.cert_type, CertType):
+        return False
+    if cert.cert_type not in SUPPORTED_CERT_TYPES:
+        return False
+
     canonical = _canonical_cert_bytes(
         cert.cert_type, cert.team_id, cert.subject_key_id, cert.subject_public_key,
         cert.issuer_key_id, cert.issuer_participant_id,
@@ -168,7 +209,7 @@ def issue_device_binding_cert(
         issuer_key,
         issuer_private_key,
         issuer_participant_id=member_id,
-        cert_type="device_binding",
+        cert_type=CertType.DEVICE_BINDING,
         team_id=team_id,
         claims={"member_id": member_id.hex()},
     )
@@ -182,7 +223,7 @@ def verify_device_binding_cert(
     subject_public_key: bytes,
 ) -> bool:
     """Verify a device-binding cert against explicit team/member constraints."""
-    if cert.cert_type != "device_binding":
+    if cert.cert_type != CertType.DEVICE_BINDING:
         return False
     if cert.team_id != team_id:
         return False
@@ -254,12 +295,12 @@ def build_hierarchy_certs(
     """
     buried_signs_guarded = issue_cert(
         guarded_key, buried_key, buried_private_key, participant_id,
-        cert_type="self_binding",
+        cert_type=CertType.SELF_BINDING,
         claims={"type": "hierarchy", "relationship": "buried_signs_guarded"},
     )
     guarded_signs_daily = issue_cert(
         daily_key, guarded_key, guarded_private_key, participant_id,
-        cert_type="self_binding",
+        cert_type=CertType.SELF_BINDING,
         claims={"type": "hierarchy", "relationship": "guarded_signs_daily"},
     )
     return buried_signs_guarded, guarded_signs_daily

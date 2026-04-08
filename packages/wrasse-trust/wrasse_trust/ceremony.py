@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 
-from .identity import KeyCertificate, issue_cert, verify_cert
+from .identity import CertType, KeyCertificate, issue_cert, parse_cert_type, verify_cert
 from .keys import ParticipantKey
 
 
@@ -39,7 +39,7 @@ def generate_ceremony_payload(
         "hierarchy_certs": [
             {
                 "cert_id": c.cert_id.hex(),
-                "cert_type": c.cert_type,
+                "cert_type": c.cert_type.value,
                 "team_id": c.team_id.hex() if c.team_id is not None else None,
                 "subject_key_id": c.subject_key_id.hex(),
                 "subject_public_key": c.subject_public_key.hex(),
@@ -81,7 +81,7 @@ def extract_hierarchy_certs(payload: dict) -> list[KeyCertificate]:
     for c in payload["hierarchy_certs"]:
         result.append(KeyCertificate(
             cert_id=bytes.fromhex(c["cert_id"]),
-            cert_type=c.get("cert_type", "generic"),
+            cert_type=parse_cert_type(c["cert_type"]),
             team_id=bytes.fromhex(c["team_id"]) if c.get("team_id") else None,
             subject_key_id=bytes.fromhex(c["subject_key_id"]),
             subject_public_key=bytes.fromhex(c["subject_public_key"]),
@@ -101,6 +101,8 @@ def verify_ceremony_payload(payload: dict) -> bool:
         return False
 
     for i, cert in enumerate(certs):
+        if cert.cert_type != CertType.SELF_BINDING:
+            return False
         if i == 0:
             continue
         prev_cert = certs[i - 1]
@@ -123,6 +125,7 @@ def complete_ceremony(
 
     return issue_cert(
         target_key, my_key, my_private_key, my_participant_id,
+        cert_type=CertType.CROSS_CERTIFICATION,
         claims={
             "type": "ceremony",
             "nonce": payload["nonce"],
