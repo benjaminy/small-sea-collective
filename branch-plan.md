@@ -19,7 +19,7 @@ The docs now describe a **device-only, per-team** identity model:
 - no synced wrapped private key material in `NoteToSelf`
 - each team membership is identified by a fresh per-team participant UUID
 - each device enrolled in that team has its own team-device key
-- `membership` admits a per-team participant UUID and names its founding
+- `membership` admits a per-team participant UUID and names its initial
   device key
 - `device_link` later expands the device set for an existing UUID
 
@@ -68,7 +68,9 @@ After this branch lands:
   useful for orientation, but the implementation should pick one model.
 - **No data migration required.** Since the system is pre-alpha and the identity
   model change is structural, we will perform a "destructive" update. Existing
-  test sandboxes should be reset (`rm -rf`) rather than migrated.
+  test sandboxes should be reset (`rm -rf`) rather than migrated. Old migration
+  code may remain in place as historical scaffolding, but this branch does not
+  promise that an old sandbox upgrades cleanly into the new model.
 - **Prefer better structure over preserving old invitation choreography.** If a
   cleaner inviter/acceptor split falls naturally out of the `membership` model,
   take it. Pre-1.0 is the right time to do that.
@@ -87,7 +89,7 @@ It updates the system's trust root from:
 
 to:
 
-`membership(founding_device=K0) -> current device key`
+`membership(initial_device=K0) -> current device key`
 
 while preserving the rest of the current operational flow:
 
@@ -106,17 +108,19 @@ cert is `MEMBERSHIP`, not `DEVICE_BINDING`.
 Concrete direction:
 
 - add `CertType.MEMBERSHIP` to `SUPPORTED_CERT_TYPES`
-- add `CertType.DEVICE_LINK` to `SUPPORTED_CERT_TYPES` with verification
-  support, but no live issuance in this branch
 - add helper(s) to issue and verify a founding-device `membership` cert
 - the minimum useful claim shape should include:
   - `member_id`
-  - `founding_device_key`
-  - possibly nothing else, since `team_id` and `subject_public_key` already
-    live in the cert envelope
+  - and likely nothing else, since `team_id` and the admitted device public key
+    can already live in the cert envelope
 - keep `DEVICE_BINDING` parseable for transitional deserialization only if the
   branch needs it for test fixtures or upgrade paths, but stop emitting it in
   all live flows
+
+Important clarification: the initial device named in the `membership` proof is
+not meant to have lasting special authority. It is only the first admitted
+device because some device has to be first. After later `device_link`
+operations, all enrolled devices for that UUID are peers.
 
 ### 2. Remove synced private team-identity storage from NoteToSelf
 
@@ -176,11 +180,11 @@ No team identity key should be created anywhere in this flow.
 The invitation flow may be reshaped if the new model wants a cleaner split of
 responsibility, but the trust payload definitely changes:
 
-- the acceptor generates a per-team member UUID and a founding team-device key
+- the acceptor generates a per-team member UUID and an initial team-device key
 - the acceptance side should send only the public material actually needed by
   the inviter to admit that member:
   - proposed per-team member UUID
-  - founding device public key
+  - initial device public key
   - cloud/peer/bootstrap details already needed by the invitation flow
 - inviter-side completion issues the `membership` cert, stores it in the team
   history, and stores the acceptor's current device public key, not an identity
@@ -194,16 +198,19 @@ This implies an honest provisional state on the invitee side:
 - the invitee may have cloned the team and prepared their local device key
 - but they are not fully admitted until the inviter's `membership` cert comes
   back through sync
-- the invitee should **not** create a `member` row for itself prematurely.
-  In-progress join state belongs in a separate `invitation` (or equivalent)
-  table on the invitee side. The `member` row is created only when the
-  inviter-issued `membership` cert arrives via sync.
+- the invitee should **not** create a `member` row for itself prematurely
+- inviter-side in-progress state can live in the team DB's existing
+  `invitation` table until the invitation is completed and admitted
+- the invitee's local clone should treat the team as provisional until the
+  inviter-issued `membership` cert arrives via sync
 
 ### 6. Keep signed bundle verification working
 
 The current path in `test_signed_bundles.py` assumes:
 
 - `get_team_signing_key(...)` returns the current team-device signing key
+- the helper should be renamed now to something clearer, e.g.
+  `get_current_team_device_key(...)`
 - the team DB `member` row exposes the public key Bob uses to verify Alice's
   pushed link
 
@@ -228,7 +235,7 @@ cleaned up.
 
 Expected work:
 
-- add `MEMBERSHIP` and `DEVICE_LINK` to supported live cert types
+- add `MEMBERSHIP` to supported live cert types
 - add `issue_membership_cert(...)`
 - add `verify_membership_cert(...)`
 - decide what to do with `DEVICE_BINDING`:
@@ -247,8 +254,8 @@ Expected work:
 - update `accept_invitation(...)`
 - update `complete_invitation_acceptance(...)`
 - update acceptance-token fields and verification logic
-- decide whether `get_team_signing_key(...)` keeps its current name for one
-  branch or gets renamed now
+- rename `get_team_signing_key(...)` to
+  `get_current_team_device_key(...)` and update its call sites
 
 ### 3. NoteToSelf schema and migration logic
 
@@ -322,9 +329,7 @@ Suggested validation command:
 
 `uv run pytest packages/wrasse-trust/tests/test_identity.py packages/small-sea-manager/tests/test_create_team.py packages/small-sea-manager/tests/test_invitation.py packages/small-sea-manager/tests/test_signed_bundles.py`
 
-## Questions To Resolve Before Locking Scope
-
-### 1. Who signs the `membership` cert in the invitation flow?
+## Locked Decision: Invitation Signer
 
 The current docs imply:
 
@@ -337,7 +342,7 @@ membership cert in the acceptance token. Instead, the acceptor should return the
 public ingredients needed for admission:
 
 - proposed per-team member UUID
-- founding device public key
+- initial device public key
 - cloud endpoint info and any other invitation-response data
 
 and the inviter should issue the `membership` cert during
