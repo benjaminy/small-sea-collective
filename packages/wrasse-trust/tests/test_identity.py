@@ -1,5 +1,10 @@
 """Micro tests for keys, identity, ceremony, and trust modules."""
 
+import hashlib
+
+import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from wrasse_trust.ceremony import (
     complete_ceremony,
     decode_ceremony_payload,
@@ -9,6 +14,9 @@ from wrasse_trust.ceremony import (
     verify_ceremony_payload,
 )
 from wrasse_trust.identity import (
+    CertType,
+    KeyCertificate,
+    _canonical_cert_bytes,
     build_hierarchy_certs,
     issue_cert,
     issue_revocation,
@@ -25,6 +33,43 @@ from wrasse_trust.trust import CertGraph, find_trust_paths
 ALICE_ID = b"alice-id-bytes00"
 BOB_ID = b"bob-id-bytes0000"
 CAROL_ID = b"carol-id-bytes00"
+
+
+def _manual_cert(
+    subject_key,
+    issuer_key,
+    issuer_private_key,
+    issuer_participant_id,
+    cert_type,
+    team_id=None,
+    claims=None,
+):
+    claims = claims or {}
+    issued_at_iso = "2026-04-07T00:00:00+00:00"
+    canonical = _canonical_cert_bytes(
+        cert_type,
+        team_id,
+        subject_key.key_id,
+        subject_key.public_key,
+        issuer_key.key_id,
+        issuer_participant_id,
+        issued_at_iso,
+        claims,
+    )
+    cert_id = hashlib.sha256(canonical).digest()[:16]
+    signature = Ed25519PrivateKey.from_private_bytes(issuer_private_key).sign(canonical)
+    return KeyCertificate(
+        cert_id=cert_id,
+        cert_type=cert_type,
+        team_id=team_id,
+        subject_key_id=subject_key.key_id,
+        subject_public_key=subject_key.public_key,
+        issuer_key_id=issuer_key.key_id,
+        issuer_participant_id=issuer_participant_id,
+        issued_at_iso=issued_at_iso,
+        claims=claims,
+        signature=signature,
+    )
 
 
 def test_generate_key_pair():
@@ -81,6 +126,7 @@ def test_issue_and_verify_cert():
 
     cert = issue_cert(
         guarded, buried, privates[buried.key_id], ALICE_ID,
+        cert_type=CertType.SELF_BINDING,
         claims={"type": "hierarchy"},
     )
 
@@ -97,6 +143,7 @@ def test_cert_verification_fails_with_wrong_key():
 
     cert = issue_cert(
         guarded, buried, privates[buried.key_id], ALICE_ID,
+        cert_type=CertType.SELF_BINDING,
     )
 
     assert not verify_cert(cert, daily.public_key)
@@ -172,6 +219,7 @@ def test_ceremony_roundtrip():
 
     assert cross_cert.subject_key_id == alice_guarded.key_id
     assert cross_cert.issuer_key_id == bob_guarded.key_id
+    assert cross_cert.cert_type == CertType.CROSS_CERTIFICATION
     assert verify_cert(cross_cert, bob_guarded.public_key)
     assert cross_cert.claims["type"] == "ceremony"
 
@@ -185,6 +233,7 @@ def test_direct_trust_path():
 
     cert = issue_cert(
         alice_guarded, bob_guarded, bob_privs[bob_guarded.key_id], BOB_ID,
+        cert_type=CertType.CROSS_CERTIFICATION,
     )
 
     graph = CertGraph(certs=[cert])
@@ -211,9 +260,11 @@ def test_transitive_trust_path():
 
     cert_ca = issue_cert(
         alice_guarded, carol_guarded, carol_privs[carol_guarded.key_id], CAROL_ID,
+        cert_type=CertType.CROSS_CERTIFICATION,
     )
     cert_bc = issue_cert(
         carol_guarded, bob_guarded, bob_privs[bob_guarded.key_id], BOB_ID,
+        cert_type=CertType.CROSS_CERTIFICATION,
     )
 
     graph = CertGraph(certs=[cert_ca, cert_bc])
@@ -253,9 +304,11 @@ def test_revoked_key_blocks_path():
 
     cert_ca = issue_cert(
         alice_guarded, carol_guarded, carol_privs[carol_guarded.key_id], CAROL_ID,
+        cert_type=CertType.CROSS_CERTIFICATION,
     )
     cert_bc = issue_cert(
         carol_guarded, bob_guarded, bob_privs[bob_guarded.key_id], BOB_ID,
+        cert_type=CertType.CROSS_CERTIFICATION,
     )
 
     carol_buried = carol_coll.buried_keys()[0]
@@ -291,6 +344,7 @@ def test_hierarchy_trust_path():
 
     cert_cross = issue_cert(
         alice_guarded, bob_guarded, bob_privs[bob_guarded.key_id], BOB_ID,
+        cert_type=CertType.CROSS_CERTIFICATION,
     )
 
     graph = CertGraph(certs=[cert_bg, cert_gd, cert_cross])
@@ -316,9 +370,11 @@ def test_multiple_trust_paths():
 
     cert_ba = issue_cert(
         alice_guarded, bob_guarded, bob_privs[bob_guarded.key_id], BOB_ID,
+        cert_type=CertType.CROSS_CERTIFICATION,
     )
     cert_ca = issue_cert(
         alice_guarded, carol_guarded, carol_privs[carol_guarded.key_id], CAROL_ID,
+        cert_type=CertType.CROSS_CERTIFICATION,
     )
 
     graph = CertGraph(certs=[cert_ba, cert_ca])
@@ -332,3 +388,133 @@ def test_multiple_trust_paths():
     anchors = {p.anchor_key_id for p in paths}
     assert bob_guarded.key_id in anchors
     assert carol_guarded.key_id in anchors
+
+
+def test_cert_type_string_stability():
+    expected = {
+        CertType.SELF_BINDING: "self_binding",
+        CertType.DEVICE_BINDING: "device_binding",
+        CertType.CROSS_CERTIFICATION: "cross_certification",
+        CertType.MEMBERSHIP: "membership",
+        CertType.SUCCESSION: "succession",
+        CertType.IDENTITY_LINK: "identity_link",
+        CertType.ATTESTATION: "attestation",
+        CertType.AMBIENT_PROXIMITY: "ambient_proximity",
+        CertType.REVOCATION: "revocation",
+    }
+    assert {cert_type: cert_type.value for cert_type in CertType} == expected
+
+
+def test_issue_cert_requires_explicit_cert_type():
+    collection, privates = generate_hierarchy(ALICE_ID)
+    buried = collection.buried_keys()[0]
+    guarded = collection.guarded_keys()[0]
+
+    with pytest.raises(TypeError):
+        issue_cert(guarded, buried, privates[buried.key_id], ALICE_ID)
+
+
+@pytest.mark.parametrize(
+    "cert_type",
+    [
+        CertType.MEMBERSHIP,
+        CertType.SUCCESSION,
+        CertType.IDENTITY_LINK,
+        CertType.ATTESTATION,
+        CertType.AMBIENT_PROXIMITY,
+        CertType.REVOCATION,
+    ],
+)
+def test_issue_cert_rejects_reserved_but_unsupported_types(cert_type):
+    collection, privates = generate_hierarchy(ALICE_ID)
+    buried = collection.buried_keys()[0]
+    guarded = collection.guarded_keys()[0]
+
+    with pytest.raises(ValueError):
+        issue_cert(
+            guarded,
+            buried,
+            privates[buried.key_id],
+            ALICE_ID,
+            cert_type=cert_type,
+        )
+
+
+def test_extract_hierarchy_certs_rejects_missing_cert_type():
+    collection, privates = generate_hierarchy(ALICE_ID)
+    buried = collection.buried_keys()[0]
+    guarded = collection.guarded_keys()[0]
+    daily = collection.daily_keys()[0]
+    cert_bg, cert_gd = build_hierarchy_certs(
+        buried, privates[buried.key_id],
+        guarded, daily, privates[guarded.key_id],
+        ALICE_ID,
+    )
+
+    payload = decode_ceremony_payload(generate_ceremony_payload(ALICE_ID, guarded, [cert_bg, cert_gd]))
+    del payload["hierarchy_certs"][0]["cert_type"]
+
+    with pytest.raises(KeyError):
+        extract_hierarchy_certs(payload)
+
+
+def test_extract_hierarchy_certs_rejects_unknown_cert_type():
+    collection, privates = generate_hierarchy(ALICE_ID)
+    buried = collection.buried_keys()[0]
+    guarded = collection.guarded_keys()[0]
+    daily = collection.daily_keys()[0]
+    cert_bg, cert_gd = build_hierarchy_certs(
+        buried, privates[buried.key_id],
+        guarded, daily, privates[guarded.key_id],
+        ALICE_ID,
+    )
+
+    payload = decode_ceremony_payload(generate_ceremony_payload(ALICE_ID, guarded, [cert_bg, cert_gd]))
+    payload["hierarchy_certs"][0]["cert_type"] = "unknown_type"
+
+    with pytest.raises(ValueError):
+        extract_hierarchy_certs(payload)
+
+
+@pytest.mark.parametrize(
+    "cert_type",
+    [
+        CertType.MEMBERSHIP,
+        CertType.SUCCESSION,
+        CertType.IDENTITY_LINK,
+        CertType.ATTESTATION,
+        CertType.AMBIENT_PROXIMITY,
+        CertType.REVOCATION,
+    ],
+)
+def test_verify_cert_rejects_reserved_but_unsupported_types(cert_type):
+    collection, privates = generate_hierarchy(ALICE_ID)
+    buried = collection.buried_keys()[0]
+    guarded = collection.guarded_keys()[0]
+
+    cert = _manual_cert(
+        guarded,
+        buried,
+        privates[buried.key_id],
+        ALICE_ID,
+        cert_type=cert_type,
+    )
+
+    assert not verify_cert(cert, buried.public_key)
+
+
+def test_verify_cert_rejects_mutated_unknown_cert_type():
+    collection, privates = generate_hierarchy(ALICE_ID)
+    buried = collection.buried_keys()[0]
+    guarded = collection.guarded_keys()[0]
+
+    cert = issue_cert(
+        guarded,
+        buried,
+        privates[buried.key_id],
+        ALICE_ID,
+        cert_type=CertType.SELF_BINDING,
+    )
+    cert.cert_type = "generic"
+
+    assert not verify_cert(cert, buried.public_key)
