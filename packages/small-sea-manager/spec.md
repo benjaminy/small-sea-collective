@@ -5,7 +5,7 @@
 Small Sea Manager is the essential built-in user application for Small Sea Collective. It manages:
 
 - **Teams** — create, configure, and leave teams
-- **Membership** — invite members, accept invitations, set roles, remove members
+- **Membership** — invite members, accept invitations, set berth permissions, remove members from the local team view
 - **Devices** — link new devices, revoke old ones, manage the participant's device identity
 - **Apps** — register which apps are active for each team (berth management)
 - **Service Subscriptions** — configure the cloud storage accounts, notification services, and other general-purpose services that the Hub needs to operate
@@ -110,13 +110,32 @@ Roles are semantic shorthands. Underneath, everything is per-berth `read-only` /
 | **contributor** | read-only | read-write |
 | **observer** | read-only | read-only |
 
-- **admin** — full control, including changing membership and permissions
-- **contributor** — can contribute data to the team's apps but cannot change team structure
-- **observer** — read-only across the board
+- **admin** — shorthand for "has write permission to the team's Core berth",
+  and therefore can publish updates to membership and berth permissions
+- **contributor** — can publish app data updates but, by convention, not Core
+  updates
+- **observer** — should continue receiving readable updates, but peers are not
+  expected to merge their writes anywhere
 
 The default role when accepting an invitation is **admin** for small teams. The inviter may specify a different role when creating the invitation.
 
-> The Hub respects these roles when deciding whose changes to incorporate: it only merges changes from members who have `read-write` permission in its local copy of the team DB.
+Important clarifications:
+
+- These roles are **local policy and protocol expectations**, not centrally
+  enforced entitlements.
+- `read-only` means peers participating in the protocol should continue doing
+  whatever key exchange is needed for that member to read updates in the berth.
+- `read-write` means peers participating in the protocol should merge that
+  member's updates for the berth into their own clone.
+- `admin` is not a special cryptographic authority. It just means
+  `read-write` on `{Team}/SmallSeaCollectiveCore`.
+
+> The Hub respects these roles when deciding whose changes to incorporate: it
+> only merges changes from members who have `read-write` permission in its
+> **local** copy of the team DB.
+
+This means different participants can legitimately have different views of who
+is an admin, who is a contributor, or who is still in the team at all.
 
 ---
 
@@ -176,7 +195,10 @@ Deletes the `user_device` row and triggers key rotation (so the removed device c
 
 #### Create team
 
-Creates `{TeamName}/Sync/` directory with a fresh team DB and git repo. Adds a Team pointer to NoteToSelf DB. The creator is added as the first member with `admin` role on all berths.
+Creates `{TeamName}/Sync/` directory with a fresh team DB and git repo. Adds a
+Team pointer to NoteToSelf DB. The creator is added as the first member with
+`admin` role on all berths, meaning their local starting view is that they have
+`read-write` access everywhere, including Core.
 
 #### List teams
 
@@ -202,11 +224,28 @@ Reads `member` + `berth_role` from the team DB. Does not query the Hub.
 
 #### Set member role
 
-Writes `berth_role` rows for the target member: sets `read-write`/`read-only` on each berth according to the role mapping in §Roles. Commits and eventually pushes.
+Writes `berth_role` rows for the target member: sets
+`read-write`/`read-only` on each berth according to the role mapping in
+§Roles. Commits and eventually pushes.
+
+This is a mutation to the local clone of the team DB. It becomes socially
+important only insofar as peers adopt that updated view and behave accordingly.
 
 #### Remove member
 
-Deletes the member's `berth_role` rows and `peer` row from the team DB. Commits. Triggers an immediate key rotation (so the removed member cannot decrypt further updates). The key rotation push should happen synchronously before any subsequent data changes are pushed.
+Deletes the member's `berth_role` rows and `peer` row from the local team DB
+clone. Commits. Triggers key rotation so that peers following this updated view
+can stop giving the removed member future readable updates.
+
+This is not a magical globally authoritative act. It means, roughly, "my clone
+now says this person is no longer part of the team, and I am publishing that
+view." Other teammates may adopt that view, reject it, or publish a conflicting
+view.
+
+Because team history is kept in git, long-lived disagreement gets awkward
+quickly. Conflicting removals effectively fork the team into incompatible
+futures. Participants cannot comfortably inhabit both without an explicit
+translation layer.
 
 ---
 
@@ -221,6 +260,10 @@ Inserts a pending `invitation` row in the team DB. Produces a token for out-of-b
 Inputs: `team_name`, optional `invitee_label` (human note for who this is for), `role` (default: admin).
 
 Token contents: invitation ID, nonce, team name, inviter member ID, inviter display name, inviter cloud endpoint (protocol + URL only — no credentials), inviter bucket name. Privacy is provided by E2E encryption (issue #0008), not by keeping the bucket private.
+
+An invitation is therefore a coordination convenience, not the sole source of
+truth for whether someone is "really" in the team. It is a conventional way of
+proposing and propagating a membership update.
 
 #### List invitations
 
@@ -242,7 +285,13 @@ Returns an acceptance token for out-of-band delivery back to the inviter.
 
 #### Complete invitation acceptance (inviter side)
 
-Takes the out-of-band acceptance token. Validates nonce. Marks invitation `accepted`. Adds the acceptor as a member with the role specified in the original invitation. Adds acceptor's cloud location to `peer`. Commits.
+Takes the out-of-band acceptance token. Validates nonce. Marks invitation
+`accepted`. Adds the acceptor as a member with the role specified in the
+original invitation. Adds acceptor's cloud location to `peer`. Commits.
+
+As with any other Core-berth mutation, this matters to the broader team only to
+the extent that other participants incorporate this updated view into their own
+clone.
 
 ---
 

@@ -379,6 +379,13 @@ The design goal is therefore not "prevent every fork." The design goal is:
 - make fork resolution an explicit administrative or human action rather
   than a silent merge
 
+One especially important consequence to name plainly: conflicting removals
+or governance edits can effectively fork the team. If Alice removes Carol
+from her clone and Carol removes Alice from hers, then "the Band team" has
+split into two awkwardly incompatible futures. Bob cannot comfortably live
+in both without some bespoke translation layer. Small Sea does not hide
+that problem; it expects teams to resolve it socially.
+
 One candidate invariant for version 1:
 
 - membership changes and removals advance the epoch before any further
