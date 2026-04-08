@@ -48,11 +48,11 @@ from small_sea_manager.sender_keys import (
 from wrasse_trust.identity import (
     CertType,
     KeyCertificate,
-    issue_device_binding_cert,
+    issue_membership_cert,
     parse_cert_type,
-    verify_device_binding_cert,
+    verify_membership_cert,
 )
-from wrasse_trust.keys import ProtectionLevel, generate_key_pair
+from wrasse_trust.keys import ParticipantKey, ProtectionLevel, generate_key_pair
 
 # ---- UUIDv7 ----
 
@@ -128,24 +128,6 @@ def _current_device_row(conn):
     return row
 
 
-def wrap_team_identity_key(private_key: bytes, device_id: bytes) -> bytes:
-    """Placeholder wrapper for the team-membership private key."""
-    payload = {
-        "wrapper_version": "placeholder-v1",
-        "device_id": device_id.hex(),
-        "private_key": private_key.hex(),
-    }
-    return json.dumps(payload, sort_keys=True).encode("utf-8")
-
-
-def unwrap_team_identity_key(wrapped_private_key: bytes, device_id: bytes) -> bytes:
-    """Placeholder unwrap for the team-membership private key."""
-    payload = json.loads(wrapped_private_key.decode("utf-8"))
-    if payload.get("device_id") != device_id.hex():
-        raise ValueError("Wrapped team identity key is not for this device")
-    return bytes.fromhex(payload["private_key"])
-
-
 def _write_local_secret(path: pathlib.Path, value: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(value)
@@ -153,6 +135,16 @@ def _write_local_secret(path: pathlib.Path, value: bytes) -> None:
 
 def _read_local_secret(path: pathlib.Path) -> bytes:
     return path.read_bytes()
+
+
+def _participant_key_from_public(public_key: bytes) -> ParticipantKey:
+    key_id = hashlib.sha256(public_key).digest()[:16]
+    return ParticipantKey(
+        key_id=key_id,
+        public_key=public_key,
+        protection_level=ProtectionLevel.DAILY,
+        created_at_iso=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 # ---- SQLAlchemy models for per-user core.db ----
@@ -260,7 +252,7 @@ class Peer(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 53
+USER_SCHEMA_VERSION = 54
 
 
 # ---- Provisioning functions ----
@@ -582,35 +574,6 @@ def _install_sqlite_merge_driver(team_sync_dir):
     )
 
 
-def _generate_team_signing_key(nts_engine, team_id):
-    """Generate an Ed25519 signing key pair for a team.
-
-    Stores the key in the team_signing_key table in NoteToSelf.
-    Returns (private_key_bytes, public_key_bytes).
-    """
-    private_key = Ed25519PrivateKey.generate()
-    private_key_bytes = private_key.private_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    public_key_bytes = private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
-    now = datetime.now(timezone.utc).isoformat()
-    with nts_engine.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO team_signing_key (id, team_id, public_key, private_key, created_at) "
-                "VALUES (:id, :team_id, :pub, :priv, :created_at)"
-            ),
-            {"id": uuid7(), "team_id": team_id, "pub": public_key_bytes,
-             "priv": private_key_bytes, "created_at": now},
-        )
-    return private_key_bytes, public_key_bytes
-
-
 def _initialize_team_sender_key_state(user_db_path, team_id, member_id):
     sender_key, distribution = create_sender_key(team_id, member_id)
     save_team_sender_key(user_db_path, team_id, sender_key)
@@ -646,53 +609,23 @@ def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes)
     )
 
 
-def _generate_team_identity_and_device_key(
+def _generate_initial_team_device_key(
     root_dir,
     participant_hex: str,
     nts_engine,
     team_id: bytes,
-    member_id: bytes,
 ):
-    """Create the local team identity, current device key, and binding cert."""
+    """Create the local current team-device key for this team."""
     now = datetime.now(timezone.utc).isoformat()
     with nts_engine.begin() as conn:
         device_row = _current_device_row(conn)
         device_id = device_row[0]
 
-    identity_key, identity_private_key = generate_key_pair(ProtectionLevel.GUARDED)
     device_key, device_private_key = generate_key_pair(ProtectionLevel.DAILY)
-    wrapped_identity_key = wrap_team_identity_key(identity_private_key, device_id)
     device_key_path = _team_device_key_path(root_dir, participant_hex, team_id, device_id)
     _write_local_secret(device_key_path, device_private_key)
 
     with nts_engine.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO team_identity (team_id, member_id, public_key, created_at) "
-                "VALUES (:team_id, :member_id, :public_key, :created_at)"
-            ),
-            {
-                "team_id": team_id,
-                "member_id": member_id,
-                "public_key": identity_key.public_key,
-                "created_at": now,
-            },
-        )
-        conn.execute(
-            text(
-                "INSERT INTO wrapped_team_identity_key ("
-                "team_id, device_id, wrapped_private_key, wrapper_version, created_at"
-                ") VALUES ("
-                ":team_id, :device_id, :wrapped_private_key, :wrapper_version, :created_at)"
-            ),
-            {
-                "team_id": team_id,
-                "device_id": device_id,
-                "wrapped_private_key": wrapped_identity_key,
-                "wrapper_version": "placeholder-v1",
-                "created_at": now,
-            },
-        )
         conn.execute(
             text(
                 "INSERT INTO team_device_key ("
@@ -709,21 +642,10 @@ def _generate_team_identity_and_device_key(
             },
         )
 
-    device_binding_cert = issue_device_binding_cert(
-        subject_key=device_key,
-        issuer_key=identity_key,
-        issuer_private_key=identity_private_key,
-        team_id=team_id,
-        member_id=member_id,
-    )
-
     return {
         "device_id": device_id,
-        "identity_key": identity_key,
         "device_key": device_key,
-        "identity_private_key": identity_private_key,
         "device_private_key": device_private_key,
-        "device_binding_cert": device_binding_cert,
         "device_key_path": device_key_path,
     }
 
@@ -780,7 +702,7 @@ def decrypt_invitation_bootstrap_payload(
     return plaintext
 
 
-def get_team_signing_key(root_dir, participant_hex, team_name):
+def get_current_team_device_key(root_dir, participant_hex, team_name):
     """Return the current device team key as (private_key_bytes, public_key_bytes)."""
     root_dir = pathlib.Path(root_dir)
     nts_db_path = (
@@ -834,9 +756,17 @@ def create_team(root_dir, participant_hex, team_name):
         session.add(team_row)
         session.commit()
 
-    # --- Generate local team identity and current device key ---
-    team_keys = _generate_team_identity_and_device_key(
-        root_dir, participant_hex, engine, team_id, member_id
+    # --- Generate local current device key ---
+    team_keys = _generate_initial_team_device_key(
+        root_dir, participant_hex, engine, team_id
+    )
+    membership_cert = issue_membership_cert(
+        subject_key=team_keys["device_key"],
+        issuer_key=team_keys["device_key"],
+        issuer_private_key=team_keys["device_private_key"],
+        team_id=team_id,
+        issuer_member_id=member_id,
+        admitted_member_id=member_id,
     )
     _initialize_team_sender_key_state(user_db_path, team_id, member_id)
 
@@ -853,18 +783,15 @@ def create_team(root_dir, participant_hex, team_name):
     with team_engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO member (id, identity_public_key, device_public_key) "
-                "VALUES (:id, :identity_public_key, :device_public_key)"
+                "INSERT INTO member (id, device_public_key) "
+                "VALUES (:id, :device_public_key)"
             ),
             {
                 "id": member_id,
-                "identity_public_key": team_keys["identity_key"].public_key,
                 "device_public_key": team_keys["device_key"].public_key,
             },
         )
-        _store_team_certificate(
-            conn, team_keys["device_binding_cert"], issuer_member_id=member_id
-        )
+        _store_team_certificate(conn, membership_cert, issuer_member_id=member_id)
         conn.execute(
             text("INSERT INTO app (id, name) VALUES (:id, :name)"),
             {"id": app_id, "name": "SmallSeaCollectiveCore"},
@@ -905,25 +832,22 @@ def create_invitation(
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
 
-    # Look up the inviter's member ID from the team DB
-    team_db_path = participant_dir / team_name / "Sync" / "core.db"
-    team_engine = create_engine(f"sqlite:///{team_db_path}")
     user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
     user_engine = create_engine(f"sqlite:///{user_db_path}")
 
-    with team_engine.begin() as conn:
-        row = conn.execute(text("SELECT id FROM member LIMIT 1")).fetchone()
-        inviter_member_id = row[0]
-    inviter_display_name = get_nickname(root_dir, participant_hex) or None
-
     with user_engine.begin() as conn:
         team_row = conn.execute(
-            text("SELECT id FROM team WHERE name = :team_name"),
+            text("SELECT id, self_in_team FROM team WHERE name = :team_name"),
             {"team_name": team_name},
         ).fetchone()
     if team_row is None:
         raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
     team_id = team_row[0]
+    inviter_member_id = team_row[1]
+    inviter_display_name = get_nickname(root_dir, participant_hex) or None
+
+    team_db_path = participant_dir / team_name / "Sync" / "core.db"
+    team_engine = create_engine(f"sqlite:///{team_db_path}")
 
     inviter_sender_key = load_team_sender_key(user_db_path, team_id)
     if inviter_sender_key is None:
@@ -1057,15 +981,12 @@ def accept_invitation(
     finally:
         os.chdir(saved_cwd)
 
-    # --- Add acceptor as member in the cloned DB ---
+    # --- Record the inviter as a peer in the cloned DB ---
     team_db_path = team_sync_dir / "core.db"
     ensure_team_db_schema(team_db_path)
     team_engine = create_engine(f"sqlite:///{team_db_path}")
 
     with team_engine.begin() as conn:
-        conn.execute(
-            text("INSERT INTO member (id) VALUES (:id)"), {"id": acceptor_member_id}
-        )
         # Store inviter's cloud location as a peer (URL only, no credentials)
         conn.execute(
             text(
@@ -1098,9 +1019,9 @@ def accept_invitation(
         session.add(team_row)
         session.commit()
 
-    # --- Generate local team identity and current device key ---
-    team_keys = _generate_team_identity_and_device_key(
-        root_dir, acceptor_participant_hex, user_engine, team_id, acceptor_member_id
+    # --- Generate local current device key ---
+    team_keys = _generate_initial_team_device_key(
+        root_dir, acceptor_participant_hex, user_engine, team_id
     )
     save_peer_sender_key(
         user_db_path,
@@ -1110,26 +1031,6 @@ def accept_invitation(
     acceptor_sender_key = _initialize_team_sender_key_state(
         user_db_path, team_id, acceptor_member_id
     )
-
-    # --- Store current local identity/device proof in the team DB ---
-    team_db_path = team_sync_dir / "core.db"
-    team_engine2 = create_engine(f"sqlite:///{team_db_path}")
-    with team_engine2.begin() as conn:
-        conn.execute(
-            text(
-                "UPDATE member SET identity_public_key = :identity_public_key, "
-                "device_public_key = :device_public_key WHERE id = :id"
-            ),
-            {
-                "identity_public_key": team_keys["identity_key"].public_key,
-                "device_public_key": team_keys["device_key"].public_key,
-                "id": acceptor_member_id,
-            },
-        )
-        _store_team_certificate(
-            conn, team_keys["device_binding_cert"], issuer_member_id=acceptor_member_id
-        )
-    team_engine2.dispose()
 
     # --- Git commit the DB changes ---
     CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
@@ -1155,9 +1056,7 @@ def accept_invitation(
         "nonce": nonce.hex(),
         "team_id": team_id.hex(),
         "acceptor_member_id": acceptor_member_id.hex(),
-        "acceptor_identity_public_key": team_keys["identity_key"].public_key.hex(),
         "acceptor_device_public_key": team_keys["device_key"].public_key.hex(),
-        "acceptor_device_binding_cert": _serialize_cert(team_keys["device_binding_cert"]),
         "acceptor_cloud": acceptor_cloud,
         "acceptor_bucket": acceptor_bucket,
         "acceptor_sender_key": serialize_distribution_message(acceptor_sender_key),
@@ -1186,26 +1085,54 @@ def complete_invitation_acceptance(
     nonce = bytes.fromhex(acceptance["nonce"])
     team_id = bytes.fromhex(acceptance["team_id"])
     acceptor_member_id = bytes.fromhex(acceptance["acceptor_member_id"])
-    acceptor_identity_public_key = bytes.fromhex(acceptance["acceptor_identity_public_key"])
     acceptor_device_public_key = bytes.fromhex(acceptance["acceptor_device_public_key"])
-    acceptor_device_binding_cert = _deserialize_cert(acceptance["acceptor_device_binding_cert"])
     acceptor_cloud = acceptance["acceptor_cloud"]
     acceptor_bucket = acceptance["acceptor_bucket"]
     acceptor_sender_key = deserialize_distribution_message(acceptance["acceptor_sender_key"])
-
-    if not verify_device_binding_cert(
-        acceptor_device_binding_cert,
-        issuer_public_key=acceptor_identity_public_key,
-        team_id=team_id,
-        member_id=acceptor_member_id,
-        subject_public_key=acceptor_device_public_key,
-    ):
-        raise ValueError("Acceptance contains an invalid device binding cert")
 
     # Find and validate the invitation in the inviter's team DB
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
     ensure_team_db_schema(team_db_path)
     engine = create_engine(f"sqlite:///{team_db_path}")
+    inviter_private_key, inviter_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
+    inviter_device_key = _participant_key_from_public(inviter_public_key)
+    acceptor_device_key = _participant_key_from_public(acceptor_device_public_key)
+
+    user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
+    user_engine = create_engine(f"sqlite:///{user_db_path}")
+    try:
+        with user_engine.begin() as conn:
+            inviter_team_row = conn.execute(
+                text("SELECT id, self_in_team FROM team WHERE name = :team_name"),
+                {"team_name": team_name},
+            ).fetchone()
+        if inviter_team_row is None:
+            raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
+        if inviter_team_row[0] != team_id:
+            raise ValueError("Acceptance team_id does not match local team")
+        inviter_member_id = inviter_team_row[1]
+    finally:
+        user_engine.dispose()
+
+    membership_cert = issue_membership_cert(
+        subject_key=acceptor_device_key,
+        issuer_key=inviter_device_key,
+        issuer_private_key=inviter_private_key,
+        team_id=team_id,
+        issuer_member_id=inviter_member_id,
+        admitted_member_id=acceptor_member_id,
+    )
+    if not verify_membership_cert(
+        membership_cert,
+        issuer_public_key=inviter_public_key,
+        team_id=team_id,
+        issuer_member_id=inviter_member_id,
+        admitted_member_id=acceptor_member_id,
+        subject_public_key=acceptor_device_public_key,
+    ):
+        raise ValueError("Failed to issue a valid membership cert for the acceptor")
 
     with engine.begin() as conn:
         row = conn.execute(
@@ -1244,18 +1171,15 @@ def complete_invitation_acceptance(
         # Add acceptor as member + peer in inviter's team DB (URL only, no credentials)
         conn.execute(
             text(
-                "INSERT INTO member (id, identity_public_key, device_public_key) "
-                "VALUES (:id, :identity_public_key, :device_public_key)"
+                "INSERT INTO member (id, device_public_key) "
+                "VALUES (:id, :device_public_key)"
             ),
             {
                 "id": acceptor_member_id,
-                "identity_public_key": acceptor_identity_public_key,
                 "device_public_key": acceptor_device_public_key,
             },
         )
-        _store_team_certificate(
-            conn, acceptor_device_binding_cert, issuer_member_id=acceptor_member_id
-        )
+        _store_team_certificate(conn, membership_cert, issuer_member_id=inviter_member_id)
         conn.execute(
             text(
                 "INSERT INTO peer (id, member_id, display_name, protocol, url, bucket) "

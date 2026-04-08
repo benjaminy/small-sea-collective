@@ -14,7 +14,7 @@ from small_sea_manager.manager import TeamManager
 from small_sea_manager.provisioning import (
     complete_invitation_acceptance,
     create_invitation, create_new_participant, create_team,
-    get_team_signing_key)
+    get_current_team_device_key)
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -112,7 +112,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
     # -- Read Alice's signing key --
-    alice_priv, alice_pub = get_team_signing_key(root, alice_hex, "ProjectX")
+    alice_priv, alice_pub = get_current_team_device_key(root, alice_hex, "ProjectX")
 
     # -- Verify Alice's current device key is in the team DB member row --
     alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"

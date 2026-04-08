@@ -19,8 +19,10 @@ from wrasse_trust.identity import (
     _canonical_cert_bytes,
     build_hierarchy_certs,
     issue_cert,
+    issue_membership_cert,
     issue_revocation,
     verify_cert,
+    verify_membership_cert,
     verify_revocation,
 )
 from wrasse_trust.keys import (
@@ -417,7 +419,6 @@ def test_issue_cert_requires_explicit_cert_type():
 @pytest.mark.parametrize(
     "cert_type",
     [
-        CertType.MEMBERSHIP,
         CertType.SUCCESSION,
         CertType.IDENTITY_LINK,
         CertType.ATTESTATION,
@@ -438,6 +439,33 @@ def test_issue_cert_rejects_reserved_but_unsupported_types(cert_type):
             ALICE_ID,
             cert_type=cert_type,
         )
+
+
+def test_issue_membership_cert_round_trip():
+    collection, privates = generate_hierarchy(ALICE_ID)
+    buried = collection.buried_keys()[0]
+    guarded = collection.guarded_keys()[0]
+
+    team_id = b"team-id-bytes-01"
+    admitted_member_id = b"member-id-bytes1"
+
+    cert = issue_membership_cert(
+        subject_key=guarded,
+        issuer_key=buried,
+        issuer_private_key=privates[buried.key_id],
+        team_id=team_id,
+        issuer_member_id=ALICE_ID,
+        admitted_member_id=admitted_member_id,
+    )
+
+    assert verify_membership_cert(
+        cert,
+        issuer_public_key=buried.public_key,
+        team_id=team_id,
+        issuer_member_id=ALICE_ID,
+        admitted_member_id=admitted_member_id,
+        subject_public_key=guarded.public_key,
+    )
 
 
 def test_extract_hierarchy_certs_rejects_missing_cert_type():
@@ -479,7 +507,6 @@ def test_extract_hierarchy_certs_rejects_unknown_cert_type():
 @pytest.mark.parametrize(
     "cert_type",
     [
-        CertType.MEMBERSHIP,
         CertType.SUCCESSION,
         CertType.IDENTITY_LINK,
         CertType.ATTESTATION,
