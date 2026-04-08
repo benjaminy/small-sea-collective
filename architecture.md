@@ -13,7 +13,13 @@ Small Sea Collective is a framework for building collaborative team applications
 ## Technical Pillars
 
 ### 1. Fully Decentralized Team Management
-Small Sea uses Signal-inspired cryptographic protocols ([X3DH](https://signal.org/docs/specifications/x3dh/) and [Double Ratchet](https://signal.org/docs/specifications/doubleratchet/)) to manage identity and group membership. Teammates certify each other's identities, effectively building a decentralized web of trust. Key rotation ensures that removed members cannot access future modifications.
+Small Sea uses Signal-inspired cryptographic protocols ([X3DH](https://signal.org/docs/specifications/x3dh/) and [Double Ratchet](https://signal.org/docs/specifications/doubleratchet/)) to manage identity and group membership. Teammates certify each other's identities, effectively building a decentralized web of trust. Key rotation helps exclude removed members from future readable updates.
+
+There is no central membership oracle and no globally authoritative admin
+service. Each participant maintains a local clone of the team's history and
+therefore a local view of who is in the team and whose updates should count.
+Those views can diverge. Small Sea aims for social convergence through shared
+history and sync conventions, not for a magical elimination of disagreement.
 
 ### 2. Snapshot-Based 3-Way Merge (Git)
 The baseline synchronization method is snapshot-based 3-way merge, utilizing `git`. While slower than CRDTs, it provides strong consistency for full-environment snapshots and allows for easier adaptation of existing software. 
@@ -38,16 +44,39 @@ Before a client can access a berth, it must request access from the Hub. The Hub
 
 ## Permissions
 
-For each berth, a member can have either **read-only** or **read-write** access.
-These are enforced as a social contract via encryption and sync conventions rather than by a central authority.
-A common way of organizing permissions:
+For each berth, a member can have either **read-only** or **read-write**
+access. These are enforced as a social contract via encryption and sync
+conventions rather than by a central authority.
+
+In concrete technical terms:
+
+- **Read permission** means peers participating in the protocol should do the
+  key exchange and future key rotation needed for that member to read updates
+  in that berth.
+- **Write permission** means peers participating in the protocol should pay
+  attention to that member's updates for that berth and merge them into their
+  own clone.
+
+A common shorthand organization is:
 
 - **Admin**: Read-write to all berths, including the team's Core berth (team metadata).
-- **Member**: Read-write to all berths _except_ Core (their changes to team metadata are ignored by other members).
+- **Contributor**: Read-write to all berths _except_ Core (their changes to team metadata are ignored by peers following the conventional role mapping).
 - **Observer**: Read-only to all berths.
 
-Any admin can invite new members or remove existing ones.
-Removal is made effective by key rotation — the departing member is not given the new keys.
+`Admin` is not a special cryptographic authority. It is just shorthand for
+"has write permission to `{Team}/SmallSeaCollectiveCore`", the berth where
+membership and berth-role data live.
+
+"Remove member" therefore means: remove that person from my local clone of the
+team DB, push that change, and rotate keys if I want future readable updates to
+exclude them. Other teammates may adopt that view, reject it, or race it with a
+conflicting view of their own.
+
+Because Small Sea uses git history, maintaining a persistent split gets awkward
+quickly. If Alice removes Carol and Carol removes Alice, the team has
+effectively forked into two incompatible futures. Bob cannot comfortably remain
+in both branches without some explicit translation layer. In practice, Small
+Sea depends on social convergence to avoid or resolve such forks.
 
 ## Components
 
