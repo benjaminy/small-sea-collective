@@ -56,7 +56,8 @@ After this branch lands:
 4. the layered per-team identity-key storage (`team_identity`,
    `wrapped_team_identity_key`, and `member.identity_public_key`) is removed
    from the live path
-5. the codebase is positioned for a later branch to add `device_link` for
+5. the legacy `team_signing_key` table is removed from NoteToSelf
+6. the codebase is positioned for a later branch to add `device_link` for
    second-device enrollment
 
 ## Scope Decisions Already Made
@@ -65,6 +66,9 @@ After this branch lands:
   the layered artifacts from live code and schema rather than keeping them in
   coexistence mode. Docs may continue mentioning the deprecated model where
   useful for orientation, but the implementation should pick one model.
+- **No data migration required.** Since the system is pre-alpha and the identity
+  model change is structural, we will perform a "destructive" update. Existing
+  test sandboxes should be reset (`rm -rf`) rather than migrated.
 - **Prefer better structure over preserving old invitation choreography.** If a
   cleaner inviter/acceptor split falls naturally out of the `membership` model,
   take it. Pre-1.0 is the right time to do that.
@@ -102,6 +106,7 @@ cert is `MEMBERSHIP`, not `DEVICE_BINDING`.
 Concrete direction:
 
 - add `CertType.MEMBERSHIP` to `SUPPORTED_CERT_TYPES`
+- add `CertType.DEVICE_LINK` as scaffolding (unissued in this branch)
 - add helper(s) to issue and verify a founding-device `membership` cert
 - the minimum useful claim shape should include:
   - `member_id`
@@ -118,6 +123,7 @@ Delete the live use of:
 
 - `team_identity`
 - `wrapped_team_identity_key`
+- `team_signing_key` (legacy migration 47 artifact)
 
 Keep:
 
@@ -184,10 +190,8 @@ This implies an honest provisional state on the invitee side:
 - the invitee may have cloned the team and prepared their local device key
 - but they are not fully admitted until the inviter's `membership` cert comes
   back through sync
-
-That awkwardness is acceptable in this first slice. The branch should model it
-honestly in code and tests rather than trying to paper it over with extra
-mechanism.
+- the invitee's local `member` row for themselves will exist, but the
+  `key_certificate` table will be empty until the sync completes.
 
 ### 6. Keep signed bundle verification working
 
@@ -203,7 +207,7 @@ cleaned up.
 ## Out of Scope
 
 - second-device enrollment UI or protocol
-- `device_link` issuance and verification in live flows
+- `device_link` issuance in live flows
 - cross-team `identity_link`
 - revocation and transitive revocation logic
 - epoch enforcement
@@ -218,7 +222,7 @@ cleaned up.
 
 Expected work:
 
-- add `MEMBERSHIP` to supported live cert types
+- add `MEMBERSHIP` and `DEVICE_LINK` to supported live cert types
 - add `issue_membership_cert(...)`
 - add `verify_membership_cert(...)`
 - decide what to do with `DEVICE_BINDING`:
@@ -244,11 +248,10 @@ Expected work:
 
 Expected work:
 
-- remove `team_identity` and `wrapped_team_identity_key` from the schema and
-  migration path
+- remove `team_identity`, `wrapped_team_identity_key`, and `team_signing_key`
+  from the schema and migration path
 - keep `team_device_key`
-- possibly remove the older `team_signing_key` table if it is now entirely dead
-  weight rather than an active compatibility path
+- update `USER_SCHEMA_VERSION` and reset sandboxes
 
 ### 4. Team schema and migration logic
 
@@ -305,9 +308,13 @@ This branch is successful if:
 - the current device key remains sufficient for signed-bundle verification
 - the updated micro tests pass
 
+**IMPORTANT:** Before running tests, reset any existing sandbox data:
+`rm -rf /Users/ben8/.gemini/tmp/small-sea-collective/Scratch/Sandbox` (or equivalent)
+
 Suggested validation command:
 
 `uv run pytest packages/wrasse-trust/tests/test_identity.py packages/small-sea-manager/tests/test_create_team.py packages/small-sea-manager/tests/test_invitation.py packages/small-sea-manager/tests/test_signed_bundles.py`
+
 
 ## Questions To Resolve Before Locking Scope
 
