@@ -142,11 +142,22 @@ column now risks encoding the wrong meaning). The founding `membership`
 cert's initial device key is inserted on admission; each `device_link`
 cert adds one more row.
 
+`member_device` is a **materialized projection**, not independent
+authority:
+
+- `key_certificate` remains the canonical signed history
+- `member_device` is the current accepted device-set index derived from
+  admitted certs
+- every `member_device` row must be justified by admitted cert history
+- if `member_device` and `key_certificate` ever disagree, the cert history
+  wins and `member_device` must be rebuildable from it
+
 **NoteToSelf (`team_device_key`):**
 
 - **loosen** the primary key from `(team_id, device_id)` to
-  `(team_id, device_id, created_at)` so that rotation history for the
-  same device on the same team is admissible
+  `(team_id, device_id, public_key)` so that rotation history for the
+  same device on the same team is admissible without making timestamp
+  metadata part of row identity
 - keep the existing `created_at` and `revoked_at` columns as-is — in this
   branch `revoked_at` just means "no longer current," and the
   "current local device key" query already filters `revoked_at IS NULL`
@@ -156,8 +167,9 @@ cert adds one more row.
 
 **Source of truth and helpers:**
 
-- trusted *public* device set per member (team-scoped, shared) lives in
-  `member_device`
+- canonical trust history (team-scoped, shared) lives in `key_certificate`
+- trusted *public* device set per member (team-scoped, shared) is
+  materialized into `member_device`
 - local *private* device key per team (installation-scoped, local) lives
   in NoteToSelf's `team_device_key`
 - `get_current_team_device_key(...)` already exists and answers "what is
@@ -165,6 +177,8 @@ cert adds one more row.
   this branch
 - add `get_trusted_device_keys_for_member(member_id)` over `member_device`
   for verification-time lookups
+- add a rebuild helper/test path proving `member_device` can be derived
+  from `key_certificate` without loss
 - a historical-lookup helper (returning revoked/superseded rows) is **not**
   added in this branch; defer until the first caller actually needs it
 
@@ -176,20 +190,25 @@ bootstrap.
 Instead, add a local provisioning/helper path that proves the trust flow and DB
 shape. For example:
 
-- generate a new team-device key for an existing member (a new row in
-  `team_device_key` on the linking installation)
-- issue a `device_link` cert signed by that installation's current active
-  device key
-- insert the new device key into `member_device` on the team DB side
-  (the validate-on-insert step for the trusted device set)
+- accept an externally supplied new device public key for an existing
+  member
+- issue a `device_link` cert signed by the linking installation's current
+  active device key
+- insert the new device public key into `member_device` on the team DB
+  side (the validate-on-insert step for the trusted device set)
 
 This could be exposed as a lower-level provisioning helper first, with Manager
 UI/wrapper methods added only if they stay cheap.
 
-Note: because rotation is out of scope, the linking installation's own
-`get_current_team_device_key` answer is unchanged by this operation — the
-new linked device key belongs to a *different* installation and doesn't
-replace the local one.
+Production semantics for this branch should remain:
+
+- the target device generates its own keypair locally, ideally in a TEE or
+  other device-local keystore
+- only the public key leaves that device for admission
+
+Micro tests may simulate both sides in one workspace, but the production
+flow should still be phrased as "admit this externally generated public
+key," not "mint a foreign device key on behalf of another installation."
 
 The important thing is to land one end-to-end path that creates and stores a
 real `device_link` cert in a real team DB.
@@ -211,6 +230,14 @@ device by its raw public key alongside the member. No "key id" concept is
 introduced in this branch — raw pubkeys are used directly. Verification
 looks up the member's trusted device set and accepts the signature if the
 named device is in it.
+
+Rationale for raw pubkeys in this branch:
+
+- the signing public keys are already public in the team trust model
+- using the raw key keeps CodSync verification self-contained
+- it avoids inventing an extra indirection layer in the same branch that is
+  changing the signature shape already
+- if CodSync is later generalized beyond Small Sea, this can be revisited
 
 The narrow branch promise is:
 
@@ -268,7 +295,7 @@ Team DB:
 
 NoteToSelf:
 
-- loosen `team_device_key` PK to `(team_id, device_id, created_at)`
+- loosen `team_device_key` PK to `(team_id, device_id, public_key)`
 - no other changes; `get_current_team_device_key` keeps working unchanged
 
 ### 3. `small_sea_manager.provisioning`
@@ -280,8 +307,13 @@ Expected work:
 - add a helper to issue/store a `device_link` cert
 - add a helper to insert the linked device key into `member_device` on the
   team DB (the validate-on-insert trust step)
+- make the public admission input explicit in the API shape: the helper
+  should admit an externally generated device public key, not silently
+  generate a foreign keypair on behalf of another device
 - add `get_trusted_device_keys_for_member(member_id)` for verification
   call sites
+- add a helper or test-only path to rebuild `member_device` from admitted
+  `key_certificate` history
 
 ### 4. `cod_sync` signature shape and verification
 
@@ -347,6 +379,10 @@ This branch is successful if:
   one member in at least one realistic local happy path
 - a transitively-linked device (signed by a non-founding device) verifies
   correctly
+- rebuilding `member_device` from admitted `key_certificate` history yields
+  the same trusted device set
+- that rebuilt/set-projected device set still matches after a normal repo
+  sync/merge path
 - signed-bundle verification succeeds for a member whose valid signer is
   any of several linked device keys
 - the updated micro tests pass
