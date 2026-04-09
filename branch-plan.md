@@ -126,11 +126,32 @@ Properties:
 - bogus or irrelevant cert rows are harmless as long as the helper ignores
   anything invalid, off-team, wrong-member, or unreachable
 
+Safety rule (explicit): **the helper verifies the signature on each cert as
+it walks.** The trusted device set for member M is: {M's founding device
+from its `membership` cert} ∪ {subject_key of any `device_link` cert whose
+(a) signature verifies, (b) claims name member M, (c) is scoped to this
+team, and (d) signer is already in the set}. Without per-cert signature
+verification during traversal, a corrupted row in `key_certificate` could
+contribute to the trusted set just because its signer field named a trusted
+key. The safety property depends on verifying as we traverse.
+
+Termination: the traversal is a monotone-growing fixpoint over a set bounded
+by the cert count. Each step adds at least one previously-unknown subject
+key or halts. No cycles are possible (an already-trusted subject cannot be
+re-added), no unbounded work.
+
 Implementation shape:
 
-- put the graph/traversal logic in a pure helper over cert rows or decoded certs
-- add a thin manager/provisioning wrapper that loads relevant certs from the
-  team DB and calls that helper
+- put the graph/traversal logic in a pure helper in `wrasse_trust` over
+  decoded cert rows (see decision below)
+- add a thin manager/provisioning wrapper that loads relevant certs from
+  the team DB and calls that helper
+
+`member.device_public_key` is **left alone** in this branch. Once
+verification moves to cert-history traversal, the column becomes vestigial
+but harmless: the existing writers (`create_team`,
+`complete_invitation_acceptance`) continue to populate it, and nothing
+trust-critical reads it. Its removal is a follow-up, tracked in issue #57.
 
 ### 3. Add an authorizing-side device-link helper
 
@@ -148,6 +169,10 @@ So the helper for this branch should look like:
 not:
 
 - "mint a private key for some other device"
+
+The helper signs the cert with the authorizing installation's current local
+device key, obtained via the existing `get_current_team_device_key(...)`
+helper.
 
 For this branch, that helper only needs to cover the **authorizing side**.
 It does not need to solve the joining installation's full bootstrap lifecycle.
@@ -200,35 +225,23 @@ This branch should update docs only enough to keep them honest:
 - device removal / re-key UX
 - cross-team batching of device enrollment
 
-## Open Questions
+## Decisions
 
-These still matter, but they no longer block the branch.
+### 1. Trust traversal lives in `wrasse_trust`
 
-### 1. Where should trust traversal live?
+The transitive "trusted device set for member M" logic is a pure helper in
+`wrasse_trust`, taking decoded cert rows as input. Manager/provisioning
+code loads the rows from the team DB and calls the helper. Rationale: the
+traversal is pure trust logic, it has no dependency on SQL or manager
+state, and keeping Wrasse Trust the single owner of trust decisions keeps
+the layering clean.
 
-Should the transitive "trusted device set for member M" logic live:
+### 2. CodSync signature payload shape
 
-- in `wrasse_trust` as a pure trust helper, with manager code only loading rows
-- or in manager/provisioning, with Wrasse Trust staying at the single-cert level?
-
-My leaning is the first option.
-
-### 2. Exact CodSync signature payload shape
-
-Is the best wire shape:
-
-- `member_id -> { device_public_key, signature }`
-
-or a slightly different object/list form?
-
-The branch should pick one simple shape and stick to it.
-
-### 3. How much authorizing-side helper should be exposed?
-
-Do we want only a low-level provisioning helper for now, or also a Manager
-method thinly wrapping it?
-
-This is implementation-shape, not model-shape.
+The wire shape is `member_id -> { device_public_key, signature }`. This
+branch is pre-alpha; changing the format later if needed is cheap, so we
+commit to one simple shape now and revisit only if review turns up a real
+problem.
 
 ## Concrete Change Areas
 
@@ -240,7 +253,10 @@ This is implementation-shape, not model-shape.
   nearby trust module if that is a better fit
 - add micro tests:
   - happy-path verification
-  - wrong-member / wrong-team rejection
+  - wrong-member rejection (cert claims name a member whose trusted set
+    does not contain the signer)
+  - wrong-team rejection (corruption check: a cert whose team field
+    disagrees with the team DB it is loaded from is ignored)
   - transitive signer case
   - unknown-signer case ignored by traversal
 
@@ -278,6 +294,11 @@ This is implementation-shape, not model-shape.
   - installation B fetches and merges the team repo
   - B computes the trusted device set from merged cert history
   - a signed bundle signed by the linked device verifies on B
+  - the two-installation pattern in
+    `packages/small-sea-manager/tests/test_merge_conflict.py` is the
+    intended starting point (uses `LocalFolderRemote`, no MinIO or Hub
+    subprocess required). Extend that pattern rather than reaching for
+    the heavier `tests/test_sync_roundtrip.py` harness.
 
 ## Risks
 
