@@ -84,46 +84,89 @@ Update `wrasse_trust.identity` so `device_link` is a first-class live cert:
 - add `CertType.DEVICE_LINK` to `SUPPORTED_CERT_TYPES`
 - add `issue_device_link_cert(...)`
 - add `verify_device_link_cert(...)`
-- for this branch, the cert subject key is the newly linked device key
-- for this branch, the required claims should be just:
+- the cert subject key is the newly linked device key
+- the required claims are just:
   - `member_id`
+- the authorizing device (D_old) is identified by the cert envelope's signer
+  key; no separate claim field is needed for it. A verifier reads D_old off
+  the envelope, not the claims.
 
 Issuer rule for this branch:
 
-- the issuer is an already-trusted device key for the same member UUID in the
-  same team
+- the signer must already be in the member's trusted device set for the
+  team. Initially that set contains just the `membership` initial device;
+  as `device_link` certs are admitted, subject keys are added to the set,
+  so trust extends **transitively** — a later device authorized by a
+  previously-linked device is valid.
 
-### 2. Add an explicit device-set table to the team DB
+Trust model for this branch:
 
-The current `member` table only has one `device_public_key`, which is not
-enough to represent a device set.
+- **Trust is monotonic and validate-on-insert.** When a `device_link` cert
+  is admitted, its signer is checked against the member's current trusted
+  device set; if the check passes, the new subject key is added to the
+  set. After that, "is D trusted for M?" is a flat set-membership check.
+  No recursive walk through cert history at verification time.
+- This skips the "was D trusted *at the time* it signed?" question because
+  there is no revocation in this branch. The revocation branch will need
+  to revisit this and consult cert history (or a revocation-aware view of
+  the device set). That re-examination is deferred, not avoided.
 
-Recommended branch shape:
+### 2. Acknowledge device multiplicity in the schema
 
-- keep `member.device_public_key` for one branch as the **primary
-  peer/session device key** used by the current runtime outside Git-signature
-  verification
-- add a new `member_device` table that records all linked device keys for a
-  member
+The current data model encodes a lie: `member.device_public_key` (singular)
+says each member has exactly one device key, and `team_device_key` is keyed
+by `(team_id, device_id)` which forbids rotation history for the same
+device. Both assumptions are wrong in the long run and this branch removes
+them together.
 
-Likely fresh-schema shape:
+**Team DB (`member` and `member_device`):**
+
+- **drop** `member.device_public_key` entirely — the team DB should no
+  longer carry a singular device key per member
+- **add** a new `member_device` table that records the trusted device set
+  for each member:
 
 ```sql
 CREATE TABLE IF NOT EXISTS member_device (
-    member_id BLOB NOT NULL,
+    member_id         BLOB NOT NULL,
     device_public_key BLOB NOT NULL,
-    added_at TEXT NOT NULL,
-    revoked_at TEXT,
+    added_at          TEXT NOT NULL,
     PRIMARY KEY (member_id, device_public_key),
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 );
 ```
 
-The authoritative device set would then be:
+The table is append-only in this branch (no `revoked_at` column —
+revocation semantics are deferred to the revocation branch, and adding a
+column now risks encoding the wrong meaning). The founding `membership`
+cert's initial device key is inserted on admission; each `device_link`
+cert adds one more row.
 
-- `membership` subject key for the initial device
-- plus later `device_link` subject keys
-- mirrored into `member_device` for fast local operations
+**NoteToSelf (`team_device_key`):**
+
+- **loosen** the primary key from `(team_id, device_id)` to
+  `(team_id, device_id, created_at)` so that rotation history for the
+  same device on the same team is admissible
+- keep the existing `created_at` and `revoked_at` columns as-is — in this
+  branch `revoked_at` just means "no longer current," and the
+  "current local device key" query already filters `revoked_at IS NULL`
+  and picks the most recent `created_at`
+- no rotation code is written in this branch; the looser PK is deliberate
+  unused capacity so the schema stops lying about what's possible
+
+**Source of truth and helpers:**
+
+- trusted *public* device set per member (team-scoped, shared) lives in
+  `member_device`
+- local *private* device key per team (installation-scoped, local) lives
+  in NoteToSelf's `team_device_key`
+- `get_current_team_device_key(...)` already exists and answers "what is
+  my current local signing key for team T" — no new helper needed for
+  this branch
+- add `get_trusted_device_keys_for_member(member_id)` over `member_device`
+  for verification-time lookups
+- a historical-lookup helper (returning revoked/superseded rows) is **not**
+  added in this branch; defer until the first caller actually needs it
 
 ### 3. Add a local Manager provisioning path for linking a new device key
 
@@ -133,13 +176,20 @@ bootstrap.
 Instead, add a local provisioning/helper path that proves the trust flow and DB
 shape. For example:
 
-- generate a new team-device key for an existing member
-- issue a `device_link` cert from the current active device key
-- insert the new device key into `member_device`
-- optionally switch `member.device_public_key` to the new key
+- generate a new team-device key for an existing member (a new row in
+  `team_device_key` on the linking installation)
+- issue a `device_link` cert signed by that installation's current active
+  device key
+- insert the new device key into `member_device` on the team DB side
+  (the validate-on-insert step for the trusted device set)
 
 This could be exposed as a lower-level provisioning helper first, with Manager
 UI/wrapper methods added only if they stay cheap.
+
+Note: because rotation is out of scope, the linking installation's own
+`get_current_team_device_key` answer is unchanged by this operation — the
+new linked device key belongs to a *different* installation and doesn't
+replace the local one.
 
 The important thing is to land one end-to-end path that creates and stores a
 real `device_link` cert in a real team DB.
@@ -151,13 +201,16 @@ For this branch, we should go a bit further than the first draft:
 - allow a pushed link to be signed by any currently linked device key for that
   member
 - make verification succeed if the signature matches any trusted linked device
-  key for that member
-- stop assuming that `member.device_public_key` is the only valid link-signing
-  key
+  key for that member (looked up via `get_trusted_device_keys_for_member`)
+- stop reading `member.device_public_key` entirely — the column no longer
+  exists
 
-This likely means changing the CodSync signature payload from a bare
+This means changing the CodSync signature payload from a bare
 `member_id -> signature` map to a richer shape that identifies the signing
-device key (or key id) alongside the member.
+device by its raw public key alongside the member. No "key id" concept is
+introduced in this branch — raw pubkeys are used directly. Verification
+looks up the member's trusted device set and accepts the signature if the
+named device is in it.
 
 The narrow branch promise is:
 
@@ -201,13 +254,22 @@ Expected work:
 - add micro tests covering happy-path verification and wrong-member/wrong-team
   rejection
 
-### 2. Team schema
+### 2. Schema changes
 
-Expected work:
+Team DB:
 
 - add `member_device`
-- keep `member.device_public_key` for current runtime compatibility
-- store linked device keys in both cert history and `member_device`
+- **drop** `member.device_public_key`
+- every writer currently setting `member.device_public_key` (`create_team`
+  and `complete_invitation_acceptance` in `provisioning.py`) is redirected
+  to insert into `member_device` instead
+- every reader currently querying `member.device_public_key` (tests and
+  future CodSync verification) is redirected to `member_device`
+
+NoteToSelf:
+
+- loosen `team_device_key` PK to `(team_id, device_id, created_at)`
+- no other changes; `get_current_team_device_key` keeps working unchanged
 
 ### 3. `small_sea_manager.provisioning`
 
@@ -216,9 +278,10 @@ Expected work:
 - add a helper to generate an additional local team-device key for an existing
   member
 - add a helper to issue/store a `device_link` cert
-- update the team DB accordingly
-- if needed, add a narrow helper for "make this newly linked key the primary
-  peer/session key on this installation"
+- add a helper to insert the linked device key into `member_device` on the
+  team DB (the validate-on-insert trust step)
+- add `get_trusted_device_keys_for_member(member_id)` for verification
+  call sites
 
 ### 4. `cod_sync` signature shape and verification
 
@@ -240,35 +303,32 @@ Expected test updates/additions:
   - create team
   - link a second device key for the same member
   - verify the `device_link` cert
-  - verify `member_device` contains both keys
-  - verify whichever field remains in `member` matches the branch's chosen
-    primary-device semantics
-- update signed-bundle tests so one member can be verified through more than one
-  linked device key
+  - verify `member_device` contains both the founding and linked device
+    keys
+  - verify the transitive case: a third device linked via a cert signed by
+    the *second* (non-founding) device is accepted
+- update existing tests that read `member.device_public_key` to use
+  `member_device` / `get_trusted_device_keys_for_member` instead
+  (`test_signed_bundles.py`, `test_invitation.py`)
+- update signed-bundle tests so one member can be verified through more
+  than one linked device key
 
 ## Risks
 
-### 1. `member.device_public_key` can become ambiguous
-
-Once a member has multiple linked devices, the current column name starts to
-mean something narrower like "primary peer/session device key on this
-installation," not "the only device key." That is okay for one branch, but the
-plan should name the ambiguity directly so later work can remove it cleanly.
-
-### 2. Git signature shape churn can spill into verification paths
+### 1. Git signature shape churn can spill into verification paths
 
 Changing link signatures from member-only to device-aware is still a cross-cut
 through CodSync and signed-bundle tests. That is manageable, but it should stay
 deliberately narrow.
 
-### 3. It is easy to over-promise multi-device support
+### 2. It is easy to over-promise multi-device support
 
 If the branch lands `device_link` certs plus device-aware Git signatures,
 readers may infer that all linked devices are fully live. The docs and tests
 should be explicit that this is not yet true for sender-key behavior or peer
 routing.
 
-### 4. The bootstrap story is still unresolved
+### 3. The bootstrap story is still unresolved
 
 The current spec imagines a device-link token that clones NoteToSelf and then
 fans out across teams. This branch should not accidentally half-implement that
@@ -279,16 +339,21 @@ story without enough validation.
 This branch is successful if:
 
 - the code can issue and verify a real `device_link` cert
-- the team DB can store more than one device key for one member
-- the Manager provisioning layer can record a second linked device key for one
-  member in at least one realistic local happy path
-- signed-bundle verification succeeds for a member whose valid signer is one of
-  several linked device keys
+- `member.device_public_key` no longer exists; the team DB represents a
+  member's trusted device set through `member_device`
+- `team_device_key` admits rotation history (loosened PK), even though no
+  code in this branch exercises rotation
+- the Manager provisioning layer can record a second linked device key for
+  one member in at least one realistic local happy path
+- a transitively-linked device (signed by a non-founding device) verifies
+  correctly
+- signed-bundle verification succeeds for a member whose valid signer is
+  any of several linked device keys
 - the updated micro tests pass
 
 Suggested validation command:
 
-`uv run pytest packages/wrasse-trust/tests/test_identity.py packages/small-sea-manager/tests/test_create_team.py packages/small-sea-manager/tests/test_signed_bundles.py`
+`uv run pytest packages/wrasse-trust/tests/test_identity.py packages/small-sea-manager/tests/test_create_team.py packages/small-sea-manager/tests/test_invitation.py packages/small-sea-manager/tests/test_signed_bundles.py`
 
 ## Locked Scoping Decision
 
