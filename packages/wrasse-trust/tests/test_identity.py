@@ -18,10 +18,13 @@ from wrasse_trust.identity import (
     KeyCertificate,
     _canonical_cert_bytes,
     build_hierarchy_certs,
+    issue_device_link_cert,
     issue_cert,
     issue_membership_cert,
     issue_revocation,
+    trusted_device_keys_for_member,
     verify_cert,
+    verify_device_link_cert,
     verify_membership_cert,
     verify_revocation,
 )
@@ -396,6 +399,7 @@ def test_cert_type_string_stability():
     expected = {
         CertType.SELF_BINDING: "self_binding",
         CertType.DEVICE_BINDING: "device_binding",
+        CertType.DEVICE_LINK: "device_link",
         CertType.CROSS_CERTIFICATION: "cross_certification",
         CertType.MEMBERSHIP: "membership",
         CertType.SUCCESSION: "succession",
@@ -466,6 +470,144 @@ def test_issue_membership_cert_round_trip():
         admitted_member_id=admitted_member_id,
         subject_public_key=guarded.public_key,
     )
+
+
+def test_issue_device_link_cert_round_trip():
+    collection, privates = generate_hierarchy(ALICE_ID)
+    buried = collection.buried_keys()[0]
+    guarded = collection.guarded_keys()[0]
+
+    team_id = b"team-id-bytes-01"
+    member_id = b"member-id-bytes1"
+
+    cert = issue_device_link_cert(
+        subject_key=guarded,
+        issuer_key=buried,
+        issuer_private_key=privates[buried.key_id],
+        team_id=team_id,
+        member_id=member_id,
+    )
+
+    assert verify_device_link_cert(
+        cert,
+        issuer_public_key=buried.public_key,
+        team_id=team_id,
+        member_id=member_id,
+        subject_public_key=guarded.public_key,
+    )
+
+
+def test_trusted_device_keys_for_member_allows_transitive_device_links():
+    team_id = b"team-id-bytes-01"
+    alice_member_id = b"alice-member-id0"
+    bob_member_id = b"bob-member-id0000"
+
+    alice_initial, alice_initial_priv = generate_key_pair(ProtectionLevel.DAILY)
+    alice_laptop, alice_laptop_priv = generate_key_pair(ProtectionLevel.DAILY)
+    bob_initial, bob_initial_priv = generate_key_pair(ProtectionLevel.DAILY)
+
+    certs = [
+        issue_membership_cert(
+            subject_key=alice_initial,
+            issuer_key=alice_initial,
+            issuer_private_key=alice_initial_priv,
+            team_id=team_id,
+            issuer_member_id=alice_member_id,
+            admitted_member_id=alice_member_id,
+        ),
+        issue_membership_cert(
+            subject_key=bob_initial,
+            issuer_key=alice_initial,
+            issuer_private_key=alice_initial_priv,
+            team_id=team_id,
+            issuer_member_id=alice_member_id,
+            admitted_member_id=bob_member_id,
+        ),
+        issue_device_link_cert(
+            subject_key=alice_laptop,
+            issuer_key=alice_initial,
+            issuer_private_key=alice_initial_priv,
+            team_id=team_id,
+            member_id=alice_member_id,
+        ),
+    ]
+
+    trusted = trusted_device_keys_for_member(certs, team_id, alice_member_id)
+    assert alice_initial.public_key in trusted
+    assert alice_laptop.public_key in trusted
+    # The Bob membership cert is not a device_link for Alice, so Bob's key must
+    # not leak into Alice's device set.
+    assert bob_initial.public_key not in trusted
+
+
+def test_trusted_device_keys_for_member_accepts_transitive_non_founding_signer():
+    team_id = b"team-id-bytes-01"
+    member_id = b"alice-member-id0"
+
+    first_device, first_priv = generate_key_pair(ProtectionLevel.DAILY)
+    second_device, second_priv = generate_key_pair(ProtectionLevel.DAILY)
+    third_device, _third_priv = generate_key_pair(ProtectionLevel.DAILY)
+
+    certs = [
+        issue_membership_cert(
+            subject_key=first_device,
+            issuer_key=first_device,
+            issuer_private_key=first_priv,
+            team_id=team_id,
+            issuer_member_id=member_id,
+            admitted_member_id=member_id,
+        ),
+        issue_device_link_cert(
+            subject_key=second_device,
+            issuer_key=first_device,
+            issuer_private_key=first_priv,
+            team_id=team_id,
+            member_id=member_id,
+        ),
+        issue_device_link_cert(
+            subject_key=third_device,
+            issuer_key=second_device,
+            issuer_private_key=second_priv,
+            team_id=team_id,
+            member_id=member_id,
+        ),
+    ]
+
+    trusted = trusted_device_keys_for_member(certs, team_id, member_id)
+    assert first_device.public_key in trusted
+    assert second_device.public_key in trusted
+    assert third_device.public_key in trusted
+
+
+def test_trusted_device_keys_for_member_ignores_unknown_signer():
+    team_id = b"team-id-bytes-01"
+    member_id = b"alice-member-id0"
+
+    founding_device, founding_priv = generate_key_pair(ProtectionLevel.DAILY)
+    stranger_device, stranger_priv = generate_key_pair(ProtectionLevel.DAILY)
+    candidate_device, _candidate_priv = generate_key_pair(ProtectionLevel.DAILY)
+
+    certs = [
+        issue_membership_cert(
+            subject_key=founding_device,
+            issuer_key=founding_device,
+            issuer_private_key=founding_priv,
+            team_id=team_id,
+            issuer_member_id=member_id,
+            admitted_member_id=member_id,
+        ),
+        issue_device_link_cert(
+            subject_key=candidate_device,
+            issuer_key=stranger_device,
+            issuer_private_key=stranger_priv,
+            team_id=team_id,
+            member_id=member_id,
+        ),
+    ]
+
+    trusted = trusted_device_keys_for_member(certs, team_id, member_id)
+    assert founding_device.public_key in trusted
+    assert candidate_device.public_key not in trusted
 
 
 def test_extract_hierarchy_certs_rejects_missing_cert_type():

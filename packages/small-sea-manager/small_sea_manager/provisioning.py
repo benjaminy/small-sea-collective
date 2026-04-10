@@ -48,8 +48,12 @@ from small_sea_manager.sender_keys import (
 from wrasse_trust.identity import (
     CertType,
     KeyCertificate,
+    issue_device_link_cert,
     issue_membership_cert,
     parse_cert_type,
+    trusted_device_keys_by_member as resolve_trusted_device_keys_by_member,
+    trusted_device_keys_for_member as resolve_trusted_device_keys_for_member,
+    verify_device_link_cert,
     verify_membership_cert,
 )
 from wrasse_trust.keys import ParticipantKey, ProtectionLevel, generate_key_pair
@@ -607,6 +611,155 @@ def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes)
             "signature": cert.signature,
         },
     )
+
+
+def _load_team_certificates(conn, team_id: bytes) -> list[KeyCertificate]:
+    rows = conn.execute(
+        text(
+            "SELECT cert_id, cert_type, subject_key_id, subject_public_key, "
+            "issuer_key_id, issuer_member_id, issued_at, claims, signature "
+            "FROM key_certificate ORDER BY issued_at ASC"
+        )
+    ).fetchall()
+    certs = []
+    for row in rows:
+        certs.append(
+            KeyCertificate(
+                cert_id=row[0],
+                cert_type=parse_cert_type(row[1]),
+                team_id=team_id,
+                subject_key_id=row[2],
+                subject_public_key=row[3],
+                issuer_key_id=row[4],
+                issuer_participant_id=row[5],
+                issued_at_iso=row[6],
+                claims=json.loads(row[7]),
+                signature=row[8],
+            )
+        )
+    return certs
+
+
+def _team_row(root_dir, participant_hex, team_name):
+    nts_db_path = (
+        pathlib.Path(root_dir)
+        / "Participants"
+        / participant_hex
+        / "NoteToSelf"
+        / "Sync"
+        / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{nts_db_path}")
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text("SELECT id, self_in_team FROM team WHERE name = :team_name"),
+                {"team_name": team_name},
+            ).fetchone()
+    finally:
+        engine.dispose()
+    if row is None:
+        raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
+    return row
+
+
+def get_trusted_device_keys_for_member_in_team_db(team_db_path, team_id, member_id):
+    """Return trusted team-device public keys for one member from one team DB."""
+    if isinstance(member_id, str):
+        member_id = bytes.fromhex(member_id)
+    engine = create_engine(f"sqlite:///{team_db_path}")
+    try:
+        with engine.begin() as conn:
+            certs = _load_team_certificates(conn, team_id)
+    finally:
+        engine.dispose()
+    return resolve_trusted_device_keys_for_member(certs, team_id, member_id)
+
+
+def get_trusted_device_keys_for_member(root_dir, participant_hex, team_name, member_id):
+    """Return trusted team-device public keys for one member from cert history."""
+    if isinstance(member_id, str):
+        member_id = bytes.fromhex(member_id)
+    team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
+    team_db_path = (
+        pathlib.Path(root_dir)
+        / "Participants"
+        / participant_hex
+        / team_name
+        / "Sync"
+        / "core.db"
+    )
+    return get_trusted_device_keys_for_member_in_team_db(team_db_path, team_id, member_id)
+
+
+def get_trusted_device_keys_by_member(root_dir, participant_hex, team_name):
+    """Return trusted team-device public keys for every member from cert history."""
+    team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
+    team_db_path = (
+        pathlib.Path(root_dir)
+        / "Participants"
+        / participant_hex
+        / team_name
+        / "Sync"
+        / "core.db"
+    )
+    engine = create_engine(f"sqlite:///{team_db_path}")
+    try:
+        with engine.begin() as conn:
+            certs = _load_team_certificates(conn, team_id)
+    finally:
+        engine.dispose()
+    return resolve_trusted_device_keys_by_member(certs, team_id)
+
+
+def issue_device_link_for_member(root_dir, participant_hex, team_name, linked_device_public_key):
+    """Issue and store a device_link cert for an externally generated public key."""
+    if isinstance(linked_device_public_key, str):
+        linked_device_public_key = bytes.fromhex(linked_device_public_key)
+
+    root_dir = pathlib.Path(root_dir)
+    participant_dir = root_dir / "Participants" / participant_hex
+    team_id, member_id = _team_row(root_dir, participant_hex, team_name)
+    issuer_private_key, issuer_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
+
+    current_trusted_keys = get_trusted_device_keys_for_member(
+        root_dir, participant_hex, team_name, member_id
+    )
+    if issuer_public_key not in current_trusted_keys:
+        raise ValueError("Current team device key is not trusted for this member")
+
+    issuer_key = _participant_key_from_public(issuer_public_key)
+    subject_key = _participant_key_from_public(linked_device_public_key)
+    cert = issue_device_link_cert(
+        subject_key=subject_key,
+        issuer_key=issuer_key,
+        issuer_private_key=issuer_private_key,
+        team_id=team_id,
+        member_id=member_id,
+    )
+    if not verify_device_link_cert(
+        cert,
+        issuer_public_key=issuer_public_key,
+        team_id=team_id,
+        member_id=member_id,
+        subject_public_key=linked_device_public_key,
+    ):
+        raise ValueError("Failed to issue a valid device_link cert")
+
+    team_sync_dir = participant_dir / team_name / "Sync"
+    team_db_path = team_sync_dir / "core.db"
+    engine = create_engine(f"sqlite:///{team_db_path}")
+    try:
+        with engine.begin() as conn:
+            _store_team_certificate(conn, cert, issuer_member_id=member_id)
+    finally:
+        engine.dispose()
+
+    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", "Linked additional team device"])
+    return cert
 
 
 def _generate_initial_team_device_key(

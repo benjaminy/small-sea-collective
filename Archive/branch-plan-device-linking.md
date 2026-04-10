@@ -236,12 +236,25 @@ traversal is pure trust logic, it has no dependency on SQL or manager
 state, and keeping Wrasse Trust the single owner of trust decisions keeps
 the layering clean.
 
+Implementation note: once this was wired up in code, the traversal needed
+to resolve a **team-wide** fixpoint, not just "follow one member's
+`device_link` chain." The reason is that a non-genesis `membership` cert for
+member B can be signed by an already-trusted device of member A. That makes
+the trust question "which devices are trusted for member M?" depend on the
+broader team cert graph, even when the caller ultimately wants one member's
+device set.
+
 ### 2. CodSync signature payload shape
 
 The wire shape is `member_id -> { device_public_key, signature }`. This
 branch is pre-alpha; changing the format later if needed is cheap, so we
 commit to one simple shape now and revisit only if review turns up a real
 problem.
+
+Implementation note: the shape worked cleanly in practice, and raw public
+keys kept Git-link verification self-contained. The remaining multi-device
+work is therefore about runtime behavior (sender keys, peer routing, joining
+install bootstrap), not about Git-link signer identification.
 
 ## Concrete Change Areas
 
@@ -299,6 +312,9 @@ problem.
     intended starting point (uses `LocalFolderRemote`, no MinIO or Hub
     subprocess required). Extend that pattern rather than reaching for
     the heavier `tests/test_sync_roundtrip.py` harness.
+  - implementation note: the lightweight two-installation verification path
+    benefits from a helper that reads cert history directly from a team DB
+    without requiring a full NoteToSelf setup on the second installation
 
 ## Risks
 
