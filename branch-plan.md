@@ -338,10 +338,20 @@ honest.
 
 ## Concrete Change Areas
 
+### `cuttlefish`
+
+- welcome bundle seal/open API: public-key authenticated encryption using a
+  well-known construction (e.g. X25519 + ChaCha20-Poly1305)
+- simple interface: `seal_welcome_bundle(recipient_public_key, plaintext)` →
+  ciphertext; `open_welcome_bundle(private_key, ciphertext)` → plaintext
+- protocol binding and identity binding baked into the construction's
+  associated data
+
 ### `small-sea-note-to-self`
 
 - welcome bundle type definition
-- serialization / parsing helpers
+- serialization / parsing helpers (plaintext → JSON → encrypt → base64
+  text-safe encoding for OOB transport)
 - bootstrap-safe local initializer
 - local schema addition for NoteToSelf device secret refs
 
@@ -392,9 +402,11 @@ Only if the stretch path stays small and clean:
 
 Before coding much:
 
-- confirm the single-remote NoteToSelf assumption
+- confirm the single-remote NoteToSelf assumption; add a loud assertion if
+  multiple `cloud_storage` rows exist
 - confirm plain shared-state admission for v1
 - confirm dedicated NoteToSelf local secret table instead of sentinel reuse
+- confirm Cuttlefish can take a new seal/open primitive without major surgery
 
 ### Phase 1: Joining-device request material
 
@@ -410,15 +422,26 @@ Implement the joining-device side first:
 - expose the public join request artifact (device UUID + public key as a
   tiny versioned JSON payload that is easy to copy as text in v1)
 
-### Phase 2: Rich welcome bundle
+### Phase 2: Rich welcome bundle + Cuttlefish seal/open
 
-Implement the bundle type first.
+Implement the bundle type and encryption together.
 
-It should:
+Bundle type:
 
-- have a versioned structure
-- include exact remote locator details
-- include no secrets
+- versioned structure
+- exact remote locator details
+- no secrets
+
+Cuttlefish:
+
+- add `seal_welcome_bundle` / `open_welcome_bundle` using a well-known
+  construction
+- protocol and identity binding via associated data
+
+Serialization:
+
+- plaintext JSON → encrypt via Cuttlefish → base64 text encoding for
+  OOB transport
 
 ### Phase 3: Authorizing-side admission
 
@@ -529,3 +552,15 @@ If the optional Hub/S3 path lands:
 - **Real provider auth becomes a blocker.**
   Mitigation: explicit non-goal for this branch; local-only proof is enough to
   validate the architecture.
+
+- **Welcome bundle encryption requires real crypto against placeholder infra.**
+  Mitigation: add the welcome bundle seal/open primitive to Cuttlefish with a
+  simple API (e.g. `seal_welcome_bundle` / `open_welcome_bundle`). Use a
+  well-known construction from an established library (e.g. X25519 +
+  ChaCha20-Poly1305 via `cryptography` or `nacl`). Do not design novel crypto.
+  Accept that the specific construction may change when Cuttlefish matures.
+
+- **Multiple `cloud_storage` rows make NoteToSelf remote ambiguous.**
+  Mitigation: assume exactly one `cloud_storage` row for now (matches the
+  single-remote precondition). Fail loudly if multiple rows exist so the
+  assumption is never silently violated. Solve multi-remote selection later.
