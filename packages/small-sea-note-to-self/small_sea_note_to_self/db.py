@@ -5,7 +5,7 @@ from pathlib import Path
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
 SHARED_SCHEMA_VERSION = 55
-LOCAL_SCHEMA_VERSION = 1
+LOCAL_SCHEMA_VERSION = 2
 
 
 def note_to_self_sync_db_path(root_dir: str | Path, participant_hex: str) -> Path:
@@ -64,6 +64,20 @@ def initialize_device_local_db(local_db_path: str | Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def initialize_bootstrap_local_state(root_dir: str | Path, participant_hex: str) -> Path:
+    """Create only device-local NoteToSelf state for a joining installation.
+
+    This intentionally does not create the shared NoteToSelf DB.
+    """
+    root_dir = Path(root_dir)
+    participant_dir = root_dir / "Participants" / participant_hex
+    (participant_dir / "NoteToSelf" / "Local").mkdir(parents=True, exist_ok=True)
+    (participant_dir / "NoteToSelf" / "Sync").mkdir(parents=True, exist_ok=True)
+    local_db = device_local_db_path(root_dir, participant_hex)
+    initialize_device_local_db(local_db)
+    return local_db
 
 
 def attached_note_to_self_connection(root_dir: str | Path, participant_hex: str) -> sqlite3.Connection:
