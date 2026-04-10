@@ -39,15 +39,18 @@ This branch makes the joining side real.
 A fresh installation goes from "blank Small Sea install" to "live device in
 an existing identity" through an honest flow:
 
-1. joining device generates a NoteToSelf device keypair; only the public key
-   leaves
-2. public key reaches an existing device through an out-of-band channel
-3. existing device admits the new device into NoteToSelf shared state and
-   prepares a welcome bundle
-4. joining device receives the welcome bundle, initializes minimal local
+1. joining device generates a NoteToSelf device keypair and a device UUID;
+   only the public key and UUID leave the device
+2. public key + device UUID reach an existing device through an out-of-band
+   channel (OOB leg 1: joining → authorizing)
+3. existing device admits the new device into NoteToSelf shared state,
+   commits, pushes NoteToSelf, and prepares a welcome bundle
+4. welcome bundle reaches the joining device through an out-of-band channel
+   (OOB leg 2: authorizing → joining)
+5. joining device receives the welcome bundle, initializes minimal local
    state, and pulls NoteToSelf
-5. after sync, the new device knows the identity's devices, teams, and apps
-6. joining any team is a separate later flow
+6. after sync, the new device knows the identity's devices, teams, and apps
+7. joining any team is a separate later flow
 
 The branch succeeds when a two-installation test proves that sequence with
 separate keystores, separate NoteToSelf repos, and no assumption of automatic
@@ -87,11 +90,11 @@ if the audit trail proves valuable.
 The minimum the joining device needs to locate and pull NoteToSelf:
 
 - participant UUID (for filesystem layout)
-- exact NoteToSelf remote descriptor for CodSync bootstrap
+- NoteToSelf remote descriptor in the existing `{protocol, url, bucket}`
+  dict shape already used by invitation tokens and `ExplicitProxyRemote`
   - for this branch, it is acceptable to assume one cloud account / one
     NoteToSelf remote
-  - the descriptor must include whatever berth locator detail CodSync needs
-    in practice (for example bucket / prefix / path), not just protocol + URL
+  - reuses the CodSync remote descriptor convention; no new format needed
 - identity label / display name (so the joining device can show the user
   what they're joining)
 
@@ -114,9 +117,16 @@ the threat model demands it.
 
 The minimum viable local installation:
 
-- a local keystore entry for the new NoteToSelf device key
+- a local keystore entry (FakeEnclave for now) for the new NoteToSelf device
+  key, plus a private key ref stored in the device-local DB
 - enough filesystem layout to host the fetched NoteToSelf repo
 - a device-local DB created by a bootstrap-safe initializer
+
+NoteToSelf device key storage: the `team_device_key_secret` table is
+team-scoped. For the identity-level NoteToSelf device key ref, the simplest
+option is to reuse `team_device_key_secret` with a well-known sentinel team
+ID (e.g. all-zeros UUID) meaning "NoteToSelf identity key." A dedicated table
+is cleaner but more schema surface — lock this decision in Phase 0.
 
 Important implementation constraint:
 
@@ -255,24 +265,29 @@ provisioning.py and manager.py to check nothing contradicts the plan.
 ### Phase 1: Welcome bundle shape
 
 Define a small typed structure in `small-sea-note-to-self`. Encode/decode
-helpers. No network I/O. Include the exact NoteToSelf remote descriptor, not
-just protocol + URL.
+helpers. No network I/O. Embed the NoteToSelf remote descriptor using the
+existing `{protocol, url, bucket}` dict shape from invitation tokens /
+`ExplicitProxyRemote`.
 
-### Phase 2: Bootstrap-safe local initialization
-
-Implement the joining-side local initializer that:
-
-- generates a new NoteToSelf device keypair, stores it locally
-- creates only the minimum filesystem + local DB state
-- does NOT create fresh shared NoteToSelf state before the first pull
-
-### Phase 3: Authorizing-side admission
+### Phase 2: Authorizing-side admission
 
 Implement the helper that:
 
-- takes the new device's public key
+- takes the new device's public key and device UUID
 - inserts a `user_device` row in shared NoteToSelf
+- commits and pushes NoteToSelf so the new row is available to fetch
 - produces the welcome bundle from existing NoteToSelf state
+
+Simpler than the joining side and can be tested independently.
+
+### Phase 3: Bootstrap-safe local initialization
+
+Implement the joining-side local initializer that:
+
+- generates a new NoteToSelf device keypair, stores it in FakeEnclave
+- stores the private key ref in the device-local DB
+- creates only the minimum filesystem + local DB state
+- does NOT create fresh shared NoteToSelf state before the first pull
 
 ### Phase 4: Joining-side bootstrap transport
 
