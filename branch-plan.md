@@ -12,51 +12,69 @@ Related trackers:
 
 ## Context
 
-When Small Sea is installed on a fresh device, there are two flows:
+When Small Sea is installed on a fresh device, there are two distinct flows:
 
-1. **Start a new identity** — most prior work
-2. **Join an existing identity** — this branch
+1. **Start a new identity**
+2. **Join an existing identity**
 
-The identity model that emerged during #61 planning:
+The repo is now much clearer about the difference:
 
-- **Identity join** gets a device into NoteToSelf. After that, the device
-  knows about the identity's teams, devices, apps, and cloud remotes.
-- **Team join** is separate. Any subset of devices can participate in any
-  subset of teams. Joining an identity does NOT auto-join teams.
-- NoteToSelf shared state is now safe to sync (secrets are device-local since
-  #61). The `small-sea-note-to-self` package owns the ATTACH helper,
-  schemas, and connection management.
+- **Identity join** gets a device into NoteToSelf.
+- **Team join** is separate and happens later, per team.
+- Any subset of a person's devices may participate in any subset of their
+  teams. Identity membership is not the same thing as team participation.
 
-The `device-linking` branch proved the authorizing side: an existing device
-can issue a `device_link` cert for an externally supplied public key and sync
-it through a team repo. But it tested that with keys conjured in a single
-process — no real second installation.
+The #61 branch made shared NoteToSelf safe to sync later by splitting secrets
+and runtime state into a device-local DB. That means this branch no longer has
+to fight the old "copying one device's live secrets to another device" problem.
 
-This branch makes the joining side real.
+The main remaining challenge is bootstrap shape:
+
+- the joining device should stay almost blank at first
+- the welcome bundle should be rich enough that the device can initialize
+  itself correctly once it has the bundle
+- the bundle should carry bootstrap metadata, not copied secret material or a
+  second source of truth for NoteToSelf state
 
 ## Branch Goal
 
-A fresh installation goes from "blank Small Sea install" to "live device in
-an existing identity" through an honest flow:
+Make "join an existing identity" real as a two-installation flow:
 
-1. joining device generates a NoteToSelf device keypair and a device UUID;
-   only the public key and UUID leave the device
-2. public key + device UUID reach an existing device through an out-of-band
-   channel (OOB leg 1: joining → authorizing)
-3. existing device admits the new device into NoteToSelf shared state,
-   commits, pushes NoteToSelf, and prepares a welcome bundle
-4. welcome bundle reaches the joining device through an out-of-band channel
-   (OOB leg 2: authorizing → joining)
-5. joining device receives the welcome bundle, initializes minimal local
-   state, and pulls NoteToSelf
-6. after sync, the new device knows the identity's devices, teams, and apps
-7. joining any team is a separate later flow
+1. the joining device generates a NoteToSelf device keypair and device UUID
+2. only the public key + device UUID leave the device
+3. an existing device admits that device into shared NoteToSelf state
+4. the existing device prepares a **rich welcome bundle**
+5. the joining device uses that bundle to initialize only the minimal local
+   shape it actually needs
+6. the joining device pulls NoteToSelf
+7. after sync, the joining device knows the identity's devices, teams, apps,
+   and NoteToSelf shared metadata
+8. joining any team remains a separate later flow
 
-The branch succeeds when a two-installation test proves that sequence with
-separate keystores, separate NoteToSelf repos, and no assumption of automatic
-team membership. The minimum required proof is local transport
-(`LocalFolderRemote`); a Hub-routed MinIO/S3 proof is desirable if it lands
-cleanly without distorting the architecture.
+The branch succeeds when a two-installation test proves that sequence with:
+
+- separate keystores
+- separate NoteToSelf repos
+- no assumption of automatic team membership
+- no copied cloud credentials or private keys in the welcome bundle
+
+**Required proof:** `LocalFolderRemote`
+
+**Nice stretch proof:** MinIO/S3-shaped bootstrap without violating the
+Hub-as-gateway rule
+
+## Core Design Stance
+
+The joining device should build as little as possible before it has enough
+authoritative information to initialize correctly.
+
+That means:
+
+- do not create a fake fresh shared NoteToSelf DB and later overwrite it
+- do not clone every team as part of identity bootstrap
+- do not copy device-local secrets from another installation
+- do use a richer welcome bundle so the joiner can initialize its local shape
+  honestly once it knows what identity it is joining
 
 ## What This Branch Is Not
 
@@ -64,301 +82,412 @@ cleanly without distorting the architecture.
 - auto-join every team on identity join
 - solve sender-key or peer-routing multi-device runtime (#59)
 - solve routine NoteToSelf sync policy (#48)
-- solve provider-specific cloud auth on the new device
+- solve generalized multi-cloud NoteToSelf remote selection
+- solve provider-specific cloud auth UX for real internet deployments
 - a trust-model redesign
 
-## Key Design Questions
+## Preconditions
 
-### Q1. NoteToSelf trust model for device admission
+This branch should assume:
 
-The biggest open question. Options:
+- the existing identity already has a working NoteToSelf remote
+- that remote has a pushed NoteToSelf repo the joiner can bootstrap from
+- for now, NoteToSelf uses exactly one configured remote
 
-- **(a) Plain shared-state mutation.** The authorizing device adds a row to
-  `user_device` in shared NoteToSelf and syncs it. Simple, and NoteToSelf is
-  single-user so there's no multi-party trust problem. But no cryptographic
-  proof of who admitted whom.
-- **(b) Signed identity-level cert.** Like team-level `device_link` certs
-  but for NoteToSelf itself. Gives an auditable admission history. More
-  machinery.
+If those assumptions are false in real life, that is a separate product/UX
+problem. This branch is about honest bootstrap once an identity already has a
+place for NoteToSelf to live.
 
-Default: **(a)** for this branch. NoteToSelf is "my own stuff" — the threat
-model is different from multi-member teams. A signed cert can be added later
-if the audit trail proves valuable.
+## Load-Bearing Decisions
 
-### Q2. What is in the welcome bundle?
+### 1. NoteToSelf admission model
 
-The minimum the joining device needs to locate and pull NoteToSelf:
+Default for this branch:
 
-- participant UUID (for filesystem layout)
-- NoteToSelf remote descriptor in the existing `{protocol, url, bucket}`
-  dict shape already used by invitation tokens and `ExplicitProxyRemote`
-  - for this branch, it is acceptable to assume one cloud account / one
-    NoteToSelf remote
-  - reuses the CodSync remote descriptor convention; no new format needed
-- identity label / display name (so the joining device can show the user
-  what they're joining)
+- the authorizing device adds a row to shared `user_device`
+- no identity-level signed admission cert yet
 
-Explicitly NOT included:
+Reason:
+
+- NoteToSelf is single-user social territory, not multi-member governance
+- this is the smallest honest thing that works
+
+Future seam to preserve:
+
+- periodic cross-device sanity checks / challenge-response should be easy to
+  add later
+- the bootstrap flow should not be shaped in a way that blocks later
+  signed/auditable admission if it becomes valuable
+
+### 2. The welcome bundle should be rich
+
+The welcome bundle should carry enough information that the joining device does
+not need to guess or build fake local identity state.
+
+It should be rich in:
+
+- bootstrap metadata
+- remote locator details
+- identity labeling / UX details
+- lightweight verification metadata
+
+It should be thin in:
+
+- authority
+- secrets
+- copied shared-state snapshots
+
+The pulled NoteToSelf repo remains the real source of truth.
+
+### 3. The joiner stays minimal until it has the bundle
+
+There are really two sub-states here.
+
+Before the welcome bundle exists, the joining device should have only:
+
+- its new NoteToSelf device keypair
+- its new device UUID
+- a public join request artifact derived from those
+
+After the welcome bundle arrives, but before the first NoteToSelf pull, the
+joining device should have only:
+
+- enough filesystem layout to receive NoteToSelf
+- a device-local DB with local secret refs
+
+It should not have:
+
+- a fresh shared `NoteToSelf/Sync/core.db`
+- pre-created teams
+- pre-created team device keys
+- copied cloud credentials
+
+### 4. Required transport proof vs stretch transport proof
+
+Required branch proof:
+
+- `LocalFolderRemote`
+
+Stretch proof, only if it stays clean:
+
+- MinIO/S3-shaped bootstrap through Hub-owned transport
+
+This keeps the branch grounded:
+
+- we must prove the identity bootstrap model works
+- we do not have to solve all real-cloud auth UX in the same branch
+
+### 5. Hub remains the only internet-facing component
+
+Manager must not grow its own cloud-adapter zoo just because bootstrap is
+awkward.
+
+If a real remote bootstrap path is added in this branch, the preferred shape
+is:
+
+- a narrow bootstrap-only Hub path
+- driven by an explicit remote descriptor from the welcome bundle
+- not requiring a preexisting NoteToSelf session
+
+## Rich Welcome Bundle
+
+The welcome bundle should at least include:
+
+- bundle format/version
+- participant UUID
+- joining device UUID
+- joining device public key echoed back
+- identity label / nickname for UI clarity
+- exact NoteToSelf remote descriptor
+- lightweight verification metadata if useful
+  - for example current `latest-link` identifier, issued-at, expiry, or
+    authorizing device label
+
+For this branch, the remote descriptor can start from the existing invitation /
+`ExplicitProxyRemote` convention, but the plan should not overfit to
+bucket-shaped backends forever.
+
+The welcome bundle must not include:
 
 - private keys
-- cloud credentials (new device does its own provider auth, or for v1 we
-  test with `LocalFolderRemote` which needs no auth)
-- team-specific material
+- cloud credentials / refresh tokens / bearer tokens
+- team-specific secrets
+- copies of NoteToSelf tables as a shadow source of truth
 
-### Q3. Does the joining device prove key possession?
+## Joining Device Local State
 
-Default: **not in v1.** The out-of-band exchange is manual (QR code, email,
-etc.) and the authorizing user is physically deciding to admit a key they
-received. A signed challenge adds replay protection but the complexity may
-not be worth it when the channel is already manual. Defer to a follow-up if
-the threat model demands it.
+The joining device needs a bootstrap-safe initializer distinct from the normal
+ATTACH helper.
 
-### Q4. What local state exists before NoteToSelf sync?
+Why:
 
-The minimum viable local installation:
+- the normal ATTACH helper currently creates shared `NoteToSelf/Sync/core.db`
+  if it is missing
+- that would accidentally create a fake fresh identity on the joining device
 
-- a local keystore entry (FakeEnclave for now) for the new NoteToSelf device
-  key, plus a private key ref stored in the device-local DB
-- enough filesystem layout to host the fetched NoteToSelf repo
-- a device-local DB created by a bootstrap-safe initializer
+So this branch should add a bootstrap initializer that does only:
 
-NoteToSelf device key storage: the `team_device_key_secret` table is
-team-scoped. For the identity-level NoteToSelf device key ref, the simplest
-option is to reuse `team_device_key_secret` with a well-known sentinel team
-ID (e.g. all-zeros UUID) meaning "NoteToSelf identity key." A dedicated table
-is cleaner but more schema surface — lock this decision in Phase 0.
+- create `Participants/{participant_hex}/NoteToSelf/Local/`
+- create the device-local DB
+- create enough directory layout for `NoteToSelf/Sync/`
+- store the local NoteToSelf device private key ref
 
-Important implementation constraint:
+and explicitly does **not**:
 
-- do NOT call the normal ATTACH helper before the first NoteToSelf pull
-- today that helper creates shared `NoteToSelf/Sync/core.db` if it is missing,
-  which would accidentally create a fake fresh identity on the joining device
-- this branch should introduce a bootstrap initializer that creates only the
-  local DB plus filesystem layout, then switches to the normal helper after
-  shared NoteToSelf has been fetched
+- initialize shared `core.db`
+- populate shared tables
 
-Important: do NOT build a full independent identity locally and then "merge"
-it. The joining device is joining, not starting fresh.
+### Local secret storage for the NoteToSelf device key
 
-### Q5. Cloud auth for the initial NoteToSelf pull
+Recommended decision for this branch:
 
-Two separate questions were getting mixed together:
+- add a dedicated local table for NoteToSelf device key refs
 
-1. how the joining device fetches NoteToSelf the first time
-2. how that device later obtains its own long-lived provider auth
+Why:
 
-Default branch shape:
+- reusing `team_device_key_secret` with a sentinel team ID would work
+- but it smuggles identity-level state into a team-scoped table and makes the
+  storage model harder to read later
 
-- **Required proof:** `LocalFolderRemote`, which needs no cloud auth
-- **Preferred stretch proof:** MinIO/S3 through the Hub, if it lands cleanly
-- **Explicitly deferred:** live internet OAuth / real provider auth UX
+## Post-Bootstrap Stable State
 
-Important architectural constraint:
+After a successful identity bootstrap, the joining device should:
 
-- the Hub remains the only Small Sea component that talks to the internet
-- the Manager should not grow duplicate cloud-adapter logic just for bootstrap
+- know identity-wide devices from shared `user_device`
+- know teams/apps from shared NoteToSelf tables
+- have a valid local NoteToSelf device key
+- have no local team clones yet
+- have no local team device keys yet
 
-Proposed implementation direction:
+This state should be treated as:
 
-- add a bootstrap-only Hub path that can fetch NoteToSelf from an explicit
-  remote descriptor in the welcome bundle, without requiring a preexisting
-  NoteToSelf session
-- the local Hub is real infrastructure, not fake throwaway setup; it already
-  owns adapter complexity and can keep owning it here
-- after bootstrap, real deployments still need a separate per-device cloud
-  auth step; credentials are never copied from the welcome bundle
+- **identity-bootstrapped**
+- not necessarily **fully cloud-authenticated for routine real-world sync**
 
-### Q6. Per-team join flow
+That distinction matters because real provider auth UX is out of scope.
 
-After identity join, joining a specific team is:
+## Per-Team Join Seam
 
-1. device generates a team-specific keypair
-2. device records a join request through NoteToSelf (or Manager-owned state)
-3. any device already in that team issues a `device_link` cert using the
-   existing trust model
+After identity join, joining a specific team is still a separate flow:
 
-This branch should **name this seam** clearly in docs/tests but does NOT
-need to implement steps 1–3 unless a tiny stub keeps the architecture honest.
+1. the device generates a team-specific keypair
+2. the device records or requests team participation through NoteToSelf or
+   Manager-owned state
+3. an already-participating device in that team issues a `device_link` cert
+
+This branch should name that seam clearly in docs/tests, but not implement the
+full team-join flow unless a tiny stub is needed to keep the architecture
+honest.
 
 ## In Scope
 
-- welcome bundle shape (typed structure, encode/decode helpers)
-- authorizing-device helper: receive public key, admit to NoteToSelf, produce
-  welcome bundle
-- joining-device entry point: generate keypair, receive welcome bundle,
-  initialize local state, pull NoteToSelf
-- bootstrap-safe local initializer that does NOT create fresh shared
-  NoteToSelf state on the joining device
-- bootstrap transport plumbing for local-only proof, and possibly Hub-routed
-  MinIO/S3 proof if it stays reviewable
-- post-bootstrap stable state: new device knows devices/teams/apps from
-  NoteToSelf, is NOT auto-joined to any team
-- two-installation happy-path test using `LocalFolderRemote`
-- doc updates to spec.md and architecture.md for the two-install-path model
-- comment on #48 with the seams this branch produces
+- rich welcome bundle type and serialization
+- authorizing-side helper:
+  - receive joining device UUID + public key
+  - admit device into shared `user_device`
+  - commit/push NoteToSelf
+  - produce welcome bundle
+- joining-side entry point:
+  - generate device UUID + keypair
+  - export the public join request artifact
+  - later consume welcome bundle
+  - run bootstrap-safe local initialization using the previously generated key
+  - pull NoteToSelf
+- dedicated local storage for the joining device's NoteToSelf key ref
+- two-installation happy-path proof with `LocalFolderRemote`
+- explicit docs for the distinction between identity join and team join
+- issue audit / comments for the issues materially changed by the branch
 
 ## Out Of Scope
 
 - automatic team cloning after identity join
 - automatic team key generation
-- sender-key per-device runtime (#59)
+- sender-key per-device runtime redesign (#59)
 - NoteToSelf routine sync policy (#48)
-- provider-specific cloud auth UX
-- revocation / removal / lost-device flows
-- signed identity-level admission certs (follow-up if needed)
-- rich UI / UX polish
-- generalized multi-cloud NoteToSelf remote selection
+- generalized multi-cloud remote selection
+- real provider auth UX
+- revocation / lost-device / device-removal flow
+- identity-level signed admission certs
+- broad UI polish
 
 ## Concrete Change Areas
 
-### `small-sea-note-to-self` package
+### `small-sea-note-to-self`
 
-- welcome bundle type definition and serialization
-- possibly a small `bootstrap.py` module
-- bootstrap-safe local initializer distinct from the normal ATTACH helper
+- welcome bundle type definition
+- serialization / parsing helpers
+- bootstrap-safe local initializer
+- local schema addition for NoteToSelf device secret refs
 
-### `small-sea-manager` — provisioning.py
+### `small-sea-manager` — `provisioning.py`
 
-- authorizing-side helper: admit new device to shared NoteToSelf
-  (`user_device` row), produce welcome bundle
-- joining-side entry point: generate keypair, consume welcome bundle, create
-  minimal local layout, prepare for NoteToSelf pull
+- authorizing-side admission helper
+- welcome bundle generation
+- joining-side bootstrap entry point
+- local initialization orchestration
 
-### `small-sea-manager` — manager.py
+### `small-sea-manager` — `manager.py`
 
-- session-layer orchestration: joining device pulls NoteToSelf after local
-  init (`LocalFolderRemote` required, Hub bootstrap path if added)
+- high-level bootstrap orchestration
+- local-only transport path for required proof
+- optional hook point for a future Hub bootstrap path
 
 ### `small-sea-hub`
 
-- if the branch takes the stretch path, add a bootstrap-only NoteToSelf fetch
-  endpoint/path that uses the welcome bundle's explicit remote descriptor
-  without requiring an already-established NoteToSelf session
+Only if the stretch path stays small and clean:
+
+- bootstrap-only NoteToSelf fetch path
+- driven by explicit remote descriptor
+- no preexisting NoteToSelf session required
 
 ### Tests
 
-- new two-installation test under `packages/small-sea-manager/tests/`
-- extends the `LocalFolderRemote` pattern from `test_merge_conflict.py`
-- installation A: existing identity device
-- installation B: brand-new Small Sea install, separate keystore, separate
-  NoteToSelf
-- asserts B knows teams/devices/apps from NoteToSelf after bootstrap
-- asserts B has NOT auto-joined any team
+- a new two-installation test under `packages/small-sea-manager/tests/`
+- installation A = existing identity device
+- installation B = truly blank joining device
+- separate keystores, separate local DBs, separate NoteToSelf dirs
+- assert B learns devices/teams/apps from pulled NoteToSelf
+- assert B does not auto-create team participation
 
 ### Docs
 
-- `packages/small-sea-manager/spec.md` — two install paths, identity-first
-  bootstrap
-- `architecture.md` — identity join vs team join distinction
-- explicitly rewrite the stale "Link new device" and "Device Linking Protocol"
-  sections in `packages/small-sea-manager/spec.md`, which still describe the
-  old token-with-creds / clone-all-teams model
-- issue #48 comment naming the seams
+- `packages/small-sea-manager/spec.md`
+  - rewrite the stale "Link new device" section
+  - rewrite the stale "Device Linking Protocol" section
+- `architecture.md`
+  - make identity-join vs team-join distinction explicit
+- issue updates
+  - #48: note the seams produced by this branch
+  - #58: summarize what this branch actually lands
 
 ## Implementation Order
 
-### Phase 0: Lock Q1–Q6
+### Phase 0: Lock branch assumptions
 
-Confirm or revise the defaults above before writing much code. Quick skim of
-provisioning.py and manager.py to check nothing contradicts the plan.
+Before coding much:
 
-### Phase 1: Welcome bundle shape
+- confirm the single-remote NoteToSelf assumption
+- confirm plain shared-state admission for v1
+- confirm dedicated NoteToSelf local secret table instead of sentinel reuse
 
-Define a small typed structure in `small-sea-note-to-self`. Encode/decode
-helpers. No network I/O. Embed the NoteToSelf remote descriptor using the
-existing `{protocol, url, bucket}` dict shape from invitation tokens /
-`ExplicitProxyRemote`.
+### Phase 1: Joining-device request material
 
-### Phase 2: Authorizing-side admission
+Implement the joining-device side first:
+
+- generate the device UUID + keypair
+- expose the public join request artifact
+- keep the private key local
+
+### Phase 2: Rich welcome bundle
+
+Implement the bundle type first.
+
+It should:
+
+- have a versioned structure
+- include exact remote locator details
+- include no secrets
+
+### Phase 3: Authorizing-side admission
 
 Implement the helper that:
 
-- takes the new device's public key and device UUID
-- inserts a `user_device` row in shared NoteToSelf
-- commits and pushes NoteToSelf so the new row is available to fetch
-- produces the welcome bundle from existing NoteToSelf state
+- takes joining device UUID + public key
+- inserts the `user_device` row
+- commits/pushes NoteToSelf
+- returns the welcome bundle
 
-Simpler than the joining side and can be tested independently.
+Note:
 
-### Phase 3: Bootstrap-safe local initialization
+- a dangling admitted-but-never-finished device is acceptable in v1
+- that is messy socially, but not a protocol failure
 
-Implement the joining-side local initializer that:
+### Phase 4: Bootstrap-safe local initialization
 
-- generates a new NoteToSelf device keypair, stores it in FakeEnclave
-- stores the private key ref in the device-local DB
-- creates only the minimum filesystem + local DB state
-- does NOT create fresh shared NoteToSelf state before the first pull
+Implement the joining-side initializer that:
 
-### Phase 4: Joining-side bootstrap transport
+- accepts the previously generated key material plus bundle metadata
+- stores the private key locally
+- creates only local DB + directory structure
+- does not create shared `core.db`
 
-Implement the entry point that:
+### Phase 5: Joining-side bootstrap flow
 
-- consumes the welcome bundle
-- uses the bootstrap-safe local initializer
+Implement the joining-side flow that:
+
+- receives the welcome bundle
+- runs bootstrap-safe local initialization
 - pulls NoteToSelf via `LocalFolderRemote`
-- optionally adds a Hub-routed MinIO/S3 bootstrap path if it stays clean
 
-Important: do not add direct internet/cloud adapter logic to Manager just to
-get around bootstrap awkwardness.
+Do not add direct internet/cloud adapter logic to Manager just to get around
+bootstrap awkwardness.
 
-### Phase 5: Post-bootstrap stable state
+### Phase 6: Stable-state proof
 
-Make the stable state explicit and testable. The new device should:
+Make the stable post-bootstrap state explicit in tests:
 
-- know identity-wide devices from `user_device`
-- know teams/apps from NoteToSelf shared tables
-- NOT have local team clones or team device keys
-- be considered "identity-bootstrapped"; real provider auth may still be a
-  later step outside this branch
+- both devices visible in `user_device`
+- teams/apps visible on the joining device
+- no team clones or team keys created automatically
 
-### Phase 6: Two-installation test
+### Phase 7: Optional real-cloud-shaped proof
 
-Drive the full arc end-to-end with `LocalFolderRemote`.
+Only if it stays reviewable:
 
-Stretch validation:
+- add a MinIO/S3-shaped bootstrap path
+- prefer Hub-owned transport over Manager adapter duplication
 
-- if feasible, add a MinIO/S3-through-Hub version of the bootstrap flow to
-  prove the architecture can support real cloud-shaped bootstrap without
-  duplicating adapter logic in Manager
+### Phase 8: Docs + issue audit
 
-### Phase 7: Docs + issue audit
-
-- update spec.md, architecture.md
-- comment on #48 with produced seams
-- update #58 to reflect what landed
+- update `spec.md`
+- update `architecture.md`
+- comment on #48
+- update #58
 
 ## Validation
 
 ### Micro-level
 
 - joining device's keystore has exactly one new NoteToSelf device key
-- welcome bundle round-trips without private material
-- welcome bundle includes the exact NoteToSelf remote descriptor needed for
-  bootstrap
-- `user_device` table on both installations includes both devices after sync
+- welcome bundle round-trips cleanly
+- welcome bundle contains no secret material
+- welcome bundle contains exact bootstrap locator metadata
+- bootstrap initializer creates no fake shared `core.db`
 - no team device keys are auto-created on the joining device
-- bootstrap initializer does not create a fake fresh shared NoteToSelf DB
 
 ### Flow-level
 
-- two-installation test passes with `LocalFolderRemote`
-- joining device can read NoteToSelf shared state after bootstrap
-- joining device sees teams from NoteToSelf but has no local team clones
-- existing device's state is not disrupted by the admission
-- if MinIO/S3 bootstrap lands, the joining device can pull NoteToSelf through
-  the Hub without Manager owning cloud-adapter logic
+- two-installation `LocalFolderRemote` bootstrap passes
+- after bootstrap, both installations see both `user_device` rows
+- the joining device can read NoteToSelf shared state
+- the joining device sees teams from NoteToSelf but has no local team clones
+- the existing device's state is not disrupted
+
+### Stretch validation
+
+If the optional Hub/S3 path lands:
+
+- the joining device can bootstrap through Hub-owned transport
+- Manager still does not own duplicate cloud adapter logic
 
 ## Risks
 
-- **Q1 (NoteToSelf trust model) proves insufficient mid-branch.** Mitigation:
-  the plain shared-state mutation is the simplest thing that works; if it
-  breaks, the cert machinery from `device-linking` is available to adapt.
-- **scope creep into team-join flow.** Mitigation: the "name the seam, don't
-  implement it" rule.
-- **welcome bundle shape becoming a parallel to invitation flow.** Mitigation:
-  reuse invitation shapes where they fit; only add fields with a concrete job.
-- **cloud auth becoming a blocker.** Mitigation: `LocalFolderRemote` for
-  tests; cloud auth is explicitly out of scope.
-- **bootstrap transport distorts the Hub/Manager boundary.** Mitigation:
-  prefer a small bootstrap-only Hub path over duplicating cloud adapter logic
-  in Manager.
+- **Plain shared-state admission proves too weak.**
+  Mitigation: keep the branch shape compatible with later signed admission /
+  sanity-check additions.
+
+- **The welcome bundle turns into a shadow copy of NoteToSelf.**
+  Mitigation: carry only bootstrap metadata and remote locator details, not
+  copied shared-state tables.
+
+- **Bootstrap transport distorts the Hub/Manager boundary.**
+  Mitigation: keep `LocalFolderRemote` as the required proof and make any Hub
+  transport extension narrow and optional.
+
+- **The branch drifts into team-join implementation.**
+  Mitigation: keep identity join and team join sharply separated in code,
+  tests, and docs.
+
+- **Real provider auth becomes a blocker.**
+  Mitigation: explicit non-goal for this branch; local-only proof is enough to
+  validate the architecture.
