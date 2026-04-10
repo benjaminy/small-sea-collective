@@ -54,7 +54,7 @@ Make "join an existing identity" real as a two-installation flow:
 The branch succeeds when a two-installation test proves that sequence with:
 
 - separate keystores
-- separate NoteToSelf repos
+- separate local NoteToSelf directories
 - no assumption of automatic team membership
 - no copied cloud credentials or private keys in the welcome bundle
 
@@ -148,7 +148,7 @@ Before the welcome bundle exists, the joining device should have only:
 - its new NoteToSelf device keypair
 - its new device UUID
 - a public join request artifact (device UUID + public key, serialized as a
-  text-copyable string for v1) derived from those
+  tiny versioned JSON payload for v1) derived from those
 
 After the welcome bundle arrives, but before the first NoteToSelf pull, the
 joining device should have only:
@@ -207,7 +207,28 @@ For this branch, the remote descriptor can start from the existing invitation /
 `ExplicitProxyRemote` convention, but the plan should not overfit to
 bucket-shaped backends forever.
 
-The welcome bundle should be **encrypted to the joining device's public key**.
+The welcome bundle should be **encrypted to the joining device's public key**
+using an authenticated-encryption construction.
+
+Best-practice requirements for this branch:
+
+- confidentiality: only the intended joining device can read the payload
+- integrity: tampering must be detected before the payload is used
+- recipient binding: decryption with the wrong device key must fail
+- protocol binding: include a bundle-purpose / bundle-version string as
+  authenticated context so this payload cannot be confused with some other
+  encrypted object
+- identity binding: include `participant_uuid` and `joining_device_uuid` in
+  the authenticated payload or associated data
+- staleness detection: keep `issued_at`, and add `expires_at` if that stays
+  simple enough for the branch
+
+Nice-to-have future seam, but not required to ship this branch:
+
+- explicit authorizing-device authenticity beyond AEAD integrity
+  - for example a detached signature or a later cross-check after the first
+    NoteToSelf pull
+
 The authorizing device already has that key from OOB leg 1, so this is natural.
 It means the bundle is safe to pass over an insecure OOB channel (email, photo,
 etc.) — only the intended device can read the remote locator details inside.
@@ -381,11 +402,13 @@ Implement the joining-device side first:
 
 - generate the device UUID + keypair
 - store the private key in the enclave (FakeEnclave for now) immediately —
-  this happens before the full Small Sea directory layout exists, so the
-  enclave ref lives in the Manager's own app/config folder as a trivial file
-  until Phase 4 records it in the device-local DB
+  the underlying secret never leaves the enclave
+- write only a lightweight reference to that enclave-held key into the
+  platform-appropriate app/user-data directory (faked in tests)
+- later, during bootstrap-safe initialization, copy or move that reference
+  into the proper device-local DB row without regenerating the key
 - expose the public join request artifact (device UUID + public key as a
-  text-copyable string)
+  tiny versioned JSON payload that is easy to copy as text in v1)
 
 ### Phase 2: Rich welcome bundle
 
@@ -443,8 +466,9 @@ Make the stable post-bootstrap state explicit in tests:
 
 Only if it stays reviewable:
 
-- add a MinIO/S3-shaped bootstrap path
+- add a MinIO/S3-shaped bootstrap path using test credentials / local harnesses
 - prefer Hub-owned transport over Manager adapter duplication
+- do not treat this as solving real provider-auth UX
 
 ### Phase 8: Docs + issue audit
 
@@ -458,9 +482,14 @@ Only if it stays reviewable:
 ### Micro-level
 
 - joining device's keystore has exactly one new NoteToSelf device key
+- join request artifact round-trips cleanly
+- join request artifact is versioned and contains only public data
 - welcome bundle round-trips cleanly
 - welcome bundle contains no secret material
 - welcome bundle contains exact bootstrap locator metadata
+- intended joining key decrypts the bundle
+- wrong key cannot decrypt the bundle
+- tampered bundle is rejected before use
 - bootstrap initializer creates no fake shared `core.db`
 - no team device keys are auto-created on the joining device
 
