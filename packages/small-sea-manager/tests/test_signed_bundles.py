@@ -130,7 +130,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     _push_via_hub(
         http, alice_team_token, alice_team_sync,
-        signing_key=alice_priv, member_id=alice_member_id_hex,
+        signing_key=alice_priv, member_id=alice_member_id_hex, device_public_key=alice_pub,
     )
 
     _make_bucket_public(
@@ -146,7 +146,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     )
     _push_via_hub(
         http, alice_team_token, alice_team_sync,
-        signing_key=alice_priv, member_id=alice_member_id_hex,
+        signing_key=alice_priv, member_id=alice_member_id_hex, device_public_key=alice_pub,
     )
 
     # -- Bob: accept via Manager --
@@ -172,7 +172,9 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
 
     assert "signatures" in supp_data
     assert alice_member_id_hex in supp_data["signatures"]
-    sig_b64 = supp_data["signatures"][alice_member_id_hex]
+    alice_signature = supp_data["signatures"][alice_member_id_hex]
+    assert alice_signature["device_public_key"] == alice_pub.hex()
+    sig_b64 = alice_signature["signature"]
 
     # Bob looks up Alice's public key from his team DB
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"

@@ -175,7 +175,7 @@ class CodSync:
         # Strip 'codsync:'
         self.url = remote_url[8:]
 
-    def push_to_remote(self, branches, signing_key=None, member_id=None):
+    def push_to_remote(self, branches, signing_key=None, member_id=None, device_public_key=None):
         logger.debug(f"push_to_remote {self.remote_name} {branches}")
 
         bundle_uid = CodSync.token_hex(8)
@@ -226,7 +226,7 @@ class CodSync:
 
         blob = self.build_link_blob(
             link_uid, link_uid_prev, bundle_uid, prerequisites,
-            signing_key=signing_key, member_id=member_id,
+            signing_key=signing_key, member_id=member_id, device_public_key=device_public_key,
         )
         logger.debug(f"pushing link {link_uid} bundle {bundle_path_tmp}")
         return self.remote.upload_latest_link(
@@ -234,7 +234,7 @@ class CodSync:
         )
 
     def build_link_blob(self, new_link_uid, prev_link_uid, bundle_uid, prerequisites,
-                        signing_key=None, member_id=None):
+                        signing_key=None, member_id=None, device_public_key=None):
         link_ids = [new_link_uid, prev_link_uid]
         branch_names = self.get_branches()
         branches = []
@@ -247,7 +247,16 @@ class CodSync:
         if signing_key is not None and member_id is not None:
             signable = canonical_link_bytes(link_ids, branches, bundles, supplement)
             signature = sign_link(signing_key, signable)
-            supplement["signatures"] = {member_id: signature}
+            if device_public_key is None:
+                raise ValueError("device_public_key is required when signing a link")
+            if isinstance(device_public_key, bytes):
+                device_public_key = device_public_key.hex()
+            supplement["signatures"] = {
+                member_id: {
+                    "device_public_key": device_public_key,
+                    "signature": signature,
+                }
+            }
 
         return [link_ids, branches, bundles, supplement]
 
