@@ -46,12 +46,20 @@ Each NoteToSelf device gets **two** bootstrap-relevant keys:
 - an **X25519 bootstrap-encryption key** for sealing / opening the welcome bundle
 - an **Ed25519 signing key** for signing the welcome bundle plaintext
 
-The authorizing device **signs the canonical welcome bundle plaintext** with its
-Ed25519 signing key, then encrypts the signed bundle to the joining device's
-X25519 bootstrap-encryption key.
+The flow is standard **sign-then-encrypt**:
 
-After pulling NoteToSelf, the joining device verifies that signature against the
-authorizing device's signing public key in `user_device`.
+1. the authorizing device serializes the `WelcomeBundle` as canonical JSON
+2. the authorizing device **signs** those bytes with its Ed25519 signing key
+3. a wrapper payload `{bundle: <bundle JSON>, authorizing_device_id: ...,
+   signature: ...}` is constructed — the signature and device ID live
+   **outside** the bundle dataclass, not inside it
+4. the wrapper is **encrypted** to the joining device's X25519 key
+5. the joining device decrypts, extracts the bundle + signature, and after
+   pulling NoteToSelf verifies the signature against the authorizing device's
+   signing public key in `user_device`
+
+This avoids any ambiguity about what bytes the signature covers — it's always
+the canonical bundle JSON, which never contains the signature itself.
 
 Why this works:
 
@@ -88,8 +96,10 @@ Limitations (acceptable for this branch):
 Because the common case is having both devices side by side, this branch should
 also add a second short confirmation string tied to the signed bundle:
 
-- the authorizing device computes it from the join session values
-- the joining device computes it after decrypt + pull + signature verification
+- the authorizing device computes it from the full handshake transcript:
+  hash of (join_request_artifact_bytes + canonical_bundle_json + signature_bytes)
+- the joining device computes the same value after decrypt + pull + signature
+  verification
 - the human compares the two devices again
 
 This does not create a central authority or redesign the flow, but it gives a
@@ -131,16 +141,23 @@ signed bootstrap event and the same pulled identity.
 - extend `user_device` to carry both public keys explicitly
   - `bootstrap_encryption_key`
   - `signing_key`
-- extend the local NoteToSelf device-key-secret table to carry both private-key
-  refs explicitly
-- add `authorizing_device_id_hex` and `authorizing_device_signature` fields to the welcome bundle
+  - the existing `key` column is replaced by these two; this is a breaking
+    schema change (fresh-schema rules apply, no migration needed)
+- extend the local NoteToSelf device-key-secret table with two columns on the
+  same row: `encryption_private_key_ref` and `signing_private_key_ref`
+  (preserves one-row-per-device invariant)
+- the `WelcomeBundle` dataclass stays unchanged — the signature and authorizing
+  device ID live in a wrapper payload outside the bundle (see sign-then-encrypt
+  flow above)
 - add a verification helper
 - add a helper for the second short confirmation string
 
 ### `small-sea-manager`
 
 - participant creation: generate/store both device keypairs
-- join-request creation: emit both public keys
+- join-request creation: `JoinRequestArtifact` updated to carry both public
+  keys (encryption + signing); this changes the auth string derivation since
+  the artifact contents change
 - authorizing-side: sign the bundle plaintext before encryption
 - joining-side: after NoteToSelf pull, verify the signature
 - joining-side: if verification passes, compute/display the second short
@@ -201,12 +218,17 @@ can absorb the additional key columns cleanly (fresh-schema rules still apply).
   - signing private-key ref
 - update participant creation and join-request creation to generate/store both
   keypairs
+- update all code that currently reads `user_device.key` — at minimum:
+  `create_team` (populates `team_device_key.public_key`), invitation flows,
+  identity bootstrap. For team operations, use the signing key as the team
+  device public key (teams need to verify signatures, not encrypt).
 
-### Phase 3: Welcome bundle signature
+### Phase 3: Welcome bundle signature (sign-then-encrypt)
 
-- add `authorizing_device_id_hex` and `signature` to the welcome bundle
-- authorizing side: sign plaintext, include signature in sealed bundle
-- the signature covers the canonical JSON plaintext (same bytes that get encrypted)
+- authorizing side: sign the canonical bundle JSON with Ed25519 signing key
+- wrap as `{bundle: ..., authorizing_device_id: ..., signature: ...}`
+- encrypt the wrapper to the joining device's X25519 key
+- the `WelcomeBundle` dataclass is unchanged; signature lives in the wrapper
 
 ### Phase 4: Post-bootstrap verification
 
@@ -248,3 +270,7 @@ can absorb the additional key columns cleanly (fresh-schema rules still apply).
 - **Post-bootstrap verification is inherently after-the-fact.**
   Mitigation: this is acceptable — document it clearly. Pre-bootstrap
   verification would require a different architecture.
+- **Replacing `user_device.key` with two columns touches every consumer.**
+  Mitigation: fresh-schema rules apply, so no migration. But audit all callers
+  in Phase 2 — `create_team`, invitation, identity bootstrap all read this
+  table.
