@@ -3,7 +3,8 @@ from dataclasses import replace
 
 from cuttlefish.group import (_advance_chain_key, _derive_message_key, GroupMessage,
                               group_decrypt, group_encrypt)
-from small_sea_manager.sender_keys import (
+from small_sea_note_to_self.db import device_local_db_path
+from small_sea_note_to_self.sender_keys import (
     load_peer_sender_key,
     load_team_sender_key,
     save_peer_sender_key,
@@ -59,21 +60,30 @@ def _message_key_for(message: GroupMessage, sender_key) -> bytes:
 
 
 def prepare_encrypted_upload(ss_session, plaintext: bytes) -> tuple[object, bytes]:
-    user_db_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
+    user_db_path = device_local_db_path(
+        ss_session.participant_path.parent.parent, ss_session.participant_id.hex()
+    )
     sender_key = load_team_sender_key(user_db_path, ss_session.team_id)
     if sender_key is None:
         raise ValueError(f"No team sender key for {ss_session.team_name!r}")
     next_sender_key, message = group_encrypt(ss_session.team_id, sender_key, plaintext)
+    replayable_keys = dict(next_sender_key.skipped_message_keys)
+    replayable_keys[message.iteration] = _derive_message_key(sender_key.chain_key)
+    next_sender_key = replace(next_sender_key, skipped_message_keys=replayable_keys)
     return next_sender_key, serialize_group_message(message)
 
 
 def commit_encrypted_upload(ss_session, next_sender_key) -> None:
-    user_db_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
+    user_db_path = device_local_db_path(
+        ss_session.participant_path.parent.parent, ss_session.participant_id.hex()
+    )
     save_team_sender_key(user_db_path, ss_session.team_id, next_sender_key)
 
 
 def decrypt_group_payload(ss_session, payload: bytes) -> bytes:
-    user_db_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
+    user_db_path = device_local_db_path(
+        ss_session.participant_path.parent.parent, ss_session.participant_id.hex()
+    )
     message = deserialize_group_message(payload)
     sender_key = load_peer_sender_key(
         user_db_path, ss_session.team_id, message.sender_participant_id

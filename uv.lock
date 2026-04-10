@@ -14,6 +14,7 @@ members = [
     "small-sea-client",
     "small-sea-hub",
     "small-sea-manager",
+    "small-sea-note-to-self",
     "small-sea-sandbox",
     "splice-merge",
     "wrasse-trust",
@@ -29,6 +30,7 @@ dev = [
     { name = "small-sea-client", editable = "packages/small-sea-client" },
     { name = "small-sea-hub", editable = "packages/small-sea-hub" },
     { name = "small-sea-manager", editable = "packages/small-sea-manager" },
+    { name = "small-sea-note-to-self", editable = "packages/small-sea-note-to-self" },
     { name = "splice-merge", editable = "packages/splice-merge" },
 ]
 
@@ -1120,7 +1122,7 @@ dependencies = [
     { name = "plyer" },
     { name = "pydantic-settings", extra = ["toml"] },
     { name = "pyobjus" },
-    { name = "small-sea-manager" },
+    { name = "small-sea-note-to-self" },
     { name = "sqlalchemy" },
 ]
 
@@ -1140,7 +1142,7 @@ requires-dist = [
     { name = "pydantic-settings", extras = ["toml"], specifier = ">=2.11.0" },
     { name = "pyobjus", specifier = ">=1.2.3" },
     { name = "respx", marker = "extra == 'test'", specifier = ">=0.21.0" },
-    { name = "small-sea-manager", editable = "packages/small-sea-manager" },
+    { name = "small-sea-note-to-self", editable = "packages/small-sea-note-to-self" },
     { name = "sqlalchemy", specifier = ">=2.0.44" },
 ]
 provides-extras = ["test"]
@@ -1158,6 +1160,7 @@ dependencies = [
     { name = "jinja2" },
     { name = "plyer" },
     { name = "small-sea-client" },
+    { name = "small-sea-note-to-self" },
     { name = "splice-merge" },
     { name = "sqlalchemy" },
 ]
@@ -1172,9 +1175,21 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
     { name = "plyer", specifier = ">=2.1.0" },
     { name = "small-sea-client", editable = "packages/small-sea-client" },
+    { name = "small-sea-note-to-self", editable = "packages/small-sea-note-to-self" },
     { name = "splice-merge", editable = "packages/splice-merge" },
     { name = "sqlalchemy", specifier = ">=2.0.44" },
 ]
+
+[[package]]
+name = "small-sea-note-to-self"
+version = "0.1.0"
+source = { editable = "packages/small-sea-note-to-self" }
+dependencies = [
+    { name = "cuttlefish" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "cuttlefish", editable = "packages/cuttlefish" }]
 
 [[package]]
 name = "small-sea-sandbox"

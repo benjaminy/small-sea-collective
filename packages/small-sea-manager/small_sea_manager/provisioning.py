@@ -14,8 +14,6 @@ import os
 import pathlib
 import secrets
 import sqlite3
-import struct
-import time
 from datetime import datetime, timezone
 
 from sqlalchemy import Column, LargeBinary, String, create_engine, text
@@ -36,13 +34,22 @@ from cuttlefish.group import (
     create_sender_key,
     group_decrypt,
 )
-from small_sea_manager.sender_keys import (
+from small_sea_note_to_self.db import (
+    attached_note_to_self_connection,
+    device_local_db_path,
+    initialize_shared_db,
+    note_to_self_sync_db_path,
+)
+from small_sea_note_to_self.ids import uuid7
+from small_sea_note_to_self.sender_keys import (
     deserialize_distribution_message,
+    deserialize_sender_key_record,
     distribution_message_from_record,
     load_team_sender_key,
     receiver_record_from_distribution,
     save_peer_sender_key,
     save_team_sender_key,
+    serialize_sender_key_record,
     serialize_distribution_message,
 )
 from wrasse_trust.identity import (
@@ -57,30 +64,6 @@ from wrasse_trust.identity import (
     verify_membership_cert,
 )
 from wrasse_trust.keys import ParticipantKey, ProtectionLevel, generate_key_pair
-
-# ---- UUIDv7 ----
-
-
-def uuid7():
-    """Generate a UUIDv7 (time-ordered, random) as 16 bytes."""
-    timestamp_ms = int(time.time() * 1000)
-    rand_bytes = secrets.token_bytes(10)
-
-    # 48-bit timestamp | 4-bit version (0111) | 12-bit rand_a
-    # 2-bit variant (10) | 62-bit rand_b
-    high = (timestamp_ms << 16) | 0x7000 | (rand_bytes[0] << 4 | rand_bytes[1] >> 4)
-    # This gives us the first 8 bytes
-    # Actually let me do this more carefully with struct
-
-    # Bytes 0-5: 48-bit unix timestamp ms (big-endian)
-    # Byte 6: version (0111) + top 4 bits of rand
-    # Byte 7: next 8 bits of rand
-    # Byte 8: variant (10) + 6 bits of rand
-    # Bytes 9-15: 48 bits of rand
-    b = struct.pack(">Q", timestamp_ms)[2:]  # 6 bytes of timestamp
-    b += bytes([(0x70 | (rand_bytes[0] & 0x0F)), rand_bytes[1]])  # ver + rand_a
-    b += bytes([0x80 | (rand_bytes[2] & 0x3F)]) + rand_bytes[3:10]  # variant + rand_b
-    return b
 
 
 def _serialize_cert(cert: KeyCertificate) -> dict:
@@ -124,9 +107,7 @@ def _team_device_key_path(root_dir, participant_hex, team_id: bytes, device_id: 
 
 
 def _current_device_row(conn):
-    row = conn.execute(
-        text("SELECT id, key FROM user_device ORDER BY id LIMIT 1")
-    ).fetchone()
+    row = conn.execute("SELECT id, key FROM user_device ORDER BY id LIMIT 1").fetchone()
     if row is None:
         raise ValueError("No local device registered in user_device")
     return row
@@ -270,6 +251,7 @@ def create_new_participant(root_dir, nickname, device=None):
 
     try:
         os.makedirs(ident_dir / "NoteToSelf" / "Sync", exist_ok=False)
+        os.makedirs(ident_dir / "NoteToSelf" / "Local", exist_ok=False)
         os.makedirs(ident_dir / "FakeEnclave", exist_ok=False)
     except Exception as exn:
         print(f"makedirs failed :( {ident_dir}")
@@ -282,8 +264,10 @@ def create_new_participant(root_dir, nickname, device=None):
 
 
 def _initialize_user_db(root_dir, ident, nickname, device):
-    path = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync" / "core.db"
-    engine = create_engine(f"sqlite:///{path}")
+    root_dir = pathlib.Path(root_dir)
+    shared_db_path = note_to_self_sync_db_path(root_dir, ident.hex())
+    local_db_path = device_local_db_path(root_dir, ident.hex())
+    initialize_shared_db(shared_db_path)
     device_id = uuid7()
     device_key = Ed25519PrivateKey.generate()
     device_key_bytes = device_key.private_bytes(
@@ -295,19 +279,30 @@ def _initialize_user_db(root_dir, ident, nickname, device):
         encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
     )
     try:
-        with engine.begin() as conn:
-            _initialize_core_note_to_self_schema(conn)
-
-        with Session(engine) as session:
-            nick1 = Nickname(id=uuid7(), name=nickname)
-            device1 = UserDevice(id=device_id, key=device_public_key_bytes)
-            team1 = Team(id=uuid7(), name="NoteToSelf", self_in_team=b"0")
-            app1 = App(id=uuid7(), name="SmallSeaCollectiveCore")
-            session.add_all([nick1, device1, team1, app1])
-            session.flush()
-            team_app = TeamAppBerth(id=uuid7(), team_id=team1.id, app_id=app1.id)
-            session.add_all([team_app])
-            session.commit()
+        with attached_note_to_self_connection(root_dir, ident.hex()) as conn:
+            conn.execute(
+                "INSERT INTO nickname (id, name) VALUES (?, ?)",
+                (uuid7(), nickname),
+            )
+            conn.execute(
+                "INSERT INTO user_device (id, key) VALUES (?, ?)",
+                (device_id, device_public_key_bytes),
+            )
+            team_id = uuid7()
+            app_id = uuid7()
+            conn.execute(
+                "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
+                (team_id, "NoteToSelf", b"0"),
+            )
+            conn.execute(
+                "INSERT INTO app (id, name) VALUES (?, ?)",
+                (app_id, "SmallSeaCollectiveCore"),
+            )
+            conn.execute(
+                "INSERT INTO team_app_berth (id, team_id, app_id) VALUES (?, ?, ?)",
+                (uuid7(), team_id, app_id),
+            )
+            conn.commit()
 
     except sqlite3.Error as e:
         print("SQLite error occurred:", e)
@@ -497,35 +492,9 @@ def migrate_participant_team_dbs(root_dir, participant_hex):
 
 
 def _initialize_core_note_to_self_schema(conn):
-    result = conn.execute(text("PRAGMA user_version"))
-    user_version = result.scalar()
-
-    if user_version == USER_SCHEMA_VERSION:
-        print("SmallSea local DB already initialized")
-        return
-
-    if (0 != user_version) and (user_version < USER_SCHEMA_VERSION):
-        _migrate_user_db(conn, user_version)
-        conn.execute(text(f"PRAGMA user_version = {USER_SCHEMA_VERSION}"))
-        print(f"User DB migrated from v{user_version} to v{USER_SCHEMA_VERSION}.")
-        return
-
-    if user_version > USER_SCHEMA_VERSION:
-        print("TODO: DB FROM THE FUTURE!")
-        raise NotImplementedError()
-
-    schema_path = pathlib.Path(__file__).parent / "sql" / "core_note_to_self_schema.sql"
-
-    with open(schema_path, "r") as f:
-        schema_script = f.read()
-
-    for statement in schema_script.split(";"):
-        statement = statement.strip()
-        if statement:
-            conn.execute(text(statement))
-
-    conn.execute(text(f"PRAGMA user_version = {USER_SCHEMA_VERSION}"))
-    print("User DB schema initialized successfully.")
+    raise NotImplementedError(
+        "NoteToSelf shared-schema initialization now lives in small_sea_note_to_self.db"
+    )
 
 
 def make_device_link_invitation(session):
@@ -641,23 +610,11 @@ def _load_team_certificates(conn, team_id: bytes) -> list[KeyCertificate]:
 
 
 def _team_row(root_dir, participant_hex, team_name):
-    nts_db_path = (
-        pathlib.Path(root_dir)
-        / "Participants"
-        / participant_hex
-        / "NoteToSelf"
-        / "Sync"
-        / "core.db"
-    )
-    engine = create_engine(f"sqlite:///{nts_db_path}")
-    try:
-        with engine.begin() as conn:
-            row = conn.execute(
-                text("SELECT id, self_in_team FROM team WHERE name = :team_name"),
-                {"team_name": team_name},
-            ).fetchone()
-    finally:
-        engine.dispose()
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute(
+            "SELECT id, self_in_team FROM team WHERE name = ?",
+            (team_name,),
+        ).fetchone()
     if row is None:
         raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
     return row
@@ -765,12 +722,11 @@ def issue_device_link_for_member(root_dir, participant_hex, team_name, linked_de
 def _generate_initial_team_device_key(
     root_dir,
     participant_hex: str,
-    nts_engine,
     team_id: bytes,
 ):
     """Create the local current team-device key for this team."""
     now = datetime.now(timezone.utc).isoformat()
-    with nts_engine.begin() as conn:
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         device_row = _current_device_row(conn)
         device_id = device_row[0]
 
@@ -778,22 +734,24 @@ def _generate_initial_team_device_key(
     device_key_path = _team_device_key_path(root_dir, participant_hex, team_id, device_id)
     _write_local_secret(device_key_path, device_private_key)
 
-    with nts_engine.begin() as conn:
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         conn.execute(
-            text(
-                "INSERT INTO team_device_key ("
-                "team_id, device_id, public_key, private_key_ref, created_at"
-                ") VALUES ("
-                ":team_id, :device_id, :public_key, :private_key_ref, :created_at)"
-            ),
-            {
-                "team_id": team_id,
-                "device_id": device_id,
-                "public_key": device_key.public_key,
-                "private_key_ref": str(device_key_path),
-                "created_at": now,
-            },
+            """
+            INSERT INTO team_device_key (
+                team_id, device_id, public_key, created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (team_id, device_id, device_key.public_key, now),
         )
+        conn.execute(
+            """
+            INSERT INTO local.team_device_key_secret (
+                team_id, device_id, private_key_ref
+            ) VALUES (?, ?, ?)
+            """,
+            (team_id, device_id, str(device_key_path)),
+        )
+        conn.commit()
 
     return {
         "device_id": device_id,
@@ -838,7 +796,7 @@ def _message_key_for(message: GroupMessage, sender_key) -> bytes:
 
 def decrypt_invitation_bootstrap_payload(
     inviter_sender_key, payload: bytes
-) -> bytes:
+) -> tuple[object, bytes]:
     """Decrypt invitation bootstrap bytes when they were published in team mode.
 
     Some bootstrap artifacts may still be plaintext. In that case, return them
@@ -847,37 +805,43 @@ def decrypt_invitation_bootstrap_payload(
     try:
         message = _deserialize_group_message(payload)
     except Exception:
-        return payload
+        return inviter_sender_key, payload
 
-    sender_key = receiver_record_from_distribution(inviter_sender_key)
-    _message_key_for(message, sender_key)
-    _next_sender_key, plaintext = group_decrypt(message, sender_key)
-    return plaintext
+    replay_message_key = _message_key_for(message, inviter_sender_key)
+    next_sender_key, plaintext = group_decrypt(message, inviter_sender_key)
+    replayable_keys = dict(next_sender_key.skipped_message_keys)
+    replayable_keys[message.iteration] = replay_message_key
+    next_sender_key = next_sender_key.__class__(
+        group_id=next_sender_key.group_id,
+        sender_participant_id=next_sender_key.sender_participant_id,
+        chain_id=next_sender_key.chain_id,
+        chain_key=next_sender_key.chain_key,
+        iteration=next_sender_key.iteration,
+        signing_public_key=next_sender_key.signing_public_key,
+        signing_private_key=next_sender_key.signing_private_key,
+        skipped_message_keys=replayable_keys,
+    )
+    return next_sender_key, plaintext
 
 
 def get_current_team_device_key(root_dir, participant_hex, team_name):
     """Return the current device team key as (private_key_bytes, public_key_bytes)."""
     root_dir = pathlib.Path(root_dir)
-    nts_db_path = (
-        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
-    engine = create_engine(f"sqlite:///{nts_db_path}")
-    try:
-        with engine.begin() as conn:
-            row = conn.execute(
-                text(
-                    "SELECT tdk.private_key_ref, tdk.public_key "
-                    "FROM team_device_key tdk "
-                    "JOIN team t ON tdk.team_id = t.id "
-                    "JOIN user_device ud ON tdk.device_id = ud.id "
-                    "WHERE t.name = :team_name "
-                    "AND tdk.revoked_at IS NULL "
-                    "ORDER BY tdk.created_at DESC LIMIT 1"
-                ),
-                {"team_name": team_name},
-            ).fetchone()
-    finally:
-        engine.dispose()
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute(
+            """
+            SELECT tdks.private_key_ref, tdk.public_key
+            FROM team_device_key tdk
+            JOIN team t ON tdk.team_id = t.id
+            JOIN local.team_device_key_secret tdks
+              ON tdks.team_id = tdk.team_id AND tdks.device_id = tdk.device_id
+            WHERE t.name = ?
+              AND tdk.revoked_at IS NULL
+            ORDER BY tdk.created_at DESC
+            LIMIT 1
+            """,
+            (team_name,),
+        ).fetchone()
     if row is None:
         raise ValueError(f"No current device key found for team '{team_name}'")
     return _read_local_secret(pathlib.Path(row[0])), row[1]
@@ -901,17 +865,17 @@ def create_team(root_dir, participant_hex, team_name):
     # --- Update the user's NoteToSelf core.db ---
     # Only a lightweight membership pointer goes here; structural team data
     # (App, TeamAppBerth, BerthRole) lives in the team's own DB.
-    user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
-    engine = create_engine(f"sqlite:///{user_db_path}")
-
-    with Session(engine) as session:
-        team_row = Team(id=team_id, name=team_name, self_in_team=member_id)
-        session.add(team_row)
-        session.commit()
+    user_db_path = note_to_self_sync_db_path(root_dir, participant_hex)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        conn.execute(
+            "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
+            (team_id, team_name, member_id),
+        )
+        conn.commit()
 
     # --- Generate local current device key ---
     team_keys = _generate_initial_team_device_key(
-        root_dir, participant_hex, engine, team_id
+        root_dir, participant_hex, team_id
     )
     membership_cert = issue_membership_cert(
         subject_key=team_keys["device_key"],
@@ -921,7 +885,9 @@ def create_team(root_dir, participant_hex, team_name):
         issuer_member_id=member_id,
         admitted_member_id=member_id,
     )
-    _initialize_team_sender_key_state(user_db_path, team_id, member_id)
+    _initialize_team_sender_key_state(
+        device_local_db_path(root_dir, participant_hex), team_id, member_id
+    )
 
     # --- Create team directory and its core.db ---
     team_sync_dir = participant_dir / team_name / "Sync"
@@ -985,13 +951,10 @@ def create_invitation(
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
 
-    user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
-    user_engine = create_engine(f"sqlite:///{user_db_path}")
-
-    with user_engine.begin() as conn:
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         team_row = conn.execute(
-            text("SELECT id, self_in_team FROM team WHERE name = :team_name"),
-            {"team_name": team_name},
+            "SELECT id, self_in_team FROM team WHERE name = ?",
+            (team_name,),
         ).fetchone()
     if team_row is None:
         raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
@@ -1002,7 +965,9 @@ def create_invitation(
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
     team_engine = create_engine(f"sqlite:///{team_db_path}")
 
-    inviter_sender_key = load_team_sender_key(user_db_path, team_id)
+    inviter_sender_key = load_team_sender_key(
+        device_local_db_path(root_dir, participant_hex), team_id
+    )
     if inviter_sender_key is None:
         raise ValueError(f"No sender key found for team '{team_name}'")
 
@@ -1044,9 +1009,7 @@ def create_invitation(
         "inviter_display_name": inviter_display_name,
         "inviter_cloud": {"protocol": inviter_cloud["protocol"], "url": inviter_cloud["url"]},
         "inviter_bucket": inviter_bucket,
-        "inviter_sender_key": serialize_distribution_message(
-            distribution_message_from_record(inviter_sender_key)
-        ),
+        "inviter_sender_key": serialize_sender_key_record(inviter_sender_key),
     }
     token_json = json.dumps(token_data)
     token_b64 = base64.b64encode(token_json.encode()).decode()
@@ -1164,25 +1127,24 @@ def accept_invitation(
     # --- Add team membership pointer to acceptor's NoteToSelf ---
     # Only a lightweight Team reference goes in NoteToSelf; structural data
     # (App, TeamAppBerth, BerthRole) lives in the team DB, which was cloned above.
-    user_db_path = acceptor_dir / "NoteToSelf" / "Sync" / "core.db"
-    user_engine = create_engine(f"sqlite:///{user_db_path}")
-
-    with Session(user_engine) as session:
-        team_row = Team(id=team_id, name=team_name, self_in_team=acceptor_member_id)
-        session.add(team_row)
-        session.commit()
+    with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
+        conn.execute(
+            "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
+            (team_id, team_name, acceptor_member_id),
+        )
+        conn.commit()
 
     # --- Generate local current device key ---
     team_keys = _generate_initial_team_device_key(
-        root_dir, acceptor_participant_hex, user_engine, team_id
+        root_dir, acceptor_participant_hex, team_id
     )
     save_peer_sender_key(
-        user_db_path,
+        device_local_db_path(root_dir, acceptor_participant_hex),
         team_id,
         receiver_record_from_distribution(inviter_sender_key),
     )
     acceptor_sender_key = _initialize_team_sender_key_state(
-        user_db_path, team_id, acceptor_member_id
+        device_local_db_path(root_dir, acceptor_participant_hex), team_id, acceptor_member_id
     )
 
     # --- Git commit the DB changes ---
@@ -1374,9 +1336,8 @@ def complete_invitation_acceptance(
     CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
     CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Accepted invitation"])
 
-    user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
     save_peer_sender_key(
-        user_db_path,
+        device_local_db_path(root_dir, participant_hex),
         team_id,
         receiver_record_from_distribution(acceptor_sender_key),
     )
@@ -1400,21 +1361,21 @@ def add_notification_service(
         raise ValueError(f"Unknown notification protocol: {protocol}")
 
     root_dir = pathlib.Path(root_dir)
-    user_db_path = (
-        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
-    engine = create_engine(f"sqlite:///{user_db_path}")
     ns_id = uuid7()
-    with Session(engine) as session:
-        ns = NotificationService(
-            id=ns_id,
-            protocol=protocol,
-            url=url,
-            access_key=access_key,
-            access_token=access_token,
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        conn.execute(
+            "INSERT INTO notification_service (id, protocol, url) VALUES (?, ?, ?)",
+            (ns_id, protocol, url),
         )
-        session.add(ns)
-        session.commit()
+        conn.execute(
+            """
+            INSERT INTO local.notification_service_credential (
+                notification_service_id, access_key, access_token
+            ) VALUES (?, ?, ?)
+            """,
+            (ns_id, access_key, access_token),
+        )
+        conn.commit()
     return ns_id.hex()
 
 
@@ -1434,22 +1395,34 @@ def set_notification_service(
         raise ValueError(f"Unknown notification protocol: {protocol}")
 
     root_dir = pathlib.Path(root_dir)
-    user_db_path = (
-        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
-    engine = create_engine(f"sqlite:///{user_db_path}")
     ns_id = uuid7()
-    with Session(engine) as session:
-        session.query(NotificationService).filter_by(protocol=protocol).delete()
-        ns = NotificationService(
-            id=ns_id,
-            protocol=protocol,
-            url=url,
-            access_key=access_key,
-            access_token=access_token,
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        old_ids = conn.execute(
+            "SELECT id FROM notification_service WHERE protocol = ?",
+            (protocol,),
+        ).fetchall()
+        for old_id, in old_ids:
+            conn.execute(
+                "DELETE FROM local.notification_service_credential WHERE notification_service_id = ?",
+                (old_id,),
+            )
+        conn.execute(
+            "DELETE FROM notification_service WHERE protocol = ?",
+            (protocol,),
         )
-        session.add(ns)
-        session.commit()
+        conn.execute(
+            "INSERT INTO notification_service (id, protocol, url) VALUES (?, ?, ?)",
+            (ns_id, protocol, url),
+        )
+        conn.execute(
+            """
+            INSERT INTO local.notification_service_credential (
+                notification_service_id, access_key, access_token
+            ) VALUES (?, ?, ?)
+            """,
+            (ns_id, access_key, access_token),
+        )
+        conn.commit()
     return ns_id.hex()
 
 
@@ -1459,15 +1432,16 @@ def get_cloud_storage(root_dir, participant_hex):
     Raises ValueError if no cloud storage is configured.
     """
     root_dir = pathlib.Path(root_dir)
-    nts_db_path = (
-        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
-    engine = create_engine(f"sqlite:///{nts_db_path}")
-    with engine.begin() as conn:
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         row = conn.execute(
-            text("SELECT protocol, url, access_key, secret_key FROM cloud_storage LIMIT 1")
+            """
+            SELECT cs.protocol, cs.url, csc.access_key, csc.secret_key
+            FROM cloud_storage cs
+            LEFT JOIN local.cloud_storage_credential csc
+              ON csc.cloud_storage_id = cs.id
+            LIMIT 1
+            """
         ).fetchone()
-    engine.dispose()
     if row is None:
         raise ValueError("No cloud storage configured for this participant")
     return {"protocol": row[0], "url": row[1], "access_key": row[2], "secret_key": row[3]}
@@ -1488,43 +1462,48 @@ def add_cloud_storage(
 ):
     """Add a cloud storage configuration to a participant's NoteToSelf DB."""
     root_dir = pathlib.Path(root_dir)
-    nts_db_path = (
-        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
-    engine = create_engine(f"sqlite:///{nts_db_path}")
-    with engine.begin() as conn:
+    storage_id = uuid7()
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         conn.execute(
-            text(
-                "INSERT INTO cloud_storage "
-                "(id, protocol, url, access_key, secret_key, "
-                " client_id, client_secret, refresh_token, access_token, token_expiry) "
-                "VALUES "
-                "(:id, :protocol, :url, :access_key, :secret_key, "
-                " :client_id, :client_secret, :refresh_token, :access_token, :token_expiry)"
-            ),
-            {
-                "id": uuid7(), "protocol": protocol, "url": url,
-                "access_key": access_key, "secret_key": secret_key,
-                "client_id": client_id, "client_secret": client_secret,
-                "refresh_token": refresh_token, "access_token": access_token,
-                "token_expiry": token_expiry,
-            },
+            """
+            INSERT INTO cloud_storage (id, protocol, url, client_id, path_metadata)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (storage_id, protocol, url, client_id, None),
         )
-    engine.dispose()
+        conn.execute(
+            """
+            INSERT INTO local.cloud_storage_credential (
+                cloud_storage_id, access_key, secret_key, client_secret,
+                refresh_token, access_token, token_expiry
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                storage_id,
+                access_key,
+                secret_key,
+                client_secret,
+                refresh_token,
+                access_token,
+                token_expiry,
+            ),
+        )
+        conn.commit()
 
 
 def list_cloud_storage(root_dir, participant_hex):
     """Return all cloud storage configs as a list of dicts (credentials masked)."""
     root_dir = pathlib.Path(root_dir)
-    nts_db_path = (
-        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
-    engine = create_engine(f"sqlite:///{nts_db_path}")
-    with engine.begin() as conn:
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         rows = conn.execute(
-            text("SELECT id, protocol, url, access_key, client_id FROM cloud_storage ORDER BY rowid")
+            """
+            SELECT cs.id, cs.protocol, cs.url, csc.access_key, cs.client_id
+            FROM cloud_storage cs
+            LEFT JOIN local.cloud_storage_credential csc
+              ON csc.cloud_storage_id = cs.id
+            ORDER BY rowid
+            """
         ).fetchall()
-    engine.dispose()
     result = []
     for row in rows:
         storage_id = row[0].hex() if isinstance(row[0], bytes) else row[0]
@@ -1541,17 +1520,17 @@ def list_cloud_storage(root_dir, participant_hex):
 def remove_cloud_storage(root_dir, participant_hex, storage_id_hex):
     """Remove a cloud storage config by its hex ID."""
     root_dir = pathlib.Path(root_dir)
-    nts_db_path = (
-        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
     storage_id = bytes.fromhex(storage_id_hex)
-    engine = create_engine(f"sqlite:///{nts_db_path}")
-    with engine.begin() as conn:
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         conn.execute(
-            text("DELETE FROM cloud_storage WHERE id = :id"),
-            {"id": storage_id},
+            "DELETE FROM local.cloud_storage_credential WHERE cloud_storage_id = ?",
+            (storage_id,),
         )
-    engine.dispose()
+        conn.execute(
+            "DELETE FROM cloud_storage WHERE id = ?",
+            (storage_id,),
+        )
+        conn.commit()
 
 
 def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
@@ -1583,30 +1562,16 @@ def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
 def get_nickname(root_dir, participant_hex):
     """Return the participant's first nickname, or empty string if none."""
     root_dir = pathlib.Path(root_dir)
-    nts_db_path = (
-        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
-    engine = create_engine(f"sqlite:///{nts_db_path}")
-    with engine.begin() as conn:
-        row = conn.execute(text("SELECT name FROM nickname LIMIT 1")).fetchone()
-    engine.dispose()
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute("SELECT name FROM nickname LIMIT 1").fetchone()
     return row[0] if row else ""
 
 
 def list_teams(root_dir, participant_hex):
     """List teams from NoteToSelf DB. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
-    nts_db_path = (
-        root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
-    )
-    engine = create_engine(f"sqlite:///{nts_db_path}")
-
-    with engine.begin() as conn:
-        rows = conn.execute(
-            text("SELECT id, name, self_in_team FROM team")
-        ).fetchall()
-
-    engine.dispose()
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        rows = conn.execute("SELECT id, name, self_in_team FROM team").fetchall()
     return [
         {"id": row[0].hex(), "name": row[1], "self_in_team": row[2].hex()}
         for row in rows

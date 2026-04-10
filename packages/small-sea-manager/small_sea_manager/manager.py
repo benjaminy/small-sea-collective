@@ -176,9 +176,18 @@ class TeamManager:
         token = _json.loads(_b64.b64decode(token_b64))
         inviter_cloud = token["inviter_cloud"]
         inviter_bucket = token["inviter_bucket"]
-        inviter_sender_key = provisioning.deserialize_distribution_message(
+        inviter_sender_key_state = provisioning.deserialize_sender_key_record(
             token["inviter_sender_key"]
         )
+
+        def _decrypt_payload(payload):
+            nonlocal inviter_sender_key_state
+            inviter_sender_key_state, plaintext = (
+                provisioning.decrypt_invitation_bootstrap_payload(
+                    inviter_sender_key_state, payload
+                )
+            )
+            return plaintext
 
         # NoteToSelf session to access /cloud_proxy for the inviter's bucket.
         # The acceptor doesn't have a team session yet — NoteToSelf provides auth.
@@ -191,9 +200,7 @@ class TeamManager:
             inviter_bucket,
             base_url=self.client._base_url,
             client=http,
-            download_transform=lambda payload: provisioning.decrypt_invitation_bootstrap_payload(
-                inviter_sender_key, payload
-            ),
+            download_transform=_decrypt_payload,
         )
 
         # Clone + local DB writes. No cloud push happens here.

@@ -57,7 +57,8 @@ Everything important is persisted to durable storage:
 | Session tokens and all session metadata | Hub SQLite DB (`small_sea_collective_local.db`) |
 | Peer cloud locations | Team DB (`peer` table), synced via Cod Sync |
 | Signal file contents (push counts) | Cloud storage (`signals.yaml`) |
-| Cloud credentials | NoteToSelf DB (`cloud_storage` table) |
+| Cloud locator metadata | NoteToSelf shared DB (`cloud_storage` table) |
+| Cloud credentials | NoteToSelf device-local DB (`cloud_storage_credential` table) |
 
 The Hub's in-process state (`watched_sessions`, `watched_peers`, `peer_counts`) is
 derived entirely from these durable sources and is **rebuilt at startup**:
@@ -93,21 +94,31 @@ The shared databases are the contract between them.
     {participant_hex}/
       NoteToSelf/
         Sync/
-          core.db                        ← NoteToSelf DB (written by Manager)
+          core.db                        ← shared NoteToSelf DB (written by Manager)
+        Local/
+          device_local.db                ← device-local NoteToSelf DB (written by Manager)
       {TeamName}/
         Sync/
           core.db                        ← Team DB (written by Manager, synced via Cod Sync)
 ```
 
-**Tables the Hub reads from the NoteToSelf DB** (`NoteToSelf/Sync/core.db`):
+**Tables the Hub reads from shared NoteToSelf** (`NoteToSelf/Sync/core.db`):
 
 | Table | Used for |
 |---|---|
 | `nickname` | Resolving a participant by human name during session request |
 | `team` | Looking up team ID for any session (including non-NoteToSelf teams) |
 | `app`, `team_app_berth` | NoteToSelf app/berth lookup |
-| `cloud_storage` | Routing cloud uploads/downloads for any session |
-| `notification_service` | Routing notifications for any session |
+| `cloud_storage` | Shared cloud locator metadata for routing uploads/downloads |
+| `notification_service` | Shared notification-service metadata |
+
+**Tables the Hub reads from device-local NoteToSelf** (`NoteToSelf/Local/device_local.db`):
+
+| Table | Used for |
+|---|---|
+| `cloud_storage_credential` | Device-local cloud auth material |
+| `notification_service_credential` | Device-local notification auth material |
+| `team_sender_key`, `peer_sender_key` | Device-local encrypted-runtime state |
 
 **Tables the Hub reads from a team DB** (`{TeamName}/Sync/core.db`):
 
@@ -123,21 +134,23 @@ Apps upload and download opaque files; the Hub routes them to the correct bucket
 ### Supported Protocols
 
 **S3-compatible** (`protocol = "s3"`): Any S3-compatible endpoint (AWS, MinIO, etc.).
-Requires `url`, `access_key`, `secret_key` in the `cloud_storage` row.
+Requires `url` in shared `cloud_storage`, plus `access_key` and `secret_key`
+in local `cloud_storage_credential`.
 Bucket name is derived as `ss-{berth_id_hex[:16]}`.
 Uses AWS Signature Version 4.
 
 **Google Drive** (`protocol = "gdrive"`): OAuth2.
-Requires `client_id`, `client_secret`, `refresh_token`.
-The Hub refreshes the access token transparently before each operation and persists
-the new token back to `cloud_storage`.
+Requires shared `client_id` plus local `client_secret` and `refresh_token`.
+The Hub refreshes the access token transparently before each operation and
+persists the new token back to local `cloud_storage_credential`.
 
 **Dropbox** (`protocol = "dropbox"`): OAuth2.
 Same token refresh pattern as Google Drive.
 
 ### Credential Management
 
-Cloud storage credentials are stored in the user's NoteToSelf database (`cloud_storage` table).
+Cloud storage locator metadata is stored in shared NoteToSelf; credentials and
+refresh state are stored in device-local NoteToSelf.
 For OAuth-based providers (Google Drive, Dropbox), the Hub handles token refresh transparently.
 
 Credential storage is likely to evolve — options include OS keyring integration, a local vault,
@@ -152,8 +165,9 @@ This is used by Cod Sync to detect concurrent writes to the bundle-chain head.
 
 ## Notifications
 
-The Hub supports push notifications via two adapters. A `notification_service` row must be
-present in the participant's NoteToSelf DB (managed by Small Sea Manager).
+The Hub supports push notifications via two adapters. A shared
+`notification_service` row must be present in NoteToSelf, and any needed auth
+tokens live in device-local `notification_service_credential`.
 
 ### Supported protocols
 
