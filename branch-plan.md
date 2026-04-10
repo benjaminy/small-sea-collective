@@ -294,7 +294,7 @@ If later a provider forces this to differ per device, that can be revisited.
 
 ### Q3. Does `path_metadata` stay shared?
 
-**Default:** yes.
+**Decision:** yes.
 
 Provider object IDs and similar path metadata are not auth secrets and may be
 useful across devices.
@@ -313,30 +313,8 @@ Implementation shape:
 The local DB must evolve independently from the shared DB without pretending
 they are the same file.
 
-### Q5. How does the Hub read the local DB?
-
-**Default:** directly, just like it already reads the shared DB.
-
-This branch should not invent a new API boundary for secret lookup.
-The Hub remains a local peer process reading Manager-owned SQLite files.
-
-### Q6. Extract `small-sea-note-to-self` package to break Hub → Manager dependency
-
-The Hub currently imports from Manager for `sender_keys` and `uuid7`. Rather
-than deepening that dependency with the new ATTACH helper, this branch should
-extract a new `small-sea-note-to-self` package that owns:
-
-- NoteToSelf DB path construction and the ATTACH helper
-- sender key load/save (currently `small_sea_manager.sender_keys`)
-- `uuid7` (currently `small_sea_manager.provisioning`)
-- the shared and device-local schema files
-
-Both Manager and Hub depend on `small-sea-note-to-self`. Neither depends on
-the other. This fixes an existing architectural smell (Hub → Manager) rather
-than making it worse.
-
-The package is deliberately narrow: NoteToSelf storage access. Sync, merging,
-app logic, and other shared concerns do not belong here.
+(Q5 and Q6 from earlier drafts are now covered by the Decisions section and
+Constraint 5.)
 
 ## Current Access Pattern (from repo audit)
 
@@ -371,19 +349,35 @@ Benefits:
 
 - most query code does not need to manage two separate connections
 - JOINs across shared and local tables work naturally
-  (e.g. `SELECT s.url, l.access_key FROM shared.cloud_storage s JOIN
-  local.cloud_storage_credential l ON s.id = l.cloud_storage_id`)
 - the split is invisible to most call sites once they use the central helper
 - both the Manager and Hub can use the same helper
+
+Note on Constraint 2.5 (visibility ≠ usability): query code must choose the
+right JOIN style depending on intent:
+
+- **LEFT JOIN** for listing/discovery — show known remotes even without local
+  credentials (e.g. "these cloud storage providers are configured for this
+  identity")
+- **INNER JOIN** for operational use — require matching local credentials
+  (e.g. "give me the credentials I need to actually authenticate")
 
 Architecture decision:
 
 - for **NoteToSelf storage**, standardize on a SQLite-first access layer owned
   by `small-sea-note-to-self`
-- that package owns the NoteToSelf queries/helpers instead of trying to make
-  ad hoc SQLAlchemy engines and raw sqlite calls coexist indefinitely
+- the new package owns **connection management and schema** — not query helpers
+- higher-level query helpers (e.g. `get_cloud_storage()`, `set_notification_service()`)
+  stay in their current packages (provisioning.py, backend.py) and use the
+  central connection helper. Hub and Manager may have similar query code — that
+  duplication is acceptable for now; DRY-ing it can be future work.
 - team DB access can stay on its current patterns for now; this branch is about
   NoteToSelf
+
+This branch migrates all NoteToSelf access through the central helper. Whether
+every existing SQLAlchemy `create_engine` call gets rewritten to raw sqlite3
+is a pragmatic per-call-site decision during implementation. The requirement is
+"all NoteToSelf access goes through the central helper"; the helper itself
+standardizes on sqlite3 + ATTACH.
 
 The central helper should:
 
@@ -424,7 +418,9 @@ Likely files:
 
 Expected work:
 
-- add `small-sea-note-to-self` dependency, remove schema SQL files that moved
+- add `small-sea-note-to-self` dependency
+- delete `core_note_to_self_schema.sql` from the Manager package (it moves to
+  the new package as `shared_schema.sql` + `device_local_schema.sql`)
 - replace ad-hoc DB opens with central helper imports
 - replace local `uuid7` / `sender_keys` imports with new package imports
 
@@ -446,7 +442,7 @@ Expected work:
 - update notification lookup to read from local DB
 - update docs
 
-### 5. Tests
+### 4. Tests
 
 Likely test areas:
 
