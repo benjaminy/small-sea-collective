@@ -62,6 +62,13 @@ The flow is standard **sign-then-encrypt**:
 This avoids any ambiguity about what bytes the signature covers — it's always
 the canonical bundle JSON, which never contains the signature itself.
 
+Encoding rule for this branch:
+
+- the wrapper carries the bundle as a parsed object
+- both sides reserialize that object with the existing canonical JSON helper
+  before signing / verifying
+- there is exactly one canonical byte representation of the bundle JSON
+
 Why this works:
 
 - signing and encryption stay cleanly separated
@@ -240,8 +247,11 @@ can absorb the additional key columns cleanly (fresh-schema rules still apply).
 - after NoteToSelf pull, the joining device:
   - looks up `authorizing_device_id_hex` in the pulled `user_device` table
   - verifies the signature against that device's Ed25519 signing public key
-  - if verification fails, marks the bootstrap untrusted and refuses further
-    identity-join completion actions in this branch
+  - if verification fails, marks the installation as
+    `identity_bootstrap_untrusted`
+  - an `identity_bootstrap_untrusted` installation is blocked from normal
+    identity/team use in this branch
+  - recovery path is explicit reset/restart of bootstrap, not "proceed anyway"
   - if verification passes, computes/displays the second short confirmation
     string for side-by-side human confirmation
 
