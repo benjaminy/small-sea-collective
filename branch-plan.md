@@ -147,7 +147,8 @@ Before the welcome bundle exists, the joining device should have only:
 
 - its new NoteToSelf device keypair
 - its new device UUID
-- a public join request artifact derived from those
+- a public join request artifact (device UUID + public key, serialized as a
+  text-copyable string for v1) derived from those
 
 After the welcome bundle arrives, but before the first NoteToSelf pull, the
 joining device should have only:
@@ -196,16 +197,20 @@ The welcome bundle should at least include:
 - bundle format/version
 - participant UUID
 - joining device UUID
-- joining device public key echoed back
+- joining device public key echoed back (for cross-check on receipt)
 - identity label / nickname for UI clarity
 - exact NoteToSelf remote descriptor
-- lightweight verification metadata if useful
-  - for example current `latest-link` identifier, issued-at, expiry, or
-    authorizing device label
+- `issued_at` timestamp (for staleness detection)
+- `authorizing_device_label` (UX — tells the user which device admitted them)
 
 For this branch, the remote descriptor can start from the existing invitation /
 `ExplicitProxyRemote` convention, but the plan should not overfit to
 bucket-shaped backends forever.
+
+The welcome bundle should be **encrypted to the joining device's public key**.
+The authorizing device already has that key from OOB leg 1, so this is natural.
+It means the bundle is safe to pass over an insecure OOB channel (email, photo,
+etc.) — only the intended device can read the remote locator details inside.
 
 The welcome bundle must not include:
 
@@ -375,8 +380,12 @@ Before coding much:
 Implement the joining-device side first:
 
 - generate the device UUID + keypair
-- expose the public join request artifact
-- keep the private key local
+- store the private key in the enclave (FakeEnclave for now) immediately —
+  this happens before the full Small Sea directory layout exists, so the
+  enclave ref lives in the Manager's own app/config folder as a trivial file
+  until Phase 4 records it in the device-local DB
+- expose the public join request artifact (device UUID + public key as a
+  text-copyable string)
 
 ### Phase 2: Rich welcome bundle
 
