@@ -25,8 +25,11 @@ import shutil
 import subprocess
 
 import cod_sync.protocol as CodSync
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cuttlefish import (
+    generate_bootstrap_keypair,
+    open_welcome_bundle,
+    seal_welcome_bundle,
+)
 from cuttlefish.group import (
     GroupMessage,
     _advance_chain_key,
@@ -37,8 +40,19 @@ from cuttlefish.group import (
 from small_sea_note_to_self.db import (
     attached_note_to_self_connection,
     device_local_db_path,
+    initialize_bootstrap_local_state,
     initialize_shared_db,
     note_to_self_sync_db_path,
+)
+from small_sea_note_to_self.bootstrap import (
+    JoinRequestArtifact,
+    WelcomeBundle,
+    deserialize_join_request_artifact,
+    deserialize_welcome_bundle_plaintext,
+    join_request_auth_string,
+    serialize_join_request_artifact,
+    serialize_welcome_bundle_plaintext,
+    welcome_bundle_aad,
 )
 from small_sea_note_to_self.ids import uuid7
 from small_sea_note_to_self.sender_keys import (
@@ -100,14 +114,43 @@ def _fake_enclave_dir(root_dir, participant_hex) -> pathlib.Path:
     return pathlib.Path(root_dir) / "Participants" / participant_hex / "FakeEnclave"
 
 
+def _bootstrap_state_dir(root_dir) -> pathlib.Path:
+    return pathlib.Path(root_dir) / ".small-sea-manager"
+
+
+def _bootstrap_fake_enclave_dir(root_dir) -> pathlib.Path:
+    return _bootstrap_state_dir(root_dir) / "FakeEnclave"
+
+
+def _bootstrap_state_path(root_dir) -> pathlib.Path:
+    return _bootstrap_state_dir(root_dir) / "pending_identity_join.json"
+
+
 def _team_device_key_path(root_dir, participant_hex, team_id: bytes, device_id: bytes) -> pathlib.Path:
     return _fake_enclave_dir(root_dir, participant_hex) / (
         f"team-device-{team_id.hex()}-{device_id.hex()}.key"
     )
 
 
+def _note_to_self_device_key_path(root_dir, participant_hex, device_id: bytes) -> pathlib.Path:
+    return _fake_enclave_dir(root_dir, participant_hex) / f"device-{device_id.hex()}.key"
+
+
+def _bootstrap_pending_device_key_path(root_dir, device_id: bytes) -> pathlib.Path:
+    return _bootstrap_fake_enclave_dir(root_dir) / f"pending-device-{device_id.hex()}.key"
+
+
 def _current_device_row(conn):
-    row = conn.execute("SELECT id, key FROM user_device ORDER BY id LIMIT 1").fetchone()
+    row = conn.execute(
+        """
+        SELECT ud.id, ud.key
+        FROM user_device ud
+        JOIN local.note_to_self_device_key_secret ndks
+          ON ndks.device_id = ud.id
+        ORDER BY ud.id
+        LIMIT 1
+        """
+    ).fetchone()
     if row is None:
         raise ValueError("No local device registered in user_device")
     return row
@@ -129,6 +172,76 @@ def _participant_key_from_public(public_key: bytes) -> ParticipantKey:
         public_key=public_key,
         protection_level=ProtectionLevel.DAILY,
         created_at_iso=datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _persist_pending_join_state(root_dir, state: dict) -> None:
+    path = _bootstrap_state_path(root_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, sort_keys=True, indent=2))
+
+
+def _load_pending_join_state(root_dir) -> dict:
+    path = _bootstrap_state_path(root_dir)
+    if not path.exists():
+        raise ValueError("No pending identity-join state found")
+    return json.loads(path.read_text())
+
+
+def _clear_pending_join_state(root_dir) -> None:
+    path = _bootstrap_state_path(root_dir)
+    if path.exists():
+        path.unlink()
+
+
+def _single_note_to_self_remote_descriptor(root_dir, participant_hex: str) -> dict:
+    root_dir = pathlib.Path(root_dir)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        rows = conn.execute(
+            """
+            SELECT id, protocol, url, client_id, path_metadata
+            FROM cloud_storage
+            ORDER BY rowid
+            """
+        ).fetchall()
+    if not rows:
+        raise ValueError("No NoteToSelf remote configured for this participant")
+    if len(rows) != 1:
+        raise ValueError("Expected exactly one NoteToSelf remote configuration")
+    row = rows[0]
+    return {
+        "storage_id_hex": row[0].hex(),
+        "protocol": row[1],
+        "url": row[2],
+        "client_id": row[3],
+        "path_metadata": row[4],
+    }
+
+
+def _push_note_to_self_to_local_remote(root_dir, participant_hex: str, remote_descriptor: dict) -> None:
+    protocol = remote_descriptor["protocol"]
+    if protocol != "localfolder":
+        raise NotImplementedError(
+            "Identity bootstrap currently supports only localfolder NoteToSelf remotes"
+        )
+    remote_path = remote_descriptor["url"]
+    repo_dir = pathlib.Path(root_dir) / "Participants" / participant_hex / "NoteToSelf" / "Sync"
+    cod = CodSync.CodSync("identity-bootstrap", repo_dir=repo_dir)
+    cod.remote = CodSync.LocalFolderRemote(remote_path)
+    if cod.remote.path is None:
+        raise ValueError(f"Invalid localfolder remote path: {remote_path}")
+    cod.push_to_remote(["main"])
+
+
+def _remote_from_descriptor(remote_descriptor: dict):
+    protocol = remote_descriptor["protocol"]
+    if protocol == "localfolder":
+        remote = CodSync.LocalFolderRemote(remote_descriptor["url"])
+        if remote.path is None:
+            raise ValueError(f"Invalid localfolder remote path: {remote_descriptor['url']}")
+        return remote
+    raise NotImplementedError(
+        f"Unsupported NoteToSelf bootstrap remote protocol: {protocol}"
     )
 
 
@@ -269,15 +382,7 @@ def _initialize_user_db(root_dir, ident, nickname, device):
     local_db_path = device_local_db_path(root_dir, ident.hex())
     initialize_shared_db(shared_db_path)
     device_id = uuid7()
-    device_key = Ed25519PrivateKey.generate()
-    device_key_bytes = device_key.private_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PrivateFormat.Raw,
-        encryption_algorithm=serialization.NoEncryption(),
-    )
-    device_public_key_bytes = device_key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw, format=serialization.PublicFormat.Raw
-    )
+    device_key_bytes, device_public_key_bytes = generate_bootstrap_keypair()
     try:
         with attached_note_to_self_connection(root_dir, ident.hex()) as conn:
             conn.execute(
@@ -302,12 +407,21 @@ def _initialize_user_db(root_dir, ident, nickname, device):
                 "INSERT INTO team_app_berth (id, team_id, app_id) VALUES (?, ?, ?)",
                 (uuid7(), team_id, app_id),
             )
+            device_key_path = _note_to_self_device_key_path(root_dir, ident.hex(), device_id)
+            conn.execute(
+                """
+                INSERT INTO local.note_to_self_device_key_secret (
+                    device_id, private_key_ref
+                ) VALUES (?, ?)
+                """,
+                (device_id, str(device_key_path)),
+            )
             conn.commit()
 
     except sqlite3.Error as e:
         print("SQLite error occurred:", e)
 
-    device_key_path = _fake_enclave_dir(root_dir, ident.hex()) / f"device-{device_id.hex()}.key"
+    device_key_path = _note_to_self_device_key_path(root_dir, ident.hex(), device_id)
     _write_local_secret(device_key_path, device_key_bytes)
 
     repo_dir = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
@@ -316,6 +430,184 @@ def _initialize_user_db(root_dir, ident, nickname, device):
     CodSync.gitCmd(
         ["-C", str(repo_dir), "commit", "-m", f"Welcome to Small Sea Collective"]
     )
+
+
+def create_identity_join_request(root_dir):
+    """Create a persisted public join request artifact for a blank installation."""
+    root_dir = pathlib.Path(root_dir)
+    device_id = uuid7()
+    device_private_key_bytes, device_public_key_bytes = generate_bootstrap_keypair()
+    pending_key_path = _bootstrap_pending_device_key_path(root_dir, device_id)
+    _write_local_secret(pending_key_path, device_private_key_bytes)
+
+    artifact = JoinRequestArtifact(
+        version=1,
+        device_id_hex=device_id.hex(),
+        device_public_key_hex=device_public_key_bytes.hex(),
+    )
+    auth_string = join_request_auth_string(artifact)
+    _persist_pending_join_state(
+        root_dir,
+        {
+            "device_id_hex": device_id.hex(),
+            "device_public_key_hex": device_public_key_bytes.hex(),
+            "private_key_ref": str(pending_key_path),
+            "join_request_artifact": serialize_join_request_artifact(artifact),
+            "auth_string": auth_string,
+        },
+    )
+    return {
+        "join_request_artifact": serialize_join_request_artifact(artifact),
+        "auth_string": auth_string,
+    }
+
+
+def authorize_identity_join(
+    root_dir,
+    participant_hex,
+    join_request_artifact_b64,
+    *,
+    expires_in_seconds: int = 600,
+):
+    """Admit a new device into shared NoteToSelf and return a sealed welcome bundle."""
+    if expires_in_seconds <= 0:
+        raise ValueError("expires_in_seconds must be positive")
+
+    root_dir = pathlib.Path(root_dir)
+    artifact = deserialize_join_request_artifact(join_request_artifact_b64)
+    auth_string = join_request_auth_string(artifact)
+    device_id = bytes.fromhex(artifact.device_id_hex)
+    device_public_key = bytes.fromhex(artifact.device_public_key_hex)
+    inserted_user_device = False
+
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        existing = conn.execute(
+            "SELECT key FROM user_device WHERE id = ?",
+            (device_id,),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO user_device (id, key) VALUES (?, ?)",
+                (device_id, device_public_key),
+            )
+            conn.commit()
+            inserted_user_device = True
+        elif existing[0] != device_public_key:
+            raise ValueError("A device with that ID is already registered with a different key")
+
+    remote_descriptor = _single_note_to_self_remote_descriptor(root_dir, participant_hex)
+    if inserted_user_device:
+        repo_dir = root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync"
+        CodSync.gitCmd(["-C", str(repo_dir), "add", "core.db"])
+        CodSync.gitCmd(
+            ["-C", str(repo_dir), "commit", "-m", f"Admit device {artifact.device_id_hex[:8]}"]
+        )
+        _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
+
+    now = datetime.now(timezone.utc)
+    expires = now.timestamp() + expires_in_seconds
+    bundle = WelcomeBundle(
+        version=1,
+        participant_hex=participant_hex,
+        joining_device_id_hex=artifact.device_id_hex,
+        joining_device_public_key_hex=artifact.device_public_key_hex,
+        identity_label=get_nickname(root_dir, participant_hex),
+        remote_descriptor=remote_descriptor,
+        issued_at=now.isoformat(),
+        expires_at=datetime.fromtimestamp(expires, timezone.utc).isoformat(),
+        authorizing_device_label=get_nickname(root_dir, participant_hex),
+    )
+    aad = welcome_bundle_aad(
+        joining_device_id_hex=bundle.joining_device_id_hex,
+        version=bundle.version,
+    )
+    sealed = seal_welcome_bundle(
+        device_public_key,
+        serialize_welcome_bundle_plaintext(bundle),
+        associated_data=aad,
+    )
+    return {
+        "welcome_bundle": base64.b64encode(sealed).decode("ascii"),
+        "auth_string": auth_string,
+    }
+
+
+def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
+    """Complete identity bootstrap on a previously blank installation."""
+    root_dir = pathlib.Path(root_dir)
+    state = _load_pending_join_state(root_dir)
+    pending_artifact = deserialize_join_request_artifact(state["join_request_artifact"])
+    pending_private_key_bytes = _read_local_secret(pathlib.Path(state["private_key_ref"]))
+
+    sealed_bundle = base64.b64decode(welcome_bundle_b64.encode("ascii"))
+    aad = welcome_bundle_aad(
+        joining_device_id_hex=pending_artifact.device_id_hex,
+        version=1,
+    )
+    plaintext = open_welcome_bundle(
+        pending_private_key_bytes,
+        sealed_bundle,
+        associated_data=aad,
+    )
+    bundle = deserialize_welcome_bundle_plaintext(plaintext)
+    if bundle.joining_device_id_hex != pending_artifact.device_id_hex:
+        raise ValueError("Welcome bundle device_id does not match pending join request")
+    if bundle.joining_device_public_key_hex != pending_artifact.device_public_key_hex:
+        raise ValueError("Welcome bundle public key does not match pending join request")
+
+    now = datetime.now(timezone.utc)
+    expires_at = datetime.fromisoformat(bundle.expires_at)
+    if expires_at <= now:
+        raise ValueError("Welcome bundle has expired")
+
+    participant_dir = root_dir / "Participants" / bundle.participant_hex
+    if participant_dir.exists():
+        shared_db = note_to_self_sync_db_path(root_dir, bundle.participant_hex)
+        if shared_db.exists():
+            raise ValueError(f"Participant {bundle.participant_hex} already exists locally")
+
+    initialize_bootstrap_local_state(root_dir, bundle.participant_hex)
+    (participant_dir / "FakeEnclave").mkdir(parents=True, exist_ok=True)
+
+    final_key_path = _note_to_self_device_key_path(
+        root_dir,
+        bundle.participant_hex,
+        bytes.fromhex(bundle.joining_device_id_hex),
+    )
+    _write_local_secret(final_key_path, pending_private_key_bytes)
+    local_db_path = device_local_db_path(root_dir, bundle.participant_hex)
+    with sqlite3.connect(local_db_path) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO note_to_self_device_key_secret (
+                device_id, private_key_ref
+            ) VALUES (?, ?)
+            """,
+            (bytes.fromhex(bundle.joining_device_id_hex), str(final_key_path)),
+        )
+        conn.commit()
+
+    sync_dir = participant_dir / "NoteToSelf" / "Sync"
+    if not (sync_dir / ".git").exists():
+        CodSync.gitCmd(["init", "-b", "main", str(sync_dir)])
+    cod = CodSync.CodSync("bootstrap-identity", repo_dir=sync_dir)
+    cod.remote = _remote_from_descriptor(bundle.remote_descriptor)
+    fetched_sha = cod.fetch_from_remote(["main"])
+    if fetched_sha is None:
+        raise RuntimeError("Failed to fetch NoteToSelf during identity bootstrap")
+    CodSync.gitCmd(["-C", str(sync_dir), "checkout", "main"])
+
+    pending_key_path = pathlib.Path(state["private_key_ref"])
+    if pending_key_path.exists():
+        pending_key_path.unlink()
+    _clear_pending_join_state(root_dir)
+    return {
+        "participant_hex": bundle.participant_hex,
+        "identity_label": bundle.identity_label,
+        "joining_device_id_hex": bundle.joining_device_id_hex,
+        "authorizing_device_label": bundle.authorizing_device_label,
+    }
+
 
 
 def _migrate_user_db(conn, from_version):

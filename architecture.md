@@ -21,6 +21,12 @@ therefore a local view of who is in the team and whose updates should count.
 Those views can diverge. Small Sea aims for social convergence through shared
 history and sync conventions, not for a magical elimination of disagreement.
 
+The same distinction applies to devices: joining an existing **identity**
+through NoteToSelf is not the same thing as joining every **team** known to
+that identity. A new device may become part of Alice's identity first, learn
+about Alice's teams from NoteToSelf, and then join only some subset of those
+teams later.
+
 ### 2. Snapshot-Based 3-Way Merge (Git)
 The baseline synchronization method is snapshot-based 3-way merge, utilizing `git`. While slower than CRDTs, it provides strong consistency for full-environment snapshots and allows for easier adaptation of existing software. 
 

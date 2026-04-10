@@ -1,3 +1,13 @@
+from .bootstrap import (
+    JoinRequestArtifact,
+    WelcomeBundle,
+    deserialize_join_request_artifact,
+    deserialize_welcome_bundle_plaintext,
+    join_request_auth_string,
+    serialize_join_request_artifact,
+    serialize_welcome_bundle_plaintext,
+    welcome_bundle_aad,
+)
 from .db import (
     LOCAL_DB_FILENAME,
     LOCAL_SCHEMA_VERSION,
@@ -5,6 +15,7 @@ from .db import (
     SHARED_SCHEMA_VERSION,
     attached_note_to_self_connection,
     device_local_db_path,
+    initialize_bootstrap_local_state,
     initialize_shared_db,
     note_to_self_sync_db_path,
 )
@@ -13,11 +24,20 @@ from .ids import uuid7
 __all__ = [
     "LOCAL_DB_FILENAME",
     "LOCAL_SCHEMA_VERSION",
+    "JoinRequestArtifact",
     "SHARED_DB_FILENAME",
     "SHARED_SCHEMA_VERSION",
+    "WelcomeBundle",
     "attached_note_to_self_connection",
+    "deserialize_join_request_artifact",
+    "deserialize_welcome_bundle_plaintext",
     "device_local_db_path",
+    "initialize_bootstrap_local_state",
     "initialize_shared_db",
+    "join_request_auth_string",
     "note_to_self_sync_db_path",
+    "serialize_join_request_artifact",
+    "serialize_welcome_bundle_plaintext",
     "uuid7",
+    "welcome_bundle_aad",
 ]

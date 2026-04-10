@@ -7,6 +7,17 @@ from small_sea_manager import provisioning
 
 _CORE_APP = "SmallSeaCollectiveCore"
 
+
+def create_identity_join_request(root_dir):
+    """Create a public join-request artifact for a blank installation."""
+    return provisioning.create_identity_join_request(root_dir)
+
+
+def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
+    """Bootstrap a blank installation into an existing identity."""
+    return provisioning.bootstrap_existing_identity(root_dir, welcome_bundle_b64)
+
+
 class TeamManager:
     """Business logic for team management operations.
 
@@ -149,6 +160,15 @@ class TeamManager:
         return provisioning.create_invitation(
             self.root_dir, self.participant_hex, team_name, cloud,
             invitee_label=invitee_label, role=role,
+        )
+
+    def authorize_identity_join(self, join_request_artifact_b64, *, expires_in_seconds=600):
+        """Admit a new device into this participant's NoteToSelf identity."""
+        return provisioning.authorize_identity_join(
+            self.root_dir,
+            self.participant_hex,
+            join_request_artifact_b64,
+            expires_in_seconds=expires_in_seconds,
         )
 
     def list_invitations(self, team_name):

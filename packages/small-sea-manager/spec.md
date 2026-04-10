@@ -184,19 +184,35 @@ A *participant* represents a person (or bot). A *device* is a specific hardware+
 
 #### Link new device — primary flow
 
-The intended flow for clean setup of a second device:
+The primary flow is now explicitly split into **identity join** and later
+**team join**.
 
-1. On the **existing device**: user initiates "Add new device" in the Manager UI. The Manager generates a short-lived *device-link token* (similar in shape to an invitation token) containing:
-   - Enough to bootstrap the new device's identity (cloud storage credentials, enough key material to clone NoteToSelf)
-   - A pre-allocated `user_device` row (device ID + public key placeholder)
-2. Token is delivered out-of-band to the new device (paste, QR code scan, etc.)
-3. On the **new device**: Manager uses the token to:
-   - Clone `NoteToSelf/SmallSeaCollectiveCore` from cloud
-   - Discover all teams via the `team` table
-   - Clone each `{Team}/SmallSeaCollectiveCore` from cloud
-   - Generate a device key, write it into the pre-allocated `user_device` row, commit, push
+Identity join:
 
-> The QR code UI is a known awkward point; the raw base64 token is acceptable for now.
+1. On the **new device**: the Manager generates a NoteToSelf device keypair,
+   persists the private key locally, and produces a small public join-request
+   artifact (`device UUID + public key`) plus a short human-verifiable
+   authentication string.
+2. The join-request artifact is delivered out-of-band to an **existing
+   device**.
+3. On the **existing device**: the Manager compares the same short
+   authentication string, adds the new device to shared `user_device`,
+   commits/pushes NoteToSelf, and returns a short-lived encrypted welcome
+   bundle.
+4. On the **new device**: the Manager decrypts the welcome bundle, initializes
+   only device-local NoteToSelf state, and pulls NoteToSelf from the shared
+   remote.
+
+After identity join, the new device knows about the participant's devices,
+teams, and apps through NoteToSelf, but it does **not** automatically join
+every team.
+
+Per-team join remains a separate later flow:
+
+1. The device generates a team-specific keypair.
+2. The device requests or records team participation.
+3. A device already participating in that team issues the necessary trust
+   material (`membership` / `device_link`).
 
 #### Unify with existing identity — secondary (oops) flow
 
@@ -445,21 +461,27 @@ Alice                                Bob
 ```
 Existing device                    New device
       |                                 |
-      | "Add new device"                |
-      | → generates device-link token   |
-      |   (cloud creds + key bootstrap) |
+      |                                 | generate NoteToSelf device key
+      |                                 | + public join request artifact
       |                                 |
-      | ---- token (out of band) -----> |
+      | <- join request artifact -----  |
+      | compare short auth string       |
+      | write shared user_device row    |
+      | commit + push NoteToSelf        |
+      | seal short-lived welcome bundle |
       |                                 |
-      |              uses token to clone NoteToSelf/Sync
-      |              discovers teams via `team` table
-      |              clones each {Team}/Sync
-      |              generates device key
-      |              writes user_device row
-      |              commits + pushes NoteToSelf
+      | --- welcome bundle (OOB) -----> |
+      |                                 |
+      |              decrypts bundle
+      |              initializes only local NoteToSelf state
+      |              pulls NoteToSelf/Sync
+      |              learns teams/apps/devices
+      |              does not auto-clone team repos
 ```
 
-`make_device_link_invitation()` in `provisioning.py` is the stub for the token-generation side.
+For this branch, the required end-to-end proof is local-only
+(`LocalFolderRemote`). Real provider-auth UX and Hub-mediated bootstrap fetches
+are separate follow-up work.
 
 ### Secondary flow (oops unification)
 
