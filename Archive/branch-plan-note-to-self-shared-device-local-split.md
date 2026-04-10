@@ -267,6 +267,13 @@ Land the smallest honest refactor that makes NoteToSelf safe to share later:
 - doc updates across Manager and Hub specs
 - GitHub issue audit/update for the issues this branch materially changes
 
+Implementation note:
+
+- invitation bootstrap for encrypted team repos needs enough sender-key state
+  to decrypt older CodSync artifacts, not just the latest distribution message
+- sender-side runtime now needs to retain replayable message keys for its own
+  past encrypted uploads so that bootstrap state can be exported honestly
+
 ## Out Of Scope
 
 - NoteToSelf sync itself (#48)

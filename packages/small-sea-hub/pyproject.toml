@@ -11,7 +11,7 @@ dependencies = [
     "plyer>=2.1.0",
     "pydantic-settings[toml]>=2.11.0",
     "pyobjus>=1.2.3",
-    "small-sea-manager",
+    "small-sea-note-to-self",
     "sqlalchemy>=2.0.44",
 ]
 
@@ -26,4 +26,4 @@ build-backend = "hatchling.build"
 
 [tool.uv.sources]
 cuttlefish = { workspace = true }
-small-sea-manager = { workspace = true }
+small-sea-note-to-self = { workspace = true }

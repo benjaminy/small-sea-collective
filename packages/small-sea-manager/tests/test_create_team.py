@@ -4,6 +4,7 @@ import sqlite3
 import subprocess
 
 import pytest
+from small_sea_note_to_self.db import device_local_db_path
 
 from small_sea_manager.provisioning import _deserialize_cert, _serialize_cert
 from small_sea_manager.provisioning import (create_new_participant,
@@ -84,13 +85,23 @@ def test_create_team(playground_dir):
     user_db = root / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
     conn = sqlite3.connect(str(user_db))
     conn.row_factory = sqlite3.Row
+    local_db = device_local_db_path(root, alice_hex)
+    lconn = sqlite3.connect(str(local_db))
+    lconn.row_factory = sqlite3.Row
 
     teams = conn.execute("SELECT * FROM team WHERE name = 'CoolProject'").fetchall()
     assert len(teams) == 1
     assert teams[0]["id"] == bytes.fromhex(team_id_hex)
     assert teams[0]["self_in_team"] == bytes.fromhex(member_id_hex)
 
-    sender_key = conn.execute(
+    with pytest.raises(sqlite3.OperationalError):
+        conn.execute(
+            "SELECT team_id, sender_participant_id, signing_private_key "
+            "FROM team_sender_key WHERE team_id = ?",
+            (bytes.fromhex(team_id_hex),),
+        ).fetchone()
+
+    sender_key = lconn.execute(
         "SELECT team_id, sender_participant_id, signing_private_key "
         "FROM team_sender_key WHERE team_id = ?",
         (bytes.fromhex(team_id_hex),),
@@ -100,7 +111,7 @@ def test_create_team(playground_dir):
     assert sender_key[1] == bytes.fromhex(member_id_hex)
     assert sender_key[2] is not None
 
-    self_receiver_key = conn.execute(
+    self_receiver_key = lconn.execute(
         "SELECT sender_participant_id, signing_private_key "
         "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
         (bytes.fromhex(team_id_hex), bytes.fromhex(member_id_hex)),
@@ -123,12 +134,17 @@ def test_create_team(playground_dir):
         ).fetchone()
 
     team_device_key = conn.execute(
-        "SELECT public_key, private_key_ref FROM team_device_key WHERE team_id = ?",
+        "SELECT public_key FROM team_device_key WHERE team_id = ?",
         (bytes.fromhex(team_id_hex),),
     ).fetchone()
     assert team_device_key is not None
     assert len(team_device_key[0]) == 32
-    assert pathlib.Path(team_device_key[1]).exists()
+    team_device_key_secret = lconn.execute(
+        "SELECT private_key_ref FROM team_device_key_secret WHERE team_id = ?",
+        (bytes.fromhex(team_id_hex),),
+    ).fetchone()
+    assert team_device_key_secret is not None
+    assert pathlib.Path(team_device_key_secret[0]).exists()
 
     # TeamAppBerth for CoolProject must NOT be in NoteToSelf — it belongs in the team DB.
     other_team_berths = conn.execute(
@@ -138,6 +154,7 @@ def test_create_team(playground_dir):
     ).fetchall()
     assert len(other_team_berths) == 0
     conn.close()
+    lconn.close()
 
     # --- Verify team directory and its core.db ---
     team_db = root / "Participants" / alice_hex / "CoolProject" / "Sync" / "core.db"

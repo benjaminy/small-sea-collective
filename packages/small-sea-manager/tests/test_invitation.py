@@ -7,6 +7,7 @@ import subprocess
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as provisioning
+from small_sea_note_to_self.db import device_local_db_path
 from cod_sync.protocol import CodSync, SmallSeaRemote
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
@@ -297,12 +298,21 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     bob_user_db = root / "Participants" / bob_hex / "NoteToSelf" / "Sync" / "core.db"
     buconn = sqlite3.connect(str(bob_user_db))
     buconn.row_factory = sqlite3.Row
+    bob_local_db = device_local_db_path(root, bob_hex)
+    bulconn = sqlite3.connect(str(bob_local_db))
     teams = buconn.execute("SELECT * FROM team WHERE name = 'ProjectX'").fetchall()
     assert len(teams) == 1
     assert teams[0]["id"] == bytes.fromhex(token_data["team_id"])
     assert teams[0]["self_in_team"] == bytes.fromhex(bob_member_id_hex)
 
-    alice_peer_sender_key = buconn.execute(
+    with pytest.raises(sqlite3.OperationalError):
+        buconn.execute(
+            "SELECT sender_participant_id, signing_private_key "
+            "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
+            (bytes.fromhex(token_data["team_id"]), bytes.fromhex(alice_member_id_hex)),
+        ).fetchone()
+
+    alice_peer_sender_key = bulconn.execute(
         "SELECT sender_participant_id, signing_private_key "
         "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
         (bytes.fromhex(token_data["team_id"]), bytes.fromhex(alice_member_id_hex)),
@@ -311,7 +321,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert alice_peer_sender_key[0] == bytes.fromhex(alice_member_id_hex)
     assert alice_peer_sender_key[1] is None
 
-    bob_team_sender_key = buconn.execute(
+    bob_team_sender_key = bulconn.execute(
         "SELECT sender_participant_id, signing_private_key "
         "FROM team_sender_key WHERE team_id = ?",
         (bytes.fromhex(token_data["team_id"]),),
@@ -327,10 +337,19 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     ).fetchall()
     assert len(other_berths) == 0
     buconn.close()
+    bulconn.close()
 
     alice_user_db = root / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
     auconn = sqlite3.connect(str(alice_user_db))
-    bob_peer_sender_key = auconn.execute(
+    alice_local_db = device_local_db_path(root, alice_hex)
+    aulconn = sqlite3.connect(str(alice_local_db))
+    with pytest.raises(sqlite3.OperationalError):
+        auconn.execute(
+            "SELECT sender_participant_id, signing_private_key "
+            "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
+            (bytes.fromhex(token_data["team_id"]), bytes.fromhex(bob_member_id_hex)),
+        ).fetchone()
+    bob_peer_sender_key = aulconn.execute(
         "SELECT sender_participant_id, signing_private_key "
         "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
         (bytes.fromhex(token_data["team_id"]), bytes.fromhex(bob_member_id_hex)),
@@ -339,6 +358,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert bob_peer_sender_key[0] == bytes.fromhex(bob_member_id_hex)
     assert bob_peer_sender_key[1] is None
     auconn.close()
+    aulconn.close()
 
     # --- Verify Bob's team dir has a git repo with correct commit ---
     bob_sync = root / "Participants" / bob_hex / "ProjectX" / "Sync"

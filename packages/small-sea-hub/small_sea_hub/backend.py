@@ -6,6 +6,7 @@ import pathlib
 import secrets
 import sqlite3
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from logging.handlers import RotatingFileHandler
 from typing import Optional, Tuple
@@ -30,7 +31,8 @@ from small_sea_hub.adapters.oauth import (is_token_expired,
 from small_sea_hub.crypto import (commit_encrypted_upload,
                                   decrypt_group_payload,
                                   prepare_encrypted_upload)
-from small_sea_manager.provisioning import uuid7
+from small_sea_note_to_self.db import attached_note_to_self_connection
+from small_sea_note_to_self.ids import uuid7
 
 
 class SmallSeaBackendExn(Exception):
@@ -112,39 +114,28 @@ class TeamAppBerth(Base):
     app_id = Column(LargeBinary, nullable=False)
 
 
-class CloudStorage(Base):
-    __tablename__ = "cloud_storage"
-
-    id = Column(LargeBinary, primary_key=True)
-    protocol = Column(String, nullable=False)
-    url = Column(String, nullable=False)
-    # Credential storage will likely change (e.g. to a keyring or vault reference)
-    access_key = Column(String, nullable=True)
-    secret_key = Column(String, nullable=True)
-    # OAuth fields for Google Drive / Dropbox
-    client_id = Column(String, nullable=True)
-    client_secret = Column(String, nullable=True)
-    refresh_token = Column(String, nullable=True)
-    access_token = Column(String, nullable=True)
-    token_expiry = Column(String, nullable=True)
-    # JSON dict mapping path → provider-specific metadata (e.g. Google Drive file IDs)
-    path_metadata = Column(String, nullable=True)
-
-    def __repr__(self):
-        return f"<CloudStorage(id='{self.id.hex()}')>"
+@dataclass
+class CloudStorageRecord:
+    id: bytes
+    protocol: str
+    url: str
+    access_key: str | None
+    secret_key: str | None
+    client_id: str | None
+    client_secret: str | None
+    refresh_token: str | None
+    access_token: str | None
+    token_expiry: str | None
+    path_metadata: str | None
 
 
-class NotificationService(Base):
-    __tablename__ = "notification_service"
-
-    id = Column(LargeBinary, primary_key=True)
-    protocol = Column(String, nullable=False)
-    url = Column(String, nullable=False)
-    access_key = Column(String, nullable=True)   # Gotify app token; ntfy auth token
-    access_token = Column(String, nullable=True)  # Gotify client token
-
-    def __repr__(self):
-        return f"<NotificationService(id='{self.id.hex()}')>"
+@dataclass
+class NotificationServiceRecord:
+    id: bytes
+    protocol: str
+    url: str
+    access_key: str | None
+    access_token: str | None
 
 
 class SmallSeaBackend:
@@ -656,35 +647,67 @@ class SmallSeaBackend:
         ss_session = self._lookup_session(session_hex)
 
         # TODO: Should we check permissions? Probably.
-        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
-        engine_core = create_engine(f"sqlite:///{core_path}")
-        with Session(engine_core) as session:
-            cloud = CloudStorage(
-                id=uuid7(),
-                protocol=scheme,
-                url=location,
-                access_key=access_key,
-                secret_key=secret_key,
-                client_id=client_id,
-                client_secret=client_secret,
-                refresh_token=refresh_token,
+        with attached_note_to_self_connection(
+            self.root_dir, ss_session.participant_id.hex()
+        ) as conn:
+            cloud_id = uuid7()
+            conn.execute(
+                """
+                INSERT INTO cloud_storage (id, protocol, url, client_id, path_metadata)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (cloud_id, scheme, location, client_id, None),
             )
-            session.add_all([cloud])
-            session.commit()
+            conn.execute(
+                """
+                INSERT INTO local.cloud_storage_credential (
+                    cloud_storage_id, access_key, secret_key, client_secret,
+                    refresh_token, access_token, token_expiry
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cloud_id,
+                    access_key,
+                    secret_key,
+                    client_secret,
+                    refresh_token,
+                    None,
+                    None,
+                ),
+            )
+            conn.commit()
 
     def _get_cloud_link(self, ss_session: SmallSeaSession):
         # TODO: Should we check permissions? Probably.
-        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
-        engine_core = create_engine(f"sqlite:///{core_path}")
-        with Session(engine_core) as session:
-            results = session.query(CloudStorage).all()
-            if len(results) == 0:
-                raise SmallSeaNotFoundExn(
-                    "No cloud storage configured for this participant. "
-                    "Add a cloud storage account in the Manager before syncing."
-                )
-            cloud = results[0]
-        return cloud
+        with attached_note_to_self_connection(
+            self.root_dir, ss_session.participant_id.hex()
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    cs.id,
+                    cs.protocol,
+                    cs.url,
+                    csc.access_key,
+                    csc.secret_key,
+                    cs.client_id,
+                    csc.client_secret,
+                    csc.refresh_token,
+                    csc.access_token,
+                    csc.token_expiry,
+                    cs.path_metadata
+                FROM cloud_storage cs
+                LEFT JOIN local.cloud_storage_credential csc
+                  ON csc.cloud_storage_id = cs.id
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            raise SmallSeaNotFoundExn(
+                "No cloud storage configured for this participant. "
+                "Add a cloud storage account in the Manager before syncing."
+            )
+        return CloudStorageRecord(*row)
 
     def _make_storage_adapter(self, ss_session: SmallSeaSession):
         cloud = self._get_cloud_link(ss_session)
@@ -714,16 +737,18 @@ class SmallSeaBackend:
         else:
             raise SmallSeaBackendExn(f"No token refresh for protocol: {cloud.protocol}")
 
-        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
-        engine_core = create_engine(f"sqlite:///{core_path}")
-        with Session(engine_core) as session:
-            session.execute(
-                text(
-                    "UPDATE cloud_storage SET access_token = :token, token_expiry = :expiry WHERE id = :id"
-                ),
-                {"token": access_token, "expiry": expiry, "id": cloud.id},
+        with attached_note_to_self_connection(
+            self.root_dir, ss_session.participant_id.hex()
+        ) as conn:
+            conn.execute(
+                """
+                UPDATE local.cloud_storage_credential
+                SET access_token = ?, token_expiry = ?
+                WHERE cloud_storage_id = ?
+                """,
+                (access_token, expiry, cloud.id),
             )
-            session.commit()
+            conn.commit()
 
         return access_token
 
@@ -756,14 +781,13 @@ class SmallSeaBackend:
     def _make_dropbox_adapter(self, ss_session, cloud):
         access_token = self._refresh_token_if_needed(ss_session, cloud)
         # Use member_id as folder prefix to avoid collisions in a shared Dropbox account.
-        nts_db = str(ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db")
-        conn = sqlite3.connect(nts_db)
-        try:
+        with attached_note_to_self_connection(
+            self.root_dir, ss_session.participant_id.hex()
+        ) as conn:
             row = conn.execute(
-                "SELECT self_in_team FROM team WHERE name = ?", (ss_session.team_name,)
+                "SELECT self_in_team FROM team WHERE name = ?",
+                (ss_session.team_name,),
             ).fetchone()
-        finally:
-            conn.close()
         # self_in_team is a valid 16-byte UUID for real teams; placeholder b"0" for NoteToSelf
         if row and len(row[0]) == 16:
             folder_prefix = f"ss-{row[0].hex()[:16]}"
@@ -1041,13 +1065,26 @@ class SmallSeaBackend:
     # ---- Notifications ----
 
     def _get_notification_service(self, ss_session):
-        core_path = ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db"
-        engine_core = create_engine(f"sqlite:///{core_path}")
-        with Session(engine_core) as session:
-            results = session.query(NotificationService).all()
-            if len(results) == 0:
-                raise SmallSeaNotFoundExn("No notification service configured")
-            return results[0]
+        with attached_note_to_self_connection(
+            self.root_dir, ss_session.participant_id.hex()
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    ns.id,
+                    ns.protocol,
+                    ns.url,
+                    nsc.access_key,
+                    nsc.access_token
+                FROM notification_service ns
+                LEFT JOIN local.notification_service_credential nsc
+                  ON nsc.notification_service_id = ns.id
+                LIMIT 1
+                """
+            ).fetchone()
+        if row is None:
+            raise SmallSeaNotFoundExn("No notification service configured")
+        return NotificationServiceRecord(*row)
 
     def _make_notification_adapter(self, ss_session):
         import hashlib

@@ -64,7 +64,18 @@ All IDs are UUIDv7 (time-ordered, random), stored as 16-byte BLOBs.
 
 There are two kinds of `core.db`:
 
-### NoteToSelf DB (`NoteToSelf/Sync/core.db`)
+### NoteToSelf storage
+
+NoteToSelf is now split into:
+
+- shared DB: `NoteToSelf/Sync/core.db`
+- device-local DB: `NoteToSelf/Local/device_local.db`
+
+The shared DB is safe to sync across a participant's devices. The local DB
+holds credentials, private-key refs, and sender-key runtime state that should
+never leave the current device.
+
+### Shared NoteToSelf DB (`NoteToSelf/Sync/core.db`)
 
 Stores this participant's personal Small Sea metadata. The Hub reads it to know what teams, apps, cloud accounts, and devices exist.
 
@@ -77,11 +88,21 @@ Stores this participant's personal Small Sea metadata. The Hub reads it to know 
 | `team` | Lightweight pointer to each team the participant belongs to; `self_in_team` is the member ID in that team's DB |
 | `app` | Apps registered for the NoteToSelf team |
 | `team_app_berth` | Berths for the NoteToSelf team (one per app; carries `team_id` since NoteToSelf DB may host multiple teams' personal berths) |
-| `cloud_storage` | Cloud storage accounts available to this participant (S3, Google Drive, Dropbox, etc.) — the Hub reads these to know where to push/pull |
-| `notification_service` | Notification endpoints (e.g. ntfy) — the Hub reads these to know where to send/receive notifications |
-| `team_signing_key` | Per-team Ed25519 signing key pairs; private key stored here (syncs across devices), public key also stored in the team DB's `member` row |
+| `cloud_storage` | Shared cloud locator metadata (`protocol`, `url`, `client_id`, `path_metadata`) |
+| `notification_service` | Shared notification-service metadata (`protocol`, `url`) |
+| `team_device_key` | Shared public metadata for this identity's team-device keys |
 
-Schema version is tracked via SQLite `PRAGMA user_version`. Current: `USER_SCHEMA_VERSION = 47`.
+### Device-local NoteToSelf DB (`NoteToSelf/Local/device_local.db`)
+
+| Table | Purpose |
+|-------|---------|
+| `cloud_storage_credential` | Per-device cloud auth material (S3 secrets, OAuth refresh/access tokens, etc.) |
+| `notification_service_credential` | Per-device notification credentials |
+| `team_device_key_secret` | Local private-key refs for this device's team keys |
+| `team_sender_key` | Local sender-chain runtime state |
+| `peer_sender_key` | Local receiver-chain runtime state |
+
+Schema versions are tracked independently via SQLite `PRAGMA user_version`.
 
 ### Team DB (`{TeamName}/Sync/core.db`)
 
@@ -145,7 +166,11 @@ is an admin, who is a contributor, or who is still in the team at all.
 
 **Create participant**
 
-Creates the participant directory, initializes NoteToSelf DB and git repo, generates a device key (stored in the hardware secure enclave if available, otherwise in `FakeEnclave/` with password-derived encryption). Should be the only operation that creates a `participant_hex`.
+Creates the participant directory, initializes the shared and device-local
+NoteToSelf DBs plus the NoteToSelf git repo, and generates a device key
+(stored in the hardware secure enclave if available, otherwise in
+`FakeEnclave/` with password-derived encryption). Should be the only operation
+that creates a `participant_hex`.
 
 Inputs: `root_dir`, `nickname`, optional `device` label.
 
@@ -317,19 +342,25 @@ Deletes the `team_app_berth` row (and cascades to `berth_role`). Commits. The ap
 
 ### Service Subscriptions
 
-The Manager provides the UI for configuring the general-purpose services that the Hub uses. The Hub reads this configuration from `core.db` and never configures services itself.
+The Manager provides the UI for configuring the general-purpose services that
+the Hub uses. The Hub reads shared locator metadata from
+`NoteToSelf/Sync/core.db` and matching device-local credentials from
+`NoteToSelf/Local/device_local.db`. The Hub never configures services itself.
 
 Small Sea can operate without cloud storage (sync simply won't work), but this is an unusual configuration.
 
 #### Cloud storage accounts
 
-Add, update, or remove entries in the `cloud_storage` table (NoteToSelf DB). Fields: `protocol`, `url`, plus protocol-specific credentials (S3 keys, OAuth tokens for Google Drive/Dropbox, etc.).
-
-> Credential storage will likely change (e.g. OS keychain or vault reference). The current schema stores credentials as plaintext columns.
+Add, update, or remove entries in the shared `cloud_storage` table plus the
+matching local `cloud_storage_credential` row. Shared fields are `protocol`,
+`url`, `client_id`, and `path_metadata`; device-local fields include S3
+credentials and OAuth refresh/access material.
 
 #### Notification services
 
-Add or remove entries in the `notification_service` table. Currently supported: `ntfy`. Fields: `protocol`, `url`.
+Add or remove entries in the shared `notification_service` table plus the
+matching local `notification_service_credential` row. Shared fields are
+`protocol` and `url`; auth tokens stay local.
 
 #### Other services (stub)
 
@@ -453,7 +484,7 @@ Key transfer between devices (e.g. sharing session keys or identity keys when li
 
 ## SQL Schemas
 
-### NoteToSelf schema (`sql/core_note_to_self_schema.sql`)
+### Shared NoteToSelf schema (`small_sea_note_to_self/sql/shared_schema.sql`)
 
 ```sql
 PRAGMA foreign_keys = ON;
@@ -488,20 +519,11 @@ CREATE TABLE IF NOT EXISTS team_app_berth (
 );
 
 CREATE TABLE IF NOT EXISTS cloud_storage (
-    id             BLOB PRIMARY KEY,
-    protocol       TEXT NOT NULL,
-    url            TEXT NOT NULL,
-    -- S3-style credentials
-    access_key     TEXT,
-    secret_key     TEXT,
-    -- OAuth fields (Google Drive, Dropbox)
-    client_id      TEXT,
-    client_secret  TEXT,
-    refresh_token  TEXT,
-    access_token   TEXT,
-    token_expiry   TEXT,
-    -- JSON dict mapping path → provider-specific metadata (e.g. Google Drive file IDs)
-    path_metadata  TEXT
+    id            BLOB PRIMARY KEY,
+    protocol      TEXT NOT NULL,
+    url           TEXT NOT NULL,
+    client_id     TEXT,
+    path_metadata TEXT
 );
 
 CREATE TABLE IF NOT EXISTS notification_service (
@@ -510,13 +532,42 @@ CREATE TABLE IF NOT EXISTS notification_service (
     url      TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS team_signing_key (
-    id          BLOB PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS team_device_key (
     team_id     BLOB NOT NULL,
+    device_id   BLOB NOT NULL,
     public_key  BLOB NOT NULL,
-    private_key BLOB NOT NULL,
     created_at  TEXT NOT NULL,
-    FOREIGN KEY (team_id) REFERENCES team(id)
+    revoked_at  TEXT,
+    PRIMARY KEY (team_id, device_id),
+    FOREIGN KEY (team_id) REFERENCES team(id),
+    FOREIGN KEY (device_id) REFERENCES user_device(id)
+);
+```
+
+### Device-local NoteToSelf schema (`small_sea_note_to_self/sql/device_local_schema.sql`)
+
+```sql
+CREATE TABLE IF NOT EXISTS cloud_storage_credential (
+    cloud_storage_id BLOB PRIMARY KEY,
+    access_key TEXT,
+    secret_key TEXT,
+    client_secret TEXT,
+    refresh_token TEXT,
+    access_token TEXT,
+    token_expiry TEXT
+);
+
+CREATE TABLE IF NOT EXISTS notification_service_credential (
+    notification_service_id BLOB PRIMARY KEY,
+    access_key TEXT,
+    access_token TEXT
+);
+
+CREATE TABLE IF NOT EXISTS team_device_key_secret (
+    team_id BLOB NOT NULL,
+    device_id BLOB NOT NULL,
+    private_key_ref TEXT NOT NULL,
+    PRIMARY KEY (team_id, device_id)
 );
 ```
 
@@ -591,4 +642,4 @@ CREATE TABLE IF NOT EXISTS peer (
 | **`participant` / `participant_unification` tables** | Not yet in the SQL schema; needs to be designed and added to NoteToSelf DB. |
 | **NoteToSelf/{App} berths** | Per-app personal state outside of team context. Not yet designed; stub only. |
 | **Sync mailbox API** | Hub needs a mailbox abstraction to notify the Manager (and other apps) when incoming changes arrive from the internet. Shape TBD. |
-| **Credential storage** | `cloud_storage` credentials are stored as plaintext columns. Should migrate to OS keychain or vault reference. |
+| **Credential storage** | Credentials now live in the device-local NoteToSelf DB, but they are still plaintext SQLite fields. Future work should move them behind OS keychain / vault references. |

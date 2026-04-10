@@ -210,8 +210,8 @@ def test_web_session_request_pin_flow(playground_dir, monkeypatch):
     captured = {}
     original = backend.request_session
 
-    def _capturing(participant, app_name, team, client_name):
-        pending_id, pin = original(participant, app_name, team, client_name)
+    def _capturing(participant, app_name, team, client_name, mode="encrypted"):
+        pending_id, pin = original(participant, app_name, team, client_name, mode=mode)
         captured["pin"] = pin
         return pending_id, pin
 
