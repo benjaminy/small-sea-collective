@@ -59,10 +59,10 @@ The branch succeeds when:
 This branch should **not** put `device_local.db` next to `core.db` inside the
 synced git repo and trust `.gitignore` or convention to keep it local.
 
-Default:
+Decided paths:
 
 - shared DB stays at `Participants/{participant_hex}/NoteToSelf/Sync/core.db`
-- device-local DB lives somewhere outside `Sync/`, e.g.
+- device-local DB at
   `Participants/{participant_hex}/NoteToSelf/Local/device_local.db`
 
 That keeps the local/shared boundary physically obvious and reduces the chance
@@ -166,17 +166,32 @@ Rationale:
 - public membership / participation metadata may be useful identity-wide
 - the private key handle is inherently device-local
 
+Note: the local side is asymmetric. The shared table has rows for ALL of this
+user's devices across teams. The local table only has `private_key_ref` entries
+for the *current device's* keys — other devices' rows have no corresponding
+local record on this machine.
+
+Note: team repos also carry `device_link` certs that record team-level device
+admission. The shared `team_device_key` rows in NoteToSelf serve a different
+purpose: personal bookkeeping ("what teams do my devices participate in?")
+versus team-scoped trust proof. The redundancy is intentional but should be
+watched for consistency issues as the identity model matures.
+
 ### Whole-Table Local
 
 #### `notification_service`
 
-Default: move the whole table local.
+Move the whole table local, but keep the same column-split pattern: shared side
+has general service info (`id`, `protocol`, `url`), local side has credentials
+(`access_key`, `access_token`).
 
 Reason:
 
-- notification configuration is device behavior, not shared identity metadata
-- different devices may legitimately use different notification setups
-- keeping only `url` shared buys very little and muddies the boundary
+- notification configuration is mostly device behavior
+- but if a user sets up a Gotify server, the URL is not secret and could be
+  useful as shared knowledge ("this identity uses this notification endpoint")
+- the boundary rule is: shared = general service info, local = secrets needed
+  to use it
 
 #### `team_sender_key`
 
@@ -235,9 +250,9 @@ Land the smallest honest refactor that makes NoteToSelf safe to share later:
 
 ### Q1. Exact local DB path/name
 
-**Default:** outside `Sync/`.
+**Decided:** `Participants/{participant_hex}/NoteToSelf/Local/device_local.db`
 
-Need to choose one path and use it consistently in code, tests, and docs.
+(See Constraint 1.)
 
 ### Q2. Does `client_id` stay shared?
 
@@ -268,66 +283,121 @@ same file.
 This branch should not invent a new API boundary for secret lookup.
 The Hub remains a local peer process reading Manager-owned SQLite files.
 
+### 5. Extract `small-sea-note-to-self` package to break Hub → Manager dependency
+
+The Hub currently imports from Manager for `sender_keys` and `uuid7`. Rather
+than deepening that dependency with the new ATTACH helper, this branch should
+extract a new `small-sea-note-to-self` package that owns:
+
+- NoteToSelf DB path construction and the ATTACH helper
+- sender key load/save (currently `small_sea_manager.sender_keys`)
+- `uuid7` (currently `small_sea_manager.provisioning`)
+- the shared and device-local schema files
+
+Both Manager and Hub depend on `small-sea-note-to-self`. Neither depends on
+the other. This fixes an existing architectural smell (Hub → Manager) rather
+than making it worse.
+
+The package is deliberately narrow: NoteToSelf storage access. Sync, merging,
+app logic, and other shared concerns do not belong here.
+
+## Current Access Pattern (from repo audit)
+
+NoteToSelf DB access is **scattered** across the codebase:
+
+- **~50+ call sites** open the DB independently, with no central helper
+- **Two connection styles** are used: SQLAlchemy `create_engine()` (~40 sites
+  in provisioning.py and backend.py) and raw `sqlite3.connect()` (~10 sites
+  in sender_keys.py, backend.py, server.py)
+- **Path construction is ad-hoc** — each caller builds
+  `root_dir / "Participants" / hex / "NoteToSelf" / "Sync" / "core.db"`
+  locally
+- **The Hub reads the DB directly from disk**, not through the Manager — both
+  provisioning.py and backend.py open the same file independently
+- **manager.py, web.py, cli.py do NOT open the DB directly** — they delegate
+  to provisioning.py through `TeamManager`
+
+This scattered pattern makes the split harder than it needs to be. This branch
+should centralize DB access as part of the refactor.
+
+## Implementation Strategy: SQLite ATTACH
+
+Use SQLite's `ATTACH DATABASE` to present both DBs through a single connection.
+
+A central helper opens the shared DB, ATTACHes the local DB, and returns a
+connection where both are available via schema-qualified table names:
+
+- `shared.cloud_storage` — general service info (shared DB)
+- `local.cloud_storage_credential` — auth material (device-local DB)
+
+Benefits:
+
+- most query code does not need to manage two separate connections
+- JOINs across shared and local tables work naturally
+  (e.g. `SELECT s.url, l.access_key FROM shared.cloud_storage s JOIN
+  local.cloud_storage_credential l ON s.id = l.cloud_storage_id`)
+- the split is invisible to most call sites once they use the central helper
+- both the Manager and Hub can use the same helper
+
+The central helper should:
+
+- take a participant path (or root_dir + participant_hex)
+- open the shared DB at `.../NoteToSelf/Sync/core.db`
+- ATTACH the local DB at `.../NoteToSelf/Local/device_local.db`
+- create the local DB and run its schema if it does not exist yet
+- return a connection ready for use
+
+Both SQLAlchemy and raw sqlite3 callers need to migrate to this helper, which
+is also the forcing function for consolidating the two connection styles.
+
 ## Concrete Change Areas
 
-### 1. Shared NoteToSelf schema
+### 1. New `small-sea-note-to-self` package
 
-Likely files:
+New files:
 
-- `packages/small-sea-manager/small_sea_manager/sql/core_note_to_self_schema.sql`
-- `packages/small-sea-manager/small_sea_manager/provisioning.py`
+- `packages/small-sea-note-to-self/pyproject.toml`
+- `packages/small-sea-note-to-self/small_sea_note_to_self/__init__.py`
+- `packages/small-sea-note-to-self/small_sea_note_to_self/db.py` — ATTACH
+  helper, path construction
+- `packages/small-sea-note-to-self/small_sea_note_to_self/sql/shared_schema.sql`
+- `packages/small-sea-note-to-self/small_sea_note_to_self/sql/device_local_schema.sql`
 
-Expected work:
+Moved from Manager:
 
-- remove the moved columns / tables from the shared schema
-- keep version markers honest
-- adjust any read/write helpers that currently assume one-file NoteToSelf
+- `sender_keys.py` → `small_sea_note_to_self.sender_keys`
+- `uuid7` → `small_sea_note_to_self.ids` (or similar)
 
-### 2. Device-local schema
-
-Likely files:
-
-- new SQL schema file under `packages/small-sea-manager/small_sea_manager/sql/`
-- `packages/small-sea-manager/small_sea_manager/provisioning.py`
-
-Expected work:
-
-- create the local NoteToSelf DB on participant setup
-- add the split local tables:
-  - `cloud_storage_credential` (or chosen name)
-  - `team_device_key_secret` (or chosen name)
-  - local `notification_service`
-  - local `team_sender_key`
-  - local `peer_sender_key`
-
-### 3. Manager/provisioning access layer
+### 2. Manager changes
 
 Likely files:
 
 - `packages/small-sea-manager/small_sea_manager/provisioning.py`
-- `packages/small-sea-manager/small_sea_manager/manager.py`
-- `packages/small-sea-manager/small_sea_manager/web.py`
-- `packages/small-sea-manager/small_sea_manager/cli.py`
+- `packages/small-sea-manager/pyproject.toml`
 
 Expected work:
 
-- centralize shared/local DB access behind helpers where possible
-- avoid scattering dual-DB lookup logic at every call site
-- keep public Manager operations stable where practical
+- add `small-sea-note-to-self` dependency, remove schema SQL files that moved
+- replace ad-hoc DB opens with central helper imports
+- replace local `uuid7` / `sender_keys` imports with new package imports
 
-### 4. Hub backend and specs
+### 3. Hub changes
 
 Likely files:
 
 - `packages/small-sea-hub/small_sea_hub/backend.py`
+- `packages/small-sea-hub/small_sea_hub/crypto.py`
+- `packages/small-sea-hub/small_sea_hub/server.py`
+- `packages/small-sea-hub/pyproject.toml`
 - `packages/small-sea-hub/spec.md`
 
 Expected work:
 
-- update Hub-side ORM / query assumptions
-- make OAuth refresh write back to the **local** DB, not the shared DB
-- make notification lookup read from the local DB
-- update docs that currently say cloud credentials live in shared NoteToSelf
+- add `small-sea-note-to-self` dependency, drop `small-sea-manager` dependency
+- replace ad-hoc DB opens and Manager imports with central helper
+- update OAuth refresh to write to local DB
+- update notification lookup to read from local DB
+- update docs
 
 ### 5. Tests
 
@@ -350,33 +420,45 @@ Before coding much:
 - confirm the fresh-schema-first stance
 - audit docs/issues that still describe the one-file NoteToSelf model
 
-### Phase 1: Shared/local schema split
+### Phase 1: Create `small-sea-note-to-self` package + schemas
 
-Implement the shared schema cleanup and new local schema side by side.
+Stand up the new package with:
 
-Target outcome:
-
-- participant setup creates both DBs
-- the shared DB no longer contains the moved secret/runtime state
-
-### Phase 2: Manager-side helper refactor
-
-Update provisioning and Manager accessors first.
+- split schemas (shared and device-local)
+- the central ATTACH helper
+- `uuid7` (moved from provisioning.py)
+- sender key load/save (moved from sender_keys.py)
 
 Target outcome:
 
-- `add_cloud_storage`, `get_cloud_storage`, notification setup, and team key
-  lookup go through clear shared/local helpers
+- `small-sea-note-to-self` is a real installable package under `packages/`
+- schemas and helpers are importable
+- Manager and Hub pyproject.toml depend on it (Hub drops Manager dependency)
 
-### Phase 3: Hub-side contract update
+### Phase 2: Manager-side migration
 
-Update the Hub once the Manager-side storage layout is stable.
+Migrate provisioning.py to import from `small-sea-note-to-self`. Remove
+ad-hoc DB path construction and direct DB opens.
 
 Target outcome:
 
-- Hub cloud operations read local credentials successfully
+- `add_cloud_storage`, `get_cloud_storage`, notification setup, team key
+  lookup, and sender key operations all go through the central helper
+- no provisioning code opens the NoteToSelf DB ad-hoc
+- `sender_keys` and `uuid7` imports come from the new package
+
+### Phase 3: Hub-side migration
+
+Migrate backend.py, crypto.py, and server.py to import from
+`small-sea-note-to-self`. Remove Manager imports from Hub.
+
+Target outcome:
+
+- Hub cloud operations read local credentials through ATTACH
 - OAuth refresh persists refreshed tokens to the local DB only
 - notification operations read the local notification config
+- no Hub code opens the NoteToSelf DB ad-hoc
+- Hub no longer depends on Manager
 
 ### Phase 4: Test sweep
 
@@ -434,11 +516,14 @@ Before wrapping the branch:
 - **branch turns into a secret-storage redesign**
   - Mitigation: keep this mechanical; no keyring/vault work here
 
-## Open For Discussion
+## Decisions (formerly Open For Discussion)
 
-- whether `notification_service` truly needs any shared counterpart at all
-- whether `team_device_key` public metadata belongs shared long-term or will
-  later want its own more explicit representation
-- whether the shared/local helper layer should live purely in provisioning or
-  whether the Hub deserves its own small helper module for reading the split
-  NoteToSelf state
+- **`notification_service` shared counterpart:** yes — same column-split pattern
+  as `cloud_storage`. Shared side has general service info (id, protocol, url),
+  local side has credentials. Consistent boundary rule across all service tables.
+- **`team_device_key` public metadata shared:** yes — it serves as personal
+  bookkeeping distinct from team-scoped certs. Redundancy with team-repo certs
+  is intentional but flagged for future consistency review.
+- **Helper layer location:** the central ATTACH helper lives in the new
+  `small-sea-note-to-self` package. Both Manager and Hub depend on it. This
+  fixes the existing Hub → Manager dependency rather than deepening it.
