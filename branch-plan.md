@@ -49,6 +49,7 @@ The branch succeeds when:
 
 - the shared DB no longer contains the moved secret/runtime fields
 - the Hub and Manager still work using the split storage
+- the Hub no longer depends on Manager for NoteToSelf storage helpers
 - the split is mechanical and reviewable, not a broader redesign of identity
   or sync behavior
 
@@ -79,6 +80,27 @@ There are really three categories:
 - **Column-split tables** where public locator metadata stays shared but auth
   material moves local
 - **Whole-table local runtime state** that should not be shared at all
+
+### 2.5 Visibility does not imply local usability
+
+After the split, some shared rows will intentionally be visible on a device
+without being usable there.
+
+This must be treated as a normal state, not an error in the data model.
+
+Rules:
+
+- shared `cloud_storage` row + no matching local credential row
+  = this device knows the remote exists, but cannot authenticate to it
+- shared `team_device_key` row + no matching local secret row
+  = this device knows the key metadata exists, but cannot sign with it
+
+Corollary:
+
+- local capability checks must require both shared metadata and matching local
+  secret state
+- lookup helpers like "current team device key" must ignore shared rows that
+  lack a matching local secret row
 
 ### 3. This branch changes the Manager ↔ Hub contract
 
@@ -131,7 +153,7 @@ Keep shared:
 - `protocol`
 - `url`
 - `path_metadata`
-- likely `client_id`
+- `client_id`
 
 Move local:
 
@@ -177,13 +199,18 @@ purpose: personal bookkeeping ("what teams do my devices participate in?")
 versus team-scoped trust proof. The redundancy is intentional but should be
 watched for consistency issues as the identity model matures.
 
-### Whole-Table Local
-
 #### `notification_service`
 
-Move the whole table local, but keep the same column-split pattern: shared side
-has general service info (`id`, `protocol`, `url`), local side has credentials
-(`access_key`, `access_token`).
+Keep shared:
+
+- `id`
+- `protocol`
+- `url`
+
+Move local:
+
+- `access_key`
+- `access_token`
 
 Reason:
 
@@ -192,6 +219,8 @@ Reason:
   useful as shared knowledge ("this identity uses this notification endpoint")
 - the boundary rule is: shared = general service info, local = secrets needed
   to use it
+
+### Whole-Table Local
 
 #### `team_sender_key`
 
@@ -221,7 +250,9 @@ Land the smallest honest refactor that makes NoteToSelf safe to share later:
 2. move the selected secret/runtime state there
 3. update Manager and Hub access paths to read/write the correct DB
 4. keep current user-visible flows working
-5. update docs and related GitHub issues so the repo stops claiming that auth
+5. extract a narrow `small-sea-note-to-self` package so NoteToSelf storage
+   stops living behind a Hub → Manager dependency
+6. update docs and related GitHub issues so the repo stops claiming that auth
    secrets live in the shared NoteToSelf DB
 
 ## In Scope
@@ -256,7 +287,7 @@ Land the smallest honest refactor that makes NoteToSelf safe to share later:
 
 ### Q2. Does `client_id` stay shared?
 
-**Default:** yes.
+**Decision:** yes.
 
 It identifies the OAuth app, not the user's auth session.
 If later a provider forces this to differ per device, that can be revisited.
@@ -270,11 +301,17 @@ useful across devices.
 
 ### Q4. Do we need a separate version marker for the local DB?
 
-**Default:** yes, but keep it simple.
+**Decision:** yes.
 
-The local DB should have its own schema version constant or equivalent so it
-can evolve independently from the shared DB without pretending they are the
-same file.
+Implementation shape:
+
+- separate local schema file
+- separate local schema version constant
+- local DB create-if-missing on open
+- narrow local migrations when the file exists but is older
+
+The local DB must evolve independently from the shared DB without pretending
+they are the same file.
 
 ### Q5. How does the Hub read the local DB?
 
@@ -283,7 +320,7 @@ same file.
 This branch should not invent a new API boundary for secret lookup.
 The Hub remains a local peer process reading Manager-owned SQLite files.
 
-### 5. Extract `small-sea-note-to-self` package to break Hub → Manager dependency
+### Q6. Extract `small-sea-note-to-self` package to break Hub → Manager dependency
 
 The Hub currently imports from Manager for `sender_keys` and `uuid7`. Rather
 than deepening that dependency with the new ATTACH helper, this branch should
@@ -339,6 +376,15 @@ Benefits:
 - the split is invisible to most call sites once they use the central helper
 - both the Manager and Hub can use the same helper
 
+Architecture decision:
+
+- for **NoteToSelf storage**, standardize on a SQLite-first access layer owned
+  by `small-sea-note-to-self`
+- that package owns the NoteToSelf queries/helpers instead of trying to make
+  ad hoc SQLAlchemy engines and raw sqlite calls coexist indefinitely
+- team DB access can stay on its current patterns for now; this branch is about
+  NoteToSelf
+
 The central helper should:
 
 - take a participant path (or root_dir + participant_hex)
@@ -347,8 +393,9 @@ The central helper should:
 - create the local DB and run its schema if it does not exist yet
 - return a connection ready for use
 
-Both SQLAlchemy and raw sqlite3 callers need to migrate to this helper, which
-is also the forcing function for consolidating the two connection styles.
+The goal is not "support both existing NoteToSelf access styles forever."
+The goal is to migrate NoteToSelf access onto this narrower storage layer so
+Manager and Hub stop opening NoteToSelf ad hoc.
 
 ## Concrete Change Areas
 
@@ -416,8 +463,8 @@ Likely test areas:
 Before coding much:
 
 - lock the table classification above
-- choose the local DB path/name
 - confirm the fresh-schema-first stance
+- lock the SQLite-first NoteToSelf access decision
 - audit docs/issues that still describe the one-file NoteToSelf model
 
 ### Phase 1: Create `small-sea-note-to-self` package + schemas
@@ -497,12 +544,17 @@ Before wrapping the branch:
 - current team device key lookup still works
 - notification setup and Hub notification delivery still work
 - OAuth refresh updates local storage only
+- shared cloud rows without local credentials fail cleanly as "known but not
+  usable on this device"
+- shared team-device-key rows without local secret rows are ignored by
+  current-key lookup
 
 ### Repo-integrity validation
 
 - Manager docs and Hub docs agree on where secrets now live
 - related issues have been audited so future branches (#58 / #48) do not plan
   against the old storage model
+- Hub no longer depends on Manager for NoteToSelf storage helpers
 
 ## Risks
 
@@ -527,3 +579,11 @@ Before wrapping the branch:
 - **Helper layer location:** the central ATTACH helper lives in the new
   `small-sea-note-to-self` package. Both Manager and Hub depend on it. This
   fixes the existing Hub → Manager dependency rather than deepening it.
+- **NoteToSelf access style:** standardize on a SQLite-first storage layer in
+  `small-sea-note-to-self` rather than trying to preserve mixed ad hoc
+  SQLAlchemy + raw sqlite NoteToSelf access patterns.
+- **Local DB versioning:** separate schema file and separate version constant;
+  create if missing, migrate narrowly if present but older.
+- **Local DB git history:** no. The device-local DB is not tracked in git,
+  including local-only git repos, because secrets and auth/runtime state should
+  not accumulate in version history.
