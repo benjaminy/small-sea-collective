@@ -105,12 +105,17 @@ place for NoteToSelf to live.
 Default for this branch:
 
 - the authorizing device adds a row to shared `user_device`
+- before admission, both devices should surface the same short
+  human-verifiable authentication string derived from the join request artifact
+  and the human should confirm it matches
 - no identity-level signed admission cert yet
 
 Reason:
 
 - NoteToSelf is single-user social territory, not multi-member governance
 - this is the smallest honest thing that works
+- the short authentication string cheaply reduces OOB mixups without dragging
+  in a larger trust redesign
 
 Future seam to preserve:
 
@@ -149,6 +154,8 @@ Before the welcome bundle exists, the joining device should have only:
 - its new device UUID
 - a public join request artifact (device UUID + public key, serialized as a
   tiny versioned JSON payload for v1) derived from those
+- a short authentication string derived from that artifact for human
+  cross-check on both devices
 
 After the welcome bundle arrives, but before the first NoteToSelf pull, the
 joining device should have only:
@@ -201,6 +208,7 @@ The welcome bundle should at least include:
 - identity label / nickname for UI clarity
 - exact NoteToSelf remote descriptor
 - `issued_at` timestamp (for staleness detection)
+- `expires_at` timestamp (required in v1)
 - `authorizing_device_label` (UX — tells the user which device admitted them)
 
 For this branch, the remote descriptor can start from the existing invitation /
@@ -220,8 +228,8 @@ Best-practice requirements for this branch:
   encrypted object
 - identity binding: include `participant_uuid` and `joining_device_uuid` in
   the authenticated payload or associated data
-- staleness detection: keep `issued_at`, and add `expires_at` if that stays
-  simple enough for the branch
+- staleness detection: keep `issued_at`, require `expires_at`, and reject
+  expired bundles before use
 
 Nice-to-have future seam, but not required to ship this branch:
 
@@ -421,6 +429,9 @@ Implement the joining-device side first:
   into the proper device-local DB row without regenerating the key
 - expose the public join request artifact (device UUID + public key as a
   tiny versioned JSON payload that is easy to copy as text in v1)
+- derive and expose a short authentication string from that artifact
+- persist enough local bootstrap state that the process may die and restart
+  without losing the in-progress join
 
 ### Phase 2: Rich welcome bundle + Cuttlefish seal/open
 
@@ -448,6 +459,7 @@ Serialization:
 Implement the helper that:
 
 - takes joining device UUID + public key
+- computes/surfaces the short authentication string for human confirmation
 - inserts the `user_device` row
 - commits/pushes NoteToSelf
 - returns the welcome bundle
@@ -465,6 +477,8 @@ Implement the joining-side initializer that:
 - stores the private key locally
 - creates only local DB + directory structure
 - does not create shared `core.db`
+- is restartable from persisted local bootstrap state rather than depending on
+  one long-lived process
 
 ### Phase 5: Joining-side bootstrap flow
 
@@ -507,13 +521,18 @@ Only if it stays reviewable:
 - joining device's keystore has exactly one new NoteToSelf device key
 - join request artifact round-trips cleanly
 - join request artifact is versioned and contains only public data
+- the same join request artifact deterministically yields the same short
+  authentication string
 - welcome bundle round-trips cleanly
 - welcome bundle contains no secret material
 - welcome bundle contains exact bootstrap locator metadata
 - intended joining key decrypts the bundle
 - wrong key cannot decrypt the bundle
 - tampered bundle is rejected before use
+- expired welcome bundle is rejected before use
 - bootstrap initializer creates no fake shared `core.db`
+- interrupted bootstrap can resume from persisted local state, or else fails
+  cleanly and requires an explicit restart
 - no team device keys are auto-created on the joining device
 
 ### Flow-level
@@ -535,7 +554,8 @@ If the optional Hub/S3 path lands:
 
 - **Plain shared-state admission proves too weak.**
   Mitigation: keep the branch shape compatible with later signed admission /
-  sanity-check additions.
+  sanity-check additions, and require a human-confirmed short authentication
+  string before admitting the join request artifact.
 
 - **The welcome bundle turns into a shadow copy of NoteToSelf.**
   Mitigation: carry only bootstrap metadata and remote locator details, not
@@ -559,6 +579,15 @@ If the optional Hub/S3 path lands:
   well-known construction from an established library (e.g. X25519 +
   ChaCha20-Poly1305 via `cryptography` or `nacl`). Do not design novel crypto.
   Accept that the specific construction may change when Cuttlefish matures.
+
+- **Stale encrypted bundles could be mistaken for fresh bootstrap authority.**
+  Mitigation: require `expires_at` in v1 and reject expired bundles before any
+  local initialization or NoteToSelf pull.
+
+- **Bootstrap depends on one live process and dies messily on interruption.**
+  Mitigation: persist the temporary enclave ref and other minimal bootstrap
+  state so the flow is restartable; if restart cannot safely continue, fail
+  loudly and require an explicit clean restart.
 
 - **Multiple `cloud_storage` rows make NoteToSelf remote ambiguous.**
   Mitigation: assume exactly one `cloud_storage` row for now (matches the
