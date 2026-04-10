@@ -26,7 +26,8 @@ This branch should add a practical verification improvement without redesigning 
 
 Strengthen the identity-join handshake so that:
 
-- the joining device has a way to verify the welcome bundle came from an authorized device in the expected identity
+- the joining device has a way to verify the welcome bundle was signed by a
+  device in the pulled identity, plus stronger side-by-side human confirmation
 - the improvement is compatible with the existing join-request / welcome-bundle flow
 - the UX remains practical for device-to-device confirmation
 
@@ -97,7 +98,10 @@ Because the common case is having both devices side by side, this branch should
 also add a second short confirmation string tied to the signed bundle:
 
 - the authorizing device computes it from the full handshake transcript:
-  hash of (join_request_artifact_bytes + canonical_bundle_json + signature_bytes)
+  hash of the canonical encodings of:
+  - join_request_artifact
+  - canonical_bundle_json
+  - signature_bytes
 - the joining device computes the same value after decrypt + pull + signature
   verification
 - the human compares the two devices again
@@ -145,7 +149,7 @@ signed bootstrap event and the same pulled identity.
     schema change (fresh-schema rules apply, no migration needed)
 - extend the local NoteToSelf device-key-secret table with two columns on the
   same row: `encryption_private_key_ref` and `signing_private_key_ref`
-  (preserves one-row-per-device invariant)
+  (preserves the existing one-row-per-device invariant and avoids table churn)
 - the `WelcomeBundle` dataclass stays unchanged — the signature and authorizing
   device ID live in a wrapper payload outside the bundle (see sign-then-encrypt
   flow above)
@@ -218,10 +222,11 @@ can absorb the additional key columns cleanly (fresh-schema rules still apply).
   - signing private-key ref
 - update participant creation and join-request creation to generate/store both
   keypairs
-- update all code that currently reads `user_device.key` — at minimum:
-  `create_team` (populates `team_device_key.public_key`), invitation flows,
-  identity bootstrap. For team operations, use the signing key as the team
-  device public key (teams need to verify signatures, not encrypt).
+- update the code that currently reads `user_device.key`, which is mainly:
+  - local-device selection for NoteToSelf-owned operations
+  - identity-bootstrap admission / verification lookups
+  Team device keys are separate and should not be conflated with either
+  NoteToSelf bootstrap key.
 
 ### Phase 3: Welcome bundle signature (sign-then-encrypt)
 
@@ -235,7 +240,8 @@ can absorb the additional key columns cleanly (fresh-schema rules still apply).
 - after NoteToSelf pull, the joining device:
   - looks up `authorizing_device_id_hex` in the pulled `user_device` table
   - verifies the signature against that device's Ed25519 signing public key
-  - warns or refuses if verification fails
+  - if verification fails, marks the bootstrap untrusted and refuses further
+    identity-join completion actions in this branch
   - if verification passes, computes/displays the second short confirmation
     string for side-by-side human confirmation
 
