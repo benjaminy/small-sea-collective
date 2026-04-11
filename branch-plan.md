@@ -137,6 +137,11 @@ Provisioning should remain responsible for:
 - signature verification after fetch
 - final cleanup
 
+This strongly suggests a cleanup during the branch:
+
+- split the current identity-bootstrap flow into local-only
+  prepare/finalize work plus session-layer fetch orchestration
+
 ### Decision 6: `remote_descriptor` must include `bucket`
 
 The joining device cannot derive the NoteToSelf bucket before it has fetched
@@ -215,6 +220,8 @@ Without locking the exact refactor yet, the repo research points to this shape:
 - automatic NoteToSelf refresh after bootstrap
 - background discovery/watch flows
 - making every bootstrap transport path share one final abstraction
+- removing the existing `LocalFolderRemote` bootstrap path unless that turns
+  out to be nearly free
 
 ## Validation
 
@@ -225,6 +232,8 @@ The branch should not be considered complete unless it proves all of these:
   transport in MinIO/S3 tests
 - the joining device can fetch NoteToSelf through Hub-owned bootstrap
   transport without a preexisting normal NoteToSelf session
+- that bootstrap fetch works through the **joining device's own local Hub**
+  rooted at blank local state, not just through the authorizing device's Hub
 - the joining device does not need a fake fully initialized NoteToSelf DB
   before fetch
 - bootstrap-scoped auth is rejected by ordinary session-only routes such as
@@ -257,6 +266,7 @@ The branch should not be considered complete unless it proves all of these:
 
 - full round-trip through Hub-owned transport
 - verify the existing signed welcome-bundle checks still pass
+- prove the joining side uses its own blank-root Hub for bootstrap transport
 
 ### Phase 5: Docs
 
