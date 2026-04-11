@@ -168,6 +168,286 @@ The branch should not be considered complete unless it proves all of these:
 - the bootstrap flow works against local MinIO/S3 tests
 - unsupported bootstrap providers fail clearly rather than silently falling back to local-only assumptions
 
+## Architectural Proposal: Bootstrap Session
+
+After digging deep into the Hub codebase, here's the key finding:
+
+**The Hub can already start with zero participant state.** `SmallSeaBackend.__init__`
+creates `root_dir`, `Logging/`, and an empty `small_sea_collective_local.db`
+with session/pending_session tables. No `Participants/` directory needed.
+
+**`_lookup_session` is cheap.** It reads a single row from the Hub's local
+session DB. It does NOT touch participant filesystems or NoteToSelf DBs.
+
+**`proxy_cloud_file` for S3 is almost free.** It validates the session token
+(cheap DB lookup), checks `team_name == "NoteToSelf"`, then does an anonymous
+S3 read. No participant credentials involved.
+
+The bottleneck is session *creation*: `request_session` calls
+`_find_participant` (iterates `Participants/` directories, reads NoteToSelf
+DBs for nickname matches) and `_resolve_berth` (reads team/app/berth rows
+from NoteToSelf DB). These require the full participant filesystem to exist.
+
+### Proposed solution: `create_bootstrap_session`
+
+Add a new method to `SmallSeaBackend`:
+
+```python
+def create_bootstrap_session(self) -> bytes:
+    """Create a short-lived session for identity bootstrap transport.
+
+    Does not require any participant state to exist. The session is scoped
+    to NoteToSelf and can be used with proxy_cloud_file for anonymous-read
+    protocols (S3).
+
+    Returns the session token (bytes).
+    """
+```
+
+This method:
+- generates a random session token
+- inserts a session row with placeholder values:
+  - `participant_id`: a zero UUID or the joining device's device_id
+  - `team_name`: `"NoteToSelf"` (so `proxy_cloud_file` accepts it)
+  - `app_name`, `berth_id`, `team_id`: placeholder values
+  - `client`: `"bootstrap"`
+- skips the PIN flow, `_find_participant`, and `_resolve_berth` entirely
+- optionally sets a short TTL
+
+Expose it via a new endpoint:
+
+```python
+@app.post("/sessions/bootstrap")
+async def create_bootstrap_session():
+    token = app.state.backend.create_bootstrap_session()
+    return {"token": token.hex()}
+```
+
+No auth required — same as `/sessions/request`. The session grants minimal
+access: only `proxy_cloud_file` for anonymous-read protocols. The joining
+device's Manager calls this once, gets a token, and uses
+`ExplicitProxyRemote` to fetch NoteToSelf through `/cloud_proxy`.
+
+### Why this works
+
+1. **Hub is the gateway.** Manager talks to its local Hub via HTTP (or
+   TestClient), never touches cloud directly.
+2. **No fake NoteToSelf state.** The bootstrap session doesn't read from any
+   participant directory. It's a real session row in the Hub's DB.
+3. **Reuses existing infrastructure.** `ExplicitProxyRemote` already talks to
+   `/cloud_proxy`. `proxy_cloud_file` already does anonymous S3 reads. The
+   only new code is the session creation shortcut.
+4. **Clearly narrower than normal sessions.** The `client: "bootstrap"` marker
+   makes bootstrap sessions distinguishable. They can be excluded from the
+   watcher, restricted to certain endpoints, and auto-expired.
+
+### Why not sessionless?
+
+An alternative is a new endpoint that doesn't require any session — just
+accepts `{protocol, url, bucket, path}` directly. This is simpler but:
+
+- breaks the Hub's consistent auth model (every cloud endpoint requires a
+  session today)
+- exposes an unauthenticated cloud proxy on localhost, which is a broader
+  surface than needed
+- makes it harder to audit/rate-limit bootstrap activity
+
+The bootstrap session is slightly more ceremony but stays consistent with the
+existing architecture.
+
+### Why not Hub-as-library?
+
+Another alternative is importing `SmallSeaBackend` or the adapter layer
+directly into Manager and calling `proxy_cloud_file`-like logic in-process.
+
+This could work but:
+
+- blurs the Hub/Manager separation that the repo maintains
+- in production the Hub process is already running — talking to it via HTTP
+  is the normal path
+- `ExplicitProxyRemote` already implements the CodSync remote interface over
+  HTTP — no new code needed on the Manager side
+- tests already inject `TestClient` as the HTTP layer, keeping everything
+  in-process anyway
+
+So: use the running Hub process in production, use TestClient in tests. Same
+code path.
+
+### Joining-side bootstrap flow (concrete)
+
+1. Manager calls `POST /sessions/bootstrap` on local Hub → gets
+   `bootstrap_token`
+2. Manager creates `ExplicitProxyRemote(bootstrap_token, protocol, url,
+   bucket)` using `remote_descriptor` from the welcome bundle
+3. CodSync fetches NoteToSelf through `/cloud_proxy` → Hub does anonymous S3
+   reads
+4. Manager checks out the fetched repo, verifies the welcome bundle signature
+   against `user_device.signing_key` (existing logic)
+5. Manager initializes the real participant state from the fetched data
+6. Bootstrap session can be deleted or left to expire
+
+### Authorizing-side push (concrete)
+
+The authorizing device already has a running Hub and a NoteToSelf session.
+`_push_note_to_self_to_local_remote` currently only supports `localfolder`.
+
+For Hub-backed protocols:
+1. The authorizing device's Manager gets a NoteToSelf session (already exists
+   or auto-approved)
+2. Creates `SmallSeaRemote(session_hex)` pointing at its local Hub
+3. CodSync pushes NoteToSelf through `POST /cloud_file` → Hub writes to S3
+
+This requires extending `_push_note_to_self_to_local_remote` (or adding a
+parallel function) to use `SmallSeaRemote` when the protocol isn't
+`localfolder`.
+
+The authorizing-side Hub session creation works normally because the
+authorizing device has full participant state.
+
+### CodSync remote selection in `_remote_from_descriptor`
+
+Today:
+```python
+def _remote_from_descriptor(remote_descriptor):
+    if protocol == "localfolder":
+        return LocalFolderRemote(url)
+    raise NotImplementedError(...)
+```
+
+After this branch:
+```python
+def _remote_from_descriptor(remote_descriptor, *, bootstrap_token=None,
+                            hub_url="http://localhost:11437", http_client=None):
+    if protocol == "localfolder":
+        return LocalFolderRemote(url)
+    if protocol == "s3":
+        if bootstrap_token is None:
+            raise ValueError("Hub-backed protocols require a bootstrap token")
+        return ExplicitProxyRemote(
+            bootstrap_token, protocol, url, bucket,
+            base_url=hub_url, client=http_client,
+        )
+    raise NotImplementedError(f"Unsupported bootstrap protocol: {protocol}")
+```
+
+### What about `proxy_cloud_file` and the NoteToSelf check?
+
+`proxy_cloud_file` currently enforces `team_name == "NoteToSelf"`. Bootstrap
+sessions have `team_name = "NoteToSelf"`, so this check passes. No change
+needed.
+
+### What about the watcher?
+
+The lifespan loop calls `_register_session_peers` for every session. For
+NoteToSelf sessions, `_register_session_peers` already returns early:
+
+```python
+if ss_session.team_name == "NoteToSelf":
+    return  # NoteToSelf has no peers
+```
+
+So bootstrap sessions won't trigger any watcher activity.
+
+## Concrete Change Areas
+
+### `small-sea-hub/backend.py`
+
+- add `create_bootstrap_session()` method
+- no changes to `proxy_cloud_file`, `_lookup_session`, or existing session
+  logic
+
+### `small-sea-hub/server.py`
+
+- add `POST /sessions/bootstrap` endpoint (no auth required)
+
+### `small-sea-manager/provisioning.py`
+
+- extend `_remote_from_descriptor` to support `ExplicitProxyRemote` for
+  Hub-backed protocols
+- extend `_push_note_to_self_to_local_remote` (or add parallel) to use
+  `SmallSeaRemote` for Hub-backed protocols
+- update `authorize_identity_join` to include `bucket` in `remote_descriptor`
+- update `bootstrap_existing_identity` to request a bootstrap session and
+  pass it through to `_remote_from_descriptor`
+
+### `small-sea-manager/manager.py`
+
+- `bootstrap_existing_identity` (the module-level wrapper) may need to accept
+  Hub connection info (port, http_client) so it can request a bootstrap
+  session
+- `authorize_identity_join` on `TeamManager` may need to push through Hub
+  when protocol isn't `localfolder`
+
+### `small-sea-note-to-self/bootstrap.py`
+
+- `WelcomeBundle.remote_descriptor` already accepts arbitrary dicts — just
+  include `bucket` when building it
+
+### `small-sea-client/client.py`
+
+- add `request_bootstrap_session()` method that calls
+  `POST /sessions/bootstrap`
+
+### Tests
+
+- MinIO integration test: full round-trip through Hub
+  - authorizing device pushes NoteToSelf via SmallSeaRemote → Hub → S3
+  - joining device fetches via bootstrap session → ExplicitProxyRemote →
+    Hub → S3
+  - verify signature, second confirmation string
+- existing localfolder tests unchanged
+
+## Implementation Order
+
+### Phase 1: Bootstrap session creation
+
+- `SmallSeaBackend.create_bootstrap_session()` + endpoint
+- `SmallSeaClient.request_bootstrap_session()`
+- unit test: can create bootstrap session on empty Hub, token is valid for
+  `_lookup_session`
+
+### Phase 2: Authorizing-side push through Hub
+
+- extend `_push_note_to_self_to_local_remote` for non-localfolder protocols
+- the authorizing device uses `SmallSeaRemote` through its local Hub
+- test: authorizing device can push NoteToSelf to MinIO through Hub
+
+### Phase 3: Joining-side fetch through Hub
+
+- extend `_remote_from_descriptor` to return `ExplicitProxyRemote` for
+  Hub-backed protocols
+- update `bootstrap_existing_identity` to request a bootstrap session
+- add `bucket` to `remote_descriptor` in `authorize_identity_join`
+- test: joining device can fetch NoteToSelf from MinIO through Hub
+
+### Phase 4: End-to-end MinIO test
+
+- full round-trip: create participant → push to MinIO → join request →
+  authorize → bootstrap through Hub → verify
+- proves the entire Hub-mediated bootstrap path
+
+### Phase 5: Docs
+
+- update specs to describe the bootstrap session concept
+- document which protocols are supported for bootstrap (S3 for now)
+- document what remains unsolved (OAuth providers)
+
+## Risks
+
+- **Bootstrap session is unauthenticated.** Anyone on localhost can create
+  one. Mitigation: bootstrap sessions only grant anonymous-read proxy access,
+  which for S3 public buckets is no more than what `curl` could do. The
+  session doesn't grant write access or credential access.
+- **Placeholder IDs in bootstrap session rows.** These are slightly unusual
+  DB state. Mitigation: mark with `client = "bootstrap"` and consider
+  auto-cleanup.
+- **MinIO test infrastructure.** Mitigation: skip if MinIO not available,
+  keep fixture self-contained.
+- **`proxy_cloud_file` might grow beyond S3.** For OAuth providers, the
+  bootstrap session can't provide credentials. Mitigation: this branch is
+  explicitly S3-only. The bootstrap session concept can be extended later
+  with credential injection, but that's a separate design.
+
 ## Questions To Defer Until The Next Planning Step
 
 These are real design questions, but they belong in the **implementation/refactor planning** step, not this branch-shape step:
