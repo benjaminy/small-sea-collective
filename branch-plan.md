@@ -19,8 +19,8 @@ bootstrap.
 
 At the end of this branch, a critic should be able to say:
 
-- Hub can fetch NoteToSelf bootstrap data before normal
-  participant/session state exists on the joining device
+- the joining device's local Hub can fetch NoteToSelf bootstrap data
+  before that device has any normal participant/session state
 - Manager still obeys “Hub as gateway”
 - the flow works in a real cloud-shaped environment, not just a shared local
   filesystem
@@ -82,7 +82,7 @@ second major design problem.
 
 ### 5. Provisioning is still supposed to stay local-only
 
-Per [packages/small-sea-manager/spec.md](/Users/ben8/Repos/small-sea-collective/packages/small-sea-manager/spec.md#L23), the split is still:
+Per [packages/small-sea-manager/spec.md](packages/small-sea-manager/spec.md), the split is still:
 
 - `provisioning.py`: local filesystem/SQLite work only
 - session layer (`manager.py`, Hub client): cloud/network orchestration
@@ -142,7 +142,7 @@ Provisioning should remain responsible for:
 The joining device cannot derive the NoteToSelf bucket before it has fetched
 NoteToSelf.
 
-So the welcome bundle must explicitly carry:
+So the welcome bundle's `remote_descriptor` must explicitly carry:
 
 - `protocol`
 - `url`
