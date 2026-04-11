@@ -438,17 +438,362 @@ MinIO remains the required proof because it exercises:
   Mitigation: treat authorizing-side push as a supporting task, not the core
   refactor.
 
-## Questions To Carry Into The Next Refactor Pass
+## Concrete Design Answers
 
-These are now the real next-step design questions:
+These answer the deferred questions from the branch-shape draft.
 
-- should bootstrap-scoped auth live in a dedicated table, a typed session row,
-  or a separate endpoint family?
-- should `/cloud_proxy` be reused directly, or should bootstrap get its own
-  narrower route?
-- how should the session layer expose joining-side bootstrap fetch without
-  bloating `TeamManager`?
-- what is the cleanest NoteToSelf push helper on the authorizing side?
+### Design A: Dedicated `bootstrap_session` table
 
-Those are implementation/refactor questions. They are intentionally not locked
-by this branch-shape draft.
+The safest way to get enforcement-by-construction is a separate table.
+
+**Hub schema addition** (`hub_local_schema.sql`):
+```sql
+CREATE TABLE IF NOT EXISTS bootstrap_session (
+    id BLOB PRIMARY KEY,
+    token BLOB NOT NULL,
+    protocol TEXT NOT NULL,
+    url TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+```
+
+Key properties:
+- the token column lives in a different table from `session.token`
+- `_lookup_session` queries `session` — it will never find a bootstrap token
+- every existing `Depends(_require_session)` endpoint is automatically immune
+- the bootstrap session carries the exact `{protocol, url, bucket}` it's
+  scoped to — no wildcard cloud access
+- no participant_id, team_id, berth_id — these don't exist yet
+
+**Backend methods:**
+
+```python
+def create_bootstrap_session(self, protocol, url, bucket,
+                             ttl_seconds=600) -> bytes:
+    """Create a scoped bootstrap session for identity bootstrap transport."""
+
+def lookup_bootstrap_session(self, token_hex) -> BootstrapSession:
+    """Look up a bootstrap session. Raises SmallSeaNotFoundExn if invalid/expired."""
+
+def bootstrap_cloud_download(self, token_hex, path) -> tuple[bool, bytes|None, str|None]:
+    """Download a file using a bootstrap session's scoped cloud coordinates."""
+```
+
+`bootstrap_cloud_download` is the bootstrap equivalent of `proxy_cloud_file`.
+It reads `{protocol, url, bucket}` from the bootstrap session row itself —
+the caller only provides `path`. This means:
+
+- the scope is locked at session creation time
+- the caller cannot redirect the bootstrap session to a different bucket
+- the Hub enforces protocol support (S3-only for now; raises on Dropbox/GDrive)
+
+**Hub endpoints:**
+
+```python
+@app.post("/bootstrap/session")
+async def create_bootstrap_session_endpoint(req: BootstrapSessionReq):
+    """Create a bootstrap-scoped session. No auth required (same as /sessions/request)."""
+
+@app.get("/bootstrap/cloud_file")
+async def bootstrap_download(path: str, token: str = Header(...)):
+    """Download a file via bootstrap-scoped transport. Separate auth from _require_session."""
+```
+
+The `token` header uses a different name or prefix from the normal `Bearer`
+scheme, or a separate `_require_bootstrap_session` dependency. Either way,
+these tokens cannot leak into normal session routes.
+
+**Why this works:**
+- enforcement is structural, not a convention check on a shared table
+- no risk of `attached_note_to_self_connection` being called with bogus paths
+- `_require_session` and `_require_bootstrap_session` are completely separate
+  dependency functions
+- the bootstrap session knows exactly what cloud location it can access
+- adding OAuth support later means extending `bootstrap_cloud_download`, not
+  changing the auth model
+
+**Why not a typed row in the `session` table?**
+- would require adding a `kind` column or similar
+- every existing `_require_session` callsite would need a kind-check added
+- if one endpoint forgets the check, bootstrap tokens leak through
+- the "add a check everywhere" approach is exactly the fragile pattern the
+  committee flagged
+
+### Design B: Split `bootstrap_existing_identity` into prepare/fetch/finalize
+
+The current `provisioning.bootstrap_existing_identity` (lines 639-754) does
+three things in one function:
+
+1. **Prepare** (lines 641-706): decrypt welcome bundle, validate, set up
+   local dirs, write device key secrets
+2. **Fetch** (lines 708-716): init git repo, create CodSync remote, fetch
+   from remote, checkout
+3. **Finalize** (lines 718-754): verify signature against pulled identity,
+   clean up pending state, return result
+
+The fetch step (2) is network I/O and must move out of provisioning. The
+split:
+
+**`provisioning.prepare_identity_bootstrap(root_dir, welcome_bundle_b64)`**
+- decrypt the welcome bundle
+- validate expiry, device_id match, public_key match
+- set up participant directory, FakeEnclave, local DB
+- write device key secrets to final paths
+- init the git repo at `NoteToSelf/Sync` (but do NOT fetch)
+- return a `BootstrapContext` with everything the caller needs:
+  ```python
+  {
+      "participant_hex": ...,
+      "remote_descriptor": bundle.remote_descriptor,
+      "sync_dir": ...,           # path to the NoteToSelf/Sync git repo
+      "bundle": bundle,          # the decrypted WelcomeBundle
+      "signed_bundle": ...,      # includes authorizing_device_id_hex, signature_hex
+      "pending_artifact": ...,   # for confirmation string
+  }
+  ```
+
+**Session layer (manager.py) does the fetch:**
+- requests a bootstrap session from Hub with `{protocol, url, bucket}` from
+  `remote_descriptor`
+- constructs a CodSync remote pointing at `GET /bootstrap/cloud_file`
+- runs `cod.fetch_from_remote(["main"])` and `git checkout main`
+
+**`provisioning.finalize_identity_bootstrap(root_dir, bootstrap_context)`**
+- verify the welcome bundle signature against the pulled `user_device` table
+- if verification fails, mark untrusted
+- clean up pending keys and join state
+- return the result dict with confirmation string
+
+This preserves the provisioning = local-only invariant. The fetch is clearly
+in the session layer, sandwiched between two provisioning calls.
+
+### Design C: Authorizing-side NoteToSelf push through Hub
+
+Follow the exact `push_team` pattern. On `TeamManager`:
+
+```python
+def push_note_to_self(self):
+    """Push NoteToSelf repo through Hub to cloud storage."""
+    from cod_sync.protocol import CodSync, SmallSeaRemote
+
+    session = self._get_or_open_session("NoteToSelf", mode="passthrough")
+    session.ensure_cloud_ready()
+    repo_dir = self.root_dir / "Participants" / self.participant_hex / "NoteToSelf" / "Sync"
+    remote = SmallSeaRemote(session.token, base_url=self.client._base_url)
+    cs = CodSync("origin", repo_dir=repo_dir)
+    cs.remote = remote
+    cs.push_to_remote(["main"])
+```
+
+Then `authorize_identity_join` on `TeamManager` (the session layer, not
+provisioning) calls `self.push_note_to_self()` after provisioning admits the
+device and commits the change.
+
+The existing `_push_note_to_self_to_local_remote` in provisioning stays for
+the `localfolder` path — or gets dropped entirely if we route all push
+through the session layer with protocol dispatch.
+
+**Bucket naming for NoteToSelf push:**
+
+`SmallSeaRemote` uploads go through `POST /cloud_file`. The Hub's
+`upload_to_cloud` calls `_make_storage_adapter(ss_session)`, which calls
+`_make_s3_adapter(ss_session, cloud)`:
+
+```python
+bucket_name = f"ss-{ss_session.berth_id.hex()[:16]}"
+```
+
+So the NoteToSelf berth_id determines the S3 bucket name. The Hub resolves
+this from the session. The authorizing device's NoteToSelf session already
+has the correct berth_id. This is the same bucket name that goes into the
+welcome bundle's `remote_descriptor["bucket"]`.
+
+### Design D: Bootstrap CodSync remote
+
+The joining device needs a CodSync remote that talks to
+`GET /bootstrap/cloud_file` instead of `GET /cloud_proxy`. This is a thin
+variant of `ExplicitProxyRemote`:
+
+```python
+class BootstrapProxyRemote(CodSyncRemote):
+    """Read-only remote for identity bootstrap, using bootstrap-scoped Hub auth."""
+
+    def __init__(self, bootstrap_token, base_url="http://localhost:11437",
+                 client=None):
+        self._token = bootstrap_token
+        self._auth = {"X-Bootstrap-Token": bootstrap_token}  # distinct from Bearer
+        # ... _download calls GET /bootstrap/cloud_file?path=...
+```
+
+The key difference from `ExplicitProxyRemote`:
+- uses a different auth header (not `Bearer` / not `Authorization`)
+- talks to `/bootstrap/cloud_file` not `/cloud_proxy`
+- does NOT pass `{protocol, url, bucket}` per request — those are locked in
+  the bootstrap session
+
+This could also be a mode on `ExplicitProxyRemote` rather than a new class.
+Either way it's a small amount of code.
+
+### Design E: `remote_descriptor` with `bucket`
+
+The authorizing device builds the descriptor in provisioning's
+`authorize_identity_join`. Currently `_single_note_to_self_remote_descriptor`
+returns `{storage_id_hex, protocol, url, client_id, path_metadata}`.
+
+For this branch, it also needs `bucket`. The bucket comes from the
+NoteToSelf berth_id:
+
+```python
+def _single_note_to_self_remote_descriptor(root_dir, participant_hex):
+    # ... existing code to get cloud_storage row ...
+    # Add bucket from NoteToSelf berth_id
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        berth_row = conn.execute(
+            "SELECT tab.id FROM team_app_berth tab "
+            "JOIN app a ON a.id = tab.app_id "
+            "WHERE a.name = 'SmallSeaCollectiveCore'"
+        ).fetchone()
+    bucket = f"ss-{berth_row[0].hex()[:16]}" if berth_row else None
+    return {
+        "storage_id_hex": row[0].hex(),
+        "protocol": row[1],
+        "url": row[2],
+        "bucket": bucket,
+        ...
+    }
+```
+
+### Joining-side full flow (concrete)
+
+1. **Manager** calls `provisioning.prepare_identity_bootstrap(root_dir, welcome_bundle_b64)`
+   → gets `BootstrapContext` with `remote_descriptor`, `sync_dir`, etc.
+2. **Manager** calls `POST /bootstrap/session` on local Hub with
+   `{protocol, url, bucket}` from `remote_descriptor`
+   → gets `bootstrap_token`
+3. **Manager** creates `BootstrapProxyRemote(bootstrap_token)` and a
+   `CodSync` instance pointed at `sync_dir`
+4. **Manager** runs `cod.fetch_from_remote(["main"])` and
+   `git checkout main`
+5. **Manager** calls `provisioning.finalize_identity_bootstrap(root_dir, bootstrap_context)`
+   → signature verification, cleanup, result
+
+### Authorizing-side full flow (concrete)
+
+1. **TeamManager.authorize_identity_join(join_request_b64)**
+   calls `provisioning.authorize_identity_join(...)` which:
+   - admits the device (inserts `user_device` row)
+   - commits the NoteToSelf change
+   - builds the welcome bundle with `bucket` in `remote_descriptor`
+   - signs and encrypts the bundle
+   - returns the sealed bundle + auth strings
+   - does NOT push (that's network I/O)
+2. **TeamManager.authorize_identity_join** then calls
+   `self.push_note_to_self()` to push the updated NoteToSelf through Hub
+3. Returns the sealed bundle + auth strings to the caller
+
+Wait — there's a subtlety. Currently `provisioning.authorize_identity_join`
+calls `_push_note_to_self_to_local_remote` internally (line 596). That push
+needs to move up to the session layer too.
+
+This means `provisioning.authorize_identity_join` should stop pushing and
+just return. The caller (TeamManager) is responsible for pushing. For the
+`localfolder` test path, the test can call the push helper directly or
+TeamManager can detect localfolder and handle it.
+
+### What stays in provisioning vs what moves
+
+**Stays in provisioning (local-only):**
+- `create_identity_join_request` — generates keypairs, writes pending state
+- `authorize_identity_join` — admits device, builds/signs/encrypts bundle,
+  commits git change. BUT: stops before pushing (returns a flag or the
+  caller pushes)
+- `prepare_identity_bootstrap` (new) — decrypt, validate, setup local state
+- `finalize_identity_bootstrap` (new) — verify signature, cleanup
+
+**Moves to session layer (manager.py):**
+- NoteToSelf push after authorize (new `push_note_to_self`)
+- CodSync fetch during bootstrap (new orchestration in
+  `bootstrap_existing_identity`)
+- bootstrap session creation (calls Hub)
+
+### What happens to the existing tests?
+
+The `test_localfolder_identity_bootstrap_roundtrip` currently calls:
+```python
+join_request = create_identity_join_request(root2)
+welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+bootstrap = bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+```
+
+After this branch:
+- `authorize_identity_join` still works but the caller must also push.
+  For localfolder, `alice_manager` can call `push_note_to_self()` (which
+  uses SmallSeaRemote through Hub). OR: the test can detect localfolder and
+  call `_push_note_to_self_to_local_remote` directly. OR: the existing test
+  keeps using `localfolder` and a new MinIO test uses Hub transport.
+- `bootstrap_existing_identity` becomes the session-layer function on
+  manager.py that calls prepare → fetch → finalize. The module-level
+  wrapper needs updating.
+
+The cleanest option: keep existing localfolder tests working by keeping the
+`localfolder` push inside provisioning as a legacy path, and adding the
+Hub-transport path alongside it. The authorizing-side provisioning code can
+check the protocol and push via localfolder if applicable, or skip the push
+and let the caller handle it for Hub-backed protocols.
+
+## Revised Implementation Order
+
+### Phase 1: Bootstrap session table + endpoints
+
+- add `bootstrap_session` table to Hub schema (with migration)
+- add `create_bootstrap_session()` and `lookup_bootstrap_session()` to
+  `SmallSeaBackend`
+- add `bootstrap_cloud_download()` that reads scoped `{protocol, url, bucket}`
+  from the session row and does anonymous S3 download
+- add `POST /bootstrap/session` and `GET /bootstrap/cloud_file` endpoints
+- add `_require_bootstrap_session` dependency (separate from `_require_session`)
+- add `request_bootstrap_session()` to `SmallSeaClient`
+- test: bootstrap token is rejected by normal session endpoints
+- test: normal session token is rejected by bootstrap endpoints
+- test: bootstrap session can download from MinIO
+
+### Phase 2: Authorizing-side NoteToSelf push through Hub
+
+- add `TeamManager.push_note_to_self()`
+- update `TeamManager.authorize_identity_join()` to push through Hub after
+  provisioning admits the device
+- remove the `_push_note_to_self_to_local_remote` call from inside
+  provisioning's `authorize_identity_join` (or keep it for localfolder only)
+- add `bucket` to `_single_note_to_self_remote_descriptor`
+- test: authorizing device can push NoteToSelf to MinIO through Hub
+
+### Phase 3: Split `bootstrap_existing_identity`
+
+- create `provisioning.prepare_identity_bootstrap()` — decrypt, validate,
+  local setup
+- create `provisioning.finalize_identity_bootstrap()` — signature verify,
+  cleanup
+- update `manager.bootstrap_existing_identity()` (module-level) or add new
+  session-layer orchestration that calls prepare → fetch → finalize
+
+### Phase 4: Joining-side bootstrap fetch through Hub
+
+- add `BootstrapProxyRemote` (or adapt `ExplicitProxyRemote`) in CodSync
+- joining-side orchestration: request bootstrap session → build remote →
+  CodSync fetch → finalize
+- test: joining device can fetch NoteToSelf from MinIO through Hub
+
+### Phase 5: End-to-end MinIO bootstrap test
+
+- full round-trip: create participant → add S3 storage → push NoteToSelf
+  through Hub → create join request → authorize → bootstrap through Hub →
+  verify signature + confirmation string
+- existing localfolder tests still pass
+
+### Phase 6: Docs
+
+- update Hub spec to describe bootstrap session concept
+- update Manager spec to describe the prepare/fetch/finalize split
+- document S3-only limitation and OAuth deferral
