@@ -4,8 +4,8 @@ from pathlib import Path
 
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
-SHARED_SCHEMA_VERSION = 55
-LOCAL_SCHEMA_VERSION = 2
+SHARED_SCHEMA_VERSION = 56
+LOCAL_SCHEMA_VERSION = 3
 
 
 def note_to_self_sync_db_path(root_dir: str | Path, participant_hex: str) -> Path:

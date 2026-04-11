@@ -27,8 +27,11 @@ import subprocess
 import cod_sync.protocol as CodSync
 from cuttlefish import (
     generate_bootstrap_keypair,
+    generate_bootstrap_signing_keypair,
     open_welcome_bundle,
     seal_welcome_bundle,
+    sign_welcome_bundle,
+    verify_welcome_bundle_signature,
 )
 from cuttlefish.group import (
     GroupMessage,
@@ -46,12 +49,16 @@ from small_sea_note_to_self.db import (
 )
 from small_sea_note_to_self.bootstrap import (
     JoinRequestArtifact,
+    SignedWelcomeBundle,
     WelcomeBundle,
+    deserialize_signed_welcome_bundle_plaintext,
     deserialize_join_request_artifact,
     deserialize_welcome_bundle_plaintext,
     join_request_auth_string,
     serialize_join_request_artifact,
+    serialize_signed_welcome_bundle_plaintext,
     serialize_welcome_bundle_plaintext,
+    welcome_bundle_confirmation_string,
     welcome_bundle_aad,
 )
 from small_sea_note_to_self.ids import uuid7
@@ -132,18 +139,42 @@ def _team_device_key_path(root_dir, participant_hex, team_id: bytes, device_id: 
     )
 
 
-def _note_to_self_device_key_path(root_dir, participant_hex, device_id: bytes) -> pathlib.Path:
-    return _fake_enclave_dir(root_dir, participant_hex) / f"device-{device_id.hex()}.key"
+def _note_to_self_device_encryption_key_path(root_dir, participant_hex, device_id: bytes) -> pathlib.Path:
+    return _fake_enclave_dir(root_dir, participant_hex) / f"device-{device_id.hex()}-enc.key"
 
 
-def _bootstrap_pending_device_key_path(root_dir, device_id: bytes) -> pathlib.Path:
-    return _bootstrap_fake_enclave_dir(root_dir) / f"pending-device-{device_id.hex()}.key"
+def _note_to_self_device_signing_key_path(root_dir, participant_hex, device_id: bytes) -> pathlib.Path:
+    return _fake_enclave_dir(root_dir, participant_hex) / f"device-{device_id.hex()}-sign.key"
+
+
+def _bootstrap_pending_device_encryption_key_path(root_dir, device_id: bytes) -> pathlib.Path:
+    return _bootstrap_fake_enclave_dir(root_dir) / f"pending-device-{device_id.hex()}-enc.key"
+
+
+def _bootstrap_pending_device_signing_key_path(root_dir, device_id: bytes) -> pathlib.Path:
+    return _bootstrap_fake_enclave_dir(root_dir) / f"pending-device-{device_id.hex()}-sign.key"
+
+
+def _identity_bootstrap_status_path(root_dir, participant_hex: str) -> pathlib.Path:
+    return (
+        pathlib.Path(root_dir)
+        / "Participants"
+        / participant_hex
+        / "NoteToSelf"
+        / "Local"
+        / "identity_bootstrap_status.json"
+    )
 
 
 def _current_device_row(conn):
     row = conn.execute(
         """
-        SELECT ud.id, ud.key
+        SELECT
+            ud.id,
+            ud.bootstrap_encryption_key,
+            ud.signing_key,
+            ndks.encryption_private_key_ref,
+            ndks.signing_private_key_ref
         FROM user_device ud
         JOIN local.note_to_self_device_key_secret ndks
           ON ndks.device_id = ud.id
@@ -192,6 +223,37 @@ def _clear_pending_join_state(root_dir) -> None:
     path = _bootstrap_state_path(root_dir)
     if path.exists():
         path.unlink()
+
+
+def _mark_identity_bootstrap_untrusted(root_dir, participant_hex: str, *, reason: str) -> None:
+    path = _identity_bootstrap_status_path(root_dir, participant_hex)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "status": "identity_bootstrap_untrusted",
+                "reason": reason,
+            },
+            sort_keys=True,
+            indent=2,
+        )
+    )
+
+
+def _clear_identity_bootstrap_untrusted(root_dir, participant_hex: str) -> None:
+    path = _identity_bootstrap_status_path(root_dir, participant_hex)
+    if path.exists():
+        path.unlink()
+
+
+def assert_identity_bootstrap_trusted(root_dir, participant_hex: str) -> None:
+    path = _identity_bootstrap_status_path(root_dir, participant_hex)
+    if path.exists():
+        status = json.loads(path.read_text())
+        raise ValueError(
+            "Installation is blocked because identity bootstrap did not verify cleanly: "
+            f"{status.get('reason', 'unknown reason')}"
+        )
 
 
 def _single_note_to_self_remote_descriptor(root_dir, participant_hex: str) -> dict:
@@ -252,7 +314,8 @@ class UserDevice(Base):
     __tablename__ = "user_device"
 
     id = Column(LargeBinary, primary_key=True)
-    key = Column(LargeBinary, nullable=False)
+    bootstrap_encryption_key = Column(LargeBinary, nullable=False)
+    signing_key = Column(LargeBinary, nullable=False)
 
     def __repr__(self):
         return f"<UserDevice(id='{self.id.hex()}')>"
@@ -382,7 +445,8 @@ def _initialize_user_db(root_dir, ident, nickname, device):
     local_db_path = device_local_db_path(root_dir, ident.hex())
     initialize_shared_db(shared_db_path)
     device_id = uuid7()
-    device_key_bytes, device_public_key_bytes = generate_bootstrap_keypair()
+    encryption_private_key_bytes, encryption_public_key_bytes = generate_bootstrap_keypair()
+    signing_private_key_bytes, signing_public_key_bytes = generate_bootstrap_signing_keypair()
     try:
         with attached_note_to_self_connection(root_dir, ident.hex()) as conn:
             conn.execute(
@@ -390,8 +454,11 @@ def _initialize_user_db(root_dir, ident, nickname, device):
                 (uuid7(), nickname),
             )
             conn.execute(
-                "INSERT INTO user_device (id, key) VALUES (?, ?)",
-                (device_id, device_public_key_bytes),
+                """
+                INSERT INTO user_device (id, bootstrap_encryption_key, signing_key)
+                VALUES (?, ?, ?)
+                """,
+                (device_id, encryption_public_key_bytes, signing_public_key_bytes),
             )
             team_id = uuid7()
             app_id = uuid7()
@@ -407,22 +474,33 @@ def _initialize_user_db(root_dir, ident, nickname, device):
                 "INSERT INTO team_app_berth (id, team_id, app_id) VALUES (?, ?, ?)",
                 (uuid7(), team_id, app_id),
             )
-            device_key_path = _note_to_self_device_key_path(root_dir, ident.hex(), device_id)
+            encryption_key_path = _note_to_self_device_encryption_key_path(
+                root_dir, ident.hex(), device_id
+            )
+            signing_key_path = _note_to_self_device_signing_key_path(
+                root_dir, ident.hex(), device_id
+            )
             conn.execute(
                 """
                 INSERT INTO local.note_to_self_device_key_secret (
-                    device_id, private_key_ref
-                ) VALUES (?, ?)
+                    device_id, encryption_private_key_ref, signing_private_key_ref
+                ) VALUES (?, ?, ?)
                 """,
-                (device_id, str(device_key_path)),
+                (device_id, str(encryption_key_path), str(signing_key_path)),
             )
             conn.commit()
 
     except sqlite3.Error as e:
         print("SQLite error occurred:", e)
 
-    device_key_path = _note_to_self_device_key_path(root_dir, ident.hex(), device_id)
-    _write_local_secret(device_key_path, device_key_bytes)
+    _write_local_secret(
+        _note_to_self_device_encryption_key_path(root_dir, ident.hex(), device_id),
+        encryption_private_key_bytes,
+    )
+    _write_local_secret(
+        _note_to_self_device_signing_key_path(root_dir, ident.hex(), device_id),
+        signing_private_key_bytes,
+    )
 
     repo_dir = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
     CodSync.gitCmd(["init", "-b", "main", str(repo_dir)])
@@ -436,22 +514,28 @@ def create_identity_join_request(root_dir):
     """Create a persisted public join request artifact for a blank installation."""
     root_dir = pathlib.Path(root_dir)
     device_id = uuid7()
-    device_private_key_bytes, device_public_key_bytes = generate_bootstrap_keypair()
-    pending_key_path = _bootstrap_pending_device_key_path(root_dir, device_id)
-    _write_local_secret(pending_key_path, device_private_key_bytes)
+    encryption_private_key_bytes, encryption_public_key_bytes = generate_bootstrap_keypair()
+    signing_private_key_bytes, signing_public_key_bytes = generate_bootstrap_signing_keypair()
+    pending_encryption_key_path = _bootstrap_pending_device_encryption_key_path(root_dir, device_id)
+    pending_signing_key_path = _bootstrap_pending_device_signing_key_path(root_dir, device_id)
+    _write_local_secret(pending_encryption_key_path, encryption_private_key_bytes)
+    _write_local_secret(pending_signing_key_path, signing_private_key_bytes)
 
     artifact = JoinRequestArtifact(
         version=1,
         device_id_hex=device_id.hex(),
-        device_public_key_hex=device_public_key_bytes.hex(),
+        device_encryption_public_key_hex=encryption_public_key_bytes.hex(),
+        device_signing_public_key_hex=signing_public_key_bytes.hex(),
     )
     auth_string = join_request_auth_string(artifact)
     _persist_pending_join_state(
         root_dir,
         {
             "device_id_hex": device_id.hex(),
-            "device_public_key_hex": device_public_key_bytes.hex(),
-            "private_key_ref": str(pending_key_path),
+            "device_encryption_public_key_hex": encryption_public_key_bytes.hex(),
+            "device_signing_public_key_hex": signing_public_key_bytes.hex(),
+            "encryption_private_key_ref": str(pending_encryption_key_path),
+            "signing_private_key_ref": str(pending_signing_key_path),
             "join_request_artifact": serialize_join_request_artifact(artifact),
             "auth_string": auth_string,
         },
@@ -477,23 +561,30 @@ def authorize_identity_join(
     artifact = deserialize_join_request_artifact(join_request_artifact_b64)
     auth_string = join_request_auth_string(artifact)
     device_id = bytes.fromhex(artifact.device_id_hex)
-    device_public_key = bytes.fromhex(artifact.device_public_key_hex)
+    encryption_public_key = bytes.fromhex(artifact.device_encryption_public_key_hex)
+    signing_public_key = bytes.fromhex(artifact.device_signing_public_key_hex)
     inserted_user_device = False
 
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        authorizing_device = _current_device_row(conn)
         existing = conn.execute(
-            "SELECT key FROM user_device WHERE id = ?",
+            "SELECT bootstrap_encryption_key, signing_key FROM user_device WHERE id = ?",
             (device_id,),
         ).fetchone()
         if existing is None:
             conn.execute(
-                "INSERT INTO user_device (id, key) VALUES (?, ?)",
-                (device_id, device_public_key),
+                """
+                INSERT INTO user_device (id, bootstrap_encryption_key, signing_key)
+                VALUES (?, ?, ?)
+                """,
+                (device_id, encryption_public_key, signing_public_key),
             )
             conn.commit()
             inserted_user_device = True
-        elif existing[0] != device_public_key:
-            raise ValueError("A device with that ID is already registered with a different key")
+        elif existing[0] != encryption_public_key or existing[1] != signing_public_key:
+            raise ValueError("A device with that ID is already registered with different keys")
+        authorizing_device_id = authorizing_device[0]
+        authorizing_signing_private_key = _read_local_secret(pathlib.Path(authorizing_device[4]))
 
     remote_descriptor = _single_note_to_self_remote_descriptor(root_dir, participant_hex)
     if inserted_user_device:
@@ -510,25 +601,38 @@ def authorize_identity_join(
         version=1,
         participant_hex=participant_hex,
         joining_device_id_hex=artifact.device_id_hex,
-        joining_device_public_key_hex=artifact.device_public_key_hex,
+        joining_device_public_key_hex=artifact.device_encryption_public_key_hex,
         identity_label=get_nickname(root_dir, participant_hex),
         remote_descriptor=remote_descriptor,
         issued_at=now.isoformat(),
         expires_at=datetime.fromtimestamp(expires, timezone.utc).isoformat(),
         authorizing_device_label=get_nickname(root_dir, participant_hex),
     )
+    bundle_plaintext = serialize_welcome_bundle_plaintext(bundle)
+    signature = sign_welcome_bundle(authorizing_signing_private_key, bundle_plaintext)
+    signed_bundle = SignedWelcomeBundle(
+        version=1,
+        bundle=bundle,
+        authorizing_device_id_hex=authorizing_device_id.hex(),
+        signature_hex=signature.hex(),
+    )
     aad = welcome_bundle_aad(
         joining_device_id_hex=bundle.joining_device_id_hex,
         version=bundle.version,
     )
     sealed = seal_welcome_bundle(
-        device_public_key,
-        serialize_welcome_bundle_plaintext(bundle),
+        encryption_public_key,
+        serialize_signed_welcome_bundle_plaintext(signed_bundle),
         associated_data=aad,
     )
     return {
         "welcome_bundle": base64.b64encode(sealed).decode("ascii"),
         "auth_string": auth_string,
+        "second_confirmation_string": welcome_bundle_confirmation_string(
+            artifact,
+            bundle,
+            signature,
+        ),
     }
 
 
@@ -537,7 +641,10 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
     root_dir = pathlib.Path(root_dir)
     state = _load_pending_join_state(root_dir)
     pending_artifact = deserialize_join_request_artifact(state["join_request_artifact"])
-    pending_private_key_bytes = _read_local_secret(pathlib.Path(state["private_key_ref"]))
+    pending_encryption_private_key_bytes = _read_local_secret(
+        pathlib.Path(state["encryption_private_key_ref"])
+    )
+    pending_signing_private_key_path = pathlib.Path(state["signing_private_key_ref"])
 
     sealed_bundle = base64.b64decode(welcome_bundle_b64.encode("ascii"))
     aad = welcome_bundle_aad(
@@ -545,14 +652,15 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
         version=1,
     )
     plaintext = open_welcome_bundle(
-        pending_private_key_bytes,
+        pending_encryption_private_key_bytes,
         sealed_bundle,
         associated_data=aad,
     )
-    bundle = deserialize_welcome_bundle_plaintext(plaintext)
+    signed_bundle = deserialize_signed_welcome_bundle_plaintext(plaintext)
+    bundle = signed_bundle.bundle
     if bundle.joining_device_id_hex != pending_artifact.device_id_hex:
         raise ValueError("Welcome bundle device_id does not match pending join request")
-    if bundle.joining_device_public_key_hex != pending_artifact.device_public_key_hex:
+    if bundle.joining_device_public_key_hex != pending_artifact.device_encryption_public_key_hex:
         raise ValueError("Welcome bundle public key does not match pending join request")
 
     now = datetime.now(timezone.utc)
@@ -569,21 +677,31 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
     initialize_bootstrap_local_state(root_dir, bundle.participant_hex)
     (participant_dir / "FakeEnclave").mkdir(parents=True, exist_ok=True)
 
-    final_key_path = _note_to_self_device_key_path(
+    final_encryption_key_path = _note_to_self_device_encryption_key_path(
         root_dir,
         bundle.participant_hex,
         bytes.fromhex(bundle.joining_device_id_hex),
     )
-    _write_local_secret(final_key_path, pending_private_key_bytes)
+    final_signing_key_path = _note_to_self_device_signing_key_path(
+        root_dir,
+        bundle.participant_hex,
+        bytes.fromhex(bundle.joining_device_id_hex),
+    )
+    _write_local_secret(final_encryption_key_path, pending_encryption_private_key_bytes)
+    _write_local_secret(final_signing_key_path, _read_local_secret(pending_signing_private_key_path))
     local_db_path = device_local_db_path(root_dir, bundle.participant_hex)
     with sqlite3.connect(local_db_path) as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO note_to_self_device_key_secret (
-                device_id, private_key_ref
-            ) VALUES (?, ?)
+                device_id, encryption_private_key_ref, signing_private_key_ref
+            ) VALUES (?, ?, ?)
             """,
-            (bytes.fromhex(bundle.joining_device_id_hex), str(final_key_path)),
+            (
+                bytes.fromhex(bundle.joining_device_id_hex),
+                str(final_encryption_key_path),
+                str(final_signing_key_path),
+            ),
         )
         conn.commit()
 
@@ -597,15 +715,42 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
         raise RuntimeError("Failed to fetch NoteToSelf during identity bootstrap")
     CodSync.gitCmd(["-C", str(sync_dir), "checkout", "main"])
 
-    pending_key_path = pathlib.Path(state["private_key_ref"])
-    if pending_key_path.exists():
-        pending_key_path.unlink()
+    bundle_plaintext = serialize_welcome_bundle_plaintext(bundle)
+    signature = bytes.fromhex(signed_bundle.signature_hex)
+    with sqlite3.connect(note_to_self_sync_db_path(root_dir, bundle.participant_hex)) as conn:
+        signer_row = conn.execute(
+            "SELECT signing_key FROM user_device WHERE id = ?",
+            (bytes.fromhex(signed_bundle.authorizing_device_id_hex),),
+        ).fetchone()
+    if signer_row is None or not verify_welcome_bundle_signature(
+        signer_row[0],
+        bundle_plaintext,
+        signature,
+    ):
+        _mark_identity_bootstrap_untrusted(
+            root_dir,
+            bundle.participant_hex,
+            reason="Welcome bundle signature verification failed",
+        )
+        raise ValueError("Welcome bundle signature verification failed")
+    _clear_identity_bootstrap_untrusted(root_dir, bundle.participant_hex)
+
+    pending_encryption_key_path = pathlib.Path(state["encryption_private_key_ref"])
+    if pending_encryption_key_path.exists():
+        pending_encryption_key_path.unlink()
+    if pending_signing_private_key_path.exists():
+        pending_signing_private_key_path.unlink()
     _clear_pending_join_state(root_dir)
     return {
         "participant_hex": bundle.participant_hex,
         "identity_label": bundle.identity_label,
         "joining_device_id_hex": bundle.joining_device_id_hex,
         "authorizing_device_label": bundle.authorizing_device_label,
+        "second_confirmation_string": welcome_bundle_confirmation_string(
+            pending_artifact,
+            bundle,
+            signature,
+        ),
     }
 
 

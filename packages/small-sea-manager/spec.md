@@ -83,7 +83,7 @@ Stores this participant's personal Small Sea metadata. The Hub reads it to know 
 |-------|---------|
 | `participant` | The participant's own identity record (name, canonical ID) |
 | `participant_unification` | Maps device-local participant IDs to a canonical person ID (see §Device Management) |
-| `user_device` | Devices registered as belonging to this participant; each has its own key |
+| `user_device` | Devices registered as belonging to this participant; each carries explicit bootstrap encryption and signing public keys |
 | `nickname` | Human-readable names associated with this participant |
 | `team` | Lightweight pointer to each team the participant belongs to; `self_in_team` is the member ID in that team's DB |
 | `app` | Apps registered for the NoteToSelf team |
@@ -190,18 +190,19 @@ The primary flow is now explicitly split into **identity join** and later
 Identity join:
 
 1. On the **new device**: the Manager generates a NoteToSelf device keypair,
-   persists the private key locally, and produces a small public join-request
-   artifact (`device UUID + public key`) plus a short human-verifiable
-   authentication string.
+   persists the private keys locally, and produces a small public join-request
+   artifact (`device UUID + bootstrap-encryption public key + signing public key`)
+   plus a short human-verifiable authentication string.
 2. The join-request artifact is delivered out-of-band to an **existing
    device**.
 3. On the **existing device**: the Manager compares the same short
    authentication string, adds the new device to shared `user_device`,
-   commits/pushes NoteToSelf, and returns a short-lived encrypted welcome
-   bundle.
+   commits/pushes NoteToSelf, signs the welcome bundle plaintext with its
+   NoteToSelf signing key, and returns a short-lived encrypted welcome bundle.
 4. On the **new device**: the Manager decrypts the welcome bundle, initializes
-   only device-local NoteToSelf state, and pulls NoteToSelf from the shared
-   remote.
+   only device-local NoteToSelf state, pulls NoteToSelf from the shared
+   remote, verifies the welcome-bundle signature against the pulled
+   `user_device` signer key, and blocks further use if that verification fails.
 
 After identity join, the new device knows about the participant's devices,
 teams, and apps through NoteToSelf, but it does **not** automatically join
@@ -512,8 +513,9 @@ Key transfer between devices (e.g. sharing session keys or identity keys when li
 PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS user_device (
-    id   BLOB PRIMARY KEY,
-    key  BLOB NOT NULL
+    id                        BLOB PRIMARY KEY,
+    bootstrap_encryption_key  BLOB NOT NULL,
+    signing_key               BLOB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS nickname (
@@ -583,6 +585,12 @@ CREATE TABLE IF NOT EXISTS notification_service_credential (
     notification_service_id BLOB PRIMARY KEY,
     access_key TEXT,
     access_token TEXT
+);
+
+CREATE TABLE IF NOT EXISTS note_to_self_device_key_secret (
+    device_id BLOB PRIMARY KEY,
+    encryption_private_key_ref TEXT NOT NULL,
+    signing_private_key_ref TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS team_device_key_secret (
