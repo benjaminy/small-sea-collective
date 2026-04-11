@@ -65,10 +65,14 @@ That is the hard part of this branch.
 `proxy_cloud_file(...)` already supports anonymous S3 reads:
 
 - no credentials required
-- no participant DB reads required
 - no deep adapter refactor required just to prove the concept
 
-This is why S3/MinIO is the right proof harness.
+The S3 adapter code is reusable as-is. The part that isn't reusable is the
+auth gate around it: both `/cloud_proxy` (`_require_session`) and the backend
+`proxy_cloud_file` require a live NoteToSelf session today. Moving that gate
+is the actual work.
+
+This is still why S3/MinIO is the right proof harness.
 
 ### 4. Authorizing-side push is not the main refactor
 
@@ -77,8 +81,9 @@ The repo already has the right pattern for Hub-backed push:
 - `TeamManager.push_team(...)` uses `SmallSeaRemote`
 - `/cloud_file` and `/cloud/setup` already work with MinIO
 
-So NoteToSelf push should be a modest extension of an existing pattern, not a
-second major design problem.
+NoteToSelf push should follow the same shape, but it is a different session
+type against a different target, so "modest extension" is the expectation,
+not a guarantee — flagged as a risk below.
 
 ### 5. Provisioning is still supposed to stay local-only
 
@@ -108,6 +113,8 @@ What is locked:
 - bootstrap transport cannot depend on normal participant/session/berth lookup
 - bootstrap-scoped auth must not be accepted by ordinary session routes
 - bootstrap-scoped auth must be limited to bootstrap transport only
+- bootstrap-scoped auth must be temporally narrow: single-use or short-TTL,
+  tied to the welcome-bundle descriptor it was issued for
 
 ### Decision 3: S3/MinIO is the required proof
 
@@ -126,8 +133,8 @@ clearly for unsupported providers rather than half-support them.
 
 ### Decision 5: Provisioning stays local-only
 
-The joining-side fetch must move into the Manager/session layer or a new
-bootstrap orchestration helper, not deeper into `provisioning.py`.
+The joining-side fetch must move into the Manager/session layer, not deeper
+into `provisioning.py`.
 
 Provisioning should remain responsible for:
 
@@ -137,10 +144,9 @@ Provisioning should remain responsible for:
 - signature verification after fetch
 - final cleanup
 
-This strongly suggests a cleanup during the branch:
-
-- split the current identity-bootstrap flow into local-only
-  prepare/finalize work plus session-layer fetch orchestration
+This means a real refactor during the branch, not an incidental cleanup:
+split the current identity-bootstrap flow into local-only prepare/finalize
+work plus session-layer fetch orchestration. Tracked explicitly in Phase 3.
 
 ### Decision 6: `remote_descriptor` must include `bucket`
 
@@ -153,7 +159,9 @@ So the welcome bundle's `remote_descriptor` must explicitly carry:
 - `url`
 - `bucket`
 
-For this branch, that is enough.
+For this branch, that is enough. `remote_descriptor` is already `dict[str,
+Any]`, but `WelcomeBundle` is versioned — the branch should bump the version
+and update fixtures rather than silently widening the schema.
 
 ## What We Should Avoid
 
@@ -238,8 +246,13 @@ The branch should not be considered complete unless it proves all of these:
   before fetch
 - bootstrap-scoped auth is rejected by ordinary session-only routes such as
   `/session/info` and `/cloud_file`
+- the existing NoteToSelf-session `/cloud_proxy` invitation path (used by
+  `accept_invitation` to clone Alice's team bundle) still works unchanged,
+  and bootstrap-scoped auth on `/cloud_proxy` can only reach the coordinates
+  named by the welcome-bundle descriptor it was issued for
 - unsupported bootstrap providers fail clearly instead of silently falling
-  back to local-only assumptions
+  back to local-only assumptions; the rejection lives in one place, not
+  split across Manager and Hub
 - existing `LocalFolderRemote` identity-bootstrap tests still pass unless we
   intentionally replace them
 
@@ -247,6 +260,8 @@ The branch should not be considered complete unless it proves all of these:
 
 ### Phase 1: Lock the Hub transport boundary
 
+- throwaway end-to-end spike first, so the bootstrap-auth shape is informed
+  by the Phase 3 consumer rather than guessed at
 - add bootstrap-scoped Hub auth/transport
 - prove it works on a blank Hub root
 - prove ordinary session routes reject it
@@ -285,6 +300,9 @@ The branch should not be considered complete unless it proves all of these:
 - **Authorizing-side push and joining-side fetch get tangled together.**
   Mitigation: treat authorizing-side push as a supporting task, not the core
   refactor.
+- **NoteToSelf push turns out not to be a trivial clone of `push_team`.**
+  Different session type, different target. Mitigation: Phase 2 is allowed
+  to surface as its own small design question, not absorbed into Phase 1.
 
 ## Questions For The Next Refactor Pass
 
