@@ -857,5 +857,66 @@ class ExplicitProxyRemote(CodSyncRemote):
             f.write(data)
 
 
+class BootstrapProxyRemote(CodSyncRemote):
+    """Read-only remote for bootstrap-scoped Hub transport.
+
+    Uses a bootstrap-scoped bearer token and can only download from the cloud
+    descriptor bound to that token by the Hub.
+    """
+
+    def __init__(self, session_hex, base_url="http://localhost:11437", client=None):
+        self.session_hex = session_hex
+        self._auth = {"Authorization": f"Bearer {session_hex}"}
+
+        if client is not None:
+            self._get = client.get
+        else:
+            self._get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
+
+    def _download(self, cloud_path):
+        resp = self._get(
+            "/bootstrap/cloud_file",
+            params={"path": cloud_path},
+            headers=self._auth,
+        )
+        if resp.status_code != 200:
+            return (None, None)
+        body = resp.json()
+        data = base64.b64decode(body["data"])
+        etag = body.get("etag")
+        return (data, etag)
+
+    def upload_latest_link(self, *args, **kwargs):
+        raise NotImplementedError("BootstrapProxyRemote is read-only")
+
+    def get_link(self, uid):
+        if uid == "latest-link":
+            cloud_path = "latest-link.yaml"
+        else:
+            cloud_path = f"L-{uid}.yaml"
+
+        data, etag = self._download(cloud_path)
+        if data is None:
+            return None
+
+        link = self.read_link_blob(io.BytesIO(data))
+
+        if uid == "latest-link":
+            return (link, etag)
+        return link
+
+    def get_latest_link(self):
+        return self.get_link("latest-link")
+
+    def download_bundle(self, bundle_uid, local_bundle_path):
+        data, _ = self._download(f"B-{bundle_uid}.bundle")
+        if data is None:
+            raise RuntimeError(
+                f"Failed to download bundle B-{bundle_uid}.bundle via bootstrap proxy"
+            )
+        with open(local_bundle_path, "wb") as f:
+            f.write(data)
+
+
 if __name__ == "__main__":
     logger.error("This file contains no main")

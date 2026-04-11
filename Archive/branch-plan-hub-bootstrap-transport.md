@@ -116,6 +116,14 @@ What is locked:
 - bootstrap-scoped auth must be temporally narrow: single-use or short-TTL,
   tied to the welcome-bundle descriptor it was issued for
 
+Implementation note:
+
+- this branch chose a dedicated `bootstrap_session` table plus a dedicated
+  `/bootstrap/cloud_file` route, rather than reusing ordinary sessions or
+  overloading `/cloud_proxy`
+- bootstrap sessions are descriptor-scoped (`protocol`, `url`, `bucket`) and
+  short-lived, but not single-use
+
 ### Decision 3: S3/MinIO is the required proof
 
 This branch is S3/MinIO-only.
@@ -147,6 +155,12 @@ Provisioning should remain responsible for:
 This means a real refactor during the branch, not an incidental cleanup:
 split the current identity-bootstrap flow into local-only prepare/finalize
 work plus session-layer fetch orchestration. Tracked explicitly in Phase 3.
+
+Implementation note:
+
+- this branch split the flow into `prepare_identity_bootstrap(...)` and
+  `finalize_identity_bootstrap(...)` in `provisioning.py`, with
+  `manager.py` owning the Hub-mediated fetch
 
 ### Decision 6: `remote_descriptor` must include `bucket`
 
@@ -204,6 +218,11 @@ Without locking the exact refactor yet, the repo research points to this shape:
   `push_team(...)`
 - this is a supporting change, not the main design question
 
+Implementation note:
+
+- the authorizing side now publishes NoteToSelf through a normal
+  NoteToSelf Hub session using the same `SmallSeaRemote` pattern as team push
+
 ### Hub side
 
 - Hub gets a bootstrap-scoped transport/auth path
@@ -231,6 +250,11 @@ Without locking the exact refactor yet, the repo research points to this shape:
 - removing the existing `LocalFolderRemote` bootstrap path unless that turns
   out to be nearly free
 
+Implementation note:
+
+- `LocalFolderRemote` was kept as a narrow fallback path for existing local
+  micro tests while the S3/MinIO proof moved to Hub-owned bootstrap transport
+
 ## Validation
 
 The branch should not be considered complete unless it proves all of these:
@@ -257,6 +281,13 @@ The branch should not be considered complete unless it proves all of these:
   split across Manager and Hub
 - existing `LocalFolderRemote` identity-bootstrap tests still pass unless we
   intentionally replace them
+
+Implementation note:
+
+- this branch added direct proof that bootstrap tokens are rejected by normal
+  routes like `/session/info` and `/cloud_file`
+- this branch added an end-to-end MinIO bootstrap test using the joining
+  device's own blank-root Hub
 
 ## Implementation Order
 
@@ -306,16 +337,14 @@ The branch should not be considered complete unless it proves all of these:
   Different session type, different target. Mitigation: Phase 2 is allowed
   to surface as its own small design question, not absorbed into Phase 1.
 
-## Questions For The Next Refactor Pass
+## Follow-On Questions
 
-These are the real next-step design questions, and they should be answered in
-the next planning round rather than here:
+This branch answered the original transport-boundary questions. The remaining
+interesting follow-ups are now narrower:
 
-- should bootstrap-scoped auth live in a dedicated table, a typed session row,
-  or a separate endpoint family?
-- should bootstrap transport reuse `/cloud_proxy` or get its own narrower
-  route?
-- what is the cleanest session-layer home for joining-side bootstrap fetch?
-- what is the cleanest NoteToSelf push helper on the authorizing side?
-
-This plan intentionally stops short of solving those implementation details.
+- should bootstrap-scoped transport eventually support OAuth-backed providers,
+  and if so what credential ceremony belongs on the brand-new device?
+- should the `LocalFolderRemote` fallback stay indefinitely, or be retired once
+  Hub-owned bootstrap transport covers every supported provider?
+- does NoteToSelf bootstrap need a dedicated Hub client abstraction, or is the
+  current narrow bootstrap-session helper enough?

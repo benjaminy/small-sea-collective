@@ -2,6 +2,8 @@ import pathlib
 import subprocess
 from typing import Optional
 
+import cod_sync.protocol as CodSyncProtocol
+from cod_sync.protocol import BootstrapProxyRemote, CodSync, SmallSeaRemote
 from small_sea_client.client import SmallSeaClient
 from small_sea_manager import provisioning
 
@@ -13,9 +15,36 @@ def create_identity_join_request(root_dir):
     return provisioning.create_identity_join_request(root_dir)
 
 
-def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
+def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=11437, _http_client=None):
     """Bootstrap a blank installation into an existing identity."""
-    return provisioning.bootstrap_existing_identity(root_dir, welcome_bundle_b64)
+    prepared = provisioning.prepare_identity_bootstrap(root_dir, welcome_bundle_b64)
+    bundle = prepared["bundle"]
+    sync_dir = pathlib.Path(prepared["sync_dir"])
+
+    remote = bundle.remote_descriptor
+    if remote["protocol"] == "localfolder":
+        cod = CodSync("bootstrap-identity", repo_dir=sync_dir)
+        cod.remote = provisioning._remote_from_descriptor(remote)
+    else:
+        client = SmallSeaClient(port=hub_port, _http_client=_http_client)
+        bootstrap_token = client.create_bootstrap_session(
+            protocol=remote["protocol"],
+            url=remote["url"],
+            bucket=remote["bucket"],
+            expires_at=bundle.expires_at,
+        )
+        cod = CodSync("bootstrap-identity", repo_dir=sync_dir)
+        cod.remote = BootstrapProxyRemote(
+            bootstrap_token,
+            base_url=client._base_url,
+            client=_http_client,
+        )
+
+    fetched_sha = cod.fetch_from_remote(["main"])
+    if fetched_sha is None:
+        raise RuntimeError("Failed to fetch NoteToSelf during identity bootstrap")
+    CodSyncProtocol.gitCmd(["-C", str(sync_dir), "checkout", "main"])
+    return provisioning.finalize_identity_bootstrap(root_dir, prepared)
 
 
 class TeamManager:
@@ -92,6 +121,42 @@ class TeamManager:
         """Return the participant's primary cloud storage config dict."""
         return provisioning.get_cloud_storage(self.root_dir, self.participant_hex)
 
+    def _note_to_self_repo_dir(self) -> pathlib.Path:
+        return self.root_dir / "Participants" / self.participant_hex / "NoteToSelf" / "Sync"
+
+    def _open_note_to_self_session(self, mode: str = "passthrough"):
+        return self._get_or_open_session("NoteToSelf", mode=mode)
+
+    def _note_to_self_remote_descriptor(self) -> dict:
+        cloud = self._cloud()
+        if cloud["protocol"] == "localfolder":
+            return {
+                "protocol": "localfolder",
+                "url": cloud["url"],
+            }
+        if cloud["protocol"] != "s3":
+            raise ValueError(
+                f"Unsupported identity bootstrap provider: {cloud['protocol']}"
+            )
+        nts_session = self._open_note_to_self_session(mode="passthrough")
+        session_info = nts_session.session_info()
+        berth_id = session_info["berth_id"]
+        return {
+            "protocol": cloud["protocol"],
+            "url": cloud["url"],
+            "bucket": f"ss-{berth_id[:16]}",
+        }
+
+    def push_note_to_self(self):
+        """Push the NoteToSelf Sync repo to the participant's cloud bucket."""
+        session = self._open_note_to_self_session(mode="passthrough")
+        session.ensure_cloud_ready()
+        repo_dir = self._note_to_self_repo_dir()
+        remote = SmallSeaRemote(session.token, base_url=self.client._base_url, client=self.client._http_client)
+        cs = CodSync("origin", repo_dir=repo_dir)
+        cs.remote = remote
+        cs.push_to_remote(["main"])
+
     def list_cloud_storage(self):
         """Return all cloud storage configs as a list of dicts."""
         return provisioning.list_cloud_storage(self.root_dir, self.participant_hex)
@@ -165,12 +230,17 @@ class TeamManager:
 
     def authorize_identity_join(self, join_request_artifact_b64, *, expires_in_seconds=600):
         """Admit a new device into this participant's NoteToSelf identity."""
-        return provisioning.authorize_identity_join(
+        remote_descriptor = self._note_to_self_remote_descriptor()
+        result = provisioning.authorize_identity_join(
             self.root_dir,
             self.participant_hex,
             join_request_artifact_b64,
+            remote_descriptor=remote_descriptor,
             expires_in_seconds=expires_in_seconds,
         )
+        if result.get("needs_publish"):
+            self.push_note_to_self()
+        return result
 
     def list_invitations(self, team_name):
         """List invitations for a team."""
@@ -266,7 +336,7 @@ class TeamManager:
         PIN provider.  Raises RuntimeError on CAS conflict (cloud is ahead;
         pull from peers first).
         """
-        from cod_sync.protocol import CodSync, SmallSeaRemote, CasConflictError
+        from cod_sync.protocol import CasConflictError
 
         session = self._get_or_open_session(team_name)
         session.ensure_cloud_ready()

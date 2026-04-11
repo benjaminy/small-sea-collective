@@ -44,6 +44,25 @@ a 32-byte Bearer token (hex-encoded). All subsequent API calls use this token in
 Sessions do not expire. There is no revocation endpoint yet — killing the Hub process
 and clearing its local DB is the current escape hatch.
 
+### Bootstrap-scoped transport
+
+Identity bootstrap now uses a second, narrower capability alongside normal
+sessions.
+
+- `POST /bootstrap/sessions` creates a short-lived bootstrap token bound to a
+  specific remote descriptor (`protocol`, `url`, `bucket`).
+- `GET /bootstrap/cloud_file` uses that token to read NoteToSelf bootstrap
+  artifacts from the bound location.
+
+These bootstrap tokens are intentionally **not** normal berth sessions:
+
+- they do not rely on participant/team/app lookup
+- they are not accepted by ordinary session routes like `/session/info` or
+  `/cloud_file`
+- they are limited to bootstrap transport only
+
+The current proof path is S3/MinIO only. OAuth bootstrap remains deferred.
+
 ### Restart resilience
 
 **Goal:** restarting the Hub should be minimally disruptive to apps. Open network

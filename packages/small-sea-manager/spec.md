@@ -197,12 +197,16 @@ Identity join:
    device**.
 3. On the **existing device**: the Manager compares the same short
    authentication string, adds the new device to shared `user_device`,
-   commits/pushes NoteToSelf, signs the welcome bundle plaintext with its
-   NoteToSelf signing key, and returns a short-lived encrypted welcome bundle.
+   commits NoteToSelf locally, publishes NoteToSelf through a normal
+   NoteToSelf Hub session when the configured provider supports it,
+   signs the welcome bundle plaintext with its NoteToSelf signing key,
+   and returns a short-lived encrypted welcome bundle.
 4. On the **new device**: the Manager decrypts the welcome bundle, initializes
-   only device-local NoteToSelf state, pulls NoteToSelf from the shared
-   remote, verifies the welcome-bundle signature against the pulled
-   `user_device` signer key, and blocks further use if that verification fails.
+   only device-local NoteToSelf state, asks its own local Hub for a
+   bootstrap-scoped fetch capability, pulls NoteToSelf from the shared
+   remote through that Hub transport, verifies the welcome-bundle signature
+   against the pulled `user_device` signer key, and blocks further use if
+   that verification fails.
 
 After identity join, the new device knows about the participant's devices,
 teams, and apps through NoteToSelf, but it does **not** automatically join
@@ -480,9 +484,9 @@ Existing device                    New device
       |              does not auto-clone team repos
 ```
 
-For this branch, the required end-to-end proof is local-only
-(`LocalFolderRemote`). Real provider-auth UX and Hub-mediated bootstrap fetches
-are separate follow-up work.
+The currently implemented proof path is S3/MinIO through Hub-owned transport,
+with `LocalFolderRemote` retained as a local-only fallback for tests and
+simple setups. Real OAuth provider bootstrap remains follow-up work.
 
 ### Secondary flow (oops unification)
 

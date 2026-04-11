@@ -148,6 +148,24 @@ class SmallSeaClient:
         token = self._post("/sessions/confirm", {"pending_id": pending_id, "pin": pin})
         return SmallSeaSession(self, token)
 
+    def create_bootstrap_session(
+        self,
+        *,
+        protocol: str,
+        url: str,
+        bucket: str,
+        expires_at: str | None = None,
+    ) -> str:
+        payload = {
+            "protocol": protocol,
+            "url": url,
+            "bucket": bucket,
+        }
+        if expires_at is not None:
+            payload["expires_at"] = expires_at
+        result = self._post("/bootstrap/sessions", payload)
+        return result["token"]
+
     # ---- Internal HTTP helpers ----
 
     def _post(
