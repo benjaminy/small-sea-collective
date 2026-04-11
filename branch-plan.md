@@ -246,10 +246,12 @@ The branch should not be considered complete unless it proves all of these:
   before fetch
 - bootstrap-scoped auth is rejected by ordinary session-only routes such as
   `/session/info` and `/cloud_file`
-- the existing NoteToSelf-session `/cloud_proxy` invitation path (used by
-  `accept_invitation` to clone Alice's team bundle) still works unchanged,
-  and bootstrap-scoped auth on `/cloud_proxy` can only reach the coordinates
-  named by the welcome-bundle descriptor it was issued for
+- the existing NoteToSelf-session invitation proxy path (currently
+  `/cloud_proxy`, used by `accept_invitation` to clone Alice's team bundle)
+  still works unchanged
+- bootstrap-scoped auth can only reach the coordinates named by the
+  welcome-bundle descriptor it was issued for, whether the implementation
+  reuses `/cloud_proxy` or introduces a narrower bootstrap route
 - unsupported bootstrap providers fail clearly instead of silently falling
   back to local-only assumptions; the rejection lives in one place, not
   split across Manager and Hub
