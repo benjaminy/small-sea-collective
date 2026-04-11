@@ -11,11 +11,9 @@ Identity bootstrap now works end-to-end in the local-only case:
 2. the existing device admits it
 3. the existing device returns an encrypted, signed welcome bundle
 4. the joining device pulls NoteToSelf
-5. the joining device verifies that the bundle was signed by a device in the
-   pulled identity
+5. the joining device verifies that the bundle was signed by a device in the pulled identity
 
-That flow currently relies on `LocalFolderRemote`, which is useful for proving
-the trust model but not for real cloud-backed use.
+That flow currently relies on `LocalFolderRemote`, which is useful for proving the trust model but not for real cloud-backed use.
 
 The joining device still has the same important starting constraints:
 
