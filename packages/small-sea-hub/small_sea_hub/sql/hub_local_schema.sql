@@ -26,3 +26,13 @@ CREATE TABLE IF NOT EXISTS pending_session (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS bootstrap_session (
+    id BLOB PRIMARY KEY,
+    token BLOB NOT NULL,
+    protocol TEXT NOT NULL,
+    url TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);

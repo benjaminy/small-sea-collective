@@ -81,6 +81,18 @@ class PendingSession(Base):
     expires_at = Column(String, nullable=False)
 
 
+class BootstrapSession(Base):
+    __tablename__ = "bootstrap_session"
+
+    id = Column(LargeBinary, primary_key=True)
+    token = Column(LargeBinary, nullable=False)
+    protocol = Column(String, nullable=False)
+    url = Column(String, nullable=False)
+    bucket = Column(String, nullable=False)
+    created_at = Column(String, nullable=False)
+    expires_at = Column(String, nullable=False)
+
+
 # Per-user core.db models (duplicated in team manager — the DB is the contract)
 
 
@@ -146,7 +158,7 @@ class SmallSeaBackend:
     small-sea-manager package (provisioning.py).
     """
 
-    hub_schema_version: int = 49
+    hub_schema_version: int = 50
 
     def __init__(self, root_dir, auto_approve_sessions: bool = False,
                  sandbox_mode: bool = False, log_level: str = "INFO"):
@@ -230,6 +242,21 @@ class SmallSeaBackend:
                 )
                 user_version = 49
                 print("Hub DB migrated to v49.")
+
+            if user_version == 49:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS bootstrap_session (
+                        id BLOB PRIMARY KEY,
+                        token BLOB NOT NULL,
+                        protocol TEXT NOT NULL,
+                        url TEXT NOT NULL,
+                        bucket TEXT NOT NULL,
+                        created_at TEXT NOT NULL,
+                        expires_at TEXT NOT NULL
+                    )
+                """)
+                user_version = 50
+                print("Hub DB migrated to v50.")
 
             cursor.execute(
                 f"PRAGMA user_version = {SmallSeaBackend.hub_schema_version}"
@@ -597,6 +624,68 @@ class SmallSeaBackend:
             self.root_dir / "Participants" / ss_session.participant_id.hex()
         )
         return ss_session
+
+    def create_bootstrap_session(
+        self,
+        *,
+        protocol: str,
+        url: str,
+        bucket: str,
+        expires_at_iso: str | None = None,
+    ) -> bytes:
+        if protocol != "s3":
+            raise SmallSeaBackendExn(
+                f"Unsupported bootstrap protocol: {protocol}"
+            )
+
+        now = datetime.now(timezone.utc)
+        if expires_at_iso is None:
+            expires_at = now + timedelta(minutes=5)
+        else:
+            expires_at = datetime.fromisoformat(expires_at_iso)
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at <= now:
+                raise SmallSeaBackendExn("Bootstrap session expiry must be in the future")
+
+        token = secrets.token_bytes(32)
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+        with Session(engine_local) as sess:
+            sess.add(
+                BootstrapSession(
+                    id=uuid7(),
+                    token=token,
+                    protocol=protocol,
+                    url=url,
+                    bucket=bucket,
+                    created_at=now.isoformat(),
+                    expires_at=expires_at.isoformat(),
+                )
+            )
+            sess.commit()
+        return token
+
+    def _lookup_bootstrap_session(self, token_hex: str) -> BootstrapSession:
+        session_token = bytes.fromhex(token_hex)
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+        with Session(engine_local) as session:
+            bootstrap = (
+                session.query(BootstrapSession)
+                .filter(BootstrapSession.token == session_token)
+                .first()
+            )
+            if bootstrap is None:
+                raise SmallSeaNotFoundExn(f"Bootstrap session not found: {token_hex[:8]}")
+            now = datetime.now(timezone.utc)
+            expires_at = datetime.fromisoformat(bootstrap.expires_at)
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if now > expires_at:
+                session.delete(bootstrap)
+                session.commit()
+                raise SmallSeaBackendExn("Bootstrap session expired")
+            session.expunge(bootstrap)
+        return bootstrap
 
     def all_session_tokens(self) -> list[str]:
         """Return hex tokens for all confirmed sessions."""
@@ -1005,6 +1094,33 @@ class SmallSeaBackend:
 
         else:
             raise SmallSeaBackendExn(f"Unsupported proxy protocol: {protocol}")
+
+    def bootstrap_cloud_file(self, token_hex: str, path: str):
+        """Download a bootstrap file from a descriptor-scoped cloud location."""
+        bootstrap = self._lookup_bootstrap_session(token_hex)
+        if bootstrap.protocol != "s3":
+            raise SmallSeaBackendExn(
+                f"Unsupported bootstrap protocol: {bootstrap.protocol}"
+            )
+
+        import boto3
+        from botocore import UNSIGNED
+        from botocore.config import Config as BotoConfig
+
+        s3_client = boto3.client(
+            "s3",
+            endpoint_url=bootstrap.url,
+            config=BotoConfig(signature_version=UNSIGNED),
+            region_name="us-east-1",
+        )
+        try:
+            response = s3_client.get_object(Bucket=bootstrap.bucket, Key=path)
+            data_bytes = response["Body"].read()
+            etag = response["ETag"].strip('"')
+            return True, data_bytes, etag
+        except ClientError as e:
+            code = e.response["Error"]["Code"]
+            return False, None, f"Bootstrap download failed: {code}"
 
     def _download_peer_file(self, session_hex, member_id_hex, path):
         """Core of download_from_peer, factored out for reuse."""

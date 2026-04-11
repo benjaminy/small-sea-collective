@@ -305,6 +305,14 @@ def _require_session(authorization: str = Header(...)):
     return authorization[7:]
 
 
+def _require_bootstrap_session(authorization: str = Header(...)):
+    if not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401, detail="Missing or invalid Authorization header"
+        )
+    return authorization[7:]
+
+
 # ---- Session management ----
 
 
@@ -407,6 +415,24 @@ async def confirm_session(req: SessionConfirmReq):
     token_hex = token.hex()
     _register_session_peers(token_hex)
     return token_hex
+
+
+class BootstrapSessionCreateReq(pydantic.BaseModel):
+    protocol: str
+    url: str
+    bucket: str
+    expires_at: Optional[str] = None
+
+
+@app.post("/bootstrap/sessions")
+async def create_bootstrap_session(req: BootstrapSessionCreateReq):
+    token = app.state.backend.create_bootstrap_session(
+        protocol=req.protocol,
+        url=req.url,
+        bucket=req.bucket,
+        expires_at_iso=req.expires_at,
+    )
+    return {"token": token.hex()}
 
 
 @app.get("/sessions/pending")
@@ -558,6 +584,19 @@ async def proxy_cloud_file(
 
     small_sea = app.state.backend
     ok, data, etag = small_sea.proxy_cloud_file(session_hex, protocol, url, bucket, path)
+    if not ok:
+        raise HTTPException(status_code=404, detail=etag)
+    return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
+
+
+@app.get("/bootstrap/cloud_file")
+async def bootstrap_cloud_file(
+    path: str,
+    session_hex: str = Depends(_require_bootstrap_session),
+):
+    import base64
+
+    ok, data, etag = app.state.backend.bootstrap_cloud_file(session_hex, path)
     if not ok:
         raise HTTPException(status_code=404, detail=etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}

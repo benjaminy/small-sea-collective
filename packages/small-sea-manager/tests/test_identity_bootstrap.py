@@ -5,7 +5,10 @@ import json
 import base64
 
 import cod_sync.protocol as CodSync
+import small_sea_hub.backend as SmallSea
 from cuttlefish import generate_bootstrap_signing_keypair, open_welcome_bundle, seal_welcome_bundle
+from fastapi.testclient import TestClient
+from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager, bootstrap_existing_identity, create_identity_join_request
 from small_sea_manager.provisioning import (
     _push_note_to_self_to_local_remote,
@@ -53,6 +56,45 @@ def _rewrite_welcome_bundle(root_dir, welcome_bundle_b64, mutate):
         associated_data=aad,
     )
     return base64.b64encode(sealed).decode("ascii")
+
+
+def _open_signed_welcome_bundle(root_dir, welcome_bundle_b64):
+    state = _pending_join_state(root_dir)
+    artifact = deserialize_join_request_artifact(state["join_request_artifact"])
+    private_key = pathlib.Path(state["encryption_private_key_ref"]).read_bytes()
+    aad = welcome_bundle_aad(
+        joining_device_id_hex=artifact.device_id_hex,
+        version=1,
+    )
+    plaintext = open_welcome_bundle(
+        private_key,
+        base64.b64decode(welcome_bundle_b64.encode("ascii")),
+        associated_data=aad,
+    )
+    return deserialize_signed_welcome_bundle_plaintext(plaintext)
+
+
+def _open_session(http, participant, team, mode="passthrough"):
+    resp = http.post(
+        "/sessions/request",
+        json={
+            "participant": participant,
+            "app": "SmallSeaCollectiveCore",
+            "team": team,
+            "client": "Smoke Tests",
+            "mode": mode,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    result = resp.json()
+    if "token" in result:
+        return result["token"]
+    resp = http.post(
+        "/sessions/confirm",
+        json={"pending_id": result["pending_id"], "pin": result["pin"]},
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
 
 
 def test_localfolder_identity_bootstrap_roundtrip(playground_dir):
@@ -226,3 +268,89 @@ def test_identity_bootstrap_rejects_wrong_known_signing_key(playground_dir):
         assert False, "Expected wrong known signer bootstrap to fail"
     except ValueError as exn:
         assert "signature verification failed" in str(exn).lower()
+
+
+def test_identity_bootstrap_via_hub_bootstrap_transport(playground_dir, minio_server_gen):
+    workspace = pathlib.Path(playground_dir)
+    root1 = workspace / "install-a"
+    root2 = workspace / "install-b"
+    root1.mkdir()
+    root2.mkdir()
+
+    minio = minio_server_gen(port=19660)
+
+    alice_hex = create_new_participant(root1, "Alice")
+
+    backend_a = SmallSea.SmallSeaBackend(root_dir=str(root1), auto_approve_sessions=True)
+    app.state.backend = backend_a
+    http_a = TestClient(app)
+
+    alice_nts_token = _open_session(http_a, "Alice", "NoteToSelf")
+    backend_a.add_cloud_location(
+        alice_nts_token,
+        "s3",
+        minio["endpoint"],
+        access_key=minio["access_key"],
+        secret_key=minio["secret_key"],
+    )
+
+    join_request = create_identity_join_request(root2)
+    alice_manager = TeamManager(root1, alice_hex, _http_client=http_a)
+    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    signed = _open_signed_welcome_bundle(root2, welcome["welcome_bundle"])
+    assert signed.bundle.remote_descriptor["protocol"] == "s3"
+    assert signed.bundle.remote_descriptor["url"] == minio["endpoint"]
+    assert signed.bundle.remote_descriptor["bucket"].startswith("ss-")
+
+    backend_b = SmallSea.SmallSeaBackend(root_dir=str(root2), auto_approve_sessions=True)
+    app.state.backend = backend_b
+    http_b = TestClient(app)
+
+    bootstrap = bootstrap_existing_identity(
+        root2,
+        welcome["welcome_bundle"],
+        _http_client=http_b,
+    )
+    assert bootstrap["participant_hex"] == alice_hex
+    assert bootstrap["second_confirmation_string"] == welcome["second_confirmation_string"]
+
+    shared2 = note_to_self_sync_db_path(root2, alice_hex)
+    assert shared2.exists()
+    assert _count_rows(shared2, "SELECT COUNT(*) FROM user_device") == 2
+
+    sync_dir = root2 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
+    head = CodSync.gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
+    assert head
+
+
+def test_bootstrap_transport_token_is_rejected_by_normal_routes(playground_dir, minio_server_gen):
+    workspace = pathlib.Path(playground_dir)
+    root = workspace / "install-a"
+    root.mkdir()
+    minio = minio_server_gen(port=19680)
+
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
+    app.state.backend = backend
+    http = TestClient(app)
+
+    resp = http.post(
+        "/bootstrap/sessions",
+        json={
+            "protocol": "s3",
+            "url": minio["endpoint"],
+            "bucket": "bootstrap-bucket",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    token = resp.json()["token"]
+    auth = {"Authorization": f"Bearer {token}"}
+
+    info_resp = http.get("/session/info", headers=auth)
+    assert info_resp.status_code >= 400
+
+    upload_resp = http.post(
+        "/cloud_file",
+        json={"path": "hello.txt", "data": base64.b64encode(b"hello").decode()},
+        headers=auth,
+    )
+    assert upload_resp.status_code >= 400

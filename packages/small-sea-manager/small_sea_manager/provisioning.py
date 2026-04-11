@@ -551,9 +551,15 @@ def authorize_identity_join(
     participant_hex,
     join_request_artifact_b64,
     *,
+    remote_descriptor: dict | None = None,
     expires_in_seconds: int = 600,
 ):
-    """Admit a new device into shared NoteToSelf and return a sealed welcome bundle."""
+    """Admit a new device into shared NoteToSelf and return a sealed welcome bundle.
+
+    When ``remote_descriptor`` is provided, this function stays local-only and
+    returns whether NoteToSelf needs to be published separately by the caller.
+    When absent, it falls back to the older localfolder-only publish path.
+    """
     if expires_in_seconds <= 0:
         raise ValueError("expires_in_seconds must be positive")
 
@@ -586,14 +592,16 @@ def authorize_identity_join(
         authorizing_device_id = authorizing_device[0]
         authorizing_signing_private_key = _read_local_secret(pathlib.Path(authorizing_device[4]))
 
-    remote_descriptor = _single_note_to_self_remote_descriptor(root_dir, participant_hex)
+    if remote_descriptor is None:
+        remote_descriptor = _single_note_to_self_remote_descriptor(root_dir, participant_hex)
     if inserted_user_device:
         repo_dir = root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync"
         CodSync.gitCmd(["-C", str(repo_dir), "add", "core.db"])
         CodSync.gitCmd(
             ["-C", str(repo_dir), "commit", "-m", f"Admit device {artifact.device_id_hex[:8]}"]
         )
-        _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
+        if remote_descriptor.get("protocol") == "localfolder":
+            _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
 
     now = datetime.now(timezone.utc)
     expires = now.timestamp() + expires_in_seconds
@@ -633,11 +641,12 @@ def authorize_identity_join(
             bundle,
             signature,
         ),
+        "needs_publish": inserted_user_device and remote_descriptor.get("protocol") != "localfolder",
     }
 
 
-def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
-    """Complete identity bootstrap on a previously blank installation."""
+def prepare_identity_bootstrap(root_dir, welcome_bundle_b64):
+    """Perform the local-only prepare step for identity bootstrap."""
     root_dir = pathlib.Path(root_dir)
     state = _load_pending_join_state(root_dir)
     pending_artifact = deserialize_join_request_artifact(state["join_request_artifact"])
@@ -708,13 +717,25 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
     sync_dir = participant_dir / "NoteToSelf" / "Sync"
     if not (sync_dir / ".git").exists():
         CodSync.gitCmd(["init", "-b", "main", str(sync_dir)])
-    cod = CodSync.CodSync("bootstrap-identity", repo_dir=sync_dir)
-    cod.remote = _remote_from_descriptor(bundle.remote_descriptor)
-    fetched_sha = cod.fetch_from_remote(["main"])
-    if fetched_sha is None:
-        raise RuntimeError("Failed to fetch NoteToSelf during identity bootstrap")
-    CodSync.gitCmd(["-C", str(sync_dir), "checkout", "main"])
 
+    return {
+        "participant_hex": bundle.participant_hex,
+        "participant_dir": str(participant_dir),
+        "sync_dir": str(sync_dir),
+        "bundle": bundle,
+        "signed_bundle": signed_bundle,
+        "pending_artifact": pending_artifact,
+        "pending_state": state,
+    }
+
+
+def finalize_identity_bootstrap(root_dir, prepared: dict):
+    """Verify fetched NoteToSelf state and finalize bootstrap cleanup."""
+    root_dir = pathlib.Path(root_dir)
+    bundle = prepared["bundle"]
+    signed_bundle = prepared["signed_bundle"]
+    pending_artifact = prepared["pending_artifact"]
+    state = prepared["pending_state"]
     bundle_plaintext = serialize_welcome_bundle_plaintext(bundle)
     signature = bytes.fromhex(signed_bundle.signature_hex)
     with sqlite3.connect(note_to_self_sync_db_path(root_dir, bundle.participant_hex)) as conn:
@@ -736,6 +757,7 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
     _clear_identity_bootstrap_untrusted(root_dir, bundle.participant_hex)
 
     pending_encryption_key_path = pathlib.Path(state["encryption_private_key_ref"])
+    pending_signing_private_key_path = pathlib.Path(state["signing_private_key_ref"])
     if pending_encryption_key_path.exists():
         pending_encryption_key_path.unlink()
     if pending_signing_private_key_path.exists():
@@ -752,6 +774,20 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
             signature,
         ),
     }
+
+
+def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
+    """Complete local-only identity bootstrap for localfolder remotes."""
+    prepared = prepare_identity_bootstrap(root_dir, welcome_bundle_b64)
+    bundle = prepared["bundle"]
+    sync_dir = pathlib.Path(prepared["sync_dir"])
+    cod = CodSync.CodSync("bootstrap-identity", repo_dir=sync_dir)
+    cod.remote = _remote_from_descriptor(bundle.remote_descriptor)
+    fetched_sha = cod.fetch_from_remote(["main"])
+    if fetched_sha is None:
+        raise RuntimeError("Failed to fetch NoteToSelf during identity bootstrap")
+    CodSync.gitCmd(["-C", str(sync_dir), "checkout", "main"])
+    return finalize_identity_bootstrap(root_dir, prepared)
 
 
 
