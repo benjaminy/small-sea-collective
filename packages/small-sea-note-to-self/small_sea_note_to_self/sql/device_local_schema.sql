@@ -18,7 +18,8 @@ CREATE TABLE IF NOT EXISTS notification_service_credential (
 
 CREATE TABLE IF NOT EXISTS note_to_self_device_key_secret (
     device_id BLOB PRIMARY KEY,
-    private_key_ref TEXT NOT NULL
+    encryption_private_key_ref TEXT NOT NULL,
+    signing_private_key_ref TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS team_device_key_secret (

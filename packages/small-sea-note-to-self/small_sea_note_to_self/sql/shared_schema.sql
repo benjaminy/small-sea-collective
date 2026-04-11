@@ -2,7 +2,8 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS user_device (
     id BLOB PRIMARY KEY,
-    key BLOB NOT NULL
+    bootstrap_encryption_key BLOB NOT NULL,
+    signing_key BLOB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS nickname (

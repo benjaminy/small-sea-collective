@@ -6,6 +6,10 @@ import os
 from typing import Any
 
 from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
     X25519PublicKey,
@@ -21,6 +25,21 @@ _ENVELOPE_VERSION = 1
 def generate_bootstrap_keypair() -> tuple[bytes, bytes]:
     """Generate an X25519 keypair for identity-bootstrap transport."""
     private_key = X25519PrivateKey.generate()
+    private_bytes = private_key.private_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PrivateFormat.Raw,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    public_bytes = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.Raw,
+        format=serialization.PublicFormat.Raw,
+    )
+    return private_bytes, public_bytes
+
+
+def generate_bootstrap_signing_keypair() -> tuple[bytes, bytes]:
+    """Generate an Ed25519 keypair for identity-bootstrap signatures."""
+    private_key = Ed25519PrivateKey.generate()
     private_bytes = private_key.private_bytes(
         encoding=serialization.Encoding.Raw,
         format=serialization.PrivateFormat.Raw,
@@ -109,3 +128,21 @@ def open_welcome_bundle(
         info=_WELCOME_BUNDLE_INFO,
     )
     return ChaCha20Poly1305(key).decrypt(nonce, ciphertext, associated_data)
+
+
+def sign_welcome_bundle(signing_private_key: bytes, plaintext: bytes) -> bytes:
+    """Sign welcome-bundle plaintext with an Ed25519 signing key."""
+    return Ed25519PrivateKey.from_private_bytes(signing_private_key).sign(plaintext)
+
+
+def verify_welcome_bundle_signature(
+    signing_public_key: bytes,
+    plaintext: bytes,
+    signature: bytes,
+) -> bool:
+    """Verify an Ed25519 signature over welcome-bundle plaintext."""
+    try:
+        Ed25519PublicKey.from_public_bytes(signing_public_key).verify(signature, plaintext)
+        return True
+    except Exception:
+        return False
