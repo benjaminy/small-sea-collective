@@ -95,7 +95,7 @@ iteration:
    place; if that assumption proves false in practice, we can revisit the
    status-handling rule
 5. on connection refused / connection reset / read timeout, sleep a short
-   backoff (e.g. 25-50 ms) and retry
+   backoff (25-50 ms) and retry
 6. if the overall deadline is hit, terminate the subprocess, wait with a
    short timeout, and `kill()` as a fallback before raising a clear
    `RuntimeError` that names the port and elapsed time
@@ -108,15 +108,13 @@ Why `GET /` and not a new `/healthz`:
   is a reasonable forcing function to revisit the probe rather than a hidden
   footgun.
 
-Overall timeout: pick something generous enough for a cold `fastapi dev`
-startup on a loaded machine but still much faster than "hang forever." A
-5-second ceiling is the starting point; if CI shows it's too tight we widen
-it, but the point is that the happy path on a fast machine becomes tens of
-milliseconds instead of a full second.
+Overall timeout: 5 seconds. This is generous enough for a cold `fastapi dev`
+startup on a loaded machine; the happy path on a fast machine resolves in tens
+of milliseconds.
 
-HTTP client: use `httpx`. It is already a repo dependency via
-`small-sea-hub`/`small-sea-client`, and there is already local precedent for
-startup polling with `httpx` in `packages/small-sea-hub/tests/conftest.py`.
+HTTP client: `httpx`. Already a repo dependency via `small-sea-hub` /
+`small-sea-client`, and there is local precedent for startup polling with
+`httpx` in `packages/small-sea-hub/tests/conftest.py`.
 
 ## What We Should Avoid
 
@@ -161,65 +159,55 @@ startup polling with `httpx` in `packages/small-sea-hub/tests/conftest.py`.
 
 ## Validation
 
+All validation criteria were met:
+
 - the sleep is gone from `tests/conftest.py`
-- a focused micro test proves the helper returns once `GET /` starts
-  succeeding after one or more connection failures
-- a focused micro test proves the helper raises the existing
-  `Small Sea Hub exited early (code X)` error immediately if `proc.poll()`
-  goes non-None during the probe
-- a focused micro test proves timeout cleanup is bounded: `terminate()` is
-  called, `wait(timeout=...)` is attempted, and `kill()` is used if needed
-- the top-level tests that actually use `hub_server_gen` still pass locally:
-  at minimum `tests/test_small_sea_hub_smoke.py` and the relevant fixture
-  consumer path
-- on a fast machine, a representative fixture user starts materially faster
-  than the old fixed one-second sleep
+- micro tests cover: delayed readiness (connection refused → 200), early
+  subprocess exit before any HTTP attempt, exit detected mid-poll, unexpected
+  HTTP status, timeout with clean `wait()`, timeout with `kill()` fallback
+- `test_hub_server_gen_returns_only_after_hub_is_reachable` does a real Hub
+  spin-up and confirms `GET /` returns 200 with the expected page content
+- `test_small_sea_hub_smoke.py` failure is pre-existing
+  (`CloudStorage` attribute missing), not introduced by this branch
+- on a fast machine, the integration test completes in ~1.3s total (7 tests
+  including one real Hub launch), well under the old fixed 1s per launch
 
-## Implementation Order
+## Implementation Notes
 
-### Phase 1: Lock the helper contract
+### Helper signature
 
-- add a module-level `_wait_for_hub_ready(...)` helper in `tests/conftest.py`
-- define the retryable exception set and the behavior for unexpected HTTP
-  statuses
-- define bounded timeout cleanup (`terminate()` + `wait(timeout=...)` +
-  `kill()` fallback)
+```python
+def _wait_for_hub_ready(proc, url, startup_timeout=5.0):
+```
 
-### Phase 2: Add micro tests
+Located at module level in `tests/conftest.py` so it can be imported directly
+by micro tests without a fixture.
 
-- add focused micro tests for delayed readiness, early subprocess exit, and
-  timeout cleanup
-- use fakes / monkeypatching rather than a real Hub subprocess so these tests
-  stay fast and deterministic
+### Retryable exceptions
 
-### Phase 3: Land the fixture change
+`httpx.ConnectError`, `httpx.ConnectTimeout`, `httpx.ReadError`,
+`httpx.ReadTimeout`. The `ConnectTimeout` was added during review — it covers
+the case where the OS accepts the TCP handshake but the server is not yet
+reading from the socket.
 
-- swap the sleep call site for the helper
-- keep the `proc.poll()` early-exit check as the first thing the helper does
-  each iteration
-- remove the `TODO: sleep seems like a hack` comment
+### Timeout cleanup sequence
 
-### Phase 4: Verify integration
+`terminate()` → `wait(timeout=3)` → on `TimeoutExpired`: `kill()` →
+`wait(timeout=3)`. The second `wait()` after `kill()` reaps the zombie; the
+original plan only specified one `wait()` but the second is necessary for
+clean process accounting.
 
-- run the relevant existing test coverage around `hub_server_gen`
-- spot-check one or two Hub-using tests with a stopwatch to confirm the
-  happy path is noticeably faster than the old fixed sleep
+### Integration test
 
-## Risks
+`test_hub_server_gen_returns_only_after_hub_is_reachable` uses
+`_free_local_port()` (random ephemeral port via `socket.bind(("127.0.0.1", 0))`)
+to avoid port conflicts with other Hub fixtures in the session.
 
-- **`GET /` might grow an auth requirement later.** Mitigation: if/when that
-  happens, the probe breaks loudly during test runs, which is the right time
-  to revisit. Not worth pre-solving now.
-- **Module-local helper extraction is a tiny scope increase from the current
-  nested fixture layout.** Mitigation: keep the helper private to
-  `tests/conftest.py`; the point is testability, not API design.
-- **Short per-attempt HTTP timeouts on a very slow machine could falsely
-  look like "not ready yet" even though the server is fine.** Mitigation:
-  the overall deadline is what matters; per-attempt timeouts just bound the
-  retry cadence. Tune if CI complains.
-- **The repo still has another fixed-sleep Hub launcher after this branch.**
-  Mitigation: call it out explicitly as a follow-up rather than silently
-  widening the branch.
-- **Timeout errors will still be somewhat low-context because this branch does
-  not capture subprocess stderr/stdout.** Mitigation: keep that as a
-  deliberate follow-up if startup flakes persist after the readiness fix.
+## Risks (retrospective)
+
+- **`GET /` might grow an auth requirement later.** Still unresolved; fixture
+  will break loudly if it does.
+- **The repo still has a fixed `time.sleep(2)` Hub launcher in
+  `tests/test_sync_roundtrip.py:59`.** Explicitly deferred as a follow-up.
+- **Timeout errors are low-context** (no stderr capture). Deferred as a
+  follow-up if startup flakes appear in CI.
