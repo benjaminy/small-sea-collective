@@ -94,6 +94,17 @@ Why this is the cleanest first choice:
 - it is compact enough for wire payloads and SQLite keys
 - it avoids embedding a 32-byte public key everywhere just to get a stable name
 
+Important implication:
+
+- this branch is intentionally treating sender runtime identity as a
+  **team-device-key identity**, not as an eternal physical-device identity
+- if future work adds team-device-key rotation, a rotated key will therefore
+  appear as a new sender identity unless a later branch explicitly designs a
+  continuity mechanism
+
+That tradeoff is acceptable for this first slice and is better than implicitly
+making the choice by accident.
+
 ### 3. Rename cleanly; do not preserve member-scoped field names
 
 This repo is pre-alpha. The branch should rename the sender-key runtime fields
@@ -204,6 +215,10 @@ Minimum expected micro test coverage:
 - one new focused runtime micro test proving that a recipient device can hold
   two peer sender-key records for the same team from two different sender
   devices of the same member without collision
+  - this should exercise the actual runtime lookup layer (`small_sea_hub.crypto`
+    and/or `small_sea_note_to_self.sender_keys`), not only low-level Cuttlefish
+    dataclasses, so the branch proves the collision is really gone where it
+    matters
 
 ## Out Of Scope
 
