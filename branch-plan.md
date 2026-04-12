@@ -1,9 +1,9 @@
-# Branch Plan: Sender-Key Runtime Rethink
+# Branch Plan: Sender-Key Runtime Roadmap
 
 **Branch:** `issue-44-sender-key-runtime`  
 **Base:** `main`  
-**Primary issue:** #44 "Revisit sender-key storage once multi-device design is clearer"  
-**Related existing issues:** #59, #58, #48, #4  
+**Original trigger:** #44 "Revisit sender-key storage once multi-device design is clearer"  
+**Active roadmap issues:** #59, #69, #43, #48, #4  
 **Related docs:** `architecture.md`, `packages/cuttlefish/README.md`,
 `packages/wrasse-trust/README-brain-storming.md`,
 `packages/small-sea-manager/spec.md`, `packages/small-sea-hub/spec.md`  
@@ -52,8 +52,9 @@ Post-Signal protocols confirm and refine this direction:
   ciphertext fan-out doesn't scale. Validates the sender-key-for-data-plane
   choice even at modest group sizes.
 
-This branch is therefore a planning branch first. It should settle the written
-model and the cut lines before a larger implementation pass starts.
+This branch is therefore intentionally an **organizational** branch first. It
+should settle the written model, clean up the tracker shape, and leave behind a
+multi-branch roadmap before a larger implementation pass starts.
 
 ## Working Direction To Pressure-Test
 
@@ -156,6 +157,23 @@ Use this as the baseline example the branch must keep returning to:
 If this story turns out to be wrong or too costly, the branch should say
 exactly where it breaks.
 
+## Why This Branch Should Stay Organizational
+
+The issue graph is currently less clear than the technical direction:
+
+- `#44` is still framed around the old single-DB storage question, but `#61`
+  already moved sender-key runtime to device-local NoteToSelf storage
+- `#59` is the real open runtime umbrella, but it currently mixes at least
+  three future branches: sender identity semantics, historical/bootstrap
+  encrypted access for linked devices, and peer routing / watch behavior
+- `#43` is already the natural home for encrypted sender-key rotation and
+  redistribution once the runtime model is clearer
+- `#48` is now more clearly about steady-state NoteToSelf refresh and discovery,
+  not encrypted team runtime itself
+
+If this branch jumped directly into code, it would likely blur those boundaries
+again.
+
 ## Proposed Goal
 
 After this planning branch:
@@ -165,10 +183,10 @@ After this planning branch:
 2. the design clearly distinguishes control plane from data plane
 3. the design clearly distinguishes device-scoped sender runtime from synced
    team metadata
-4. the branch records what current code is temporary scaffolding versus
-   intended long-term direction
-5. follow-on implementation work can be split into reviewable branches with
-   explicit validation criteria
+4. the issue tracker reflects current reality rather than outdated milestone
+   assumptions
+5. follow-on implementation work is split into reviewable branches with
+   explicit validation criteria and cleaner issue ownership
 
 ## Non-Goals
 
@@ -261,10 +279,65 @@ should say so explicitly rather than forcing an artificial split.
 
 1. keep iterating on `branch-plan.md` until the model is crisp enough to survive
    skeptical review
-2. capture a short repo-local design note or issue-ready summary once the
-   control-plane and data-plane model is stable
-3. identify the smallest honest follow-on implementation slice or slices,
-   including the micro tests that would prove them
+2. comment on the key GitHub issues so their current scope matches the repo's
+   implemented state and the updated design direction
+3. close or supersede stale issues where the original problem statement is no
+   longer the real problem
+4. open any missing follow-up issue needed to keep future implementation
+   branches narrow and honest
+5. leave behind a concrete multi-branch roadmap, including the micro tests that
+   should prove each implementation slice
+
+## Planned Tracker Actions
+
+Tracker actions now taken in this branch:
+
+1. update `#59` with the clarified mental model:
+   - pairwise control plane
+   - sender-key data plane
+   - likely device-scoped sender identity
+2. close `#44` as superseded:
+   - `#61` already handled the original shared-vs-local storage milestone
+   - the remaining open problem is the broader multi-device runtime model
+3. open `#69` for the still-missing "linked device joins an existing encrypted
+   team honestly" problem, since that is not the same as:
+   - identity bootstrap (`#58`, now closed)
+   - NoteToSelf refresh (`#48`)
+   - general runtime identity / peer routing (`#59`)
+4. leave `#43` focused on encrypted rotation / redistribution rather than
+   overloading it with storage or peer-routing questions
+
+## Likely Future Branch Sequence
+
+### 1. This branch: roadmap and issue cleanup
+
+- clarify the steady-state model
+- align issue scopes with current repo reality
+- identify the next smallest honest implementation slice
+
+### 2. Sender-device runtime identity
+
+- choose and implement the concrete sender-device identifier model
+- update local sender / receiver runtime lookups
+- add micro tests for multiple linked devices encrypting independently
+
+### 3. Encrypted team access for a newly linked device
+
+- define what historical encrypted team data a newly linked device can read
+- define what sender-key snapshot or replayable-key export is required
+- add micro tests for an existing team with pre-existing encrypted artifacts
+
+### 4. Encrypted sender-key rotation and redistribution
+
+- move beyond invitation-token bootstrap
+- implement control-plane redistribution over the intended encrypted path
+- add micro tests for routine rotation and membership-change rekey
+
+### 5. Device-aware peer routing and watches
+
+- distinguish sibling devices as runtime endpoints where needed
+- settle Hub routing / notification / watch semantics
+- add micro tests proving multiple linked devices stay live without conflation
 
 ## Validation
 
@@ -287,6 +360,8 @@ repo if all of the following are true:
   a fuzzy "figure it out later"
 - the next implementation branch would have clear success criteria and micro
   test expectations
+- the issue tracker would read as a roadmap instead of a pile of partially
+  outdated placeholders
 
 ## Validation Evidence To Gather In This Branch
 
