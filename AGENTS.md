@@ -11,12 +11,11 @@ As an AI agent working in this repository, you must follow these rules to mainta
 - The typical workflow should be:
    1. Make a branch for the current task
    2. Iterate on the branch-plan.md document
-      - AIs are not reliable. The plan had better have really excellent validation. How are you going to convince a bright critic that this plan:
-         1. Accomplishes the goals of the branch
-	 2. Maintains or improves the general integrity of the repo
+      - My boss thinks AIs are not reliable enough for serious work yet. The validation part of the plan needs to be even better than would be expected on a great software engineering team. How will the implementation convince a smart skeptic that:
+         1. The goals of the branch have been accomplished
+	 2. The general integrity of the repo (low coupling, maintainability, consistency, etc) has been maintained or improved
    3. Implement, debug, optimize
-   4. If anything significant changed while working, update branch-plan.md and move it to Archive/branch-plan-{BRANCH_NAME}.md
-   5. Merge to main
+   4. To wrap up a branch, update branch-plan.md and move it to Archive/branch-plan-{BRANCH_NAME}.md
 
 ## Architectural Mandates
 - **Hub as Gateway**: In production, the ONLY Small Sea component allowed to communicate with the internet is the **Hub**.
