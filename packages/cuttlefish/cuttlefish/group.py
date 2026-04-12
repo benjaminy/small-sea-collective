@@ -51,10 +51,10 @@ def _advance_chain_key(chain_key: bytes) -> bytes:
 
 @dataclass
 class SenderKeyRecord:
-    """A member's current sender chain state. Stored securely on-device."""
+    """A sender device's current sender chain state. Stored securely on-device."""
 
     group_id: bytes
-    sender_participant_id: bytes
+    sender_device_key_id: bytes
     chain_id: bytes                  # Random ID for this chain generation
     chain_key: bytes                 # 32-byte current chain key
     iteration: int                   # Current position in the chain
@@ -68,7 +68,7 @@ class SenderKeyDistributionMessage:
     """Sent 1:1 (via X3DH/Ratchet) to each group member when keys change."""
 
     group_id: bytes
-    sender_participant_id: bytes
+    sender_device_key_id: bytes
     sender_chain_id: bytes
     iteration: int
     chain_key: bytes       # Current chain key
@@ -77,7 +77,7 @@ class SenderKeyDistributionMessage:
 
 @dataclass
 class GroupMessage:
-    sender_participant_id: bytes
+    sender_device_key_id: bytes
     sender_chain_id: bytes
     iteration: int
     iv: bytes              # 12-byte nonce for AES-256-GCM
@@ -89,9 +89,9 @@ class GroupMessage:
 
 
 def create_sender_key(
-    group_id: bytes, sender_participant_id: bytes,
+    group_id: bytes, sender_device_key_id: bytes,
 ) -> tuple[SenderKeyRecord, SenderKeyDistributionMessage]:
-    """Initialize a new sender key chain for this participant in a group.
+    """Initialize a new sender key chain for this sender device in a group.
 
     Call this when creating a group or after a membership change.
     Returns (local_record, distribution_message_to_send_to_each_member).
@@ -112,7 +112,7 @@ def create_sender_key(
 
     record = SenderKeyRecord(
         group_id=group_id,
-        sender_participant_id=sender_participant_id,
+        sender_device_key_id=sender_device_key_id,
         chain_id=chain_id,
         chain_key=chain_key,
         iteration=0,
@@ -122,7 +122,7 @@ def create_sender_key(
 
     distribution = SenderKeyDistributionMessage(
         group_id=group_id,
-        sender_participant_id=sender_participant_id,
+        sender_device_key_id=sender_device_key_id,
         sender_chain_id=chain_id,
         iteration=0,
         chain_key=chain_key,
@@ -137,11 +137,11 @@ def process_sender_key_distribution(
 ) -> SenderKeyRecord:
     """Process a distribution message received from another group member.
 
-    The returned record should be stored keyed by (group_id, sender_participant_id).
+    The returned record should be stored keyed by (group_id, sender_device_key_id).
     """
     return SenderKeyRecord(
         group_id=msg.group_id,
-        sender_participant_id=msg.sender_participant_id,
+        sender_device_key_id=msg.sender_device_key_id,
         chain_id=msg.sender_chain_id,
         chain_key=msg.chain_key,
         iteration=msg.iteration,
@@ -174,7 +174,7 @@ def group_encrypt(
     signature = private_key.sign(iv + ciphertext)
 
     message = GroupMessage(
-        sender_participant_id=my_sender_key.sender_participant_id,
+        sender_device_key_id=my_sender_key.sender_device_key_id,
         sender_chain_id=my_sender_key.chain_id,
         iteration=my_sender_key.iteration,
         iv=iv,

@@ -20,7 +20,7 @@ def test_create_sender_key():
     record, dist = create_sender_key(GROUP_ID, ALICE_ID)
 
     assert record.group_id == GROUP_ID
-    assert record.sender_participant_id == ALICE_ID
+    assert record.sender_device_key_id == ALICE_ID
     assert len(record.chain_key) == 32
     assert len(record.chain_id) == 32
     assert len(record.signing_public_key) == 32
@@ -29,7 +29,7 @@ def test_create_sender_key():
     assert record.skipped_message_keys == {}
 
     assert dist.group_id == GROUP_ID
-    assert dist.sender_participant_id == ALICE_ID
+    assert dist.sender_device_key_id == ALICE_ID
     assert dist.chain_key == record.chain_key
     assert dist.sender_chain_id == record.chain_id
     assert dist.signing_public_key == record.signing_public_key
@@ -87,7 +87,7 @@ def test_signature_verification_failure():
 
     # Tamper with ciphertext
     tampered = GroupMessage(
-        sender_participant_id=msg.sender_participant_id,
+        sender_device_key_id=msg.sender_device_key_id,
         sender_chain_id=msg.sender_chain_id,
         iteration=msg.iteration,
         iv=msg.iv,

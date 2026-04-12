@@ -84,7 +84,12 @@ from wrasse_trust.identity import (
     verify_device_link_cert,
     verify_membership_cert,
 )
-from wrasse_trust.keys import ParticipantKey, ProtectionLevel, generate_key_pair
+from wrasse_trust.keys import (
+    ParticipantKey,
+    ProtectionLevel,
+    generate_key_pair,
+    key_id_from_public,
+)
 
 
 def _serialize_cert(cert: KeyCertificate) -> dict:
@@ -413,7 +418,7 @@ class Peer(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 54
+USER_SCHEMA_VERSION = 55
 
 
 # ---- Provisioning functions ----
@@ -839,7 +844,7 @@ def _migrate_user_db(conn, from_version):
                 "CREATE TABLE IF NOT EXISTS team_sender_key ("
                 "team_id BLOB PRIMARY KEY, "
                 "group_id BLOB NOT NULL, "
-                "sender_participant_id BLOB NOT NULL, "
+                "sender_device_key_id BLOB NOT NULL, "
                 "chain_id BLOB NOT NULL, "
                 "chain_key BLOB NOT NULL, "
                 "iteration INTEGER NOT NULL, "
@@ -893,14 +898,14 @@ def _migrate_user_db(conn, from_version):
                 "CREATE TABLE IF NOT EXISTS peer_sender_key ("
                 "team_id BLOB NOT NULL, "
                 "group_id BLOB NOT NULL, "
-                "sender_participant_id BLOB NOT NULL, "
+                "sender_device_key_id BLOB NOT NULL, "
                 "chain_id BLOB NOT NULL, "
                 "chain_key BLOB NOT NULL, "
                 "iteration INTEGER NOT NULL, "
                 "signing_public_key BLOB NOT NULL, "
                 "signing_private_key BLOB, "
                 "skipped_message_keys TEXT NOT NULL DEFAULT '{}', "
-                "PRIMARY KEY (team_id, sender_participant_id), "
+                "PRIMARY KEY (team_id, sender_device_key_id), "
                 "FOREIGN KEY (team_id) REFERENCES team(id))"
             )
         )
@@ -930,6 +935,24 @@ def _migrate_team_db(conn, from_version):
                 "FOREIGN KEY (issuer_member_id) REFERENCES member(id) ON DELETE CASCADE)"
             )
         )
+    if from_version < 55:
+        _rename_sender_key_column_if_present(conn, "team_sender_key")
+        _rename_sender_key_column_if_present(conn, "peer_sender_key")
+
+
+def _rename_sender_key_column_if_present(conn, table_name: str) -> None:
+    columns = {
+        row[1]
+        for row in conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
+    }
+    if "sender_participant_id" not in columns or "sender_device_key_id" in columns:
+        return
+    conn.execute(
+        text(
+            f"ALTER TABLE {table_name} "
+            "RENAME COLUMN sender_participant_id TO sender_device_key_id"
+        )
+    )
 
 
 def ensure_team_db_schema(db_path):
@@ -1020,8 +1043,8 @@ def _install_sqlite_merge_driver(team_sync_dir):
     )
 
 
-def _initialize_team_sender_key_state(user_db_path, team_id, member_id):
-    sender_key, distribution = create_sender_key(team_id, member_id)
+def _initialize_team_sender_key_state(user_db_path, team_id, sender_device_key_id):
+    sender_key, distribution = create_sender_key(team_id, sender_device_key_id)
     save_team_sender_key(user_db_path, team_id, sender_key)
     save_peer_sender_key(
         user_db_path,
@@ -1029,6 +1052,10 @@ def _initialize_team_sender_key_state(user_db_path, team_id, member_id):
         receiver_record_from_distribution(distribution),
     )
     return distribution
+
+
+def _sender_device_key_id_from_public_key(public_key: bytes) -> bytes:
+    return key_id_from_public(public_key)
 
 
 def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes) -> None:
@@ -1237,7 +1264,7 @@ def _generate_initial_team_device_key(
 def _deserialize_group_message(payload: bytes) -> GroupMessage:
     data = json.loads(payload.decode("utf-8"))
     return GroupMessage(
-        sender_participant_id=bytes.fromhex(data["sender_participant_id"]),
+        sender_device_key_id=bytes.fromhex(data["sender_device_key_id"]),
         sender_chain_id=bytes.fromhex(data["sender_chain_id"]),
         iteration=int(data["iteration"]),
         iv=bytes.fromhex(data["iv"]),
@@ -1286,7 +1313,7 @@ def decrypt_invitation_bootstrap_payload(
     replayable_keys[message.iteration] = replay_message_key
     next_sender_key = next_sender_key.__class__(
         group_id=next_sender_key.group_id,
-        sender_participant_id=next_sender_key.sender_participant_id,
+        sender_device_key_id=next_sender_key.sender_device_key_id,
         chain_id=next_sender_key.chain_id,
         chain_key=next_sender_key.chain_key,
         iteration=next_sender_key.iteration,
@@ -1359,7 +1386,9 @@ def create_team(root_dir, participant_hex, team_name):
         admitted_member_id=member_id,
     )
     _initialize_team_sender_key_state(
-        device_local_db_path(root_dir, participant_hex), team_id, member_id
+        device_local_db_path(root_dir, participant_hex),
+        team_id,
+        _sender_device_key_id_from_public_key(team_keys["device_key"].public_key),
     )
 
     # --- Create team directory and its core.db ---
@@ -1617,7 +1646,9 @@ def accept_invitation(
         receiver_record_from_distribution(inviter_sender_key),
     )
     acceptor_sender_key = _initialize_team_sender_key_state(
-        device_local_db_path(root_dir, acceptor_participant_hex), team_id, acceptor_member_id
+        device_local_db_path(root_dir, acceptor_participant_hex),
+        team_id,
+        _sender_device_key_id_from_public_key(team_keys["device_key"].public_key),
     )
 
     # --- Git commit the DB changes ---

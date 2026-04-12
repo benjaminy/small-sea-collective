@@ -10,7 +10,7 @@ from small_sea_manager.provisioning import _deserialize_cert, _serialize_cert
 from small_sea_manager.provisioning import (create_new_participant,
                                                  create_team)
 from wrasse_trust.identity import CertType, issue_cert, verify_membership_cert
-from wrasse_trust.keys import generate_hierarchy
+from wrasse_trust.keys import generate_hierarchy, key_id_from_public
 
 
 ALICE_ID = b"alice-id-bytes00"
@@ -96,29 +96,10 @@ def test_create_team(playground_dir):
 
     with pytest.raises(sqlite3.OperationalError):
         conn.execute(
-            "SELECT team_id, sender_participant_id, signing_private_key "
+            "SELECT team_id, sender_device_key_id, signing_private_key "
             "FROM team_sender_key WHERE team_id = ?",
             (bytes.fromhex(team_id_hex),),
         ).fetchone()
-
-    sender_key = lconn.execute(
-        "SELECT team_id, sender_participant_id, signing_private_key "
-        "FROM team_sender_key WHERE team_id = ?",
-        (bytes.fromhex(team_id_hex),),
-    ).fetchone()
-    assert sender_key is not None
-    assert sender_key[0] == bytes.fromhex(team_id_hex)
-    assert sender_key[1] == bytes.fromhex(member_id_hex)
-    assert sender_key[2] is not None
-
-    self_receiver_key = lconn.execute(
-        "SELECT sender_participant_id, signing_private_key "
-        "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
-        (bytes.fromhex(team_id_hex), bytes.fromhex(member_id_hex)),
-    ).fetchone()
-    assert self_receiver_key is not None
-    assert self_receiver_key[0] == bytes.fromhex(member_id_hex)
-    assert self_receiver_key[1] is None
 
     with pytest.raises(sqlite3.OperationalError):
         conn.execute(
@@ -139,12 +120,32 @@ def test_create_team(playground_dir):
     ).fetchone()
     assert team_device_key is not None
     assert len(team_device_key[0]) == 32
+    team_device_key_id = key_id_from_public(team_device_key[0])
     team_device_key_secret = lconn.execute(
         "SELECT private_key_ref FROM team_device_key_secret WHERE team_id = ?",
         (bytes.fromhex(team_id_hex),),
     ).fetchone()
     assert team_device_key_secret is not None
     assert pathlib.Path(team_device_key_secret[0]).exists()
+
+    sender_key = lconn.execute(
+        "SELECT team_id, sender_device_key_id, signing_private_key "
+        "FROM team_sender_key WHERE team_id = ?",
+        (bytes.fromhex(team_id_hex),),
+    ).fetchone()
+    assert sender_key is not None
+    assert sender_key[0] == bytes.fromhex(team_id_hex)
+    assert sender_key[1] == team_device_key_id
+    assert sender_key[2] is not None
+
+    self_receiver_key = lconn.execute(
+        "SELECT sender_device_key_id, signing_private_key "
+        "FROM peer_sender_key WHERE team_id = ? AND sender_device_key_id = ?",
+        (bytes.fromhex(team_id_hex), team_device_key_id),
+    ).fetchone()
+    assert self_receiver_key is not None
+    assert self_receiver_key[0] == team_device_key_id
+    assert self_receiver_key[1] is None
 
     # TeamAppBerth for CoolProject must NOT be in NoteToSelf — it belongs in the team DB.
     other_team_berths = conn.execute(
