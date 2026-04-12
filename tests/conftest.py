@@ -26,7 +26,7 @@ def _wait_for_hub_ready(proc, url, startup_timeout=5.0):
             raise RuntimeError(
                 f"Hub readiness probe got unexpected status {resp.status_code} from {url}"
             )
-        except (httpx.ConnectError, httpx.ReadError, httpx.ReadTimeout):
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadError, httpx.ReadTimeout):
             pass
         if time.monotonic() >= deadline:
             proc.terminate()
@@ -34,6 +34,7 @@ def _wait_for_hub_ready(proc, url, startup_timeout=5.0):
                 proc.wait(timeout=3)
             except subprocess.TimeoutExpired:
                 proc.kill()
+                proc.wait(timeout=3)
             raise RuntimeError(
                 f"Hub at {url} did not become ready within {startup_timeout}s"
             )

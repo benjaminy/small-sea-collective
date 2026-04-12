@@ -1,11 +1,13 @@
 """Micro tests for _wait_for_hub_ready in tests/conftest.py."""
 
+import socket
 import subprocess
 import time
 import unittest.mock as mock
 
 import httpx
 import pytest
+import requests
 
 from conftest import _wait_for_hub_ready
 
@@ -35,6 +37,12 @@ def _error_response(status_code):
     resp.is_redirect = False
     resp.status_code = status_code
     return resp
+
+
+def _free_local_port():
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +150,7 @@ def test_timeout_cleanup_kill_fallback(monkeypatch):
     monkeypatch.setattr(time, "sleep", lambda _: None)
 
     proc = _make_proc(iter(lambda: None, object()))
-    proc.wait.side_effect = subprocess.TimeoutExpired(cmd="hub", timeout=3)
+    proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="hub", timeout=3), None]
 
     monkeypatch.setattr(
         time, "monotonic",
@@ -155,3 +163,13 @@ def test_timeout_cleanup_kill_fallback(monkeypatch):
 
     proc.terminate.assert_called_once()
     proc.kill.assert_called_once()
+    assert proc.wait.call_count == 2
+
+
+def test_hub_server_gen_returns_only_after_hub_is_reachable(playground_dir, hub_server_gen):
+    hub = hub_server_gen(root_dir=playground_dir, port=_free_local_port())
+
+    resp = requests.get(f"{hub['endpoint']}/", timeout=2)
+
+    assert resp.status_code == 200
+    assert "Local Hub status page" in resp.text
