@@ -78,6 +78,10 @@ The Small Sea Hub provides a collection of generic services to applications and 
 
 The Small Sea Hub is **not** a remote service. Rather, it is software that runs on client devices and translates local application requests into appropriate general-purpose service interactions.
 
+That gateway rule still allows one device's Hub to talk directly to another
+device's Hub, including over future VPN-style paths. The important boundary is
+that Small Sea apps and internal packages do not bypass their local Hub.
+
 ## Why?
 
 Small Sea Collective addresses two big challenges for local-first software:

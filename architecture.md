@@ -36,7 +36,17 @@ The baseline synchronization method is snapshot-based 3-way merge, utilizing `gi
 ## Design Principles & Constraints
 
 ### The Hub as the Sole Gateway
-**All internet communication for Small Sea components must go through the Hub.** Applications, synchronization protocols, and internal packages must never make direct network calls to cloud storage, peers, or external services. This chokepoint enables transparent end-to-end encryption and consistent access control.
+**All internet communication for Small Sea components must go through the Hub.**
+Applications, synchronization protocols, and internal packages must never make
+direct network calls to cloud storage, peers, or external services on their
+own.
+
+This does **not** forbid one device's Hub from talking directly to another
+device's Hub. Hub-to-Hub transport, including future VPN-backed paths, still
+fits the rule. What is forbidden is bypassing the local Hub.
+
+This chokepoint enables transparent end-to-end encryption and consistent access
+control.
 
 ### Database Access
 **Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
