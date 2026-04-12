@@ -294,6 +294,44 @@ The branch should aim to prove, at minimum:
 - solving linked-device bootstrap implicitly in this branch instead of in `#69`
 - leaving member-scoped names in place after changing the actual semantics
 
+## Open Questions
+
+### 1. `team_sender_key` primary key width
+
+The current `team_sender_key` table has `PRIMARY KEY (team_id)` — no device
+dimension. `peer_sender_key` naturally gains multi-device support from the
+rename (`PRIMARY KEY (team_id, sender_device_key_id)`). Should this branch
+also widen `team_sender_key` to `(team_id, sender_device_key_id)` to position
+for #69, or leave it as-is since a single device still has only one local
+sender key?
+
+### 2. Duplicate `sender_keys.py`
+
+`small_sea_manager/sender_keys.py` and `small_sea_note_to_self/sender_keys.py`
+are near-identical copies. `provisioning.py` and `crypto.py` both import from
+the note-to-self version; the manager copy may be dead code. The concrete
+change areas only mention the note-to-self copy. Should the manager copy be
+deleted or does the rename need to cover both?
+
+### 3. `_initialize_team_sender_key_state` signature change
+
+This function currently takes `(user_db_path, team_id, member_id)` and passes
+`member_id` straight to `create_sender_key`. After the flip it needs a
+device key ID instead. Its callers (`create_team`, invitation acceptance) will
+need to thread through the team-device public key or its key_id — worth
+confirming how each caller currently obtains that value.
+
+### 4. Duplicate `_message_key_for`
+
+`crypto.py:41` and `provisioning.py:1249` have identical `_message_key_for`
+helpers. Both need the rename but deduplication is out of scope.
+
+### 5. JSON serialization field names
+
+The `serialize_*` / `deserialize_*` helpers use `"sender_participant_id"` as a
+JSON key in invitation token payloads. Pre-alpha so no wire-compat concern, but
+test fixtures with hardcoded JSON will need updating alongside the rename.
+
 ## Outcome
 
 To be filled in at wrap-up.
