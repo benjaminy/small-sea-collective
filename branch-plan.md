@@ -98,6 +98,25 @@ didn't exist yet has no business decrypting pre-join data. Historical access, if
 ever needed, should be a separate carefully-authenticated mechanism (future
 issue).
 
+Important corollary: join-time-forward is only honest if the bootstrap flow also
+ensures the new device can obtain a readable **current baseline** for the team
+after join. For Small Sea's git-based team state, that likely means some form
+of post-join resealed snapshot or equivalent current-state export, so the new
+device does not depend on decrypting pre-join artifacts just to see the latest
+team state.
+
+More generally, this suggests a default Small Sea bootstrap invariant:
+
+- whenever something new joins and needs persistent shared state — a new team
+  member, a newly linked device, or an already-linked device joining a specific
+  team — the sponsoring device is responsible for ensuring that a readable
+  current baseline is available in cloud storage under access the joiner can
+  legitimately use
+- for git-backed state, that may mean publishing a fresh Cod Sync snapshot,
+  bundle chain tip, or equivalent resealed current-state export after admission
+- future encrypted deltas then continue from that fresh baseline; they do not
+  require handing over old long-lived sender-key history
+
 ### P3. Sender key distribution requires cryptographic membership verification
 
 A device must verify wrasse-trust certs (a valid `membership` or `device_link`
@@ -117,10 +136,13 @@ rotate, admit, remove — and the team DB writes that record them. This provides
 natural serialization point that avoids MLS's hardest open problem (concurrent
 commit ordering in decentralized deployments).
 
-The actual pairwise SenderKeyDistributionMessages travel device-to-device over
-encrypted ratchet channels, not through the Manager. The Manager triggers the
-rotation; each device then distributes its new sender key directly to each peer
-device.
+The actual pairwise SenderKeyDistributionMessages travel over encrypted
+device-to-device logical channels, but their transport must still respect Small
+Sea's architecture: in production all internet-facing traffic goes through the
+Hub. That still allows direct Hub-to-Hub transport between devices. The Manager
+triggers the rotation; each device then distributes its new sender key to each
+peer device via Hub-mediated transport, not by bypassing the local Hub with
+ad-hoc application-level network paths.
 
 ### P5. Rejoin after extended absence is fresh distribution, not replay
 
@@ -235,6 +257,19 @@ questions (owned by #69):
   fresh SenderKeyDistributionMessages over pairwise channels for each active
   sender device in the team. The new device can decrypt any bundle uploaded after
   it receives those distributions.
+- What is the default **baseline publication** strategy? Current direction: the
+  inviter / sponsor is responsible for making the relevant persistent shared
+  state available in cloud storage under access the joiner will have after
+  admission. For git-backed state, that may mean publishing a fresh Cod Sync
+  snapshot or equivalent resealed baseline.
+- What is the concrete **current baseline** mechanism for git-backed team data?
+  Join-time-forward only works if a newly linked device can read the latest team
+  state without needing pre-join sender keys. `#69` must therefore include
+  either:
+  - a resealed fresh baseline / full snapshot after join, or
+  - an equivalent current-state export mechanism
+  A design that omits this would strand the new device behind unreadable
+  history.
 - How does the new device establish pairwise channels with every other device
   async? Pre-published key bundles (analogous to MLS KeyPackages) in cloud
   storage are the likely mechanism. Note that `cuttlefish.prekeys` already has
