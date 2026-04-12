@@ -18,9 +18,9 @@ As an AI agent working in this repository, you must follow these rules to mainta
    4. To wrap up a branch, update branch-plan.md and move it to Archive/branch-plan-{BRANCH_NAME}.md
 
 ## Architectural Mandates
-- **Hub as Gateway**: In production, the ONLY Small Sea component allowed to communicate with the internet is the **Hub**.
-   Any other component (Manager, internal packages) must use the Hub API for all network-related activity.
-   - This is *not* a restriction on what apps are allowed to do outside the scope of Small Sea.
+- **Hub as Gateway**: In production, all Small Sea internet traffic must go through the **Hub**.
+   Going around the Hub to talk to cloud storage, any other service or peer device is bad.
+   - This is *not* intended to limit what apps are allowed to do outside the scope of Small Sea.
 - **Manager Database Exclusivity**: Only the `small-sea-manager` package is permitted to read/write the `{Team}/SmallSeaCollectiveCore` berth databases directly.
    All other apps must retrieve session and identity information via the Hub's API (`GET /session/info`).
 - **Local-Only Testing**: During testing, avoid internet communication where possible. If tests require network interaction, use local mocks or services like MinIO.
