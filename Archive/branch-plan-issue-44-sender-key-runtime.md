@@ -448,3 +448,41 @@ blocking:
   sharing old sender keys with new devices, if join-time-forward (P2) proves
   too restrictive in practice. Must learn from Matrix's CVE-2021-40823/40824.
   Explicitly deferred.
+
+## Outcome
+
+Completed as an organizational roadmap branch.
+
+Implemented:
+
+- clarified the intended steady-state model: pairwise device-specific control
+  plane, sender-key data plane, and device-scoped sender runtime
+- documented two important boundary conditions in the plan:
+  - Hub-to-Hub transport is allowed; bypassing the local Hub is not
+  - join-time-forward only works if a sponsoring device also publishes a
+    readable current baseline for the joiner
+- updated top-level docs so the Hub gateway rule no longer reads as "never
+  direct device-to-device" when the transport is actually Hub-to-Hub
+- cleaned up the GitHub roadmap:
+  - closed `#44` as superseded
+  - commented on `#59`, `#43`, and `#4` to align them with the updated model
+  - opened `#69` for encrypted team bootstrap of an already-linked device
+
+Validation completed:
+
+- pressure-tested the roadmap against public Signal material plus related E2EE
+  protocol lessons from Megolm, MLS, and Wire
+- checked the proposed runtime model against the repo's architectural rules,
+  especially Hub-as-gateway and Manager-owned team DB writes
+- reduced the issue graph to a cleaner non-overlapping set of future branches:
+  `#59`, `#69`, `#43`, and `#48`
+- resolved two planning timebombs before handoff:
+  - clarified that control-plane transport remains Hub-mediated
+  - made readable current-baseline publication an explicit bootstrap invariant
+
+Not done on this branch:
+
+- implementation of sender-device runtime identity
+- implementation of encrypted team bootstrap for newly linked devices
+- implementation of periodic or membership-change sender-key rotation
+- implementation of device-aware peer routing / watch behavior
