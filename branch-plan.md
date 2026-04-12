@@ -94,16 +94,21 @@ Why this is the cleanest first choice:
 - it is compact enough for wire payloads and SQLite keys
 - it avoids embedding a 32-byte public key everywhere just to get a stable name
 
-Important implication:
+Important requirement:
 
-- this branch is intentionally treating sender runtime identity as a
-  **team-device-key identity**, not as an eternal physical-device identity
-- if future work adds team-device-key rotation, a rotated key will therefore
-  appear as a new sender identity unless a later branch explicitly designs a
-  continuity mechanism
+- this branch is using the current team-device key ID as the best
+  **peer-visible runtime handle we have today**, not as a claim that the key is
+  eternal or unrotatable
+- the implementation should centralize derivation of that handle behind one
+  helper or narrow seam instead of scattering ad hoc assumptions through the
+  runtime
+- future branches must remain free to decide the continuity story for rotated
+  team-device keys:
+  - rotation may mint a new runtime sender handle, or
+  - rotation may preserve continuity through additional trust/runtime metadata
 
-That tradeoff is acceptable for this first slice and is better than implicitly
-making the choice by accident.
+This first slice should remove the bad member-scoped assumption without
+foreclosing either later rotation design.
 
 ### 3. Rename cleanly; do not preserve member-scoped field names
 
@@ -301,6 +306,9 @@ The branch should aim to prove, at minimum:
    team-device identity rather than member ID
 4. a recipient device can decrypt messages from two distinct sender-device IDs
    in one team without state collision
+5. the implementation does not encode "team-device keys never rotate" as a
+   hidden runtime assumption; key-handle derivation is centralized enough that a
+   later rotation branch has a clear seam to extend
 
 ## Risks To Avoid
 
@@ -308,6 +316,8 @@ The branch should aim to prove, at minimum:
 - overloading the sender-key signing public key as the sender device identity
 - solving linked-device bootstrap implicitly in this branch instead of in `#69`
 - leaving member-scoped names in place after changing the actual semantics
+- baking "this key ID is eternal" assumptions into field names, helper behavior,
+  or comments
 
 ## Open Questions
 
