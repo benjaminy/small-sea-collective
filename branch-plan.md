@@ -359,4 +359,44 @@ test fixtures with hardcoded JSON will need updating alongside the rename.
 
 ## Outcome
 
-To be filled in at wrap-up.
+Landed in commit `129e456`.
+
+### What changed
+
+- `cuttlefish.group`: renamed `sender_participant_id` → `sender_device_key_id`
+  in `SenderKeyRecord`, `SenderKeyDistributionMessage`, `GroupMessage`, and all
+  related functions and docstrings.
+- `wrasse_trust.keys`: promoted `_key_id_from_public` to the public
+  `key_id_from_public`; updated the one internal caller.
+- `small_sea_note_to_self.sender_keys` + `device_local_schema.sql`: column
+  renamed in both tables; serialization JSON keys updated; schema version bumped
+  to 4 with a migration path.
+- `small_sea_manager.sender_keys`: same rename throughout.
+- `small_sea_manager.provisioning`: `_initialize_team_sender_key_state` now
+  takes a `sender_device_key_id` instead of `member_id`; `create_team` and
+  `accept_invitation` derive it via `key_id_from_public`; user DB schema version
+  bumped to 55 with a column-rename migration.
+- `small_sea_hub.crypto`: serialization and lookup paths updated.
+- New micro test `test_group_crypto.py::test_runtime_keeps_two_sender_devices_from_one_member_distinct`
+  exercises the full runtime lookup layer and confirms two linked-device sender
+  streams coexist without collision.
+
+### Open questions resolved
+
+- **`team_sender_key` PK width**: left as `PRIMARY KEY (team_id)` — #69 can
+  widen it if a device needs to hold multiple local sender records.
+- **Duplicate `sender_keys.py`**: both copies updated; deduplication deferred.
+- **`_sender_device_key_id_from_public_key` wrapper**: surfaced during review,
+  removed before landing — callers use `key_id_from_public` directly.
+- **Migration placement**: `< 55` rename correctly landed in `_migrate_user_db`,
+  not `_migrate_team_db`.
+
+### Validation checklist
+
+- No live sender-key runtime path keys sender state by member UUID. ✓
+- Runtime identifier is explicitly the team-device public key ID. ✓
+- Two sender streams from two linked devices of the same member coexist without
+  collision (proven by new micro test). ✓
+- First-device `create_team` and full invitation flow still pass. ✓
+- No fake solutions smuggled in for #69, #43, or peer routing. ✓
+- Key-ID derivation is centralized behind `key_id_from_public`. ✓
