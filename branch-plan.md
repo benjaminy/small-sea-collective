@@ -109,13 +109,18 @@ Rationale: the largest class of vulnerability in the 2023 Matrix audit was
 membership changes authenticated by the server rather than cryptographically.
 Our cloud storage is equally untrustworthy.
 
-### P4. Manager serializes control-plane state changes
+### P4. Manager serializes control-plane decisions; distribution is device-to-device
 
 The Manager's role as the single writer to team DBs is load-bearing for crypto
-ordering, not just a DB-access pattern. Sender key rotations and membership
-changes go through the Manager, which provides a natural serialization point.
-This avoids MLS's hardest open problem (concurrent commit ordering in
-decentralized deployments).
+ordering, not just a DB-access pattern. The Manager owns the *decisions* —
+rotate, admit, remove — and the team DB writes that record them. This provides a
+natural serialization point that avoids MLS's hardest open problem (concurrent
+commit ordering in decentralized deployments).
+
+The actual pairwise SenderKeyDistributionMessages travel device-to-device over
+encrypted ratchet channels, not through the Manager. The Manager triggers the
+rotation; each device then distributes its new sender key directly to each peer
+device.
 
 ### P5. Rejoin after extended absence is fresh distribution, not replay
 
@@ -201,10 +206,11 @@ After this planning branch:
 
 ### 1. Sender identity shape
 
-- Is the steady-state sender-key namespace keyed by device, by member, or by
-  some hybrid?
-- If device-scoped, what concrete identifier should the Hub and Manager use in
-  stored ciphertext metadata and local lookup tables?
+P1 commits to device-scoped. Remaining question:
+
+- What concrete device identifier should the Hub and Manager use in stored
+  ciphertext metadata and local lookup tables? (Per-team device UUID from
+  wrasse-trust? Something else?)
 
 ### 2. Local storage boundary
 
@@ -221,8 +227,9 @@ After this planning branch:
 
 ### 4. Bootstrap and history
 
-Position P2 says: new devices decrypt from join-time forward only. Questions
-that remain:
+P2 commits to join-time-forward only. P5 commits to fresh-distribution for
+rejoin. These are now design constraints, not open questions. Remaining
+questions (owned by #69):
 
 - What is the concrete bootstrap sequence? Proposed: the existing device sends
   fresh SenderKeyDistributionMessages over pairwise channels for each active
@@ -231,10 +238,9 @@ that remain:
 - How does the new device establish pairwise channels with every other device
   async? Pre-published key bundles (analogous to MLS KeyPackages) in cloud
   storage are the likely mechanism. Note that `cuttlefish.prekeys` already has
-  the right shape. (Designing and implementing this is a follow-on issue, not
-  this branch.)
-- What about the rejoining-after-absence case (P5)? Is it identical to new
-  device bootstrap, or does it differ?
+  the right shape.
+- Is the rejoining-after-absence case (P5) identical to first-time team
+  bootstrap, or does it differ in practice?
 
 ### 5. Scalability
 
@@ -260,20 +266,27 @@ that remain:
 - Or should this branch define a narrower local crypto-session interface even if
   the first implementation still uses SQLite-backed helpers underneath?
 
-## Cut Line Between Issues
+## Issue Topology After Tracker Cleanup
 
-Provisional split:
+`#44` is now closed as superseded (`#61` handled the original storage split).
+The remaining work is distributed across four open issues:
 
-- `#44` should settle where sender-key runtime lives, what parts are
-  device-local, and whether the steady-state sender identity is device-scoped or
-  member-scoped
-- `#59` should settle the operational consequences once multiple linked devices
-  are fully live: peer routing, notification or watch behavior, sibling-device
-  download policy, and any schema or API changes needed to name device endpoints
-  cleanly
+- **#59** — steady-state runtime identity and peer routing: sender-device
+  identity semantics, Hub routing/notification/watch behavior for sibling
+  devices
+- **#69** — encrypted team bootstrap for a newly linked device: how a device
+  that already belongs to an identity becomes an honest recipient for an
+  already-encrypted team (owns the P2/P5 implementation)
+- **#43** — encrypted sender-key rotation and redistribution: moving beyond
+  invitation-token bootstrap to real control-plane rekey (owns the Q6 rotation
+  policy implementation)
+- **#48** — steady-state NoteToSelf refresh and team discovery across devices:
+  not encrypted-team-runtime per se, but the Manager-level plumbing that lets a
+  second device learn about teams created elsewhere
 
-If, during planning, those questions prove inseparable in practice, the branch
-should say so explicitly rather than forcing an artificial split.
+These four issues are intentionally non-overlapping. If future work reveals that
+two of them are inseparable in practice, the branch doing the work should say so
+explicitly rather than silently merging scopes.
 
 ## Planned Outputs
 
@@ -288,24 +301,20 @@ should say so explicitly rather than forcing an artificial split.
 5. leave behind a concrete multi-branch roadmap, including the micro tests that
    should prove each implementation slice
 
-## Planned Tracker Actions
+## Tracker Actions Taken
 
-Tracker actions now taken in this branch:
+All completed in this branch:
 
-1. update `#59` with the clarified mental model:
-   - pairwise control plane
-   - sender-key data plane
-   - likely device-scoped sender identity
-2. close `#44` as superseded:
-   - `#61` already handled the original shared-vs-local storage milestone
-   - the remaining open problem is the broader multi-device runtime model
-3. open `#69` for the still-missing "linked device joins an existing encrypted
-   team honestly" problem, since that is not the same as:
-   - identity bootstrap (`#58`, now closed)
-   - NoteToSelf refresh (`#48`)
-   - general runtime identity / peer routing (`#59`)
-4. leave `#43` focused on encrypted rotation / redistribution rather than
-   overloading it with storage or peer-routing questions
+1. ~~update `#59`~~ — commented with clarified mental model (pairwise control
+   plane, sender-key data plane, device-scoped sender identity)
+2. ~~close `#44`~~ — superseded; `#61` handled storage split, remaining work
+   belongs to #59/#69/#43
+3. ~~open `#69`~~ — encrypted team bootstrap for newly linked devices, distinct
+   from identity bootstrap (#58), NoteToSelf refresh (#48), and runtime
+   identity (#59)
+4. ~~comment on `#4`~~ — noted that the old synced-schema sketch is superseded by
+   device-local-only direction
+5. ~~comment on `#43`~~ — scoped to rotation/redistribution only
 
 ## Likely Future Branch Sequence
 
@@ -315,25 +324,27 @@ Tracker actions now taken in this branch:
 - align issue scopes with current repo reality
 - identify the next smallest honest implementation slice
 
-### 2. Sender-device runtime identity
+### 2. Sender-device runtime identity (#59, first slice)
 
 - choose and implement the concrete sender-device identifier model
 - update local sender / receiver runtime lookups
 - add micro tests for multiple linked devices encrypting independently
 
-### 3. Encrypted team access for a newly linked device
+### 3. Encrypted team access for a newly linked device (#69)
 
-- define what historical encrypted team data a newly linked device can read
-- define what sender-key snapshot or replayable-key export is required
-- add micro tests for an existing team with pre-existing encrypted artifacts
+- implement P2 (join-time-forward) and P5 (rejoin = fresh distribution)
+- design the async pairwise channel setup (pre-published key bundles)
+- add micro tests for a new linked device decrypting future team bundles
+- add micro tests proving the historical-access boundary is enforced
 
-### 4. Encrypted sender-key rotation and redistribution
+### 4. Encrypted sender-key rotation and redistribution (#43)
 
 - move beyond invitation-token bootstrap
 - implement control-plane redistribution over the intended encrypted path
+- implement the rotation trigger policy settled in Q6
 - add micro tests for routine rotation and membership-change rekey
 
-### 5. Device-aware peer routing and watches
+### 5. Device-aware peer routing and watches (#59, second slice)
 
 - distinguish sibling devices as runtime endpoints where needed
 - settle Hub routing / notification / watch semantics
@@ -378,23 +389,27 @@ repo if all of the following are true:
   - rotating a sender key
   - admitting a new teammate
 
-## Follow-On Issues To File
+## Notes For Existing Issues
 
-Issues to create after this planning branch stabilizes. These are explicitly
-out of scope for this branch but surfaced by the design work.
+Design details surfaced here that should be folded into the relevant existing
+issues when those branches start, rather than filed as separate issues:
 
-- **Pre-published key bundles for async session establishment**: design and
-  implement MLS-KeyPackage-style prekey publishing in cloud storage so pairwise
-  channels can be established without both devices being online. Builds on
-  `cuttlefish.prekeys`.
-- **Sender key rotation policy**: implement the rotation trigger policy settled
-  in this plan (membership change + periodic). Decide concrete thresholds.
-- **Historical key-sharing mechanism** (if ever needed): a carefully
-  authenticated protocol for sharing old sender keys with new devices. Must
-  learn from Matrix's CVE-2021-40823/40824. Explicitly deferred; P2 says
-  join-time-forward for now.
-- **Update #4's schema proposal**: the Cuttlefish integration issue (#4) has
-  stale schema sketches that put sender keys in synced stores. Update to match
-  device-local-only direction.
-- **Device rejoin protocol**: implement the rejoin-after-absence flow (P5).
-  May overlap with the new-device bootstrap issue (#58 follow-on).
+- **#69** should own the pre-published key bundle mechanism for async pairwise
+  channel setup (MLS-KeyPackage-style, building on `cuttlefish.prekeys`). It
+  should also own the rejoin-after-absence flow (P5), since the mechanism is
+  likely identical to first-time team bootstrap.
+- **#43** should own the rotation trigger policy (Q6: membership change +
+  periodic for PCS). Concrete thresholds belong there.
+- **#4** already has a comment noting the stale synced-schema sketch. When #4
+  is next touched, the schema section should be rewritten to match device-local-
+  only direction.
+
+## Deferred Design Questions
+
+Not owned by any current issue. File new issues only if/when these become
+blocking:
+
+- **Historical key-sharing mechanism**: a carefully authenticated protocol for
+  sharing old sender keys with new devices, if join-time-forward (P2) proves
+  too restrictive in practice. Must learn from Matrix's CVE-2021-40823/40824.
+  Explicitly deferred.
