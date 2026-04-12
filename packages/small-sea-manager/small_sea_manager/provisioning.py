@@ -909,6 +909,9 @@ def _migrate_user_db(conn, from_version):
                 "FOREIGN KEY (team_id) REFERENCES team(id))"
             )
         )
+    if from_version < 55:
+        _rename_sender_key_column_if_present(conn, "team_sender_key")
+        _rename_sender_key_column_if_present(conn, "peer_sender_key")
 
 
 def _migrate_team_db(conn, from_version):
@@ -935,11 +938,6 @@ def _migrate_team_db(conn, from_version):
                 "FOREIGN KEY (issuer_member_id) REFERENCES member(id) ON DELETE CASCADE)"
             )
         )
-    if from_version < 55:
-        _rename_sender_key_column_if_present(conn, "team_sender_key")
-        _rename_sender_key_column_if_present(conn, "peer_sender_key")
-
-
 def _rename_sender_key_column_if_present(conn, table_name: str) -> None:
     columns = {
         row[1]
@@ -1052,11 +1050,6 @@ def _initialize_team_sender_key_state(user_db_path, team_id, sender_device_key_i
         receiver_record_from_distribution(distribution),
     )
     return distribution
-
-
-def _sender_device_key_id_from_public_key(public_key: bytes) -> bytes:
-    return key_id_from_public(public_key)
-
 
 def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes) -> None:
     conn.execute(
@@ -1388,7 +1381,7 @@ def create_team(root_dir, participant_hex, team_name):
     _initialize_team_sender_key_state(
         device_local_db_path(root_dir, participant_hex),
         team_id,
-        _sender_device_key_id_from_public_key(team_keys["device_key"].public_key),
+        key_id_from_public(team_keys["device_key"].public_key),
     )
 
     # --- Create team directory and its core.db ---
@@ -1648,7 +1641,7 @@ def accept_invitation(
     acceptor_sender_key = _initialize_team_sender_key_state(
         device_local_db_path(root_dir, acceptor_participant_hex),
         team_id,
-        _sender_device_key_id_from_public_key(team_keys["device_key"].public_key),
+        key_id_from_public(team_keys["device_key"].public_key),
     )
 
     # --- Git commit the DB changes ---
