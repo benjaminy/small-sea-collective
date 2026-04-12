@@ -199,7 +199,7 @@ def test_x3dh_into_ratchet_into_sender_key_distribution():
     import json
     dist_payload = json.dumps({
         "group_id": alice_dist.group_id.hex(),
-        "sender_participant_id": alice_dist.sender_participant_id.hex(),
+        "sender_device_key_id": alice_dist.sender_device_key_id.hex(),
         "sender_chain_id": alice_dist.sender_chain_id.hex(),
         "iteration": alice_dist.iteration,
         "chain_key": alice_dist.chain_key.hex(),
@@ -217,7 +217,7 @@ def test_x3dh_into_ratchet_into_sender_key_distribution():
     from cuttlefish.group import SenderKeyDistributionMessage
     received_dist = SenderKeyDistributionMessage(
         group_id=bytes.fromhex(dist_data["group_id"]),
-        sender_participant_id=bytes.fromhex(dist_data["sender_participant_id"]),
+        sender_device_key_id=bytes.fromhex(dist_data["sender_device_key_id"]),
         sender_chain_id=bytes.fromhex(dist_data["sender_chain_id"]),
         iteration=dist_data["iteration"],
         chain_key=bytes.fromhex(dist_data["chain_key"]),

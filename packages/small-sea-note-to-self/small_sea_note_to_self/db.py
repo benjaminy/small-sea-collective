@@ -5,7 +5,7 @@ from pathlib import Path
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
 SHARED_SCHEMA_VERSION = 56
-LOCAL_SCHEMA_VERSION = 3
+LOCAL_SCHEMA_VERSION = 4
 
 
 def note_to_self_sync_db_path(root_dir: str | Path, participant_hex: str) -> Path:
@@ -56,7 +56,10 @@ def initialize_device_local_db(local_db_path: str | Path) -> None:
         if current_version > LOCAL_SCHEMA_VERSION:
             raise NotImplementedError("TODO: LOCAL NOTE_TO_SELF DB FROM THE FUTURE!")
         if current_version != 0:
-            raise NotImplementedError("TODO: local NoteToSelf DB migrations")
+            _migrate_device_local_db(conn, current_version)
+            conn.execute(f"PRAGMA user_version = {LOCAL_SCHEMA_VERSION}")
+            conn.commit()
+            return
 
         schema = (_sql_dir() / "device_local_schema.sql").read_text()
         conn.executescript(schema)
@@ -64,6 +67,25 @@ def initialize_device_local_db(local_db_path: str | Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate_device_local_db(conn: sqlite3.Connection, current_version: int) -> None:
+    if current_version < 4:
+        _rename_sender_key_column_if_present(conn, "team_sender_key")
+        _rename_sender_key_column_if_present(conn, "peer_sender_key")
+
+
+def _rename_sender_key_column_if_present(conn: sqlite3.Connection, table_name: str) -> None:
+    columns = {
+        row[1]
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if "sender_participant_id" not in columns or "sender_device_key_id" in columns:
+        return
+    conn.execute(
+        f"ALTER TABLE {table_name} "
+        "RENAME COLUMN sender_participant_id TO sender_device_key_id"
+    )
 
 
 def initialize_bootstrap_local_state(root_dir: str | Path, participant_hex: str) -> Path:

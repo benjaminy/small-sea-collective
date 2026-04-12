@@ -98,7 +98,7 @@ class ParticipantKeyCollection:
         return None
 
 
-def _key_id_from_public(public_key: bytes) -> bytes:
+def key_id_from_public(public_key: bytes) -> bytes:
     """Derive a 16-byte key_id from a public key."""
     return hashlib.sha256(public_key).digest()[:16]
 
@@ -123,7 +123,7 @@ def generate_key_pair(
         format=serialization.PublicFormat.Raw,
     )
 
-    key_id = _key_id_from_public(public_bytes)
+    key_id = key_id_from_public(public_bytes)
     now = datetime.now(timezone.utc).isoformat()
 
     pk = ParticipantKey(

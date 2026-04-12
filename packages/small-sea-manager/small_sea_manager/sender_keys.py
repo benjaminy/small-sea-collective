@@ -13,7 +13,7 @@ from cuttlefish.group import (
 def distribution_message_from_record(record: SenderKeyRecord) -> SenderKeyDistributionMessage:
     return SenderKeyDistributionMessage(
         group_id=record.group_id,
-        sender_participant_id=record.sender_participant_id,
+        sender_device_key_id=record.sender_device_key_id,
         sender_chain_id=record.chain_id,
         iteration=record.iteration,
         chain_key=record.chain_key,
@@ -24,7 +24,7 @@ def distribution_message_from_record(record: SenderKeyRecord) -> SenderKeyDistri
 def serialize_distribution_message(msg: SenderKeyDistributionMessage) -> dict:
     return {
         "group_id": msg.group_id.hex(),
-        "sender_participant_id": msg.sender_participant_id.hex(),
+        "sender_device_key_id": msg.sender_device_key_id.hex(),
         "sender_chain_id": msg.sender_chain_id.hex(),
         "iteration": msg.iteration,
         "chain_key": msg.chain_key.hex(),
@@ -35,7 +35,7 @@ def serialize_distribution_message(msg: SenderKeyDistributionMessage) -> dict:
 def deserialize_distribution_message(data: dict) -> SenderKeyDistributionMessage:
     return SenderKeyDistributionMessage(
         group_id=bytes.fromhex(data["group_id"]),
-        sender_participant_id=bytes.fromhex(data["sender_participant_id"]),
+        sender_device_key_id=bytes.fromhex(data["sender_device_key_id"]),
         sender_chain_id=bytes.fromhex(data["sender_chain_id"]),
         iteration=int(data["iteration"]),
         chain_key=bytes.fromhex(data["chain_key"]),
@@ -66,7 +66,7 @@ def _record_from_row(row) -> SenderKeyRecord | None:
         return None
     return SenderKeyRecord(
         group_id=row["group_id"],
-        sender_participant_id=row["sender_participant_id"],
+        sender_device_key_id=row["sender_device_key_id"],
         chain_id=row["chain_id"],
         chain_key=row["chain_key"],
         iteration=row["iteration"],
@@ -89,7 +89,7 @@ def _save_record(
             INSERT OR REPLACE INTO {table_name} (
                 team_id,
                 group_id,
-                sender_participant_id,
+                sender_device_key_id,
                 chain_id,
                 chain_key,
                 iteration,
@@ -101,7 +101,7 @@ def _save_record(
             (
                 team_id,
                 record.group_id,
-                record.sender_participant_id,
+                record.sender_device_key_id,
                 record.chain_id,
                 record.chain_key,
                 record.iteration,
@@ -129,7 +129,7 @@ def load_team_sender_key(db_path: str | Path, team_id: bytes) -> SenderKeyRecord
     try:
         row = conn.execute(
             """
-            SELECT group_id, sender_participant_id, chain_id, chain_key, iteration,
+            SELECT group_id, sender_device_key_id, chain_id, chain_key, iteration,
                    signing_public_key, signing_private_key, skipped_message_keys
             FROM team_sender_key
             WHERE team_id = ?
@@ -142,19 +142,19 @@ def load_team_sender_key(db_path: str | Path, team_id: bytes) -> SenderKeyRecord
 
 
 def load_peer_sender_key(
-    db_path: str | Path, team_id: bytes, sender_participant_id: bytes
+    db_path: str | Path, team_id: bytes, sender_device_key_id: bytes
 ) -> SenderKeyRecord | None:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     try:
         row = conn.execute(
             """
-            SELECT group_id, sender_participant_id, chain_id, chain_key, iteration,
+            SELECT group_id, sender_device_key_id, chain_id, chain_key, iteration,
                    signing_public_key, signing_private_key, skipped_message_keys
             FROM peer_sender_key
-            WHERE team_id = ? AND sender_participant_id = ?
+            WHERE team_id = ? AND sender_device_key_id = ?
             """,
-            (team_id, sender_participant_id),
+            (team_id, sender_device_key_id),
         ).fetchone()
     finally:
         conn.close()
