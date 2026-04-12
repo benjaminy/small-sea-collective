@@ -14,8 +14,14 @@ from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager
 from small_sea_manager.provisioning import (
     complete_invitation_acceptance,
-    create_invitation, create_new_participant, create_team, list_invitations)
+    create_invitation,
+    create_new_participant,
+    create_team,
+    get_current_team_device_key,
+    list_invitations,
+)
 from wrasse_trust.identity import verify_membership_cert
+from wrasse_trust.keys import key_id_from_public
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -123,7 +129,12 @@ def test_create_invitation_includes_bucket(playground_dir):
     assert len(token["inviter_bucket"]) == 3 + 16  # "ss-" + 16 hex chars
     assert len(token["team_id"]) == 32
     assert token["inviter_sender_key"]["group_id"] == token["team_id"]
-    assert token["inviter_sender_key"]["sender_participant_id"] == token["inviter_member_id"]
+    _alice_team_private_key, alice_team_public_key = get_current_team_device_key(
+        root, alice_hex, "ProjectX"
+    )
+    assert token["inviter_sender_key"]["sender_device_key_id"] == key_id_from_public(
+        alice_team_public_key
+    ).hex()
 
 
 def test_full_invitation_flow(playground_dir, minio_server_gen):
@@ -197,7 +208,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert acceptance["team_id"] == token_data["team_id"]
     assert len(acceptance["acceptor_device_public_key"]) == 64
     assert acceptance["acceptor_sender_key"]["group_id"] == token_data["team_id"]
-    assert acceptance["acceptor_sender_key"]["sender_participant_id"] == bob_member_id_hex
+    assert acceptance["acceptor_sender_key"]["sender_device_key_id"] == key_id_from_public(
+        bytes.fromhex(acceptance["acceptor_device_public_key"])
+    ).hex()
 
     # -- Alice: complete the acceptance --
     complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
@@ -304,30 +317,34 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert len(teams) == 1
     assert teams[0]["id"] == bytes.fromhex(token_data["team_id"])
     assert teams[0]["self_in_team"] == bytes.fromhex(bob_member_id_hex)
+    alice_sender_device_key_id = key_id_from_public(alice_device_public_key)
+    bob_sender_device_key_id = key_id_from_public(
+        bytes.fromhex(acceptance["acceptor_device_public_key"])
+    )
 
     with pytest.raises(sqlite3.OperationalError):
         buconn.execute(
-            "SELECT sender_participant_id, signing_private_key "
-            "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
-            (bytes.fromhex(token_data["team_id"]), bytes.fromhex(alice_member_id_hex)),
+            "SELECT sender_device_key_id, signing_private_key "
+            "FROM peer_sender_key WHERE team_id = ? AND sender_device_key_id = ?",
+            (bytes.fromhex(token_data["team_id"]), alice_sender_device_key_id),
         ).fetchone()
 
     alice_peer_sender_key = bulconn.execute(
-        "SELECT sender_participant_id, signing_private_key "
-        "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
-        (bytes.fromhex(token_data["team_id"]), bytes.fromhex(alice_member_id_hex)),
+        "SELECT sender_device_key_id, signing_private_key "
+        "FROM peer_sender_key WHERE team_id = ? AND sender_device_key_id = ?",
+        (bytes.fromhex(token_data["team_id"]), alice_sender_device_key_id),
     ).fetchone()
     assert alice_peer_sender_key is not None
-    assert alice_peer_sender_key[0] == bytes.fromhex(alice_member_id_hex)
+    assert alice_peer_sender_key[0] == alice_sender_device_key_id
     assert alice_peer_sender_key[1] is None
 
     bob_team_sender_key = bulconn.execute(
-        "SELECT sender_participant_id, signing_private_key "
+        "SELECT sender_device_key_id, signing_private_key "
         "FROM team_sender_key WHERE team_id = ?",
         (bytes.fromhex(token_data["team_id"]),),
     ).fetchone()
     assert bob_team_sender_key is not None
-    assert bob_team_sender_key[0] == bytes.fromhex(bob_member_id_hex)
+    assert bob_team_sender_key[0] == bob_sender_device_key_id
     assert bob_team_sender_key[1] is not None
 
     other_berths = buconn.execute(
@@ -345,17 +362,17 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     aulconn = sqlite3.connect(str(alice_local_db))
     with pytest.raises(sqlite3.OperationalError):
         auconn.execute(
-            "SELECT sender_participant_id, signing_private_key "
-            "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
-            (bytes.fromhex(token_data["team_id"]), bytes.fromhex(bob_member_id_hex)),
+            "SELECT sender_device_key_id, signing_private_key "
+            "FROM peer_sender_key WHERE team_id = ? AND sender_device_key_id = ?",
+            (bytes.fromhex(token_data["team_id"]), bob_sender_device_key_id),
         ).fetchone()
     bob_peer_sender_key = aulconn.execute(
-        "SELECT sender_participant_id, signing_private_key "
-        "FROM peer_sender_key WHERE team_id = ? AND sender_participant_id = ?",
-        (bytes.fromhex(token_data["team_id"]), bytes.fromhex(bob_member_id_hex)),
+        "SELECT sender_device_key_id, signing_private_key "
+        "FROM peer_sender_key WHERE team_id = ? AND sender_device_key_id = ?",
+        (bytes.fromhex(token_data["team_id"]), bob_sender_device_key_id),
     ).fetchone()
     assert bob_peer_sender_key is not None
-    assert bob_peer_sender_key[0] == bytes.fromhex(bob_member_id_hex)
+    assert bob_peer_sender_key[0] == bob_sender_device_key_id
     assert bob_peer_sender_key[1] is None
     auconn.close()
     aulconn.close()

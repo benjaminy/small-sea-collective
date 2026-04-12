@@ -15,7 +15,7 @@ from small_sea_note_to_self.sender_keys import (
 def serialize_group_message(message: GroupMessage) -> bytes:
     return json.dumps(
         {
-            "sender_participant_id": message.sender_participant_id.hex(),
+            "sender_device_key_id": message.sender_device_key_id.hex(),
             "sender_chain_id": message.sender_chain_id.hex(),
             "iteration": message.iteration,
             "iv": message.iv.hex(),
@@ -29,7 +29,7 @@ def serialize_group_message(message: GroupMessage) -> bytes:
 def deserialize_group_message(payload: bytes) -> GroupMessage:
     data = json.loads(payload.decode("utf-8"))
     return GroupMessage(
-        sender_participant_id=bytes.fromhex(data["sender_participant_id"]),
+        sender_device_key_id=bytes.fromhex(data["sender_device_key_id"]),
         sender_chain_id=bytes.fromhex(data["sender_chain_id"]),
         iteration=int(data["iteration"]),
         iv=bytes.fromhex(data["iv"]),
@@ -86,11 +86,11 @@ def decrypt_group_payload(ss_session, payload: bytes) -> bytes:
     )
     message = deserialize_group_message(payload)
     sender_key = load_peer_sender_key(
-        user_db_path, ss_session.team_id, message.sender_participant_id
+        user_db_path, ss_session.team_id, message.sender_device_key_id
     )
     if sender_key is None:
         raise ValueError(
-            f"Missing sender key for participant {message.sender_participant_id.hex()}"
+            f"Missing sender key for device key {message.sender_device_key_id.hex()}"
         )
     replay_message_key = _message_key_for(message, sender_key)
     next_sender_key, plaintext = group_decrypt(message, sender_key)
