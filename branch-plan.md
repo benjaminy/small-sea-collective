@@ -57,8 +57,10 @@ At the end of this branch:
   a session, so it's usable as a readiness probe without auth setup.
 - `packages/small-sea-hub/tests/conftest.py:91-124` already contains a
   bounded startup poll for the test ntfy server using `httpx.get(...)` in a
-  retry loop. This branch should stay stylistically close to that existing
-  pattern unless there is a clear reason not to.
+  retry loop. This branch should reuse that general pattern (`httpx` +
+  bounded polling), but it should intentionally use a much tighter cadence:
+  the ntfy fixture tolerates slower Docker cold starts, while this Hub probe
+  is local-process startup and should optimize fast-path latency.
 - Hub is launched with `fastapi dev`, which prints its own startup banner on
   stdout/stderr but the fixture does not currently capture either stream, so
   parsing log lines is not the cheapest path.
@@ -81,14 +83,17 @@ iteration:
 1. check `proc.poll()` — if the subprocess has exited, raise the same
    `RuntimeError(f"Small Sea Hub exited early (code {proc.returncode})")` as
    today, so the existing failure mode is preserved exactly
-2. try a short HTTP GET against `http://localhost:{port}/` with a small
-   per-attempt timeout
+2. try a short HTTP GET against `http://localhost:{port}/` with a concrete
+   per-attempt timeout of 250 ms
 3. if the request succeeds with any 2xx/3xx response, the server is ready —
    break out of the loop
 4. if the request returns an unexpected HTTP status (4xx/5xx), raise a clear
    `RuntimeError` immediately. The server is reachable, so this is not a
    readiness delay; it is an unexpected app-level failure worth surfacing
-   directly
+   directly. This relies on the assumption that once FastAPI is accepting
+   requests on the socket, route registration for `GET /` is effectively in
+   place; if that assumption proves false in practice, we can revisit the
+   status-handling rule
 5. on connection refused / connection reset / read timeout, sleep a short
    backoff (e.g. 25-50 ms) and retry
 6. if the overall deadline is hit, terminate the subprocess, wait with a
@@ -129,6 +134,9 @@ startup polling with `httpx` in `packages/small-sea-hub/tests/conftest.py`.
 - **Do not bury unexpected HTTP responses inside the retry loop.** Once the
   app is returning a real 4xx/5xx from `GET /`, fail with that status instead
   of pretending the server is still merely "not ready."
+- **Do not add subprocess stdout/stderr capture in this branch just to enrich
+  timeout errors.** That is a reasonable follow-up if CI flakes need more
+  diagnostics, but it adds process-I/O complexity beyond issue #17's core fix.
 
 ## Scope
 
@@ -149,6 +157,7 @@ startup polling with `httpx` in `packages/small-sea-hub/tests/conftest.py`.
 - fixture-level parallelization or caching of Hub instances
 - touching any other `time.sleep` in the codebase
 - cleaning up the separate fixed sleep in `tests/test_sync_roundtrip.py`
+- capturing Hub stderr/stdout and attaching log tails to timeout errors
 
 ## Validation
 
@@ -211,3 +220,6 @@ startup polling with `httpx` in `packages/small-sea-hub/tests/conftest.py`.
 - **The repo still has another fixed-sleep Hub launcher after this branch.**
   Mitigation: call it out explicitly as a follow-up rather than silently
   widening the branch.
+- **Timeout errors will still be somewhat low-context because this branch does
+  not capture subprocess stderr/stdout.** Mitigation: keep that as a
+  deliberate follow-up if startup flakes persist after the readiness fix.
