@@ -145,6 +145,14 @@ def test_linked_device_bootstrap_round_trip_same_member(playground_dir):
         ).fetchall()]
     assert cert_types == ["membership", "device_link"]
 
+    with sqlite3.connect(
+        root2 / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
+    ) as conn:
+        cert_types = [row[0] for row in conn.execute(
+            "SELECT cert_type FROM key_certificate ORDER BY issued_at"
+        ).fetchall()]
+    assert cert_types == ["membership", "device_link"]
+
     with sqlite3.connect(note_to_self_sync_db_path(root2, alice_hex)) as conn:
         with pytest.raises(sqlite3.OperationalError):
             conn.execute("SELECT COUNT(*) FROM linked_team_bootstrap_session").fetchone()

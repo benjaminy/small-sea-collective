@@ -1537,30 +1537,6 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
         peer_team_device_public_key=proposed_team_device_public_key,
     )
 
-    _store_linked_team_bootstrap_session(
-        root_dir,
-        participant_hex,
-        bootstrap_id=bootstrap_id,
-        team_id=team_id,
-        device_id=device_id,
-        team_device_public_key=proposed_team_device_public_key,
-        team_device_private_key=None,
-        x3dh_identity=sender_identity,
-        signed_prekey=SignedPrekey(
-            prekey_id=prekey_bundle.signed_prekey.prekey_id,
-            public_key=x3dh_result.signed_prekey_public,
-            signature=prekey_bundle.signed_prekey.signature,
-        ),
-        signed_prekey_private_key=b"",
-        one_time_prekey=(
-            prekey_bundle.one_time_prekeys[0]
-            if prekey_bundle.one_time_prekeys
-            else None
-        ),
-        one_time_prekey_private_key=None,
-        ratchet_state=ratchet_state,
-    )
-
     _authorizer_private_key, authorizer_public_key = get_current_team_device_key(
         root_dir,
         participant_hex,
@@ -1723,6 +1699,19 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         team_id,
         key_id_from_public(session_row["team_device_public_key"]),
     )
+
+    participant_dir = root_dir / "Participants" / participant_hex
+    team_sync_dir = participant_dir / team_name / "Sync"
+    team_db_path = team_sync_dir / "core.db"
+    engine = create_engine(f"sqlite:///{team_db_path}")
+    try:
+        with engine.begin() as conn:
+            _store_team_certificate(conn, cert, issuer_member_id=member_id)
+    finally:
+        engine.dispose()
+    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", "Received device link cert from bootstrap"])
+
     response_payload = {
         "bootstrap_id": bootstrap_id.hex(),
         "sender_distribution": serialize_distribution_message(sender_distribution),
