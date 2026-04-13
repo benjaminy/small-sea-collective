@@ -5,7 +5,7 @@ from pathlib import Path
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
 SHARED_SCHEMA_VERSION = 56
-LOCAL_SCHEMA_VERSION = 4
+LOCAL_SCHEMA_VERSION = 5
 
 
 def note_to_self_sync_db_path(root_dir: str | Path, participant_hex: str) -> Path:
@@ -73,6 +73,40 @@ def _migrate_device_local_db(conn: sqlite3.Connection, current_version: int) -> 
     if current_version < 4:
         _rename_sender_key_column_if_present(conn, "team_sender_key")
         _rename_sender_key_column_if_present(conn, "peer_sender_key")
+    if current_version < 5:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS linked_team_bootstrap_session (
+                bootstrap_id BLOB PRIMARY KEY,
+                team_id BLOB NOT NULL,
+                device_id BLOB NOT NULL,
+                team_device_public_key BLOB NOT NULL,
+                team_device_private_key BLOB,
+                x3dh_identity_dh_public_key BLOB NOT NULL,
+                x3dh_identity_dh_private_key BLOB NOT NULL,
+                x3dh_identity_signing_public_key BLOB NOT NULL,
+                x3dh_identity_signing_private_key BLOB NOT NULL,
+                signed_prekey_id BLOB NOT NULL,
+                signed_prekey_public_key BLOB NOT NULL,
+                signed_prekey_private_key BLOB NOT NULL,
+                one_time_prekey_id BLOB,
+                one_time_prekey_public_key BLOB,
+                one_time_prekey_private_key BLOB,
+                ratchet_state_json TEXT,
+                finalized_at TEXT,
+                response_payload_json TEXT,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS pending_linked_team_bootstrap (
+                bootstrap_id BLOB PRIMARY KEY,
+                team_id BLOB NOT NULL,
+                peer_device_id BLOB NOT NULL,
+                peer_team_device_public_key BLOB NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            """
+        )
 
 
 def _rename_sender_key_column_if_present(conn: sqlite3.Connection, table_name: str) -> None:

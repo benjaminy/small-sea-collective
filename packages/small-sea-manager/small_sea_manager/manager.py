@@ -242,6 +242,41 @@ class TeamManager:
             self.push_note_to_self()
         return result
 
+    def prepare_linked_device_team_join(self, team_name):
+        """Prepare the joining-device side of same-member encrypted team bootstrap."""
+        return provisioning.prepare_linked_device_team_join(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+        )
+
+    def create_linked_device_bootstrap(self, team_name, join_request_bundle):
+        """Authorize a linked-device encrypted team bootstrap."""
+        return provisioning.create_linked_device_bootstrap(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            join_request_bundle,
+        )
+
+    def finalize_linked_device_bootstrap(self, team_name, bootstrap_bundle):
+        """Finalize the joining-device side of encrypted team bootstrap."""
+        return provisioning.finalize_linked_device_bootstrap(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            bootstrap_bundle,
+        )
+
+    def complete_linked_device_bootstrap(self, team_name, sender_distribution_payload):
+        """Store the linked device's sender distribution on the authorizing device."""
+        return provisioning.complete_linked_device_bootstrap(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            sender_distribution_payload,
+        )
+
     def list_invitations(self, team_name):
         """List invitations for a team."""
         return provisioning.list_invitations(self.root_dir, self.participant_hex, team_name)
