@@ -410,6 +410,17 @@ class CodSync:
 
         [tmp_remote, _] = self.bundle_tmp()
 
+        head_result = self.gitCmd(["rev-parse", "--verify", "HEAD"], raise_on_error=False)
+        if head_result.returncode != 0:
+            # Fresh repos created with `git init -b main` have an unborn branch,
+            # so there is nothing for `git merge` to merge into yet. In that
+            # case, adopt the fetched branch as the initial local branch.
+            result = self.gitCmd(
+                ["checkout", "-B", branch, f"{tmp_remote}/{branch}"],
+                raise_on_error=False,
+            )
+            return result.returncode
+
         result = self.gitCmd(["merge", f"{tmp_remote}/{branch}"], raise_on_error=False)
         return result.returncode
 

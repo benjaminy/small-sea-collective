@@ -210,10 +210,8 @@ def test_push_and_pull_via_hub(sync_env):
         _git(["config", "user.name", "Bob"], repo_dir=bob_repo)
 
         bob_cod.fetch_from_remote(["main"])
-
-        # Bob's repo is empty — check out Alice's fetched branch directly
-        # rather than creating a dummy commit and hitting "unrelated histories".
-        _git(["checkout", "-b", "main", "peer-codsync-bundle-tmp/main"], repo_dir=bob_repo)
+        exit_code = bob_cod.merge_from_remote(["main"])
+        assert exit_code == 0, "Merge failed"
 
         # ---- Verify ----
         assert (bob_repo / "data.txt").exists()
