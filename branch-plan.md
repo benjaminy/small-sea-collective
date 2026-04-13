@@ -79,6 +79,12 @@ The device set that matters for redistribution comes from:
 - trusted `membership` / `device_link` cert resolution
 - locally available device-local sender-key runtime state
 
+The shared team model should also move toward keeping distinct member-level and
+device-level concepts distinct rather than forcing one table to represent both.
+At a minimum, this branch should settle an explicit device-aware shared model
+for runtime endpoints, whether by widening existing shared metadata or by
+introducing a separate device-oriented table.
+
 ### S2. Production transport stays Hub-mediated
 
 The branch should move beyond purely manual artifact exchange for normal runtime
@@ -168,6 +174,10 @@ Important details:
 - reconciliation should rerun on any later adopted team DB change that could
   make delivery possible, including `device_prekey_bundle` publication
 
+For implementation planning, that means the Hub watch path must treat adopted
+changes to `device_prekey_bundle` as a first-class wake-up signal for runtime
+reconciliation, not just member/peer list changes.
+
 ### 3. Trigger local rotation after adopted member removal
 
 For non-removing devices, this branch should add the runtime path that says:
@@ -204,6 +214,8 @@ Minimum expected coverage:
 - same-member sibling device is treated as a real runtime target, not skipped
 - non-removing device rotates after adopting a member removal
 - missing prekey bundles do not break the reconciliation round
+- later `device_prekey_bundle` publication wakes reconciliation and allows a
+  previously skipped target to receive redistribution
 - Hub/runtime watch logic can keep multiple linked devices for one member live
   without conflation
 - local-only test setup remains sufficient; no internet dependency required
@@ -233,6 +245,9 @@ Minimum expected coverage:
 - trusted-device enumeration for runtime decisions
 - glue from adopted team view to existing `rotate_team_sender_key(...)` and
   `redistribute_sender_key(...)`
+- small device-local delivery/reconciliation state that prevents resending the
+  same current sender key to the same target after every restart or unrelated
+  team DB change
 
 ### 3. Specs
 
@@ -263,6 +278,7 @@ true:
   - same-member linked-device fanout
   - adopted-removal-triggered rotation on a non-removing device
   - missing-prekey skip / retry behavior
+  - wake-up on later bundle publication for a previously skipped target
   - multiple linked devices for one member remaining distinct in runtime logic
 
 ## Open Questions
@@ -289,8 +305,9 @@ The branch should choose the smallest honest state model that still allows:
 - no dependence on synced mutable state
 
 This state should remain device-local. It should not be stored in the shared
-team DB. The exact table/location is still open and should not be prematurely
-folded into unrelated prekey-material tables without a clear reason.
+team DB. This branch should add a small delivery/reconciliation state seam,
+likely keyed by current sender stream and target device, while avoiding folding
+that bookkeeping into unrelated prekey-material tables without a clear reason.
 
 ### Q3. How do watch-triggered retries surface partial progress?
 
@@ -304,10 +321,12 @@ team DB changes that affect deliverability, including newly published
 ### Q4. Does device-aware runtime require shared peer-schema changes?
 
 The runtime/watch layer definitely needs to distinguish linked devices as
-separate runtime endpoints. What remains open is whether that requires:
+separate runtime endpoints. This branch should decide explicitly between:
 
-- only an in-memory / watch-model change in the Hub, or
-- a small supporting shared-schema change to peer metadata
+- keeping member-level `peer` metadata and adding a separate device-level shared
+  endpoint table/model, or
+- widening existing shared peer metadata so device endpoints are first-class
 
-This branch should answer that explicitly instead of drifting into an accidental
-schema change mid-implementation.
+Leaving the shared model fuzzy is no longer good enough, because multi-device
+runtime polling/routing depends on knowing whether distinct devices can have
+distinct shared endpoints.
