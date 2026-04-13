@@ -392,4 +392,50 @@ true:
 
 ## Outcome
 
-To be filled in at wrap-up.
+This branch landed the same-member encrypted team bootstrap slice for linked
+devices.
+
+Shipped:
+
+- device-local bootstrap storage in NoteToSelf Local for bootstrap sessions,
+  prekey private material, and pending-bootstrap breadcrumbs
+- Manager/provisioning seams for:
+  - `prepare_linked_device_team_join`
+  - `create_linked_device_bootstrap`
+  - `finalize_linked_device_bootstrap`
+  - `complete_linked_device_bootstrap`
+- a three-payload bootstrap flow where:
+  - Device B generates its Team X keypair and X3DH prekeys locally
+  - Device A verifies NoteToSelf + Team X signatures on the request
+  - Device A issues the `device_link` cert and returns Device A sender-key
+    distribution over X3DH + Double Ratchet
+  - Device B installs receiver state for Device A, persists its own Team X key,
+    creates its own sender stream, and returns a signed distribution payload
+  - Device A installs receiver state for Device B and clears the pending
+    breadcrumb
+- Device B persists the bootstrap-delivered `device_link` cert into its own
+  cloned team DB
+- finalize retry behavior was hardened so an interrupted finalize does not:
+  - fail on duplicate `device_link` cert insertion
+  - remint a second sender stream for Device B
+  - fail on a no-op git commit after the cert is already present
+
+Validated:
+
+- same-member round-trip bootstrap makes A->B and B->A future sender-key
+  traffic decryptable
+- pre-bootstrap sender-key history remains unreadable on the newly linked
+  device
+- invalid join-request signatures are rejected
+- `device_link` cert issuance happens during bootstrap
+- Device A breadcrumb lifecycle works
+- interrupted finalize retry is idempotent
+- bootstrap private material stays out of shared NoteToSelf state
+
+Intentionally left for later branches:
+
+- cross-member sender-key redistribution
+- async Hub-mediated prekey publication/retrieval
+- NoteToSelf sync/team discovery work (#48)
+- sender-key rotation/redistribution policy
+- bootstrap-session garbage collection beyond the current local state model
