@@ -88,21 +88,23 @@ exchange begins:
 
 - Device B has already completed identity join and holds its local NoteToSelf
   device private keys
-- Device A is the admitting or otherwise already-aware sibling device that has
-  Device B's `user_device` signer key locally; this branch does not rely on a
-  fresh cross-device NoteToSelf sync round
-- Device B's team-device public key has already been admitted to Team X trust
-  history via the existing `device_link` path
-- Device B can already obtain a readable current Team X baseline; the default
-  strategy is that the sponsoring device publishes a fresh CodSync full-snapshot
-  bundle or equivalent resealed current-state export
+- Device A has Device B's `user_device.signing_key` in the shared NoteToSelf
+  Sync DB — populated by identity bootstrap (#58); no fresh cross-device
+  NoteToSelf sync round is required
+- Device B can already obtain a readable current Team X baseline (CodSync
+  snapshot or equivalent); this branch does not own baseline delivery
 - manual out-of-band transfer of bootstrap payloads is acceptable for this slice
+
+Device B does **not** need a pre-existing team-device keypair for Team T —
+`prepare_linked_device_team_join` generates one as its first step. Device B does
+**not** need a pre-existing `device_link` cert — cert issuance via
+`issue_device_link_for_member` happens inside `create_linked_device_bootstrap`.
 
 This branch therefore does **not** own:
 
-- certifying Device B's team-device key
-- discovering Team X from NoteToSelf sync
-- optimizing current-baseline delivery beyond the fresh-snapshot default
+- identity bootstrap (getting Device B a `user_device` entry) — that is #58
+- NoteToSelf sync and team discovery — that is #48
+- current-baseline delivery optimization
 
 ## Scope Decisions Already Made
 
@@ -257,18 +259,24 @@ New Manager function. Device A calls this with Device B's join-request bundle.
 Steps:
 - deserialize the join request
 - verify the NoteToSelf signature against Device B's `user_device.signing_key`
+  (looked up from the shared NoteToSelf Sync DB)
 - verify the Team X team-device signature against the team-device public key
   named in the request
 - look up the named team-device public key in the trusted device keys for
   Device A's own `self_in_team` member; reject if not found
+- call `issue_device_link_for_member` to issue and commit Device B's
+  `device_link` cert to the Team T DB
 - initiate X3DH using Device B's prekey bundle → get shared secret
 - initialize a Double Ratchet sender session
 - encrypt Device A's `SenderKeyDistributionMessage` (from Device A's local sender
   record) inside a ratchet message
 - serialize and return the bootstrap bundle, signed by Device A's Team X
   team-device key
-- persist any bootstrap state needed to safely accept Device B's later sender
-  distribution for this `bootstrap_id`
+
+Device A stores no session state after this call. It accepts Device B's sender
+distribution (payload 3) by verifying the signature against Device B's now-
+trusted team-device key — no `bootstrap_id` correlation needed on Device A's
+side.
 
 ### 5. `finalize_linked_device_bootstrap`
 
@@ -316,7 +324,9 @@ Minimum expected coverage:
 
 - cross-member sender-key redistribution to a newly linked device (#43 / #59
   second slice)
-- issuing or syncing Device B's `device_link` trust material
+- syncing Device B's `device_link` cert to other team members' views (that
+  happens via normal CodSync team DB pull; this branch issues the cert and
+  commits it, delivery to peers is not owned here)
 - async Hub-mediated prekey bundle publication and retrieval
 - periodic sender-key rotation and redistribution (#43)
 - NoteToSelf cross-device sync and team discovery (#48)
@@ -355,16 +365,17 @@ covering the cases listed above.
 
 ## Open Questions
 
-### 1. Bootstrap-session cleanup details
+### 1. Bootstrap-session cleanup on Device B
 
-The branch no longer treats cleanup policy as a design blocker, but the code
-still needs to implement the default policy consistently:
+Device A holds no session state, so cleanup is Device B's concern only.
+Default policy to implement:
 
-- consumed one-time prekeys are deleted immediately after successful X3DH receive
-- finalized bootstrap-session and ratchet state are deleted once Device B has
-  finalized locally and Device A has accepted Device B's sender distribution
-- abandoned bootstrap sessions older than one day are pruned opportunistically
-  when bootstrap helpers run
+- consumed one-time prekey private keys are deleted immediately on successful
+  X3DH receive
+- bootstrap-session record and ratchet state are deleted once
+  `finalize_linked_device_bootstrap` completes successfully
+- abandoned sessions (no finalization received) can be pruned opportunistically
+  on next bootstrap-function call or startup; a simple age threshold is fine
 
 ## Validation
 
