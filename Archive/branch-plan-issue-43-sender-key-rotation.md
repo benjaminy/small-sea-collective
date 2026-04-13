@@ -2,11 +2,40 @@
 
 **Branch:** `issue-43-sender-key-rotation`  
 **Base:** `main`  
+**Status:** Implemented and ready to archive  
 **Primary issue:** #43 "Add encrypted sender-key rotation and redistribution flow"  
 **Related issues:** #59, #69, #48, #73  
 **Related archive plans:** `Archive/branch-plan-issue-44-sender-key-runtime.md`,
 `Archive/branch-plan-issue-59-sender-device-runtime-identity.md`,
 `Archive/branch-plan-issue-69-linked-device-encrypted-team-bootstrap.md`
+
+## Outcome
+
+This branch implemented the core crypto/runtime slice described here:
+
+- `remove_member(...)` now exists and performs self-removal rejection,
+  Core-berth authorization, Python-side subject-cert deletion, member-row
+  deletion, local stale receiver cleanup, local sender-key rotation, and
+  redistribution artifact creation
+- sender-key redistribution now uses encrypted pairwise payloads over X3DH +
+  Double Ratchet with published public prekey bundles in the team DB
+- team-scoped redistribution prekey private material now lives in the
+  device-local DB
+- create-team, invitation acceptance, and linked-device bootstrap now publish
+  local `device_prekey_bundle` rows
+- same-member linked devices are included in redistribution; only the current
+  sender device is excluded
+- the splice SQLite merge engine was updated so non-`id` primary-key tables
+  such as `device_prekey_bundle` merge correctly
+
+Known branch boundaries that remain intentional:
+
+- rotation is still a hard sender-chain boundary
+- transport remains manual/test-level artifact exchange in this branch
+- periodic rotation, auto-triggered redistribution, and revocation certs stay
+  deferred
+- `packages/small-sea-manager/spec.md` was not updated in this branch and
+  should be handled as follow-up documentation work if still desired
 
 ## Context
 
@@ -279,8 +308,8 @@ team_name, distribution_payload)`
 
 ### 7. Spec updates
 
-- Update `packages/small-sea-manager/spec.md` to replace "Key rotation
-  mechanics are TBD" with the actual rotation trigger policy
+- Deferred at wrap-up. This branch shipped the code and micro tests without a
+  matching `packages/small-sea-manager/spec.md` update.
 
 ### 8. Micro tests
 
@@ -421,6 +450,24 @@ This branch should convince a skeptical reviewer if:
   still goes through the Hub, but this implementation slice may stop at payload
   creation/receipt plus explicit test exchange
 - micro tests are local-only, no internet services required
+
+## Wrap-Up Evidence
+
+Implementation and verification completed with:
+
+- `python3 -m compileall packages/splice-merge/splice_merge packages/small-sea-manager/small_sea_manager packages/small-sea-note-to-self/small_sea_note_to_self`
+- `uv run pytest packages/splice-merge/tests/test_merge.py packages/small-sea-manager/tests/test_sender_key_rotation.py packages/small-sea-manager/tests/test_create_team.py packages/small-sea-manager/tests/test_linked_device_bootstrap.py -q`
+- follow-up focused reruns of `packages/small-sea-manager/tests/test_sender_key_rotation.py -q` after the same-member redistribution fix
+
+The implemented micro tests now cover:
+
+- rotation round-trip across members
+- self-removal rejection
+- Core-berth authorization on member removal
+- subject-cert deletion and stale receiver cleanup during member removal
+- same-member linked-device redistribution inclusion
+- missing-prekey skip behavior
+- parallel `device_prekey_bundle` merge preservation
 
 ## Decisions Confirmed
 
