@@ -639,6 +639,8 @@ def _ensure_redistribution_prekey_material(
 
 
 def _ensure_device_prekey_bundle_table(conn) -> None:
+    # Intentionally lazy-created for older team DBs so redistribution can
+    # work without forcing a shared-schema version bump on this branch.
     conn.execute(
         text(
             "CREATE TABLE IF NOT EXISTS device_prekey_bundle ("
@@ -2439,7 +2441,7 @@ def rotate_team_sender_key(root_dir, participant_hex, team_name):
 
 def redistribute_sender_key(root_dir, participant_hex, team_name, target_device_key_ids=None):
     root_dir = pathlib.Path(root_dir)
-    team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+    team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     user_db_path = device_local_db_path(root_dir, participant_hex)
     sender_record = load_team_sender_key(user_db_path, team_id)
@@ -2464,10 +2466,10 @@ def redistribute_sender_key(root_dir, participant_hex, team_name, target_device_
     )
     candidate_public_keys: dict[bytes, bytes] = {}
     for member_id, public_keys in trusted_public_keys_by_member.items():
-        if member_id == self_in_team:
-            continue
         for public_key in public_keys:
             device_key_id = key_id_from_public(public_key)
+            if device_key_id == sender_device_key_id:
+                continue
             if requested_target_ids is not None and device_key_id not in requested_target_ids:
                 continue
             candidate_public_keys[device_key_id] = public_key

@@ -75,6 +75,44 @@ def _team_db(root: pathlib.Path, participant_hex: str, team_name: str) -> pathli
     return root / "Participants" / participant_hex / team_name / "Sync" / "core.db"
 
 
+def _add_same_member_linked_device_bundle(root: pathlib.Path, participant_hex: str, team_name: str):
+    team_id, _member_id = _team_row(root, participant_hex, team_name)
+    linked_device_key, _linked_device_private_key = generate_key_pair(ProtectionLevel.DAILY)
+    provisioning.issue_device_link_for_member(
+        root,
+        participant_hex,
+        team_name,
+        linked_device_key.public_key,
+    )
+    identity = provisioning.generate_identity_key_pair()
+    signed_prekey, _signed_prekey_private_key = provisioning.generate_signed_prekey(
+        identity.signing_private_key
+    )
+    one_time_prekeys = provisioning.generate_one_time_prekeys(2)
+    bundle = provisioning.build_prekey_bundle(
+        participant_id=key_id_from_public(linked_device_key.public_key),
+        identity=identity,
+        signed_prekey=signed_prekey,
+        one_time_prekeys=[prekey for prekey, _private_key in one_time_prekeys],
+    )
+    team_db = _team_db(root, participant_hex, team_name)
+    with sqlite3.connect(team_db) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO device_prekey_bundle
+            (device_key_id, prekey_bundle_json, published_at)
+            VALUES (?, ?, ?)
+            """,
+            (
+                key_id_from_public(linked_device_key.public_key),
+                json.dumps(_serialize_prekey_bundle(bundle), sort_keys=True),
+                "2026-04-13T00:00:00+00:00",
+            ),
+        )
+        conn.commit()
+    return key_id_from_public(linked_device_key.public_key)
+
+
 def _bootstrap_remote_member_installation(workspace: pathlib.Path):
     alice_root = workspace / "alice"
     bob_root = workspace / "bob"
@@ -331,6 +369,37 @@ def test_remove_member_purges_local_receiver_state_and_subject_side_certs(playgr
         state["bob_device_key_id"],
     )
     assert peer_sender is None
+
+
+def test_redistribute_sender_key_includes_same_member_linked_devices(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    create_team(root, alice_hex, "ProjectX")
+    linked_device_key_id = _add_same_member_linked_device_bundle(root, alice_hex, "ProjectX")
+
+    redistribution = provisioning.redistribute_sender_key(root, alice_hex, "ProjectX")
+
+    artifact_targets = {
+        artifact["target_device_key_id_hex"] for artifact in redistribution["artifacts"]
+    }
+    assert linked_device_key_id.hex() in artifact_targets
+
+
+def test_redistribute_sender_key_skips_trusted_devices_without_prekey_bundle(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    create_team(root, alice_hex, "ProjectX")
+    linked_device_key, _linked_device_private_key = generate_key_pair(ProtectionLevel.DAILY)
+    provisioning.issue_device_link_for_member(
+        root,
+        alice_hex,
+        "ProjectX",
+        linked_device_key.public_key,
+    )
+
+    redistribution = provisioning.redistribute_sender_key(root, alice_hex, "ProjectX")
+
+    assert key_id_from_public(linked_device_key.public_key).hex() in redistribution["skipped_device_key_ids_hex"]
 
 
 def test_parallel_device_prekey_bundle_rows_merge(playground_dir):
