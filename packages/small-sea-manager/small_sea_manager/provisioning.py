@@ -822,6 +822,10 @@ def _untokenize(token: str) -> dict:
     return json.loads(base64.b64decode(token.encode("ascii")).decode("utf-8"))
 
 
+def _json_dumps_sorted(value) -> str:
+    return json.dumps(value, sort_keys=True)
+
+
 def _sign_bytes(private_key: bytes, payload: bytes) -> bytes:
     return Ed25519PrivateKey.from_private_bytes(private_key).sign(payload)
 
@@ -2421,6 +2425,185 @@ def _delete_peer_sender_key_rows(db_path: str | pathlib.Path, team_id: bytes, se
         conn.commit()
 
 
+def _runtime_reconciliation_state_row(root_dir, participant_hex: str, team_id: bytes):
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            """
+            SELECT team_id,
+                   trusted_member_ids_json,
+                   trusted_device_key_ids_json,
+                   last_sender_device_key_id,
+                   last_sender_chain_id,
+                   updated_at
+            FROM runtime_reconciliation_state
+            WHERE team_id = ?
+            """,
+            (team_id,),
+        ).fetchone()
+
+
+def _store_runtime_reconciliation_state(
+    root_dir,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    trusted_member_ids_hex: list[str],
+    trusted_device_key_ids_hex: list[str],
+    last_sender_device_key_id: bytes | None,
+    last_sender_chain_id: bytes | None,
+) -> None:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO runtime_reconciliation_state (
+                team_id,
+                trusted_member_ids_json,
+                trusted_device_key_ids_json,
+                last_sender_device_key_id,
+                last_sender_chain_id,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                _json_dumps_sorted(sorted(trusted_member_ids_hex)),
+                _json_dumps_sorted(sorted(trusted_device_key_ids_hex)),
+                last_sender_device_key_id,
+                last_sender_chain_id,
+                _now_iso(),
+            ),
+        )
+        conn.commit()
+
+
+def _delivery_exists(
+    root_dir,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    sender_device_key_id: bytes,
+    sender_chain_id: bytes,
+    target_device_key_id: bytes,
+) -> bool:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM redistribution_delivery
+            WHERE team_id = ?
+              AND sender_device_key_id = ?
+              AND sender_chain_id = ?
+              AND target_device_key_id = ?
+            """,
+            (team_id, sender_device_key_id, sender_chain_id, target_device_key_id),
+        ).fetchone()
+    return row is not None
+
+
+def mark_redistribution_delivery(
+    root_dir,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    sender_device_key_id: bytes,
+    sender_chain_id: bytes,
+    target_device_key_id: bytes,
+) -> None:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO redistribution_delivery (
+                team_id,
+                sender_device_key_id,
+                sender_chain_id,
+                target_device_key_id,
+                delivered_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                sender_device_key_id,
+                sender_chain_id,
+                target_device_key_id,
+                _now_iso(),
+            ),
+        )
+        conn.commit()
+
+
+def _receipt_exists(
+    root_dir,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    sender_device_key_id: bytes,
+    sender_chain_id: bytes,
+    target_device_key_id: bytes,
+) -> bool:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        row = conn.execute(
+            """
+            SELECT 1
+            FROM redistribution_receipt
+            WHERE team_id = ?
+              AND sender_device_key_id = ?
+              AND sender_chain_id = ?
+              AND target_device_key_id = ?
+            """,
+            (team_id, sender_device_key_id, sender_chain_id, target_device_key_id),
+        ).fetchone()
+    return row is not None
+
+
+def mark_redistribution_receipt(
+    root_dir,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    sender_device_key_id: bytes,
+    sender_chain_id: bytes,
+    target_device_key_id: bytes,
+) -> None:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO redistribution_receipt (
+                team_id,
+                sender_device_key_id,
+                sender_chain_id,
+                target_device_key_id,
+                received_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                sender_device_key_id,
+                sender_chain_id,
+                target_device_key_id,
+                _now_iso(),
+            ),
+        )
+        conn.commit()
+
+
+def runtime_redistribution_artifact_path(target_device_key_id: bytes, sender_device_key_id: bytes) -> str:
+    return (
+        "runtime/redistribution/"
+        f"{target_device_key_id.hex()}/{sender_device_key_id.hex()}.json"
+    )
+
+
+def peek_redistribution_payload_metadata(distribution_payload: str) -> dict:
+    payload = _untokenize(distribution_payload)
+    return {
+        "team_id_hex": payload["team_id"],
+        "sender_device_key_id_hex": payload["sender_device_key_id"],
+        "sender_chain_id_hex": payload["sender_chain_id"],
+        "target_device_key_id_hex": payload["target_device_key_id"],
+    }
+
+
 def rotate_team_sender_key(root_dir, participant_hex, team_name):
     root_dir = pathlib.Path(root_dir)
     team_id, _member_id = _team_row(root_dir, participant_hex, team_name)
@@ -2506,6 +2689,7 @@ def redistribute_sender_key(root_dir, participant_hex, team_name, target_device_
                     "team_id": team_id.hex(),
                     "sender_team_device_public_key": sender_team_device_public_key.hex(),
                     "sender_device_key_id": sender_device_key_id.hex(),
+                    "sender_chain_id": sender_distribution.sender_chain_id.hex(),
                     "target_device_key_id": device_key_id.hex(),
                     "x3dh_initial_message": _serialize_x3dh_initial_message(
                         x3dh_result.initial_message
@@ -2521,6 +2705,11 @@ def redistribute_sender_key(root_dir, participant_hex, team_name, target_device_
                     {
                         "target_device_key_id_hex": device_key_id.hex(),
                         "sender_device_key_id_hex": sender_device_key_id.hex(),
+                        "sender_chain_id_hex": sender_distribution.sender_chain_id.hex(),
+                        "artifact_path": runtime_redistribution_artifact_path(
+                            device_key_id,
+                            sender_device_key_id,
+                        ),
                         "distribution_payload": _tokenize(artifact_body),
                     }
                 )
@@ -2542,6 +2731,7 @@ def receive_sender_key_distribution(root_dir, participant_hex, team_name, distri
         "team_id": payload["team_id"],
         "sender_team_device_public_key": payload["sender_team_device_public_key"],
         "sender_device_key_id": payload["sender_device_key_id"],
+        "sender_chain_id": payload["sender_chain_id"],
         "target_device_key_id": payload["target_device_key_id"],
         "x3dh_initial_message": payload["x3dh_initial_message"],
         "ratchet_message": payload["ratchet_message"],
@@ -2635,10 +2825,12 @@ def receive_sender_key_distribution(root_dir, participant_hex, team_name, distri
             participant_hex,
             team_id=team_id,
             prekey_id=used_otp_id,
-        )
+    )
     distribution = deserialize_distribution_message(json.loads(plaintext.decode("utf-8")))
     if distribution.sender_device_key_id != sender_device_key_id:
         raise ValueError("Distribution payload sender stream does not match decrypted sender key")
+    if distribution.sender_chain_id.hex() != payload["sender_chain_id"]:
+        raise ValueError("Distribution payload sender chain does not match decrypted sender key")
     save_peer_sender_key(
         device_local_db_path(root_dir, participant_hex),
         team_id,
@@ -2647,7 +2839,112 @@ def receive_sender_key_distribution(root_dir, participant_hex, team_name, distri
     return {
         "team_id_hex": team_id.hex(),
         "sender_device_key_id_hex": sender_device_key_id.hex(),
+        "sender_chain_id_hex": distribution.sender_chain_id.hex(),
         "target_device_key_id_hex": target_device_key_id.hex(),
+    }
+
+
+def reconcile_runtime_state(root_dir, participant_hex, team_name):
+    root_dir = pathlib.Path(root_dir)
+    team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+    local_db_path = device_local_db_path(root_dir, participant_hex)
+    _local_private_key, local_team_device_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
+    local_device_key_id = key_id_from_public(local_team_device_public_key)
+    trusted_public_keys_by_member = get_trusted_device_keys_by_member(
+        root_dir,
+        participant_hex,
+        team_name,
+    )
+    trusted_self_public_keys = trusted_public_keys_by_member.get(self_in_team, [])
+    if local_team_device_public_key not in trusted_self_public_keys:
+        return {
+            "team_id_hex": team_id.hex(),
+            "local_device_key_id_hex": local_device_key_id.hex(),
+            "local_device_trusted": False,
+            "rotated": False,
+            "removed_member_ids_hex": [],
+            "redistribution_artifacts": [],
+            "skipped_device_key_ids_hex": [],
+        }
+
+    current_trusted_member_ids_hex = sorted(
+        member_id.hex() for member_id in trusted_public_keys_by_member
+    )
+    current_trusted_device_key_ids = sorted(
+        {
+            key_id_from_public(public_key)
+            for public_keys in trusted_public_keys_by_member.values()
+            for public_key in public_keys
+        }
+    )
+    current_trusted_device_key_ids_hex = sorted(
+        device_key_id.hex() for device_key_id in current_trusted_device_key_ids
+    )
+
+    state_row = _runtime_reconciliation_state_row(root_dir, participant_hex, team_id)
+    previous_member_ids_hex = set()
+    if state_row is not None:
+        previous_member_ids_hex = set(json.loads(state_row["trusted_member_ids_json"]))
+
+    removed_member_ids_hex = sorted(
+        previous_member_ids_hex - set(current_trusted_member_ids_hex) - {self_in_team.hex()}
+    )
+    rotated = False
+    if removed_member_ids_hex:
+        rotate_team_sender_key(root_dir, participant_hex, team_name)
+        rotated = True
+
+    sender_record = load_team_sender_key(local_db_path, team_id)
+    if sender_record is None:
+        raise ValueError(f"No local sender key found for team '{team_name}'")
+    pending_target_device_key_ids = []
+    for device_key_id in current_trusted_device_key_ids:
+        if device_key_id == sender_record.sender_device_key_id:
+            continue
+        if not _delivery_exists(
+            root_dir,
+            participant_hex,
+            team_id=team_id,
+            sender_device_key_id=sender_record.sender_device_key_id,
+            sender_chain_id=sender_record.chain_id,
+            target_device_key_id=device_key_id,
+        ):
+            pending_target_device_key_ids.append(device_key_id)
+
+    if pending_target_device_key_ids:
+        redistribution = redistribute_sender_key(
+            root_dir,
+            participant_hex,
+            team_name,
+            target_device_key_ids=pending_target_device_key_ids,
+        )
+        artifacts = redistribution["artifacts"]
+        skipped = redistribution["skipped_device_key_ids_hex"]
+    else:
+        artifacts = []
+        skipped = []
+
+    _store_runtime_reconciliation_state(
+        root_dir,
+        participant_hex,
+        team_id=team_id,
+        trusted_member_ids_hex=current_trusted_member_ids_hex,
+        trusted_device_key_ids_hex=current_trusted_device_key_ids_hex,
+        last_sender_device_key_id=sender_record.sender_device_key_id,
+        last_sender_chain_id=sender_record.chain_id,
+    )
+    return {
+        "team_id_hex": team_id.hex(),
+        "local_device_key_id_hex": local_device_key_id.hex(),
+        "local_device_trusted": True,
+        "rotated": rotated,
+        "removed_member_ids_hex": removed_member_ids_hex,
+        "sender_device_key_id_hex": sender_record.sender_device_key_id.hex(),
+        "sender_chain_id_hex": sender_record.chain_id.hex(),
+        "redistribution_artifacts": artifacts,
+        "skipped_device_key_ids_hex": skipped,
     }
 
 
