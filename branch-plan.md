@@ -76,18 +76,19 @@ It does **not** need to solve:
 
 ### S1. Rotation triggers
 
-Two triggers, both mandatory:
+One trigger is implemented in this branch:
 
 1. **Member removal**: when any member is removed, every remaining sender device
    must rotate its sender key. This is the minimum honest guarantee — the removed
    member's devices must not be able to decrypt future traffic for participants
    who adopt that removal view and rotate accordingly.
-2. **Device removal/revocation**: when a specific device is revoked (but the
-   member stays), every other sender device in the team must rotate. Same
-   rationale.
 
-Manual rotation (user-initiated rekey) is a natural fourth trigger but can be
-deferred if it's just "call the same rotation function."
+Future triggers can reuse the same rotation primitive, but are deferred:
+
+- **Device removal/revocation**: should eventually trigger the same rotation
+  behavior, but is deferred until revocation cert design is tracked separately.
+- **Manual rotation**: a natural follow-up if it is just "call the same
+  rotation function."
 
 ### S2. Redistribution is device-to-device over encrypted channels
 
@@ -134,18 +135,36 @@ orchestration.
 `remove_member` is currently `raise NotImplementedError`. This branch should
 implement it:
 
-1. Delete the member's `berth_role` rows, `member` row, and associated
-   `key_certificate` entries from the local team DB
-2. Commit to the team DB
-3. Rotate this device's sender key
-4. Distribute the new sender key to all remaining peer devices
+1. Reject self-removal: `remove_member(team_name, self_in_team)` is not a valid
+   operation in this branch.
+2. Verify the caller has `read-write` permission on the team's Core berth
+   (`SmallSeaCollectiveCore`) before mutating membership state.
+3. Resolve and capture the removed member's currently trusted team-device
+   public keys before mutating the team DB, then derive their
+   `sender_device_key_id`s with `key_id_from_public()`. This captured key-id set
+   is the source of truth for local cleanup later in the flow.
+4. Load team certificates with `_load_team_certificates()`, filter in Python
+   for rows where `cert.claims.get("member_id") == removed_member_id.hex()`,
+   and delete those rows by `cert_id`. Do this in Python rather than SQL
+   because `claims` is stored as JSON text. This explicit deletion removes the
+   removed member's subject-side membership and `device_link` cert history.
+5. Delete the removed member's `member` row. That cascade cleans `berth_role`,
+   `peer`, and any remaining issuer-side certificate rows whose
+   `issuer_member_id` is that member.
+6. Commit to the team DB.
+7. Purge local `peer_sender_key` rows whose `sender_device_key_id` is in the
+   captured removed-device set.
+8. Rotate this device's sender key.
+9. Distribute the new sender key to all remaining peer devices.
 
 ## In Scope
 
 ### 1. Implement `remove_member` in provisioning
 
 New function in `provisioning.py`. Removes the member from the team DB,
-commits, then triggers sender-key rotation and redistribution.
+rejects self-removal, enforces Core-berth authorization, commits, purges
+captured local receiver state for that member's devices, then triggers
+sender-key rotation and redistribution.
 
 ### 2. Sender-key rotation function
 
@@ -162,8 +181,10 @@ target_device_key_ids=None)`
 
 - If `target_device_key_ids` is provided, distributes only to those devices.
   Otherwise defaults to all trusted peer devices in the team (via wrasse-trust
-  cert lookups on the team DB). The caller controls when and to whom
-  redistribution happens; the function handles the crypto.
+  cert lookups on the team DB). Those trust lookups return public keys, so the
+  implementation derives `device_key_id`s with `key_id_from_public()` for
+  `device_prekey_bundle` lookup and payload addressing. The caller controls
+  when and to whom redistribution happens; the function handles the crypto.
 - For each target peer device that has a published prekey bundle:
   - Performs X3DH key agreement
   - Encrypts the `SenderKeyDistributionMessage` via Double Ratchet
@@ -192,16 +213,26 @@ team_name, distribution_payload)`
 - New team DB table: `device_prekey_bundle` (device_key_id, prekey_bundle_json,
   published_at)
 - Manager writes prekey bundles as part of team DB commits
-- Prekey bundles are refreshed on rotation or when one-time prekeys are consumed
+- Each published bundle should contain multiple one-time prekeys, not just one
+- One-time prekeys are single-use from the receiver's local perspective, but
+  concurrent initiators may still consume the same published prekey from stale
+  team DB snapshots
+- When one-time prekeys are exhausted, redistribution falls back to
+  signed-prekey-only X3DH until a refreshed bundle is published
+- Prekey bundles are refreshed on rotation or on later team DB commits after
+  local consumption
 
 ### 6. Schema changes
 
 - Bump `LOCAL_SCHEMA_VERSION` with migration
-- Add a device-local table for redistribution prekey private material (the
-  receiver's X3DH identity key, signed prekey, and one-time prekeys needed to
-  complete `receive_sender_key_distribution`). Similar in shape to
-  `linked_team_bootstrap_session` but generalized for ongoing redistribution,
-  not one-shot bootstrap.
+- Add team-scoped device-local storage for redistribution prekey private
+  material:
+  - one persistent per-team X3DH identity and current signed prekey used for
+    published redistribution bundles
+  - one or more consumable one-time prekeys tracked separately from bootstrap
+    sessions
+  - no bootstrap-id-scoped ratchet/session table for steady-state
+    redistribution
 - Bump team DB schema version
 - Add `device_prekey_bundle` table to team DB schema
 
@@ -218,20 +249,28 @@ Minimum expected coverage:
   can decrypt future bundles from A using the new key; Device B cannot use the
   old key for new messages
 - **Remove member triggers rotation**: after removing a member, the removing
-  device's sender key has changed and old peer_sender_key records for the
-  removed member's devices are gone
+  device's sender key has changed, captured removed-device ids are purged from
+  `peer_sender_key`, and redistribution excludes those removed devices
+- **Self-removal guard**: `remove_member(team_name, self_in_team)` is rejected
+- **Authorization**: a caller without `read-write` permission on the team's
+  Core berth cannot remove a member
 - **Cross-member redistribution**: Device A (Alice) distributes its sender key
   to Device C (Bob's new device) via X3DH when explicitly asked to redistribute
   to that device
-- **Prekey bundle round-trip**: Device publishes prekey bundle to team DB;
-  peer device consumes it for X3DH; the consumed one-time prekey is no longer
-  usable
+- **Prekey bundle round-trip**: Device publishes a bundle with multiple
+  one-time prekeys; a peer device can consume one for X3DH, and redistribution
+  still works via signed-prekey-only fallback when one-time prekeys are
+  exhausted
 - **Rejection**: redistribution payload with invalid signature is rejected
 - **Historical boundary**: after rotation, a device that only has the old
   sender key cannot decrypt messages encrypted with the new key
 - **Missing prekey behavior**: redistribution to a peer device without a
   published prekey bundle is skipped or surfaced as pending without breaking
   the whole round
+- **Removal cert-selection rule**: removing a member loads certs in Python,
+  filters by `claims.member_id`, and deletes by `cert_id`, so subject-side
+  membership and `device_link` history no longer makes that member resolve as
+  trusted
 - **Migration integrity**: local schema migration preserves existing sender-key
   runtime while adding any new fields required by this branch
 
@@ -247,8 +286,8 @@ Minimum expected coverage:
 - NoteToSelf sync and team discovery (#48)
 - Upgrading invitation-flow sender keys to encrypted channels
 - Periodic sender-key rotation policy, thresholds, and Hub signaling (#73)
-- Device revocation UI/UX (this branch implements the backend; revocation
-  cert semantics can follow)
+- Device revocation and revocation-cert design/implementation (follow-up issue)
+- Device revocation UI/UX
 
 ## Concrete Change Areas
 
@@ -287,6 +326,8 @@ This branch should convince a skeptical reviewer if:
   traffic using the new key
 - removing a member triggers rotation and the removed member's devices cannot
   decrypt post-removal traffic
+- self-removal is rejected and Core-berth write permission is enforced before
+  membership mutation
 - a newly linked device from a different member receives sender-key
   distributions from all active sender devices once redistribution is invoked
 - redistribution uses X3DH + Double Ratchet, not cleartext payloads
@@ -304,6 +345,8 @@ This branch should convince a skeptical reviewer if:
 - **Prekey publication**: team DB table (`device_prekey_bundle`). Public material,
   Manager-owned writes, available to all devices on pull.
 - **`remove_member`**: implement in this branch as the primary rotation trigger.
+- **Device revocation**: deferred until the repo has an honest revocation-cert
+  path; this branch should not fake it with local-only shortcuts.
 - **Cross-member redistribution**: the crypto primitive is in scope; automatic
   trigger on pull/watch discovery is deferred to #59.
 
@@ -311,9 +354,19 @@ This branch should convince a skeptical reviewer if:
 
 ### Q1. Prekey bundle refresh after consumption
 
-When a one-time prekey is consumed by a peer's X3DH, the device needs to
-publish a fresh one. When does this happen? Default direction: eagerly on next
-team DB commit, since commits are infrequent at Small Sea's scale.
+Because the team DB is eventually consistent, one-time prekey consumption is
+not globally atomic: two initiators can race on the same published bundle from
+different snapshots. The branch should therefore assume:
+
+- each published bundle carries multiple one-time prekeys
+- local receiver state consumes an OTP at most once
+- concurrent double-consumption can still happen across devices pulling stale
+  snapshots
+- redistribution must still work with signed-prekey-only X3DH when OTPs are
+  exhausted
+
+The remaining tuning question is how many OTPs to publish per bundle and when
+to refresh them on later team DB commits.
 
 ### Q2. Concurrent rotation ordering
 
@@ -324,9 +377,10 @@ DB as the source of truth for membership state.
 
 ### Q3. Revocation certs (deferred)
 
-`remove_member` in this branch deletes the member's rows and certs from the
-team DB. This is sufficient for rotation/redistribution mechanics: peer
-enumeration naturally excludes the removed member because their rows are gone.
+`remove_member` in this branch deletes the member's subject-side and issuer-side
+team-DB state. This is sufficient for rotation/redistribution mechanics: peer
+enumeration no longer resolves that member's devices as trusted, and local
+receiver state is purged using the captured device-id set from before mutation.
 
 However, deletion alone does not give peers a cryptographic reason to believe
 the removal was authorized — they only observe absence. A proper revocation
