@@ -22,10 +22,12 @@ def sqlite_to_json(db_path):
     ).fetchall()
 
     tables = {}
+    primary_keys = {}
     for tbl in tables_raw:
         table_name = tbl["name"]
         col_info = conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
         col_names = [c["name"] for c in col_info]
+        pk_columns = [c["name"] for c in sorted(col_info, key=lambda c: c["pk"]) if c["pk"]]
 
         rows = conn.execute(f"SELECT * FROM '{table_name}'").fetchall()
         row_dicts = []
@@ -39,14 +41,23 @@ def sqlite_to_json(db_path):
                     d[col] = val
             row_dicts.append(d)
         tables[table_name] = row_dicts
+        primary_keys[table_name] = pk_columns
 
     conn.close()
-    return {"__tables__": tables, "__pragmas__": {"user_version": user_version}}
+    return {
+        "__tables__": tables,
+        "__pragmas__": {"user_version": user_version},
+        "__primary_keys__": primary_keys,
+    }
 
 
-def _row_key(row):
-    """Extract the primary key from a row dict. Always 'id'."""
-    return _normalize_key(row.get("id"))
+def _row_key(row, pk_columns):
+    """Extract a stable comparison key for a row dict."""
+    if pk_columns:
+        return tuple(_normalize_key(row.get(column)) for column in pk_columns)
+    if "id" in row:
+        return (_normalize_key(row.get("id")),)
+    return tuple((column, _normalize_key(value)) for column, value in sorted(row.items()))
 
 
 def _normalize_key(val):
@@ -73,6 +84,8 @@ def compute_delta(ancestor_json, version_json):
     """
     a_tables = ancestor_json.get("__tables__", {})
     v_tables = version_json.get("__tables__", {})
+    a_primary_keys = ancestor_json.get("__primary_keys__", {})
+    v_primary_keys = version_json.get("__primary_keys__", {})
 
     all_table_names = set(a_tables.keys()) | set(v_tables.keys())
     delta = {}
@@ -80,9 +93,10 @@ def compute_delta(ancestor_json, version_json):
     for table_name in sorted(all_table_names):
         a_rows = a_tables.get(table_name, [])
         v_rows = v_tables.get(table_name, [])
+        pk_columns = a_primary_keys.get(table_name) or v_primary_keys.get(table_name) or []
 
-        a_by_key = {_row_key(r): r for r in a_rows}
-        v_by_key = {_row_key(r): r for r in v_rows}
+        a_by_key = {_row_key(r, pk_columns): r for r in a_rows}
+        v_by_key = {_row_key(r, pk_columns): r for r in v_rows}
 
         inserts = {}
         deletes = {}
@@ -184,11 +198,15 @@ def apply_delta(db_path, delta):
         # Get column names from the actual DB
         col_info = conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
         col_names = [row[1] for row in col_info]
+        pk_columns = [row[1] for row in sorted(col_info, key=lambda row: row[5]) if row[5]]
+        if not pk_columns and "id" in col_names:
+            pk_columns = ["id"]
+        where_clause = " AND ".join(f"{column} = ?" for column in pk_columns)
 
         # DELETEs
         for key, row in ops.get("deletes", {}).items():
-            id_val = _decode_value(row["id"])
-            conn.execute(f"DELETE FROM '{table_name}' WHERE id = ?", (id_val,))
+            key_values = tuple(_decode_value(row[column]) for column in pk_columns)
+            conn.execute(f"DELETE FROM '{table_name}' WHERE {where_clause}", key_values)
 
         # INSERTs
         for key, row in ops.get("inserts", {}).items():
@@ -202,17 +220,18 @@ def apply_delta(db_path, delta):
 
         # UPDATEs
         for key, row in ops.get("updates", {}).items():
-            id_val = _decode_value(row["id"])
             set_clauses = []
             set_values = []
             for c in col_names:
-                if c == "id":
+                if c in pk_columns:
                     continue
                 set_clauses.append(f"{c} = ?")
                 set_values.append(_decode_value(row.get(c)))
-            set_values.append(id_val)
+            if not set_clauses:
+                continue
+            set_values.extend(_decode_value(row[column]) for column in pk_columns)
             conn.execute(
-                f"UPDATE '{table_name}' SET {', '.join(set_clauses)} WHERE id = ?",
+                f"UPDATE '{table_name}' SET {', '.join(set_clauses)} WHERE {where_clause}",
                 set_values,
             )
 

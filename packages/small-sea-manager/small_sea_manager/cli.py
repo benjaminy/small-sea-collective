@@ -1,5 +1,6 @@
 """Click CLI for the Small Sea Manager."""
 
+import json
 import pathlib
 import sys
 import tomllib
@@ -209,8 +210,8 @@ def revoke_invitation(ctx, team_name, invitation_id):
 def remove_member(ctx, team_name, member):
     """Remove a member from a team."""
     manager = _make_manager(ctx)
-    manager.remove_member(team_name, member)
-    click.echo(f"Removed '{member}' from '{team_name}'")
+    result = manager.remove_member(team_name, member)
+    click.echo(json.dumps(result, indent=2, sort_keys=True))
 
 
 @cli.command("set-role")

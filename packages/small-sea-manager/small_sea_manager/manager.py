@@ -210,7 +210,12 @@ class TeamManager:
 
     def remove_member(self, team_name, member):
         """Remove a member from a team. Must be an admin."""
-        raise NotImplementedError("remove_member")
+        return provisioning.remove_member(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            member,
+        )
 
     def set_member_role(self, team_name, member, role):
         """Set a member's role (admin or observer)."""

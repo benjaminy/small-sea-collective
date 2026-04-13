@@ -251,3 +251,47 @@ def test_merge_true_conflict_ours_wins():
         inv_rows = _query_table(str(ours_db), "invitation")
         assert len(inv_rows) == 1
         assert inv_rows[0]["status"] == "accepted"  # ours wins
+
+
+def test_merge_non_id_primary_key_rows():
+    """Non-id primary keys merge cleanly when both sides insert different rows."""
+    with tempfile.TemporaryDirectory() as tmp:
+        ancestor = _make_db(tmp, "ancestor.db", members=[b"\x01" * 16])
+        ours_db = pathlib.Path(tmp) / "ours.db"
+        theirs_db = pathlib.Path(tmp) / "theirs.db"
+        shutil.copy(ancestor, str(ours_db))
+        shutil.copy(ancestor, str(theirs_db))
+
+        for db_path, device_key_id, payload in (
+            (ours_db, b"a" * 16, '{"row":"a"}'),
+            (theirs_db, b"b" * 16, '{"row":"b"}'),
+        ):
+            conn = sqlite3.connect(str(db_path))
+            conn.execute(
+                """
+                INSERT INTO device_prekey_bundle
+                (device_key_id, prekey_bundle_json, published_at)
+                VALUES (?, ?, ?)
+                """,
+                (device_key_id, payload, "2026-04-13T00:00:00+00:00"),
+            )
+            conn.commit()
+            conn.close()
+
+        a_json = sqlite_to_json(ancestor)
+        o_json = sqlite_to_json(str(ours_db))
+        t_json = sqlite_to_json(str(theirs_db))
+
+        ours_delta = compute_delta(a_json, o_json)
+        theirs_delta = compute_delta(a_json, t_json)
+        cleaned = reconcile_deltas(ours_delta, theirs_delta)
+        apply_delta(str(ours_db), cleaned)
+
+        bundle_rows = _query_table(
+            str(ours_db),
+            "device_prekey_bundle",
+            "hex(device_key_id) AS device_key_id",
+        )
+        device_key_ids = {row["device_key_id"] for row in bundle_rows}
+        assert (b"a" * 16).hex().upper() in device_key_ids
+        assert (b"b" * 16).hex().upper() in device_key_ids
