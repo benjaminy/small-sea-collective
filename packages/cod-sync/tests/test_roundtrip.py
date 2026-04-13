@@ -84,3 +84,40 @@ def test_roundtrip(scratch_dir):
     assert "plan.txt" in alice_files
     assert "notes.txt" not in alice_files
     assert "Updated by Bob." in alice_files["README.md"]
+
+
+def test_merge_from_remote_bootstraps_unborn_branch(scratch_dir):
+    scratch = pathlib.Path(scratch_dir)
+    alice_clone = scratch / "alice-clone"
+    bob_clone = scratch / "bob-clone"
+    alice_pub = scratch / "alice-publication"
+
+    for d in [alice_clone, bob_clone, alice_pub]:
+        d.mkdir()
+
+    CS.gitCmd(["init", "-b", "main", str(alice_clone)])
+    CS.gitCmd(["-C", str(alice_clone), "config", "user.email", "alice@test"])
+    CS.gitCmd(["-C", str(alice_clone), "config", "user.name", "Alice"])
+    (alice_clone / "README.md").write_text("# My Project\n")
+    (alice_clone / "data.txt").write_text("Hello from Alice!\n")
+    CS.gitCmd(["-C", str(alice_clone), "add", "-A"])
+    CS.gitCmd(["-C", str(alice_clone), "commit", "-m", "initial commit"])
+
+    alice_remote = make_file_remote(alice_pub)
+    alice_cod = make_cod_sync(alice_clone, "alice-pub")
+    alice_cod.remote = alice_remote
+    alice_cod.push_to_remote(["main"])
+
+    CS.gitCmd(["init", "-b", "main", str(bob_clone)])
+    CS.gitCmd(["-C", str(bob_clone), "config", "user.email", "bob@test"])
+    CS.gitCmd(["-C", str(bob_clone), "config", "user.name", "Bob"])
+
+    bob_cod = make_cod_sync(bob_clone, "alice")
+    bob_cod.remote = CS.LocalFolderRemote(str(alice_pub))
+    fetched_sha = bob_cod.fetch_from_remote(["main"])
+    assert fetched_sha
+
+    exit_code = bob_cod.merge_from_remote(["main"])
+    assert exit_code == 0
+
+    assert working_tree_files(alice_clone) == working_tree_files(bob_clone)

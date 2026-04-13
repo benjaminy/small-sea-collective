@@ -3,7 +3,6 @@
 # Starts a real hub process and MinIO server, then exercises the full
 # push/clone roundtrip over HTTP — proving the deployment path works.
 
-import os
 import pathlib
 import shutil
 import tempfile
@@ -11,8 +10,6 @@ import tempfile
 import boto3
 import requests
 from botocore.config import Config as BotoConfig
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
 import pytest
 
 import small_sea_hub.backend as SmallSea
@@ -35,9 +32,7 @@ def working_tree_files(repo_dir):
 
 def make_cod_sync(repo_dir, remote_name):
     """Create a CodSync wired to a specific repo directory."""
-    os.chdir(repo_dir)
-    cod = CS.CodSync(remote_name)
-    return cod
+    return CS.CodSync(remote_name, repo_dir=repo_dir)
 
 
 @pytest.fixture(scope="module")
@@ -55,21 +50,11 @@ def hub_env(playground_dir, minio, hub_server_gen):
 
     # Write S3 cloud config directly to NoteToSelf DB before starting the Hub.
     # The Hub reads this at request time; no HTTP endpoint for cloud registration.
-    note_to_self_db = (
-        pathlib.Path(root_dir)
-        / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
+    Provisioning.add_cloud_storage(
+        root_dir, alice_hex, "s3", minio["endpoint"],
+        access_key=minio["access_key"],
+        secret_key=minio["secret_key"],
     )
-    engine = create_engine(f"sqlite:///{note_to_self_db}")
-    with Session(engine) as db_session:
-        cloud = SmallSea.CloudStorage(
-            id=os.urandom(16),
-            protocol="s3",
-            url=minio["endpoint"],
-            access_key=minio["access_key"],
-            secret_key=minio["secret_key"],
-        )
-        db_session.add(cloud)
-        db_session.commit()
 
     # Start hub as a real subprocess
     hub = hub_server_gen(root_dir=root_dir, port=HUB_PORT)

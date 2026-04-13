@@ -37,27 +37,29 @@ def init_single_bucket(
         endpoint_url=f"http://localhost:{port}",
         aws_access_key_id=access_key,
         aws_secret_access_key=access_secret,
-        region="us-east-1"
+        region_name="us-east-1",
     )
     s3.create_bucket(Bucket=bucket_name)
     return s3
 
-def test_upload(minio_server_gen):
-    minio_server = minio_server_gen()
+def test_upload(minio):
     s3 = init_single_bucket(
-        minio_server["port"],
-        minio_server["access_key"],
-        minio_server["secret_key"],
-        "alice" )
+        minio["port"],
+        minio["access_key"],
+        minio["secret_key"],
+        "alice-upload" )
+    my_bucket = "alice-upload"
+    data = b"The quick brown fox"
+    key = "Fred"
     upload_result = upload_object(s3, my_bucket, key, data, expected_tag=None)
+    assert upload_result["success"]
 
-def test_simple_up_down(minio_server_gen):
-    minio_server = minio_server_gen()
+def test_simple_up_down(minio):
     s3 = boto3.client(
         "s3",
-        endpoint_url=minio_server["endpoint"],
-        aws_access_key_id=minio_server["access_key"],
-        aws_secret_access_key=minio_server["secret_key"]
+        endpoint_url=minio["endpoint"],
+        aws_access_key_id=minio["access_key"],
+        aws_secret_access_key=minio["secret_key"]
     )
     my_bucket = "alice"
     s3.create_bucket(Bucket=my_bucket)

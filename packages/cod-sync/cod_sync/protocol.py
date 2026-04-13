@@ -264,10 +264,11 @@ class CodSync:
         logger.debug(f"clone_from_remote {self.remote_name} {url}")
 
         git_cmd = ["git", "rev-parse", "--show-toplevel"]
-        result = subprocess.run(git_cmd, capture_output=True, text=True)
+        result = subprocess.run(git_cmd, capture_output=True, text=True, cwd=self._repo_dir)
         if result.returncode == 0:
+            target = self._repo_dir or os.getcwd()
             logger.warning(
-                f"clone_from_remote: already in a repo '{os.getcwd()}' '{result.stdout.strip()}'"
+                f"clone_from_remote: already in a repo '{target}' '{result.stdout.strip()}'"
             )
             return -1
 
@@ -408,6 +409,17 @@ class CodSync:
         branch = branches[0]
 
         [tmp_remote, _] = self.bundle_tmp()
+
+        head_result = self.gitCmd(["rev-parse", "--verify", "HEAD"], raise_on_error=False)
+        if head_result.returncode != 0:
+            # Fresh repos created with `git init -b main` have an unborn branch,
+            # so there is nothing for `git merge` to merge into yet. In that
+            # case, adopt the fetched branch as the initial local branch.
+            result = self.gitCmd(
+                ["checkout", "-B", branch, f"{tmp_remote}/{branch}"],
+                raise_on_error=False,
+            )
+            return result.returncode
 
         result = self.gitCmd(["merge", f"{tmp_remote}/{branch}"], raise_on_error=False)
         return result.returncode

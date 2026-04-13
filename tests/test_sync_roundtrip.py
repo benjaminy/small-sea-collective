@@ -16,11 +16,12 @@ import tempfile
 
 import pytest
 import requests
+
+_REPO_ROOT = str(pathlib.Path(__file__).parent.parent)
 from botocore.config import Config as BotoConfig
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-import small_sea_hub.backend as Backend
 import small_sea_manager.provisioning as Provisioning
 import cod_sync.protocol as CS
 
@@ -54,7 +55,7 @@ def hub(hub_server_gen, tmp_path_factory, minio):
         "packages/small-sea-hub/small_sea_hub/server.py",
         "--port", str(HUB_PORT),
     ]
-    proc = subprocess.Popen(cmd, env=env)
+    proc = subprocess.Popen(cmd, env=env, cwd=_REPO_ROOT)
     time.sleep(2)
     if proc.poll() is not None:
         raise RuntimeError(f"Hub exited early (code {proc.returncode})")
@@ -77,21 +78,11 @@ def sync_env(playground_dir, minio, hub):
     bob_hex = Provisioning.create_new_participant(root_dir, "bob_sync")
 
     def _add_cloud(participant_hex):
-        nts_db = (
-            pathlib.Path(root_dir)
-            / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+        Provisioning.add_cloud_storage(
+            root_dir, participant_hex, "s3", minio_endpoint,
+            access_key=minio["access_key"],
+            secret_key=minio["secret_key"],
         )
-        engine = create_engine(f"sqlite:///{nts_db}")
-        with Session(engine) as sess:
-            cloud = Backend.CloudStorage(
-                id=os.urandom(16),
-                protocol="s3",
-                url=minio_endpoint,
-                access_key=minio["access_key"],
-                secret_key=minio["secret_key"],
-            )
-            sess.add(cloud)
-            sess.commit()
 
     _add_cloud(alice_hex)
     _add_cloud(bob_hex)
@@ -150,6 +141,7 @@ def sync_env(playground_dir, minio, hub):
             "app": "SmallSeaCollectiveCore",
             "team": "SyncTest",
             "client": "test",
+            "mode": "passthrough",
         })
         assert resp.status_code == 200, resp.text
         return resp.json()["token"]
@@ -218,15 +210,8 @@ def test_push_and_pull_via_hub(sync_env):
         _git(["config", "user.name", "Bob"], repo_dir=bob_repo)
 
         bob_cod.fetch_from_remote(["main"])
-
-        # Merge into Bob's repo (creates an orphan initial commit first if needed).
-        # Since Bob's repo is empty we need to create an initial commit to merge into.
-        (bob_repo / ".gitkeep").write_text("")
-        _git(["add", ".gitkeep"], repo_dir=bob_repo)
-        _git(["commit", "-m", "init"], repo_dir=bob_repo)
-
         exit_code = bob_cod.merge_from_remote(["main"])
-        assert exit_code == 0, "Merge had conflicts"
+        assert exit_code == 0, "Merge failed"
 
         # ---- Verify ----
         assert (bob_repo / "data.txt").exists()

@@ -29,15 +29,14 @@ def upload_object( s3, bucket_name, key, data, expected_tag=None ):
     except Exception as exn:
         return { "success": False, "exn": str( exn ) }
 
-def test_simple_up_down(minio_server_gen):
-    minio_server = minio_server_gen()
+def test_simple_up_down(minio):
     s3 = boto3.client(
         "s3",
-        endpoint_url=minio_server["endpoint"],
-        aws_access_key_id=minio_server["access_key"],
-        aws_secret_access_key=minio_server["secret_key"]
+        endpoint_url=minio["endpoint"],
+        aws_access_key_id=minio["access_key"],
+        aws_secret_access_key=minio["secret_key"]
     )
-    my_bucket = "alice"
+    my_bucket = "alice-cloud-dl"
     s3.create_bucket(Bucket=my_bucket)
     # test_file = local_dir / "blah.txt"
     # with open( test_file, "w" ) as f:
