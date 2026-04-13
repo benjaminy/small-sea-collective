@@ -46,8 +46,9 @@ After this branch lands:
 
 1. A device can rotate its own team sender key, generating a fresh chain and
    distributing it to all known peer devices
-2. Membership removal triggers mandatory sender-key rotation for all remaining
-   devices (so the removed member's devices cannot decrypt future traffic)
+2. Membership removal triggers immediate sender-key rotation on the removing
+   device, and this branch provides the redistribution primitive remaining
+   devices will use after they independently observe the removal
 3. A newly linked device that completed same-member bootstrap (#69) can receive
    sender-key distributions from cross-member peer devices (not just its sibling)
 4. Redistribution uses encrypted pairwise channels (X3DH + Double Ratchet),
@@ -79,9 +80,12 @@ It does **not** need to solve:
 One trigger is implemented in this branch:
 
 1. **Member removal**: when any member is removed, every remaining sender device
-   must rotate its sender key. This is the minimum honest guarantee — the removed
-   member's devices must not be able to decrypt future traffic for participants
-   who adopt that removal view and rotate accordingly.
+   that adopts that removal view must rotate its sender key. This branch
+   implements that on the removing device immediately. Other remaining devices
+   should do the same after they independently observe the removal. This is the
+   minimum honest guarantee — the removed member's devices must not be able to
+   decrypt future traffic for participants who adopt that removal view and
+   rotate accordingly.
 
 Future triggers can reuse the same rotation primitive, but are deferred:
 
@@ -130,7 +134,22 @@ it to do so. Automatic detection during pull/watch flows is deferred to #59 so
 this branch stays focused on the crypto path rather than background
 orchestration.
 
-### S6. Remove member implementation
+### S6. Rotation is a hard sender-chain boundary
+
+`create_sender_key` creates a fresh sender chain and signing keypair on each
+rotation. In this branch, receiver state for a given sender is replaced rather
+than preserving multiple active chains for a grace period.
+
+That means rotation creates a hard boundary for that sender:
+
+- after a receiver accepts the new `SenderKeyDistributionMessage`, it can
+  decrypt the sender's post-rotation messages
+- in-flight pre-rotation messages from that same sender may become
+  undecryptable if they arrive later
+- this is intentional for the branch slice; multi-chain grace-period receiver
+  support is a follow-up if Small Sea later needs it
+
+### S7. Remove member implementation
 
 `remove_member` is currently `raise NotImplementedError`. This branch should
 implement it:
@@ -156,6 +175,20 @@ implement it:
    captured removed-device set.
 8. Rotate this device's sender key.
 9. Distribute the new sender key to all remaining peer devices.
+
+### S8. Redistribution returns manual-delivery artifacts
+
+`redistribute_sender_key(...)` should return structured artifacts for each
+target peer device, not just opaque bytes. At minimum each artifact should
+identify:
+
+- the target `device_key_id`
+- the serialized `distribution_payload`
+- the rotating sender's `sender_device_key_id`
+
+In this branch, `remove_member(...)` should return the redistribution artifacts
+it produced so the caller (CLI or test harness) can perform explicit manual
+delivery. The branch does not need to queue or persist outbound deliveries.
 
 ## In Scope
 
@@ -188,12 +221,16 @@ target_device_key_ids=None)`
 - For each target peer device that has a published prekey bundle:
   - Performs X3DH key agreement
   - Encrypts the `SenderKeyDistributionMessage` via Double Ratchet
-  - Produces a serialized distribution payload
-- Returns the set of distribution payloads (one per peer device)
+  - Produces a structured redistribution artifact containing at least the
+    target `device_key_id`, the sender `sender_device_key_id`, and the
+    serialized distribution payload
+- Returns the set of redistribution artifacts (one per peer device)
 
 The actual delivery of these payloads is out of scope for the core function —
-the caller (CLI or Hub) handles transport. But the branch should include at
-least a test-level round-trip that proves the payloads are receivable.
+the caller (CLI or Hub) handles transport. In this branch, the caller receives
+the redistribution artifacts back for explicit manual delivery. The branch
+should include at least a test-level round-trip that proves the payloads are
+receivable.
 
 ### 4. Receive redistributed sender key
 
@@ -261,9 +298,15 @@ Minimum expected coverage:
   one-time prekeys; a peer device can consume one for X3DH, and redistribution
   still works via signed-prekey-only fallback when one-time prekeys are
   exhausted
+- **Parallel prekey publication merge**: two devices publish distinct
+  `device_prekey_bundle` rows in concurrent commits, and after merge both rows
+  remain present and readable
 - **Rejection**: redistribution payload with invalid signature is rejected
 - **Historical boundary**: after rotation, a device that only has the old
   sender key cannot decrypt messages encrypted with the new key
+- **In-flight old-chain boundary**: after a receiver accepts a rotated sender
+  key, a pre-rotation message from that sender arriving later is no longer
+  decryptable in this branch
 - **Missing prekey behavior**: redistribution to a peer device without a
   published prekey bundle is skipped or surfaced as pending without breaking
   the whole round
@@ -288,6 +331,36 @@ Minimum expected coverage:
 - Periodic sender-key rotation policy, thresholds, and Hub signaling (#73)
 - Device revocation and revocation-cert design/implementation (follow-up issue)
 - Device revocation UI/UX
+
+## Worked Example
+
+Use this as the concrete removal example during implementation and review:
+
+- Alice has devices `D` and `G`
+- Bob has devices `E` and `F`
+- Carol has device `H`
+
+Removal flow in this branch:
+
+1. Alice/`D` removes Bob.
+2. `D` verifies it is not removing `self_in_team` and that it has `read-write`
+   on `{Team}/SmallSeaCollectiveCore`.
+3. `D` captures Bob's current trusted device public keys (`E`, `F`) and derives
+   their key ids for later local cleanup.
+4. `D` deletes Bob's subject-side membership / `device_link` certs in Python by
+   filtering `claims.member_id`, then deletes Bob's `member` row and commits.
+5. `D` purges local receiver state for `E` and `F`.
+6. `D` rotates its own sender key immediately.
+7. `D` calls `redistribute_sender_key(...)` and gets redistribution artifacts
+   for currently trusted remaining peers such as `G` and `H` if they have
+   published bundles. It does **not** produce artifacts for `E` or `F`.
+8. In the manual-exchange model for this branch, the caller delivers `D`'s
+   artifact for `G` to Alice/`G` and `D`'s artifact for `H` to Carol/`H`.
+9. `G` and `H` cannot decrypt `D`'s post-rotation messages until they receive
+   and process those artifacts.
+10. `G` and `H` do not rotate their own sender keys yet just because `D` did.
+    They rotate later, after they independently pull the removal and choose to
+    act on it.
 
 ## Concrete Change Areas
 
@@ -322,10 +395,12 @@ Minimum expected coverage:
 
 This branch should convince a skeptical reviewer if:
 
-- a device can rotate its sender key and all peer devices can decrypt future
-  traffic using the new key
-- removing a member triggers rotation and the removed member's devices cannot
-  decrypt post-removal traffic
+- a device can rotate its sender key and peer devices that receive/process its
+  redistribution artifact can decrypt that sender's future traffic using the
+  new key
+- removing a member triggers immediate rotation on the removing device and the
+  removed member's devices cannot decrypt that removing device's post-removal
+  traffic
 - self-removal is rejected and Core-berth write permission is enforced before
   membership mutation
 - a newly linked device from a different member receives sender-key
@@ -333,6 +408,11 @@ This branch should convince a skeptical reviewer if:
 - redistribution uses X3DH + Double Ratchet, not cleartext payloads
 - prekey bundles are published as public material in the team DB, not synced
   as private state
+- concurrent prekey-bundle publication merges preserve distinct rows for
+  different devices
+- the branch is honest about the hard boundary created by rotation: once a
+  receiver accepts a new sender chain, in-flight old-chain messages from that
+  sender may become undecryptable
 - the branch is honest about transport boundaries: production internet traffic
   still goes through the Hub, but this implementation slice may stop at payload
   creation/receipt plus explicit test exchange
@@ -374,6 +454,14 @@ Each device rotates independently. The removing device rotates its own key and
 distributes. Other devices learn about the removal on their next team DB pull
 and rotate + redistribute then. No central coordinator needed beyond the team
 DB as the source of truth for membership state.
+
+This means the branch does **not** deliver immediate team-wide rotation across
+all remaining devices. It delivers:
+
+- immediate rotation by the removing device
+- redistribution artifacts that remaining peers can process once delivered
+- the primitive other remaining devices will later use after they independently
+  observe the removal
 
 ### Q3. Revocation certs (deferred)
 
