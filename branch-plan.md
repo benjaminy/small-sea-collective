@@ -88,8 +88,9 @@ exchange begins:
 
 - Device B has already completed identity join and holds its local NoteToSelf
   device private keys
-- Device B has already generated its own Team X team-device keypair locally;
-  no sibling device mints team-device private keys for it
+- Device A is the admitting or otherwise already-aware sibling device that has
+  Device B's `user_device` signer key locally; this branch does not rely on a
+  fresh cross-device NoteToSelf sync round
 - Device B's team-device public key has already been admitted to Team X trust
   history via the existing `device_link` path
 - Device B can already obtain a readable current Team X baseline; the default
@@ -99,7 +100,7 @@ exchange begins:
 
 This branch therefore does **not** own:
 
-- generating or certifying Device B's team-device key
+- certifying Device B's team-device key
 - discovering Team X from NoteToSelf sync
 - optimizing current-baseline delivery beyond the fresh-snapshot default
 
@@ -166,7 +167,20 @@ The three payloads:
 All device-related keys are generated on-device. No sibling device creates or
 copies another device's team-device or X3DH private key material.
 
-### 4. Separate X3DH bootstrap keys from durable device identities
+### 4. Keep NoteToSelf signatures on the request, not the response
+
+The join request is dual-signed:
+
+- NoteToSelf device signature: binds the request to the linked installation's
+  identity-side `device_id`
+- Team X team-device signature: binds the request to team trust
+
+The bootstrap response is signed only by Device A's Team X team-device key.
+That is the security-critical authorization for releasing team crypto material.
+Adding a second NoteToSelf signature on the response is deferred unless a later
+branch finds a concrete need.
+
+### 5. Separate X3DH bootstrap keys from durable device identities
 
 `cuttlefish.prekeys.IdentityKeyPair` uses X25519 (DH) + Ed25519 (signing).
 These are distinct from the team-device Ed25519 signing key that appears in
@@ -186,7 +200,26 @@ For this branch:
 
 ## In Scope
 
-### 1. Device-local prekey storage schema
+### 1. Minimal linked-device team-key scaffolding
+
+This branch includes the smallest local-only seam needed so a newly linked
+device can satisfy the "has a Team X team-device keypair" precondition without
+calling private helpers directly in tests.
+
+Requirements:
+
+- runs on Device B only
+- generates/stores a Team X team-device keypair locally if one does not already
+  exist
+- returns the public key for the existing out-of-band `device_link` admission
+  step
+- does not issue trust material, sync NoteToSelf, or bootstrap sender keys
+
+The exact helper name and whether it is public or private are implementation
+details. The design constraint is that it is local-only, idempotent, and does
+not become a back door for broader team bootstrap logic.
+
+### 2. Device-local prekey storage schema
 
 Add tables to `device_local_schema.sql` (and corresponding migration) for:
 
@@ -200,13 +233,14 @@ Add tables to `device_local_schema.sql` (and corresponding migration) for:
 These are device-local secrets; they must not appear in the shared NoteToSelf
 sync DB.
 
-### 2. `prepare_linked_device_team_join`
+### 3. `prepare_linked_device_team_join`
 
 New Manager function. Device B calls this before initiating bootstrap.
 
 Steps:
 - assert that Device B already has a local NoteToSelf device signing key and a
-  local Team X team-device private key
+  local Team X team-device private key (creating the latter through the minimal
+  local-only helper if needed)
 - generate a fresh X3DH identity key pair, signed prekey, and at least one
   one-time prekey
 - store the bootstrap-session private state keyed by `bootstrap_id`
@@ -216,7 +250,7 @@ Steps:
 - sign the join-request bundle with both Device B's NoteToSelf device key and
   Device B's Team X team-device key
 
-### 3. `create_linked_device_bootstrap`
+### 4. `create_linked_device_bootstrap`
 
 New Manager function. Device A calls this with Device B's join-request bundle.
 
@@ -236,7 +270,7 @@ Steps:
 - persist any bootstrap state needed to safely accept Device B's later sender
   distribution for this `bootstrap_id`
 
-### 4. `finalize_linked_device_bootstrap`
+### 5. `finalize_linked_device_bootstrap`
 
 New Manager function. Device B calls this with Device A's bootstrap bundle.
 
@@ -254,12 +288,12 @@ Steps:
 Device A's caller verifies the returned signature and stores this distribution as
 a peer receiver record for Device B.
 
-### 5. Schema migration
+### 6. Schema migration
 
 Bump `LOCAL_SCHEMA_VERSION` and add the new prekey/ratchet session tables. Add a
 migration path in `_migrate_device_local_db`.
 
-### 6. Micro tests
+### 7. Micro tests
 
 Minimum expected coverage:
 
@@ -275,12 +309,13 @@ Minimum expected coverage:
 - idempotent finalization: finalizing the same bootstrap bundle twice does not
   corrupt local state or mint a second sender stream for Device B
 - no bootstrap private material appears in the shared NoteToSelf DB
+- minimal linked-device key scaffolding is idempotent and does not issue trust
+  material by itself
 
 ## Out Of Scope
 
 - cross-member sender-key redistribution to a newly linked device (#43 / #59
   second slice)
-- generating Device B's Team X team-device keypair
 - issuing or syncing Device B's `device_link` trust material
 - async Hub-mediated prekey bundle publication and retrieval
 - periodic sender-key rotation and redistribution (#43)
@@ -304,7 +339,9 @@ Schema version bump and migration.
 
 ### 3. `packages/small-sea-manager/small_sea_manager/provisioning.py`
 
-Three new functions:
+New or extended seams:
+- minimal local-only helper to ensure a Team X team-device key exists on a
+  linked device
 - `prepare_linked_device_team_join`
 - `create_linked_device_bootstrap`
 - `finalize_linked_device_bootstrap`
@@ -318,23 +355,16 @@ covering the cases listed above.
 
 ## Open Questions
 
-### 1. Should Device A's bootstrap response also carry a NoteToSelf signature?
+### 1. Bootstrap-session cleanup details
 
-The request clearly benefits from both signatures: NoteToSelf binds the shared
-identity-side `device_id`, while Team X team-device signing binds the request to
-team trust. For the response, Team X team-device signing is definitely needed;
-the remaining question is whether a second NoteToSelf signature adds enough
-clarity or defense-in-depth to justify the extra surface.
+The branch no longer treats cleanup policy as a design blocker, but the code
+still needs to implement the default policy consistently:
 
-### 2. What is the cleanup policy for completed or abandoned bootstrap sessions?
-
-The branch now keys bootstrap state by `bootstrap_id`, but implementation still
-needs a small policy:
-
-- when to delete consumed one-time prekeys
-- when to delete finalized bootstrap-session state
-- whether abandoned sessions expire on time, on next startup, or only when a
-  new bootstrap supersedes them
+- consumed one-time prekeys are deleted immediately after successful X3DH receive
+- finalized bootstrap-session and ratchet state are deleted once Device B has
+  finalized locally and Device A has accepted Device B's sender distribution
+- abandoned bootstrap sessions older than one day are pruned opportunistically
+  when bootstrap helpers run
 
 ## Validation
 
