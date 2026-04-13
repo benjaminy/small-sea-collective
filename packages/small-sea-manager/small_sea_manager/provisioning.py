@@ -8,7 +8,6 @@
 # schema is the shared contract between the two packages.
 
 import base64
-import hashlib
 import json
 import os
 import pathlib
@@ -225,7 +224,7 @@ def _read_local_secret(path: pathlib.Path) -> bytes:
 
 
 def _participant_key_from_public(public_key: bytes) -> ParticipantKey:
-    key_id = hashlib.sha256(public_key).digest()[:16]
+    key_id = key_id_from_public(public_key)
     return ParticipantKey(
         key_id=key_id,
         public_key=public_key,
@@ -405,6 +404,354 @@ def _clear_pending_linked_team_bootstrap(root_dir, participant_hex: str, bootstr
             (bootstrap_id,),
         )
         conn.commit()
+
+
+REDISTRIBUTION_ONE_TIME_PREKEY_COUNT = 5
+
+
+def _redistribution_prekey_state_row(root_dir, participant_hex: str, team_id: bytes):
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            """
+            SELECT team_id,
+                   identity_dh_public_key,
+                   identity_dh_private_key,
+                   identity_signing_public_key,
+                   identity_signing_private_key,
+                   signed_prekey_id,
+                   signed_prekey_public_key,
+                   signed_prekey_private_key,
+                   signed_prekey_signature,
+                   published_at,
+                   updated_at
+            FROM redistribution_prekey_state
+            WHERE team_id = ?
+            """,
+            (team_id,),
+        ).fetchone()
+
+
+def _available_redistribution_one_time_prekeys(root_dir, participant_hex: str, team_id: bytes):
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            """
+            SELECT prekey_id, public_key, private_key
+            FROM redistribution_one_time_prekey
+            WHERE team_id = ? AND private_key IS NOT NULL AND consumed_at IS NULL
+            ORDER BY prekey_id
+            """,
+            (team_id,),
+        ).fetchall()
+
+
+def _store_redistribution_prekey_state(
+    root_dir,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    identity: IdentityKeyPair,
+    signed_prekey: SignedPrekey,
+    signed_prekey_private_key: bytes,
+    published_at: str | None = None,
+) -> None:
+    now = _now_iso()
+    published = published_at or now
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO redistribution_prekey_state (
+                team_id,
+                identity_dh_public_key,
+                identity_dh_private_key,
+                identity_signing_public_key,
+                identity_signing_private_key,
+                signed_prekey_id,
+                signed_prekey_public_key,
+                signed_prekey_private_key,
+                signed_prekey_signature,
+                published_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                team_id,
+                identity.dh_public_key,
+                identity.dh_private_key,
+                identity.signing_public_key,
+                identity.signing_private_key,
+                signed_prekey.prekey_id,
+                signed_prekey.public_key,
+                signed_prekey_private_key,
+                signed_prekey.signature,
+                published,
+                now,
+            ),
+        )
+        conn.commit()
+
+
+def _replace_redistribution_one_time_prekeys(
+    root_dir,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    one_time_prekeys: list[tuple[OneTimePrekey, bytes]],
+) -> None:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.execute(
+            "DELETE FROM redistribution_one_time_prekey WHERE team_id = ?",
+            (team_id,),
+        )
+        conn.executemany(
+            """
+            INSERT INTO redistribution_one_time_prekey (
+                team_id, prekey_id, public_key, private_key, consumed_at
+            ) VALUES (?, ?, ?, ?, NULL)
+            """,
+            [
+                (
+                    team_id,
+                    one_time_prekey.prekey_id,
+                    one_time_prekey.public_key,
+                    one_time_prekey_private_key,
+                )
+                for one_time_prekey, one_time_prekey_private_key in one_time_prekeys
+            ],
+        )
+        conn.commit()
+
+
+def _consume_redistribution_one_time_prekey(
+    root_dir,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    prekey_id: bytes,
+) -> None:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.execute(
+            """
+            UPDATE redistribution_one_time_prekey
+            SET private_key = NULL, consumed_at = ?
+            WHERE team_id = ? AND prekey_id = ?
+            """,
+            (_now_iso(), team_id, prekey_id),
+        )
+        conn.commit()
+
+
+def _redistribution_one_time_prekey_private(
+    root_dir,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    prekey_id: bytes,
+) -> bytes | None:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        row = conn.execute(
+            """
+            SELECT private_key
+            FROM redistribution_one_time_prekey
+            WHERE team_id = ? AND prekey_id = ?
+            """,
+            (team_id, prekey_id),
+        ).fetchone()
+    if row is None:
+        return None
+    return row[0]
+
+
+def _ensure_redistribution_prekey_material(
+    root_dir,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    refresh: bool = False,
+) -> tuple[IdentityKeyPair, SignedPrekey, bytes, list[tuple[OneTimePrekey, bytes]]]:
+    state_row = _redistribution_prekey_state_row(root_dir, participant_hex, team_id)
+    if state_row is None:
+        identity = generate_identity_key_pair()
+        signed_prekey, signed_prekey_private_key = generate_signed_prekey(
+            identity.signing_private_key
+        )
+        one_time_prekeys = generate_one_time_prekeys(REDISTRIBUTION_ONE_TIME_PREKEY_COUNT)
+        _store_redistribution_prekey_state(
+            root_dir,
+            participant_hex,
+            team_id=team_id,
+            identity=identity,
+            signed_prekey=signed_prekey,
+            signed_prekey_private_key=signed_prekey_private_key,
+        )
+        _replace_redistribution_one_time_prekeys(
+            root_dir,
+            participant_hex,
+            team_id=team_id,
+            one_time_prekeys=one_time_prekeys,
+        )
+        return identity, signed_prekey, signed_prekey_private_key, one_time_prekeys
+
+    identity = IdentityKeyPair(
+        dh_public_key=state_row["identity_dh_public_key"],
+        dh_private_key=state_row["identity_dh_private_key"],
+        signing_public_key=state_row["identity_signing_public_key"],
+        signing_private_key=state_row["identity_signing_private_key"],
+    )
+    if refresh:
+        signed_prekey, signed_prekey_private_key = generate_signed_prekey(
+            identity.signing_private_key
+        )
+        one_time_prekeys = generate_one_time_prekeys(REDISTRIBUTION_ONE_TIME_PREKEY_COUNT)
+        _store_redistribution_prekey_state(
+            root_dir,
+            participant_hex,
+            team_id=team_id,
+            identity=identity,
+            signed_prekey=signed_prekey,
+            signed_prekey_private_key=signed_prekey_private_key,
+        )
+        _replace_redistribution_one_time_prekeys(
+            root_dir,
+            participant_hex,
+            team_id=team_id,
+            one_time_prekeys=one_time_prekeys,
+        )
+        return identity, signed_prekey, signed_prekey_private_key, one_time_prekeys
+
+    signed_prekey = SignedPrekey(
+        prekey_id=state_row["signed_prekey_id"],
+        public_key=state_row["signed_prekey_public_key"],
+        signature=state_row["signed_prekey_signature"],
+    )
+    one_time_prekeys = [
+        (
+            OneTimePrekey(
+                prekey_id=row["prekey_id"],
+                public_key=row["public_key"],
+            ),
+            row["private_key"],
+        )
+        for row in _available_redistribution_one_time_prekeys(root_dir, participant_hex, team_id)
+    ]
+    return identity, signed_prekey, state_row["signed_prekey_private_key"], one_time_prekeys
+
+
+def _ensure_device_prekey_bundle_table(conn) -> None:
+    conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS device_prekey_bundle ("
+            "device_key_id BLOB PRIMARY KEY, "
+            "prekey_bundle_json TEXT NOT NULL, "
+            "published_at TEXT NOT NULL)"
+        )
+    )
+
+
+def _upsert_device_prekey_bundle(
+    conn,
+    *,
+    device_key_id: bytes,
+    prekey_bundle: PrekeyBundle,
+    published_at: str,
+) -> None:
+    _ensure_device_prekey_bundle_table(conn)
+    conn.execute(
+        text(
+            "INSERT OR REPLACE INTO device_prekey_bundle "
+            "(device_key_id, prekey_bundle_json, published_at) "
+            "VALUES (:device_key_id, :prekey_bundle_json, :published_at)"
+        ),
+        {
+            "device_key_id": device_key_id,
+            "prekey_bundle_json": json.dumps(
+                _serialize_prekey_bundle(prekey_bundle),
+                sort_keys=True,
+            ),
+            "published_at": published_at,
+        },
+    )
+
+
+def _load_device_prekey_bundle(conn, device_key_id: bytes) -> PrekeyBundle | None:
+    _ensure_device_prekey_bundle_table(conn)
+    row = conn.execute(
+        text(
+            "SELECT prekey_bundle_json FROM device_prekey_bundle WHERE device_key_id = :device_key_id"
+        ),
+        {"device_key_id": device_key_id},
+    ).fetchone()
+    if row is None:
+        return None
+    return _deserialize_prekey_bundle(json.loads(row[0]))
+
+
+def _publish_local_device_prekey_bundle(
+    root_dir,
+    participant_hex: str,
+    team_name: str,
+    *,
+    commit_message: str | None = None,
+    refresh: bool = False,
+    conn=None,
+    team_id: bytes | None = None,
+    team_device_public_key: bytes | None = None,
+) -> dict:
+    if team_id is None:
+        team_id, _member_id = _team_row(root_dir, participant_hex, team_name)
+    if team_device_public_key is None:
+        _private_key, team_device_public_key = get_current_team_device_key(
+            root_dir, participant_hex, team_name
+        )
+    device_key_id = key_id_from_public(team_device_public_key)
+    identity, signed_prekey, _signed_prekey_private_key, one_time_prekeys = (
+        _ensure_redistribution_prekey_material(
+            root_dir,
+            participant_hex,
+            team_id=team_id,
+            refresh=refresh,
+        )
+    )
+    bundle = build_prekey_bundle(
+        participant_id=device_key_id,
+        identity=identity,
+        signed_prekey=signed_prekey,
+        one_time_prekeys=[prekey for prekey, _private in one_time_prekeys],
+    )
+    published_at = _now_iso()
+
+    if conn is not None:
+        _upsert_device_prekey_bundle(
+            conn,
+            device_key_id=device_key_id,
+            prekey_bundle=bundle,
+            published_at=published_at,
+        )
+    else:
+        team_sync_dir = pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync"
+        team_db_path = team_sync_dir / "core.db"
+        ensure_team_db_schema(team_db_path)
+        engine = create_engine(f"sqlite:///{team_db_path}")
+        try:
+            with engine.begin() as local_conn:
+                _upsert_device_prekey_bundle(
+                    local_conn,
+                    device_key_id=device_key_id,
+                    prekey_bundle=bundle,
+                    published_at=published_at,
+                )
+        finally:
+            engine.dispose()
+        if commit_message is not None:
+            CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+            CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", commit_message])
+
+    return {
+        "device_key_id": device_key_id,
+        "prekey_bundle": bundle,
+        "published_at": published_at,
+    }
 
 
 def _persist_pending_join_state(root_dir, state: dict) -> None:
@@ -1721,6 +2068,14 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
                 cert,
                 issuer_member_id=member_id,
             )
+            _publish_local_device_prekey_bundle(
+                root_dir,
+                participant_hex,
+                team_name,
+                conn=conn,
+                team_id=team_id,
+                team_device_public_key=session_row["team_device_public_key"],
+            )
     finally:
         engine.dispose()
     if cert_inserted:
@@ -2028,6 +2383,347 @@ def get_trusted_device_keys_by_member(root_dir, participant_hex, team_name):
     return resolve_trusted_device_keys_by_member(certs, team_id)
 
 
+def _team_sync_dir(root_dir, participant_hex, team_name) -> pathlib.Path:
+    return pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync"
+
+
+def _team_db_path(root_dir, participant_hex, team_name) -> pathlib.Path:
+    return _team_sync_dir(root_dir, participant_hex, team_name) / "core.db"
+
+
+def _core_berth_role(conn, member_id: bytes) -> str | None:
+    row = conn.execute(
+        text(
+            "SELECT br.role "
+            "FROM berth_role br "
+            "JOIN team_app_berth tab ON tab.id = br.berth_id "
+            "JOIN app a ON a.id = tab.app_id "
+            "WHERE br.member_id = :member_id AND a.name = 'SmallSeaCollectiveCore' "
+            "LIMIT 1"
+        ),
+        {"member_id": member_id},
+    ).fetchone()
+    return row[0] if row is not None else None
+
+
+def _delete_peer_sender_key_rows(db_path: str | pathlib.Path, team_id: bytes, sender_device_key_ids: list[bytes]):
+    if not sender_device_key_ids:
+        return
+    placeholders = ", ".join("?" for _ in sender_device_key_ids)
+    params = [team_id, *sender_device_key_ids]
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(
+            f"DELETE FROM peer_sender_key WHERE team_id = ? AND sender_device_key_id IN ({placeholders})",
+            params,
+        )
+        conn.commit()
+
+
+def rotate_team_sender_key(root_dir, participant_hex, team_name):
+    root_dir = pathlib.Path(root_dir)
+    team_id, _member_id = _team_row(root_dir, participant_hex, team_name)
+    _team_device_private_key, team_device_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
+    sender_device_key_id = key_id_from_public(team_device_public_key)
+    sender_record, distribution = create_sender_key(team_id, sender_device_key_id)
+    user_db_path = device_local_db_path(root_dir, participant_hex)
+    save_team_sender_key(user_db_path, team_id, sender_record)
+    save_peer_sender_key(user_db_path, team_id, receiver_record_from_distribution(distribution))
+    return {
+        "team_id_hex": team_id.hex(),
+        "sender_device_key_id_hex": distribution.sender_device_key_id.hex(),
+        "sender_distribution": serialize_distribution_message(distribution),
+    }
+
+
+def redistribute_sender_key(root_dir, participant_hex, team_name, target_device_key_ids=None):
+    root_dir = pathlib.Path(root_dir)
+    team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    user_db_path = device_local_db_path(root_dir, participant_hex)
+    sender_record = load_team_sender_key(user_db_path, team_id)
+    if sender_record is None:
+        raise ValueError(f"No local sender key found for team '{team_name}'")
+
+    sender_distribution = distribution_message_from_record(sender_record)
+    plaintext = _json_bytes(serialize_distribution_message(sender_distribution))
+    _sender_private_key, sender_team_device_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
+    sender_device_key_id = key_id_from_public(sender_team_device_public_key)
+    requested_target_ids = None
+    if target_device_key_ids is not None:
+        requested_target_ids = {
+            bytes.fromhex(target) if isinstance(target, str) else target
+            for target in target_device_key_ids
+        }
+
+    trusted_public_keys_by_member = get_trusted_device_keys_by_member(
+        root_dir, participant_hex, team_name
+    )
+    candidate_public_keys: dict[bytes, bytes] = {}
+    for member_id, public_keys in trusted_public_keys_by_member.items():
+        if member_id == self_in_team:
+            continue
+        for public_key in public_keys:
+            device_key_id = key_id_from_public(public_key)
+            if requested_target_ids is not None and device_key_id not in requested_target_ids:
+                continue
+            candidate_public_keys[device_key_id] = public_key
+
+    engine = create_engine(f"sqlite:///{team_db_path}")
+    artifacts = []
+    skipped = []
+    try:
+        with engine.begin() as conn:
+            for device_key_id, _public_key in sorted(candidate_public_keys.items()):
+                bundle = _load_device_prekey_bundle(conn, device_key_id)
+                if bundle is None:
+                    skipped.append(device_key_id.hex())
+                    continue
+                sender_identity = generate_identity_key_pair()
+                x3dh_result = x3dh_send(sender_identity, bundle)
+                ratchet_state = initialize_as_sender(
+                    x3dh_result.shared_secret,
+                    x3dh_result.signed_prekey_public,
+                )
+                associated_data = _json_bytes(
+                    {
+                        "team_id": team_id.hex(),
+                        "sender_device_key_id": sender_device_key_id.hex(),
+                        "target_device_key_id": device_key_id.hex(),
+                    }
+                )
+                ratchet_state, encrypted_message = ratchet_encrypt(
+                    ratchet_state,
+                    plaintext,
+                    associated_data=associated_data,
+                )
+                artifact_body = {
+                    "team_id": team_id.hex(),
+                    "sender_team_device_public_key": sender_team_device_public_key.hex(),
+                    "sender_device_key_id": sender_device_key_id.hex(),
+                    "target_device_key_id": device_key_id.hex(),
+                    "x3dh_initial_message": _serialize_x3dh_initial_message(
+                        x3dh_result.initial_message
+                    ),
+                    "ratchet_message": _serialize_encrypted_message(encrypted_message),
+                }
+                artifact_bytes = _json_bytes(artifact_body)
+                artifact_body["team_device_signature"] = _sign_bytes(
+                    _sender_private_key,
+                    artifact_bytes,
+                ).hex()
+                artifacts.append(
+                    {
+                        "target_device_key_id_hex": device_key_id.hex(),
+                        "sender_device_key_id_hex": sender_device_key_id.hex(),
+                        "distribution_payload": _tokenize(artifact_body),
+                    }
+                )
+    finally:
+        engine.dispose()
+
+    return {
+        "team_id_hex": team_id.hex(),
+        "sender_device_key_id_hex": sender_device_key_id.hex(),
+        "artifacts": artifacts,
+        "skipped_device_key_ids_hex": skipped,
+    }
+
+
+def receive_sender_key_distribution(root_dir, participant_hex, team_name, distribution_payload):
+    root_dir = pathlib.Path(root_dir)
+    payload = _untokenize(distribution_payload)
+    payload_body = {
+        "team_id": payload["team_id"],
+        "sender_team_device_public_key": payload["sender_team_device_public_key"],
+        "sender_device_key_id": payload["sender_device_key_id"],
+        "target_device_key_id": payload["target_device_key_id"],
+        "x3dh_initial_message": payload["x3dh_initial_message"],
+        "ratchet_message": payload["ratchet_message"],
+    }
+    payload_bytes = _json_bytes(payload_body)
+
+    team_id, _member_id = _team_row(root_dir, participant_hex, team_name)
+    if bytes.fromhex(payload["team_id"]) != team_id:
+        raise ValueError("Distribution payload team_id does not match local team")
+
+    _local_private_key, local_team_device_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
+    local_device_key_id = key_id_from_public(local_team_device_public_key)
+    target_device_key_id = bytes.fromhex(payload["target_device_key_id"])
+    if target_device_key_id != local_device_key_id:
+        raise ValueError("Distribution payload is not addressed to this device")
+
+    sender_team_device_public_key = bytes.fromhex(payload["sender_team_device_public_key"])
+    sender_device_key_id = bytes.fromhex(payload["sender_device_key_id"])
+    if sender_device_key_id != key_id_from_public(sender_team_device_public_key):
+        raise ValueError("Distribution payload sender key id does not match signer key")
+    if not _verify_signature(
+        sender_team_device_public_key,
+        payload_bytes,
+        bytes.fromhex(payload["team_device_signature"]),
+    ):
+        raise ValueError("Distribution payload signature is invalid")
+
+    trusted_public_keys = {
+        public_key
+        for public_keys in get_trusted_device_keys_by_member(
+            root_dir, participant_hex, team_name
+        ).values()
+        for public_key in public_keys
+    }
+    if sender_team_device_public_key not in trusted_public_keys:
+        raise ValueError("Distribution payload signer is not trusted in this team")
+
+    prekey_state = _redistribution_prekey_state_row(root_dir, participant_hex, team_id)
+    if prekey_state is None:
+        raise ValueError(f"No redistribution prekey state found for team '{team_name}'")
+
+    identity = IdentityKeyPair(
+        dh_public_key=prekey_state["identity_dh_public_key"],
+        dh_private_key=prekey_state["identity_dh_private_key"],
+        signing_public_key=prekey_state["identity_signing_public_key"],
+        signing_private_key=prekey_state["identity_signing_private_key"],
+    )
+    initial_message = _deserialize_x3dh_initial_message(payload["x3dh_initial_message"])
+    used_otp_id = initial_message.used_one_time_prekey_id
+    otp_private_key = None
+    if used_otp_id is not None:
+        otp_private_key = _redistribution_one_time_prekey_private(
+            root_dir,
+            participant_hex,
+            team_id=team_id,
+            prekey_id=used_otp_id,
+        )
+        if otp_private_key is None:
+            raise ValueError("Distribution payload consumed an unavailable one-time prekey")
+
+    shared_secret = x3dh_receive(
+        identity,
+        prekey_state["signed_prekey_private_key"],
+        otp_private_key,
+        initial_message,
+    )
+    ratchet_state = initialize_as_receiver(
+        shared_secret,
+        (
+            prekey_state["signed_prekey_public_key"],
+            prekey_state["signed_prekey_private_key"],
+        ),
+    )
+    associated_data = _json_bytes(
+        {
+            "team_id": team_id.hex(),
+            "sender_device_key_id": sender_device_key_id.hex(),
+            "target_device_key_id": target_device_key_id.hex(),
+        }
+    )
+    _ratchet_state, plaintext = ratchet_decrypt(
+        ratchet_state,
+        _deserialize_encrypted_message(payload["ratchet_message"]),
+        associated_data=associated_data,
+    )
+    if used_otp_id is not None:
+        _consume_redistribution_one_time_prekey(
+            root_dir,
+            participant_hex,
+            team_id=team_id,
+            prekey_id=used_otp_id,
+        )
+    distribution = deserialize_distribution_message(json.loads(plaintext.decode("utf-8")))
+    if distribution.sender_device_key_id != sender_device_key_id:
+        raise ValueError("Distribution payload sender stream does not match decrypted sender key")
+    save_peer_sender_key(
+        device_local_db_path(root_dir, participant_hex),
+        team_id,
+        receiver_record_from_distribution(distribution),
+    )
+    return {
+        "team_id_hex": team_id.hex(),
+        "sender_device_key_id_hex": sender_device_key_id.hex(),
+        "target_device_key_id_hex": target_device_key_id.hex(),
+    }
+
+
+def remove_member(root_dir, participant_hex, team_name, member):
+    root_dir = pathlib.Path(root_dir)
+    removed_member_id = bytes.fromhex(member) if isinstance(member, str) else member
+    team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+    if removed_member_id == self_in_team:
+        raise ValueError("remove_member cannot remove self in this branch")
+
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    ensure_team_db_schema(team_db_path)
+    engine = create_engine(f"sqlite:///{team_db_path}")
+    removed_device_public_keys = get_trusted_device_keys_for_member(
+        root_dir, participant_hex, team_name, removed_member_id
+    )
+    removed_device_key_ids = [key_id_from_public(public_key) for public_key in removed_device_public_keys]
+
+    try:
+        with engine.begin() as conn:
+            member_exists = conn.execute(
+                text("SELECT 1 FROM member WHERE id = :member_id"),
+                {"member_id": removed_member_id},
+            ).fetchone()
+            if member_exists is None:
+                raise ValueError(f"Member '{removed_member_id.hex()}' not found")
+            role = _core_berth_role(conn, self_in_team)
+            if role != "read-write":
+                raise ValueError("Removing a member requires read-write permission on the Core berth")
+            certs = _load_team_certificates(conn, team_id)
+            cert_ids_to_delete = [
+                cert.cert_id
+                for cert in certs
+                if cert.claims.get("member_id") == removed_member_id.hex()
+            ]
+            for cert_id in cert_ids_to_delete:
+                conn.execute(
+                    text("DELETE FROM key_certificate WHERE cert_id = :cert_id"),
+                    {"cert_id": cert_id},
+                )
+            conn.execute(
+                text("DELETE FROM member WHERE id = :member_id"),
+                {"member_id": removed_member_id},
+            )
+            _publish_local_device_prekey_bundle(
+                root_dir,
+                participant_hex,
+                team_name,
+                conn=conn,
+                team_id=team_id,
+                refresh=True,
+            )
+    finally:
+        engine.dispose()
+
+    team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+    CodSync.gitCmd(
+        ["-C", str(team_sync_dir), "commit", "-m", f"Removed member {removed_member_id.hex()}"]
+    )
+
+    _delete_peer_sender_key_rows(
+        device_local_db_path(root_dir, participant_hex),
+        team_id,
+        removed_device_key_ids,
+    )
+    rotated = rotate_team_sender_key(root_dir, participant_hex, team_name)
+    redistribution = redistribute_sender_key(root_dir, participant_hex, team_name)
+    return {
+        "team_id_hex": team_id.hex(),
+        "removed_member_id_hex": removed_member_id.hex(),
+        "removed_device_key_ids_hex": [device_key_id.hex() for device_key_id in removed_device_key_ids],
+        "rotated_sender_device_key_id_hex": rotated["sender_device_key_id_hex"],
+        "redistribution_artifacts": redistribution["artifacts"],
+        "skipped_device_key_ids_hex": redistribution["skipped_device_key_ids_hex"],
+    }
+
+
 def issue_device_link_for_member(root_dir, participant_hex, team_name, linked_device_public_key):
     """Issue and store a device_link cert for an externally generated public key."""
     if isinstance(linked_device_public_key, str):
@@ -2287,6 +2983,14 @@ def create_team(root_dir, participant_hex, team_name):
             ),
             {"id": uuid7(), "mid": member_id, "bid": berth_id, "role": "read-write"},
         )
+        _publish_local_device_prekey_bundle(
+            root_dir,
+            participant_hex,
+            team_name,
+            conn=conn,
+            team_id=team_id,
+            team_device_public_key=team_keys["device_key"].public_key,
+        )
 
     # --- Git init ---
     CodSync.gitCmd(["init", "-b", "main", str(team_sync_dir)])
@@ -2511,6 +3215,15 @@ def accept_invitation(
     )
 
     # --- Git commit the DB changes ---
+    with team_engine.begin() as conn:
+        _publish_local_device_prekey_bundle(
+            root_dir,
+            acceptor_participant_hex,
+            team_name,
+            conn=conn,
+            team_id=team_id,
+            team_device_public_key=team_keys["device_key"].public_key,
+        )
     CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
     CodSync.gitCmd(
         ["-C", str(team_sync_dir), "commit", "-m", f"Joined team: {team_name}"]

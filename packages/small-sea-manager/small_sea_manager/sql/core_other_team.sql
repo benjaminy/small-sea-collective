@@ -61,3 +61,9 @@ CREATE TABLE IF NOT EXISTS key_certificate (
     signature BLOB NOT NULL,
     FOREIGN KEY (issuer_member_id) REFERENCES member(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS device_prekey_bundle (
+    device_key_id BLOB PRIMARY KEY,
+    prekey_bundle_json TEXT NOT NULL,
+    published_at TEXT NOT NULL
+);

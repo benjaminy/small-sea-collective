@@ -83,3 +83,26 @@ CREATE TABLE IF NOT EXISTS pending_linked_team_bootstrap (
     peer_team_device_public_key BLOB NOT NULL,
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS redistribution_prekey_state (
+    team_id BLOB PRIMARY KEY,
+    identity_dh_public_key BLOB NOT NULL,
+    identity_dh_private_key BLOB NOT NULL,
+    identity_signing_public_key BLOB NOT NULL,
+    identity_signing_private_key BLOB NOT NULL,
+    signed_prekey_id BLOB NOT NULL,
+    signed_prekey_public_key BLOB NOT NULL,
+    signed_prekey_private_key BLOB NOT NULL,
+    signed_prekey_signature BLOB NOT NULL,
+    published_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS redistribution_one_time_prekey (
+    team_id BLOB NOT NULL,
+    prekey_id BLOB NOT NULL,
+    public_key BLOB NOT NULL,
+    private_key BLOB,
+    consumed_at TEXT,
+    PRIMARY KEY (team_id, prekey_id)
+);
