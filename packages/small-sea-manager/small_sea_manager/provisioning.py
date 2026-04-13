@@ -1694,11 +1694,21 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
             )
             conn.commit()
 
-    sender_distribution = _initialize_team_sender_key_state(
+    existing_sender_record = load_team_sender_key(
         device_local_db_path(root_dir, participant_hex),
         team_id,
-        key_id_from_public(session_row["team_device_public_key"]),
     )
+    expected_sender_device_key_id = key_id_from_public(session_row["team_device_public_key"])
+    if existing_sender_record is not None:
+        if existing_sender_record.sender_device_key_id != expected_sender_device_key_id:
+            raise ValueError("Existing team sender key does not belong to the bootstrapped device")
+        sender_distribution = distribution_message_from_record(existing_sender_record)
+    else:
+        sender_distribution = _initialize_team_sender_key_state(
+            device_local_db_path(root_dir, participant_hex),
+            team_id,
+            expected_sender_device_key_id,
+        )
 
     participant_dir = root_dir / "Participants" / participant_hex
     team_sync_dir = participant_dir / team_name / "Sync"
@@ -1706,11 +1716,16 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     engine = create_engine(f"sqlite:///{team_db_path}")
     try:
         with engine.begin() as conn:
-            _store_team_certificate(conn, cert, issuer_member_id=member_id)
+            cert_inserted = _store_team_certificate_if_missing(
+                conn, cert, issuer_member_id=member_id
+            )
     finally:
         engine.dispose()
-    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", "Received device link cert from bootstrap"])
+    if cert_inserted:
+        CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+        CodSync.gitCmd(
+            ["-C", str(team_sync_dir), "commit", "-m", "Received device link cert from bootstrap"]
+        )
 
     response_payload = {
         "bootstrap_id": bootstrap_id.hex(),
@@ -1867,6 +1882,33 @@ def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes)
             "signature": cert.signature,
         },
     )
+
+
+def _store_team_certificate_if_missing(conn, cert: KeyCertificate, issuer_member_id: bytes) -> bool:
+    existing = conn.execute(
+        text(
+            "SELECT cert_type, subject_key_id, subject_public_key, issuer_key_id, "
+            "issuer_member_id, issued_at, claims, signature "
+            "FROM key_certificate WHERE cert_id = :cert_id"
+        ),
+        {"cert_id": cert.cert_id},
+    ).fetchone()
+    if existing is None:
+        _store_team_certificate(conn, cert, issuer_member_id=issuer_member_id)
+        return True
+
+    if (
+        existing[0] != cert.cert_type.value
+        or existing[1] != cert.subject_key_id
+        or existing[2] != cert.subject_public_key
+        or existing[3] != cert.issuer_key_id
+        or existing[4] != issuer_member_id
+        or existing[5] != cert.issued_at_iso
+        or json.loads(existing[6]) != cert.claims
+        or existing[7] != cert.signature
+    ):
+        raise ValueError("Existing team certificate does not match bootstrap certificate")
+    return False
 
 
 def _load_team_certificates(conn, team_id: bytes) -> list[KeyCertificate]:

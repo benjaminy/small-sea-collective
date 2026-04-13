@@ -12,6 +12,7 @@ from small_sea_manager.manager import (
     bootstrap_existing_identity,
     create_identity_join_request,
 )
+from small_sea_manager import provisioning
 from small_sea_manager.provisioning import add_cloud_storage, create_new_participant
 from small_sea_note_to_self.db import device_local_db_path, note_to_self_sync_db_path
 from small_sea_note_to_self.sender_keys import (
@@ -201,3 +202,66 @@ def test_linked_device_bootstrap_rejects_invalid_join_signatures(playground_dir)
             "ProjectX",
             base64.b64encode(json.dumps(tampered_team).encode("utf-8")).decode("ascii"),
         )
+
+
+def test_linked_device_bootstrap_retry_after_interrupted_finalize_is_idempotent(
+    playground_dir, monkeypatch
+):
+    workspace = pathlib.Path(playground_dir)
+    root1 = workspace / "install-a"
+    root2 = workspace / "install-b"
+    cloud_dir = workspace / "cloud"
+    root1.mkdir()
+    root2.mkdir()
+    cloud_dir.mkdir()
+
+    alice_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
+
+    join_request = create_identity_join_request(root2)
+    manager1 = TeamManager(root1, alice_hex)
+    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+
+    team_result = manager1.create_team("ProjectX")
+    team_id = bytes.fromhex(team_result["team_id_hex"])
+    member_id = bytes.fromhex(team_result["member_id_hex"])
+    _copy_team_baseline(root1, root2, alice_hex, "ProjectX", team_id, member_id)
+
+    manager2 = TeamManager(root2, alice_hex)
+    prepared = manager2.prepare_linked_device_team_join("ProjectX")
+    created = manager1.create_linked_device_bootstrap(
+        "ProjectX",
+        prepared["join_request_bundle"],
+    )
+
+    original_update = provisioning._update_linked_team_bootstrap_session
+
+    def fail_after_cert_store(*args, **kwargs):
+        raise RuntimeError("simulated crash after cert store")
+
+    monkeypatch.setattr(
+        provisioning,
+        "_update_linked_team_bootstrap_session",
+        fail_after_cert_store,
+    )
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        manager2.finalize_linked_device_bootstrap(
+            "ProjectX",
+            created["bootstrap_bundle"],
+        )
+
+    monkeypatch.setattr(
+        provisioning,
+        "_update_linked_team_bootstrap_session",
+        original_update,
+    )
+    retried = manager2.finalize_linked_device_bootstrap(
+        "ProjectX",
+        created["bootstrap_bundle"],
+    )
+    retried_again = manager2.finalize_linked_device_bootstrap(
+        "ProjectX",
+        created["bootstrap_bundle"],
+    )
+    assert retried_again == retried
