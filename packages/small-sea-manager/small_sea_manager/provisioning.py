@@ -1716,8 +1716,10 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     engine = create_engine(f"sqlite:///{team_db_path}")
     try:
         with engine.begin() as conn:
-            cert_inserted = _store_team_certificate_if_missing(
-                conn, cert, issuer_member_id=member_id
+            cert_inserted = _insert_team_certificate_if_missing(
+                conn,
+                cert,
+                issuer_member_id=member_id,
             )
     finally:
         engine.dispose()
@@ -1884,7 +1886,48 @@ def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes)
     )
 
 
-def _store_team_certificate_if_missing(conn, cert: KeyCertificate, issuer_member_id: bytes) -> bool:
+def _same_team_certificate_row(row, cert: KeyCertificate, issuer_member_id: bytes) -> bool:
+    return (
+        row[0] == cert.cert_type.value
+        and row[1] == cert.subject_key_id
+        and row[2] == cert.subject_public_key
+        and row[3] == cert.issuer_key_id
+        and row[4] == issuer_member_id
+        and row[5] == cert.issued_at_iso
+        and json.loads(row[6]) == cert.claims
+        and row[7] == cert.signature
+    )
+
+
+def _insert_team_certificate_if_missing(
+    conn,
+    cert: KeyCertificate,
+    issuer_member_id: bytes,
+) -> bool:
+    result = conn.execute(
+        text(
+            "INSERT OR IGNORE INTO key_certificate ("
+            "cert_id, cert_type, subject_key_id, subject_public_key, "
+            "issuer_key_id, issuer_member_id, issued_at, claims, signature"
+            ") VALUES ("
+            ":cert_id, :cert_type, :subject_key_id, :subject_public_key, "
+            ":issuer_key_id, :issuer_member_id, :issued_at, :claims, :signature)"
+        ),
+        {
+            "cert_id": cert.cert_id,
+            "cert_type": cert.cert_type,
+            "subject_key_id": cert.subject_key_id,
+            "subject_public_key": cert.subject_public_key,
+            "issuer_key_id": cert.issuer_key_id,
+            "issuer_member_id": issuer_member_id,
+            "issued_at": cert.issued_at_iso,
+            "claims": json.dumps(cert.claims, sort_keys=True),
+            "signature": cert.signature,
+        },
+    )
+    if result.rowcount > 0:
+        return True
+
     existing = conn.execute(
         text(
             "SELECT cert_type, subject_key_id, subject_public_key, issuer_key_id, "
@@ -1893,20 +1936,7 @@ def _store_team_certificate_if_missing(conn, cert: KeyCertificate, issuer_member
         ),
         {"cert_id": cert.cert_id},
     ).fetchone()
-    if existing is None:
-        _store_team_certificate(conn, cert, issuer_member_id=issuer_member_id)
-        return True
-
-    if (
-        existing[0] != cert.cert_type.value
-        or existing[1] != cert.subject_key_id
-        or existing[2] != cert.subject_public_key
-        or existing[3] != cert.issuer_key_id
-        or existing[4] != issuer_member_id
-        or existing[5] != cert.issued_at_iso
-        or json.loads(existing[6]) != cert.claims
-        or existing[7] != cert.signature
-    ):
+    if existing is None or not _same_team_certificate_row(existing, cert, issuer_member_id):
         raise ValueError("Existing team certificate does not match bootstrap certificate")
     return False
 
