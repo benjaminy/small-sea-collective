@@ -3,7 +3,7 @@
 **Branch:** `issue-43-sender-key-rotation`  
 **Base:** `main`  
 **Primary issue:** #43 "Add encrypted sender-key rotation and redistribution flow"  
-**Related issues:** #59, #69, #48  
+**Related issues:** #59, #69, #48, #73  
 **Related archive plans:** `Archive/branch-plan-issue-44-sender-key-runtime.md`,
 `Archive/branch-plan-issue-59-sender-device-runtime-identity.md`,
 `Archive/branch-plan-issue-69-linked-device-encrypted-team-bootstrap.md`
@@ -53,7 +53,8 @@ After this branch lands:
    sender-key distributions from cross-member peer devices (not just its sibling)
 4. Redistribution uses encrypted pairwise channels (X3DH + Double Ratchet),
    not cleartext token payloads
-5. The branch takes a position on periodic rotation for post-compromise security
+5. The branch documents deferred follow-ups clearly enough that they do not
+   creep back into this implementation slice
 
 ## Why This Slice
 
@@ -70,6 +71,7 @@ It does **not** need to solve:
 - NoteToSelf sync and team discovery (#48)
 - Upgrading existing invitation-flow sender keys to encrypted channels (can be
   a follow-up; the invitation flow still works for first-device bootstrap)
+- Periodic sender-key rotation policy and runtime enforcement (#73)
 
 ## Scope Decisions
 
@@ -79,15 +81,11 @@ Three triggers, all mandatory:
 
 1. **Member removal**: when any member is removed, every remaining sender device
    must rotate its sender key. This is the minimum honest guarantee — the removed
-   member's devices must not be able to decrypt future traffic.
+   member's devices must not be able to decrypt future traffic for participants
+   who adopt that removal view and rotate accordingly.
 2. **Device removal/revocation**: when a specific device is revoked (but the
    member stays), every other sender device in the team must rotate. Same
    rationale.
-3. **Periodic rotation**: for post-compromise security, sender keys should
-   rotate after N messages or T hours, whichever comes first. At Small Sea's
-   scale (small teams, infrequent messages), this is cheap. Concrete thresholds
-   are a tuning decision — start with something conservative like every 100
-   messages or every 24 hours.
 
 Manual rotation (user-initiated rekey) is a natural fourth trigger but can be
 deferred if it's just "call the same rotation function."
@@ -126,15 +124,11 @@ gets access to peer prekey bundles.
 
 ### S5. Cross-member redistribution for newly linked devices
 
-When a device discovers a new peer device (e.g., a new `device_link` cert
-appears in the team DB after a pull), it should proactively distribute its
-current sender key to that new device. This closes the gap where Device B
-completes linked-device bootstrap but only has its sibling's sender key.
-
-The trigger is: "I pulled the team DB and found a device_link cert for a
-device I don't have a peer_sender_key record for." The response is: initiate
-X3DH with that device's published prekey bundle and send a
-`SenderKeyDistributionMessage`.
+The redistribution primitive in this branch must be capable of sending a
+current sender key to a newly linked cross-member device once the caller tells
+it to do so. Automatic detection during pull/watch flows is deferred to #59 so
+this branch stays focused on the crypto path rather than background
+orchestration.
 
 ### S6. Remove member implementation
 
@@ -198,36 +192,18 @@ team_name, distribution_payload)`
 - Manager writes prekey bundles as part of team DB commits
 - Prekey bundles are refreshed on rotation or when one-time prekeys are consumed
 
-### 6. Cross-member new-device discovery
-
-Add logic (likely in the team DB pull/sync path) that detects new peer devices
-and triggers redistribution to them.
-
-### 7. Periodic rotation tracking
-
-- Add `last_rotated_at` and `messages_since_rotation` to `team_sender_key`
-  table
-- Hub encrypt path (`prepare_encrypted_upload`) checks thresholds and signals
-  when rotation is needed
-- Actual rotation is triggered by the Manager, not the Hub (Hub signals,
-  Manager decides)
-
-### 8. Schema changes
+### 6. Schema changes
 
 - Bump `LOCAL_SCHEMA_VERSION` with migration
-- Add `last_rotated_at` and `messages_since_rotation` columns to
-  `team_sender_key`
 - Bump team DB schema version
 - Add `device_prekey_bundle` table to team DB schema
 
-### 9. Spec updates
+### 7. Spec updates
 
 - Update `packages/small-sea-manager/spec.md` to replace "Key rotation
   mechanics are TBD" with the actual rotation trigger policy
-- Update `packages/small-sea-hub/spec.md` if the Hub gains rotation-signaling
-  responsibilities
 
-### 10. Micro tests
+### 8. Micro tests
 
 Minimum expected coverage:
 
@@ -238,25 +214,32 @@ Minimum expected coverage:
   device's sender key has changed and old peer_sender_key records for the
   removed member's devices are gone
 - **Cross-member redistribution**: Device A (Alice) distributes its sender key
-  to Device C (Bob's new device) via X3DH after discovering C's device_link
-  cert in the team DB
+  to Device C (Bob's new device) via X3DH when explicitly asked to redistribute
+  to that device
 - **Prekey bundle round-trip**: Device publishes prekey bundle to team DB;
   peer device consumes it for X3DH; the consumed one-time prekey is no longer
   usable
-- **Periodic rotation threshold**: after N messages, the Hub signals that
-  rotation is needed
 - **Rejection**: redistribution payload with invalid signature is rejected
 - **Historical boundary**: after rotation, a device that only has the old
   sender key cannot decrypt messages encrypted with the new key
+- **Missing prekey behavior**: redistribution to a peer device without a
+  published prekey bundle is skipped or surfaced as pending without breaking
+  the whole round
+- **Migration integrity**: local schema migration preserves existing sender-key
+  runtime while adding any new fields required by this branch
 
 ## Out Of Scope
 
 - Hub-mediated async transport for distribution payloads (manual/CLI exchange
-  is acceptable for this branch)
+  is acceptable for this branch; later delivery orchestration belongs with
+  linked-device runtime follow-up work under #59)
 - Persistent pairwise Double Ratchet sessions (ephemeral per redistribution)
 - Device-aware peer routing or watch behavior (#59)
+- Automatic cross-member redistribution triggered by team DB pull/watch
+  discovery (#59)
 - NoteToSelf sync and team discovery (#48)
 - Upgrading invitation-flow sender keys to encrypted channels
+- Periodic sender-key rotation policy, thresholds, and Hub signaling (#73)
 - Device revocation UI/UX (this branch implements the backend; revocation
   cert semantics can follow)
 
@@ -270,13 +253,15 @@ Minimum expected coverage:
 - Prekey bundle publication helpers
 
 ### 2. `packages/small-sea-note-to-self/small_sea_note_to_self/sql/device_local_schema.sql`
-- Add rotation tracking columns to `team_sender_key`
+- Add any local migration support needed by redistribution state changes in
+  this branch
 
 ### 3. `packages/small-sea-note-to-self/small_sea_note_to_self/sender_keys.py`
-- Update save/load for new rotation tracking fields
+- Update save/load for any redistribution-related local state changes
 
 ### 4. `packages/small-sea-hub/small_sea_hub/crypto.py`
-- Add rotation-needed signaling in `prepare_encrypted_upload`
+- No production transport or rotation-signaling changes are required for this
+  branch if manual/test exchange remains sufficient
 
 ### 5. Team DB schema
 - Add `device_prekey_bundle` table
@@ -296,13 +281,13 @@ This branch should convince a skeptical reviewer if:
 - removing a member triggers rotation and the removed member's devices cannot
   decrypt post-removal traffic
 - a newly linked device from a different member receives sender-key
-  distributions from all active sender devices, not just its own member's
+  distributions from all active sender devices once redistribution is invoked
 - redistribution uses X3DH + Double Ratchet, not cleartext payloads
 - prekey bundles are published as public material in the team DB, not synced
   as private state
-- the Manager owns the rotation decision; the Hub only signals when thresholds
-  are hit
-- periodic rotation thresholds exist and are enforced
+- the branch is honest about transport boundaries: production internet traffic
+  still goes through the Hub, but this implementation slice may stop at payload
+  creation/receipt plus explicit test exchange
 - micro tests are local-only, no internet services required
 
 ## Decisions Confirmed
@@ -329,8 +314,8 @@ distributes. Other devices learn about the removal on their next team DB pull
 and rotate + redistribute then. No central coordinator needed beyond the team
 DB as the source of truth for membership state.
 
-### Q3. Invitation flow upgrade
+### Q3. Team DB revocation semantics
 
-Leave the invitation flow's cleartext sender-key exchange as-is. It still
-works for first-device bootstrap and is pre-alpha. Upgrading it to encrypted
-channels is a separate follow-up.
+Be explicit about which certs or peer rows are removed versus marked revoked
+when a member is removed, and make peer-device enumeration for redistribution
+follow that same rule.
