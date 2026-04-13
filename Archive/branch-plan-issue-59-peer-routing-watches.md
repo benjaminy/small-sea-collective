@@ -2,6 +2,7 @@
 
 **Branch:** `issue-59-peer-routing-watches`  
 **Base:** `main`  
+**Status:** Implemented and ready to archive  
 **Primary issue:** #59 "Make linked devices first-class for sender keys and peer routing"  
 **Related issues:** #43, #69, #48, #73  
 **Related docs:** `architecture.md`, `packages/small-sea-manager/spec.md`,
@@ -9,6 +10,35 @@
 **Related archive plans:** `Archive/branch-plan-issue-59-sender-device-runtime-identity.md`,
 `Archive/branch-plan-issue-69-linked-device-encrypted-team-bootstrap.md`,
 `Archive/branch-plan-issue-43-sender-key-rotation.md`
+
+## Outcome
+
+This branch implemented the first runtime-orchestration slice on top of the
+already-landed crypto primitives:
+
+- Manager now owns a `reconcile_runtime_state(...)` helper that compares the
+  locally adopted team view against device-local runtime state and decides
+  whether to rotate and/or redistribute
+- device-local persistence now tracks redistribution delivery, redistribution
+  receipt, and last reconciliation state so the runtime does not resend the
+  same current sender key on every restart or unrelated DB change
+- redistribution artifacts now carry sender-chain identity and a stable runtime
+  artifact path
+- the Hub watcher now triggers reconciliation on local team DB changes, uploads
+  runtime artifacts without group-layer encryption, and processes incoming
+  redistribution artifacts from peer buckets and same-member sibling buckets
+- focused micro tests now cover delivery dedupe, skip-then-retry after bundle
+  publication, adopted-removal-triggered rotation, and the watcher-triggered
+  upload seam
+
+Intentional limits that remain after this branch:
+
+- specs were not updated here
+- the shared endpoint model question remains open: the runtime is more
+  device-aware, but the shared `peer` schema itself was not widened yet
+- signals and peer polling remain member-scoped in shared storage even though
+  reconciliation and receipt handling now distinguish device-keyed sender
+  streams
 
 ## Context
 
@@ -280,6 +310,22 @@ true:
   - missing-prekey skip / retry behavior
   - wake-up on later bundle publication for a previously skipped target
   - multiple linked devices for one member remaining distinct in runtime logic
+
+## Wrap-Up Evidence
+
+Implementation and verification completed with:
+
+- `uv run pytest packages/small-sea-manager/tests/test_sender_key_rotation.py packages/small-sea-hub/tests/test_runtime_watch.py -q`
+- `uv run pytest packages/small-sea-manager/tests/test_create_team.py packages/small-sea-manager/tests/test_linked_device_bootstrap.py packages/small-sea-hub/tests/test_group_crypto.py packages/splice-merge/tests/test_merge.py -q`
+- `python3 -m compileall packages/small-sea-manager/small_sea_manager packages/small-sea-note-to-self/small_sea_note_to_self packages/small-sea-hub/small_sea_hub packages/small-sea-hub/tests`
+
+The new micro-test evidence now explicitly covers:
+
+- same-member linked-device redistribution targets
+- deduping redistribution after successful delivery logging
+- retry after later `device_prekey_bundle` publication
+- adopted-removal-triggered rotation on a non-removing device
+- watcher-triggered runtime artifact upload from the Hub side
 
 ## Open Questions
 
