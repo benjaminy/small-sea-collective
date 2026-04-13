@@ -89,12 +89,23 @@ Manager still owns:
 - mutating the team DB
 - computing trusted-device views
 - creating redistribution artifacts when asked
+- owning the reconciliation logic that decides whether local rotation and/or
+  redistribution is needed after an adopted team-view change
 
 The Hub should own:
 
+- detecting that a local adopted team view changed and scheduling a runtime
+  reconciliation pass
 - moving runtime payloads over Small Sea transport
 - watch / notification plumbing
 - device-aware endpoint fanout where internet communication is involved
+
+Recommended seam for this branch:
+
+- Hub detects a relevant adopted team DB change
+- Hub calls a narrow Manager-owned runtime reconciliation helper
+- Manager returns the actions/artifacts required
+- Hub handles transport / scheduling for those artifacts
 
 ### S3. Runtime adoption is local, not globally coordinated
 
@@ -108,6 +119,8 @@ So this branch should be explicit:
 - a device redistributes only to the trusted peer-device set visible in its
   current local view
 - there is no promise of instantaneous team-wide convergence
+- after one adopted removal, multiple remaining devices may rotate
+  independently; that "rotation storm" is acceptable at Small Sea scale
 
 ### S4. Automatic behavior should be narrow and inspectable
 
@@ -152,6 +165,8 @@ Important details:
   later reconciliation pass
 - redistribution should use the existing encrypted payload format from `#43`,
   not invent a second delivery format
+- reconciliation should rerun on any later adopted team DB change that could
+  make delivery possible, including `device_prekey_bundle` publication
 
 ### 3. Trigger local rotation after adopted member removal
 
@@ -170,6 +185,8 @@ Update the Hub's runtime handling so linked devices are not conflated when:
 - watching for relevant team changes
 - routing runtime fanout
 - tracking which peer devices are currently live recipients
+- keying in-memory watch/runtime state where `member_id` would otherwise merge
+  multiple linked devices into one runtime endpoint
 
 This does not require a full redesign of the `peer` table. It does require the
 Hub's in-memory model and watch loop to stop assuming one runtime endpoint per
@@ -252,14 +269,13 @@ true:
 
 ### Q1. Where should reconciliation live?
 
-Possible shapes:
+Recommended answer for this branch:
 
-- primarily Hub-owned watch loop, calling narrow Manager/provisioning helpers
-- primarily Manager-owned reconciliation function, with the Hub only providing
-  transport and scheduling
+- Manager owns reconciliation logic and runtime decisions
+- Hub owns watch-triggering, scheduling, and network transport
 
-The branch should settle one clear ownership model instead of splitting logic
-halfway.
+The remaining implementation question is how narrow and explicit the seam can
+be, not which side should own the trust/runtime decision-making.
 
 ### Q2. What is the minimal persisted state for "already redistributed"?
 
@@ -272,7 +288,26 @@ The branch should choose the smallest honest state model that still allows:
 - no conflation across different sender devices
 - no dependence on synced mutable state
 
+This state should remain device-local. It should not be stored in the shared
+team DB. The exact table/location is still open and should not be prematurely
+folded into unrelated prekey-material tables without a clear reason.
+
 ### Q3. How do watch-triggered retries surface partial progress?
 
 When some trusted targets have bundles and others do not, the branch should
 decide how partial completion is represented and retried without hiding failure.
+
+At minimum, the plan should assume retries can be triggered by later adopted
+team DB changes that affect deliverability, including newly published
+`device_prekey_bundle` rows.
+
+### Q4. Does device-aware runtime require shared peer-schema changes?
+
+The runtime/watch layer definitely needs to distinguish linked devices as
+separate runtime endpoints. What remains open is whether that requires:
+
+- only an in-memory / watch-model change in the Hub, or
+- a small supporting shared-schema change to peer metadata
+
+This branch should answer that explicitly instead of drifting into an accidental
+schema change mid-implementation.
