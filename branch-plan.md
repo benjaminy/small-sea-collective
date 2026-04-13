@@ -24,8 +24,7 @@ Current sender-key bootstrap works through two paths:
 What is missing:
 
 - **No rotation trigger**: `remove_member` is `raise NotImplementedError`.
-  There is no code to rotate a sender key after membership changes or on a
-  periodic schedule.
+  There is no code to rotate a sender key after membership changes.
 - **No redistribution mechanism**: after a device rotates its sender key, there
   is no way to deliver fresh `SenderKeyDistributionMessage`s to all remaining
   peer devices over encrypted channels.
@@ -77,7 +76,7 @@ It does **not** need to solve:
 
 ### S1. Rotation triggers
 
-Three triggers, all mandatory:
+Two triggers, both mandatory:
 
 1. **Member removal**: when any member is removed, every remaining sender device
    must rotate its sender key. This is the minimum honest guarantee — the removed
@@ -135,11 +134,11 @@ orchestration.
 `remove_member` is currently `raise NotImplementedError`. This branch should
 implement it:
 
-1. Delete the member's `berth_role` rows and `peer` row from the local team DB
-2. Remove or mark revoked the member's `key_certificate` entries
-3. Commit to the team DB
-4. Rotate this device's sender key
-5. Distribute the new sender key to all remaining peer devices
+1. Delete the member's `berth_role` rows, `member` row, and associated
+   `key_certificate` entries from the local team DB
+2. Commit to the team DB
+3. Rotate this device's sender key
+4. Distribute the new sender key to all remaining peer devices
 
 ## In Scope
 
@@ -158,11 +157,14 @@ New function: `rotate_team_sender_key(root_dir, participant_hex, team_name)`
 
 ### 3. Redistribution function
 
-New function: `redistribute_sender_key(root_dir, participant_hex, team_name)`
+New function: `redistribute_sender_key(root_dir, participant_hex, team_name,
+target_device_key_ids=None)`
 
-- Enumerates all trusted peer devices in the team (via wrasse-trust cert
-  lookups on the team DB)
-- For each peer device that has a published prekey bundle:
+- If `target_device_key_ids` is provided, distributes only to those devices.
+  Otherwise defaults to all trusted peer devices in the team (via wrasse-trust
+  cert lookups on the team DB). The caller controls when and to whom
+  redistribution happens; the function handles the crypto.
+- For each target peer device that has a published prekey bundle:
   - Performs X3DH key agreement
   - Encrypts the `SenderKeyDistributionMessage` via Double Ratchet
   - Produces a serialized distribution payload
@@ -195,6 +197,11 @@ team_name, distribution_payload)`
 ### 6. Schema changes
 
 - Bump `LOCAL_SCHEMA_VERSION` with migration
+- Add a device-local table for redistribution prekey private material (the
+  receiver's X3DH identity key, signed prekey, and one-time prekeys needed to
+  complete `receive_sender_key_distribution`). Similar in shape to
+  `linked_team_bootstrap_session` but generalized for ongoing redistribution,
+  not one-shot bootstrap.
 - Bump team DB schema version
 - Add `device_prekey_bundle` table to team DB schema
 
@@ -297,7 +304,8 @@ This branch should convince a skeptical reviewer if:
 - **Prekey publication**: team DB table (`device_prekey_bundle`). Public material,
   Manager-owned writes, available to all devices on pull.
 - **`remove_member`**: implement in this branch as the primary rotation trigger.
-- **Cross-member redistribution**: in scope. Closes the #69 gap.
+- **Cross-member redistribution**: the crypto primitive is in scope; automatic
+  trigger on pull/watch discovery is deferred to #59.
 
 ## Remaining Open Questions
 
@@ -314,8 +322,18 @@ distributes. Other devices learn about the removal on their next team DB pull
 and rotate + redistribute then. No central coordinator needed beyond the team
 DB as the source of truth for membership state.
 
-### Q3. Team DB revocation semantics
+### Q3. Revocation certs (deferred)
 
-Be explicit about which certs or peer rows are removed versus marked revoked
-when a member is removed, and make peer-device enumeration for redistribution
-follow that same rule.
+`remove_member` in this branch deletes the member's rows and certs from the
+team DB. This is sufficient for rotation/redistribution mechanics: peer
+enumeration naturally excludes the removed member because their rows are gone.
+
+However, deletion alone does not give peers a cryptographic reason to believe
+the removal was authorized — they only observe absence. A proper revocation
+cert (a signed certificate that explicitly invalidates a membership or
+device_link cert) would let any device verify the removal independently. Git
+history is not a substitute for this; it should not be relied on as an
+indefinite audit log.
+
+This branch should open a new GitHub issue for revocation cert design as a
+tracker action, but should not implement revocation certs itself.
