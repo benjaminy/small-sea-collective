@@ -12,6 +12,7 @@ import pydantic
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+import small_sea_manager.provisioning as Provisioning
 from small_sea_hub.backend import SmallSeaBackend, SmallSeaNotFoundExn
 from small_sea_hub.config import Settings
 
@@ -107,6 +108,163 @@ def _send_peer_notification(app: FastAPI, session_hex: str, berth_id_hex: str, l
         )
 
 
+def _team_db_revision(team_db_path: str):
+    stat = pathlib.Path(team_db_path).stat()
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _run_runtime_reconciliation_for_session(app: FastAPI, session_hex: str):
+    session_info = app.state.watched_sessions.get(session_hex)
+    if session_info is None:
+        return
+    try:
+        revision = _team_db_revision(session_info["team_db_path"])
+    except FileNotFoundError:
+        return
+    if revision == session_info.get("team_db_revision"):
+        return
+
+    ss_session = app.state.backend._lookup_session(session_hex)
+    result = Provisioning.reconcile_runtime_state(
+        app.state.backend.root_dir,
+        ss_session.participant_id.hex(),
+        ss_session.team_name,
+    )
+    for artifact in result.get("redistribution_artifacts", []):
+        ok, _etag, msg = app.state.backend.upload_runtime_artifact(
+            session_hex,
+            artifact["artifact_path"],
+            artifact["distribution_payload"].encode("utf-8"),
+        )
+        if ok:
+            Provisioning.mark_redistribution_delivery(
+                app.state.backend.root_dir,
+                ss_session.participant_id.hex(),
+                team_id=bytes.fromhex(result["team_id_hex"]),
+                sender_device_key_id=bytes.fromhex(artifact["sender_device_key_id_hex"]),
+                sender_chain_id=bytes.fromhex(artifact["sender_chain_id_hex"]),
+                target_device_key_id=bytes.fromhex(artifact["target_device_key_id_hex"]),
+            )
+        else:
+            app.state.logger.warning(
+                "Runtime artifact upload failed for %s -> %s: %s",
+                artifact["sender_device_key_id_hex"][:8],
+                artifact["target_device_key_id_hex"][:8],
+                msg,
+            )
+    session_info["team_db_revision"] = revision
+
+
+def _process_runtime_inbox_from_member(
+    app: FastAPI,
+    session_hex: str,
+    member_id_hex: str,
+    *,
+    use_local_bucket: bool,
+):
+    ss_session = app.state.backend._lookup_session(session_hex)
+    root_dir = app.state.backend.root_dir
+    participant_hex = ss_session.participant_id.hex()
+    team_name = ss_session.team_name
+    team_id, self_in_team = Provisioning._team_row(root_dir, participant_hex, team_name)
+    _local_private_key, local_team_device_public_key = Provisioning.get_current_team_device_key(
+        root_dir,
+        participant_hex,
+        team_name,
+    )
+    local_device_key_id = Provisioning.key_id_from_public(local_team_device_public_key)
+    trusted_public_keys_by_member = Provisioning.get_trusted_device_keys_by_member(
+        root_dir,
+        participant_hex,
+        team_name,
+    )
+    member_id = bytes.fromhex(member_id_hex)
+    if member_id not in trusted_public_keys_by_member:
+        return
+
+    for public_key in trusted_public_keys_by_member[member_id]:
+        sender_device_key_id = Provisioning.key_id_from_public(public_key)
+        if sender_device_key_id == local_device_key_id:
+            continue
+        artifact_path = Provisioning.runtime_redistribution_artifact_path(
+            local_device_key_id,
+            sender_device_key_id,
+        )
+        if use_local_bucket:
+            ok, data, _etag = app.state.backend.download_runtime_artifact_from_cloud(
+                session_hex,
+                artifact_path,
+            )
+        else:
+            ok, data, _etag = app.state.backend.download_runtime_artifact_from_peer(
+                session_hex,
+                member_id_hex,
+                artifact_path,
+            )
+        if not ok:
+            continue
+        distribution_payload = data.decode("utf-8")
+        metadata = Provisioning.peek_redistribution_payload_metadata(distribution_payload)
+        if Provisioning._receipt_exists(
+            root_dir,
+            participant_hex,
+            team_id=team_id,
+            sender_device_key_id=bytes.fromhex(metadata["sender_device_key_id_hex"]),
+            sender_chain_id=bytes.fromhex(metadata["sender_chain_id_hex"]),
+            target_device_key_id=bytes.fromhex(metadata["target_device_key_id_hex"]),
+        ):
+            continue
+        try:
+            received = Provisioning.receive_sender_key_distribution(
+                root_dir,
+                participant_hex,
+                team_name,
+                distribution_payload,
+            )
+        except Exception as exc:
+            app.state.logger.warning(
+                "Runtime artifact receive failed for sender %s: %s",
+                metadata["sender_device_key_id_hex"][:8],
+                exc,
+            )
+            continue
+        Provisioning.mark_redistribution_receipt(
+            root_dir,
+            participant_hex,
+            team_id=bytes.fromhex(received["team_id_hex"]),
+            sender_device_key_id=bytes.fromhex(received["sender_device_key_id_hex"]),
+            sender_chain_id=bytes.fromhex(received["sender_chain_id_hex"]),
+            target_device_key_id=bytes.fromhex(received["target_device_key_id_hex"]),
+        )
+
+
+def _refresh_local_runtime_signal(app: FastAPI, session_hex: str):
+    session_info = app.state.watched_sessions.get(session_hex)
+    if session_info is None:
+        return
+    signals, etag = app.state.backend.get_local_signal(session_hex)
+    if signals is None or etag is None:
+        return
+    if etag == session_info.get("self_signal_etag"):
+        return
+    ss_session = app.state.backend._lookup_session(session_hex)
+    try:
+        team_id, self_in_team = Provisioning._team_row(
+            app.state.backend.root_dir,
+            ss_session.participant_id.hex(),
+            ss_session.team_name,
+        )
+    except Exception:
+        return
+    _process_runtime_inbox_from_member(
+        app,
+        session_hex,
+        self_in_team.hex(),
+        use_local_bucket=True,
+    )
+    session_info["self_signal_etag"] = etag
+
+
 def _watcher_pass(app: FastAPI):
     """Single poll round: refresh peer lists and check all peer signals for changes.
 
@@ -119,6 +277,8 @@ def _watcher_pass(app: FastAPI):
     # Refresh peer lists for all active sessions before polling signals.
     for session_hex in list(app.state.watched_sessions):
         _refresh_session_peers(app, session_hex)
+        _run_runtime_reconciliation_for_session(app, session_hex)
+        _refresh_local_runtime_signal(app, session_hex)
 
     peers = getattr(app.state, "watched_peers", {})
     # Track which berths have already received a push notification this round
@@ -157,6 +317,12 @@ def _watcher_pass(app: FastAPI):
             state["signals"] = {k: v for k, v in signals.items() if k != "version"}
 
             if changed and berth_id_hex:
+                _process_runtime_inbox_from_member(
+                    app,
+                    session_hex,
+                    member_id_hex,
+                    use_local_bucket=False,
+                )
                 _pulse_berth_event(app, berth_id_hex)
                 if berth_id_hex not in notified_berths:
                     notified_berths.add(berth_id_hex)
@@ -367,6 +533,8 @@ def _register_session_peers(session_hex: str):
         watched_sessions[session_hex] = {
             "berth_id_hex": berth_id_hex,
             "team_db_path": team_db_path,
+            "team_db_revision": None,
+            "self_signal_etag": None,
         }
         app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
         # Do an immediate peer refresh so watched_peers is populated now rather

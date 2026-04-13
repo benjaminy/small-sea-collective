@@ -106,3 +106,30 @@ CREATE TABLE IF NOT EXISTS redistribution_one_time_prekey (
     consumed_at TEXT,
     PRIMARY KEY (team_id, prekey_id)
 );
+
+CREATE TABLE IF NOT EXISTS redistribution_delivery (
+    team_id BLOB NOT NULL,
+    sender_device_key_id BLOB NOT NULL,
+    sender_chain_id BLOB NOT NULL,
+    target_device_key_id BLOB NOT NULL,
+    delivered_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, sender_device_key_id, sender_chain_id, target_device_key_id)
+);
+
+CREATE TABLE IF NOT EXISTS redistribution_receipt (
+    team_id BLOB NOT NULL,
+    sender_device_key_id BLOB NOT NULL,
+    sender_chain_id BLOB NOT NULL,
+    target_device_key_id BLOB NOT NULL,
+    received_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, sender_device_key_id, sender_chain_id, target_device_key_id)
+);
+
+CREATE TABLE IF NOT EXISTS runtime_reconciliation_state (
+    team_id BLOB PRIMARY KEY,
+    trusted_member_ids_json TEXT NOT NULL,
+    trusted_device_key_ids_json TEXT NOT NULL,
+    last_sender_device_key_id BLOB,
+    last_sender_chain_id BLOB,
+    updated_at TEXT NOT NULL
+);
