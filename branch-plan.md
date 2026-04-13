@@ -271,7 +271,11 @@ team_name, distribution_payload)`
   - no bootstrap-id-scoped ratchet/session table for steady-state
     redistribution
 - Bump team DB schema version
-- Add `device_prekey_bundle` table to team DB schema
+- Add `device_prekey_bundle` table to team DB schema. Note: there is no team
+  DB migration system (unlike the device-local DB which has
+  `_migrate_device_local_db`). Old team DBs pulled from cloud will not have
+  this table. Use defensive `CREATE TABLE IF NOT EXISTS` on first access so
+  the table is created transparently for existing teams.
 
 ### 7. Spec updates
 
