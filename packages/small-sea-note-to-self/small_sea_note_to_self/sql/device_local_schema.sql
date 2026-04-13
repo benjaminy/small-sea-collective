@@ -53,3 +53,33 @@ CREATE TABLE IF NOT EXISTS peer_sender_key (
     skipped_message_keys TEXT NOT NULL DEFAULT '{}',
     PRIMARY KEY (team_id, sender_device_key_id)
 );
+
+CREATE TABLE IF NOT EXISTS linked_team_bootstrap_session (
+    bootstrap_id BLOB PRIMARY KEY,
+    team_id BLOB NOT NULL,
+    device_id BLOB NOT NULL,
+    team_device_public_key BLOB NOT NULL,
+    team_device_private_key BLOB,
+    x3dh_identity_dh_public_key BLOB NOT NULL,
+    x3dh_identity_dh_private_key BLOB NOT NULL,
+    x3dh_identity_signing_public_key BLOB NOT NULL,
+    x3dh_identity_signing_private_key BLOB NOT NULL,
+    signed_prekey_id BLOB NOT NULL,
+    signed_prekey_public_key BLOB NOT NULL,
+    signed_prekey_private_key BLOB NOT NULL,
+    one_time_prekey_id BLOB,
+    one_time_prekey_public_key BLOB,
+    one_time_prekey_private_key BLOB,
+    ratchet_state_json TEXT,
+    finalized_at TEXT,
+    response_payload_json TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS pending_linked_team_bootstrap (
+    bootstrap_id BLOB PRIMARY KEY,
+    team_id BLOB NOT NULL,
+    peer_device_id BLOB NOT NULL,
+    peer_team_device_public_key BLOB NOT NULL,
+    created_at TEXT NOT NULL
+);

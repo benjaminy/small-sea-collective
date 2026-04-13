@@ -16,6 +16,10 @@ import secrets
 import sqlite3
 from datetime import datetime, timezone
 
+from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+    Ed25519PrivateKey,
+    Ed25519PublicKey,
+)
 from sqlalchemy import Column, LargeBinary, String, create_engine, text
 from sqlalchemy.orm import Session, declarative_base
 
@@ -40,6 +44,25 @@ from cuttlefish.group import (
     create_sender_key,
     group_decrypt,
 )
+from cuttlefish.prekeys import (
+    IdentityKeyPair,
+    OneTimePrekey,
+    PrekeyBundle,
+    SignedPrekey,
+    build_prekey_bundle,
+    generate_identity_key_pair,
+    generate_one_time_prekeys,
+    generate_signed_prekey,
+)
+from cuttlefish.ratchet import (
+    EncryptedMessage,
+    RatchetState,
+    decrypt as ratchet_decrypt,
+    encrypt as ratchet_encrypt,
+    initialize_as_receiver,
+    initialize_as_sender,
+)
+from cuttlefish.x3dh import X3DHInitialMessage, x3dh_receive, x3dh_send
 from small_sea_note_to_self.db import (
     attached_note_to_self_connection,
     device_local_db_path,
@@ -211,6 +234,179 @@ def _participant_key_from_public(public_key: bytes) -> ParticipantKey:
     )
 
 
+def _linked_team_bootstrap_session_row(root_dir, participant_hex: str, bootstrap_id: bytes):
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            """
+            SELECT bootstrap_id, team_id, device_id, team_device_public_key,
+                   team_device_private_key, x3dh_identity_dh_public_key,
+                   x3dh_identity_dh_private_key, x3dh_identity_signing_public_key,
+                   x3dh_identity_signing_private_key, signed_prekey_id,
+                   signed_prekey_public_key, signed_prekey_private_key,
+                   one_time_prekey_id, one_time_prekey_public_key,
+                   one_time_prekey_private_key, ratchet_state_json, finalized_at,
+                   response_payload_json, created_at
+            FROM linked_team_bootstrap_session
+            WHERE bootstrap_id = ?
+            """,
+            (bootstrap_id,),
+        ).fetchone()
+
+
+def _store_linked_team_bootstrap_session(
+    root_dir,
+    participant_hex: str,
+    *,
+    bootstrap_id: bytes,
+    team_id: bytes,
+    device_id: bytes,
+    team_device_public_key: bytes,
+    team_device_private_key: bytes | None,
+    x3dh_identity: IdentityKeyPair,
+    signed_prekey: SignedPrekey,
+    signed_prekey_private_key: bytes,
+    one_time_prekey: OneTimePrekey | None,
+    one_time_prekey_private_key: bytes | None,
+    ratchet_state: RatchetState | None = None,
+    finalized_at: str | None = None,
+    response_payload_json: str | None = None,
+) -> None:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO linked_team_bootstrap_session (
+                bootstrap_id,
+                team_id,
+                device_id,
+                team_device_public_key,
+                team_device_private_key,
+                x3dh_identity_dh_public_key,
+                x3dh_identity_dh_private_key,
+                x3dh_identity_signing_public_key,
+                x3dh_identity_signing_private_key,
+                signed_prekey_id,
+                signed_prekey_public_key,
+                signed_prekey_private_key,
+                one_time_prekey_id,
+                one_time_prekey_public_key,
+                one_time_prekey_private_key,
+                ratchet_state_json,
+                finalized_at,
+                response_payload_json,
+                created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                bootstrap_id,
+                team_id,
+                device_id,
+                team_device_public_key,
+                team_device_private_key,
+                x3dh_identity.dh_public_key,
+                x3dh_identity.dh_private_key,
+                x3dh_identity.signing_public_key,
+                x3dh_identity.signing_private_key,
+                signed_prekey.prekey_id,
+                signed_prekey.public_key,
+                signed_prekey_private_key,
+                one_time_prekey.prekey_id if one_time_prekey is not None else None,
+                one_time_prekey.public_key if one_time_prekey is not None else None,
+                one_time_prekey_private_key,
+                _serialize_ratchet_state(ratchet_state) if ratchet_state is not None else None,
+                finalized_at,
+                response_payload_json,
+                _now_iso(),
+            ),
+        )
+        conn.commit()
+
+
+def _update_linked_team_bootstrap_session(
+    root_dir,
+    participant_hex: str,
+    bootstrap_id: bytes,
+    *,
+    ratchet_state: RatchetState | None = None,
+    one_time_prekey_private_key: bytes | None | object = ...,
+    finalized_at: str | None | object = ...,
+    response_payload_json: str | None | object = ...,
+) -> None:
+    assignments = []
+    values: list[object] = []
+    if ratchet_state is not None:
+        assignments.append("ratchet_state_json = ?")
+        values.append(_serialize_ratchet_state(ratchet_state))
+    if one_time_prekey_private_key is not ...:
+        assignments.append("one_time_prekey_private_key = ?")
+        values.append(one_time_prekey_private_key)
+    if finalized_at is not ...:
+        assignments.append("finalized_at = ?")
+        values.append(finalized_at)
+    if response_payload_json is not ...:
+        assignments.append("response_payload_json = ?")
+        values.append(response_payload_json)
+    if not assignments:
+        return
+    values.append(bootstrap_id)
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.execute(
+            f"UPDATE linked_team_bootstrap_session SET {', '.join(assignments)} "
+            "WHERE bootstrap_id = ?",
+            values,
+        )
+        conn.commit()
+
+
+def _store_pending_linked_team_bootstrap(
+    root_dir,
+    participant_hex: str,
+    *,
+    bootstrap_id: bytes,
+    team_id: bytes,
+    peer_device_id: bytes,
+    peer_team_device_public_key: bytes,
+) -> None:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO pending_linked_team_bootstrap (
+                bootstrap_id, team_id, peer_device_id, peer_team_device_public_key, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                bootstrap_id,
+                team_id,
+                peer_device_id,
+                peer_team_device_public_key,
+                _now_iso(),
+            ),
+        )
+        conn.commit()
+
+
+def _load_pending_linked_team_bootstrap(root_dir, participant_hex: str, bootstrap_id: bytes):
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            """
+            SELECT bootstrap_id, team_id, peer_device_id, peer_team_device_public_key, created_at
+            FROM pending_linked_team_bootstrap
+            WHERE bootstrap_id = ?
+            """,
+            (bootstrap_id,),
+        ).fetchone()
+
+
+def _clear_pending_linked_team_bootstrap(root_dir, participant_hex: str, bootstrap_id: bytes) -> None:
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.execute(
+            "DELETE FROM pending_linked_team_bootstrap WHERE bootstrap_id = ?",
+            (bootstrap_id,),
+        )
+        conn.commit()
+
+
 def _persist_pending_join_state(root_dir, state: dict) -> None:
     path = _bootstrap_state_path(root_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -259,6 +455,206 @@ def assert_identity_bootstrap_trusted(root_dir, participant_hex: str) -> None:
             "Installation is blocked because identity bootstrap did not verify cleanly: "
             f"{status.get('reason', 'unknown reason')}"
         )
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _json_bytes(payload: dict) -> bytes:
+    return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def _tokenize(payload: dict) -> str:
+    return base64.b64encode(_json_bytes(payload)).decode("ascii")
+
+
+def _untokenize(token: str) -> dict:
+    return json.loads(base64.b64decode(token.encode("ascii")).decode("utf-8"))
+
+
+def _sign_bytes(private_key: bytes, payload: bytes) -> bytes:
+    return Ed25519PrivateKey.from_private_bytes(private_key).sign(payload)
+
+
+def _verify_signature(public_key: bytes, payload: bytes, signature: bytes) -> bool:
+    try:
+        Ed25519PublicKey.from_public_bytes(public_key).verify(signature, payload)
+        return True
+    except Exception:
+        return False
+
+
+def _serialize_signed_prekey(prekey: SignedPrekey) -> dict:
+    return {
+        "prekey_id": prekey.prekey_id.hex(),
+        "public_key": prekey.public_key.hex(),
+        "signature": prekey.signature.hex(),
+    }
+
+
+def _deserialize_signed_prekey(data: dict) -> SignedPrekey:
+    return SignedPrekey(
+        prekey_id=bytes.fromhex(data["prekey_id"]),
+        public_key=bytes.fromhex(data["public_key"]),
+        signature=bytes.fromhex(data["signature"]),
+    )
+
+
+def _serialize_one_time_prekey(prekey: OneTimePrekey) -> dict:
+    return {
+        "prekey_id": prekey.prekey_id.hex(),
+        "public_key": prekey.public_key.hex(),
+    }
+
+
+def _deserialize_one_time_prekey(data: dict) -> OneTimePrekey:
+    return OneTimePrekey(
+        prekey_id=bytes.fromhex(data["prekey_id"]),
+        public_key=bytes.fromhex(data["public_key"]),
+    )
+
+
+def _serialize_prekey_bundle(bundle: PrekeyBundle) -> dict:
+    return {
+        "participant_id": bundle.participant_id.hex(),
+        "identity_dh_public_key": bundle.identity_dh_public_key.hex(),
+        "identity_signing_public_key": bundle.identity_signing_public_key.hex(),
+        "signed_prekey": _serialize_signed_prekey(bundle.signed_prekey),
+        "one_time_prekeys": [
+            _serialize_one_time_prekey(prekey) for prekey in bundle.one_time_prekeys
+        ],
+    }
+
+
+def _deserialize_prekey_bundle(data: dict) -> PrekeyBundle:
+    return PrekeyBundle(
+        participant_id=bytes.fromhex(data["participant_id"]),
+        identity_dh_public_key=bytes.fromhex(data["identity_dh_public_key"]),
+        identity_signing_public_key=bytes.fromhex(data["identity_signing_public_key"]),
+        signed_prekey=_deserialize_signed_prekey(data["signed_prekey"]),
+        one_time_prekeys=[
+            _deserialize_one_time_prekey(prekey)
+            for prekey in data.get("one_time_prekeys", [])
+        ],
+    )
+
+
+def _serialize_x3dh_initial_message(message: X3DHInitialMessage) -> dict:
+    return {
+        "sender_identity_dh_public_key": message.sender_identity_dh_public_key.hex(),
+        "ephemeral_public_key": message.ephemeral_public_key.hex(),
+        "used_one_time_prekey_id": (
+            message.used_one_time_prekey_id.hex()
+            if message.used_one_time_prekey_id is not None
+            else None
+        ),
+    }
+
+
+def _deserialize_x3dh_initial_message(data: dict) -> X3DHInitialMessage:
+    return X3DHInitialMessage(
+        sender_identity_dh_public_key=bytes.fromhex(data["sender_identity_dh_public_key"]),
+        ephemeral_public_key=bytes.fromhex(data["ephemeral_public_key"]),
+        used_one_time_prekey_id=(
+            bytes.fromhex(data["used_one_time_prekey_id"])
+            if data.get("used_one_time_prekey_id")
+            else None
+        ),
+    )
+
+
+def _serialize_encrypted_message(message: EncryptedMessage) -> dict:
+    return {
+        "ratchet_public_key": message.ratchet_public_key.hex(),
+        "message_index": message.message_index,
+        "previous_chain_length": message.previous_chain_length,
+        "ciphertext": message.ciphertext.hex(),
+        "iv": message.iv.hex(),
+    }
+
+
+def _deserialize_encrypted_message(data: dict) -> EncryptedMessage:
+    return EncryptedMessage(
+        ratchet_public_key=bytes.fromhex(data["ratchet_public_key"]),
+        message_index=int(data["message_index"]),
+        previous_chain_length=int(data["previous_chain_length"]),
+        ciphertext=bytes.fromhex(data["ciphertext"]),
+        iv=bytes.fromhex(data["iv"]),
+    )
+
+
+def _serialize_ratchet_state(state: RatchetState) -> str:
+    return json.dumps(
+        {
+            "dh_public_key": state.dh_public_key.hex(),
+            "dh_private_key": state.dh_private_key.hex(),
+            "dh_remote_public_key": (
+                state.dh_remote_public_key.hex()
+                if state.dh_remote_public_key is not None
+                else None
+            ),
+            "root_key": state.root_key.hex(),
+            "sending_chain_key": (
+                state.sending_chain_key.hex()
+                if state.sending_chain_key is not None
+                else None
+            ),
+            "receiving_chain_key": (
+                state.receiving_chain_key.hex()
+                if state.receiving_chain_key is not None
+                else None
+            ),
+            "sending_message_index": state.sending_message_index,
+            "receiving_message_index": state.receiving_message_index,
+            "previous_sending_chain_length": state.previous_sending_chain_length,
+            "skipped_keys": [
+                {
+                    "ratchet_public_key": ratchet_public_key.hex(),
+                    "message_index": message_index,
+                    "message_key": message_key.hex(),
+                }
+                for (ratchet_public_key, message_index), message_key in state.skipped_keys.items()
+            ],
+        },
+        sort_keys=True,
+    )
+
+
+def _deserialize_ratchet_state(raw_value: str | None) -> RatchetState | None:
+    if not raw_value:
+        return None
+    data = json.loads(raw_value)
+    return RatchetState(
+        dh_public_key=bytes.fromhex(data["dh_public_key"]),
+        dh_private_key=bytes.fromhex(data["dh_private_key"]),
+        dh_remote_public_key=(
+            bytes.fromhex(data["dh_remote_public_key"])
+            if data.get("dh_remote_public_key")
+            else None
+        ),
+        root_key=bytes.fromhex(data["root_key"]),
+        sending_chain_key=(
+            bytes.fromhex(data["sending_chain_key"])
+            if data.get("sending_chain_key")
+            else None
+        ),
+        receiving_chain_key=(
+            bytes.fromhex(data["receiving_chain_key"])
+            if data.get("receiving_chain_key")
+            else None
+        ),
+        sending_message_index=int(data["sending_message_index"]),
+        receiving_message_index=int(data["receiving_message_index"]),
+        previous_sending_chain_length=int(data["previous_sending_chain_length"]),
+        skipped_keys={
+            (
+                bytes.fromhex(item["ratchet_public_key"]),
+                int(item["message_index"]),
+            ): bytes.fromhex(item["message_key"])
+            for item in data.get("skipped_keys", [])
+        },
+    )
 
 
 def _single_note_to_self_remote_descriptor(root_dir, participant_hex: str) -> dict:
@@ -996,6 +1392,421 @@ def make_device_link_invitation(session):
     pass
 
 
+def prepare_linked_device_team_join(root_dir, participant_hex, team_name):
+    """Prepare a same-member encrypted team bootstrap request on the joining device."""
+    root_dir = pathlib.Path(root_dir)
+    team_id, _member_id = _team_row(root_dir, participant_hex, team_name)
+    bootstrap_id = uuid7()
+
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        device_row = _current_device_row(conn)
+        device_id = device_row[0]
+        note_to_self_signing_private_key = _read_local_secret(pathlib.Path(device_row[4]))
+
+    existing_sender_key = load_team_sender_key(device_local_db_path(root_dir, participant_hex), team_id)
+    if existing_sender_key is not None:
+        raise ValueError(f"Device already has an active sender key for team '{team_name}'")
+
+    team_device_key, team_device_private_key = generate_key_pair(ProtectionLevel.DAILY)
+    x3dh_identity = generate_identity_key_pair()
+    signed_prekey, signed_prekey_private_key = generate_signed_prekey(
+        x3dh_identity.signing_private_key
+    )
+    one_time_prekey, one_time_prekey_private_key = generate_one_time_prekeys(1)[0]
+    prekey_bundle = build_prekey_bundle(
+        participant_id=device_id,
+        identity=x3dh_identity,
+        signed_prekey=signed_prekey,
+        one_time_prekeys=[one_time_prekey],
+    )
+
+    _store_linked_team_bootstrap_session(
+        root_dir,
+        participant_hex,
+        bootstrap_id=bootstrap_id,
+        team_id=team_id,
+        device_id=device_id,
+        team_device_public_key=team_device_key.public_key,
+        team_device_private_key=team_device_private_key,
+        x3dh_identity=x3dh_identity,
+        signed_prekey=signed_prekey,
+        signed_prekey_private_key=signed_prekey_private_key,
+        one_time_prekey=one_time_prekey,
+        one_time_prekey_private_key=one_time_prekey_private_key,
+    )
+
+    request_body = {
+        "bootstrap_id": bootstrap_id.hex(),
+        "team_id": team_id.hex(),
+        "device_id": device_id.hex(),
+        "team_device_public_key": team_device_key.public_key.hex(),
+        "x3dh_prekey_bundle": _serialize_prekey_bundle(prekey_bundle),
+    }
+    request_bytes = _json_bytes(request_body)
+    request_body["note_to_self_signature"] = _sign_bytes(
+        note_to_self_signing_private_key,
+        request_bytes,
+    ).hex()
+    request_body["team_device_signature"] = _sign_bytes(
+        team_device_private_key,
+        request_bytes,
+    ).hex()
+
+    return {
+        "bootstrap_id_hex": bootstrap_id.hex(),
+        "join_request_bundle": _tokenize(request_body),
+    }
+
+
+def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_request_bundle):
+    """Authorize a same-member bootstrap and return the encrypted bootstrap payload."""
+    root_dir = pathlib.Path(root_dir)
+    request = _untokenize(join_request_bundle)
+    request_body = {
+        "bootstrap_id": request["bootstrap_id"],
+        "team_id": request["team_id"],
+        "device_id": request["device_id"],
+        "team_device_public_key": request["team_device_public_key"],
+        "x3dh_prekey_bundle": request["x3dh_prekey_bundle"],
+    }
+    request_bytes = _json_bytes(request_body)
+    bootstrap_id = bytes.fromhex(request["bootstrap_id"])
+    requested_team_id = bytes.fromhex(request["team_id"])
+    device_id = bytes.fromhex(request["device_id"])
+    proposed_team_device_public_key = bytes.fromhex(request["team_device_public_key"])
+
+    team_id, member_id = _team_row(root_dir, participant_hex, team_name)
+    if requested_team_id != team_id:
+        raise ValueError("Join request team_id does not match local team")
+
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        note_to_self_row = conn.execute(
+            "SELECT signing_key FROM user_device WHERE id = ?",
+            (device_id,),
+        ).fetchone()
+    if note_to_self_row is None:
+        raise ValueError("Join request device is not known in shared NoteToSelf state")
+    if not _verify_signature(
+        note_to_self_row[0],
+        request_bytes,
+        bytes.fromhex(request["note_to_self_signature"]),
+    ):
+        raise ValueError("Join request NoteToSelf signature is invalid")
+    if not _verify_signature(
+        proposed_team_device_public_key,
+        request_bytes,
+        bytes.fromhex(request["team_device_signature"]),
+    ):
+        raise ValueError("Join request Team X signature is invalid")
+
+    cert = issue_device_link_for_member(
+        root_dir,
+        participant_hex,
+        team_name,
+        proposed_team_device_public_key,
+    )
+
+    prekey_bundle = _deserialize_prekey_bundle(request["x3dh_prekey_bundle"])
+    sender_identity = generate_identity_key_pair()
+    x3dh_result = x3dh_send(sender_identity, prekey_bundle)
+    ratchet_state = initialize_as_sender(
+        x3dh_result.shared_secret,
+        x3dh_result.signed_prekey_public,
+    )
+
+    sender_key_record = load_team_sender_key(device_local_db_path(root_dir, participant_hex), team_id)
+    if sender_key_record is None:
+        raise ValueError(f"No local sender key found for team '{team_name}'")
+    sender_distribution = distribution_message_from_record(sender_key_record)
+    plaintext = _json_bytes(serialize_distribution_message(sender_distribution))
+    associated_data = _json_bytes(
+        {"bootstrap_id": bootstrap_id.hex(), "team_id": team_id.hex()}
+    )
+    ratchet_state, encrypted_message = ratchet_encrypt(
+        ratchet_state,
+        plaintext,
+        associated_data=associated_data,
+    )
+
+    _store_pending_linked_team_bootstrap(
+        root_dir,
+        participant_hex,
+        bootstrap_id=bootstrap_id,
+        team_id=team_id,
+        peer_device_id=device_id,
+        peer_team_device_public_key=proposed_team_device_public_key,
+    )
+
+    _authorizer_private_key, authorizer_public_key = get_current_team_device_key(
+        root_dir,
+        participant_hex,
+        team_name,
+    )
+    response_body = {
+        "bootstrap_id": bootstrap_id.hex(),
+        "team_id": team_id.hex(),
+        "authorizing_team_device_public_key": authorizer_public_key.hex(),
+        "active_sender_device_key_id": sender_distribution.sender_device_key_id.hex(),
+        "x3dh_initial_message": _serialize_x3dh_initial_message(x3dh_result.initial_message),
+        "ratchet_message": _serialize_encrypted_message(encrypted_message),
+        "device_link_cert": _serialize_cert(cert),
+    }
+    response_bytes = _json_bytes(response_body)
+    response_body["team_device_signature"] = _sign_bytes(
+        _authorizer_private_key,
+        response_bytes,
+    ).hex()
+    return {
+        "bootstrap_id_hex": bootstrap_id.hex(),
+        "bootstrap_bundle": _tokenize(response_body),
+    }
+
+
+def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, bootstrap_bundle):
+    """Finish a same-member bootstrap on the joining device and emit payload 3."""
+    root_dir = pathlib.Path(root_dir)
+    response = _untokenize(bootstrap_bundle)
+    response_body = {
+        "bootstrap_id": response["bootstrap_id"],
+        "team_id": response["team_id"],
+        "authorizing_team_device_public_key": response["authorizing_team_device_public_key"],
+        "active_sender_device_key_id": response["active_sender_device_key_id"],
+        "x3dh_initial_message": response["x3dh_initial_message"],
+        "ratchet_message": response["ratchet_message"],
+        "device_link_cert": response["device_link_cert"],
+    }
+    response_bytes = _json_bytes(response_body)
+    bootstrap_id = bytes.fromhex(response["bootstrap_id"])
+    response_team_id = bytes.fromhex(response["team_id"])
+    authorizing_team_device_public_key = bytes.fromhex(
+        response["authorizing_team_device_public_key"]
+    )
+
+    team_id, member_id = _team_row(root_dir, participant_hex, team_name)
+    if response_team_id != team_id:
+        raise ValueError("Bootstrap bundle team_id does not match local team")
+
+    trusted_keys = get_trusted_device_keys_for_member(
+        root_dir, participant_hex, team_name, member_id
+    )
+    if authorizing_team_device_public_key not in trusted_keys:
+        raise ValueError("Bootstrap bundle signer is not trusted for this member")
+    if not _verify_signature(
+        authorizing_team_device_public_key,
+        response_bytes,
+        bytes.fromhex(response["team_device_signature"]),
+    ):
+        raise ValueError("Bootstrap bundle signature is invalid")
+
+    session_row = _linked_team_bootstrap_session_row(root_dir, participant_hex, bootstrap_id)
+    if session_row is None:
+        raise ValueError("No pending linked-team bootstrap session found")
+    cert = _deserialize_cert(response["device_link_cert"])
+    if not verify_device_link_cert(
+        cert,
+        issuer_public_key=authorizing_team_device_public_key,
+        team_id=team_id,
+        member_id=member_id,
+        subject_public_key=session_row["team_device_public_key"],
+    ):
+        raise ValueError("Bootstrap bundle device_link cert is invalid")
+    if session_row["finalized_at"] is not None and session_row["response_payload_json"]:
+        response_payload = json.loads(session_row["response_payload_json"])
+        return {
+            "bootstrap_id_hex": bootstrap_id.hex(),
+            "sender_distribution_payload": _tokenize(response_payload),
+        }
+
+    identity = IdentityKeyPair(
+        dh_public_key=session_row["x3dh_identity_dh_public_key"],
+        dh_private_key=session_row["x3dh_identity_dh_private_key"],
+        signing_public_key=session_row["x3dh_identity_signing_public_key"],
+        signing_private_key=session_row["x3dh_identity_signing_private_key"],
+    )
+    initial_message = _deserialize_x3dh_initial_message(response["x3dh_initial_message"])
+    otp_private_key = session_row["one_time_prekey_private_key"]
+    used_otp_id = initial_message.used_one_time_prekey_id
+    if used_otp_id is None:
+        otp_private_key = None
+    elif session_row["one_time_prekey_id"] != used_otp_id:
+        raise ValueError("Bootstrap bundle consumed an unexpected one-time prekey")
+
+    shared_secret = x3dh_receive(
+        identity,
+        session_row["signed_prekey_private_key"],
+        otp_private_key,
+        initial_message,
+    )
+    ratchet_state = _deserialize_ratchet_state(session_row["ratchet_state_json"])
+    if ratchet_state is None:
+        ratchet_state = initialize_as_receiver(
+            shared_secret,
+            (
+                session_row["signed_prekey_public_key"],
+                session_row["signed_prekey_private_key"],
+            ),
+        )
+
+    associated_data = _json_bytes(
+        {"bootstrap_id": bootstrap_id.hex(), "team_id": team_id.hex()}
+    )
+    ratchet_state, plaintext = ratchet_decrypt(
+        ratchet_state,
+        _deserialize_encrypted_message(response["ratchet_message"]),
+        associated_data=associated_data,
+    )
+    authorizer_distribution = deserialize_distribution_message(
+        json.loads(plaintext.decode("utf-8"))
+    )
+    save_peer_sender_key(
+        device_local_db_path(root_dir, participant_hex),
+        team_id,
+        receiver_record_from_distribution(authorizer_distribution),
+    )
+
+    team_device_private_key = session_row["team_device_private_key"]
+    if team_device_private_key is None:
+        raise ValueError("Bootstrap session is missing the local Team X private key")
+
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        current_device = _current_device_row(conn)
+        device_id = current_device[0]
+        existing = conn.execute(
+            "SELECT public_key FROM team_device_key WHERE team_id = ? AND device_id = ?",
+            (team_id, device_id),
+        ).fetchone()
+        if existing is None:
+            key_path = _team_device_key_path(root_dir, participant_hex, team_id, device_id)
+            _write_local_secret(key_path, team_device_private_key)
+            conn.execute(
+                """
+                INSERT INTO team_device_key (team_id, device_id, public_key, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (team_id, device_id, session_row["team_device_public_key"], _now_iso()),
+            )
+            conn.execute(
+                """
+                INSERT INTO local.team_device_key_secret (team_id, device_id, private_key_ref)
+                VALUES (?, ?, ?)
+                """,
+                (team_id, device_id, str(key_path)),
+            )
+            conn.commit()
+
+    existing_sender_record = load_team_sender_key(
+        device_local_db_path(root_dir, participant_hex),
+        team_id,
+    )
+    expected_sender_device_key_id = key_id_from_public(session_row["team_device_public_key"])
+    if existing_sender_record is not None:
+        if existing_sender_record.sender_device_key_id != expected_sender_device_key_id:
+            raise ValueError("Existing team sender key does not belong to the bootstrapped device")
+        sender_distribution = distribution_message_from_record(existing_sender_record)
+    else:
+        sender_distribution = _initialize_team_sender_key_state(
+            device_local_db_path(root_dir, participant_hex),
+            team_id,
+            expected_sender_device_key_id,
+        )
+
+    participant_dir = root_dir / "Participants" / participant_hex
+    team_sync_dir = participant_dir / team_name / "Sync"
+    team_db_path = team_sync_dir / "core.db"
+    engine = create_engine(f"sqlite:///{team_db_path}")
+    try:
+        with engine.begin() as conn:
+            cert_inserted = _insert_team_certificate_if_missing(
+                conn,
+                cert,
+                issuer_member_id=member_id,
+            )
+    finally:
+        engine.dispose()
+    if cert_inserted:
+        CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
+        CodSync.gitCmd(
+            ["-C", str(team_sync_dir), "commit", "-m", "Received device link cert from bootstrap"]
+        )
+
+    response_payload = {
+        "bootstrap_id": bootstrap_id.hex(),
+        "sender_distribution": serialize_distribution_message(sender_distribution),
+    }
+    response_payload_bytes = _json_bytes(response_payload)
+    response_payload["team_device_signature"] = _sign_bytes(
+        team_device_private_key,
+        response_payload_bytes,
+    ).hex()
+
+    _update_linked_team_bootstrap_session(
+        root_dir,
+        participant_hex,
+        bootstrap_id,
+        ratchet_state=ratchet_state,
+        one_time_prekey_private_key=None,
+        finalized_at=_now_iso(),
+        response_payload_json=json.dumps(response_payload, sort_keys=True),
+    )
+
+    return {
+        "bootstrap_id_hex": bootstrap_id.hex(),
+        "sender_distribution_payload": _tokenize(response_payload),
+    }
+
+
+def complete_linked_device_bootstrap(
+    root_dir,
+    participant_hex,
+    team_name,
+    sender_distribution_payload,
+):
+    """Finish payload 3 on the authorizing device and store the peer receiver state."""
+    root_dir = pathlib.Path(root_dir)
+    payload = _untokenize(sender_distribution_payload)
+    payload_body = {
+        "bootstrap_id": payload["bootstrap_id"],
+        "sender_distribution": payload["sender_distribution"],
+    }
+    payload_bytes = _json_bytes(payload_body)
+    bootstrap_id = bytes.fromhex(payload["bootstrap_id"])
+    distribution = deserialize_distribution_message(payload["sender_distribution"])
+    team_id, member_id = _team_row(root_dir, participant_hex, team_name)
+
+    pending = _load_pending_linked_team_bootstrap(root_dir, participant_hex, bootstrap_id)
+    if pending is None:
+        raise ValueError("No pending linked-team bootstrap breadcrumb found")
+    if pending["team_id"] != team_id:
+        raise ValueError("Pending bootstrap breadcrumb belongs to a different team")
+    if distribution.sender_device_key_id != key_id_from_public(
+        pending["peer_team_device_public_key"]
+    ):
+        raise ValueError("Payload 3 sender stream does not match the pending proposed key")
+    if not _verify_signature(
+        pending["peer_team_device_public_key"],
+        payload_bytes,
+        bytes.fromhex(payload["team_device_signature"]),
+    ):
+        raise ValueError("Payload 3 team-device signature is invalid")
+
+    trusted_keys = get_trusted_device_keys_for_member(
+        root_dir, participant_hex, team_name, member_id
+    )
+    if pending["peer_team_device_public_key"] not in trusted_keys:
+        raise ValueError("Pending bootstrap key is not trusted for this member")
+
+    save_peer_sender_key(
+        device_local_db_path(root_dir, participant_hex),
+        team_id,
+        receiver_record_from_distribution(distribution),
+    )
+    _clear_pending_linked_team_bootstrap(root_dir, participant_hex, bootstrap_id)
+    return {
+        "bootstrap_id_hex": bootstrap_id.hex(),
+        "sender_device_key_id_hex": distribution.sender_device_key_id.hex(),
+    }
+
+
 def _init_team_db(db_path):
     """Initialize a team core.db with the team schema. Returns the engine."""
     engine = create_engine(f"sqlite:///{db_path}")
@@ -1073,6 +1884,61 @@ def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes)
             "signature": cert.signature,
         },
     )
+
+
+def _same_team_certificate_row(row, cert: KeyCertificate, issuer_member_id: bytes) -> bool:
+    return (
+        row[0] == cert.cert_type.value
+        and row[1] == cert.subject_key_id
+        and row[2] == cert.subject_public_key
+        and row[3] == cert.issuer_key_id
+        and row[4] == issuer_member_id
+        and row[5] == cert.issued_at_iso
+        and json.loads(row[6]) == cert.claims
+        and row[7] == cert.signature
+    )
+
+
+def _insert_team_certificate_if_missing(
+    conn,
+    cert: KeyCertificate,
+    issuer_member_id: bytes,
+) -> bool:
+    result = conn.execute(
+        text(
+            "INSERT OR IGNORE INTO key_certificate ("
+            "cert_id, cert_type, subject_key_id, subject_public_key, "
+            "issuer_key_id, issuer_member_id, issued_at, claims, signature"
+            ") VALUES ("
+            ":cert_id, :cert_type, :subject_key_id, :subject_public_key, "
+            ":issuer_key_id, :issuer_member_id, :issued_at, :claims, :signature)"
+        ),
+        {
+            "cert_id": cert.cert_id,
+            "cert_type": cert.cert_type,
+            "subject_key_id": cert.subject_key_id,
+            "subject_public_key": cert.subject_public_key,
+            "issuer_key_id": cert.issuer_key_id,
+            "issuer_member_id": issuer_member_id,
+            "issued_at": cert.issued_at_iso,
+            "claims": json.dumps(cert.claims, sort_keys=True),
+            "signature": cert.signature,
+        },
+    )
+    if result.rowcount > 0:
+        return True
+
+    existing = conn.execute(
+        text(
+            "SELECT cert_type, subject_key_id, subject_public_key, issuer_key_id, "
+            "issuer_member_id, issued_at, claims, signature "
+            "FROM key_certificate WHERE cert_id = :cert_id"
+        ),
+        {"cert_id": cert.cert_id},
+    ).fetchone()
+    if existing is None or not _same_team_certificate_row(existing, cert, issuer_member_id):
+        raise ValueError("Existing team certificate does not match bootstrap certificate")
+    return False
 
 
 def _load_team_certificates(conn, team_id: bytes) -> list[KeyCertificate]:
