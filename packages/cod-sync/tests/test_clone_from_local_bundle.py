@@ -11,7 +11,6 @@
 # CodSync.build_link_blob, SmallSeaRemote link+bundle file methods,
 # CodSyncRemote.read_link_blob
 
-import os
 import pathlib
 
 import cod_sync.protocol as CS
@@ -23,15 +22,8 @@ def make_file_remote(pub_dir):
 
 
 def make_cod_sync(repo_dir, remote_name):
-    """Create a CodSync wired to a specific repo directory.
-
-    CodSync methods call self.gitCmd, but only the module-level gitCmd
-    exists.  We patch it onto the instance.  CodSync also assumes cwd is
-    the repo root (via change_to_root_git_dir), so we chdir there.
-    """
-    os.chdir(repo_dir)
-    cod = CS.CodSync(remote_name)
-    return cod
+    """Create a CodSync wired to a specific repo directory."""
+    return CS.CodSync(remote_name, repo_dir=repo_dir)
 
 
 def working_tree_files(repo_dir):

@@ -8,13 +8,12 @@ import pytest
 import boto3
 
 
-def test_minio_bucket_creation(minio_server_gen):
-    minio_server = minio_server_gen()
+def test_minio_bucket_creation(minio):
     s3 = boto3.client(
         "s3",
-        endpoint_url=minio_server["endpoint"],
-        aws_access_key_id=minio_server["access_key"],
-        aws_secret_access_key=minio_server["secret_key"]
+        endpoint_url=minio["endpoint"],
+        aws_access_key_id=minio["access_key"],
+        aws_secret_access_key=minio["secret_key"]
     )
 
     print(s3.list_buckets())

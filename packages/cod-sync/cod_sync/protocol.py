@@ -264,10 +264,11 @@ class CodSync:
         logger.debug(f"clone_from_remote {self.remote_name} {url}")
 
         git_cmd = ["git", "rev-parse", "--show-toplevel"]
-        result = subprocess.run(git_cmd, capture_output=True, text=True)
+        result = subprocess.run(git_cmd, capture_output=True, text=True, cwd=self._repo_dir)
         if result.returncode == 0:
+            target = self._repo_dir or os.getcwd()
             logger.warning(
-                f"clone_from_remote: already in a repo '{os.getcwd()}' '{result.stdout.strip()}'"
+                f"clone_from_remote: already in a repo '{target}' '{result.stdout.strip()}'"
             )
             return -1
 

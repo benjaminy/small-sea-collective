@@ -6,7 +6,7 @@ from Experiments.git_history_pruning import run_experiment as exp
 def test_compute_boundary_uses_dag_closure(tmp_path: pathlib.Path):
     repo = exp.build_repo(tmp_path, "repo_a_typical", 24, 101)
 
-    boundary, _boundary_parent, window_commits, old_commits = exp.compute_boundary(repo, 5)
+    boundary, _boundary_parent, _mainline_commits, window_commits, old_commits = exp.compute_boundary(repo, 5)
 
     assert boundary
     assert window_commits
@@ -26,13 +26,11 @@ def test_compute_boundary_uses_dag_closure(tmp_path: pathlib.Path):
 
 def test_filtered_finalize_preserves_missing_objects(tmp_path: pathlib.Path):
     source = exp.build_repo(tmp_path, "repo_c_large_files", 24, 303)
-    boundary, _boundary_parent, window_commits, _old_commits = exp.compute_boundary(source, 5)
+    boundary, _boundary_parent, _mainline_commits, window_commits, _old_commits = exp.compute_boundary(source, 5)
 
     clone = tmp_path / "clone"
     exp.make_blobless_clone(source, clone)
-    checkout_result = exp.rehydrate_checkout(clone, boundary, window_commits)
-
-    assert checkout_result.ok
+    exp.rehydrate_exact_snapshots(clone, window_commits)
 
     before_missing = exp.count_missing_objects(clone)
     before_size = exp.git_size_kib(clone)

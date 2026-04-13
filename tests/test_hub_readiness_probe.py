@@ -9,7 +9,7 @@ import httpx
 import pytest
 import requests
 
-from conftest import _wait_for_hub_ready
+from hub_test_utils import _wait_for_hub_ready
 
 
 # ---------------------------------------------------------------------------
