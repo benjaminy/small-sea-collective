@@ -76,21 +76,40 @@ def _team_db(root: pathlib.Path, participant_hex: str, team_name: str) -> pathli
 
 
 def _add_same_member_linked_device_bundle(root: pathlib.Path, participant_hex: str, team_name: str):
-    team_id, _member_id = _team_row(root, participant_hex, team_name)
     linked_device_key, _linked_device_private_key = generate_key_pair(ProtectionLevel.DAILY)
-    provisioning.issue_device_link_for_member(
+    return _publish_device_prekey_bundle_for_public_key(
         root,
         participant_hex,
         team_name,
         linked_device_key.public_key,
+        issue_link_cert=True,
     )
+
+
+def _publish_device_prekey_bundle_for_public_key(
+    root: pathlib.Path,
+    participant_hex: str,
+    team_name: str,
+    public_key: bytes,
+    *,
+    issue_link_cert: bool = False,
+):
+    team_id, _member_id = _team_row(root, participant_hex, team_name)
+    if issue_link_cert:
+        provisioning.issue_device_link_for_member(
+            root,
+            participant_hex,
+            team_name,
+            public_key,
+        )
+    device_key_id = key_id_from_public(public_key)
     identity = provisioning.generate_identity_key_pair()
     signed_prekey, _signed_prekey_private_key = provisioning.generate_signed_prekey(
         identity.signing_private_key
     )
     one_time_prekeys = provisioning.generate_one_time_prekeys(2)
     bundle = provisioning.build_prekey_bundle(
-        participant_id=key_id_from_public(linked_device_key.public_key),
+        participant_id=device_key_id,
         identity=identity,
         signed_prekey=signed_prekey,
         one_time_prekeys=[prekey for prekey, _private_key in one_time_prekeys],
@@ -104,13 +123,13 @@ def _add_same_member_linked_device_bundle(root: pathlib.Path, participant_hex: s
             VALUES (?, ?, ?)
             """,
             (
-                key_id_from_public(linked_device_key.public_key),
+                device_key_id,
                 json.dumps(_serialize_prekey_bundle(bundle), sort_keys=True),
                 "2026-04-13T00:00:00+00:00",
             ),
         )
         conn.commit()
-    return key_id_from_public(linked_device_key.public_key)
+    return device_key_id
 
 
 def _bootstrap_remote_member_installation(workspace: pathlib.Path):
@@ -400,6 +419,100 @@ def test_redistribute_sender_key_skips_trusted_devices_without_prekey_bundle(pla
     redistribution = provisioning.redistribute_sender_key(root, alice_hex, "ProjectX")
 
     assert key_id_from_public(linked_device_key.public_key).hex() in redistribution["skipped_device_key_ids_hex"]
+
+
+def test_reconcile_runtime_state_does_not_repeat_delivered_current_sender_key(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    create_team(root, alice_hex, "ProjectX")
+    linked_device_key_id = _add_same_member_linked_device_bundle(root, alice_hex, "ProjectX")
+
+    first = provisioning.reconcile_runtime_state(root, alice_hex, "ProjectX")
+
+    assert first["rotated"] is False
+    assert linked_device_key_id.hex() in {
+        artifact["target_device_key_id_hex"] for artifact in first["redistribution_artifacts"]
+    }
+    for artifact in first["redistribution_artifacts"]:
+        provisioning.mark_redistribution_delivery(
+            root,
+            alice_hex,
+            team_id=bytes.fromhex(first["team_id_hex"]),
+            sender_device_key_id=bytes.fromhex(artifact["sender_device_key_id_hex"]),
+            sender_chain_id=bytes.fromhex(artifact["sender_chain_id_hex"]),
+            target_device_key_id=bytes.fromhex(artifact["target_device_key_id_hex"]),
+        )
+
+    second = provisioning.reconcile_runtime_state(root, alice_hex, "ProjectX")
+
+    assert second["redistribution_artifacts"] == []
+    assert second["skipped_device_key_ids_hex"] == []
+
+
+def test_reconcile_runtime_state_retries_after_bundle_publication(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    create_team(root, alice_hex, "ProjectX")
+    linked_device_key, _linked_device_private_key = generate_key_pair(ProtectionLevel.DAILY)
+    provisioning.issue_device_link_for_member(
+        root,
+        alice_hex,
+        "ProjectX",
+        linked_device_key.public_key,
+    )
+    linked_device_key_id = key_id_from_public(linked_device_key.public_key)
+
+    first = provisioning.reconcile_runtime_state(root, alice_hex, "ProjectX")
+    assert linked_device_key_id.hex() in first["skipped_device_key_ids_hex"]
+    assert first["redistribution_artifacts"] == []
+
+    _publish_device_prekey_bundle_for_public_key(
+        root,
+        alice_hex,
+        "ProjectX",
+        linked_device_key.public_key,
+    )
+
+    second = provisioning.reconcile_runtime_state(root, alice_hex, "ProjectX")
+    assert linked_device_key_id.hex() in {
+        artifact["target_device_key_id_hex"] for artifact in second["redistribution_artifacts"]
+    }
+
+
+def test_reconcile_runtime_state_rotates_after_adopted_member_removal(playground_dir):
+    state = _bootstrap_remote_member_installation(pathlib.Path(playground_dir))
+    alice_sender_before = load_team_sender_key(
+        device_local_db_path(state["alice_root"], state["alice_hex"]),
+        state["team_id"],
+    )
+    assert alice_sender_before is not None
+    removed_member_id = provisioning.uuid7()
+    provisioning._store_runtime_reconciliation_state(
+        state["alice_root"],
+        state["alice_hex"],
+        team_id=state["team_id"],
+        trusted_member_ids_hex=[
+            state["alice_member_id"].hex(),
+            state["bob_member_id"].hex(),
+            removed_member_id.hex(),
+        ],
+        trusted_device_key_ids_hex=[
+            alice_sender_before.sender_device_key_id.hex(),
+            state["bob_device_key_id"].hex(),
+        ],
+        last_sender_device_key_id=alice_sender_before.sender_device_key_id,
+        last_sender_chain_id=alice_sender_before.chain_id,
+    )
+
+    reconciliation = provisioning.reconcile_runtime_state(
+        state["alice_root"],
+        state["alice_hex"],
+        "ProjectX",
+    )
+
+    assert reconciliation["rotated"] is True
+    assert removed_member_id.hex() in reconciliation["removed_member_ids_hex"]
+    assert reconciliation["sender_chain_id_hex"] != alice_sender_before.chain_id.hex()
 
 
 def test_parallel_device_prekey_bundle_rows_merge(playground_dir):

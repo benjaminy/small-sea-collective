@@ -217,6 +217,14 @@ class TeamManager:
             member,
         )
 
+    def reconcile_runtime_state(self, team_name):
+        """Reconcile local runtime state against the adopted team view."""
+        return provisioning.reconcile_runtime_state(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+        )
+
     def set_member_role(self, team_name, member, role):
         """Set a member's role (admin or observer)."""
         if role not in ("admin", "observer"):

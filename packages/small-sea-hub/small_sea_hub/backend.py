@@ -973,6 +973,40 @@ class SmallSeaBackend:
             data = decrypt_group_payload(ss_session, data)
         return ok, data, etag
 
+    def upload_runtime_artifact(self, session_hex, path, data, expected_etag=None):
+        """Upload a runtime-control artifact without group-layer encryption."""
+        ss_session = self._lookup_session(session_hex)
+        adapter = self._make_storage_adapter(ss_session)
+        if expected_etag is not None:
+            result = adapter.upload_if_match(path, data, expected_etag)
+        else:
+            result = adapter.upload_overwrite(path, data)
+        if result[0]:
+            self._bump_signal(session_hex)
+        return result
+
+    def download_runtime_artifact_from_cloud(self, session_hex, path):
+        """Download a raw runtime-control artifact from this session's own bucket."""
+        ss_session = self._lookup_session(session_hex)
+        adapter = self._make_storage_adapter(ss_session)
+        return adapter.download(path)
+
+    def download_runtime_artifact_from_peer(self, session_hex, member_id_hex, path):
+        """Download a raw runtime-control artifact from a peer bucket."""
+        return self._download_peer_file(session_hex, member_id_hex, path)
+
+    def get_local_signal(self, session_hex):
+        """Return (signals_dict, etag) from this session's own signals.yaml."""
+        ss_session = self._lookup_session(session_hex)
+        adapter = self._make_storage_adapter(ss_session)
+        ok, data, etag = adapter.download(self._SIGNAL_PATH)
+        if not ok:
+            return None, None
+        signals = yaml.safe_load(data.decode("utf-8")) or {}
+        if not isinstance(signals, dict):
+            signals = {}
+        return signals, etag
+
     # ---- Signal file ----
 
     _SIGNAL_PATH = "signals.yaml"
