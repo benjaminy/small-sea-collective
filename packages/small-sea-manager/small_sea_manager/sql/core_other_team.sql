@@ -2,7 +2,8 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS member (
     id BLOB PRIMARY KEY,
-    device_public_key BLOB
+    display_name TEXT,
+    identity_public_key BLOB
 );
 
 CREATE TABLE IF NOT EXISTS app (
@@ -35,17 +36,19 @@ CREATE TABLE IF NOT EXISTS invitation (
     created_at TEXT NOT NULL,
     accepted_at TEXT,
     accepted_by BLOB,
+    acceptor_device_key_id BLOB,
     acceptor_protocol TEXT,
     acceptor_url TEXT
 );
 
-CREATE TABLE IF NOT EXISTS peer (
-    id BLOB PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS team_device (
+    device_key_id BLOB PRIMARY KEY,
     member_id BLOB NOT NULL,
-    display_name TEXT,
-    protocol TEXT NOT NULL,
-    url TEXT NOT NULL,
+    public_key BLOB NOT NULL,
+    protocol TEXT,
+    url TEXT,
     bucket TEXT,
+    created_at TEXT NOT NULL,
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 );
 
@@ -65,5 +68,6 @@ CREATE TABLE IF NOT EXISTS key_certificate (
 CREATE TABLE IF NOT EXISTS device_prekey_bundle (
     device_key_id BLOB PRIMARY KEY,
     prekey_bundle_json TEXT NOT NULL,
-    published_at TEXT NOT NULL
+    published_at TEXT NOT NULL,
+    FOREIGN KEY (device_key_id) REFERENCES team_device(device_key_id) ON DELETE CASCADE
 );

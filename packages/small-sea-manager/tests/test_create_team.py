@@ -164,10 +164,18 @@ def test_create_team(playground_dir):
     tconn = sqlite3.connect(str(team_db))
 
     # member: Alice as first member (fresh per-team ID)
-    members = tconn.execute("SELECT * FROM member").fetchall()
+    members = tconn.execute("SELECT id, display_name FROM member").fetchall()
     assert len(members) == 1
     assert members[0][0] == bytes.fromhex(member_id_hex)
-    assert members[0][1] == team_device_key[0]
+    assert members[0][1] == "Alice"
+    team_devices = tconn.execute(
+        "SELECT member_id, device_key_id, public_key, protocol, url, bucket "
+        "FROM team_device"
+    ).fetchall()
+    assert len(team_devices) == 1
+    assert team_devices[0][0] == bytes.fromhex(member_id_hex)
+    assert team_devices[0][1] == team_device_key_id
+    assert team_devices[0][2] == team_device_key[0]
 
     cert_row = tconn.execute(
         "SELECT cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, "

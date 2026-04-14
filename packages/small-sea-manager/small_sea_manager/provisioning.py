@@ -639,14 +639,13 @@ def _ensure_redistribution_prekey_material(
 
 
 def _ensure_device_prekey_bundle_table(conn) -> None:
-    # Intentionally lazy-created for older team DBs so redistribution can
-    # work without forcing a shared-schema version bump on this branch.
     conn.execute(
         text(
             "CREATE TABLE IF NOT EXISTS device_prekey_bundle ("
             "device_key_id BLOB PRIMARY KEY, "
             "prekey_bundle_json TEXT NOT NULL, "
-            "published_at TEXT NOT NULL)"
+            "published_at TEXT NOT NULL, "
+            "FOREIGN KEY (device_key_id) REFERENCES team_device(device_key_id) ON DELETE CASCADE)"
         )
     )
 
@@ -687,6 +686,95 @@ def _load_device_prekey_bundle(conn, device_key_id: bytes) -> PrekeyBundle | Non
     if row is None:
         return None
     return _deserialize_prekey_bundle(json.loads(row[0]))
+
+
+def _bucket_name_for_protocol(protocol: str, member_id: bytes, berth_id: bytes) -> str:
+    if protocol == "dropbox":
+        return f"ss-{member_id.hex()[:16]}"
+    return f"ss-{berth_id.hex()[:16]}"
+
+
+def _upsert_member_row(
+    conn,
+    member_id: bytes,
+    *,
+    display_name: str | None = None,
+    identity_public_key: bytes | None = None,
+) -> None:
+    conn.execute(
+        text(
+            "INSERT OR IGNORE INTO member (id, display_name, identity_public_key) "
+            "VALUES (:id, :display_name, :identity_public_key)"
+        ),
+        {
+            "id": member_id,
+            "display_name": display_name,
+            "identity_public_key": identity_public_key,
+        },
+    )
+    updates = []
+    params: dict[str, object] = {"id": member_id}
+    if display_name is not None:
+        updates.append("display_name = :display_name")
+        params["display_name"] = display_name
+    if identity_public_key is not None:
+        updates.append("identity_public_key = :identity_public_key")
+        params["identity_public_key"] = identity_public_key
+    if updates:
+        conn.execute(
+            text(f"UPDATE member SET {', '.join(updates)} WHERE id = :id"),
+            params,
+        )
+
+
+def _upsert_team_device_row(
+    conn,
+    member_id: bytes,
+    public_key: bytes,
+    *,
+    protocol: str | None = None,
+    url: str | None = None,
+    bucket: str | None = None,
+    created_at: str | None = None,
+) -> bytes:
+    device_key_id = key_id_from_public(public_key)
+    if created_at is None:
+        created_at = _now_iso()
+    conn.execute(
+        text(
+            "INSERT OR IGNORE INTO team_device "
+            "(device_key_id, member_id, public_key, protocol, url, bucket, created_at) "
+            "VALUES (:device_key_id, :member_id, :public_key, :protocol, :url, :bucket, :created_at)"
+        ),
+        {
+            "device_key_id": device_key_id,
+            "member_id": member_id,
+            "public_key": public_key,
+            "protocol": protocol,
+            "url": url,
+            "bucket": bucket,
+            "created_at": created_at,
+        },
+    )
+    conn.execute(
+        text(
+            "UPDATE team_device "
+            "SET member_id = :member_id, public_key = :public_key, "
+            "protocol = COALESCE(:protocol, protocol), "
+            "url = COALESCE(:url, url), "
+            "bucket = COALESCE(:bucket, bucket) "
+            "WHERE device_key_id = :device_key_id"
+        ),
+        {
+            "device_key_id": device_key_id,
+            "member_id": member_id,
+            "public_key": public_key,
+            "protocol": protocol,
+            "url": url,
+            "bucket": bucket,
+        },
+    )
+    return device_key_id
 
 
 def _publish_local_device_prekey_bundle(
@@ -1144,6 +1232,7 @@ class Invitation(Base):
     created_at = Column(String, nullable=False)
     accepted_at = Column(String)
     accepted_by = Column(LargeBinary)
+    acceptor_device_key_id = Column(LargeBinary)
     acceptor_protocol = Column(String)
     acceptor_url = Column(String)
 
@@ -1151,23 +1240,24 @@ class Invitation(Base):
         return f"<Invitation(id='{self.id.hex()}', status='{self.status}')>"
 
 
-class Peer(Base):
-    __tablename__ = "peer"
+class TeamDevice(Base):
+    __tablename__ = "team_device"
 
-    id = Column(LargeBinary, primary_key=True)
+    device_key_id = Column(LargeBinary, primary_key=True)
     member_id = Column(LargeBinary, nullable=False)
-    display_name = Column(String, nullable=True)
-    protocol = Column(String, nullable=False)
-    url = Column(String, nullable=False)
+    public_key = Column(LargeBinary, nullable=False)
+    protocol = Column(String, nullable=True)
+    url = Column(String, nullable=True)
     bucket = Column(String, nullable=True)
+    created_at = Column(String, nullable=False)
 
     def __repr__(self):
-        return f"<Peer(id='{self.id.hex()}')>"
+        return f"<TeamDevice(device_key_id='{self.device_key_id.hex()}')>"
 
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 55
+USER_SCHEMA_VERSION = 56
 
 
 # ---- Provisioning functions ----
@@ -1687,6 +1777,148 @@ def _migrate_team_db(conn, from_version):
                 "FOREIGN KEY (issuer_member_id) REFERENCES member(id) ON DELETE CASCADE)"
             )
         )
+    if from_version < 56:
+        _migrate_team_db_to_member_and_team_device(conn)
+
+
+def _table_columns(conn, table_name: str) -> list[str]:
+    return [row[1] for row in conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()]
+
+
+def _table_exists(conn, table_name: str) -> bool:
+    row = conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :name"),
+        {"name": table_name},
+    ).fetchone()
+    return row is not None
+
+
+def _migrate_team_db_to_member_and_team_device(conn) -> None:
+    member_columns = set(_table_columns(conn, "member"))
+    if "display_name" not in member_columns:
+        conn.execute(text("ALTER TABLE member ADD COLUMN display_name TEXT"))
+    if "identity_public_key" not in member_columns:
+        conn.execute(text("ALTER TABLE member ADD COLUMN identity_public_key BLOB"))
+
+    peer_rows = []
+    if _table_exists(conn, "peer"):
+        peer_rows = conn.execute(
+            text(
+                "SELECT member_id, display_name, protocol, url, bucket "
+                "FROM peer ORDER BY member_id, id"
+            )
+        ).fetchall()
+        seen_member_ids: set[bytes] = set()
+        for row in peer_rows:
+            member_id = row[0]
+            if member_id in seen_member_ids:
+                raise ValueError(
+                    f"Cannot migrate team DB with multiple peer rows for member {member_id.hex()}"
+                )
+            seen_member_ids.add(member_id)
+            conn.execute(
+                text(
+                    "UPDATE member SET display_name = :display_name "
+                    "WHERE id = :member_id AND display_name IS NULL"
+                ),
+                {"member_id": member_id, "display_name": row[1]},
+            )
+
+    conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS team_device ("
+            "device_key_id BLOB PRIMARY KEY, "
+            "member_id BLOB NOT NULL, "
+            "public_key BLOB NOT NULL, "
+            "protocol TEXT, "
+            "url TEXT, "
+            "bucket TEXT, "
+            "created_at TEXT NOT NULL, "
+            "FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE)"
+        )
+    )
+
+    peer_by_member = {row[0]: row for row in peer_rows}
+    cert_rows = conn.execute(
+        text(
+            "SELECT cert_type, subject_public_key, issued_at, claims "
+            "FROM key_certificate ORDER BY issued_at ASC"
+        )
+    ).fetchall()
+    devices_by_key: dict[bytes, dict[str, object]] = {}
+    for cert_type, subject_public_key, issued_at, claims_json in cert_rows:
+        if cert_type not in {"membership", "device_link"}:
+            continue
+        claims = json.loads(claims_json)
+        member_id_hex = claims.get("member_id")
+        if not isinstance(member_id_hex, str):
+            continue
+        try:
+            member_id = bytes.fromhex(member_id_hex)
+        except ValueError:
+            continue
+        device_key_id = key_id_from_public(subject_public_key)
+        if device_key_id not in devices_by_key:
+            peer_row = peer_by_member.get(member_id)
+            devices_by_key[device_key_id] = {
+                "member_id": member_id,
+                "public_key": subject_public_key,
+                "protocol": peer_row[2] if peer_row else None,
+                "url": peer_row[3] if peer_row else None,
+                "bucket": peer_row[4] if peer_row else None,
+                "created_at": issued_at or _now_iso(),
+            }
+
+    if "device_public_key" in member_columns:
+        legacy_member_rows = conn.execute(
+            text("SELECT id, device_public_key FROM member WHERE device_public_key IS NOT NULL")
+        ).fetchall()
+        for member_id, public_key in legacy_member_rows:
+            device_key_id = key_id_from_public(public_key)
+            devices_by_key.setdefault(
+                device_key_id,
+                {
+                    "member_id": member_id,
+                    "public_key": public_key,
+                    "protocol": peer_by_member.get(member_id)[2] if member_id in peer_by_member else None,
+                    "url": peer_by_member.get(member_id)[3] if member_id in peer_by_member else None,
+                    "bucket": peer_by_member.get(member_id)[4] if member_id in peer_by_member else None,
+                    "created_at": _now_iso(),
+                },
+            )
+
+    for row in devices_by_key.values():
+        conn.execute(
+            text(
+                "INSERT OR REPLACE INTO team_device "
+                "(device_key_id, member_id, public_key, protocol, url, bucket, created_at) "
+                "VALUES (:device_key_id, :member_id, :public_key, :protocol, :url, :bucket, :created_at)"
+            ),
+            {
+                "device_key_id": key_id_from_public(row["public_key"]),
+                "member_id": row["member_id"],
+                "public_key": row["public_key"],
+                "protocol": row["protocol"],
+                "url": row["url"],
+                "bucket": row["bucket"],
+                "created_at": row["created_at"],
+            },
+        )
+
+    if not _table_exists(conn, "device_prekey_bundle"):
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS device_prekey_bundle ("
+                "device_key_id BLOB PRIMARY KEY, "
+                "prekey_bundle_json TEXT NOT NULL, "
+                "published_at TEXT NOT NULL, "
+                "FOREIGN KEY (device_key_id) REFERENCES team_device(device_key_id) ON DELETE CASCADE)"
+            )
+        )
+
+    invitation_columns = set(_table_columns(conn, "invitation"))
+    if "acceptor_device_key_id" not in invitation_columns:
+        conn.execute(text("ALTER TABLE invitation ADD COLUMN acceptor_device_key_id BLOB"))
 def _rename_sender_key_column_if_present(conn, table_name: str) -> None:
     columns = {
         row[1]
@@ -2073,6 +2305,30 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
                 conn,
                 cert,
                 issuer_member_id=member_id,
+            )
+            berth_row = conn.execute(
+                text("SELECT id FROM team_app_berth LIMIT 1")
+            ).fetchone()
+            try:
+                local_cloud = get_cloud_storage(root_dir, participant_hex)
+                local_protocol = local_cloud["protocol"]
+                local_url = local_cloud["url"]
+                local_bucket = (
+                    _bucket_name_for_protocol(local_protocol, member_id, berth_row[0])
+                    if berth_row is not None
+                    else None
+                )
+            except ValueError:
+                local_protocol = None
+                local_url = None
+                local_bucket = None
+            _upsert_team_device_row(
+                conn,
+                member_id,
+                session_row["team_device_public_key"],
+                protocol=local_protocol,
+                url=local_url,
+                bucket=local_bucket,
             )
             _publish_local_device_prekey_bundle(
                 root_dir,
@@ -3065,6 +3321,11 @@ def issue_device_link_for_member(root_dir, participant_hex, team_name, linked_de
     try:
         with engine.begin() as conn:
             _store_team_certificate(conn, cert, issuer_member_id=member_id)
+            _upsert_team_device_row(
+                conn,
+                member_id,
+                linked_device_public_key,
+            )
     finally:
         engine.dispose()
 
@@ -3255,16 +3516,25 @@ def create_team(root_dir, participant_hex, team_name):
     # Populate the team DB: creator member, app, berth, and creator's role.
     app_id = uuid7()
     berth_id = uuid7()
+    creator_display_name = get_nickname(root_dir, participant_hex) or None
+    try:
+        creator_cloud = get_cloud_storage(root_dir, participant_hex)
+        creator_protocol = creator_cloud["protocol"]
+        creator_url = creator_cloud["url"]
+        creator_bucket = _bucket_name_for_protocol(creator_protocol, member_id, berth_id)
+    except ValueError:
+        creator_protocol = None
+        creator_url = None
+        creator_bucket = None
     with team_engine.begin() as conn:
-        conn.execute(
-            text(
-                "INSERT INTO member (id, device_public_key) "
-                "VALUES (:id, :device_public_key)"
-            ),
-            {
-                "id": member_id,
-                "device_public_key": team_keys["device_key"].public_key,
-            },
+        _upsert_member_row(conn, member_id, display_name=creator_display_name)
+        _upsert_team_device_row(
+            conn,
+            member_id,
+            team_keys["device_key"].public_key,
+            protocol=creator_protocol,
+            url=creator_url,
+            bucket=creator_bucket,
         )
         _store_team_certificate(conn, membership_cert, issuer_member_id=member_id)
         conn.execute(
@@ -3334,6 +3604,9 @@ def create_invitation(
     )
     if inviter_sender_key is None:
         raise ValueError(f"No sender key found for team '{team_name}'")
+    _inviter_private_key, inviter_device_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
 
     # Look up the berth ID from the team DB (to derive the bucket name).
     # Berth structural data lives in the team DB, not NoteToSelf.
@@ -3344,10 +3617,7 @@ def create_invitation(
     if berth_row is None:
         raise ValueError(f"No berth found in team DB for '{team_name}'")
     berth_id_hex = berth_row[0].hex()
-    if inviter_cloud["protocol"] == "dropbox":
-        inviter_bucket = f"ss-{inviter_member_id.hex()[:16]}"
-    else:
-        inviter_bucket = f"ss-{berth_id_hex[:16]}"
+    inviter_bucket = _bucket_name_for_protocol(inviter_cloud["protocol"], inviter_member_id, berth_row[0])
 
     # Create invitation row
     inv_id = uuid7()
@@ -3373,6 +3643,7 @@ def create_invitation(
         "inviter_display_name": inviter_display_name,
         "inviter_cloud": {"protocol": inviter_cloud["protocol"], "url": inviter_cloud["url"]},
         "inviter_bucket": inviter_bucket,
+        "inviter_device_public_key": inviter_device_public_key.hex(),
         "inviter_sender_key": serialize_sender_key_record(inviter_sender_key),
     }
     token_json = json.dumps(token_data)
@@ -3419,6 +3690,7 @@ def accept_invitation(
     inviter_cloud = token["inviter_cloud"]  # protocol + url only, no credentials
     inviter_bucket = token["inviter_bucket"]
     inviter_display_name = token.get("inviter_display_name") or None
+    inviter_device_public_key = bytes.fromhex(token["inviter_device_public_key"])
     inviter_sender_key = deserialize_distribution_message(token["inviter_sender_key"])
     invitation_id = bytes.fromhex(token["invitation_id"])
     nonce = bytes.fromhex(token["nonce"])
@@ -3461,30 +3733,6 @@ def accept_invitation(
     finally:
         os.chdir(saved_cwd)
 
-    # --- Record the inviter as a peer in the cloned DB ---
-    team_db_path = team_sync_dir / "core.db"
-    ensure_team_db_schema(team_db_path)
-    team_engine = create_engine(f"sqlite:///{team_db_path}")
-
-    with team_engine.begin() as conn:
-        # Store inviter's cloud location as a peer (URL only, no credentials)
-        conn.execute(
-            text(
-                "INSERT INTO peer (id, member_id, display_name, protocol, url, bucket) "
-                "VALUES (:id, :member_id, :display_name, :protocol, :url, :bucket)"
-            ),
-            {
-                "id": uuid7(),
-                "member_id": inviter_member_id,
-                "display_name": inviter_display_name,
-                "protocol": inviter_cloud["protocol"],
-                "url": inviter_cloud["url"],
-                "bucket": inviter_bucket,
-            },
-        )
-
-    team_engine.dispose()
-
     # --- Install sqlite merge driver ---
     _install_sqlite_merge_driver(team_sync_dir)
 
@@ -3502,6 +3750,7 @@ def accept_invitation(
     team_keys = _generate_initial_team_device_key(
         root_dir, acceptor_participant_hex, team_id
     )
+    acceptor_device_key_id = key_id_from_public(team_keys["device_key"].public_key)
     save_peer_sender_key(
         device_local_db_path(root_dir, acceptor_participant_hex),
         team_id,
@@ -3513,23 +3762,9 @@ def accept_invitation(
         key_id_from_public(team_keys["device_key"].public_key),
     )
 
-    # --- Git commit the DB changes ---
-    with team_engine.begin() as conn:
-        _publish_local_device_prekey_bundle(
-            root_dir,
-            acceptor_participant_hex,
-            team_name,
-            conn=conn,
-            team_id=team_id,
-            team_device_public_key=team_keys["device_key"].public_key,
-        )
-    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
-    CodSync.gitCmd(
-        ["-C", str(team_sync_dir), "commit", "-m", f"Joined team: {team_name}"]
-    )
-
-    # Derive acceptor's bucket name (protocol-aware to avoid folder collisions)
+    # --- Record visible member/device rows in the cloned DB ---
     team_db_path = team_sync_dir / "core.db"
+    ensure_team_db_schema(team_db_path)
     team_engine = create_engine(f"sqlite:///{team_db_path}")
     if acceptor_cloud["protocol"] == "dropbox":
         acceptor_bucket = f"ss-{acceptor_member_id.hex()[:16]}"
@@ -3538,7 +3773,50 @@ def accept_invitation(
             berth_row = conn.execute(
                 text("SELECT id FROM team_app_berth LIMIT 1")
             ).fetchone()
-        acceptor_bucket = f"ss-{berth_row[0].hex()[:16]}"
+        acceptor_bucket = _bucket_name_for_protocol(
+            acceptor_cloud["protocol"],
+            acceptor_member_id,
+            berth_row[0],
+        )
+
+    with team_engine.begin() as conn:
+        _upsert_member_row(conn, inviter_member_id, display_name=inviter_display_name)
+        _upsert_team_device_row(
+            conn,
+            inviter_member_id,
+            inviter_device_public_key,
+            protocol=inviter_cloud["protocol"],
+            url=inviter_cloud["url"],
+            bucket=inviter_bucket,
+        )
+        _upsert_member_row(
+            conn,
+            acceptor_member_id,
+            display_name=get_nickname(root_dir, acceptor_participant_hex) or None,
+        )
+        _upsert_team_device_row(
+            conn,
+            acceptor_member_id,
+            team_keys["device_key"].public_key,
+            protocol=acceptor_cloud["protocol"],
+            url=acceptor_cloud["url"],
+            bucket=acceptor_bucket,
+        )
+        _publish_local_device_prekey_bundle(
+            root_dir,
+            acceptor_participant_hex,
+            team_name,
+            conn=conn,
+            team_id=team_id,
+            team_device_public_key=team_keys["device_key"].public_key,
+        )
+    team_engine.dispose()
+
+    # --- Git commit the DB changes ---
+    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
+    CodSync.gitCmd(
+        ["-C", str(team_sync_dir), "commit", "-m", f"Joined team: {team_name}"]
+    )
 
     # --- Build and return acceptance response (no credentials) ---
     acceptance_data = {
@@ -3546,6 +3824,7 @@ def accept_invitation(
         "nonce": nonce.hex(),
         "team_id": team_id.hex(),
         "acceptor_member_id": acceptor_member_id.hex(),
+        "acceptor_device_key_id": acceptor_device_key_id.hex(),
         "acceptor_device_public_key": team_keys["device_key"].public_key.hex(),
         "acceptor_cloud": acceptor_cloud,
         "acceptor_bucket": acceptor_bucket,
@@ -3575,6 +3854,7 @@ def complete_invitation_acceptance(
     nonce = bytes.fromhex(acceptance["nonce"])
     team_id = bytes.fromhex(acceptance["team_id"])
     acceptor_member_id = bytes.fromhex(acceptance["acceptor_member_id"])
+    acceptor_device_key_id = bytes.fromhex(acceptance["acceptor_device_key_id"])
     acceptor_device_public_key = bytes.fromhex(acceptance["acceptor_device_public_key"])
     acceptor_cloud = acceptance["acceptor_cloud"]
     acceptor_bucket = acceptance["acceptor_bucket"]
@@ -3645,7 +3925,8 @@ def complete_invitation_acceptance(
         conn.execute(
             text(
                 "UPDATE invitation SET status='accepted', accepted_at=:now, "
-                "accepted_by=:member_id, acceptor_protocol=:protocol, "
+                "accepted_by=:member_id, acceptor_device_key_id=:device_key_id, "
+                "acceptor_protocol=:protocol, "
                 "acceptor_url=:url "
                 "WHERE id = :id"
             ),
@@ -3653,37 +3934,25 @@ def complete_invitation_acceptance(
                 "id": invitation_id,
                 "now": now,
                 "member_id": acceptor_member_id,
+                "device_key_id": acceptor_device_key_id,
                 "protocol": acceptor_cloud["protocol"],
                 "url": acceptor_cloud["url"],
             },
         )
 
-        # Add acceptor as member + peer in inviter's team DB (URL only, no credentials)
-        conn.execute(
-            text(
-                "INSERT INTO member (id, device_public_key) "
-                "VALUES (:id, :device_public_key)"
-            ),
-            {
-                "id": acceptor_member_id,
-                "device_public_key": acceptor_device_public_key,
-            },
-        )
+        # Add acceptor as member + device in inviter's team DB (URL only, no credentials)
+        _upsert_member_row(conn, acceptor_member_id, display_name=row[2])
         _store_team_certificate(conn, membership_cert, issuer_member_id=inviter_member_id)
-        conn.execute(
-            text(
-                "INSERT INTO peer (id, member_id, display_name, protocol, url, bucket) "
-                "VALUES (:id, :member_id, :display_name, :protocol, :url, :bucket)"
-            ),
-            {
-                "id": uuid7(),
-                "member_id": acceptor_member_id,
-                "display_name": row[2],
-                "protocol": acceptor_cloud["protocol"],
-                "url": acceptor_cloud["url"],
-                "bucket": acceptor_bucket,
-            },
+        stored_device_key_id = _upsert_team_device_row(
+            conn,
+            acceptor_member_id,
+            acceptor_device_public_key,
+            protocol=acceptor_cloud["protocol"],
+            url=acceptor_cloud["url"],
+            bucket=acceptor_bucket,
         )
+        if stored_device_key_id != acceptor_device_key_id:
+            raise ValueError("Acceptance device_key_id does not match acceptor public key")
 
         # Grant the acceptor read-write on all berths (default).
         # The inviter (admin) can change this later.

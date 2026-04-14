@@ -167,30 +167,28 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     assert alice_member_id_hex in member_ids
     assert bob_member_id_hex in member_ids
 
-    peers = aconn.execute(
-        "SELECT member_id, display_name, protocol, url FROM peer"
+    team_devices = aconn.execute(
+        "SELECT member_id, public_key, protocol, url FROM team_device ORDER BY member_id, device_key_id"
     ).fetchall()
-    assert len(peers) == 1
-    assert peers[0][0].hex() == bob_member_id_hex
-    assert peers[0][1] == "Bob"
-    assert peers[0][2] == "s3"
+    assert len(team_devices) == 2
+    bob_device = next(row for row in team_devices if row[0].hex() == bob_member_id_hex)
+    assert bob_device[2] == "s3"
     aconn.close()
 
-    # ---- Verify Bob's team DB stays provisional until a later sync ----
+    # ---- Verify Bob's team DB carries both member rows locally ----
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
     members = bconn.execute("SELECT id FROM member").fetchall()
-    assert len(members) == 1
+    assert len(members) == 2
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
-    assert bob_member_id_hex not in member_ids
-    peers = bconn.execute(
-        "SELECT member_id, display_name, protocol, url FROM peer"
+    assert bob_member_id_hex in member_ids
+    team_devices = bconn.execute(
+        "SELECT member_id, protocol, url FROM team_device ORDER BY member_id, device_key_id"
     ).fetchall()
-    assert len(peers) == 1
-    assert peers[0][0].hex() == alice_member_id_hex
-    assert peers[0][1] == "Alice"
-    assert peers[0][2] == "s3"
+    assert len(team_devices) == 2
+    alice_device = next(row for row in team_devices if row[0].hex() == alice_member_id_hex)
+    assert alice_device[1] == "s3"
     bconn.close()
 
     # ---- Verify Bob's repo was pushed to his MinIO ----
