@@ -376,17 +376,18 @@ def test_session_peers(playground_dir):
     )
     conn = sqlite3.connect(str(team_db))
     try:
-        conn.execute("INSERT INTO member (id) VALUES (?)", (bob_member_id,))
+        conn.execute("INSERT INTO member (id, display_name) VALUES (?, ?)", (bob_member_id, "Bob"))
         conn.execute(
-            "INSERT INTO peer (id, member_id, display_name, protocol, url, bucket) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO team_device (device_key_id, member_id, public_key, protocol, url, bucket, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
-                Provisioning.uuid7(),
                 bob_member_id,
-                "Bob",
+                bob_member_id,
+                bob_member_id,
                 "s3",
                 "http://localhost:9001",
                 "ss-test",
+                "2026-01-01T00:00:00+00:00",
             ),
         )
         conn.commit()

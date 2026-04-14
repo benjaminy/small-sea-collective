@@ -114,11 +114,11 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     # -- Read Alice's signing key --
     alice_priv, alice_pub = get_current_team_device_key(root, alice_hex, "ProjectX")
 
-    # -- Verify Alice's current device key is in the team DB member row --
+    # -- Verify Alice's current device key is in the shared team_device row --
     alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     conn = sqlite3.connect(str(alice_team_db))
     row = conn.execute(
-        "SELECT device_public_key FROM member WHERE id = ?",
+        "SELECT public_key FROM team_device WHERE member_id = ?",
         (bytes.fromhex(alice_member_id_hex),),
     ).fetchone()
     conn.close()
@@ -180,7 +180,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
     alice_pub_from_bob = bconn.execute(
-        "SELECT device_public_key FROM member WHERE id = ?",
+        "SELECT public_key FROM team_device WHERE member_id = ?",
         (bytes.fromhex(alice_member_id_hex),),
     ).fetchone()[0]
     bconn.close()
@@ -191,7 +191,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     # --- Verify Bob's public key is in Alice's team DB (from acceptance token) ---
     aconn = sqlite3.connect(str(alice_team_db))
     bob_pub_row = aconn.execute(
-        "SELECT device_public_key FROM member WHERE id = ?",
+        "SELECT public_key FROM team_device WHERE member_id = ?",
         (bytes.fromhex(bob_member_id_hex),),
     ).fetchone()
     aconn.close()

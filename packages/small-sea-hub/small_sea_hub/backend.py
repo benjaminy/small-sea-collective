@@ -902,7 +902,7 @@ class SmallSeaBackend:
     def list_peers(self, session_hex):
         """Return peer details visible to the current team session.
 
-        Prefers the team DB's peer.display_name when present. Falls back to
+        Prefers the team DB's member.display_name when present. Falls back to
         accepted invitation labels for older team DBs.
         """
         ss_session = self._lookup_session(session_hex)
@@ -910,20 +910,22 @@ class SmallSeaBackend:
         if ss_session.team_name == "NoteToSelf":
             return []
 
+        with attached_note_to_self_connection(
+            self.root_dir, ss_session.participant_id.hex()
+        ) as nts_conn:
+            self_row = nts_conn.execute(
+                "SELECT self_in_team FROM team WHERE name = ?",
+                (ss_session.team_name,),
+            ).fetchone()
+        self_in_team = self_row[0] if self_row is not None else None
+
         team_db_path = str(ss_session.participant_path / ss_session.team_name / "Sync" / "core.db")
         conn = sqlite3.connect(team_db_path)
         try:
-            try:
-                rows = conn.execute(
-                    "SELECT member_id, display_name FROM peer ORDER BY member_id"
-                ).fetchall()
-            except sqlite3.OperationalError:
-                rows = [
-                    (member_id, None)
-                    for (member_id,) in conn.execute(
-                        "SELECT member_id FROM peer ORDER BY member_id"
-                    ).fetchall()
-                ]
+            rows = conn.execute(
+                "SELECT id, display_name FROM member WHERE id != ? ORDER BY id",
+                (self_in_team,),
+            ).fetchall()
             name_rows = conn.execute(
                 "SELECT accepted_by, invitee_label "
                 "FROM invitation "
@@ -1169,7 +1171,15 @@ class SmallSeaBackend:
         conn = sqlite3.connect(team_db_path)
         try:
             row = conn.execute(
-                "SELECT protocol, url, bucket FROM peer WHERE member_id = ?", (member_id,)
+                """
+                SELECT protocol, url, bucket
+                FROM team_device
+                WHERE member_id = ?
+                  AND url IS NOT NULL
+                ORDER BY created_at ASC, device_key_id ASC
+                LIMIT 1
+                """,
+                (member_id,),
             ).fetchone()
         finally:
             conn.close()

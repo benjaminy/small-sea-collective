@@ -46,11 +46,15 @@ def _refresh_session_peers(app: FastAPI, session_hex: str):
 
     berth_id_hex = session_info["berth_id_hex"]
     team_db_path = session_info["team_db_path"]
+    self_in_team = session_info.get("self_in_team")
 
     try:
         conn = _sqlite3.connect(team_db_path)
         try:
-            rows = conn.execute("SELECT member_id FROM peer").fetchall()
+            rows = conn.execute(
+                "SELECT id FROM member WHERE id != ?",
+                (bytes.fromhex(self_in_team),),
+            ).fetchall()
         finally:
             conn.close()
     except Exception as exc:
@@ -535,6 +539,11 @@ def _register_session_peers(session_hex: str):
             "team_db_path": team_db_path,
             "team_db_revision": None,
             "self_signal_etag": None,
+            "self_in_team": Provisioning._team_row(
+                app.state.backend.root_dir,
+                ss_session.participant_id.hex(),
+                ss_session.team_name,
+            )[1].hex(),
         }
         app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
         # Do an immediate peer refresh so watched_peers is populated now rather

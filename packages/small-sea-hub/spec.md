@@ -74,7 +74,7 @@ Everything important is persisted to durable storage:
 | Data | Where stored |
 |---|---|
 | Session tokens and all session metadata | Hub SQLite DB (`small_sea_collective_local.db`) |
-| Peer cloud locations | Team DB (`peer` table), synced via Cod Sync |
+| Peer cloud locations | Team DB (`team_device` plus `member`), synced via Cod Sync |
 | Signal file contents (push counts) | Cloud storage (`signals.yaml`) |
 | Cloud locator metadata | NoteToSelf shared DB (`cloud_storage` table) |
 | Cloud credentials | NoteToSelf device-local DB (`cloud_storage_credential` table) |
@@ -83,7 +83,7 @@ The Hub's in-process state (`watched_sessions`, `watched_peers`, `peer_counts`) 
 derived entirely from these durable sources and is **rebuilt at startup**:
 
 1. `watched_sessions` is repopulated by reading all confirmed session rows from the Hub DB.
-2. `watched_peers` is repopulated by reading each session's team DB peer list.
+2. `watched_peers` is repopulated by reading each session's team DB member list (excluding self).
 3. `peer_counts` is repopulated by the peer watcher's first pass (which runs immediately on startup rather than after the full poll interval).
 
 This means that after a Hub restart, an app that reconnects with its existing session token
@@ -310,8 +310,9 @@ Errors: `404` if not found.
 ---
 
 **`GET /peer_cloud_file?member_id=<hex>&path=<remote path>`** — Download a file from a peer's
-public cloud bucket via the Hub proxy. The Hub reads the peer's cloud URL from the team DB and
-fetches the file without credentials (public-read bucket).
+public cloud bucket via the Hub proxy. The Hub resolves the member's readable
+endpoint through `team_device` in the team DB and fetches the file without
+credentials (public-read bucket).
 
 Response: same as `GET /cloud_file`.
 

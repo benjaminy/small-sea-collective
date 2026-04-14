@@ -187,31 +187,26 @@ def _bootstrap_remote_member_installation(workspace: pathlib.Path):
                 ).fetchone()
                 if existing_member is None:
                     conn.execute(
-                        text(
-                            "INSERT INTO member (id, device_public_key) VALUES (:id, :device_public_key)"
-                        ),
-                        {"id": bob_member_id, "device_public_key": bob_team_keys["device_key"].public_key},
+                        text("INSERT INTO member (id, display_name) VALUES (:id, :display_name)"),
+                        {"id": bob_member_id, "display_name": "Bob"},
                     )
+                conn.execute(
+                    text(
+                        "INSERT OR IGNORE INTO team_device "
+                        "(device_key_id, member_id, public_key, protocol, url, bucket, created_at) "
+                        "VALUES (:device_key_id, :member_id, :public_key, :protocol, :url, :bucket, :created_at)"
+                    ),
+                    {
+                        "device_key_id": key_id_from_public(bob_team_keys["device_key"].public_key),
+                        "member_id": bob_member_id,
+                        "public_key": bob_team_keys["device_key"].public_key,
+                        "protocol": "localfolder",
+                        "url": str(workspace / "bob-cloud"),
+                        "bucket": "bucket-bob",
+                        "created_at": provisioning._now_iso(),
+                    },
+                )
                 _store_team_certificate(conn, bob_membership_cert, issuer_member_id=alice_member_id)
-                peer_exists = conn.execute(
-                    text("SELECT 1 FROM peer WHERE member_id = :member_id"),
-                    {"member_id": bob_member_id},
-                ).fetchone()
-                if peer_exists is None:
-                    conn.execute(
-                        text(
-                            "INSERT INTO peer (id, member_id, display_name, protocol, url, bucket) "
-                            "VALUES (:id, :member_id, :display_name, :protocol, :url, :bucket)"
-                        ),
-                        {
-                            "id": provisioning.uuid7(),
-                            "member_id": bob_member_id,
-                            "display_name": "Bob",
-                            "protocol": "localfolder",
-                            "url": str(workspace / "bob-cloud"),
-                            "bucket": "bucket-bob",
-                        },
-                    )
                 role_exists = conn.execute(
                     text("SELECT 1 FROM berth_role WHERE member_id = :member_id AND berth_id = :berth_id"),
                     {"member_id": bob_member_id, "berth_id": berth_id},
@@ -379,6 +374,16 @@ def test_remove_member_purges_local_receiver_state_and_subject_side_certs(playgr
             (state["bob_member_id"],),
         ).fetchone()
         assert member_row is None
+        team_device_row = conn.execute(
+            "SELECT 1 FROM team_device WHERE member_id = ?",
+            (state["bob_member_id"],),
+        ).fetchone()
+        assert team_device_row is None
+        prekey_row = conn.execute(
+            "SELECT 1 FROM device_prekey_bundle WHERE device_key_id = ?",
+            (state["bob_device_key_id"],),
+        ).fetchone()
+        assert prekey_row is None
         cert_rows = conn.execute("SELECT claims FROM key_certificate").fetchall()
     assert all(json.loads(row[0]).get("member_id") != state["bob_member_id"].hex() for row in cert_rows)
 

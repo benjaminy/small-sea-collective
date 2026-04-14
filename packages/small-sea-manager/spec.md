@@ -110,13 +110,13 @@ Stores the shared state for one team. All members maintain their own copy; chang
 
 | Table | Purpose |
 |-------|---------|
-| `member` | One row per team member; the primary key is that member's team-local identity; `public_key` holds their Ed25519 signing key for bundle verification |
+| `member` | One row per team member; the primary key is that member's team-local identity; member-facing fields such as `display_name` live here |
 | `member_unification` | Maps multiple member IDs to the same person (for the oops-unification device flow; see §Device Management) |
 | `app` | Apps active for this team |
 | `team_app_berth` | Berths for this team (one per app; `team_id` omitted — implicit from which DB this is) |
 | `berth_role` | Per-member, per-berth role assignments: `read-only` or `read-write` |
 | `invitation` | Invitation records (pending, accepted, revoked) |
-| `peer` | Each team member's cloud location(s) — used for Cod Sync pull |
+| `team_device` | One row per team device; device identity and cloud endpoint metadata used for Cod Sync pull live here |
 
 
 ---
@@ -324,7 +324,7 @@ Updates `invitation.status` to `revoked` for a pending invitation. Commits.
 Takes an out-of-band token. All cloud I/O goes through the Hub:
 
 1. Opens a NoteToSelf Hub session, calls `GET /cloud_proxy` (using an `ExplicitProxyRemote`) to download the inviter's team bundle chain. The Hub proxies the bytes using appropriate credentials — the Manager never contacts cloud storage directly.
-2. Clones the team repo locally, adds self as a member, installs the splice-sqlite merge driver. Adds a Team pointer to NoteToSelf DB. (All local DB/git ops; no network.)
+2. Clones the team repo locally, records member/device rows in the shared team DB, installs the splice-sqlite merge driver, and adds a Team pointer to NoteToSelf DB. (All local DB/git ops; no network.)
 3. Opens a team Hub session, calls `POST /cloud/setup` to create the acceptor's bucket, then pushes via Cod Sync through the Hub.
 
 Returns an acceptance token for out-of-band delivery back to the inviter.
@@ -333,7 +333,8 @@ Returns an acceptance token for out-of-band delivery back to the inviter.
 
 Takes the out-of-band acceptance token. Validates nonce. Marks invitation
 `accepted`. Adds the acceptor as a member with the role specified in the
-original invitation. Adds acceptor's cloud location to `peer`. Commits.
+original invitation. Adds or updates the acceptor's `team_device` row with its
+cloud location. Commits.
 
 As with any other Core-berth mutation, this matters to the broader team only to
 the extent that other participants incorporate this updated view into their own
@@ -612,7 +613,8 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS member (
     id BLOB PRIMARY KEY,
-    public_key BLOB
+    display_name TEXT,
+    identity_public_key BLOB
 );
 
 CREATE TABLE IF NOT EXISTS app (
@@ -645,20 +647,29 @@ CREATE TABLE IF NOT EXISTS invitation (
     created_at        TEXT NOT NULL,
     accepted_at       TEXT,
     accepted_by       BLOB,
+    acceptor_device_key_id BLOB,
     acceptor_protocol TEXT,
     acceptor_url      TEXT
     -- no credential columns: privacy is E2E, not access-control
 );
 
-CREATE TABLE IF NOT EXISTS peer (
-    id        BLOB PRIMARY KEY,
+CREATE TABLE IF NOT EXISTS team_device (
+    device_key_id BLOB PRIMARY KEY,
     member_id BLOB NOT NULL,
-    display_name TEXT,
-    protocol  TEXT NOT NULL,
-    url       TEXT NOT NULL,
-    bucket    TEXT,
+    public_key BLOB NOT NULL,
+    protocol TEXT,
+    url TEXT,
+    bucket TEXT,
+    created_at TEXT NOT NULL,
     -- no credential columns: credentials stay in the local Hub, never shared
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS device_prekey_bundle (
+    device_key_id BLOB PRIMARY KEY,
+    prekey_bundle_json TEXT NOT NULL,
+    published_at TEXT NOT NULL,
+    FOREIGN KEY (device_key_id) REFERENCES team_device(device_key_id) ON DELETE CASCADE
 );
 ```
 

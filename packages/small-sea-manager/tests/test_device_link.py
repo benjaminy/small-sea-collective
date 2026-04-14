@@ -57,8 +57,15 @@ def test_issue_device_link_for_member_updates_trusted_device_lookup(playground_d
     cert_types = conn.execute(
         "SELECT cert_type FROM key_certificate ORDER BY issued_at"
     ).fetchall()
+    member_count = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
+    team_device_count = conn.execute(
+        "SELECT COUNT(*) FROM team_device WHERE member_id = ?",
+        (bytes.fromhex(alice_member_id_hex),),
+    ).fetchone()[0]
     conn.close()
     assert [row[0] for row in cert_types] == ["membership", "device_link"]
+    assert member_count == 1
+    assert team_device_count == 2
 
     # Silence lint-style "unused" suspicion around the generated signing key by
     # proving it differs from the current trusted founding key.

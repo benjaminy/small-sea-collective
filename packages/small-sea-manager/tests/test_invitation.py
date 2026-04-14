@@ -220,18 +220,30 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert len(invitations) == 1
     assert invitations[0]["status"] == "accepted"
 
-    # --- Verify Alice's team DB has 2 members, a peer (Bob), and 2 berth_roles ---
+    # --- Verify Alice's team DB has 2 members, a device row for Bob, and 2 berth_roles ---
     alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     aconn = sqlite3.connect(str(alice_team_db))
     members = aconn.execute(
-        "SELECT id, device_public_key FROM member"
+        "SELECT id, display_name FROM member ORDER BY id"
     ).fetchall()
     assert len(members) == 2
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
     assert bob_member_id_hex in member_ids
     bob_member_row = next(row for row in members if row[0] == bytes.fromhex(bob_member_id_hex))
-    assert bob_member_row[1] == bytes.fromhex(acceptance["acceptor_device_public_key"])
+    assert bob_member_row[1] == "Bob"
+    team_devices = aconn.execute(
+        "SELECT member_id, device_key_id, public_key, protocol, url "
+        "FROM team_device ORDER BY member_id, device_key_id"
+    ).fetchall()
+    assert len(team_devices) == 2
+    bob_team_device_row = next(
+        row for row in team_devices if row[0] == bytes.fromhex(bob_member_id_hex)
+    )
+    assert bob_team_device_row[1] == bytes.fromhex(acceptance["acceptor_device_key_id"])
+    assert bob_team_device_row[2] == bytes.fromhex(acceptance["acceptor_device_public_key"])
+    assert bob_team_device_row[3] == "s3"
+    assert bob_team_device_row[4] == bob_minio["endpoint"]
 
     bob_cert_row = aconn.execute(
         "SELECT cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, "
@@ -259,7 +271,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
         }
     )
     alice_device_public_key = next(
-        row[1] for row in members if row[0] == bytes.fromhex(alice_member_id_hex)
+        row[2] for row in team_devices if row[0] == bytes.fromhex(alice_member_id_hex)
     )
     assert verify_membership_cert(
         bob_membership_cert,
@@ -270,15 +282,6 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
         subject_public_key=bytes.fromhex(acceptance["acceptor_device_public_key"]),
     )
 
-    peers = aconn.execute(
-        "SELECT member_id, display_name, protocol, url FROM peer"
-    ).fetchall()
-    assert len(peers) == 1
-    assert peers[0][0] == bytes.fromhex(bob_member_id_hex)
-    assert peers[0][1] == "Bob"
-    assert peers[0][2] == "s3"
-    assert peers[0][3] == bob_minio["endpoint"]
-
     roles = aconn.execute("SELECT member_id, role FROM berth_role").fetchall()
     assert len(roles) == 2
     role_map = {row[0].hex(): row[1] for row in roles}
@@ -286,25 +289,25 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert role_map[bob_member_id_hex] == "read-write"
     aconn.close()
 
-    # --- Verify Bob's team DB is still provisional: Alice exists, Bob does not yet ---
+    # --- Verify Bob's team DB carries both member rows and both device rows locally ---
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
     members = bconn.execute(
-        "SELECT id, device_public_key FROM member"
+        "SELECT id, display_name FROM member ORDER BY id"
     ).fetchall()
-    assert len(members) == 1
+    assert len(members) == 2
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
-    assert bob_member_id_hex not in member_ids
-
-    peers = bconn.execute(
-        "SELECT member_id, display_name, protocol, url FROM peer"
+    assert bob_member_id_hex in member_ids
+    team_devices = bconn.execute(
+        "SELECT member_id, public_key, protocol, url FROM team_device ORDER BY member_id, device_key_id"
     ).fetchall()
-    assert len(peers) == 1
-    assert peers[0][0] == bytes.fromhex(alice_member_id_hex)
-    assert peers[0][1] == "Alice"
-    assert peers[0][2] == "s3"
-    assert peers[0][3] == alice_minio["endpoint"]
+    assert len(team_devices) == 2
+    alice_team_device = next(
+        row for row in team_devices if row[0] == bytes.fromhex(alice_member_id_hex)
+    )
+    assert alice_team_device[2] == "s3"
+    assert alice_team_device[3] == alice_minio["endpoint"]
     bconn.close()
 
     # --- Verify Bob's NoteToSelf has the team pointer but NOT a TeamAppBerth for ProjectX ---
