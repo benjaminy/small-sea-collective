@@ -28,8 +28,7 @@ Today, the repo still lacks one honest implementation slice for:
 
 - learning that shared NoteToSelf changed on another device
 - pulling and adopting the updated shared NoteToSelf state through the Hub
-- discovering teams and related berth/app metadata created elsewhere by the
-  same identity
+- discovering teams created elsewhere by the same identity
 - doing all of that without syncing device-local secrets or sneaking in
   automatic team admission
 
@@ -42,13 +41,15 @@ After this branch lands:
 
 1. a second device can refresh shared NoteToSelf through Hub-mediated sync and
    discover teams created on another device of the same identity
-2. the Hub can surface a narrow "shared NoteToSelf changed" update-awareness
-   signal to the Manager instead of leaving refresh entirely blind
+2. the Hub can surface a coarse "NoteToSelf changed" signal to the Manager
+   instead of leaving refresh entirely blind
 3. the Manager can adopt refreshed shared NoteToSelf state and rescan newly
-   visible teams/apps/berths without inventing a shadow registry
+   visible teams without inventing a shadow registry
 4. discovery remains distinct from team access: seeing a team in NoteToSelf is
    not the same thing as having a local clone or local team-device participation
 5. device-local NoteToSelf secrets and runtime state remain local and unsynced
+6. the branch reuses the normal steady-state NoteToSelf Hub transport that
+   already exists for push, instead of inventing a second bootstrap-only path
 
 ## Why This Slice
 
@@ -79,34 +80,63 @@ This branch should not invent a second synced discovery registry.
 Discovery comes from the shared NoteToSelf DB and repo:
 
 - `team`
-- `app`
-- `team_app_berth`
-- any related shared locator metadata already meant to sync across devices
+- shared locator metadata already meant to sync across devices
 
-### S2. Hub owns transport and update detection; Manager owns adoption and writes
+Important factual boundary for this branch:
+
+- user-team `app` and `team_app_berth` rows do not live in NoteToSelf today
+- `team_app_berth` in NoteToSelf currently serves the NoteToSelf meta-team, not
+  arbitrary user teams
+- this branch therefore treats user-team discovery as discovery of `team` rows,
+  not synced per-team app/berth structure
+
+If later work wants cross-device discovery of user-team app/berth metadata via
+NoteToSelf, that should be a separate explicit schema decision rather than an
+accident of this branch.
+
+### S2. Reuse the normal NoteToSelf Hub transport, not the bootstrap helper
+
+This branch should not treat `_push_note_to_self_to_local_remote(...)` as the
+steady-state transport seam. That helper is for identity bootstrap.
+
+The steady-state NoteToSelf sync path for this branch should build on the
+already-landed normal session transport:
+
+- Manager opens a normal `NoteToSelf` Hub session
+- Manager uses `SmallSeaRemote` over `/cloud_file`
+- refresh/pull and push both go through the Hub-owned cloud transport for that
+  session
+
+This keeps same-identity NoteToSelf sync on the same transport model as other
+steady-state Hub-mediated sync instead of inventing a NoteToSelf-specific proxy
+path or reusing peer semantics that do not fit.
+
+### S3. Hub owns signal detection; Manager owns refresh/adoption and writes
 
 This branch should keep the existing architectural seam honest:
 
 - Hub detects that shared NoteToSelf may have changed remotely
 - Hub handles the actual cloud transport for pull/push
 - Manager remains the only writer of NoteToSelf DBs
-- Manager decides how to adopt the refreshed state and what newly visible teams
-  or berths mean locally
+- Manager decides when to refresh, how to adopt the refreshed state, and what
+  newly visible teams mean locally
 
-### S3. User-initiated refresh remains the default
+### S4. User-initiated refresh remains the default
 
 The Hub should help with update-awareness, but this branch should not turn
 NoteToSelf sync into a magical always-on auto-adopt system.
 
 The intended model is:
 
-- Hub can notice incoming change and surface it through a narrow mailbox/reminder
-  seam
-- Manager can present or act on that signal in a controlled way
+- Hub compares coarse remote signal state and surfaces "there may be new shared
+  NoteToSelf data"
+- Hub does not prefetch and stage NoteToSelf bytes for later adoption
+- Manager-triggered refresh performs the actual fetch/adopt when the user or
+  test asks for it
 - tests may auto-trigger refresh for local proof, but production semantics stay
   user-initiated by default
 
-### S4. Discovery is not team join
+### S5. Discovery is not team join
 
 This branch should be explicit about the boundary:
 
@@ -119,7 +149,7 @@ This branch should be explicit about the boundary:
 That follow-through remains separate work already owned by the team-join and
 runtime branches.
 
-### S5. Device-local NoteToSelf state must remain out of sync
+### S6. Device-local NoteToSelf state must remain out of sync
 
 This branch must not regress the shared/local split.
 
@@ -137,14 +167,42 @@ It must not sync:
 - sender-key runtime state
 - notification tokens or other local-only auth/runtime material
 
-### S6. Keep the mailbox seam narrow
+### S7. Reuse existing signal/watch machinery instead of inventing a mailbox table
 
-The Manager spec already says the Hub should place an incoming notification in
-its mailbox when remote data arrives. This branch should implement the smallest
-honest version of that story for shared NoteToSelf, not a grand new messaging
-framework.
+The Manager spec uses "mailbox" language, but the concrete repo machinery today
+is:
 
-### S7. Pre-alpha rules apply
+- `signals.yaml` counters in cloud storage
+- Hub watcher polling / optional ntfy-triggered wakeups
+- berth events and `/notifications/watch`
+
+This branch should use that existing shape for a coarse NoteToSelf update
+signal instead of inventing a durable mailbox table.
+
+Recommended concrete seam:
+
+- detection trigger: the current device's own NoteToSelf `signals.yaml` counter
+  for the NoteToSelf berth changes
+- Hub watcher tracks that counter for live NoteToSelf sessions
+- Hub exposes the coarse change through the existing notification/watch seam,
+  extended with a self-update field rather than a peer-member-only response
+
+### S8. "Known team" and "joined team" are derived from existing state
+
+This should not stay an open question.
+
+For this branch:
+
+- known/discovered team = row exists in shared NoteToSelf `team`
+- joined/adopted team = local team repo/DB exists at
+  `Participants/{participant_hex}/{team_name}/Sync/core.db`
+
+This branch should update the code paths that currently assume "team row exists
+in NoteToSelf" implies "local team DB exists on disk." In particular, team
+detail/read paths should either guard and return a clear not-joined-local state
+or stay out of the discovery UI entirely.
+
+### S9. Pre-alpha rules apply
 
 Prefer a clean, reviewable implementation over backward-compatibility shims for
 old sandboxes.
@@ -154,11 +212,12 @@ old sandboxes.
 ### 1. Shared NoteToSelf refresh path
 
 Add or tighten the explicit Manager/Hub seam for refreshing shared NoteToSelf
-through Hub-mediated transport.
+through a normal NoteToSelf Hub session.
 
 Minimum behavior:
 
-- a device can pull shared NoteToSelf updates through the Hub
+- a device can fetch shared NoteToSelf updates through `SmallSeaRemote` over
+  `/cloud_file`
 - the refreshed shared DB/repo becomes the source of truth immediately after
   adoption
 - refresh works in local micro-test setups without internet dependence
@@ -170,20 +229,25 @@ remote NoteToSelf changes.
 
 Minimum behavior:
 
-- Hub detects that the NoteToSelf remote changed or may have changed
-- Hub surfaces a narrow update signal/mailbox item for the local participant
-- Manager has a clean seam for reacting to that signal
+- Hub detects NoteToSelf changes by observing the current session's own
+  `signals.yaml` berth counter
+- Hub surfaces a coarse self-update signal through the existing watch/notification
+  seam
+- Manager has a clean seam for reacting to that coarse signal without automatic
+  byte staging or automatic adoption
 
-### 3. Team and berth discovery after refresh
+### 3. Team discovery after refresh
 
 After a successful shared NoteToSelf refresh, the Manager should rescan and
 surface newly visible shared metadata, including:
 
 - teams created on another device
-- related app / berth metadata needed to keep local discovery coherent
 
 The implementation should avoid shadow copies of discovery state when the
-shared NoteToSelf tables already contain the truth.
+shared NoteToSelf `team` table already contains the truth.
+
+This branch does not need to sync or discover user-team `team_app_berth`
+structure through NoteToSelf.
 
 ### 4. Coherent local semantics for "known remotely, not adopted locally"
 
@@ -205,24 +269,28 @@ refresh/discovery path is real.
 
 Minimum expected coverage:
 
-- two-device same-identity setup where device A creates or records a team in
-  shared NoteToSelf and device B does not see it until refresh
+- two-device same-identity setup where device A records a team in shared
+  NoteToSelf, pushes NoteToSelf through the existing normal Hub path, and
+  device B does not see it until refresh
 - after shared NoteToSelf refresh, device B discovers the team cleanly
 - device B still does not auto-create local team participation for that team
 - shared NoteToSelf refresh does not sync device-local secrets/runtime state
-- Hub update-awareness path produces a narrow signal/mailbox effect instead of
-  silent magic
+- Hub update-awareness path produces a coarse self-update signal instead of
+  silent magic or hidden byte staging
 
 ## Out Of Scope
 
 - automatic team join / local team clone after discovery
+- syncing user-team `app` / `team_app_berth` metadata through NoteToSelf
 - sender-key crypto redesign
 - revocation or device-removal semantics
 - periodic sender-key rotation policy
 - broad UI/UX redesign
 - generalized multi-remote arbitration beyond the current practical assumption
-- redesigning the whole Hub mailbox system beyond what this branch actually
-  needs
+- redesigning the whole Hub notification/watch system beyond what this branch
+  actually needs
+- redesigning NoteToSelf push transport; this branch may rely on the existing
+  `push_note_to_self()` path
 
 ## Concrete Change Areas
 
@@ -234,21 +302,26 @@ Minimum expected coverage:
 
 Likely work:
 
-- explicit shared NoteToSelf refresh entry point
-- post-refresh rescan of teams/apps/berths
+- explicit `refresh_note_to_self()`-style entry point using a normal
+  `NoteToSelf` session and `SmallSeaRemote`
+- post-refresh rescan of shared `team` rows
 - clear distinction between "discovered in NoteToSelf" and "locally joined"
+- guards or explicit semantics for team-detail/read paths that currently assume
+  the local team DB exists
 
 ### 2. Hub update-awareness / transport seams
 
 - `packages/small-sea-hub/small_sea_hub/backend.py`
 - `packages/small-sea-hub/small_sea_hub/server.py`
-- any mailbox or watch helper already used for incoming reminders
+- existing watch/signal helpers already used for incoming reminders
 
 Likely work:
 
-- detect incoming shared NoteToSelf changes
-- emit the narrow update signal/mailbox effect
-- support the steady-state Hub-mediated NoteToSelf refresh path cleanly
+- reuse the current normal Hub session transport for steady-state NoteToSelf
+  fetches
+- track coarse NoteToSelf self-signal changes for NoteToSelf sessions
+- extend the existing watch/notification seam with a self-update field instead
+  of inventing a new mailbox table
 
 ### 3. Specs
 
@@ -258,7 +331,7 @@ Likely work:
 ### 4. Tests
 
 - focused Manager micro tests for refresh/discovery semantics
-- focused Hub micro tests for the update-awareness seam
+- focused Hub micro tests for the self-update signal seam
 - one end-to-end local two-installation micro test proving same-identity team
   discovery after refresh
 
@@ -269,36 +342,34 @@ true:
 
 - there is one explicit code path for shared NoteToSelf refresh instead of
   ad-hoc local DB poking
-- the Hub, not the Manager, still owns the actual cloud transport
+- the refresh path uses the normal NoteToSelf session transport (`SmallSeaRemote`
+  over `/cloud_file`), not the bootstrap helper and not peer transport
+- the Hub, not the Manager, still owns the actual cloud transport and coarse
+  signal detection
 - the Manager, not the Hub, still owns NoteToSelf DB writes/adoption
 - device B in a two-installation same-identity test does not see a newly added
   team before refresh
 - after refresh, device B does see the team in NoteToSelf-backed discovery
 - after refresh, device B still has no local team clone or local team-device
   participation unless separate join/bootstrap work runs
+- a team row in NoteToSelf is enough for discovery, but team-detail operations
+  that require a local clone do not crash or silently assume the clone exists
 - shared/device-local NoteToSelf boundaries remain intact after refresh
-- the new update-awareness seam is narrow enough that future mailbox work is
-  easier, not more magical
+- the Hub's self-update signal is driven by NoteToSelf's own `signals.yaml`
+  counter rather than by hidden byte staging or a new mailbox table
 - the implementation makes later runtime/team-join branches simpler instead of
   introducing another shadow source of truth
 
 ## Open Questions
 
-### Q1. How coarse should the mailbox/update signal be?
+### Q1. Exact watch API shape for the self-update field
 
-Recommended first-pass answer:
+The branch should keep the signal coarse, but the exact HTTP shape still needs
+to be chosen explicitly during review:
 
-- keep it coarse and berth-scoped
-- something like "shared NoteToSelf may have changed" is enough
-- do not make this branch compute rich semantic diffs inside the Hub
+- likely reuse `/notifications/watch`
+- request should include a known self-count for NoteToSelf sessions
+- response should include a self-updated count/value when the current session's
+  own NoteToSelf berth counter increased
 
-### Q2. What is the smallest honest local representation of a discovered team?
-
-This branch should likely avoid a new discovery table and instead derive the
-state from:
-
-- shared NoteToSelf `team` rows
-- existence or absence of local team clone/adoption state
-
-If implementation pressure suggests a tiny explicit local marker is necessary,
-the branch should justify it rather than slipping it in silently.
+This branch should not broaden that into rich semantic diff delivery.
