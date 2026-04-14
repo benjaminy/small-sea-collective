@@ -147,15 +147,82 @@ class TeamManager:
             "bucket": f"ss-{berth_id[:16]}",
         }
 
+    def _ensure_note_to_self_adopted_count(self, session) -> tuple[bytes, int]:
+        berth_id = bytes.fromhex(session.session_info()["berth_id"])
+        adopted = provisioning.get_note_to_self_adopted_signal_count(
+            self.root_dir, self.participant_hex, berth_id
+        )
+        if adopted is None:
+            snapshot = session.watch_notifications({}, timeout=0, known_self_count=0)
+            adopted = int(snapshot.get("self_updated_count") or 0)
+            provisioning.set_note_to_self_adopted_signal_count(
+                self.root_dir, self.participant_hex, berth_id, adopted
+            )
+        return berth_id, adopted
+
     def push_note_to_self(self):
-        """Push the NoteToSelf Sync repo to the participant's cloud bucket."""
+        """Push the NoteToSelf Sync repo to the participant's cloud bucket.
+
+        Stages and commits any outstanding changes to core.db before pushing
+        so that NoteToSelf mutations (e.g. new team rows from create_team) are
+        included in the push without requiring callers to commit explicitly.
+        """
         session = self._open_note_to_self_session(mode="passthrough")
+        berth_id, adopted = self._ensure_note_to_self_adopted_count(session)
         session.ensure_cloud_ready()
         repo_dir = self._note_to_self_repo_dir()
+        # Stage and commit any uncommitted NoteToSelf DB changes.
+        stage_result = CodSyncProtocol.gitCmd(
+            ["-C", str(repo_dir), "add", "core.db"], raise_on_error=False
+        )
+        if stage_result.returncode == 0:
+            status = CodSyncProtocol.gitCmd(
+                ["-C", str(repo_dir), "diff", "--cached", "--quiet"], raise_on_error=False
+            )
+            if status.returncode != 0:
+                CodSyncProtocol.gitCmd(
+                    ["-C", str(repo_dir), "commit", "-m", "Update NoteToSelf"]
+                )
         remote = SmallSeaRemote(session.token, base_url=self.client._base_url, client=self.client._http_client)
         cs = CodSync("origin", repo_dir=repo_dir)
         cs.remote = remote
         cs.push_to_remote(["main"])
+        provisioning.set_note_to_self_adopted_signal_count(
+            self.root_dir,
+            self.participant_hex,
+            berth_id,
+            adopted + 1,
+        )
+
+    def refresh_note_to_self(self):
+        """Fetch and adopt shared NoteToSelf updates through the Hub transport."""
+        session = self._open_note_to_self_session(mode="passthrough")
+        berth_id, adopted = self._ensure_note_to_self_adopted_count(session)
+        repo_dir = self._note_to_self_repo_dir()
+        remote = SmallSeaRemote(
+            session.token, base_url=self.client._base_url, client=self.client._http_client
+        )
+        cs = CodSync("origin", repo_dir=repo_dir)
+        cs.remote = remote
+        fetched_sha = cs.fetch_from_remote(["main"])
+        if fetched_sha is None:
+            raise RuntimeError("Failed to fetch NoteToSelf from remote")
+        merge_result = cs.merge_from_remote(["main"])
+        if merge_result != 0:
+            raise RuntimeError(f"Failed to adopt refreshed NoteToSelf (merge exit {merge_result})")
+        snapshot = session.watch_notifications({}, timeout=0, known_self_count=adopted)
+        new_count = int(snapshot.get("self_updated_count") or adopted)
+        provisioning.set_note_to_self_adopted_signal_count(
+            self.root_dir,
+            self.participant_hex,
+            berth_id,
+            new_count,
+        )
+        return {
+            "berth_id": berth_id.hex(),
+            "adopted_count": new_count,
+            "teams": self.list_known_teams(),
+        }
 
     def list_cloud_storage(self):
         """Return all cloud storage configs as a list of dicts."""
@@ -186,14 +253,36 @@ class TeamManager:
 
     def list_teams(self):
         """List all teams the current participant belongs to."""
-        return provisioning.list_teams(self.root_dir, self.participant_hex)
+        return self.list_known_teams()
+
+    def list_known_teams(self):
+        """List teams known from shared NoteToSelf, whether or not joined locally."""
+        teams = provisioning.list_teams(self.root_dir, self.participant_hex)
+        for team in teams:
+            team["joined_locally"] = provisioning.has_local_team_clone(
+                self.root_dir,
+                self.participant_hex,
+                team["name"],
+            )
+        return teams
 
     def get_team(self, team_name):
         """Get details for a specific team."""
+        joined_locally = provisioning.has_local_team_clone(
+            self.root_dir, self.participant_hex, team_name
+        )
+        if not joined_locally:
+            return {
+                "name": team_name,
+                "joined_locally": False,
+                "members": [],
+                "invitations": [],
+            }
         members = provisioning.list_members(self.root_dir, self.participant_hex, team_name)
         invitations = provisioning.list_invitations(self.root_dir, self.participant_hex, team_name)
         return {
             "name": team_name,
+            "joined_locally": True,
             "members": members,
             "invitations": invitations,
         }

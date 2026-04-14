@@ -79,9 +79,11 @@ from cuttlefish.x3dh import X3DHInitialMessage, x3dh_receive, x3dh_send
 from small_sea_note_to_self.db import (
     attached_note_to_self_connection,
     device_local_db_path,
+    get_note_to_self_adopted_count,
     initialize_bootstrap_local_state,
     initialize_shared_db,
     note_to_self_sync_db_path,
+    set_note_to_self_adopted_count,
 )
 from small_sea_note_to_self.bootstrap import (
     JoinRequestArtifact,
@@ -2665,6 +2667,20 @@ def _team_sync_dir(root_dir, participant_hex, team_name) -> pathlib.Path:
 
 def _team_db_path(root_dir, participant_hex, team_name) -> pathlib.Path:
     return _team_sync_dir(root_dir, participant_hex, team_name) / "core.db"
+
+
+def has_local_team_clone(root_dir, participant_hex, team_name) -> bool:
+    return _team_db_path(root_dir, participant_hex, team_name).exists()
+
+
+def get_note_to_self_adopted_signal_count(root_dir, participant_hex, berth_id: bytes) -> int | None:
+    return get_note_to_self_adopted_count(root_dir, participant_hex, berth_id)
+
+
+def set_note_to_self_adopted_signal_count(
+    root_dir, participant_hex, berth_id: bytes, count: int
+) -> None:
+    set_note_to_self_adopted_count(root_dir, participant_hex, berth_id, count)
 
 
 def _core_berth_role(conn, member_id: bytes) -> str | None:

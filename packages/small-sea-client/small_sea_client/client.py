@@ -293,22 +293,21 @@ class SmallSeaSession:
         self,
         known: dict,
         timeout: int = 30,
+        known_self_count: Optional[int] = None,
     ) -> dict:
-        """Block until a teammate's push count exceeds a known value.
+        """Block until a sync count exceeds a known value.
 
         known: {member_id_hex: last_known_count} — the counts the caller has
             already processed. Returns immediately if the Hub already has higher
             counts; otherwise blocks up to timeout seconds.
 
-        Returns {member_id_hex: new_count} for any members with new data,
-        or an empty dict on timeout.
+        If known_self_count is provided, the Hub may also return
+        {"self_updated_count": int} for NoteToSelf self-updates.
         """
-        result = self._client._post(
-            "/notifications/watch",
-            {"known": known, "timeout": timeout},
-            token=self._token,
-        )
-        return result.get("updated", {})
+        payload = {"known": known, "timeout": timeout}
+        if known_self_count is not None:
+            payload["known_self_count"] = known_self_count
+        return self._client._post("/notifications/watch", payload, token=self._token)
 
     # ---- ntfy Notifications ----
 

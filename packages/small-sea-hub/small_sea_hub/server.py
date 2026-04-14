@@ -43,6 +43,8 @@ def _refresh_session_peers(app: FastAPI, session_hex: str):
     session_info = app.state.watched_sessions.get(session_hex)
     if session_info is None:
         return
+    if session_info.get("watch_self_only"):
+        return
 
     berth_id_hex = session_info["berth_id_hex"]
     team_db_path = session_info["team_db_path"]
@@ -120,6 +122,8 @@ def _team_db_revision(team_db_path: str):
 def _run_runtime_reconciliation_for_session(app: FastAPI, session_hex: str):
     session_info = app.state.watched_sessions.get(session_hex)
     if session_info is None:
+        return
+    if session_info.get("watch_self_only"):
         return
     try:
         revision = _team_db_revision(session_info["team_db_path"])
@@ -246,6 +250,8 @@ def _refresh_local_runtime_signal(app: FastAPI, session_hex: str):
     session_info = app.state.watched_sessions.get(session_hex)
     if session_info is None:
         return
+    if session_info.get("watch_self_only"):
+        return
     signals, etag = app.state.backend.get_local_signal(session_hex)
     if signals is None or etag is None:
         return
@@ -269,6 +275,32 @@ def _refresh_local_runtime_signal(app: FastAPI, session_hex: str):
     session_info["self_signal_etag"] = etag
 
 
+def _refresh_note_to_self_self_signal(app: FastAPI, session_hex: str):
+    session_info = app.state.watched_sessions.get(session_hex)
+    if session_info is None or not session_info.get("watch_self_only"):
+        return
+
+    signals, etag = app.state.backend.get_local_signal(session_hex)
+    if signals is None or etag is None:
+        return
+    if etag == session_info.get("self_signal_etag"):
+        return
+
+    berth_id_hex = session_info["berth_id_hex"]
+    current_count = int(signals.get(berth_id_hex, 0))
+    previous_count = int(session_info.get("self_signal_count", 0))
+    app.state.self_signal_counts[berth_id_hex] = current_count
+    session_info["self_signal_etag"] = etag
+    session_info["self_signal_count"] = current_count
+
+    ignored_count = session_info.get("ignore_self_signal_count")
+    if ignored_count is not None and current_count >= ignored_count:
+        session_info["ignore_self_signal_count"] = None
+        return
+    if current_count > previous_count:
+        _pulse_berth_event(app, berth_id_hex)
+
+
 def _watcher_pass(app: FastAPI):
     """Single poll round: refresh peer lists and check all peer signals for changes.
 
@@ -283,6 +315,7 @@ def _watcher_pass(app: FastAPI):
         _refresh_session_peers(app, session_hex)
         _run_runtime_reconciliation_for_session(app, session_hex)
         _refresh_local_runtime_signal(app, session_hex)
+        _refresh_note_to_self_self_signal(app, session_hex)
 
     peers = getattr(app.state, "watched_peers", {})
     # Track which berths have already received a push notification this round
@@ -405,6 +438,8 @@ async def lifespan(app: FastAPI):
         app.state.watched_peers = {}      # (session_hex, member_id_hex) → state
     if not hasattr(app.state, "peer_counts"):
         app.state.peer_counts = {}        # (berth_id_hex, member_id_hex) → int
+    if not hasattr(app.state, "self_signal_counts"):
+        app.state.self_signal_counts = {}  # berth_id_hex → int
     if not hasattr(app.state, "peer_signal_events"):
         app.state.peer_signal_events = {}  # berth_id_hex → asyncio.Event
     if not hasattr(app.state, "watcher_interval"):
@@ -528,9 +563,25 @@ def _register_session_peers(session_hex: str):
         return  # Watcher state not yet initialized
     try:
         ss_session = app.state.backend._lookup_session(session_hex)
-        if ss_session.team_name == "NoteToSelf":
-            return  # NoteToSelf has no peers
         berth_id_hex = ss_session.berth_id.hex()
+        if ss_session.team_name == "NoteToSelf":
+            signals, etag = app.state.backend.get_local_signal(session_hex)
+            current_count = 0
+            if signals is not None:
+                current_count = int(signals.get(berth_id_hex, 0))
+            app.state.self_signal_counts[berth_id_hex] = current_count
+            watched_sessions[session_hex] = {
+                "berth_id_hex": berth_id_hex,
+                "team_db_path": None,
+                "team_db_revision": None,
+                "self_signal_etag": etag,
+                "self_signal_count": current_count,
+                "ignore_self_signal_count": None,
+                "watch_self_only": True,
+            }
+            app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
+            _maybe_start_ntfy_listener(app, ss_session, berth_id_hex)
+            return
         team_db_path = str(
             ss_session.participant_path / ss_session.team_name / "Sync" / "core.db"
         )
@@ -544,6 +595,7 @@ def _register_session_peers(session_hex: str):
                 ss_session.participant_id.hex(),
                 ss_session.team_name,
             )[1].hex(),
+            "watch_self_only": False,
         }
         app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
         # Do an immediate peer refresh so watched_peers is populated now rather
@@ -695,14 +747,21 @@ async def upload_to_cloud(
     if req.notify:
         _logger = getattr(app.state, "logger", None)
         try:
-            small_sea._bump_signal(session_hex)
+            new_count = small_sea._bump_signal(session_hex)
         except Exception as exc:
+            new_count = None
             if _logger:
                 _logger.warning(f"_bump_signal failed: {exc}")
         # Pulse the local berth event so other sessions on this berth
         # (e.g. a second browser tab) are also notified.
         try:
             ss_session = small_sea._lookup_session(session_hex)
+            if (
+                new_count is not None
+                and ss_session.team_name == "NoteToSelf"
+                and session_hex in getattr(app.state, "watched_sessions", {})
+            ):
+                app.state.watched_sessions[session_hex]["ignore_self_signal_count"] = new_count
             _pulse_berth_event(app, ss_session.berth_id.hex())
         except Exception as exc:
             if _logger:
@@ -802,6 +861,7 @@ async def get_peer_signal(
 
 class WatchNotificationsReq(pydantic.BaseModel):
     known: dict[str, int] = {}  # member_id_hex → last known count
+    known_self_count: Optional[int] = None
     timeout: int = 30
 
 
@@ -828,22 +888,29 @@ async def watch_notifications(
             current = app.state.peer_counts.get((berth_id_hex, member_id_hex), 0)
             if current > known_count:
                 updated[member_id_hex] = current
-        return updated
+        result = {"updated": updated}
+        if req.known_self_count is not None:
+            self_counts = getattr(app.state, "self_signal_counts", {})
+            current_self = self_counts.get(berth_id_hex, 0)
+            if current_self > req.known_self_count:
+                result["self_updated_count"] = current_self
+        return result
 
     # Return immediately if we already know about newer data.
-    updated = _check()
-    if updated:
-        return {"updated": updated}
+    result = _check()
+    if result.get("updated") or "self_updated_count" in result:
+        return result
 
     # Grab the current event before sleeping — the watcher may replace it
     # while we wait, but we hold the reference so set() still wakes us.
-    event = app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
+    peer_signal_events = getattr(app.state, "peer_signal_events", None) or {}
+    event = peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
     try:
         await asyncio.wait_for(event.wait(), timeout=req.timeout)
     except asyncio.TimeoutError:
         return {"updated": {}}
 
-    return {"updated": _check()}
+    return _check()
 
 
 class SendNotificationReq(pydantic.BaseModel):
