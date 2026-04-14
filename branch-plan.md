@@ -143,6 +143,8 @@ The intended model is:
 - Hub does not prefetch and stage NoteToSelf bytes for later adoption
 - Manager-triggered refresh performs the actual fetch/adopt when the user or
   test asks for it
+- update-awareness requires an active `NoteToSelf` Manager/Hub session; it is
+  not a background daemon for one-shot CLI use
 - tests may auto-trigger refresh for local proof, but production semantics stay
   user-initiated by default
 
@@ -196,11 +198,15 @@ Recommended concrete seam:
 - there is one shared signal file per berth in cloud storage; "self" here means
   the current NoteToSelf berth/session, not a device-private signal file
 - Hub watcher tracks that self-signal only for live NoteToSelf sessions
-- the Hub suppresses self-update echoes for counter bumps caused by the same
-  session's own push
+- the Hub-side same-session self-echo filter is deliberate race protection for
+  the narrow case where a push succeeds but the Manager crashes before it can
+  persist the new adopted counter locally
 - Hub exposes the coarse change through the existing notification/watch seam,
   adding a self-update axis rather than pretending the NoteToSelf berth has a
   peer-member dimension
+- self-update reporting is opt-in: callers that do not supply a
+  `known_self_count`-style value should continue to get the current peer-only
+  behavior
 
 ### S8. "Known team" and "joined team" are derived from existing state
 
@@ -224,13 +230,21 @@ awareness behaves sensibly across bootstrap, refresh, push, and restart.
 
 Recommended rule:
 
-- store the last adopted NoteToSelf berth counter in device-local state
+- store the last adopted NoteToSelf berth counter in the NoteToSelf
+  device-local DB, not in an ad-hoc state file
+- add a tiny dedicated local sync-state table rather than overloading an
+  unrelated existing table
+- bump `LOCAL_SCHEMA_VERSION` as part of that addition
 - seed it at bootstrap completion when that counter is known
 - otherwise seed it on first successful NoteToSelf session open/refresh without
   surfacing a stale "new data" prompt
 - update it after every successful NoteToSelf refresh/adoption
 - update it after this same device successfully pushes NoteToSelf so the Hub
   does not immediately report that push back as a self-update
+
+The persisted baseline is the primary correctness mechanism. The Hub-side
+same-session echo filter above is only cheap defense-in-depth for the crash/race
+window before that baseline is updated.
 
 ### S10. Pre-alpha rules apply
 
@@ -251,6 +265,8 @@ Minimum behavior:
 - the refreshed shared DB/repo becomes the source of truth immediately after
   adoption, with explicit close/reopen or invalidate/reopen behavior around any
   NoteToSelf DB handles used by the refresh path
+- refresh and discovery remain separate entry points: refresh fetches/adopts,
+  while discovery reads current shared NoteToSelf state even when offline
 - refresh works in local micro-test setups without internet dependence
 
 ### 2. Update-awareness for shared NoteToSelf
@@ -317,6 +333,8 @@ Minimum expected coverage:
 
 - automatic team join / local team clone after discovery
 - syncing user-team `app` / `team_app_berth` metadata through NoteToSelf
+- genuine concurrent writes to the same shared NoteToSelf row; this branch only
+  aims to cover non-overlapping inserts plus normal stale-writer rejection
 - sender-key crypto redesign
 - revocation or device-removal semantics
 - periodic sender-key rotation policy
@@ -334,6 +352,8 @@ Minimum expected coverage:
 - `packages/small-sea-manager/small_sea_manager/manager.py`
 - `packages/small-sea-manager/small_sea_manager/provisioning.py`
 - any narrow helper layer already responsible for NoteToSelf sync/discovery
+- `packages/small-sea-note-to-self/small_sea_note_to_self/db.py`
+- `packages/small-sea-note-to-self/small_sea_note_to_self/sql/device_local_schema.sql`
 
 Likely work:
 
@@ -341,12 +361,14 @@ Likely work:
   `NoteToSelf` session and `SmallSeaRemote`
 - explicit refresh adoption lifecycle:
   close/dispose old NoteToSelf DB handles, fetch/adopt, reopen fresh handles
-- post-refresh rescan of shared `team` rows
+- separate `list_known_teams()`/discovery read seam that reads current shared
+  `team` rows without implicitly fetching
 - clear distinction between "discovered in NoteToSelf" and "locally joined"
 - guards or explicit semantics for team-detail/read paths that currently assume
   the local team DB exists
 - persist/update the last adopted NoteToSelf berth counter in device-local
-  state
+  DB state
+- bump `LOCAL_SCHEMA_VERSION` for the new NoteToSelf local sync-state table
 
 ### 2. Hub update-awareness / transport seams
 
@@ -371,12 +393,25 @@ Likely work:
 - `packages/small-sea-manager/spec.md`
 - `packages/small-sea-hub/spec.md`
 
+Likely work:
+
+- replace stale "mailbox" wording in the Manager spec with the actual
+  self-signal/watch seam this branch implements
+- document the self-update field as additive and opt-in on the Hub watch API
+
 ### 4. Tests
 
 - focused Manager micro tests for refresh/discovery semantics
 - focused Hub micro tests for the self-update signal seam
 - one end-to-end local two-installation micro test proving same-identity team
   discovery after refresh
+
+Recommended test split:
+
+- the end-to-end two-installation proof should call the explicit refresh path
+  directly rather than depending on watcher polling timing
+- self-signal/watch behavior should be proven in focused Hub micro tests with a
+  short controlled watcher interval
 
 ## Validation
 
@@ -397,6 +432,8 @@ true:
 - device B in a two-installation same-identity test does not see a newly added
   team before refresh
 - after refresh, device B does see the team in NoteToSelf-backed discovery
+- a stale NoteToSelf writer cannot clobber a newer remote state silently;
+  non-fast-forward push is rejected until refresh/adoption occurs
 - after refresh, device B still has no local team clone or local team-device
   participation unless separate join/bootstrap work runs
 - a team row in NoteToSelf is enough for discovery, but team-detail operations
@@ -434,5 +471,6 @@ Likely shape:
 - request includes a known self-count for NoteToSelf sessions
 - response includes a self-updated count/value when the current session's
   NoteToSelf berth counter increased
+- callers that omit the self-count field keep today's peer-only semantics
 
 This branch should not broaden that into rich semantic diff delivery.
