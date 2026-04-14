@@ -1,4 +1,4 @@
-# Branch Plan: Separate Peer and Device Team Models
+# Branch Plan: Collapse Peer Into Member and Add Team Device Model
 
 **Branch:** `issue-59-peer-device-model`  
 **Base:** `main`  
@@ -23,7 +23,8 @@ The recent runtime branches improved device-scoped crypto and orchestration:
 But one architectural question is still unresolved and keeps leaking into every
 runtime branch:
 
-- the shared team DB still has a member-scoped `peer` table
+- the shared team DB still carries member-facing and device-facing data in an
+  awkward split between `member` and `peer`
 - runtime logic increasingly needs device-scoped endpoints
 - linked devices clearly belong to members, but not all endpoint/routing data
   is member-shaped
@@ -31,16 +32,16 @@ runtime branch:
 That mismatch is now the next real blocker. Without a clean shared model for
 member-level and device-level concepts, later work on watches, routing,
 notifications, and delivery semantics will keep layering assumptions onto the
-wrong table.
+wrong tables.
 
 ## Proposed Goal
 
 After this branch lands:
 
-1. the shared team DB has distinct member-level and device-level models instead
-   of forcing `peer` to carry both concepts
-2. it is explicit which data belongs to the member-facing `peer` concept and
-   which belongs to the device-facing runtime endpoint concept
+1. the shared team DB has a cleaner split between member-level data on
+   `member` and device-level data on `team_device`
+2. member-facing display and identity fields live on `member`, while
+   device-facing runtime endpoint fields live on `team_device`
 3. Manager writes both models in the flows that already know device ownership:
    create-team, invitation acceptance, linked-device bootstrap, and member
    removal
@@ -58,25 +59,25 @@ That makes it the right next step because:
 
 - the device/runtime branches now have enough experience to know what data they
   actually need
-- the current member-scoped `peer` table is becoming a semantic bottleneck
+- the current `member` plus `peer` split is carrying one-device-era assumptions
 - later routing/watch branches will be easier if this model is settled first
 
 ## Scope Decisions
 
-### S1. Keep both peer and device concepts
+### S1. Collapse member-facing data into `member`
 
-This branch starts from the explicit decision that the team DB should maintain
-both:
+This branch starts from the explicit decision that `peer` should not survive as
+a paper-thin duplicate of `member`.
 
-- a member-level `peer` model
+The shared team DB should instead maintain:
+
+- a member-level `member` model
 - a device-level `team_device` model linked to members
-
-This is not duplication for its own sake. It reflects that members and devices
-are different kinds of things in Small Sea.
 
 Concrete split for the current shared schema:
 
-- `peer.member_id` and `peer.display_name` stay member-level
+- `member.display_name` is the member-facing home for display metadata
+- `peer` is removed
 - `peer.protocol`, `peer.url`, and `peer.bucket` move to `team_device`
 - `member.device_public_key` moves to `team_device` and is removed from
   `member`
@@ -119,7 +120,20 @@ That means:
 - Hub read paths do not lazily create shared schema
 - the migration path is explicit and micro-tested
 
-### S6. Avoid over-solving routing in this branch
+### S6. Device identity has one shared owner
+
+This branch should stop hedging about device identity ownership.
+
+- `team_device.device_key_id` is the primary key for shared team-device
+  identity
+- `team_device.member_id` is a required FK to the owning member
+- `device_prekey_bundle.device_key_id` should be a literal FK to
+  `team_device.device_key_id`
+
+That gives the shared schema one clear owner for device identity and makes
+cleanup on member removal explicit instead of conceptual.
+
+### S7. Avoid over-solving routing in this branch
 
 This branch should settle the schema/model and the core write/read seams, but
 it does not need to finish all watch/routing behavior in the same branch.
@@ -129,16 +143,16 @@ same implementation slice.
 
 ## In Scope
 
-### 1. Define the member-level `peer` role precisely
+### 1. Define the member-level `member` role precisely
 
-The branch should make `peer` explicitly about member-facing presence and team
-relationship data.
+The branch should make `member` explicitly carry the member-facing fields that
+used to be awkwardly split across `member` and `peer`.
 
-- `member_id`
 - `display_name`
+- member identity and trust lineage fields
 
-The branch should also remove any accidental implication that `peer` alone is
-the runtime endpoint model.
+The branch should remove the separate `peer` table instead of preserving a 1:1
+shadow of `member`.
 
 ### 2. Add a device-level shared model
 
@@ -150,12 +164,11 @@ The model should make room for data such as:
 - `device_key_id`
 - `public_key`
 - device-facing endpoint/routing metadata: `protocol`, `url`, `bucket`
-- status fields that matter for runtime endpoint discovery
+- a minimal ordering field for deterministic interim member-keyed lookups
 
-`device_prekey_bundle.device_key_id` should conceptually attach to
-`team_device.device_key_id`. The branch may or may not add a literal FK, but it
-should treat `team_device` as the shared ownership home for team-device
-identity.
+`device_prekey_bundle.device_key_id` should literally FK to
+`team_device.device_key_id`, and member removal should rely on that ownership
+chain to avoid orphaned prekey-bundle rows.
 
 ### 3. Write the new model in existing Manager flows
 
@@ -170,6 +183,12 @@ These flows should populate and maintain the new shared device model honestly.
 Member removal should delete the removed member's `team_device` rows as shared
 endpoint metadata while the existing membership / device-link removal flow
 independently removes the cert-backed trust path.
+
+Invitation acceptance should explicitly write `invitation.acceptor_protocol` and
+`invitation.acceptor_url` into `team_device` rather than into `peer`.
+
+Create-team should create the founding `team_device` row immediately, even if
+endpoint fields are still null until later cloud setup backfills them.
 
 ### 4. Read the new model in Hub/Manager seams
 
@@ -186,22 +205,25 @@ real and coherent.
 
 Minimum expected coverage:
 
-- create-team creates both the founding member-facing peer data and the
-  founding device-facing row(s)
+- create-team creates the founding member row and the founding device-facing
+  row
 - invitation acceptance creates a new member plus its initial device row
 - linked-device bootstrap adds a second device row for the same member without
-  mutating that member into a second peer
+  creating a second member row
 - member removal removes the removed member’s associated device rows
 - Hub/Manager read paths can distinguish two devices of one member from one
   device each of two members
 
 Migration/shape micro tests should also prove:
 
-- `peer` no longer contains `protocol`, `url`, or `bucket`
+- `peer` no longer exists
+- `member` now contains `display_name`
 - `member` no longer contains `device_public_key`
-- `team_device` contains exactly one row per `(member_id, device_key_id)` pair
-  after create-team, invitation acceptance, and linked-device bootstrap
-- one member with two devices produces one `peer` row and two `team_device`
+- `team_device.device_key_id` is the primary key
+- `device_prekey_bundle.device_key_id` references `team_device.device_key_id`
+- `team_device` contains exactly one row per device key after create-team,
+  invitation acceptance, and linked-device bootstrap
+- one member with two devices produces one `member` row and two `team_device`
   rows
 
 ## Out Of Scope
@@ -222,7 +244,8 @@ Migration/shape micro tests should also prove:
 
 Specific schema target:
 
-- `peer(member_id, display_name, ...)` becomes member-facing only
+- `peer` is removed
+- `member` gains or retains `display_name`
 - new `team_device` table holds:
   - `member_id`
   - `device_key_id`
@@ -230,7 +253,10 @@ Specific schema target:
   - `protocol`
   - `url`
   - `bucket`
+  - deterministic ordering field for interim member-keyed lookup
+  - primary key: `device_key_id`
 - `member.device_public_key` is removed
+- `device_prekey_bundle.device_key_id` FK references `team_device.device_key_id`
 - Manager-owned migration/adoption updates older team DBs to this shape
 
 ### 2. Manager provisioning logic
@@ -242,7 +268,7 @@ Specific schema target:
 
 ### 3. Hub read paths
 
-- peer listing / peer lookup seams
+- member listing / member lookup seams that previously flowed through `peer`
 - future runtime endpoint enumeration seam
 
 ### 4. Specs
@@ -260,29 +286,39 @@ Specific schema target:
 This branch should convince a skeptical reviewer if all of the following are
 true:
 
-- `peer` no longer contains `protocol`, `url`, or `bucket`
+- `peer` no longer exists in the shared team DB schema
+- `member` contains `display_name`
 - `member` no longer contains `device_public_key`
-- `team_device` exists and has exactly one row per `(member_id, device_key_id)`
-  pair after create-team, invitation acceptance, and linked-device bootstrap
-- one member with two devices produces one `peer` row and two `team_device`
+- `team_device.device_key_id` is the primary key
+- `device_prekey_bundle.device_key_id` is an FK to
+  `team_device.device_key_id`
+- `team_device` exists and has exactly one row per device key after create-team,
+  invitation acceptance, and linked-device bootstrap
+- one member with two devices produces one `member` row and two `team_device`
   rows
-- create-team creates exactly one founding `peer` row and one founding
+- create-team creates exactly one founding `member` row and one founding
   `team_device` row for the founding device
-- invitation acceptance creates exactly one new `peer` row and one new
+- create-team permits the founding `team_device` row to exist before endpoint
+  fields are backfilled by later cloud setup
+- invitation acceptance creates exactly one new `member` row and one new
   `team_device` row for that admitted member's first device
 - linked-device bootstrap adds a second `team_device` row for the same member
-  without creating a second `peer` row
+  without creating a second `member` row
 - linked devices are explicitly attached to members in shared state
 - trust is still derived from cert history rather than implicitly from
   `team_device` rows
 - member removal deletes associated `team_device` rows while the existing
   membership / device-link trust-removal flow independently removes the trust
   path; endpoint-row deletion is not itself the trust mechanism
-- Hub read paths that need endpoint data no longer read it from `peer`
+- invitation acceptance writes endpoint-shaped invitation fields into
+  `team_device`
+- Hub read paths that need endpoint data no longer read it from `member`
 - the existing member-keyed Hub peer-cloud-file lookup resolves endpoint data
-  through `team_device`, not `peer`
+  through `team_device`
 - older adopted team DBs are migrated/backfilled by Manager before Hub read
   paths rely on `team_device`
+- the migration barrier is explicit: Manager migrates the team DB on open/adopt
+  before any write path or Hub-facing session info relies on the new shape
 - the branch makes future runtime/routing work easier instead of more magical
 
 ## Open Questions
@@ -294,7 +330,7 @@ moves to `team_device`, the branch should keep those member-keyed APIs working
 by documenting a temporary rule:
 
 - when a member has multiple device rows, member-keyed Hub peer reads choose one
-  readable endpoint by a deterministic rule
+  readable endpoint by a deterministic rule grounded in schema data
 
 This branch does not need to finish device-keyed caller APIs, but it should not
 leave the one-to-many lookup behavior implicit.
