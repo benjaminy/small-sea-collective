@@ -106,10 +106,17 @@ already-landed normal session transport:
 - Manager uses `SmallSeaRemote` over `/cloud_file`
 - refresh/pull and push both go through the Hub-owned cloud transport for that
   session
+- push is already wired today; this branch makes refresh/pull a first-class
+  Manager seam on top of the same transport, adding a small CodSync fetch/adopt
+  seam only if needed
 
 This keeps same-identity NoteToSelf sync on the same transport model as other
 steady-state Hub-mediated sync instead of inventing a NoteToSelf-specific proxy
 path or reusing peer semantics that do not fit.
+
+Conflict resolution for concurrent same-identity push/pull should continue to
+rely on existing CodSync git fetch/merge/push semantics. This branch does not
+introduce a new merge policy.
 
 ### S3. Hub owns signal detection; Manager owns refresh/adoption and writes
 
@@ -120,6 +127,9 @@ This branch should keep the existing architectural seam honest:
 - Manager remains the only writer of NoteToSelf DBs
 - Manager decides when to refresh, how to adopt the refreshed state, and what
   newly visible teams mean locally
+- adoption includes explicit DB-handle lifecycle management: NoteToSelf
+  connections/engines used before refresh must not be silently reused across
+  fetch/adopt
 
 ### S4. User-initiated refresh remains the default
 
@@ -181,11 +191,16 @@ signal instead of inventing a durable mailbox table.
 
 Recommended concrete seam:
 
-- detection trigger: the current device's own NoteToSelf `signals.yaml` counter
-  for the NoteToSelf berth changes
-- Hub watcher tracks that counter for live NoteToSelf sessions
+- detection trigger: the current session's NoteToSelf berth counter in the
+  shared `signals.yaml` changes
+- there is one shared signal file per berth in cloud storage; "self" here means
+  the current NoteToSelf berth/session, not a device-private signal file
+- Hub watcher tracks that self-signal only for live NoteToSelf sessions
+- the Hub suppresses self-update echoes for counter bumps caused by the same
+  session's own push
 - Hub exposes the coarse change through the existing notification/watch seam,
-  extended with a self-update field rather than a peer-member-only response
+  adding a self-update axis rather than pretending the NoteToSelf berth has a
+  peer-member dimension
 
 ### S8. "Known team" and "joined team" are derived from existing state
 
@@ -202,7 +217,22 @@ in NoteToSelf" implies "local team DB exists on disk." In particular, team
 detail/read paths should either guard and return a clear not-joined-local state
 or stay out of the discovery UI entirely.
 
-### S9. Pre-alpha rules apply
+### S9. Persist the last adopted NoteToSelf signal count locally
+
+This branch should add the smallest honest local baseline seam so update
+awareness behaves sensibly across bootstrap, refresh, push, and restart.
+
+Recommended rule:
+
+- store the last adopted NoteToSelf berth counter in device-local state
+- seed it at bootstrap completion when that counter is known
+- otherwise seed it on first successful NoteToSelf session open/refresh without
+  surfacing a stale "new data" prompt
+- update it after every successful NoteToSelf refresh/adoption
+- update it after this same device successfully pushes NoteToSelf so the Hub
+  does not immediately report that push back as a self-update
+
+### S10. Pre-alpha rules apply
 
 Prefer a clean, reviewable implementation over backward-compatibility shims for
 old sandboxes.
@@ -219,7 +249,8 @@ Minimum behavior:
 - a device can fetch shared NoteToSelf updates through `SmallSeaRemote` over
   `/cloud_file`
 - the refreshed shared DB/repo becomes the source of truth immediately after
-  adoption
+  adoption, with explicit close/reopen or invalidate/reopen behavior around any
+  NoteToSelf DB handles used by the refresh path
 - refresh works in local micro-test setups without internet dependence
 
 ### 2. Update-awareness for shared NoteToSelf
@@ -229,12 +260,16 @@ remote NoteToSelf changes.
 
 Minimum behavior:
 
-- Hub detects NoteToSelf changes by observing the current session's own
-  `signals.yaml` berth counter
+- Hub detects NoteToSelf changes by observing the current session's NoteToSelf
+  berth counter in shared `signals.yaml`
 - Hub surfaces a coarse self-update signal through the existing watch/notification
   seam
 - Manager has a clean seam for reacting to that coarse signal without automatic
   byte staging or automatic adoption
+- the first watch cycle after bootstrap/session-open does not produce a bogus
+  self-update solely because the local known counter started at zero
+- this device's own successful NoteToSelf push does not come back immediately
+  as a self-update prompt
 
 ### 3. Team discovery after refresh
 
@@ -304,10 +339,14 @@ Likely work:
 
 - explicit `refresh_note_to_self()`-style entry point using a normal
   `NoteToSelf` session and `SmallSeaRemote`
+- explicit refresh adoption lifecycle:
+  close/dispose old NoteToSelf DB handles, fetch/adopt, reopen fresh handles
 - post-refresh rescan of shared `team` rows
 - clear distinction between "discovered in NoteToSelf" and "locally joined"
 - guards or explicit semantics for team-detail/read paths that currently assume
   the local team DB exists
+- persist/update the last adopted NoteToSelf berth counter in device-local
+  state
 
 ### 2. Hub update-awareness / transport seams
 
@@ -320,8 +359,12 @@ Likely work:
 - reuse the current normal Hub session transport for steady-state NoteToSelf
   fetches
 - track coarse NoteToSelf self-signal changes for NoteToSelf sessions
-- extend the existing watch/notification seam with a self-update field instead
-  of inventing a new mailbox table
+- extend the existing watch/notification seam with a self-update field/axis
+  while preserving existing peer-watch behavior for non-NoteToSelf team
+  sessions
+- filter out self-signal bumps caused by the same session's own push
+- treat detection as session-bounded rather than as a persistent background
+  daemon when no NoteToSelf session is open
 
 ### 3. Specs
 
@@ -342,11 +385,15 @@ true:
 
 - there is one explicit code path for shared NoteToSelf refresh instead of
   ad-hoc local DB poking
+- no unrelated code path silently performs a NoteToSelf git pull as a side
+  effect of listing, rescanning, or opening team detail
 - the refresh path uses the normal NoteToSelf session transport (`SmallSeaRemote`
   over `/cloud_file`), not the bootstrap helper and not peer transport
 - the Hub, not the Manager, still owns the actual cloud transport and coarse
   signal detection
 - the Manager, not the Hub, still owns NoteToSelf DB writes/adoption
+- after refresh, freshly opened NoteToSelf connections see the new state and
+  the refresh path does not rely on stale pre-refresh DB handles
 - device B in a two-installation same-identity test does not see a newly added
   team before refresh
 - after refresh, device B does see the team in NoteToSelf-backed discovery
@@ -357,6 +404,12 @@ true:
 - shared/device-local NoteToSelf boundaries remain intact after refresh
 - the Hub's self-update signal is driven by NoteToSelf's own `signals.yaml`
   counter rather than by hidden byte staging or a new mailbox table
+- the first watch after bootstrap/session-open does not spuriously report a
+  self-update when the device is already in sync
+- this device's own NoteToSelf push does not immediately echo back as a
+  self-update prompt
+- existing peer-watch behavior for ordinary team sessions still works after the
+  self-update field/axis is added
 - the implementation makes later runtime/team-join branches simpler instead of
   introducing another shadow source of truth
 
@@ -365,11 +418,21 @@ true:
 ### Q1. Exact watch API shape for the self-update field
 
 The branch should keep the signal coarse, but the exact HTTP shape still needs
-to be chosen explicitly during review:
+to be chosen explicitly during review.
 
-- likely reuse `/notifications/watch`
-- request should include a known self-count for NoteToSelf sessions
-- response should include a self-updated count/value when the current session's
-  own NoteToSelf berth counter increased
+Preferred direction:
+
+- keep the watch API count-based, not etag-based
+- add a `known_self_count`-style request field and a `self_updated_count`-style
+  response field/value
+- this matches the existing watch endpoint's counter semantics better than
+  introducing a second etag-shaped contract
+
+Likely shape:
+
+- reuse `/notifications/watch`
+- request includes a known self-count for NoteToSelf sessions
+- response includes a self-updated count/value when the current session's
+  NoteToSelf berth counter increased
 
 This branch should not broaden that into rich semantic diff delivery.
