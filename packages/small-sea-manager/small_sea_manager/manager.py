@@ -204,20 +204,26 @@ class TeamManager:
         )
         cs = CodSync("origin", repo_dir=repo_dir)
         cs.remote = remote
+        # Snapshot the berth counter BEFORE the fetch so the adopted baseline
+        # only advances to state we've actually incorporated. Reading the counter
+        # after the merge could observe a later push (counter N+1 or N+2) that
+        # this device has not yet fetched, causing that push to be silently
+        # skipped on the next watch/refresh cycle.
+        pre_fetch_snapshot = session.watch_notifications({}, timeout=0, known_self_count=adopted)
+        pre_fetch_count = int(pre_fetch_snapshot.get("self_updated_count") or adopted)
         fetched_sha = cs.fetch_from_remote(["main"])
         if fetched_sha is None:
             raise RuntimeError("Failed to fetch NoteToSelf from remote")
         merge_result = cs.merge_from_remote(["main"])
         if merge_result != 0:
             raise RuntimeError(f"Failed to adopt refreshed NoteToSelf (merge exit {merge_result})")
-        snapshot = session.watch_notifications({}, timeout=0, known_self_count=adopted)
-        new_count = int(snapshot.get("self_updated_count") or adopted)
         provisioning.set_note_to_self_adopted_signal_count(
             self.root_dir,
             self.participant_hex,
             berth_id,
-            new_count,
+            pre_fetch_count,
         )
+        new_count = pre_fetch_count
         return {
             "berth_id": berth_id.hex(),
             "adopted_count": new_count,
