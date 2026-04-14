@@ -119,7 +119,7 @@ true:
 - micro tests showing the DB schema rejects duplicate `(team_name, niche_name)` checkout rows
 - micro tests showing fetch can park updates without an attached checkout
 - micro tests showing attaching a checkout after fetch does not auto-merge parked updates
-- micro tests showing merge-time paths reject dirty tracked changes
+- micro tests showing merge-time paths reject dirty tracked changes — critically, these tests must put dirty files in the *user's checkout directory*, not in transit, and must verify the guard fires before any transit operations run (transit always resets itself to HEAD and would silently pass the check if tested there)
 - micro tests showing dirty untracked files also block merge, so we do not hide collision cases behind partial cleanup
 - micro tests showing clean fetch/merge still refresh the single checkout correctly
 - web and CLI tests showing the user sees a clear "remove existing checkout first" message instead of implicit replacement
