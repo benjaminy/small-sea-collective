@@ -129,6 +129,8 @@ That means:
 
 This branch should stop hedging about device identity ownership.
 
+- `device_key_id` is deterministically derived from the device public key using
+  the repo's existing key-id convention
 - `team_device.device_key_id` is the primary key for shared team-device
   identity
 - `team_device.member_id` is a required FK to the owning member with
@@ -194,7 +196,8 @@ Invitation acceptance should explicitly write `invitation.acceptor_protocol` and
 `invitation.acceptor_url` into `team_device` rather than into `peer`.
 The acceptance flow should also record `acceptor_device_key_id` so it can write
 the new `team_device` row directly instead of trying to infer device identity
-later from a separate cert lookup.
+later from a separate cert lookup. That value is computed from the acceptor's
+device public key using the same key-id convention.
 
 Create-team should create the founding `team_device` row immediately, even if
 endpoint fields are still null until later cloud setup backfills them.
@@ -254,6 +257,8 @@ Migration/shape micro tests should also prove:
 Specific schema target:
 
 - `peer` is removed
+- no other table references `peer.id`, so the table is dropped outright during
+  migration instead of being preserved as a compatibility shim
 - `member` gains or retains `display_name`
 - new `team_device` table holds:
   - `member_id`
