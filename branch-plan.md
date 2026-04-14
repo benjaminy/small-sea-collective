@@ -73,6 +73,20 @@ issue.
 - the notable subprocess usage in this package is unrelated `osascript`
   notification handling, which is out of scope for issue #78
 
+### 0b. Other searched packages with no production git leakage
+
+The remaining first-party packages were also searched and came back clean for
+this issue:
+
+- `packages/cuttlefish`
+- `packages/small-sea-client`
+- `packages/small-sea-note-to-self`
+- `packages/splice-merge`
+- `packages/wrasse-trust`
+
+For these packages, I found no production `gitCmd` usage and no production raw
+`subprocess.run(["git", ...])` usage.
+
 ### 1. `packages/shared-file-vault/shared_file_vault/vault.py`
 
 `vault.py` imports `gitCmd` directly:
@@ -291,11 +305,10 @@ soundness rather than runtime behavior.
 
 ### Evidence that the branch goal is accomplished
 
-- Every production reference in the targeted packages to `gitCmd` or direct git
-  subprocess usage has been searched for and reviewed.
+- Every production reference in the repo's first-party packages to `gitCmd` or
+  direct git subprocess usage has been searched for and reviewed.
 - The plan distinguishes production leakage from test-only usage.
-- The catalog reflects the actual code currently on this branch, including the
-  corrected `manager.py` findings.
+- The catalog reflects the actual code currently on this branch.
 - The plan names concrete future refactor seams rather than vague "clean this
   up later" intentions.
 
@@ -311,7 +324,7 @@ soundness rather than runtime behavior.
 ### Concrete verification steps used for this plan
 
 - search for leakage:
-  `rg -n 'subprocess\.run\(\["git"|gitCmd|CodSync\.gitCmd|CodSyncProtocol\.gitCmd' packages/shared-file-vault packages/small-sea-manager packages/small-sea-hub packages/cod-sync tests`
+  `rg -n 'subprocess\.run\(\["git"|gitCmd|CodSync\.gitCmd|CodSyncProtocol\.gitCmd' packages tests`
 - count `vault.py` references:
   `rg -n "gitCmd" packages/shared-file-vault/shared_file_vault/vault.py | wc -l`
 - count `provisioning.py` references:
