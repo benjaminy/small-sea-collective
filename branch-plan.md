@@ -63,6 +63,16 @@ Out of scope for this branch:
 The following findings are based on direct inspection of the repository on
 2026-04-14.
 
+### 0. `packages/small-sea-hub`
+
+`small-sea-hub` was included in the search scope and came back clean for this
+issue.
+
+- no production `gitCmd` usage found
+- no production raw `subprocess.run(["git", ...])` usage found
+- the notable subprocess usage in this package is unrelated `osascript`
+  notification handling, which is out of scope for issue #78
+
 ### 1. `packages/shared-file-vault/shared_file_vault/vault.py`
 
 `vault.py` imports `gitCmd` directly:
@@ -121,12 +131,13 @@ Interpretation:
 
 ### 3. `packages/small-sea-manager/small_sea_manager/manager.py`
 
-The earlier draft understated this file. It does not contain only one direct
-git subprocess helper. It currently has 4 production `gitCmd` call sites:
+`manager.py` contains two distinct kinds of production git coupling:
 
-- identity bootstrap path: `checkout main`
-- NoteToSelf push path: `add core.db`, `diff --cached --quiet`, conditional
+- 4 `CodSyncProtocol.gitCmd(...)` call sites:
+  `checkout main`, `add core.db`, `diff --cached --quiet`, and conditional
   `commit -m "Update NoteToSelf"`
+- 1 raw `subprocess.run(["git", ...])` helper:
+  `_git_head(...)`, which reads `rev-parse HEAD`
 
 Interpretation:
 
@@ -135,21 +146,26 @@ Interpretation:
 - The NoteToSelf staging/commit behavior is important because it shows the leak
   is not isolated to one bootstrap module; it is present in ongoing application
   logic too.
+- The `_git_head(...)` helper shows that issue #78 is mostly about leaked
+  `gitCmd`, but not exclusively; there is at least one direct raw-git
+  subprocess usage in production manager code.
 
 ### 4. Direct raw git subprocess leakage
 
-For this branch's target area, the notable production leakage is the
-cross-package dependency on `gitCmd`, not a large set of raw
+For this branch's target area, the dominant production leakage is the
+cross-package dependency on `gitCmd`, not a broad field of independent raw
 `subprocess.run(["git", ...])` calls.
 
-I did not find additional production raw-git subprocess usage in the targeted
-packages beyond the `gitCmd`-based leakage documented above.
+I did find one production raw-git subprocess helper in the targeted packages:
+`small_sea_manager/manager.py:_git_head(...)`, which runs
+`git -C <repo> rev-parse HEAD`.
 
 Implication:
 
 - Issue #78 is primarily about cod-sync's helper becoming an accidental shared
-  utility, not about many packages independently inventing their own raw git
-  subprocess wrappers.
+  utility.
+- Phase 2 should still decide whether `_git_head(...)` gets folded into the same
+  cleanup or intentionally left as a separate local helper.
 
 ### 5. Test-only usage worth tracking
 
@@ -176,7 +192,7 @@ Interpretation:
 |---------|------|-----------|-----------------------|-----------------------|
 | `shared-file-vault` | `shared_file_vault/vault.py` | direct `from cod_sync.protocol import gitCmd` | 21 calls + 1 import | full local git plumbing for registry/niche repos |
 | `small-sea-manager` | `small_sea_manager/provisioning.py` | `CodSync.gitCmd(...)` | 29 | repo init, checkout, add, commit around db/file mutations |
-| `small-sea-manager` | `small_sea_manager/manager.py` | `CodSyncProtocol.gitCmd(...)` | 4 | bootstrap checkout plus NoteToSelf staging/commit logic |
+| `small-sea-manager` | `small_sea_manager/manager.py` | 4 `CodSyncProtocol.gitCmd(...)` sites plus 1 raw `subprocess.run(["git", ...])` helper | 5 total | bootstrap checkout, NoteToSelf staging/commit logic, and HEAD introspection |
 
 ## What The Leakage Seems To Mean Architecturally
 
@@ -295,13 +311,13 @@ soundness rather than runtime behavior.
 ### Concrete verification steps used for this plan
 
 - search for leakage:
-  `rg -n "subprocess\\.run\\(\\[\\\"git\\\"|gitCmd|CodSync\\.gitCmd|CodSyncProtocol\\.gitCmd" packages/shared-file-vault packages/small-sea-manager packages/small-sea-hub packages/cod-sync tests`
+  `rg -n 'subprocess\.run\(\["git"|gitCmd|CodSync\.gitCmd|CodSyncProtocol\.gitCmd' packages/shared-file-vault packages/small-sea-manager packages/small-sea-hub packages/cod-sync tests`
 - count `vault.py` references:
   `rg -n "gitCmd" packages/shared-file-vault/shared_file_vault/vault.py | wc -l`
 - count `provisioning.py` references:
   `rg -n "CodSync\\.gitCmd" packages/small-sea-manager/small_sea_manager/provisioning.py | wc -l`
 - count `manager.py` references:
-  `rg -n "CodSyncProtocol\\.gitCmd|subprocess\\.run\\(\\[\\\"git\\\"" packages/small-sea-manager/small_sea_manager/manager.py | wc -l`
+  `rg -n 'CodSyncProtocol\.gitCmd|subprocess\.run\(\["git"' packages/small-sea-manager/small_sea_manager/manager.py | wc -l`
 - inspect surrounding code manually in:
   `packages/cod-sync/cod_sync/protocol.py`
   `packages/shared-file-vault/shared_file_vault/vault.py`
