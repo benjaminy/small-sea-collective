@@ -28,28 +28,44 @@ Remove DVCS features from Shared File Vault whose complexity cost exceeds their 
 - Remove (or simplify) the multi-checkout refresh loop in `publish()`, `pull_niche()`, and `merge_niche()` — with at most one checkout, this reduces to a direct single-checkout refresh.
 - Add a helper `get_checkout(vault_root, participant_hex, team_name, niche_name) -> str | None` that returns the single checkout path (or None).
 
-### 2. Require clean checkout before pull/merge in `vault.py`
+### 2. Eliminate the transit work tree
 
-- Add `_is_checkout_clean(git_dir, checkout_path) -> bool` that checks `git status --porcelain` for the checkout's work tree.
+The transit work tree existed to solve two problems: (a) multiple checkouts needing a neutral merge space, and (b) user checkouts potentially being dirty at merge time. This branch eliminates both problems, so transit can be removed entirely.
+
+Post-simplification model:
+- **fetch**: operates on the bare git dir only, no work tree required, always available regardless of checkout state.
+- **merge/pull**: requires a checkout to exist (returns a clear error if none), merges directly into the user's checkout since it is guaranteed clean.
+
+The `_cod_pull()` / `_cod_fetch()` / `_cod_merge_ref()` functions in `vault.py` were largely built around the transit work tree and should be rewritten as simpler functions targeting the bare git dir and the single user checkout directly.
+
+Edge case: **niche not materialized locally.** If a peer pushes while no checkout is attached, fetch still works fine (bare git dir). Merge is simply unavailable and should return a clear error. When the user later attaches a checkout, `add_checkout()` initializes the work tree from current HEAD — no deferred merge required. Multiple un-merged peer refs accumulating while there is no checkout is not a blocker for this branch; it can be addressed later.
+
+### 3. Require clean checkout before pull/merge in `vault.py`
+
+- Add `_is_checkout_clean(checkout_path, git_dir) -> bool` that runs `git status --porcelain` scoped to the user's checkout work tree. **Important:** always pass the user's checkout path explicitly — do not let this check accidentally target the transit or any other work tree.
+- `--porcelain` output includes untracked files. Untracked files block pull/merge just like tracked changes do. The primary motivation is UX simplicity: non-git users have no mental model for the tracked/untracked distinction, so "your folder must be clean" is one rule rather than a leaky git abstraction. Path-collision safety is a secondary benefit. This diverges from git's default merge behavior and should be noted in the function doc. Future relaxation (e.g. ignoring certain noise files) can be motivated by specific cases.
 - In `pull_niche()` (and `merge_niche()`): before doing any network/merge work, call this check. Raise a new `DirtyCheckoutError` (with the list of modified paths) if unclean.
 - Do the same in `pull_registry()` / `merge_registry()`.
 - Mirror this guard in `sync.py`'s `pull_via_hub()` and `merge_via_hub()`.
-- Do not add a partial "discard tracked files only" path in this branch. For now, pulling requires an actually clean checkout; any future destructive cleanup action should be an explicit separate feature.
+- `fetch_niche()` does not need the clean-checkout guard (fetch touches only the bare git dir). The guard lives in `merge_niche()`. The UI model (banner-then-deliberate-merge) means the user naturally has time to clean up between seeing changes are available and attempting to merge.
+- Do not add a partial "discard tracked files only" path in this branch. Pull requires a genuinely clean checkout; any destructive cleanup action should be a separate explicit feature.
 
-### 3. Update `web.py` and templates
+### 4. Update `web.py` and templates
 
 - Remove the "add another checkout" form from `checkouts.html` / `niche_detail.html` — replace it with a single checkout path display, a remove action, and an attach form that is only available when no checkout exists.
 - Keep the `POST .../checkouts` route as an explicit attach action, not an implicit replace. If a checkout already exists, return an error that tells the user to remove it first.
 - Simplify niche detail view: instead of iterating over checkouts, show the single checkout path (or a prompt to attach one).
-- Surface `DirtyCheckoutError` in the UI when a pull is rejected — show which files are dirty and direct the user to publish, manually clean the work tree, or remove the checkout. Do not add an in-branch "move checkout" or destructive auto-clean flow.
+- The fetch→merge flow should not present as a single button that immediately leads to merge. Instead: fetch surfaces a "Changes from teammates available" banner or indicator; merge is a separate deliberate action the user takes when ready. This gives the user a natural window to clean up their work tree before merging, making the dirty-checkout error less surprising when it fires.
+- Whether fetch becomes automatic (on page load, background poll) or stays a manual trigger is a decision to make during implementation; flag it and decide explicitly rather than inheriting the current behavior by default.
+- Surface `DirtyCheckoutError` when merge is rejected — show which files are dirty and direct the user to publish or manually clean the work tree. Do not add an in-branch "move checkout" or destructive auto-clean flow.
 
-### 4. Update `cli.py`
+### 5. Update `cli.py`
 
 - Audit all CLI commands that mention checkouts; update help text and behavior to match single-checkout semantics.
 - `checkout` command should fail clearly if the niche already has a checkout and explain that the user must remove it first.
 - `pull` command: surface `DirtyCheckoutError` with a clear message about what the user needs to do.
 
-### 5. Update `spec.md`
+### 6. Update `spec.md`
 
 - Remove or mark deprecated the multi-checkout description.
 - Document the new constraint: "at most one checkout per niche per device."
@@ -104,10 +120,11 @@ true:
 ## Order of Work
 
 1. `vault.py` — local schema/version handling, one-checkout uniqueness enforcement, and `get_checkout` helper
-2. `vault.py` — `DirtyCheckoutError` + `_is_checkout_clean` + guards in pull/merge
-3. `sync.py` — propagate dirty-checkout guard
-4. Micro tests for the new invariants and refusal paths
-5. `web.py` + templates — single-checkout UI, explicit remove-then-attach semantics, and dirty-checkout error surfacing
-6. `cli.py` — audit and update
-7. `spec.md` — update documentation and remove multi-checkout claims
-8. Aspirational tests — update/remove multi-checkout scenarios
+2. `vault.py` — remove transit work tree; rewrite `_cod_pull/fetch/merge_ref` to target bare git dir + single user checkout directly
+3. `vault.py` — `DirtyCheckoutError` + `_is_checkout_clean` + guards in pull/merge (not fetch)
+4. `sync.py` — propagate dirty-checkout guard through Hub-backed wrappers
+5. Micro tests for the new invariants and refusal paths
+6. `web.py` + templates — single-checkout UI, explicit remove-then-attach semantics, dirty-checkout error surfacing
+7. `cli.py` — audit and update
+8. `spec.md` — update documentation, remove multi-checkout and transit claims
+9. Aspirational tests — update/remove multi-checkout scenarios
