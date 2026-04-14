@@ -446,8 +446,24 @@ def merge_via_hub(
     hub_port: int = SmallSeaClient.DEFAULT_PORT,
     _http_client=None,
 ) -> MergeResult:
-    """Merge already-fetched peer refs for a registry and niche."""
+    """Merge already-fetched peer refs for a registry and niche.
+
+    Preflights the niche checkout before touching the registry, so a
+    dirty-checkout or no-checkout condition never leaves the registry
+    merged while the niche merge is still pending.
+    """
     _session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+
+    # Preflight: verify niche checkout exists and is clean before merging
+    # anything. Without this, a failed niche merge would leave the registry
+    # already integrated — a partially-merged state the user cannot easily undo.
+    checkout = vault.get_checkout(vault_root, participant_hex, team_name, niche_name)
+    if checkout is None:
+        raise NoCheckoutError(team_name, niche_name)
+    dirty_entries = vault.status(vault_root, participant_hex, team_name, niche_name, checkout)
+    if dirty_entries:
+        raise DirtyCheckoutError([e["path"] for e in dirty_entries])
+
     try:
         registry_sha = vault.merge_registry(
             vault_root,

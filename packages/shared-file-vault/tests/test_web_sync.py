@@ -270,9 +270,10 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     assert push_resp.status_code == 200
     assert "Pushed niche and registry through the Hub." in push_resp.text
 
+    # Bob joins: fetch → attach checkout → merge (3-step join flow)
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
     sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
-    sync.pull_via_hub(
+    sync.fetch_via_hub(
         bob_vault_root,
         env["bob_hex"],
         "ProjectX",
@@ -281,6 +282,14 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
         _http_client=http,
     )
     vault.add_checkout(bob_vault_root, env["bob_hex"], "ProjectX", "docs", str(bob_checkout))
+    sync.merge_via_hub(
+        bob_vault_root,
+        env["bob_hex"],
+        "ProjectX",
+        "docs",
+        env["alice_member_id_hex"],
+        _http_client=http,
+    )
 
     (alice_checkout / "notes.txt").write_text("hello again\n")
     vault.publish(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout), message="update")
