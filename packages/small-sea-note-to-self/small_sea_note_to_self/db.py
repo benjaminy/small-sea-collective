@@ -1,11 +1,12 @@
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
 SHARED_SCHEMA_VERSION = 56
-LOCAL_SCHEMA_VERSION = 7
+LOCAL_SCHEMA_VERSION = 8
 
 
 def note_to_self_sync_db_path(root_dir: str | Path, participant_hex: str) -> Path:
@@ -165,6 +166,16 @@ def _migrate_device_local_db(conn: sqlite3.Connection, current_version: int) -> 
             );
             """
         )
+    if current_version < 8:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS note_to_self_sync_state (
+                berth_id BLOB PRIMARY KEY,
+                last_adopted_count INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
 
 
 def _rename_sender_key_column_if_present(conn: sqlite3.Connection, table_name: str) -> None:
@@ -205,3 +216,45 @@ def attached_note_to_self_connection(root_dir: str | Path, participant_hex: str)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("ATTACH DATABASE ? AS local", (str(local_db),))
     return conn
+
+
+def get_note_to_self_adopted_count(
+    root_dir: str | Path, participant_hex: str, berth_id: bytes
+) -> int | None:
+    local_db = device_local_db_path(root_dir, participant_hex)
+    initialize_device_local_db(local_db)
+    conn = sqlite3.connect(local_db)
+    try:
+        row = conn.execute(
+            """
+            SELECT last_adopted_count
+            FROM note_to_self_sync_state
+            WHERE berth_id = ?
+            """,
+            (berth_id,),
+        ).fetchone()
+        return None if row is None else int(row[0])
+    finally:
+        conn.close()
+
+
+def set_note_to_self_adopted_count(
+    root_dir: str | Path, participant_hex: str, berth_id: bytes, count: int
+) -> None:
+    local_db = device_local_db_path(root_dir, participant_hex)
+    initialize_device_local_db(local_db)
+    conn = sqlite3.connect(local_db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO note_to_self_sync_state (berth_id, last_adopted_count, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(berth_id) DO UPDATE SET
+                last_adopted_count = excluded.last_adopted_count,
+                updated_at = excluded.updated_at
+            """,
+            (berth_id, int(count), datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()

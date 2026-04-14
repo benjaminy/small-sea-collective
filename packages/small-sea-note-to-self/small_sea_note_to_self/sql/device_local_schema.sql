@@ -16,6 +16,12 @@ CREATE TABLE IF NOT EXISTS notification_service_credential (
     access_token TEXT
 );
 
+CREATE TABLE IF NOT EXISTS note_to_self_sync_state (
+    berth_id BLOB PRIMARY KEY,
+    last_adopted_count INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS note_to_self_device_key_secret (
     device_id BLOB PRIMARY KEY,
     encryption_private_key_ref TEXT NOT NULL,

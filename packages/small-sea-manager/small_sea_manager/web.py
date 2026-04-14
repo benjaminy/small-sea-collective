@@ -61,8 +61,12 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     def _teams_with_status(mgr):
         teams = [t for t in mgr.list_teams() if t["name"] != _NOTETOSELF]
         for t in teams:
-            t["sync_status"] = mgr.get_team_sync_status(t["name"])
-            t["session_status"] = mgr.session_state(t["name"], _ENCRYPTED)
+            if t.get("joined_locally"):
+                t["sync_status"] = mgr.get_team_sync_status(t["name"])
+                t["session_status"] = mgr.session_state(t["name"], _ENCRYPTED)
+            else:
+                t["sync_status"] = None
+                t["session_status"] = "none"
         return teams
 
     @app.get("/", response_class=HTMLResponse)
@@ -151,11 +155,26 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.get("/teams/{team_name}", response_class=HTMLResponse)
     async def team_detail(request: Request, team_name: str):
         mgr = _mgr(request)
+        team = mgr.get_team(team_name)
+        if not team.get("joined_locally"):
+            return templates.TemplateResponse(
+                "fragments/team_detail.html",
+                {
+                    "request": request,
+                    "team_name": team_name,
+                    "joined_locally": False,
+                    "members": [],
+                    "invitations": [],
+                    "sync_status": None,
+                    "team_session_status": "none",
+                    "team_session_mode_badge": None,
+                },
+            )
         all_teams = mgr.list_teams()
         self_in_team = next(
             (t["self_in_team"] for t in all_teams if t["name"] == team_name), None
         )
-        members = mgr.list_members(team_name)
+        members = team["members"]
         for m in members:
             m["is_self"] = m["id"] == self_in_team
             roles = m.get("berth_roles", [])
@@ -165,8 +184,9 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             {
                 "request": request,
                 "team_name": team_name,
+                "joined_locally": True,
                 "members": members,
-                "invitations": mgr.list_invitations(team_name),
+                "invitations": team["invitations"],
                 "sync_status": mgr.get_team_sync_status(team_name),
                 "team_session_status": mgr.session_state(team_name, _ENCRYPTED),
                 "team_session_mode_badge": _mode_badge(_ENCRYPTED),

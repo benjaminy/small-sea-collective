@@ -1046,13 +1046,14 @@ class SmallSeaBackend:
 
             if upload_ok:
                 self._ntfy_publish_signal(ss_session, signals[berth_id_hex])
-                return
+                return signals[berth_id_hex]
             # CAS conflict — re-read and retry
 
         self.logger.warning(
             f"_bump_signal: gave up after {self._SIGNAL_MAX_RETRIES} retries "
             f"(session {session_hex[:8]})"
         )
+        return None
 
     def _ntfy_publish_signal(self, ss_session, count):
         """Fire-and-forget ntfy publish after a successful signal bump."""
