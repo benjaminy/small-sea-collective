@@ -116,22 +116,18 @@ def sync_env(playground_dir, minio, hub):
             {"id": team_id, "name": "SyncTest", "sim": bob_member_id},
         )
 
-    # Add Bob as a member + peer in his own team DB copy.
+    # Add Bob as a member in his own team DB copy. Alice's cloned team_device
+    # row already provides the endpoint Bob will pull from.
     bob_team_db = bob_team_sync / "core.db"
     engine_team = create_engine(f"sqlite:///{bob_team_db}")
     with engine_team.begin() as conn:
         conn.execute(
-            text("INSERT INTO member (id) VALUES (:id)"),
-            {"id": bob_member_id},
+            text("INSERT INTO member (id, display_name) VALUES (:id, :display_name)"),
+            {"id": bob_member_id, "display_name": "Bob"},
         )
         conn.execute(
             text("INSERT INTO berth_role (id, member_id, berth_id, role) VALUES (:id, :mid, :bid, :role)"),
             {"id": os.urandom(16), "mid": bob_member_id, "bid": berth_id, "role": "read-write"},
-        )
-        # Alice is the peer Bob will pull from.
-        conn.execute(
-            text("INSERT INTO peer (id, member_id, protocol, url) VALUES (:id, :mid, :proto, :url)"),
-            {"id": os.urandom(16), "mid": bytes.fromhex(alice_member_id_hex), "proto": "s3", "url": minio_endpoint},
         )
 
     # Open sessions via auto-approve.

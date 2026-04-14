@@ -374,6 +374,16 @@ def test_remove_member_purges_local_receiver_state_and_subject_side_certs(playgr
             (state["bob_member_id"],),
         ).fetchone()
         assert member_row is None
+        team_device_row = conn.execute(
+            "SELECT 1 FROM team_device WHERE member_id = ?",
+            (state["bob_member_id"],),
+        ).fetchone()
+        assert team_device_row is None
+        prekey_row = conn.execute(
+            "SELECT 1 FROM device_prekey_bundle WHERE device_key_id = ?",
+            (state["bob_device_key_id"],),
+        ).fetchone()
+        assert prekey_row is None
         cert_rows = conn.execute("SELECT claims FROM key_certificate").fetchall()
     assert all(json.loads(row[0]).get("member_id") != state["bob_member_id"].hex() for row in cert_rows)
 

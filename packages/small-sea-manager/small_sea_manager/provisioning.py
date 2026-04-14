@@ -19,13 +19,27 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
-from sqlalchemy import Column, LargeBinary, String, create_engine, text
+from sqlalchemy import Column, LargeBinary, String, create_engine, event, text
 from sqlalchemy.orm import Session, declarative_base
 
 Base = declarative_base()
 
 import shutil
 import subprocess
+
+
+def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys = ON")
+    finally:
+        cursor.close()
+
+
+def _sqlite_engine(db_path) -> object:
+    engine = create_engine(f"sqlite:///{db_path}")
+    event.listen(engine, "connect", _enable_sqlite_foreign_keys)
+    return engine
 
 import cod_sync.protocol as CodSync
 from cuttlefish import (
@@ -822,7 +836,7 @@ def _publish_local_device_prekey_bundle(
         team_sync_dir = pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync"
         team_db_path = team_sync_dir / "core.db"
         ensure_team_db_schema(team_db_path)
-        engine = create_engine(f"sqlite:///{team_db_path}")
+        engine = _sqlite_engine(team_db_path)
         try:
             with engine.begin() as local_conn:
                 _upsert_device_prekey_bundle(
@@ -1936,7 +1950,7 @@ def _rename_sender_key_column_if_present(conn, table_name: str) -> None:
 
 def ensure_team_db_schema(db_path):
     """Upgrade an existing team DB in place if needed."""
-    engine = create_engine(f"sqlite:///{db_path}")
+    engine = _sqlite_engine(db_path)
     try:
         with engine.begin() as conn:
             user_version = conn.execute(text("PRAGMA user_version")).scalar()
@@ -2298,7 +2312,7 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     participant_dir = root_dir / "Participants" / participant_hex
     team_sync_dir = participant_dir / team_name / "Sync"
     team_db_path = team_sync_dir / "core.db"
-    engine = create_engine(f"sqlite:///{team_db_path}")
+    engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
             cert_inserted = _insert_team_certificate_if_missing(
@@ -2426,7 +2440,7 @@ def complete_linked_device_bootstrap(
 
 def _init_team_db(db_path):
     """Initialize a team core.db with the team schema. Returns the engine."""
-    engine = create_engine(f"sqlite:///{db_path}")
+    engine = _sqlite_engine(db_path)
     with engine.begin() as conn:
         schema_path = pathlib.Path(__file__).parent / "sql" / "core_other_team.sql"
         with open(schema_path, "r") as f:
@@ -2600,7 +2614,7 @@ def get_trusted_device_keys_for_member_in_team_db(team_db_path, team_id, member_
     """Return trusted team-device public keys for one member from one team DB."""
     if isinstance(member_id, str):
         member_id = bytes.fromhex(member_id)
-    engine = create_engine(f"sqlite:///{team_db_path}")
+    engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
             certs = _load_team_certificates(conn, team_id)
@@ -2636,7 +2650,7 @@ def get_trusted_device_keys_by_member(root_dir, participant_hex, team_name):
         / "Sync"
         / "core.db"
     )
-    engine = create_engine(f"sqlite:///{team_db_path}")
+    engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
             certs = _load_team_certificates(conn, team_id)
@@ -2913,7 +2927,7 @@ def redistribute_sender_key(root_dir, participant_hex, team_name, target_device_
                 continue
             candidate_public_keys[device_key_id] = public_key
 
-    engine = create_engine(f"sqlite:///{team_db_path}")
+    engine = _sqlite_engine(team_db_path)
     artifacts = []
     skipped = []
     try:
@@ -3213,7 +3227,7 @@ def remove_member(root_dir, participant_hex, team_name, member):
 
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     ensure_team_db_schema(team_db_path)
-    engine = create_engine(f"sqlite:///{team_db_path}")
+    engine = _sqlite_engine(team_db_path)
     removed_device_public_keys = get_trusted_device_keys_for_member(
         root_dir, participant_hex, team_name, removed_member_id
     )
@@ -3317,7 +3331,7 @@ def issue_device_link_for_member(root_dir, participant_hex, team_name, linked_de
 
     team_sync_dir = participant_dir / team_name / "Sync"
     team_db_path = team_sync_dir / "core.db"
-    engine = create_engine(f"sqlite:///{team_db_path}")
+    engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
             _store_team_certificate(conn, cert, issuer_member_id=member_id)
@@ -3597,7 +3611,7 @@ def create_invitation(
     inviter_display_name = get_nickname(root_dir, participant_hex) or None
 
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
-    team_engine = create_engine(f"sqlite:///{team_db_path}")
+    team_engine = _sqlite_engine(team_db_path)
 
     inviter_sender_key = load_team_sender_key(
         device_local_db_path(root_dir, participant_hex), team_id
@@ -3765,7 +3779,7 @@ def accept_invitation(
     # --- Record visible member/device rows in the cloned DB ---
     team_db_path = team_sync_dir / "core.db"
     ensure_team_db_schema(team_db_path)
-    team_engine = create_engine(f"sqlite:///{team_db_path}")
+    team_engine = _sqlite_engine(team_db_path)
     if acceptor_cloud["protocol"] == "dropbox":
         acceptor_bucket = f"ss-{acceptor_member_id.hex()[:16]}"
     else:
@@ -3863,7 +3877,7 @@ def complete_invitation_acceptance(
     # Find and validate the invitation in the inviter's team DB
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
     ensure_team_db_schema(team_db_path)
-    engine = create_engine(f"sqlite:///{team_db_path}")
+    engine = _sqlite_engine(team_db_path)
     inviter_private_key, inviter_public_key = get_current_team_device_key(
         root_dir, participant_hex, team_name
     )
@@ -3871,7 +3885,7 @@ def complete_invitation_acceptance(
     acceptor_device_key = _participant_key_from_public(acceptor_device_public_key)
 
     user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
-    user_engine = create_engine(f"sqlite:///{user_db_path}")
+    user_engine = _sqlite_engine(user_db_path)
     try:
         with user_engine.begin() as conn:
             inviter_team_row = conn.execute(
@@ -4184,7 +4198,7 @@ def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
         root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
     )
     invitation_id = bytes.fromhex(invitation_id_hex)
-    engine = create_engine(f"sqlite:///{team_db_path}")
+    engine = _sqlite_engine(team_db_path)
     with engine.begin() as conn:
         row = conn.execute(
             text("SELECT status FROM invitation WHERE id = :id"), {"id": invitation_id}
@@ -4228,7 +4242,7 @@ def list_members(root_dir, participant_hex, team_name):
     team_db_path = (
         root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
     )
-    engine = create_engine(f"sqlite:///{team_db_path}")
+    engine = _sqlite_engine(team_db_path)
 
     with engine.begin() as conn:
         members = conn.execute(text("SELECT id FROM member")).fetchall()
@@ -4257,7 +4271,7 @@ def list_invitations(root_dir, participant_hex, team_name):
     team_db_path = (
         root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
     )
-    engine = create_engine(f"sqlite:///{team_db_path}")
+    engine = _sqlite_engine(team_db_path)
 
     with engine.begin() as conn:
         rows = conn.execute(
