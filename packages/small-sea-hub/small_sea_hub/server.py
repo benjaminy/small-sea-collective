@@ -903,8 +903,9 @@ async def watch_notifications(
 
     # Grab the current event before sleeping — the watcher may replace it
     # while we wait, but we hold the reference so set() still wakes us.
-    peer_signal_events = getattr(app.state, "peer_signal_events", None) or {}
-    event = peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
+    if not hasattr(app.state, "peer_signal_events"):
+        app.state.peer_signal_events = {}
+    event = app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
     try:
         await asyncio.wait_for(event.wait(), timeout=req.timeout)
     except asyncio.TimeoutError:

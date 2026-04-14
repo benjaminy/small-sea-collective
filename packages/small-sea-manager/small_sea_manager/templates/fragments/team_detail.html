@@ -1,16 +1,19 @@
 <div class="detail-header">
   <h2>{{ team_name }}</h2>
-  {% with status=sync_status %}
-    {% include "fragments/sync_badge.html" %}
-  {% endwith %}
-  <form hx-post="/teams/{{ team_name }}/push"
-        hx-target="#sync-result"
-        hx-swap="outerHTML"
-        hx-on::after-request="htmx.trigger('#sync-badge-{{ team_name }}', 'refresh')">
-    <button class="btn btn-secondary" type="submit">Push to cloud</button>
-  </form>
+  {% if joined_locally %}
+    {% with status=sync_status %}
+      {% include "fragments/sync_badge.html" %}
+    {% endwith %}
+    <form hx-post="/teams/{{ team_name }}/push"
+          hx-target="#sync-result"
+          hx-swap="outerHTML"
+          hx-on::after-request="htmx.trigger('#sync-badge-{{ team_name }}', 'refresh')">
+      <button class="btn btn-secondary" type="submit">Push to cloud</button>
+    </form>
+  {% endif %}
 </div>
 
+{% if joined_locally %}
 <div class="detail-section" style="padding-top:0.4rem; padding-bottom:0.4rem;">
   {% include "fragments/team_session.html" %}
 </div>
@@ -28,3 +31,8 @@
   <h3>Invitations</h3>
   {% include "fragments/invitations.html" %}
 </div>
+{% else %}
+<div class="detail-section">
+  <p>This team was discovered in NoteToSelf but has not been joined on this device yet.</p>
+</div>
+{% endif %}
