@@ -1,4 +1,4 @@
-# Branch Plan: NoteToSelf Sync and Team Discovery
+# Branch Wrap-Up: NoteToSelf Sync and Team Discovery
 
 **Branch:** `codex-issue-48-note-to-self-sync-discovery`  
 **Base:** `main`  
@@ -11,6 +11,65 @@
 `Archive/branch-plan-issue-69-linked-device-encrypted-team-bootstrap.md`,
 `Archive/branch-plan-issue-59-peer-routing-watches.md`,
 `Archive/branch-plan-issue-59-peer-device-model.md`
+
+## Outcome
+
+This branch landed the steady-state same-identity NoteToSelf discovery slice.
+
+What shipped:
+
+- explicit Manager-side `refresh_note_to_self()` using the normal `NoteToSelf`
+  session plus `SmallSeaRemote` over `/cloud_file`
+- device-local persistence of the last adopted NoteToSelf berth counter in the
+  NoteToSelf local DB
+- additive, opt-in self-update support on `/notifications/watch` for live
+  `NoteToSelf` sessions
+- `list_known_teams()` / `joined_locally` semantics backed by shared
+  NoteToSelf `team` rows rather than local directory guessing
+- safe `get_team()` behavior for NoteToSelf-known but not locally joined teams
+- Manager web/UI guards so discovered-only teams do not hit local-team-only
+  operations
+
+What this branch intentionally did not do:
+
+- automatic team join or local team clone after discovery
+- syncing user-team `app` / `team_app_berth` structure through NoteToSelf
+- redesigning push transport or broadening the Hub watch system beyond the
+  new coarse self-update axis
+- backward-compatibility cleanup beyond the pre-alpha baseline
+
+## Verification
+
+Focused verification that passed during wrap-up:
+
+- `uv run pytest tests/test_watch_notifications.py packages/small-sea-manager/tests/test_note_to_self_refresh.py packages/small-sea-hub/tests/test_note_to_self_self_signal.py -q`
+  Result: `19 passed`
+
+Additional verification earlier in implementation/review:
+
+- `uv run pytest packages/small-sea-manager/tests/test_identity_bootstrap.py -q`
+- `uv run pytest tests/test_watch_notifications.py -q`
+
+Final review notes addressed before wrap-up:
+
+- fixed the adopted-counter race so refresh only advances the persisted
+  baseline to a pre-fetch snapshot, never to a later unseen push
+- fixed the Hub watch-event regression so generic berth waiters use the shared
+  `peer_signal_events` map rather than a throwaway local dict
+- fixed Manager web/detail rendering so discovered-but-unjoined teams do not
+  touch local-team-only session/sync/member/invitation paths
+
+## Residual Limits
+
+These remain true after the branch and are intentional:
+
+- update-awareness is session-bounded and requires an active `NoteToSelf`
+  Manager/Hub session
+- same-row concurrent edits in shared NoteToSelf are still out of scope; this
+  branch relies on existing CodSync stale-writer rejection and normal
+  fetch/merge/push behavior
+- discovery stays distinct from join; a discovered team can be shown safely,
+  but no local participation is created until later join/bootstrap work runs
 
 ## Context
 
