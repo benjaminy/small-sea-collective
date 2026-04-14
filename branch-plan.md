@@ -4,7 +4,7 @@
 
 Remove DVCS features from Shared File Vault whose complexity cost exceeds their value:
 1. **At most one local checkout per niche** — a niche is either not materialized on a device or has exactly one checkout location.
-2. **Require clean checkout before pulling** — the user must commit or drop local changes before accepting changes from elsewhere.
+2. **Require clean checkout before merge-capable sync operations** — the user must commit or drop local changes before integrating fetched changes from elsewhere.
 3. **Keep the `.git`-separate-from-checkout-directory design.**
 
 ---
@@ -44,7 +44,7 @@ This branch intentionally does **not** require architectural garbage collection 
 - Add `_is_checkout_clean(checkout_path, git_dir) -> bool` that runs `git status --porcelain` scoped to the user's checkout work tree. **Important:** always pass the user's checkout path explicitly — do not let this check accidentally target the transit or any other work tree.
 - `--porcelain` output includes untracked files. Untracked files block merge-time operations just like tracked changes do. The primary motivation is UX simplicity: non-git users have no mental model for the tracked/untracked distinction, so "your folder must be clean" is one rule rather than a leaky git abstraction. Path-collision safety is a secondary benefit. This diverges from git's default merge behavior and should be noted in the function doc. Future relaxation (e.g. ignoring certain noise files) can be motivated by specific cases.
 - In `merge_niche()` (and any combined `pull` wrapper): before doing merge work, call this check. Raise a new `DirtyCheckoutError` (with the list of modified paths) if unclean.
-- Do the same in `pull_registry()` / `merge_registry()`.
+- Do the same for registry merge-time paths.
 - Mirror this guard in `sync.py`'s combined/wrapper operations and `merge_via_hub()`.
 - `fetch_niche()` does not need the clean-checkout guard because fetch alone does not change visible checkout state. The guard lives in merge-time paths. The UI model (background-or-manual fetch, then deliberate merge) gives the user a natural window to clean up before integrating changes.
 - Do not add a partial "discard tracked files only" path in this branch. Merge-capable flows require a genuinely clean checkout; any destructive cleanup action should be a separate explicit feature.
