@@ -107,8 +107,9 @@ already-landed normal session transport:
 - refresh/pull and push both go through the Hub-owned cloud transport for that
   session
 - push is already wired today; this branch makes refresh/pull a first-class
-  Manager seam on top of the same transport, adding a small CodSync fetch/adopt
-  seam only if needed
+  Manager seam on top of the same transport by routing through explicit
+  `CodSync.fetch_from_remote(...)`-style fetch/adopt behavior rather than ad-hoc
+  git commands from Manager
 
 This keeps same-identity NoteToSelf sync on the same transport model as other
 steady-state Hub-mediated sync instead of inventing a NoteToSelf-specific proxy
@@ -130,6 +131,8 @@ This branch should keep the existing architectural seam honest:
 - adoption includes explicit DB-handle lifecycle management: NoteToSelf
   connections/engines used before refresh must not be silently reused across
   fetch/adopt
+- handle lifecycle here includes attached-db NoteToSelf connections in addition
+  to SQLAlchemy engines/pools
 
 ### S4. User-initiated refresh remains the default
 
@@ -265,6 +268,8 @@ Minimum behavior:
 - the refreshed shared DB/repo becomes the source of truth immediately after
   adoption, with explicit close/reopen or invalidate/reopen behavior around any
   NoteToSelf DB handles used by the refresh path
+- partial failure stays honest: the persisted adopted counter advances only
+  after full refresh/adoption succeeds, not merely after fetch succeeds
 - refresh and discovery remain separate entry points: refresh fetches/adopts,
   while discovery reads current shared NoteToSelf state even when offline
 - refresh works in local micro-test setups without internet dependence
@@ -361,6 +366,7 @@ Likely work:
   `NoteToSelf` session and `SmallSeaRemote`
 - explicit refresh adoption lifecycle:
   close/dispose old NoteToSelf DB handles, fetch/adopt, reopen fresh handles
+- failed refresh/adoption leaves the last-adopted counter unchanged
 - separate `list_known_teams()`/discovery read seam that reads current shared
   `team` rows without implicitly fetching
 - clear distinction between "discovered in NoteToSelf" and "locally joined"
@@ -429,6 +435,10 @@ true:
 - the Manager, not the Hub, still owns NoteToSelf DB writes/adoption
 - after refresh, freshly opened NoteToSelf connections see the new state and
   the refresh path does not rely on stale pre-refresh DB handles
+- if fetch succeeds but adoption fails, the device does not advance the
+  persisted adopted counter or report a false in-sync state
+- `list_teams()`/known-team discovery continues to reflect NoteToSelf `team`
+  rows rather than local directory presence
 - device B in a two-installation same-identity test does not see a newly added
   team before refresh
 - after refresh, device B does see the team in NoteToSelf-backed discovery
@@ -450,27 +460,16 @@ true:
 - the implementation makes later runtime/team-join branches simpler instead of
   introducing another shadow source of truth
 
-## Open Questions
+## Watch API Decision
 
-### Q1. Exact watch API shape for the self-update field
+This branch keeps the self-update signal coarse and count-based.
 
-The branch should keep the signal coarse, but the exact HTTP shape still needs
-to be chosen explicitly during review.
-
-Preferred direction:
-
-- keep the watch API count-based, not etag-based
-- add a `known_self_count`-style request field and a `self_updated_count`-style
-  response field/value
-- this matches the existing watch endpoint's counter semantics better than
-  introducing a second etag-shaped contract
-
-Likely shape:
+Chosen direction:
 
 - reuse `/notifications/watch`
-- request includes a known self-count for NoteToSelf sessions
-- response includes a self-updated count/value when the current session's
-  NoteToSelf berth counter increased
+- keep the API count-based, not etag-based
+- add a `known_self_count`-style request field and a `self_updated_count`-style
+  response field/value
 - callers that omit the self-count field keep today's peer-only semantics
 
 This branch should not broaden that into rich semantic diff delivery.
