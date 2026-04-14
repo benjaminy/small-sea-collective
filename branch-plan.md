@@ -101,6 +101,11 @@ Trust remains grounded in:
 The new shared device model is for endpoint/routing/runtime metadata, not for
 replacing trust resolution.
 
+`key_certificate.subject_key_id` is not rehomed into `team_device` and should
+not FK to it. Cert history can predate, outlive, or diverge from shared
+endpoint-row adoption, so the two layers must remain related by value rather
+than by ownership constraint.
+
 ### S4. Manager remains the only writer of team DBs
 
 The new shared model must continue to respect the repo’s existing rule:
@@ -126,9 +131,10 @@ This branch should stop hedging about device identity ownership.
 
 - `team_device.device_key_id` is the primary key for shared team-device
   identity
-- `team_device.member_id` is a required FK to the owning member
-- `device_prekey_bundle.device_key_id` should be a literal FK to
-  `team_device.device_key_id`
+- `team_device.member_id` is a required FK to the owning member with
+  `ON DELETE CASCADE`
+- `device_prekey_bundle.device_key_id` is a literal FK to
+  `team_device.device_key_id` with `ON DELETE CASCADE`
 
 That gives the shared schema one clear owner for device identity and makes
 cleanup on member removal explicit instead of conceptual.
@@ -164,7 +170,7 @@ The model should make room for data such as:
 - `device_key_id`
 - `public_key`
 - device-facing endpoint/routing metadata: `protocol`, `url`, `bucket`
-- a minimal ordering field for deterministic interim member-keyed lookups
+- `created_at`
 
 `device_prekey_bundle.device_key_id` should literally FK to
 `team_device.device_key_id`, and member removal should rely on that ownership
@@ -186,6 +192,9 @@ independently removes the cert-backed trust path.
 
 Invitation acceptance should explicitly write `invitation.acceptor_protocol` and
 `invitation.acceptor_url` into `team_device` rather than into `peer`.
+The acceptance flow should also record `acceptor_device_key_id` so it can write
+the new `team_device` row directly instead of trying to infer device identity
+later from a separate cert lookup.
 
 Create-team should create the founding `team_device` row immediately, even if
 endpoint fields are still null until later cloud setup backfills them.
@@ -253,11 +262,14 @@ Specific schema target:
   - `protocol`
   - `url`
   - `bucket`
-  - deterministic ordering field for interim member-keyed lookup
+  - `created_at`
   - primary key: `device_key_id`
+- `team_device.member_id` FK references `member.id` with `ON DELETE CASCADE`
 - `member.device_public_key` is removed
 - `device_prekey_bundle.device_key_id` FK references `team_device.device_key_id`
+  with `ON DELETE CASCADE`
 - Manager-owned migration/adoption updates older team DBs to this shape
+- invitation acceptance input/state includes `acceptor_device_key_id`
 
 ### 2. Manager provisioning logic
 
@@ -292,6 +304,8 @@ true:
 - `team_device.device_key_id` is the primary key
 - `device_prekey_bundle.device_key_id` is an FK to
   `team_device.device_key_id`
+- `team_device.member_id` cascades on member deletion
+- `device_prekey_bundle.device_key_id` cascades on `team_device` deletion
 - `team_device` exists and has exactly one row per device key after create-team,
   invitation acceptance, and linked-device bootstrap
 - one member with two devices produces one `member` row and two `team_device`
@@ -302,6 +316,8 @@ true:
   fields are backfilled by later cloud setup
 - invitation acceptance creates exactly one new `member` row and one new
   `team_device` row for that admitted member's first device
+- invitation acceptance obtains `device_key_id` from
+  `acceptor_device_key_id`, not from a later inferred lookup
 - linked-device bootstrap adds a second `team_device` row for the same member
   without creating a second `member` row
 - linked devices are explicitly attached to members in shared state
@@ -319,6 +335,9 @@ true:
   paths rely on `team_device`
 - the migration barrier is explicit: Manager migrates the team DB on open/adopt
   before any write path or Hub-facing session info relies on the new shape
+- migrating older team DBs backfills `member.display_name` from `peer` by
+  `member_id`, leaves it null when no matching `peer` row exists, and fails
+  loudly if multiple `peer` rows exist for one member
 - the branch makes future runtime/routing work easier instead of more magical
 
 ## Open Questions
@@ -331,6 +350,9 @@ by documenting a temporary rule:
 
 - when a member has multiple device rows, member-keyed Hub peer reads choose one
   readable endpoint by a deterministic rule grounded in schema data
+- readable means `url IS NOT NULL`
+- choose the readable row with the lowest `created_at`, tie-breaking on
+  `device_key_id`
 
 This branch does not need to finish device-keyed caller APIs, but it should not
 leave the one-to-many lookup behavior implicit.
