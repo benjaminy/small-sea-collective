@@ -134,7 +134,7 @@ def push_cmd(team_name, niche_name, vault_root, participant, hub_port):
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
 def pull_cmd(team_name, niche_name, from_member, vault_root, participant, hub_port):
-    """Pull a niche and its registry from a peer through the Hub."""
+    """Pull a niche and its registry from a peer (fetch + merge)."""
     vault_root, participant, hub_port = _resolve_sync(vault_root, participant, hub_port)
     try:
         vault_root = sync.require_value(vault_root, "vault_root")
@@ -147,6 +147,15 @@ def pull_cmd(team_name, niche_name, from_member, vault_root, participant, hub_po
             from_member,
             hub_port=hub_port,
         )
+    except sync.DirtyCheckoutError as exc:
+        click.echo("Pull blocked: checkout has uncommitted changes.", err=True)
+        if exc.paths:
+            click.echo("Clean up these files before pulling:", err=True)
+            for path in exc.paths:
+                click.echo(f"  {path}", err=True)
+        raise SystemExit(1)
+    except sync.NoCheckoutError as exc:
+        _die(str(exc))
     except sync.PullConflictError as exc:
         click.echo(f"Pull left unresolved conflicts in the {exc.scope}.", err=True)
         if exc.paths:
@@ -194,9 +203,16 @@ def create_cmd(vault_root, participant_hex, team_name, niche_name):
 @click.argument("niche_name")
 @click.argument("dest_path")
 def checkout_cmd(vault_root, participant_hex, team_name, niche_name, dest_path):
-    """Add a checkout of a niche at a filesystem path."""
-    vault.add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path)
-    click.echo(f"Checkout added at {dest_path}")
+    """Attach a checkout of a niche at a filesystem path.
+
+    Each niche may have at most one checkout. Remove the existing checkout
+    before attaching a new location.
+    """
+    try:
+        vault.add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path)
+    except vault.DuplicateCheckoutError as exc:
+        _die(str(exc))
+    click.echo(f"Checkout attached at {dest_path}")
 
 
 @cli.command("list")
@@ -210,8 +226,8 @@ def list_cmd(vault_root, participant_hex, team_name):
         click.echo("No niches.")
         return
     for niche in niches:
-        checkouts = vault.list_checkouts(vault_root, participant_hex, team_name, niche["name"])
-        co_str = ", ".join(checkouts) if checkouts else "(no checkouts)"
+        checkout = vault.get_checkout(vault_root, participant_hex, team_name, niche["name"])
+        co_str = checkout if checkout else "(no checkout)"
         click.echo(f"  {niche['name']}  {co_str}  [{niche['id'][:8]}]")
 
 

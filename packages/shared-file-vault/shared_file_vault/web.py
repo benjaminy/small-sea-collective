@@ -97,11 +97,12 @@ def create_app(
                 peers = []
         else:
             peers = []
-        checkouts = vault.list_checkouts(vr, ph, team_name, niche_name)
-        status_by_checkout = [
-            {"path": co, "entries": vault.status(vr, ph, team_name, niche_name, co)}
-            for co in checkouts
-        ]
+        checkout = vault.get_checkout(vr, ph, team_name, niche_name)
+        checkout_status = (
+            vault.status(vr, ph, team_name, niche_name, checkout)
+            if checkout is not None
+            else []
+        )
         commits = vault.log(vr, ph, team_name, niche_name)
         return templates.TemplateResponse(
             "fragments/niche_detail.html",
@@ -109,8 +110,8 @@ def create_app(
                 "request": request,
                 "team_name": team_name,
                 "niche_name": niche_name,
-                "checkouts": checkouts,
-                "status_by_checkout": status_by_checkout,
+                "checkout": checkout,
+                "checkout_status": checkout_status,
                 "commits": commits,
                 "sync_notice": sync_notice,
                 "sync_error": sync_error,
@@ -233,16 +234,16 @@ def create_app(
         try:
             vault.add_checkout(vr, ph, team_name, niche_name, dest_path)
             error = None
-        except ValueError as e:
+        except (ValueError, vault.DuplicateCheckoutError) as e:
             error = str(e)
-        checkouts = vault.list_checkouts(vr, ph, team_name, niche_name)
+        checkout = vault.get_checkout(vr, ph, team_name, niche_name)
         return templates.TemplateResponse(
             "fragments/checkouts.html",
             {
                 "request": request,
                 "team_name": team_name,
                 "niche_name": niche_name,
-                "checkouts": checkouts,
+                "checkout": checkout,
                 "error": error,
             },
         )
@@ -259,14 +260,14 @@ def create_app(
     ):
         vr, ph = _vr(request), _ph(request)
         vault.remove_checkout(vr, ph, team_name, niche_name, checkout_path)
-        checkouts = vault.list_checkouts(vr, ph, team_name, niche_name)
+        checkout = vault.get_checkout(vr, ph, team_name, niche_name)
         return templates.TemplateResponse(
             "fragments/checkouts.html",
             {
                 "request": request,
                 "team_name": team_name,
                 "niche_name": niche_name,
-                "checkouts": checkouts,
+                "checkout": checkout,
                 "error": None,
             },
         )
@@ -408,6 +409,16 @@ def create_app(
             )
             notice = f"Merged parked changes from {member_id}."
             error = None
+        except sync.DirtyCheckoutError as exc:
+            notice = None
+            path_list = ", ".join(exc.paths) if exc.paths else "unknown files"
+            error = (
+                f"Merge blocked: checkout has uncommitted changes ({path_list}). "
+                "Publish or discard them before merging."
+            )
+        except sync.NoCheckoutError:
+            notice = None
+            error = "Merge blocked: no checkout is attached. Attach a checkout location first."
         except sync.PullConflictError as exc:
             notice = None
             if exc.paths:
@@ -433,12 +444,10 @@ def create_app(
 
 
 def _niches_with_info(vault_root, participant_hex, team_name):
-    """Return niches annotated with local checkout count."""
+    """Return niches annotated with whether a checkout is attached."""
     niches = vault.list_niches(vault_root, participant_hex, team_name)
     result = []
     for n in niches:
-        checkouts = vault.list_checkouts(
-            vault_root, participant_hex, team_name, n["name"]
-        )
-        result.append({**n, "checkout_count": len(checkouts)})
+        checkout = vault.get_checkout(vault_root, participant_hex, team_name, n["name"])
+        result.append({**n, "has_checkout": checkout is not None})
     return result

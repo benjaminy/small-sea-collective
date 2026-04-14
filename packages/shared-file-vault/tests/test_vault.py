@@ -1,13 +1,22 @@
 import pathlib
 
+import pytest
+
 from shared_file_vault.vault import (
+    DirtyCheckoutError,
+    DuplicateCheckoutError,
+    NoCheckoutError,
     add_checkout,
     create_niche,
+    fetch_niche,
+    get_checkout,
     init_vault,
     list_checkouts,
     list_niches,
     log,
+    merge_niche,
     publish,
+    remove_checkout,
     status,
 )
 
@@ -57,19 +66,39 @@ def test_add_checkout(playground_dir):
     assert str(dest) in checkouts
 
 
-def test_add_multiple_checkouts(playground_dir):
+def test_add_checkout_twice_raises(playground_dir):
+    """A second add_checkout for the same niche raises DuplicateCheckoutError."""
     _init(playground_dir)
     create_niche(playground_dir, PARTICIPANT, TEAM, "notes")
 
     dest_a = pathlib.Path(playground_dir) / "checkout-a"
     dest_b = pathlib.Path(playground_dir) / "checkout-b"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest_a))
-    add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest_b))
 
+    with pytest.raises(DuplicateCheckoutError) as exc_info:
+        add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest_b))
+
+    assert str(dest_a) in exc_info.value.existing_path
+
+    # Only the first checkout is registered
     checkouts = list_checkouts(playground_dir, PARTICIPANT, TEAM, "notes")
-    assert len(checkouts) == 2
+    assert len(checkouts) == 1
     assert str(dest_a) in checkouts
-    assert str(dest_b) in checkouts
+
+
+def test_get_checkout(playground_dir):
+    """get_checkout returns the path or None."""
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "notes")
+
+    assert get_checkout(playground_dir, PARTICIPANT, TEAM, "notes") is None
+
+    dest = pathlib.Path(playground_dir) / "checkout"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest))
+    assert get_checkout(playground_dir, PARTICIPANT, TEAM, "notes") == str(dest)
+
+    remove_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest))
+    assert get_checkout(playground_dir, PARTICIPANT, TEAM, "notes") is None
 
 
 def test_publish_and_log(playground_dir):
@@ -127,18 +156,137 @@ def test_selective_publish(playground_dir):
     assert "a.txt" not in paths
 
 
-def test_publish_refreshes_sibling_checkouts(playground_dir):
-    """After publishing from checkout_a, checkout_b reflects the new commit."""
+def test_schema_version_recreates_db(playground_dir):
+    """checkouts.db is recreated when the schema version does not match."""
+    import sqlite3
+    from shared_file_vault.vault import _CHECKOUTS_DB_VERSION, _checkouts_db_path
+
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "photos")
+    dest = pathlib.Path(playground_dir) / "checkout"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "photos", str(dest))
+
+    # Corrupt the schema version to simulate a stale DB
+    db_path = _checkouts_db_path(playground_dir, PARTICIPANT)
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("UPDATE schema_version SET version = ?", (_CHECKOUTS_DB_VERSION - 1,))
+    conn.commit()
+    conn.close()
+
+    # Next connection should recreate the DB; stale checkout row is gone
+    assert get_checkout(playground_dir, PARTICIPANT, TEAM, "photos") is None
+
+
+# ---------------------------------------------------------------------------
+# merge_niche guard tests
+# These verify that the clean-checkout guard fires on the user's checkout
+# (not on the transit work tree) before any transit operations run.
+# ---------------------------------------------------------------------------
+
+PARTICIPANT_B = "bb" * 16
+
+
+def _two_vault_setup(playground_dir):
+    """Set up alice (PARTICIPANT) and bob (PARTICIPANT_B) vaults sharing a niche."""
+    from cod_sync.protocol import LocalFolderRemote
+    from shared_file_vault.vault import (
+        fetch_niche,
+        push_niche,
+    )
+
+    playground = pathlib.Path(playground_dir)
+
+    # Alice creates niche, writes a file, and pushes
     _init(playground_dir)
     create_niche(playground_dir, PARTICIPANT, TEAM, "shared")
+    alice_co = playground / "checkout-alice"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "shared", str(alice_co))
+    (alice_co / "hello.txt").write_text("hello\n")
+    publish(playground_dir, PARTICIPANT, TEAM, "shared", str(alice_co), message="init")
 
-    dest_a = pathlib.Path(playground_dir) / "checkout-a"
-    dest_b = pathlib.Path(playground_dir) / "checkout-b"
-    add_checkout(playground_dir, PARTICIPANT, TEAM, "shared", str(dest_a))
-    add_checkout(playground_dir, PARTICIPANT, TEAM, "shared", str(dest_b))
+    cloud = playground / "cloud"
+    cloud.mkdir()
+    push_niche(playground_dir, PARTICIPANT, TEAM, "shared", LocalFolderRemote(str(cloud)))
 
-    (dest_a / "ideas.txt").write_text("Build something useful.\n")
-    publish(playground_dir, PARTICIPANT, TEAM, "shared", str(dest_a), message="add ideas")
+    # Bob gets an empty vault and fetches from alice
+    bob_root = playground / "vault-bob"
+    init_vault(str(bob_root), PARTICIPANT_B)
+    fetch_niche(str(bob_root), PARTICIPANT_B, TEAM, "shared", PARTICIPANT, LocalFolderRemote(str(cloud)))
 
-    assert (dest_b / "ideas.txt").exists()
-    assert (dest_b / "ideas.txt").read_text() == "Build something useful.\n"
+    bob_co = playground / "checkout-bob"
+    add_checkout(str(bob_root), PARTICIPANT_B, TEAM, "shared", str(bob_co))
+
+    return playground, bob_root, bob_co
+
+
+def test_merge_without_checkout_raises(playground_dir):
+    """merge_niche raises NoCheckoutError when no checkout is attached."""
+    from cod_sync.protocol import LocalFolderRemote
+    from shared_file_vault.vault import fetch_niche, push_niche
+
+    playground = pathlib.Path(playground_dir)
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "stuff")
+    alice_co = playground / "checkout-alice"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "stuff", str(alice_co))
+    (alice_co / "a.txt").write_text("a\n")
+    publish(playground_dir, PARTICIPANT, TEAM, "stuff", str(alice_co), message="init")
+
+    cloud = playground / "cloud"
+    cloud.mkdir()
+    push_niche(playground_dir, PARTICIPANT, TEAM, "stuff", LocalFolderRemote(str(cloud)))
+
+    bob_root = playground / "vault-bob"
+    init_vault(str(bob_root), PARTICIPANT_B)
+    fetch_niche(str(bob_root), PARTICIPANT_B, TEAM, "stuff", PARTICIPANT, LocalFolderRemote(str(cloud)))
+
+    # Bob has a fetched ref but no checkout — merge must fail clearly
+    with pytest.raises(NoCheckoutError):
+        merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "stuff", PARTICIPANT)
+
+
+def test_merge_dirty_tracked_file_raises(playground_dir):
+    """merge_niche raises DirtyCheckoutError when the user's checkout has a modified tracked file.
+
+    The guard must target the user's checkout, not the transit work tree
+    (transit resets itself to HEAD and would always appear clean).
+    """
+    playground, bob_root, bob_co = _two_vault_setup(playground_dir)
+
+    # Bob has a fetched ref parked (from _two_vault_setup).
+    # Dirty a tracked file in bob's checkout — this is what must block the merge.
+    (bob_co / "hello.txt").write_text("modified\n")
+
+    with pytest.raises(DirtyCheckoutError) as exc_info:
+        merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "shared", PARTICIPANT)
+
+    assert "hello.txt" in exc_info.value.paths
+
+
+def test_merge_dirty_untracked_file_raises(playground_dir):
+    """merge_niche raises DirtyCheckoutError for untracked files too.
+
+    Untracked files are treated as dirty to avoid path-collision cases and
+    to keep the UX rule simple: the folder must be completely clean.
+    """
+    playground, bob_root, bob_co = _two_vault_setup(playground_dir)
+
+    # Drop an untracked file into bob's checkout
+    (bob_co / "untracked.txt").write_text("surprise\n")
+
+    with pytest.raises(DirtyCheckoutError) as exc_info:
+        merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "shared", PARTICIPANT)
+
+    assert "untracked.txt" in exc_info.value.paths
+
+
+def test_merge_clean_checkout_succeeds(playground_dir):
+    """merge_niche succeeds and refreshes the checkout when it is clean."""
+    playground, bob_root, bob_co = _two_vault_setup(playground_dir)
+
+    # Bob's checkout is clean; merge should succeed and deliver alice's file
+    result_sha = merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "shared", PARTICIPANT)
+
+    assert result_sha is not None
+    assert (bob_co / "hello.txt").exists()
+    assert (bob_co / "hello.txt").read_text() == "hello\n"

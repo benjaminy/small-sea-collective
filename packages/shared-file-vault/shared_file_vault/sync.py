@@ -54,6 +54,34 @@ class PullConflictError(VaultSyncError):
         super().__init__(f"{scope} merge conflict: {path_text}")
 
 
+class DirtyCheckoutError(VaultSyncError):
+    """Merge rejected because the checkout has uncommitted changes.
+
+    Publish or manually discard all changes (including untracked files)
+    before integrating changes from teammates.
+    """
+
+    def __init__(self, paths: list[str]):
+        self.paths = paths
+        path_text = ", ".join(paths) if paths else "unknown files"
+        super().__init__(f"Checkout is not clean: {path_text}")
+
+
+class NoCheckoutError(VaultSyncError):
+    """Merge rejected because no checkout is attached to this niche.
+
+    Attach a checkout location before merging teammate changes.
+    """
+
+    def __init__(self, team_name: str, niche_name: str):
+        self.team_name = team_name
+        self.niche_name = niche_name
+        super().__init__(
+            f"Niche '{niche_name}' in team '{team_name}' has no local checkout. "
+            "Attach a checkout before merging."
+        )
+
+
 @dataclass
 class FetchResult:
     member_id: str
@@ -440,6 +468,10 @@ def merge_via_hub(
         )
     except vault.MergeConflictError as exc:
         raise PullConflictError("niche", exc.paths) from exc
+    except vault.DirtyCheckoutError as exc:
+        raise DirtyCheckoutError(exc.paths) from exc
+    except vault.NoCheckoutError as exc:
+        raise NoCheckoutError(exc.team_name, exc.niche_name) from exc
 
     return MergeResult(
         member_id=from_member_id,
