@@ -300,9 +300,10 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
     assert b"notes.txt" not in raw_latest_link
     assert b"v1\n" not in raw_latest_link
 
+    # Bob joins: fetch → attach checkout → merge (3-step join flow)
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
     sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
-    sync.pull_via_hub(
+    sync.fetch_via_hub(
         bob_vault_root,
         env["bob_hex"],
         "ProjectX",
@@ -311,6 +312,14 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
         _http_client=http,
     )
     vault.add_checkout(bob_vault_root, env["bob_hex"], "ProjectX", "docs", str(bob_checkout))
+    sync.merge_via_hub(
+        bob_vault_root,
+        env["bob_hex"],
+        "ProjectX",
+        "docs",
+        env["alice_member_id_hex"],
+        _http_client=http,
+    )
     assert (bob_checkout / "notes.txt").read_text() == "v1\n"
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
@@ -318,6 +327,7 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
     vault.publish(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout), message="update")
     sync.push_via_hub(alice_vault_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
+    # Subsequent pull: Bob already has a clean checkout, pull_via_hub works directly
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
     sync.pull_via_hub(
         bob_vault_root,
@@ -352,9 +362,10 @@ def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monke
     sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     sync.push_via_hub(alice_vault_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
+    # Bob joins: fetch → attach checkout → merge (3-step join flow)
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
     sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
-    sync.pull_via_hub(
+    sync.fetch_via_hub(
         bob_vault_root,
         env["bob_hex"],
         "ProjectX",
@@ -363,6 +374,14 @@ def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monke
         _http_client=http,
     )
     vault.add_checkout(bob_vault_root, env["bob_hex"], "ProjectX", "docs", str(bob_checkout))
+    sync.merge_via_hub(
+        bob_vault_root,
+        env["bob_hex"],
+        "ProjectX",
+        "docs",
+        env["alice_member_id_hex"],
+        _http_client=http,
+    )
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
     (alice_checkout / "shared.txt").write_text("alice change\n")

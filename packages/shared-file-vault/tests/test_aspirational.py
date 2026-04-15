@@ -1,9 +1,8 @@
 """
-Aspirational tests for the redesigned Shared File Vault.
+Scenario tests for the Shared File Vault.
 
-These tests are written against the spec (spec.md) and will fail until
-the implementation catches up. They cover the four tricky cases that
-diverge most from the current implementation:
+These cover the multi-participant workflows that exercise the most
+important end-to-end behavior:
 
   1. Registry propagation — Bob discovers a niche via the shared registry
      without Alice telling him its name out-of-band.
@@ -11,33 +10,12 @@ diverge most from the current implementation:
   2. Concurrent registry additions — Alice and Bob each create a niche
      independently; after cross-pulling registries both see all niches.
 
-  3. Multiple checkouts — one niche, two checkout paths on the same device;
-     both reflect committed state.
-
-  4. Full join flow — Bob starts with an empty vault, pulls the registry,
+  3. Full join flow — Bob starts with an empty vault, pulls the registry,
      discovers a niche, pulls the niche content, adds a checkout, reads
-     Alice's files.
+     Alice's files and contributes back.
 
-API assumed by these tests (post-spec):
-
-  init_vault(vault_root, participant_hex)
-  create_niche(vault_root, participant_hex, team_name, niche_name)
-  list_niches(vault_root, participant_hex, team_name) -> [{name, ...}]
-  add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path)
-  remove_checkout(vault_root, participant_hex, team_name, niche_name, checkout_path)
-  list_checkouts(vault_root, participant_hex, team_name, niche_name) -> [str]
-  publish(vault_root, participant_hex, team_name, niche_name, checkout_path, message=None)
-  status(vault_root, participant_hex, team_name, niche_name, checkout_path)
-  push_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir)
-  pull_niche(vault_root, participant_hex, team_name, niche_name, cloud_dir)
-  push_registry(vault_root, participant_hex, team_name, cloud_dir)
-  pull_registry(vault_root, participant_hex, team_name, cloud_dir)
-
-Key differences from current implementation:
-- checkout_path is explicit in publish/status (multiple checkouts allowed)
-- add_checkout replaces checkout_niche (no one-per-niche constraint)
-- push_registry / pull_registry sync the shared niche registry
-- list_niches reads from the shared registry, not a local-only DB
+Note: each niche has at most one checkout per device. Add/remove is the
+supported workflow for relocating a checkout.
 """
 
 import pathlib
@@ -48,9 +26,11 @@ from cod_sync.protocol import LocalFolderRemote
 from shared_file_vault.vault import (
     add_checkout,
     create_niche,
+    fetch_niche,
+    get_checkout,
     init_vault,
-    list_checkouts,
     list_niches,
+    merge_niche,
     publish,
     pull_niche,
     pull_registry,
@@ -125,11 +105,15 @@ def test_registry_propagation(playground_dir):
     niche_names = [n["name"] for n in niches]
     assert "docs" in niche_names, "Bob should discover the 'docs' niche via the registry"
 
-    # Bob pulls the niche content and adds his own checkout
-    pull_niche(str(bob_root), BOB, TEAM, "docs", LocalFolderRemote(str(alice_niche_cloud)))
+    # Bob joins the niche: fetch → attach checkout → merge (3-step join flow).
+    # Fetch parks Alice's content under a peer ref without advancing HEAD.
+    # add_checkout then creates an empty checkout. merge_niche integrates the
+    # parked ref and refreshes the checkout with Alice's files.
+    fetch_niche(str(bob_root), BOB, TEAM, "docs", ALICE, LocalFolderRemote(str(alice_niche_cloud)))
 
     bob_co = playground / "checkout-bob-docs"
     add_checkout(str(bob_root), BOB, TEAM, "docs", str(bob_co))
+    merge_niche(str(bob_root), BOB, TEAM, "docs", ALICE)
 
     assert exists(bob_co, "readme.txt"), "Bob's checkout should contain Alice's file"
     assert read(bob_co, "readme.txt") == "Hello from Alice.\n"
@@ -181,13 +165,15 @@ def test_concurrent_registry_additions(playground_dir):
     assert alice_niches == bob_niches, "Both participants should converge to the same registry"
 
 
-def test_multiple_checkouts_same_niche(playground_dir):
-    """One niche, two checkout paths on the same device.
+def test_one_checkout_per_niche(playground_dir):
+    """Each niche has at most one checkout on a device.
 
-    After publishing from checkout_a, both checkouts reflect the committed
-    state. The second checkout does not need to be the source of the commit
-    to see its result.
+    Adding a second checkout raises DuplicateCheckoutError. To relocate a
+    checkout, the user must remove the existing one first.
     """
+    import pytest
+    from shared_file_vault.vault import DuplicateCheckoutError
+
     playground = pathlib.Path(playground_dir)
 
     alice_root = setup_vault(playground, "alice", ALICE)
@@ -197,29 +183,22 @@ def test_multiple_checkouts_same_niche(playground_dir):
     checkout_b = playground / "checkout-b"
 
     add_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_a))
-    add_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_b))
+    assert get_checkout(str(alice_root), ALICE, TEAM, "notes") == str(checkout_a)
 
-    checkouts = list_checkouts(str(alice_root), ALICE, TEAM, "notes")
-    assert len(checkouts) == 2, "Both checkouts should be registered"
-    assert str(checkout_a) in checkouts
-    assert str(checkout_b) in checkouts
-
-    # Write and publish from checkout_a
     write(checkout_a, "ideas.txt", "Build something useful.\n")
     publish(str(alice_root), ALICE, TEAM, "notes", str(checkout_a), message="add ideas")
 
-    # checkout_b shares the same git repo — committed content is reachable
-    assert exists(checkout_b, "ideas.txt"), (
-        "checkout_b should reflect the committed file from checkout_a"
-    )
-    assert read(checkout_b, "ideas.txt") == "Build something useful.\n"
+    # Second attach is refused
+    with pytest.raises(DuplicateCheckoutError):
+        add_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_b))
 
-    # Remove one checkout — the other is unaffected
+    # Remove and re-attach at a new location
     remove_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_a))
-    remaining = list_checkouts(str(alice_root), ALICE, TEAM, "notes")
-    assert len(remaining) == 1
-    assert str(checkout_b) in remaining
-    assert exists(checkout_b, "ideas.txt"), "checkout_b files should survive checkout_a removal"
+    assert get_checkout(str(alice_root), ALICE, TEAM, "notes") is None
+
+    add_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_b))
+    assert get_checkout(str(alice_root), ALICE, TEAM, "notes") == str(checkout_b)
+    assert exists(checkout_b, "ideas.txt"), "new checkout should reflect committed content"
 
 
 def test_full_join_flow(playground_dir):
@@ -262,10 +241,12 @@ def test_full_join_flow(playground_dir):
     discovered = [n["name"] for n in list_niches(str(bob_root), BOB, TEAM)]
     assert "docs" in discovered
 
-    pull_niche(str(bob_root), BOB, TEAM, "docs", LocalFolderRemote(str(alice_niche_cloud)))
+    # 3-step join flow: fetch → attach checkout → merge
+    fetch_niche(str(bob_root), BOB, TEAM, "docs", ALICE, LocalFolderRemote(str(alice_niche_cloud)))
 
     bob_co = playground / "checkout-bob"
     add_checkout(str(bob_root), BOB, TEAM, "docs", str(bob_co))
+    merge_niche(str(bob_root), BOB, TEAM, "docs", ALICE)
 
     assert exists(bob_co, "guide.txt")
     assert read(bob_co, "guide.txt") == "Getting started.\n"

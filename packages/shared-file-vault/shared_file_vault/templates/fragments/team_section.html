@@ -5,7 +5,7 @@
     <thead>
       <tr>
         <th>Niche</th>
-        <th>Checkouts</th>
+        <th>Checkout</th>
         <th></th>
       </tr>
     </thead>
@@ -20,10 +20,10 @@
                   hx-push-url="false">{{ niche.name }}</button>
         </td>
         <td>
-          {% if niche.checkout_count == 0 %}
-            <span class="badge badge-none">no checkouts</span>
+          {% if niche.has_checkout %}
+            <span class="badge badge-clean">attached</span>
           {% else %}
-            <span class="badge badge-clean">{{ niche.checkout_count }} checkout{% if niche.checkout_count != 1 %}s{% endif %}</span>
+            <span class="badge badge-none">none</span>
           {% endif %}
         </td>
         <td style="text-align:right; white-space:nowrap">
