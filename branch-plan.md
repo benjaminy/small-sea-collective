@@ -7,6 +7,50 @@
 **Related packages:** `packages/cod-sync`, `packages/shared-file-vault`,
 `packages/small-sea-manager`, `packages/small-sea-hub`
 
+## In-Progress Notes (2026-04-15) — paused pending #87
+
+This branch is paused while issue #87 ("Vault: drop .git pointer file; pass
+explicit --git-dir and --work-tree") is worked on. The existing plan text below
+is background context, not the working plan.
+
+### Where planning left off
+
+After issues #80, #81, and #82 landed, we agreed this branch should be a
+**catalog + starter refactor**, not catalog-only. The target direction for
+cod-sync is a **pared-down generic DVCS API plus automation around specific
+sync workflows** — callers should name operations in DVCS terms, not git-CLI
+terms, and `gitCmd` becomes a private implementation detail.
+
+Sketch of the API shape we discussed:
+
+- A `Repo(git_dir, work_tree=None)` value type (work_tree=None = CACHED mode).
+- Generic DVCS methods: `init`, `head`, `has_commits`, `stage`, `commit`,
+  `status`, `log`, `resolve_ref`, `is_ancestor`, `checkout_branch`,
+  `conflict_paths`.
+- Existing sync workflows (`push_to_remote`, `fetch_from_remote`,
+  `clone_from_remote`, `merge_from_remote`, `add_remote`) stay as-is.
+
+Candidate starter refactor target: the manager's recurring
+"add core.db + diff --cached --quiet + commit" pattern (10+ sites), plus the
+one raw `subprocess.run(["git", ...])` helper `_git_head` in `manager.py`.
+Converting those proves the read-only introspection primitive and the
+commit-staged primitive without touching vault or the full provisioning
+surface.
+
+### Why paused on #87
+
+The `Repo(git_dir, work_tree=None)` shape is cleanest if vault adopts
+explicit `(--git-dir, --work-tree)` pairs and drops the `.git` pointer file
+(#87). Doing #87 first means the cod-sync API can take that shape as a
+given rather than having to accommodate the pointer-file mechanism.
+
+### When we resume
+
+- Refresh the catalog section below against post-#87 code.
+- Draft the cod-sync DVCS API sketch concretely (method signatures).
+- Pick the starter refactor site and convert it.
+- Measure the change in leakage count as validation.
+
 ## Why This Branch Exists
 
 `packages/cod-sync/cod_sync/protocol.py` defines a low-level helper,
