@@ -41,10 +41,18 @@ filesystem where the user actually reads and writes files. The git metadata
 lives inside the vault (via `--separate-git-dir`); the checkout directory
 contains only the user's files.
 
-Checkouts are **purely local state** — they are not shared with teammates
-and do not need to sync via NoteToSelf. There is no limit on how many
-checkouts a niche can have, and checkout paths may overlap in arbitrary
-ways (since the git dir lives elsewhere, there is no technical constraint).
+Checkouts are **purely local state** — they are not shared with teammates.
+**Each niche has at most one checkout on a given device.** A niche is either
+not materialized locally (no checkout), or it is materialized at exactly one
+path. To move a checkout to a different path, remove the existing one and
+attach a new one.
+
+**Merge operations require a clean checkout.** Before integrating changes
+from a teammate (`merge_niche`, `pull_niche` when a checkout is attached),
+the checkout must have no uncommitted tracked changes and no untracked files.
+The user must publish or discard all local changes first. Untracked files are
+treated the same as tracked changes — the rule is simply "the folder must be
+clean", with no tracked/untracked distinction exposed to the user.
 
 ### Vault
 
@@ -102,17 +110,22 @@ macOS, `%APPDATA%\SmallSea\FileVault` on Windows).
 ### checkouts.db schema
 
 ```sql
+CREATE TABLE schema_version (
+    version INTEGER NOT NULL
+);
 CREATE TABLE checkout (
     id            BLOB PRIMARY KEY,   -- UUIDv7
     team_name     TEXT NOT NULL,
     niche_name    TEXT NOT NULL,
     checkout_path TEXT NOT NULL,
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    UNIQUE (team_name, niche_name)    -- at most one checkout per niche
 );
 ```
 
-Multiple rows with the same `(team_name, niche_name)` are allowed —
-one per checkout of that niche.
+The `schema_version` table holds a single row. On version mismatch the
+entire database is recreated from scratch (it is device-local and
+reconstructable). No migration SQL is written.
 
 ---
 
@@ -129,9 +142,9 @@ one per checkout of that niche.
 
 | Operation | Description |
 |-----------|-------------|
-| `add_checkout` | Register a local directory as a checkout of a niche. Creates the git work tree link. |
-| `remove_checkout` | Unregister a checkout (does not delete the files). |
-| `list_checkouts` | List all checkouts for a niche. |
+| `add_checkout` | Attach the single checkout of a niche to a local directory. Raises `DuplicateCheckoutError` if one already exists. |
+| `remove_checkout` | Detach the checkout (does not delete files). |
+| `get_checkout` | Return the checkout path or `None`. |
 
 ### Day-to-day
 
@@ -145,8 +158,10 @@ one per checkout of that niche.
 
 | Operation | Description |
 |-----------|-------------|
-| `push_niche` | Push a niche (or the registry) to a cloud remote via Cod Sync. |
-| `pull_niche` | Fetch from a cloud remote and merge into the local niche repo. Updates all checkouts. |
+| `push_niche` | Push a niche to a cloud remote via Cod Sync. |
+| `pull_niche` | Fetch from a cloud remote and merge into the local niche repo. Requires a clean checkout if one is attached; refreshes it after merge. |
+| `fetch_niche` | Fetch from a peer and park the ref locally without merging. No checkout required. |
+| `merge_niche` | Merge a previously parked peer ref. Requires a clean attached checkout. |
 | `push_registry` | Push the niche registry to a cloud remote. |
 | `pull_registry` | Pull the niche registry from a cloud remote and merge. |
 

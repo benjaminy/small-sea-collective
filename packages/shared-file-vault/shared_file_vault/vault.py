@@ -5,9 +5,8 @@ See spec.md for the design. Key points:
 - One vault per device/participant. vault_root + participant_hex identify it.
 - Niches are shared file trees backed by git repos, synced via Cod Sync.
 - The niche registry (which niches exist per team) is itself a git repo
-  synced via its own Cod Sync chain. It stores one YAML file per niche.
-- Checkouts are purely local: multiple checkouts of the same niche are
-  allowed; they are tracked in a local checkouts.db.
+  synced via its own Cod Sync chain. It stores one JSON file per niche.
+- Each niche has at most one local checkout per device, tracked in checkouts.db.
 - Bundle temp files always live inside the niche/registry git dir so they
   never appear in user-visible checkout directories.
 """
@@ -33,6 +32,75 @@ class MergeConflictError(RuntimeError):
     def __init__(self, paths):
         self.paths = paths
         super().__init__("Merge conflict during pull")
+
+
+class DuplicateCheckoutError(ValueError):
+    """Raised when trying to add a checkout for a niche that already has one.
+
+    Remove the existing checkout before attaching a new location.
+    """
+
+    def __init__(self, team_name, niche_name, existing_path):
+        self.team_name = team_name
+        self.niche_name = niche_name
+        self.existing_path = existing_path
+        super().__init__(
+            f"Niche '{niche_name}' in team '{team_name}' already has a checkout at "
+            f"'{existing_path}'. Remove it before attaching a new one."
+        )
+
+
+class DirtyCheckoutError(RuntimeError):
+    """Raised when a merge operation finds uncommitted changes in the user's checkout.
+
+    Both tracked modifications and untracked files are treated as dirty.
+    The checkout must be fully clean before integrating changes from teammates.
+    This is intentional: non-git users should not need to understand the
+    tracked/untracked distinction, and hiding untracked files could mask
+    path-collision cases during merge.
+    """
+
+    def __init__(self, paths):
+        self.paths = paths
+        super().__init__(
+            "Checkout has uncommitted changes. Publish or discard them before merging.\n"
+            + "".join(f"  {p}\n" for p in paths)
+        )
+
+
+class NoCheckoutError(RuntimeError):
+    """Raised when a merge operation is attempted but no checkout is attached.
+
+    Fetch can still run without a checkout. Merge requires a checkout to
+    exist so that fetched changes can be written to a visible location.
+    """
+
+    def __init__(self, team_name, niche_name):
+        self.team_name = team_name
+        self.niche_name = niche_name
+        super().__init__(
+            f"Niche '{niche_name}' in team '{team_name}' has no local checkout. "
+            "Attach a checkout before merging."
+        )
+
+
+class StaleCheckoutError(RuntimeError):
+    """Raised when the registered checkout directory no longer exists on disk.
+
+    The checkout registration is still in the database, but the directory it
+    points to has been moved or deleted. Remove the stale registration and
+    re-attach at the correct path.
+    """
+
+    def __init__(self, team_name, niche_name, checkout_path):
+        self.team_name = team_name
+        self.niche_name = niche_name
+        self.checkout_path = checkout_path
+        super().__init__(
+            f"Registered checkout '{checkout_path}' for niche '{niche_name}' in team "
+            f"'{team_name}' no longer exists on disk. "
+            "Remove the stale registration and re-attach at the correct path."
+        )
 
 
 def uuid7():
@@ -102,13 +170,19 @@ def _bundle_tmp_dir(git_dir):
 # SQLite helpers
 # ---------------------------------------------------------------------------
 
+_CHECKOUTS_DB_VERSION = 1
+
 _CHECKOUTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS schema_version (
+    version INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS checkout (
     id            BLOB PRIMARY KEY,
     team_name     TEXT NOT NULL,
     niche_name    TEXT NOT NULL,
     checkout_path TEXT NOT NULL,
-    created_at    TEXT NOT NULL
+    created_at    TEXT NOT NULL,
+    UNIQUE (team_name, niche_name)
 );
 CREATE TABLE IF NOT EXISTS peer_sync (
     team_name        TEXT NOT NULL,
@@ -127,7 +201,29 @@ def _connect_checkouts(vault_root, participant_hex):
     db = _checkouts_db_path(vault_root, participant_hex)
     conn = sqlite3.connect(str(db))
     conn.row_factory = sqlite3.Row
+
+    # Check schema version; recreate the DB if stale. checkouts.db is
+    # device-local and reconstructable, so recreation is safe.
+    try:
+        row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+        version = row[0] if row else None
+    except sqlite3.OperationalError:
+        version = None
+
+    if version != _CHECKOUTS_DB_VERSION:
+        conn.close()
+        db.unlink(missing_ok=True)
+        conn = sqlite3.connect(str(db))
+        conn.row_factory = sqlite3.Row
+
     conn.executescript(_CHECKOUTS_SCHEMA)
+
+    if not conn.execute("SELECT 1 FROM schema_version LIMIT 1").fetchone():
+        conn.execute(
+            "INSERT INTO schema_version (version) VALUES (?)", (_CHECKOUTS_DB_VERSION,)
+        )
+        conn.commit()
+
     return conn
 
 
@@ -260,6 +356,35 @@ def _refresh_work_tree(git_dir, dest):
         "--git-dir", str(git_dir), "--work-tree", str(dest),
         "checkout", "HEAD", "--", ".",
     ])
+
+
+def _is_checkout_clean(checkout_path, git_dir):
+    """Return True if the checkout has no tracked or untracked changes.
+
+    Returns False — rather than raising — if the checkout directory does not
+    exist on disk or if git exits non-zero for any reason. This prevents a
+    missing or unreadable checkout from being mistaken for a clean one.
+
+    Uses 'git status --porcelain' which reports both tracked modifications
+    and untracked files. Untracked files block merge operations just as
+    tracked changes do — this is intentional: non-git users should not need
+    to understand the tracked/untracked distinction, and hiding untracked
+    files from the check could mask path-collision cases during merge.
+
+    Always called with the user's checkout_path, never with the transit
+    work tree (transit always resets itself to HEAD before use, so checking
+    it would silently pass even when the user's checkout is dirty).
+    """
+    if not pathlib.Path(checkout_path).exists():
+        return False
+    result = gitCmd(
+        [
+            "--git-dir", str(git_dir), "--work-tree", str(checkout_path),
+            "status", "--porcelain",
+        ],
+        raise_on_error=False,
+    )
+    return result.returncode == 0 and result.stdout.strip() == ""
 
 
 def _conflict_paths(git_dir, work_tree):
@@ -409,8 +534,7 @@ def init_vault(vault_root, participant_hex):
     """Create the vault directory and local checkout registry database."""
     pdir = _participant_dir(vault_root, participant_hex)
     pdir.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(_checkouts_db_path(vault_root, participant_hex)))
-    conn.executescript(_CHECKOUTS_SCHEMA)
+    conn = _connect_checkouts(vault_root, participant_hex)
     conn.close()
 
 
@@ -478,14 +602,21 @@ def list_niches(vault_root, participant_hex, team_name):
 
 
 def add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path):
-    """Register a local directory as a checkout of a niche.
+    """Register a local directory as the checkout of a niche.
 
-    Multiple checkouts of the same niche are allowed.
+    Each niche may have at most one checkout on a device. Raises
+    DuplicateCheckoutError if one is already registered. Remove the existing
+    checkout before attaching a new location.
+
     If the niche already has commits, dest_path is populated immediately.
     """
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     if not git_dir.exists():
         raise ValueError(f"Niche '{niche_name}' does not exist in team '{team_name}'")
+
+    existing = get_checkout(vault_root, participant_hex, team_name, niche_name)
+    if existing is not None:
+        raise DuplicateCheckoutError(team_name, niche_name, existing)
 
     _make_work_tree(git_dir, dest_path)
 
@@ -516,24 +647,26 @@ def remove_checkout(vault_root, participant_hex, team_name, niche_name, checkout
     conn.close()
 
 
-def list_checkouts(vault_root, participant_hex, team_name, niche_name):
-    """Return list of checkout paths registered for a niche."""
+def get_checkout(vault_root, participant_hex, team_name, niche_name):
+    """Return the single registered checkout path for a niche, or None."""
     conn = _connect_checkouts(vault_root, participant_hex)
-    rows = conn.execute(
+    row = conn.execute(
         "SELECT checkout_path FROM checkout WHERE team_name = ? AND niche_name = ?",
         (team_name, niche_name),
-    ).fetchall()
+    ).fetchone()
     conn.close()
-    return [row["checkout_path"] for row in rows]
+    return row["checkout_path"] if row else None
+
+
+def list_checkouts(vault_root, participant_hex, team_name, niche_name):
+    """Return list of checkout paths for a niche (at most one element)."""
+    checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
+    return [checkout] if checkout is not None else []
 
 
 def publish(vault_root, participant_hex, team_name, niche_name, checkout_path,
             files=None, message=None):
-    """Stage changes in a checkout and commit. Returns commit hash.
-
-    After committing, refreshes all other registered checkouts of this
-    niche so they reflect the new HEAD.
-    """
+    """Stage changes in a checkout and commit. Returns commit hash."""
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     checkout = pathlib.Path(checkout_path).resolve()
     git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
@@ -547,14 +680,7 @@ def publish(vault_root, participant_hex, team_name, niche_name, checkout_path,
     gitCmd(git_prefix + ["commit", "-m", message or "Published changes"])
 
     result = gitCmd(git_prefix + ["rev-parse", "HEAD"])
-    head = result.stdout.strip()
-
-    # Refresh sibling checkouts
-    for other in list_checkouts(vault_root, participant_hex, team_name, niche_name):
-        if pathlib.Path(other).resolve() != checkout:
-            _refresh_work_tree(git_dir, other)
-
-    return head
+    return result.stdout.strip()
 
 
 def status(vault_root, participant_hex, team_name, niche_name, checkout_path):
@@ -658,12 +784,35 @@ def list_teams(vault_root, participant_hex):
     ]
 
 
+def _require_clean_checkout(vault_root, participant_hex, team_name, niche_name):
+    """Verify a checkout is attached, exists on disk, and is clean.
+
+    Returns the checkout path. Raises NoCheckoutError, ValueError (missing
+    path), or DirtyCheckoutError as appropriate. Called by pull_niche and
+    merge_niche before any transit operations so that transit's always-clean
+    state is never mistakenly used as the check target.
+    """
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
+    if checkout is None:
+        raise NoCheckoutError(team_name, niche_name)
+    if not pathlib.Path(checkout).exists():
+        raise StaleCheckoutError(team_name, niche_name, checkout)
+    if not _is_checkout_clean(checkout, git_dir):
+        dirty = [e["path"] for e in status(vault_root, participant_hex, team_name, niche_name, checkout)]
+        raise DirtyCheckoutError(dirty)
+    return checkout
+
+
 def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
     """Pull a niche from cloud storage and merge.
 
-    Creates the niche git repo if this is the first time pulling it
-    (e.g. a new team member joining). Updates all registered checkouts
-    after a successful merge.
+    Requires a checkout to be attached and clean. This keeps pull semantics
+    consistent with merge: visible files are only updated through an explicit
+    action, never automatically on a subsequent add_checkout call.
+
+    For the initial join flow (no checkout yet), use fetch_niche to park the
+    remote content, then add_checkout, then merge_niche.
     """
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     if not git_dir.exists():
@@ -674,15 +823,18 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
     if not transit.exists():
         _make_work_tree(git_dir, transit)
 
-    _cod_pull(git_dir, transit, remote)
+    checkout = _require_clean_checkout(vault_root, participant_hex, team_name, niche_name)
 
-    # Refresh all user checkouts
-    for checkout in list_checkouts(vault_root, participant_hex, team_name, niche_name):
-        _refresh_work_tree(git_dir, checkout)
+    _cod_pull(git_dir, transit, remote)
+    _refresh_work_tree(git_dir, checkout)
 
 
 def fetch_niche(vault_root, participant_hex, team_name, niche_name, member_id, remote):
-    """Fetch a niche from a peer and pin it to a durable local ref."""
+    """Fetch a niche from a peer and pin it to a durable local ref.
+
+    Fetch does not modify the user's checkout, so no clean-checkout guard
+    is needed here. The guard fires at merge time.
+    """
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     if not git_dir.exists():
         git_dir.mkdir(parents=True)
@@ -702,9 +854,18 @@ def fetch_niche(vault_root, participant_hex, team_name, niche_name, member_id, r
 
 
 def merge_niche(vault_root, participant_hex, team_name, niche_name, member_id):
-    """Merge a previously parked niche ref from a peer."""
+    """Merge a previously parked niche ref from a peer.
+
+    Requires a checkout to be attached (raises NoCheckoutError if none).
+    Requires the checkout to be clean (raises DirtyCheckoutError if not).
+    The clean-checkout guard fires here, before any transit operations,
+    because transit always resets to HEAD and would silently pass the check.
+    """
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
+
+    checkout = _require_clean_checkout(vault_root, participant_hex, team_name, niche_name)
+
     ref_name = _peer_ref_name(member_id)
     parked_sha = _resolve_ref(git_dir, transit, ref_name)
     if parked_sha is None:
@@ -719,8 +880,7 @@ def merge_niche(vault_root, participant_hex, team_name, niche_name, member_id):
         vault_root, participant_hex, team_name, "niche", niche_name, member_id, parked_sha
     )
 
-    for checkout in list_checkouts(vault_root, participant_hex, team_name, niche_name):
-        _refresh_work_tree(git_dir, checkout)
+    _refresh_work_tree(git_dir, checkout)
     return parked_sha
 
 

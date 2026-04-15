@@ -54,6 +54,50 @@ class PullConflictError(VaultSyncError):
         super().__init__(f"{scope} merge conflict: {path_text}")
 
 
+class DirtyCheckoutError(VaultSyncError):
+    """Merge rejected because the checkout has uncommitted changes.
+
+    Publish or manually discard all changes (including untracked files)
+    before integrating changes from teammates.
+    """
+
+    def __init__(self, paths: list[str]):
+        self.paths = paths
+        path_text = ", ".join(paths) if paths else "unknown files"
+        super().__init__(f"Checkout is not clean: {path_text}")
+
+
+class NoCheckoutError(VaultSyncError):
+    """Merge rejected because no checkout is attached to this niche.
+
+    Attach a checkout location before merging teammate changes.
+    """
+
+    def __init__(self, team_name: str, niche_name: str):
+        self.team_name = team_name
+        self.niche_name = niche_name
+        super().__init__(
+            f"Niche '{niche_name}' in team '{team_name}' has no local checkout. "
+            "Attach a checkout before merging."
+        )
+
+
+class StaleCheckoutError(VaultSyncError):
+    """Merge rejected because the registered checkout directory no longer exists.
+
+    Remove the stale registration and re-attach at the correct path.
+    """
+
+    def __init__(self, team_name: str, niche_name: str, checkout_path: str):
+        self.team_name = team_name
+        self.niche_name = niche_name
+        self.checkout_path = checkout_path
+        super().__init__(
+            f"Registered checkout '{checkout_path}' for niche '{niche_name}' no longer "
+            "exists on disk. Remove the stale registration and re-attach."
+        )
+
+
 @dataclass
 class FetchResult:
     member_id: str
@@ -418,8 +462,26 @@ def merge_via_hub(
     hub_port: int = SmallSeaClient.DEFAULT_PORT,
     _http_client=None,
 ) -> MergeResult:
-    """Merge already-fetched peer refs for a registry and niche."""
+    """Merge already-fetched peer refs for a registry and niche.
+
+    Preflights the niche checkout before touching the registry, so a
+    dirty-checkout or no-checkout condition never leaves the registry
+    merged while the niche merge is still pending.
+    """
     _session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+
+    # Preflight: verify niche checkout exists and is clean before merging
+    # anything. Without this, a failed niche merge would leave the registry
+    # already integrated — a partially-merged state the user cannot easily undo.
+    checkout = vault.get_checkout(vault_root, participant_hex, team_name, niche_name)
+    if checkout is None:
+        raise NoCheckoutError(team_name, niche_name)
+    if not pathlib.Path(checkout).exists():
+        raise StaleCheckoutError(team_name, niche_name, checkout)
+    dirty_entries = vault.status(vault_root, participant_hex, team_name, niche_name, checkout)
+    if dirty_entries:
+        raise DirtyCheckoutError([e["path"] for e in dirty_entries])
+
     try:
         registry_sha = vault.merge_registry(
             vault_root,
@@ -440,6 +502,12 @@ def merge_via_hub(
         )
     except vault.MergeConflictError as exc:
         raise PullConflictError("niche", exc.paths) from exc
+    except vault.DirtyCheckoutError as exc:
+        raise DirtyCheckoutError(exc.paths) from exc
+    except vault.NoCheckoutError as exc:
+        raise NoCheckoutError(exc.team_name, exc.niche_name) from exc
+    except vault.StaleCheckoutError as exc:
+        raise StaleCheckoutError(exc.team_name, exc.niche_name, exc.checkout_path) from exc
 
     return MergeResult(
         member_id=from_member_id,

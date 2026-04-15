@@ -4,7 +4,7 @@
 </div>
 
 <div class="detail-section">
-  <h3>Checkouts</h3>
+  <h3>Checkout</h3>
   {% include "fragments/checkouts.html" %}
 </div>
 
@@ -31,6 +31,15 @@
       {% for peer in peers %}
       <div style="border:1px solid #d6d3d1; border-radius:0.75rem; padding:0.75rem; min-width:15rem">
         <div style="font-weight:600; margin-bottom:0.5rem">{{ peer.label }}</div>
+        {% if peer.update_status.ready_to_merge and peer.update_status.parked_sha %}
+        <p class="notice notice-ok" style="margin-bottom:0.5rem; font-size:0.88rem">
+          Changes from this teammate are available ({{ peer.update_status.parked_sha[:8] }}).
+        </p>
+        {% elif peer.update_status.already_merged and peer.update_status.parked_sha %}
+        <p style="color:#57534e; font-size:0.88rem; margin-bottom:0.5rem">
+          Latest fetched ({{ peer.update_status.parked_sha[:8] }}) is already merged.
+        </p>
+        {% endif %}
         <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
           <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/fetch"
                 hx-target="#niche-detail"
@@ -51,15 +60,6 @@
           </form>
           {% endif %}
         </div>
-        {% if peer.update_status.ready_to_merge and peer.update_status.parked_sha %}
-        <p style="color:#57534e; font-size:0.88rem; margin:0.5rem 0 0">
-          Fetched {{ peer.update_status.parked_sha[:8] }} and ready to merge.
-        </p>
-        {% elif peer.update_status.already_merged and peer.update_status.parked_sha %}
-        <p style="color:#57534e; font-size:0.88rem; margin:0.5rem 0 0">
-          Latest fetched {{ peer.update_status.parked_sha[:8] }} is already merged.
-        </p>
-        {% endif %}
       </div>
       {% endfor %}
     </div>
@@ -74,20 +74,17 @@
   </p>
 </div>
 
-{% if status_by_checkout %}
-  {% for item in status_by_checkout %}
-  <div class="detail-section">
-    <h3>Status — <span class="checkout-path">{{ item.path }}</span></h3>
-    {# set variables for status_panel.html include #}
-    {% set checkout_path = item.path %}
-    {% set entries = item.entries %}
-    {% set commits = [] %}
-    {% include "fragments/status_panel.html" %}
-  </div>
-  {% endfor %}
+{% if checkout %}
+<div class="detail-section">
+  <h3>Status — <span class="checkout-path">{{ checkout }}</span></h3>
+  {% set checkout_path = checkout %}
+  {% set entries = checkout_status %}
+  {% set commits = [] %}
+  {% include "fragments/status_panel.html" %}
+</div>
 {% else %}
 <div class="detail-section">
-  <p style="color:#78716c; font-size:0.88rem">Add a checkout above to see status and publish changes.</p>
+  <p style="color:#78716c; font-size:0.88rem">Attach a checkout above to see status and publish changes.</p>
 </div>
 {% endif %}
 
