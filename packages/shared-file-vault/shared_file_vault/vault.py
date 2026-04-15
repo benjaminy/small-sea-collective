@@ -84,6 +84,25 @@ class NoCheckoutError(RuntimeError):
         )
 
 
+class StaleCheckoutError(RuntimeError):
+    """Raised when the registered checkout directory no longer exists on disk.
+
+    The checkout registration is still in the database, but the directory it
+    points to has been moved or deleted. Remove the stale registration and
+    re-attach at the correct path.
+    """
+
+    def __init__(self, team_name, niche_name, checkout_path):
+        self.team_name = team_name
+        self.niche_name = niche_name
+        self.checkout_path = checkout_path
+        super().__init__(
+            f"Registered checkout '{checkout_path}' for niche '{niche_name}' in team "
+            f"'{team_name}' no longer exists on disk. "
+            "Remove the stale registration and re-attach at the correct path."
+        )
+
+
 def uuid7():
     """Generate a UUIDv7 (time-ordered, random) as 16 bytes."""
     timestamp_ms = int(time.time() * 1000)
@@ -778,10 +797,7 @@ def _require_clean_checkout(vault_root, participant_hex, team_name, niche_name):
     if checkout is None:
         raise NoCheckoutError(team_name, niche_name)
     if not pathlib.Path(checkout).exists():
-        raise ValueError(
-            f"Registered checkout '{checkout}' no longer exists on disk. "
-            "Remove the registration and re-attach at the correct path."
-        )
+        raise StaleCheckoutError(team_name, niche_name, checkout)
     if not _is_checkout_clean(checkout, git_dir):
         dirty = [e["path"] for e in status(vault_root, participant_hex, team_name, niche_name, checkout)]
         raise DirtyCheckoutError(dirty)

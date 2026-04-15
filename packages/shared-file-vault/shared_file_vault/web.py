@@ -416,6 +416,12 @@ def create_app(
                 f"Merge blocked: checkout has uncommitted changes ({path_list}). "
                 "Publish or discard them before merging."
             )
+        except sync.StaleCheckoutError as exc:
+            notice = None
+            error = (
+                f"Merge blocked: registered checkout '{exc.checkout_path}' no longer exists. "
+                "Remove the stale registration and re-attach at the correct path."
+            )
         except sync.NoCheckoutError:
             notice = None
             error = "Merge blocked: no checkout is attached. Attach a checkout location first."

@@ -82,6 +82,22 @@ class NoCheckoutError(VaultSyncError):
         )
 
 
+class StaleCheckoutError(VaultSyncError):
+    """Merge rejected because the registered checkout directory no longer exists.
+
+    Remove the stale registration and re-attach at the correct path.
+    """
+
+    def __init__(self, team_name: str, niche_name: str, checkout_path: str):
+        self.team_name = team_name
+        self.niche_name = niche_name
+        self.checkout_path = checkout_path
+        super().__init__(
+            f"Registered checkout '{checkout_path}' for niche '{niche_name}' no longer "
+            "exists on disk. Remove the stale registration and re-attach."
+        )
+
+
 @dataclass
 class FetchResult:
     member_id: str
@@ -460,6 +476,8 @@ def merge_via_hub(
     checkout = vault.get_checkout(vault_root, participant_hex, team_name, niche_name)
     if checkout is None:
         raise NoCheckoutError(team_name, niche_name)
+    if not pathlib.Path(checkout).exists():
+        raise StaleCheckoutError(team_name, niche_name, checkout)
     dirty_entries = vault.status(vault_root, participant_hex, team_name, niche_name, checkout)
     if dirty_entries:
         raise DirtyCheckoutError([e["path"] for e in dirty_entries])
@@ -488,6 +506,8 @@ def merge_via_hub(
         raise DirtyCheckoutError(exc.paths) from exc
     except vault.NoCheckoutError as exc:
         raise NoCheckoutError(exc.team_name, exc.niche_name) from exc
+    except vault.StaleCheckoutError as exc:
+        raise StaleCheckoutError(exc.team_name, exc.niche_name, exc.checkout_path) from exc
 
     return MergeResult(
         member_id=from_member_id,

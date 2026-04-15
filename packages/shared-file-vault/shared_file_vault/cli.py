@@ -196,6 +196,8 @@ def merge_cmd(team_name, niche_name, from_member, vault_root, participant, hub_p
             for path in exc.paths:
                 click.echo(f"  {path}", err=True)
         raise SystemExit(1)
+    except sync.StaleCheckoutError as exc:
+        _die(str(exc))
     except sync.NoCheckoutError as exc:
         _die(str(exc))
     except sync.PullConflictError as exc:
@@ -242,6 +244,8 @@ def pull_cmd(team_name, niche_name, from_member, vault_root, participant, hub_po
             for path in exc.paths:
                 click.echo(f"  {path}", err=True)
         raise SystemExit(1)
+    except sync.StaleCheckoutError as exc:
+        _die(str(exc))
     except sync.NoCheckoutError as exc:
         _die(str(exc))
     except sync.PullConflictError as exc:
