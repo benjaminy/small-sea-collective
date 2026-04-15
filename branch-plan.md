@@ -165,7 +165,15 @@ conflict, and then have its checkout unregistered via `remove_checkout`.  The
 registration is removed from the DB but MERGE_HEAD persists in `git_dir`.
 Returning `[]` in that state would silently hide live conflict state.
 
-Update the docstring accordingly.
+**This is an intentional public API behavior change**: `niche_conflict_paths`
+previously never raised (it only returned a list); it can now raise
+`NoCheckoutError` or `StaleCheckoutError` when MERGE_HEAD is present but no
+checkout is available.  Before landing this branch, audit every caller of
+`niche_conflict_paths` in `sync.py`, `web.py`, `cli.py`, and tests to confirm
+they either (a) never reach that code path in practice, or (b) already handle
+or explicitly propagate those exceptions.
+
+Update the docstring to document the new raising conditions.
 
 **`peer_update_status`** — niche CACHED state:
 - Drop the `work_tree = _niche_transit_dir(...)` line.
@@ -223,7 +231,8 @@ These are in addition to the existing suite, not a replacement.  Add them to
      HEAD at A) — while still CHECKED_OUT.  Bob then calls `remove_checkout` to
      unregister the checkout (niche goes to CACHED with HEAD at A).  Bob fetches
      B.  Now `peer_update_status` is called with the CACHED niche: `_has_commits`
-     is True, so `_is_ancestor(git_dir, sha_B, "HEAD_A")` is exercised.  Assert
+     is True, so `_is_ancestor(git_dir, sha_B, "HEAD")` is exercised (HEAD
+     points at A at this point).  Assert
      `already_merged` is False and `ready_to_merge` is True.  Then have Bob
      re-register a checkout and merge B; remove checkout again; assert
      `already_merged` is True.
