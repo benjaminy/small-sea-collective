@@ -4,9 +4,10 @@ from cod_sync.protocol import LocalFolderRemote
 from shared_file_vault.vault import (
     add_checkout,
     create_niche,
+    fetch_niche,
     init_vault,
+    merge_niche,
     publish,
-    pull_niche,
     push_niche,
 )
 
@@ -32,13 +33,14 @@ def test_sync_niche_between_devices(playground_dir):
 
     push_niche(root_a, PARTICIPANT, TEAM, "photos", LocalFolderRemote(str(cloud_dir)))
 
-    # --- Device B: pull from cloud (no prior create_niche needed) ---
+    # --- Device B: join flow: fetch → attach checkout → merge ---
     root_b = str(playground / "device-b")
     init_vault(root_b, PARTICIPANT)
     checkout_b = str(playground / "checkout-b" / "photos")
 
-    pull_niche(root_b, PARTICIPANT, TEAM, "photos", LocalFolderRemote(str(cloud_dir)))
+    fetch_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, LocalFolderRemote(str(cloud_dir)))
     add_checkout(root_b, PARTICIPANT, TEAM, "photos", checkout_b)
+    merge_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT)
 
     # --- Assert both checkouts have the same files ---
     sunset_b = pathlib.Path(checkout_b) / "sunset.jpg"

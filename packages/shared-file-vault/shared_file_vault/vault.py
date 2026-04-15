@@ -342,6 +342,10 @@ def _refresh_work_tree(git_dir, dest):
 def _is_checkout_clean(checkout_path, git_dir):
     """Return True if the checkout has no tracked or untracked changes.
 
+    Returns False — rather than raising — if the checkout directory does not
+    exist on disk or if git exits non-zero for any reason. This prevents a
+    missing or unreadable checkout from being mistaken for a clean one.
+
     Uses 'git status --porcelain' which reports both tracked modifications
     and untracked files. Untracked files block merge operations just as
     tracked changes do — this is intentional: non-git users should not need
@@ -352,6 +356,8 @@ def _is_checkout_clean(checkout_path, git_dir):
     work tree (transit always resets itself to HEAD before use, so checking
     it would silently pass even when the user's checkout is dirty).
     """
+    if not pathlib.Path(checkout_path).exists():
+        return False
     result = gitCmd(
         [
             "--git-dir", str(git_dir), "--work-tree", str(checkout_path),
@@ -359,7 +365,7 @@ def _is_checkout_clean(checkout_path, git_dir):
         ],
         raise_on_error=False,
     )
-    return result.stdout.strip() == ""
+    return result.returncode == 0 and result.stdout.strip() == ""
 
 
 def _conflict_paths(git_dir, work_tree):
@@ -759,14 +765,38 @@ def list_teams(vault_root, participant_hex):
     ]
 
 
+def _require_clean_checkout(vault_root, participant_hex, team_name, niche_name):
+    """Verify a checkout is attached, exists on disk, and is clean.
+
+    Returns the checkout path. Raises NoCheckoutError, ValueError (missing
+    path), or DirtyCheckoutError as appropriate. Called by pull_niche and
+    merge_niche before any transit operations so that transit's always-clean
+    state is never mistakenly used as the check target.
+    """
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
+    if checkout is None:
+        raise NoCheckoutError(team_name, niche_name)
+    if not pathlib.Path(checkout).exists():
+        raise ValueError(
+            f"Registered checkout '{checkout}' no longer exists on disk. "
+            "Remove the registration and re-attach at the correct path."
+        )
+    if not _is_checkout_clean(checkout, git_dir):
+        dirty = [e["path"] for e in status(vault_root, participant_hex, team_name, niche_name, checkout)]
+        raise DirtyCheckoutError(dirty)
+    return checkout
+
+
 def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
     """Pull a niche from cloud storage and merge.
 
-    Creates the niche git repo if this is the first time pulling it
-    (e.g. a new team member joining). If a checkout is attached, requires
-    it to be clean before proceeding and refreshes it after a successful merge.
-    If no checkout is attached, performs the merge in the transit work tree
-    only; no visible files are written.
+    Requires a checkout to be attached and clean. This keeps pull semantics
+    consistent with merge: visible files are only updated through an explicit
+    action, never automatically on a subsequent add_checkout call.
+
+    For the initial join flow (no checkout yet), use fetch_niche to park the
+    remote content, then add_checkout, then merge_niche.
     """
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     if not git_dir.exists():
@@ -777,18 +807,10 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
     if not transit.exists():
         _make_work_tree(git_dir, transit)
 
-    # Guard: if a checkout is attached, it must be clean before we merge.
-    # The guard targets the user's checkout, not transit (transit resets
-    # itself to HEAD before every merge and would always appear clean).
-    checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
-    if checkout is not None and not _is_checkout_clean(checkout, git_dir):
-        dirty = [e["path"] for e in status(vault_root, participant_hex, team_name, niche_name, checkout)]
-        raise DirtyCheckoutError(dirty)
+    checkout = _require_clean_checkout(vault_root, participant_hex, team_name, niche_name)
 
     _cod_pull(git_dir, transit, remote)
-
-    if checkout is not None:
-        _refresh_work_tree(git_dir, checkout)
+    _refresh_work_tree(git_dir, checkout)
 
 
 def fetch_niche(vault_root, participant_hex, team_name, niche_name, member_id, remote):
@@ -826,13 +848,7 @@ def merge_niche(vault_root, participant_hex, team_name, niche_name, member_id):
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
 
-    # Guard: require a checkout and verify it is clean before touching transit.
-    checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
-    if checkout is None:
-        raise NoCheckoutError(team_name, niche_name)
-    if not _is_checkout_clean(checkout, git_dir):
-        dirty = [e["path"] for e in status(vault_root, participant_hex, team_name, niche_name, checkout)]
-        raise DirtyCheckoutError(dirty)
+    checkout = _require_clean_checkout(vault_root, participant_hex, team_name, niche_name)
 
     ref_name = _peer_ref_name(member_id)
     parked_sha = _resolve_ref(git_dir, transit, ref_name)

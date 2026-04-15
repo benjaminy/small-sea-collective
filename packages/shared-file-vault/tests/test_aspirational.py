@@ -26,9 +26,11 @@ from cod_sync.protocol import LocalFolderRemote
 from shared_file_vault.vault import (
     add_checkout,
     create_niche,
+    fetch_niche,
     get_checkout,
     init_vault,
     list_niches,
+    merge_niche,
     publish,
     pull_niche,
     pull_registry,
@@ -103,11 +105,15 @@ def test_registry_propagation(playground_dir):
     niche_names = [n["name"] for n in niches]
     assert "docs" in niche_names, "Bob should discover the 'docs' niche via the registry"
 
-    # Bob pulls the niche content and adds his own checkout
-    pull_niche(str(bob_root), BOB, TEAM, "docs", LocalFolderRemote(str(alice_niche_cloud)))
+    # Bob joins the niche: fetch → attach checkout → merge (3-step join flow).
+    # Fetch parks Alice's content under a peer ref without advancing HEAD.
+    # add_checkout then creates an empty checkout. merge_niche integrates the
+    # parked ref and refreshes the checkout with Alice's files.
+    fetch_niche(str(bob_root), BOB, TEAM, "docs", ALICE, LocalFolderRemote(str(alice_niche_cloud)))
 
     bob_co = playground / "checkout-bob-docs"
     add_checkout(str(bob_root), BOB, TEAM, "docs", str(bob_co))
+    merge_niche(str(bob_root), BOB, TEAM, "docs", ALICE)
 
     assert exists(bob_co, "readme.txt"), "Bob's checkout should contain Alice's file"
     assert read(bob_co, "readme.txt") == "Hello from Alice.\n"
@@ -235,10 +241,12 @@ def test_full_join_flow(playground_dir):
     discovered = [n["name"] for n in list_niches(str(bob_root), BOB, TEAM)]
     assert "docs" in discovered
 
-    pull_niche(str(bob_root), BOB, TEAM, "docs", LocalFolderRemote(str(alice_niche_cloud)))
+    # 3-step join flow: fetch → attach checkout → merge
+    fetch_niche(str(bob_root), BOB, TEAM, "docs", ALICE, LocalFolderRemote(str(alice_niche_cloud)))
 
     bob_co = playground / "checkout-bob"
     add_checkout(str(bob_root), BOB, TEAM, "docs", str(bob_co))
+    merge_niche(str(bob_root), BOB, TEAM, "docs", ALICE)
 
     assert exists(bob_co, "guide.txt")
     assert read(bob_co, "guide.txt") == "Getting started.\n"
