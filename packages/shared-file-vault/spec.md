@@ -54,6 +54,36 @@ The user must publish or discard all local changes first. Untracked files are
 treated the same as tracked changes — the rule is simply "the folder must be
 clean", with no tracked/untracked distinction exposed to the user.
 
+### Niche residency
+
+A niche can be in one of three **residency modes** on a given device:
+
+| Mode | Condition |
+|------|-----------|
+| **Remote only** | No niche git dir exists locally. The niche is known via the registry but has never been fetched. |
+| **Cached** | The niche git dir exists locally — possibly with fetched peer refs or committed history — but no checkout is registered. |
+| **Checked out** | The niche git dir exists locally and a checkout is registered in `checkouts.db`. |
+
+Residency is about local materialization, not sync freshness. A niche can be
+cached or checked out and still be behind a teammate.
+
+Stale checkout registrations (registered path no longer exists on disk) are
+reported as `StaleCheckoutError` and are not a distinct residency mode.
+
+**State transitions:**
+
+- *Remote only → Cached*: `create_niche`, `fetch_niche`, `pull_niche` (which
+  creates the git dir before checking for a checkout).
+- *Cached → Checked out*: `add_checkout`.
+- *Checked out → Cached*: `remove_checkout`.
+- *Checked out → Checked out*: `publish`, `push_niche`, `merge_niche`,
+  `pull_niche`.
+- *Cached → Cached*: repeated `fetch_niche` or other sync activity that
+  updates refs without attaching a checkout.
+
+No automatic transition back to *Remote only* exists; a local deletion flow
+has not been implemented.
+
 ### Vault
 
 The vault is the local storage root for all Shared File Vault data on a

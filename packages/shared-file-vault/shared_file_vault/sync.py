@@ -70,15 +70,23 @@ class DirtyCheckoutError(VaultSyncError):
 class NoCheckoutError(VaultSyncError):
     """Merge rejected because no checkout is attached to this niche.
 
-    Attach a checkout location before merging teammate changes.
+    The ``residency`` field mirrors vault.NicheResidency and tells the caller
+    why there is no checkout:
+    - NicheResidency.REMOTE_ONLY: fetch the niche first, then attach a checkout.
+    - NicheResidency.CACHED: the niche is local; attach a checkout directly.
     """
 
-    def __init__(self, team_name: str, niche_name: str):
+    def __init__(self, team_name: str, niche_name: str, residency=None):
         self.team_name = team_name
         self.niche_name = niche_name
+        self.residency = residency
         super().__init__(
             f"Niche '{niche_name}' in team '{team_name}' has no local checkout. "
-            "Attach a checkout before merging."
+            + (
+                "The niche has no local data yet. Run fetch first, then attach a checkout."
+                if residency is not None and residency.value == "remote_only"
+                else "Attach a checkout before merging."
+            )
         )
 
 
@@ -475,7 +483,8 @@ def merge_via_hub(
     # already integrated — a partially-merged state the user cannot easily undo.
     checkout = vault.get_checkout(vault_root, participant_hex, team_name, niche_name)
     if checkout is None:
-        raise NoCheckoutError(team_name, niche_name)
+        residency = vault.niche_residency(vault_root, participant_hex, team_name, niche_name)
+        raise NoCheckoutError(team_name, niche_name, residency)
     if not pathlib.Path(checkout).exists():
         raise StaleCheckoutError(team_name, niche_name, checkout)
     dirty_entries = vault.status(vault_root, participant_hex, team_name, niche_name, checkout)
@@ -505,7 +514,7 @@ def merge_via_hub(
     except vault.DirtyCheckoutError as exc:
         raise DirtyCheckoutError(exc.paths) from exc
     except vault.NoCheckoutError as exc:
-        raise NoCheckoutError(exc.team_name, exc.niche_name) from exc
+        raise NoCheckoutError(exc.team_name, exc.niche_name, exc.residency) from exc
     except vault.StaleCheckoutError as exc:
         raise StaleCheckoutError(exc.team_name, exc.niche_name, exc.checkout_path) from exc
 

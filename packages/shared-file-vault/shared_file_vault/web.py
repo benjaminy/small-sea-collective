@@ -422,9 +422,16 @@ def create_app(
                 f"Merge blocked: registered checkout '{exc.checkout_path}' no longer exists. "
                 "Remove the stale registration and re-attach at the correct path."
             )
-        except sync.NoCheckoutError:
+        except sync.NoCheckoutError as exc:
             notice = None
-            error = "Merge blocked: no checkout is attached. Attach a checkout location first."
+            from shared_file_vault.vault import NicheResidency
+            if exc.residency is NicheResidency.REMOTE_ONLY:
+                error = (
+                    "Merge blocked: the niche has no local data yet. "
+                    "Fetch from a teammate first, then attach a checkout."
+                )
+            else:
+                error = "Merge blocked: no checkout is attached. Attach a checkout location first."
         except sync.PullConflictError as exc:
             notice = None
             if exc.paths:
