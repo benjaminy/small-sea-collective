@@ -52,8 +52,9 @@ introducing a fourth residency mode.
 - `REMOTE_ONLY -> CACHED`
   - `create_niche()`
   - `fetch_niche()`
-  - `pull_niche()` when it lazily creates the git dir before rejecting for
-    missing checkout
+  - `pull_niche()` currently creates the git dir before rejecting for missing
+    checkout; this branch documents that existing behavior but does not expand
+    it
 
 - `CACHED -> CHECKED_OUT`
   - `add_checkout()`
@@ -122,6 +123,8 @@ local deletion flow is being introduced here.
 - Change any on-disk storage layout or DB schema.
 - Introduce a fourth residency mode for stale checkout paths.
 - Change join-flow semantics beyond clearer state naming and clearer errors.
+- Add dedicated web UI residency display changes. Any explicit web-layer
+  residency presentation is follow-up work, not part of this branch.
 
 ## Key files
 
@@ -130,8 +133,6 @@ local deletion flow is being introduced here.
 - `packages/shared-file-vault/shared_file_vault/sync.py` — preserve residency
   through sync-layer exceptions
 - `packages/shared-file-vault/shared_file_vault/cli.py` — list output update
-- `packages/shared-file-vault/shared_file_vault/web.py` — optional alignment
-  if residency is surfaced in UI helpers/messages
 - `packages/shared-file-vault/spec.md` — residency model and transitions
 - `packages/shared-file-vault/tests/test_vault.py` — core micro tests
 
