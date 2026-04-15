@@ -318,9 +318,13 @@ def list_cmd(vault_root, participant_hex, team_name):
         click.echo("No niches.")
         return
     for niche in niches:
+        residency = niche.get("residency", "")
         checkout = vault.get_checkout(vault_root, participant_hex, team_name, niche["name"])
-        co_str = checkout if checkout else "(no checkout)"
-        click.echo(f"  {niche['name']}  {co_str}  [{niche['id'][:8]}]")
+        if checkout:
+            state_str = checkout
+        else:
+            state_str = f"({residency})"
+        click.echo(f"  {niche['name']}  {state_str}  [{niche['id'][:8]}]")
 
 
 @cli.command("status")

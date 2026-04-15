@@ -5,6 +5,7 @@ import pytest
 from shared_file_vault.vault import (
     DirtyCheckoutError,
     DuplicateCheckoutError,
+    NicheResidency,
     NoCheckoutError,
     add_checkout,
     create_niche,
@@ -15,6 +16,7 @@ from shared_file_vault.vault import (
     list_niches,
     log,
     merge_niche,
+    niche_residency,
     publish,
     remove_checkout,
     status,
@@ -290,3 +292,106 @@ def test_merge_clean_checkout_succeeds(playground_dir):
     assert result_sha is not None
     assert (bob_co / "hello.txt").exists()
     assert (bob_co / "hello.txt").read_text() == "hello\n"
+
+
+# ---------------------------------------------------------------------------
+# Niche residency
+# ---------------------------------------------------------------------------
+
+
+def test_residency_remote_only(playground_dir):
+    """A niche that exists in the registry but has no local git dir is REMOTE_ONLY."""
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "photos")
+
+    # Simulate a second participant who has the registry but not the niche git dir.
+    other = "bb" * 16
+    init_vault(playground_dir, other)
+    # Manually write a registry entry so list_niches knows about "photos" without
+    # a local niche git dir existing for `other`.
+    import pathlib as _pl
+    from shared_file_vault.vault import _registry_checkout_dir, _ensure_registry
+    import json
+    _ensure_registry(playground_dir, other, TEAM)
+    reg_co = _registry_checkout_dir(playground_dir, other, TEAM)
+    (reg_co / "photos.json").write_text(json.dumps({"id": "x" * 32, "name": "photos"}))
+
+    assert niche_residency(playground_dir, other, TEAM, "photos") is NicheResidency.REMOTE_ONLY
+
+
+def test_residency_cached(playground_dir):
+    """A niche whose git dir exists but has no checkout registered is CACHED."""
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "docs")
+    # create_niche creates the git dir but no checkout row.
+    assert niche_residency(playground_dir, PARTICIPANT, TEAM, "docs") is NicheResidency.CACHED
+
+
+def test_residency_checked_out(playground_dir):
+    """A niche with a registered checkout is CHECKED_OUT."""
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "notes")
+    dest = pathlib.Path(playground_dir) / "co-notes"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest))
+    assert niche_residency(playground_dir, PARTICIPANT, TEAM, "notes") is NicheResidency.CHECKED_OUT
+
+
+def test_residency_cached_after_remove_checkout(playground_dir):
+    """remove_checkout transitions a niche from CHECKED_OUT back to CACHED."""
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "archive")
+    dest = pathlib.Path(playground_dir) / "co-archive"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "archive", str(dest))
+    assert niche_residency(playground_dir, PARTICIPANT, TEAM, "archive") is NicheResidency.CHECKED_OUT
+
+    remove_checkout(playground_dir, PARTICIPANT, TEAM, "archive", str(dest))
+    assert niche_residency(playground_dir, PARTICIPANT, TEAM, "archive") is NicheResidency.CACHED
+
+
+def test_list_niches_includes_residency(playground_dir):
+    """list_niches includes a 'residency' key in each niche dict."""
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "alpha")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "beta")
+
+    dest = pathlib.Path(playground_dir) / "co-alpha"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "alpha", str(dest))
+
+    niches = {n["name"]: n for n in list_niches(playground_dir, PARTICIPANT, TEAM)}
+    assert niches["alpha"]["residency"] == NicheResidency.CHECKED_OUT.value
+    assert niches["beta"]["residency"] == NicheResidency.CACHED.value
+
+
+def test_no_checkout_error_cached_message(playground_dir):
+    """NoCheckoutError for a CACHED niche tells the user to attach a checkout."""
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "stuff")
+
+    with pytest.raises(NoCheckoutError) as exc_info:
+        merge_niche(playground_dir, PARTICIPANT, TEAM, "stuff", "some-peer-id")
+
+    err = exc_info.value
+    assert err.residency is NicheResidency.CACHED
+    # Message should not mention fetching since the niche is already local.
+    assert "fetch" not in str(err).lower()
+    assert "attach" in str(err).lower()
+
+
+def test_no_checkout_error_remote_only_message(playground_dir):
+    """NoCheckoutError for a REMOTE_ONLY niche tells the user to fetch first."""
+    _init(playground_dir)
+    # Register the niche in registry but create no git dir (simulate REMOTE_ONLY).
+    _ensure_registry = __import__(
+        "shared_file_vault.vault", fromlist=["_ensure_registry"]
+    )._ensure_registry
+    from shared_file_vault.vault import _registry_checkout_dir
+    import json
+    _ensure_registry(playground_dir, PARTICIPANT, TEAM)
+    reg_co = _registry_checkout_dir(playground_dir, PARTICIPANT, TEAM)
+    (reg_co / "ghost.json").write_text(json.dumps({"id": "y" * 32, "name": "ghost"}))
+
+    # Manually raise NoCheckoutError with REMOTE_ONLY residency to test the message,
+    # since merge_niche would fail earlier without a git dir.
+    err = NoCheckoutError(TEAM, "ghost", NicheResidency.REMOTE_ONLY)
+    assert err.residency is NicheResidency.REMOTE_ONLY
+    assert "fetch" in str(err).lower()

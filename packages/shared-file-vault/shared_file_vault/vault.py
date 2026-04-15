@@ -11,6 +11,7 @@ See spec.md for the design. Key points:
   never appear in user-visible checkout directories.
 """
 
+import enum
 import json
 import os
 import pathlib
@@ -24,6 +25,25 @@ from datetime import datetime, timezone
 
 import cod_sync.protocol as CS
 from cod_sync.protocol import gitCmd
+
+
+class NicheResidency(enum.Enum):
+    """How much of a niche exists locally on this device.
+
+    Residency is about local materialization, not sync freshness. A niche can
+    be CACHED or CHECKED_OUT and still be behind a teammate.
+
+    REMOTE_ONLY  — No niche git dir on this device. The niche may still be
+                   known via the shared registry.
+    CACHED       — The niche git dir exists locally, possibly with fetched
+                   refs or committed history, but no checkout is registered.
+    CHECKED_OUT  — The niche git dir exists and a checkout is registered in
+                   checkouts.db.
+    """
+
+    REMOTE_ONLY = "remote_only"
+    CACHED = "cached"
+    CHECKED_OUT = "checked_out"
 
 
 class MergeConflictError(RuntimeError):
@@ -73,14 +93,27 @@ class NoCheckoutError(RuntimeError):
 
     Fetch can still run without a checkout. Merge requires a checkout to
     exist so that fetched changes can be written to a visible location.
+
+    The ``residency`` field indicates why there is no checkout:
+    - NicheResidency.REMOTE_ONLY: no local niche data at all; run
+      ``fetch_niche`` first, then attach a checkout.
+    - NicheResidency.CACHED: the niche is fetched locally; attach a checkout
+      directly, then merge.
     """
 
-    def __init__(self, team_name, niche_name):
+    def __init__(self, team_name, niche_name, residency=None):
         self.team_name = team_name
         self.niche_name = niche_name
+        self.residency = residency
+        if residency is NicheResidency.REMOTE_ONLY:
+            detail = (
+                "The niche has no local data yet. "
+                "Run fetch_niche first to download it, then attach a checkout before merging."
+            )
+        else:
+            detail = "Attach a checkout before merging."
         super().__init__(
-            f"Niche '{niche_name}' in team '{team_name}' has no local checkout. "
-            "Attach a checkout before merging."
+            f"Niche '{niche_name}' in team '{team_name}' has no local checkout. {detail}"
         )
 
 
@@ -590,6 +623,9 @@ def list_niches(vault_root, participant_hex, team_name):
 
     Reads from the local registry checkout, which reflects whatever has
     been pulled from the shared registry chain.
+
+    Each returned dict includes a ``"residency"`` key with the string value
+    of the niche's NicheResidency on this device, computed on read.
     """
     _ensure_registry(vault_root, participant_hex, team_name)
     registry_co = _registry_checkout_dir(vault_root, participant_hex, team_name)
@@ -597,6 +633,9 @@ def list_niches(vault_root, participant_hex, team_name):
     for f in sorted(registry_co.glob("*.json")):
         data = json.loads(f.read_text())
         if data:
+            data["residency"] = niche_residency(
+                vault_root, participant_hex, team_name, data["name"]
+            ).value
             niches.append(data)
     return niches
 
@@ -662,6 +701,22 @@ def list_checkouts(vault_root, participant_hex, team_name, niche_name):
     """Return list of checkout paths for a niche (at most one element)."""
     checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
     return [checkout] if checkout is not None else []
+
+
+def niche_residency(vault_root, participant_hex, team_name, niche_name):
+    """Return the NicheResidency for a niche on this device.
+
+    REMOTE_ONLY  — no local git dir exists (niche known only from registry).
+    CACHED       — local git dir exists but no checkout is registered.
+    CHECKED_OUT  — local git dir exists and a checkout is registered.
+    """
+    git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
+    if not git_dir.exists():
+        return NicheResidency.REMOTE_ONLY
+    checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
+    if checkout is None:
+        return NicheResidency.CACHED
+    return NicheResidency.CHECKED_OUT
 
 
 def publish(vault_root, participant_hex, team_name, niche_name, checkout_path,
@@ -795,7 +850,8 @@ def _require_clean_checkout(vault_root, participant_hex, team_name, niche_name):
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
     if checkout is None:
-        raise NoCheckoutError(team_name, niche_name)
+        residency = niche_residency(vault_root, participant_hex, team_name, niche_name)
+        raise NoCheckoutError(team_name, niche_name, residency)
     if not pathlib.Path(checkout).exists():
         raise StaleCheckoutError(team_name, niche_name, checkout)
     if not _is_checkout_clean(checkout, git_dir):
