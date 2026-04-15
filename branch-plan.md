@@ -81,14 +81,20 @@ the preceding fetch step.
     state.  Using `repo_dir=git_dir` preserves that.
 
 - `_cod_pull(git_dir, checkout, remote)`:
-  - **Fetch step**: `CodSync(repo_dir=git_dir)` → `cod.fetch_from_remote(["main"])`.
+  - **Bundle-tmp invariant**: both `CodSync` instances must use
+    `bundle_tmp_dir=_bundle_tmp_dir(git_dir)`.  This keeps the temp remote name
+    (`cloud-codsync-bundle-tmp`) and path identical for both, so the bundle
+    remote created during fetch is found by the merge step.
+  - **Fetch step**: `CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir), repo_dir=git_dir)`
+    → `cod.fetch_from_remote(["main"])`.
   - **Guard**: if `fetch_from_remote` returns `None` (remote has no latest link
     or the fetch fails), raise `RuntimeError("pull failed: could not fetch from
     remote")` and do not proceed to merge.  This is the existing guard from the
     old implementation; it must be preserved because `merge_from_remote` would
     otherwise merge an old `cloud-codsync-bundle-tmp/main` ref left in repo
     config from a prior successful fetch.
-  - **Merge step**: `CodSync(repo_dir=checkout)` → `cod.merge_from_remote(["main"])`.
+  - **Merge step**: `CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir), repo_dir=checkout)`
+    → `cod.merge_from_remote(["main"])`.
   - `CodSync.merge_from_remote` already handles both branches internally:
     - With commits: `git -C checkout merge bundle_remote/main`
     - Without commits (initial pull): `git -C checkout checkout -B main bundle_remote/main`
@@ -102,10 +108,6 @@ the preceding fetch step.
     wrote files directly into `checkout`.
 
 - `_cod_merge_ref(git_dir, checkout, ref_name)`:
-  - Both `CodSync` instances (`repo_dir=git_dir` for fetch and `repo_dir=checkout`
-    for merge) must use the same `bundle_tmp_dir=_bundle_tmp_dir(git_dir)`.  This
-    ensures they agree on the temp remote name (`cloud-codsync-bundle-tmp`) and
-    path, so the bundle remote created during fetch is found by the merge step.
   - `CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir), repo_dir=checkout)`.
   - With commits: `cod.merge_from_ref(ref_name)` → `git -C checkout merge ref_name`.
   - **Conflict handling**: if `merge_from_ref` returns nonzero, raise
@@ -140,19 +142,30 @@ branch will have orphaned `transit/` directories.  No code reads or writes them
 after this change, so they are harmless.  Cleanup of existing transit dirs is
 out of scope for this branch.
 
-**`niche_conflict_paths`** — conflict semantics by residency:
-- CHECKED_OUT: look up the registered checkout via `get_checkout`; call
-  `_conflict_paths(git_dir, checkout)`.
-- CACHED or REMOTE_ONLY (no checkout registered): return `[]` — no merge can
-  be in progress without a checkout, because `merge_niche` requires one.
-- Stale registered checkout (path in DB but directory deleted): the git index
-  (inside `git_dir`) can still hold MERGE_HEAD state from a merge that was
-  running when the directory was deleted.  Check `_resolve_ref(git_dir,
-  "MERGE_HEAD")`: if it resolves, raise `StaleCheckoutError` — the user must
-  re-register a checkout before they can see or resolve the conflict.  If it
-  does not resolve, return `[]` (no in-progress merge, stale registration is
-  just a cleanup item).  See micro test 8 for coverage of both sub-cases.
-- Update the docstring to say "user checkout" not "transit work tree".
+**`niche_conflict_paths`** — unified policy:
+
+The function follows a single decision tree based on whether there is a usable
+checkout AND whether there is live merge state in the git dir:
+
+```
+1. No git_dir (REMOTE_ONLY) → return []
+2. Usable checkout (registered path exists on disk)
+       → return _conflict_paths(git_dir, checkout)
+3. No usable checkout (CACHED, or checkout registered-but-deleted):
+   a. _resolve_ref(git_dir, "MERGE_HEAD") resolves:
+      - checkout was registered (stale): raise StaleCheckoutError(team_name, niche_name, registered_path)
+      - no checkout registered (CACHED): raise NoCheckoutError(team_name, niche_name, NicheResidency.CACHED)
+      In both cases the user must re-register a checkout before conflicts
+      can be viewed or resolved.
+   b. No MERGE_HEAD → return []
+```
+
+Why CACHED can have MERGE_HEAD: a niche can be CHECKED_OUT, develop a merge
+conflict, and then have its checkout unregistered via `remove_checkout`.  The
+registration is removed from the DB but MERGE_HEAD persists in `git_dir`.
+Returning `[]` in that state would silently hide live conflict state.
+
+Update the docstring accordingly.
 
 **`peer_update_status`** — niche CACHED state:
 - Drop the `work_tree = _niche_transit_dir(...)` line.
@@ -196,12 +209,24 @@ These are in addition to the existing suite, not a replacement.  Add them to
 
 2. **Fetch without checkout pins the ref**: call `fetch_niche` on a CACHED niche
    (git_dir exists, no checkout registered), then assert that the parked peer
-   ref resolves to the expected SHA.  This directly validates that the pure-ref
-   helpers (`_resolve_ref`, `_is_ancestor`) work without a checkout.
+   ref resolves to the expected SHA.  This directly validates that `_resolve_ref`
+   works without a checkout.
 
-3. **`peer_update_status` for CACHED niche**: after the fetch above, call
-   `peer_update_status` and assert `parked_sha` is not None and
-   `ready_to_merge` is True — without ever creating a checkout.
+3. **`peer_update_status` for CACHED niche — both `_resolve_ref` and `_is_ancestor`**:
+
+   - **`_resolve_ref` path**: from test 2 above, assert `parked_sha` is not None
+     and `ready_to_merge` is True.  At this point there are no local commits, so
+     `_is_ancestor` is not reached.
+
+   - **`_is_ancestor` path**: set up a niche where Alice publishes two commits
+     (A then B) with two pushes.  Bob fetches A, then merges A (creating a local
+     HEAD at A) — while still CHECKED_OUT.  Bob then calls `remove_checkout` to
+     unregister the checkout (niche goes to CACHED with HEAD at A).  Bob fetches
+     B.  Now `peer_update_status` is called with the CACHED niche: `_has_commits`
+     is True, so `_is_ancestor(git_dir, sha_B, "HEAD_A")` is exercised.  Assert
+     `already_merged` is False and `ready_to_merge` is True.  Then have Bob
+     re-register a checkout and merge B; remove checkout again; assert
+     `already_merged` is True.
 
 4. **Initial-history pull** (setup: fresh niche git dir with no prior commits,
    checkout attached but empty): call `pull_niche`, then assert the checkout
@@ -225,17 +250,30 @@ These are in addition to the existing suite, not a replacement.  Add them to
    described in the plan — it catches the case where `merge_from_remote`
    would otherwise merge stale bundle-remote refs.
 
-8. **Stale-checkout `niche_conflict_paths`**:
-   - Sub-case A (no active merge): register a checkout, create the git dir,
-     then delete the checkout directory.  Assert `niche_conflict_paths`
+8. **`niche_conflict_paths` — no-checkout and stale cases**:
+
+   MERGE_HEAD is a git pseudoref; `git update-ref MERGE_HEAD <sha>` will be
+   rejected.  Write it directly: `(pathlib.Path(git_dir) / "MERGE_HEAD").write_text(sha + "\n")`.
+   Any valid commit SHA reachable in the repo works.
+
+   Four sub-cases, all required:
+
+   - **A — CACHED, no MERGE_HEAD**: create niche git dir and a checkout, publish
+     one commit, then call `remove_checkout`.  Assert `niche_conflict_paths`
      returns `[]`.
-   - Sub-case B (active merge state): same setup, but also write a synthetic
-     `MERGE_HEAD` ref into the git dir (e.g. `git update-ref MERGE_HEAD
-     <some sha>`).  Assert `niche_conflict_paths` raises `StaleCheckoutError`.
-     If constructing a realistic `MERGE_HEAD` proves expensive in the test
-     fixture, this sub-case may be marked `@pytest.mark.skip(reason="MERGE_HEAD
-     construction is expensive; policy tested by inspection")` with an
-     explanatory comment.
+
+   - **B — CACHED, MERGE_HEAD present**: same setup as A, then write a valid
+     commit SHA to `git_dir/MERGE_HEAD`.  Assert `niche_conflict_paths` raises
+     `NoCheckoutError`.
+
+   - **C — stale registered checkout (dir deleted), no MERGE_HEAD**: register a
+     checkout, publish one commit, then `shutil.rmtree` the checkout directory
+     without calling `remove_checkout`.  Assert `niche_conflict_paths` returns
+     `[]`.
+
+   - **D — stale registered checkout, MERGE_HEAD present**: same as C, then
+     write a valid commit SHA to `git_dir/MERGE_HEAD`.  Assert
+     `niche_conflict_paths` raises `StaleCheckoutError`.
 
 9. **CWD preservation**: for each of the four operations that previously
    called `os.chdir` — `push_niche`, `fetch_niche`, `pull_niche`,
