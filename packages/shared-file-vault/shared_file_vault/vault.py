@@ -13,7 +13,6 @@ See spec.md for the design. Key points:
 
 import enum
 import json
-import os
 import pathlib
 import re
 import secrets
@@ -188,10 +187,6 @@ def _registry_checkout_dir(vault_root, participant_hex, team_name):
 def _niche_git_dir(vault_root, participant_hex, team_name, niche_name):
     return _team_dir(vault_root, participant_hex, team_name) / "niches" / niche_name / "git"
 
-
-def _niche_transit_dir(vault_root, participant_hex, team_name, niche_name):
-    """Internal checkout used by push/pull. Never user-managed."""
-    return _team_dir(vault_root, participant_hex, team_name) / "niches" / niche_name / "transit"
 
 
 def _bundle_tmp_dir(git_dir):
@@ -404,9 +399,7 @@ def _is_checkout_clean(checkout_path, git_dir):
     to understand the tracked/untracked distinction, and hiding untracked
     files from the check could mask path-collision cases during merge.
 
-    Always called with the user's checkout_path, never with the transit
-    work tree (transit always resets itself to HEAD before use, so checking
-    it would silently pass even when the user's checkout is dirty).
+    Always called with the user's checkout_path.
     """
     if not pathlib.Path(checkout_path).exists():
         return False
@@ -432,9 +425,9 @@ def _conflict_paths(git_dir, work_tree):
     return [line.strip() for line in result.stdout.splitlines() if line.strip()]
 
 
-def _resolve_ref(git_dir, work_tree, ref_name):
+def _resolve_ref(git_dir, ref_name):
     result = gitCmd(
-        ["--git-dir", str(git_dir), "--work-tree", str(work_tree), "rev-parse", "--verify", ref_name],
+        ["--git-dir", str(git_dir), "rev-parse", "--verify", ref_name],
         raise_on_error=False,
     )
     if result.returncode != 0:
@@ -442,10 +435,10 @@ def _resolve_ref(git_dir, work_tree, ref_name):
     return result.stdout.strip()
 
 
-def _is_ancestor(git_dir, work_tree, maybe_ancestor, descendant="HEAD"):
+def _is_ancestor(git_dir, maybe_ancestor, descendant="HEAD"):
     result = gitCmd(
         [
-            "--git-dir", str(git_dir), "--work-tree", str(work_tree),
+            "--git-dir", str(git_dir),
             "merge-base", "--is-ancestor", maybe_ancestor, descendant,
         ],
         raise_on_error=False,
@@ -487,76 +480,66 @@ def _ensure_registry(vault_root, participant_hex, team_name):
 # Cod Sync push/pull primitives
 # ---------------------------------------------------------------------------
 
-def _cod_push(git_dir, transit, remote):
-    saved = os.getcwd()
-    try:
-        os.chdir(transit)
-        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir))
-        cod.remote = remote
-        cod.push_to_remote(["main"])
-    finally:
-        os.chdir(saved)
+def _cod_push(git_dir, remote):
+    """Push git_dir to remote via Cod Sync bundle transfer."""
+    cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir), repo_dir=git_dir)
+    cod.remote = remote
+    cod.push_to_remote(["main"])
 
 
-def _cod_pull(git_dir, transit, remote):
-    """Fetch from remote and merge into git_dir via transit work tree."""
-    saved = os.getcwd()
-    try:
-        os.chdir(transit)
-        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir))
-        cod.remote = remote
+def _cod_pull(git_dir, checkout, remote):
+    """Fetch from remote and merge into the user checkout.
 
-        has_commits = _has_commits(git_dir)
-        if has_commits:
-            # Sync transit work tree to HEAD before merging.  Without this,
-            # files committed from a user checkout (not the transit) would
-            # appear as uncommitted deletions in the transit and block the merge.
-            gitCmd(["checkout", "HEAD", "--", "."])
+    Uses repo_dir=git_dir for fetch (no work tree needed) and
+    repo_dir=checkout for merge (git writes files into the checkout).
+    Both instances share the same bundle_tmp_dir so the temp remote name
+    and path are identical and the merge step finds the remote set up
+    during fetch.
+    """
+    btd = _bundle_tmp_dir(git_dir)
+    cod_fetch = CS.CodSync("cloud", bundle_tmp_dir=btd, repo_dir=git_dir)
+    cod_fetch.remote = remote
 
-        fetch_result = cod.fetch_from_remote(["main"])
-        if fetch_result is None:
-            raise RuntimeError("pull failed: could not fetch from remote")
+    fetch_result = cod_fetch.fetch_from_remote(["main"])
+    if fetch_result is None:
+        raise RuntimeError("pull failed: could not fetch from remote")
 
-        if has_commits:
-            exit_code = cod.merge_from_remote(["main"])
-            if exit_code != 0:
-                raise MergeConflictError(_conflict_paths(git_dir, transit))
-        else:
-            gitCmd(["checkout", "main"])
-    finally:
-        os.chdir(saved)
+    cod_merge = CS.CodSync("cloud", bundle_tmp_dir=btd, repo_dir=checkout)
+    exit_code = cod_merge.merge_from_remote(["main"])
+    if exit_code != 0:
+        raise MergeConflictError(_conflict_paths(git_dir, checkout))
 
 
-def _cod_fetch(git_dir, transit, remote, pin_to_ref):
-    saved = os.getcwd()
-    try:
-        os.chdir(transit)
-        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir))
-        cod.remote = remote
-        return cod.fetch_from_remote(["main"], pin_to_ref=pin_to_ref)
-    finally:
-        os.chdir(saved)
+def _cod_fetch(git_dir, remote, pin_to_ref):
+    """Fetch from remote and optionally pin the result to a local ref.
+
+    Operates on git_dir directly — no work tree needed for fetch operations.
+    Safe to call when no checkout is registered (CACHED state).
+    """
+    cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir), repo_dir=git_dir)
+    cod.remote = remote
+    return cod.fetch_from_remote(["main"], pin_to_ref=pin_to_ref)
 
 
-def _cod_merge_ref(git_dir, transit, ref_name):
-    saved = os.getcwd()
-    try:
-        os.chdir(transit)
-        cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir))
+def _cod_merge_ref(git_dir, checkout, ref_name):
+    """Merge a parked peer ref into the user checkout.
 
-        has_commits = _has_commits(git_dir)
-        if has_commits:
-            # Keep the transit work tree aligned with HEAD before merging.
-            gitCmd(["checkout", "HEAD", "--", "."])
-
-        if has_commits:
-            exit_code = cod.merge_from_ref(ref_name)
-            if exit_code != 0:
-                raise MergeConflictError(_conflict_paths(git_dir, transit))
-        else:
-            gitCmd(["checkout", "-B", "main", ref_name])
-    finally:
-        os.chdir(saved)
+    Uses repo_dir=checkout so git writes files into the checkout directory.
+    The checkout's .git pointer resolves git_dir automatically, so remotes
+    set up on git_dir (e.g. from a preceding fetch) are visible here.
+    """
+    cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir), repo_dir=checkout)
+    if _has_commits(git_dir):
+        exit_code = cod.merge_from_ref(ref_name)
+        if exit_code != 0:
+            raise MergeConflictError(_conflict_paths(git_dir, checkout))
+    else:
+        # No local history: initialise the branch from the parked peer ref.
+        # Content conflicts are impossible here; GitCmdFailed propagates as-is.
+        gitCmd([
+            "--git-dir", str(git_dir), "--work-tree", str(checkout),
+            "checkout", "-B", "main", ref_name,
+        ])
 
 
 # ---------------------------------------------------------------------------
@@ -582,15 +565,11 @@ def create_niche(vault_root, participant_hex, team_name, niche_name):
     niche_name = _canonical_name(niche_name)
     _ensure_registry(vault_root, participant_hex, team_name)
 
-    # Create niche git repo and transit work tree
+    # Create niche git repo
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     if not git_dir.exists():
         git_dir.mkdir(parents=True)
         _init_git_dir(git_dir)
-
-    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
-    if not transit.exists():
-        _make_work_tree(git_dir, transit)
 
     # Write niche record to registry checkout and commit
     registry_git = _registry_git_dir(vault_root, participant_hex, team_name)
@@ -773,8 +752,7 @@ def push_registry(vault_root, participant_hex, team_name, remote):
     """Push the niche registry to cloud storage via Cod Sync."""
     _ensure_registry(vault_root, participant_hex, team_name)
     git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
-    checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
-    _cod_push(git_dir, checkout, remote)
+    _cod_push(git_dir, remote)
 
 
 def pull_registry(vault_root, participant_hex, team_name, remote):
@@ -789,9 +767,8 @@ def fetch_registry(vault_root, participant_hex, team_name, member_id, remote):
     """Fetch the registry from a peer and pin it to a durable local ref."""
     _ensure_registry(vault_root, participant_hex, team_name)
     git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
-    checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
     ref_name = _peer_ref_name(member_id)
-    fetched_sha = _cod_fetch(git_dir, checkout, remote, ref_name)
+    fetched_sha = _cod_fetch(git_dir, remote, ref_name)
     if fetched_sha is not None:
         _record_peer_fetch(
             vault_root, participant_hex, team_name, "registry", None, member_id, fetched_sha
@@ -805,10 +782,10 @@ def merge_registry(vault_root, participant_hex, team_name, member_id):
     git_dir = _registry_git_dir(vault_root, participant_hex, team_name)
     checkout = _registry_checkout_dir(vault_root, participant_hex, team_name)
     ref_name = _peer_ref_name(member_id)
-    parked_sha = _resolve_ref(git_dir, checkout, ref_name)
+    parked_sha = _resolve_ref(git_dir, ref_name)
     if parked_sha is None:
         return None
-    if _has_commits(git_dir) and _is_ancestor(git_dir, checkout, parked_sha, "HEAD"):
+    if _has_commits(git_dir) and _is_ancestor(git_dir, parked_sha, "HEAD"):
         _record_peer_merge(
             vault_root, participant_hex, team_name, "registry", None, member_id, parked_sha
         )
@@ -823,8 +800,7 @@ def merge_registry(vault_root, participant_hex, team_name, member_id):
 def push_niche(vault_root, participant_hex, team_name, niche_name, remote):
     """Push a niche to cloud storage via Cod Sync."""
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
-    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
-    _cod_push(git_dir, transit, remote)
+    _cod_push(git_dir, remote)
 
 
 def list_teams(vault_root, participant_hex):
@@ -842,10 +818,9 @@ def list_teams(vault_root, participant_hex):
 def _require_clean_checkout(vault_root, participant_hex, team_name, niche_name):
     """Verify a checkout is attached, exists on disk, and is clean.
 
-    Returns the checkout path. Raises NoCheckoutError, ValueError (missing
-    path), or DirtyCheckoutError as appropriate. Called by pull_niche and
-    merge_niche before any transit operations so that transit's always-clean
-    state is never mistakenly used as the check target.
+    Returns the checkout path. Raises NoCheckoutError, StaleCheckoutError, or
+    DirtyCheckoutError as appropriate. Called by pull_niche and merge_niche
+    before any merge step that writes into the user checkout.
     """
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
@@ -861,7 +836,7 @@ def _require_clean_checkout(vault_root, participant_hex, team_name, niche_name):
 
 
 def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
-    """Pull a niche from cloud storage and merge.
+    """Pull a niche from cloud storage and merge into the user checkout.
 
     Requires a checkout to be attached and clean. This keeps pull semantics
     consistent with merge: visible files are only updated through an explicit
@@ -875,33 +850,25 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
         git_dir.mkdir(parents=True)
         _init_git_dir(git_dir)
 
-    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
-    if not transit.exists():
-        _make_work_tree(git_dir, transit)
-
     checkout = _require_clean_checkout(vault_root, participant_hex, team_name, niche_name)
 
-    _cod_pull(git_dir, transit, remote)
-    _refresh_work_tree(git_dir, checkout)
+    _cod_pull(git_dir, checkout, remote)
 
 
 def fetch_niche(vault_root, participant_hex, team_name, niche_name, member_id, remote):
     """Fetch a niche from a peer and pin it to a durable local ref.
 
     Fetch does not modify the user's checkout, so no clean-checkout guard
-    is needed here. The guard fires at merge time.
+    is needed here. The guard fires at merge time.  Works from CACHED state
+    (no checkout registered).
     """
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
     if not git_dir.exists():
         git_dir.mkdir(parents=True)
         _init_git_dir(git_dir)
 
-    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
-    if not transit.exists():
-        _make_work_tree(git_dir, transit)
-
     ref_name = _peer_ref_name(member_id)
-    fetched_sha = _cod_fetch(git_dir, transit, remote, ref_name)
+    fetched_sha = _cod_fetch(git_dir, remote, ref_name)
     if fetched_sha is not None:
         _record_peer_fetch(
             vault_root, participant_hex, team_name, "niche", niche_name, member_id, fetched_sha
@@ -914,29 +881,25 @@ def merge_niche(vault_root, participant_hex, team_name, niche_name, member_id):
 
     Requires a checkout to be attached (raises NoCheckoutError if none).
     Requires the checkout to be clean (raises DirtyCheckoutError if not).
-    The clean-checkout guard fires here, before any transit operations,
-    because transit always resets to HEAD and would silently pass the check.
+    The clean-checkout guard fires before any merge step that writes into
+    the user checkout.
     """
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
-    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
-
     checkout = _require_clean_checkout(vault_root, participant_hex, team_name, niche_name)
 
     ref_name = _peer_ref_name(member_id)
-    parked_sha = _resolve_ref(git_dir, transit, ref_name)
+    parked_sha = _resolve_ref(git_dir, ref_name)
     if parked_sha is None:
         return None
-    if _has_commits(git_dir) and _is_ancestor(git_dir, transit, parked_sha, "HEAD"):
+    if _has_commits(git_dir) and _is_ancestor(git_dir, parked_sha, "HEAD"):
         _record_peer_merge(
             vault_root, participant_hex, team_name, "niche", niche_name, member_id, parked_sha
         )
         return parked_sha
-    _cod_merge_ref(git_dir, transit, ref_name)
+    _cod_merge_ref(git_dir, checkout, ref_name)
     _record_peer_merge(
         vault_root, participant_hex, team_name, "niche", niche_name, member_id, parked_sha
     )
-
-    _refresh_work_tree(git_dir, checkout)
     return parked_sha
 
 
@@ -948,10 +911,34 @@ def registry_conflict_paths(vault_root, participant_hex, team_name):
 
 
 def niche_conflict_paths(vault_root, participant_hex, team_name, niche_name):
-    """Return unresolved conflict paths for a niche repo's transit work tree."""
+    """Return unresolved conflict paths for a niche's user checkout.
+
+    Decision tree:
+    1. No git dir (REMOTE_ONLY) → return []
+    2. Usable checkout (registered and directory exists) → return conflict paths
+    3. No usable checkout (CACHED, or checkout registered-but-deleted):
+       - MERGE_HEAD present → raise StaleCheckoutError (stale registration) or
+         NoCheckoutError (no registration); user must re-register before resolving
+       - No MERGE_HEAD → return []
+
+    Intentional API change: this function can now raise NoCheckoutError or
+    StaleCheckoutError when MERGE_HEAD is present but no checkout is available.
+    Audit every caller to confirm they handle or never reach these states.
+    """
     git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
-    transit = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
-    return _conflict_paths(git_dir, transit)
+    if not git_dir.exists():
+        return []
+
+    checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
+    if checkout is not None and pathlib.Path(checkout).exists():
+        return _conflict_paths(git_dir, checkout)
+
+    # No usable checkout — check for orphaned merge state in the git dir.
+    if _resolve_ref(git_dir, "MERGE_HEAD") is not None:
+        if checkout is not None:
+            raise StaleCheckoutError(team_name, niche_name, checkout)
+        raise NoCheckoutError(team_name, niche_name, NicheResidency.CACHED)
+    return []
 
 
 def peer_update_status(
@@ -964,8 +951,7 @@ def peer_update_status(
         work_tree = _registry_checkout_dir(vault_root, participant_hex, team_name)
     else:
         git_dir = _niche_git_dir(vault_root, participant_hex, team_name, niche_name)
-        work_tree = _niche_transit_dir(vault_root, participant_hex, team_name, niche_name)
-        if not git_dir.exists() or not work_tree.exists():
+        if not git_dir.exists():
             row = _peer_sync_row(
                 vault_root, participant_hex, team_name, repo_kind, niche_name, member_id
             )
@@ -981,7 +967,7 @@ def peer_update_status(
             }
 
     ref_name = _peer_ref_name(member_id)
-    parked_sha = _resolve_ref(git_dir, work_tree, ref_name)
+    parked_sha = _resolve_ref(git_dir, ref_name)
     row = _peer_sync_row(vault_root, participant_hex, team_name, repo_kind, niche_name, member_id)
     if parked_sha is None:
         return {
@@ -995,7 +981,7 @@ def peer_update_status(
             "last_merged_sha": row["last_merged_sha"] if row else None,
         }
 
-    already_merged = _has_commits(git_dir) and _is_ancestor(git_dir, work_tree, parked_sha, "HEAD")
+    already_merged = _has_commits(git_dir) and _is_ancestor(git_dir, parked_sha, "HEAD")
     return {
         "member_id": member_id,
         "repo_kind": repo_kind,
