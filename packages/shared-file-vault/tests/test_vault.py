@@ -378,20 +378,40 @@ def test_no_checkout_error_cached_message(playground_dir):
 
 
 def test_no_checkout_error_remote_only_message(playground_dir):
-    """NoCheckoutError for a REMOTE_ONLY niche tells the user to fetch first."""
-    _init(playground_dir)
-    # Register the niche in registry but create no git dir (simulate REMOTE_ONLY).
-    _ensure_registry = __import__(
-        "shared_file_vault.vault", fromlist=["_ensure_registry"]
-    )._ensure_registry
-    from shared_file_vault.vault import _registry_checkout_dir
-    import json
-    _ensure_registry(playground_dir, PARTICIPANT, TEAM)
-    reg_co = _registry_checkout_dir(playground_dir, PARTICIPANT, TEAM)
-    (reg_co / "ghost.json").write_text(json.dumps({"id": "y" * 32, "name": "ghost"}))
+    """NoCheckoutError from merge_niche for a REMOTE_ONLY niche says to fetch first.
 
-    # Manually raise NoCheckoutError with REMOTE_ONLY residency to test the message,
-    # since merge_niche would fail earlier without a git dir.
-    err = NoCheckoutError(TEAM, "ghost", NicheResidency.REMOTE_ONLY)
+    A REMOTE_ONLY niche has no local git dir. _require_clean_checkout detects
+    this via niche_residency() and raises NoCheckoutError(residency=REMOTE_ONLY).
+    """
+    _init(playground_dir)
+    # Vault is initialised but "ghost" niche was never created locally —
+    # there is no git dir, so residency is REMOTE_ONLY.
+    with pytest.raises(NoCheckoutError) as exc_info:
+        merge_niche(playground_dir, PARTICIPANT, TEAM, "ghost", "some-peer-id")
+
+    err = exc_info.value
     assert err.residency is NicheResidency.REMOTE_ONLY
     assert "fetch" in str(err).lower()
+    assert "attach" in str(err).lower()
+
+
+def test_cli_list_shows_residency_labels(playground_dir):
+    """sfv list reports the correct residency label for all three states."""
+    from click.testing import CliRunner
+    from shared_file_vault.cli import cli
+
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "alpha")   # will be CHECKED_OUT
+    create_niche(playground_dir, PARTICIPANT, TEAM, "beta")    # stays CACHED
+
+    dest = pathlib.Path(playground_dir) / "co-alpha"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "alpha", str(dest))
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["list", playground_dir, PARTICIPANT, TEAM])
+    assert result.exit_code == 0, result.output
+
+    assert "checked_out" in result.output
+    assert "cached" in result.output
+    # Checkout path is still visible alongside the residency label.
+    assert str(dest) in result.output

@@ -321,7 +321,7 @@ def list_cmd(vault_root, participant_hex, team_name):
         residency = niche.get("residency", "")
         checkout = vault.get_checkout(vault_root, participant_hex, team_name, niche["name"])
         if checkout:
-            state_str = checkout
+            state_str = f"{checkout}  ({residency})"
         else:
             state_str = f"({residency})"
         click.echo(f"  {niche['name']}  {state_str}  [{niche['id'][:8]}]")
