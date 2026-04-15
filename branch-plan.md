@@ -82,10 +82,20 @@ the preceding fetch step.
 
 - `_cod_pull(git_dir, checkout, remote)`:
   - **Fetch step**: `CodSync(repo_dir=git_dir)` → `cod.fetch_from_remote(["main"])`.
+  - **Guard**: if `fetch_from_remote` returns `None` (remote has no latest link
+    or the fetch fails), raise `RuntimeError("pull failed: could not fetch from
+    remote")` and do not proceed to merge.  This is the existing guard from the
+    old implementation; it must be preserved because `merge_from_remote` would
+    otherwise merge an old `cloud-codsync-bundle-tmp/main` ref left in repo
+    config from a prior successful fetch.
   - **Merge step**: `CodSync(repo_dir=checkout)` → `cod.merge_from_remote(["main"])`.
   - `CodSync.merge_from_remote` already handles both branches internally:
     - With commits: `git -C checkout merge bundle_remote/main`
     - Without commits (initial pull): `git -C checkout checkout -B main bundle_remote/main`
+  - **Conflict handling**: if `merge_from_remote` returns nonzero, raise
+    `MergeConflictError(_conflict_paths(git_dir, checkout))`.  Conflict state
+    lives in the git index (inside `git_dir`); `_conflict_paths` reads it by
+    running `git diff --diff-filter=U` against the user checkout.
   - Drop the `has_commits` branch split and the "reset work tree to HEAD"
     step — both were transit artefacts.
   - Remove the `_refresh_work_tree` call after `_cod_pull`; the merge already
@@ -93,8 +103,9 @@ the preceding fetch step.
 
 - `_cod_merge_ref(git_dir, checkout, ref_name)`:
   - `CodSync("cloud", bundle_tmp_dir=..., repo_dir=checkout)`.
-  - With commits: `cod.merge_from_ref(ref_name)` →
-    `git -C checkout merge ref_name`.
+  - With commits: `cod.merge_from_ref(ref_name)` → `git -C checkout merge ref_name`.
+  - **Conflict handling**: if `merge_from_ref` returns nonzero, raise
+    `MergeConflictError(_conflict_paths(git_dir, checkout))`.
   - Without commits (initial merge): explicitly
     `gitCmd(["--git-dir", git_dir, "--work-tree", checkout, "checkout", "-B", "main", ref_name])`.
     Here `ref_name` is the parked peer ref (e.g. `refs/peers/<hex>/main`), which
@@ -117,10 +128,15 @@ the preceding fetch step.
 **`niche_conflict_paths`** — conflict semantics by residency:
 - CHECKED_OUT: look up the registered checkout via `get_checkout`; call
   `_conflict_paths(git_dir, checkout)`.
-- CACHED or REMOTE_ONLY (no checkout registered): return `[]` — there is no
-  active merge in progress without a checkout.
-- Stale registered checkout (path in DB but directory deleted): return `[]` for
-  the same reason; a deleted directory cannot hold an in-progress merge.
+- CACHED or REMOTE_ONLY (no checkout registered): return `[]` — no merge can
+  be in progress without a checkout, because `merge_niche` requires one.
+- Stale registered checkout (path in DB but directory deleted): the git index
+  (inside `git_dir`) can still hold MERGE_HEAD state from a merge that was
+  running when the directory was deleted.  Check `_resolve_ref(git_dir,
+  "MERGE_HEAD")`: if it resolves, raise `StaleCheckoutError` — the user must
+  re-register a checkout before they can see or resolve the conflict.  If it
+  does not resolve, return `[]` (no in-progress merge, stale registration is
+  just a cleanup item).
 - Update the docstring to say "user checkout" not "transit work tree".
 
 **`peer_update_status`** — niche CACHED state:
@@ -156,8 +172,12 @@ No public API signature changes are expected.  However, verify that:
 These are in addition to the existing suite, not a replacement.  Add them to
 `tests/test_vault.py`.
 
-1. **No transit dir created**: after `create_niche`, assert that no
-   `transit/` subdirectory exists under the niche dir.
+1. **No transit dir ever created**: run the full sync lifecycle —
+   `create_niche` → `add_checkout` → `publish` → `push_niche` →
+   `fetch_niche` (second vault) → `add_checkout` → `merge_niche` — then
+   walk the entire vault tree and assert that no `transit/` directory
+   appears anywhere.  This catches lazy creation that `create_niche` alone
+   would miss.
 
 2. **Fetch without checkout pins the ref**: call `fetch_niche` on a CACHED niche
    (git_dir exists, no checkout registered), then assert that the parked peer
@@ -179,8 +199,14 @@ These are in addition to the existing suite, not a replacement.  Add them to
    `merge_niche`, then assert `niche_conflict_paths` returns the conflicted
    filenames (not an empty list).
 
-7. **CWD preservation**: assert that `os.getcwd()` is identical before and
-   after any vault operation that touches git (push, pull, fetch, merge).
+7. **CWD preservation**: for each of the four operations that previously
+   called `os.chdir` — `push_niche`, `fetch_niche`, `pull_niche`,
+   `merge_niche` — plus at least one registry operation (`merge_registry`),
+   assert that `os.getcwd()` is identical before and after.  Also cover one
+   failure path cheaply: `pull_niche` where `fetch_from_remote` returns None
+   (remote has no content), assert CWD is still unchanged and `RuntimeError`
+   is raised.  Registry and niche paths are both needed because registry merge
+   goes through `_cod_merge_ref` while niche pull goes through `_cod_pull`.
 
 ---
 
