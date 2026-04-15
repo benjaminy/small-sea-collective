@@ -102,14 +102,21 @@ the preceding fetch step.
     wrote files directly into `checkout`.
 
 - `_cod_merge_ref(git_dir, checkout, ref_name)`:
-  - `CodSync("cloud", bundle_tmp_dir=..., repo_dir=checkout)`.
+  - Both `CodSync` instances (`repo_dir=git_dir` for fetch and `repo_dir=checkout`
+    for merge) must use the same `bundle_tmp_dir=_bundle_tmp_dir(git_dir)`.  This
+    ensures they agree on the temp remote name (`cloud-codsync-bundle-tmp`) and
+    path, so the bundle remote created during fetch is found by the merge step.
+  - `CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir), repo_dir=checkout)`.
   - With commits: `cod.merge_from_ref(ref_name)` → `git -C checkout merge ref_name`.
   - **Conflict handling**: if `merge_from_ref` returns nonzero, raise
     `MergeConflictError(_conflict_paths(git_dir, checkout))`.
-  - Without commits (initial merge): explicitly
+  - Without commits (initial merge):
     `gitCmd(["--git-dir", git_dir, "--work-tree", checkout, "checkout", "-B", "main", ref_name])`.
-    Here `ref_name` is the parked peer ref (e.g. `refs/peers/<hex>/main`), which
-    names an exact, already-present ref — no ambiguity.
+    `ref_name` is the parked peer ref (e.g. `refs/peers/<hex>/main`), an
+    already-present ref.  Because there is no local history, content conflicts
+    are impossible on this path.  `gitCmd` raises `GitCmdFailed` on any
+    non-zero exit; no additional wrapping is needed — ordinary command failures
+    (missing ref, broken git dir) should propagate as-is.
   - Remove the `_refresh_work_tree` call after `_cod_merge_ref`; merge already
     wrote files into `checkout`.
   - Drop the `has_commits` reset-to-HEAD step for the same reason as `_cod_pull`.
@@ -124,6 +131,14 @@ the preceding fetch step.
 - `merge_niche`: drop transit lookup; pass `checkout` to `_cod_merge_ref`;
   update `_resolve_ref` and `_is_ancestor` call sites (no work_tree arg);
   remove `_refresh_work_tree` call.
+- `merge_registry`: update `_resolve_ref` and `_is_ancestor` call sites (no
+  work_tree arg); `_cod_merge_ref` call already uses the registry checkout, so
+  no argument change needed there beyond the signature update.
+
+**Pre-existing transit dirs on disk**: vaults that were created before this
+branch will have orphaned `transit/` directories.  No code reads or writes them
+after this change, so they are harmless.  Cleanup of existing transit dirs is
+out of scope for this branch.
 
 **`niche_conflict_paths`** — conflict semantics by residency:
 - CHECKED_OUT: look up the registered checkout via `get_checkout`; call
@@ -136,7 +151,7 @@ the preceding fetch step.
   "MERGE_HEAD")`: if it resolves, raise `StaleCheckoutError` — the user must
   re-register a checkout before they can see or resolve the conflict.  If it
   does not resolve, return `[]` (no in-progress merge, stale registration is
-  just a cleanup item).
+  just a cleanup item).  See micro test 8 for coverage of both sub-cases.
 - Update the docstring to say "user checkout" not "transit work tree".
 
 **`peer_update_status`** — niche CACHED state:
@@ -181,32 +196,54 @@ These are in addition to the existing suite, not a replacement.  Add them to
 
 2. **Fetch without checkout pins the ref**: call `fetch_niche` on a CACHED niche
    (git_dir exists, no checkout registered), then assert that the parked peer
-   ref resolves to the expected SHA.
+   ref resolves to the expected SHA.  This directly validates that the pure-ref
+   helpers (`_resolve_ref`, `_is_ancestor`) work without a checkout.
 
 3. **`peer_update_status` for CACHED niche**: after the fetch above, call
    `peer_update_status` and assert `parked_sha` is not None and
    `ready_to_merge` is True — without ever creating a checkout.
 
-4. **Initial-history pull**: call `pull_niche` on a fresh niche git dir (no
-   prior commits), assert the checkout is populated with the expected files
-   afterward.
+4. **Initial-history pull** (setup: fresh niche git dir with no prior commits,
+   checkout attached but empty): call `pull_niche`, then assert the checkout
+   directory contains the expected files from the remote.  The checkout must
+   be attached before calling `pull_niche` because `_require_clean_checkout`
+   runs first; "fresh" means no prior commits in the git dir, not no checkout.
 
-5. **Initial-history merge**: call `fetch_niche` + `add_checkout` +
-   `merge_niche` on a niche with no prior commits, assert the checkout is
-   populated.
+5. **Initial-history merge** (setup: same fresh git dir, no prior commits):
+   call `fetch_niche` then `add_checkout` then `merge_niche`, assert the
+   checkout is populated with the expected files.
 
 6. **Merge conflict paths land in user checkout**: induce a merge conflict via
    `merge_niche`, then assert `niche_conflict_paths` returns the conflicted
    filenames (not an empty list).
 
-7. **CWD preservation**: for each of the four operations that previously
+7. **Stale-bundle guard**: perform a successful `pull_niche` to seed
+   `cloud-codsync-bundle-tmp/main` in the niche's git config, then swap the
+   remote for an empty `LocalFolderRemote` and call `pull_niche` again.
+   Assert that `RuntimeError` is raised and the checkout contents are
+   unchanged.  This is the targeted regression test for the fetch-guard
+   described in the plan — it catches the case where `merge_from_remote`
+   would otherwise merge stale bundle-remote refs.
+
+8. **Stale-checkout `niche_conflict_paths`**:
+   - Sub-case A (no active merge): register a checkout, create the git dir,
+     then delete the checkout directory.  Assert `niche_conflict_paths`
+     returns `[]`.
+   - Sub-case B (active merge state): same setup, but also write a synthetic
+     `MERGE_HEAD` ref into the git dir (e.g. `git update-ref MERGE_HEAD
+     <some sha>`).  Assert `niche_conflict_paths` raises `StaleCheckoutError`.
+     If constructing a realistic `MERGE_HEAD` proves expensive in the test
+     fixture, this sub-case may be marked `@pytest.mark.skip(reason="MERGE_HEAD
+     construction is expensive; policy tested by inspection")` with an
+     explanatory comment.
+
+9. **CWD preservation**: for each of the four operations that previously
    called `os.chdir` — `push_niche`, `fetch_niche`, `pull_niche`,
-   `merge_niche` — plus at least one registry operation (`merge_registry`),
-   assert that `os.getcwd()` is identical before and after.  Also cover one
-   failure path cheaply: `pull_niche` where `fetch_from_remote` returns None
-   (remote has no content), assert CWD is still unchanged and `RuntimeError`
-   is raised.  Registry and niche paths are both needed because registry merge
-   goes through `_cod_merge_ref` while niche pull goes through `_cod_pull`.
+   `merge_niche` — plus `merge_registry`, record `os.getcwd()` before and
+   assert equality after.  Also cover one failure path: `pull_niche` on an
+   empty remote should raise `RuntimeError` and leave CWD unchanged.  Registry
+   and niche paths are both needed because registry merge goes through
+   `_cod_merge_ref` while niche pull goes through `_cod_pull`.
 
 ---
 
