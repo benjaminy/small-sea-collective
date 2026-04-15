@@ -302,15 +302,9 @@ def test_three_participant_gossip(playground_dir):
 
 
 def test_concurrent_edit_same_line_raises(playground_dir):
-    """Both participants edit the same line — merge conflict.
+    """Both participants edit the same line — merge conflict raises MergeConflictError."""
+    from shared_file_vault.vault import MergeConflictError
 
-    Currently raises GitCmdFailed. The aspirational behavior is a typed
-    MergeConflictError that leaves the working tree in a state the user
-    can inspect and resolve.
-
-    Marking xfail to document the gap — remove the mark when conflict
-    handling is implemented in vault.py.
-    """
     playground = pathlib.Path(playground_dir)
     alice_cloud = playground / "cloud-alice"
     bob_cloud = playground / "cloud-bob"
@@ -334,7 +328,6 @@ def test_concurrent_edit_same_line_raises(playground_dir):
     publish(str(bob_root), BOB, TEAM, NICHE, str(bob_co), message="name it Wavelength")
     do_push(bob_root, BOB, bob_cloud)
 
-    # Bob merges Alice's change — this conflicts
-    # Currently crashes; eventually should raise MergeConflictError
-    with pytest.raises(Exception):
+    with pytest.raises(MergeConflictError) as exc_info:
         do_pull(bob_root, BOB, alice_cloud)
+    assert "title.txt" in exc_info.value.paths

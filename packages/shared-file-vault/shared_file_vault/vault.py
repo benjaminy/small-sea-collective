@@ -399,9 +399,7 @@ def _is_checkout_clean(checkout_path, git_dir):
     to understand the tracked/untracked distinction, and hiding untracked
     files from the check could mask path-collision cases during merge.
 
-    Always called with the user's checkout_path, never with the transit
-    work tree (transit always resets itself to HEAD before use, so checking
-    it would silently pass even when the user's checkout is dirty).
+    Always called with the user's checkout_path.
     """
     if not pathlib.Path(checkout_path).exists():
         return False
