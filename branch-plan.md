@@ -30,6 +30,8 @@ What still looks unresolved relative to the original issue wording:
 - there is not yet evidence that every other active sender device in the team automatically redistributes sender-key material to the new device
 - there is not yet evidence that the "payload 3" return trip has a settled product transport beyond manual or test-local handoff
 - the strongest existing historical-boundary test depends on Cuttlefish behavior, and this repo has treated some of that crypto surface as placeholder code during pre-alpha development
+- interrupted-flow and retry behavior is not yet fully audited across all four linked-team bootstrap stages: `prepare`, `create`, `finalize`, and `complete`
+- one current test appears to assert destruction of the `linked_team_bootstrap_session` table itself rather than simple row cleanup, and the intended lifecycle of that storage is not yet documented
 - the issue text still reads like a design-and-implement ticket, while the code now looks closer to "audit, tighten, document, and decide whether the remaining gap belongs in a follow-up issue"
 
 This branch should start by treating issue #69 as an assumptions audit, not as greenfield design work.
@@ -116,9 +118,9 @@ Minimum permanent target:
 
 - update `packages/small-sea-manager/spec.md` with the current linked-device bootstrap slice and its explicit boundaries
 
-Optional additional target if helpful:
+Required additional target:
 
-- a closing or status comment on GitHub issue `#69` summarizing what changed and which follow-up gaps remain
+- a closing or status comment on GitHub issue `#69` summarizing what changed, what the branch now proves, and which follow-up gaps remain so the issue no longer reads like untouched design work
 
 ### 2. Validate the currently implemented same-member bootstrap slice end to end
 
@@ -132,7 +134,10 @@ Confirm that the present flow really provides all of the following:
 - the new device cannot decrypt pre-bootstrap sender-key history
 - retry/finalize behavior remains idempotent for interrupted local execution
 - prepare-stage interrupted-flow behavior is either made safe/idempotent or documented as a current limitation
+- create-stage repeated submission behavior is either made safe/idempotent or documented as a current limitation
+- complete-stage interrupted-flow behavior is either made safe/idempotent or documented as a current limitation
 - the current transport story for the joining device's return payload is stated honestly in code or docs rather than being left implicit in test-only wiring
+- the lifecycle of `linked_team_bootstrap_session` storage is stated honestly: whether it is meant to persist as reusable schema, be truncated, or be recreated as part of local-state initialization
 
 ### 3. Tighten implementation only where the audit finds a real gap
 
@@ -145,6 +150,7 @@ Examples of acceptable work here:
 - adding or correcting a missing micro test
 - updating a spec that still describes the pre-reorganization layout
 - replacing a brittle raw path reference in tests with a helper-backed lookup if that improves integrity without broadening scope
+- clarifying or correcting bootstrap-session table lifecycle behavior if the current test is asserting an accidental implementation detail
 
 Examples of work that do **not** belong here unless the audit proves they are already required for #69:
 
@@ -168,6 +174,8 @@ That decision should explicitly address:
 - whether payload 3 transport is intentionally manual in this slice
 - what user-visible expectation we set for linked-device history access
 - whether per-team bootstrap is intentionally required independently for each known team on a linked device
+- whether retry semantics across `prepare` / `create` / `finalize` / `complete` are strong enough to present as intended behavior versus current limitation
+- whether `linked_team_bootstrap_session` teardown behavior is deliberate design or brittle fallout from current initialization details
 
 ## Out Of Scope
 
@@ -190,6 +198,8 @@ That decision should explicitly address:
 - If payload 3 currently depends on manual return transport, that should be named as the current slice boundary, not hidden behind direct function calls in micro tests.
 - The honest historical boundary is a security choice, but it is also a product expectation problem. If the code keeps the current forward-only behavior, the docs/specs should say that prominently enough that a user would not infer full history sync from the phrase "linked device."
 - The branch should examine prepare-stage re-entry and decide whether repeated `prepare_linked_device_team_join(...)` should reuse an in-flight bootstrap session, invalidate the old one explicitly, or remain a documented limitation.
+- The branch should examine retry behavior for `create_linked_device_bootstrap(...)` and `complete_linked_device_bootstrap(...)`, not just finalize, because crash windows on the authorizing side matter too.
+- The audit should confirm whether destroying the `linked_team_bootstrap_session` table is intentional local-state lifecycle design or just an implementation artifact that the current test accidentally bakes in.
 - The audit should note fragile couplings even if they are not all fixed here, including direct imports of private Cuttlefish helpers and raw test-path construction that bypasses path helpers.
 
 ## Validation
@@ -202,13 +212,15 @@ The validation bar for this branch should be unusually explicit so a skeptical r
 - run any adjacent sender-key or identity/bootstrap micro tests touched by the changes
 - if the audit reveals a missing behavior claim, add a focused micro test that fails before the fix and passes after it
 - confirm with tests that pre-bootstrap encrypted history is still unreadable on the newly linked device, while describing this as repo-local protocol evidence rather than definitive crypto assurance if the underlying Cuttlefish layer is still placeholder
-- if possible, add or tighten one focused check that makes the current redistribution boundary visible rather than leaving it as an unstated assumption
+- add or tighten at least one focused check that makes the current redistribution boundary visible rather than leaving it as an unstated assumption if the branch continues to claim the new device is only partially live/visible after same-member bootstrap
 
 Preferred focused checks if this branch adds tests:
 
 - a "Bob exists too" scenario where Device B completes same-member bootstrap but still lacks Bob's sender-key distribution afterward
 - a negative cross-member scenario showing that a join request for Member B cannot be accepted as if it belonged to Member A
 - a prepare-stage re-entry scenario covering crash/retry before finalize
+- a create-stage duplicate-submission scenario on the authorizing device
+- a complete-stage crash/retry scenario on the authorizing device
 
 ### Integrity proof
 
@@ -219,6 +231,17 @@ Preferred focused checks if this branch adds tests:
 - make any manual transport assumptions around payload 3 explicit so a reviewer can distinguish protocol completeness from test harness convenience
 - make the "payload 0" prerequisite equally explicit so a reviewer can distinguish team discovery/baseline delivery from team bootstrap itself
 - flag fragile couplings discovered during the audit, even if some are deferred, such as private-symbol imports from Cuttlefish
+- confirm that the `spec.md` update is substantive enough to be useful later, not merely a token note that linked-device bootstrap exists
+
+Minimum `packages/small-sea-manager/spec.md` update content:
+
+- state that linked-device bootstrap is per-team, not implied for every known team
+- name the "payload 0" prerequisite: team discovery and readable baseline come first
+- describe the current same-member bootstrap flow at a short step-by-step level
+- state the honest historical boundary for old encrypted sender-key traffic
+- state the current redistribution boundary for other senders/devices
+- state the current transport/status of payload 3
+- name any retry/idempotency limitations that remain after this branch
 
 ### Skeptic-facing wrap-up
 
@@ -232,3 +255,8 @@ The final branch summary should answer these questions directly:
 6. Is payload 3 still a manual return-trip in this slice, and if so, where is that boundary documented?
 7. What is the explicit "payload 0" prerequisite for team discovery and readable baseline state before linked-team bootstrap starts?
 8. Which findings are protocol/product-boundary clarifications versus true cryptographic assurances?
+
+Item 8 should be presented as a labeled list with one line per claim, so a reviewer can quickly distinguish:
+
+- `Protocol/Product Boundary:` claims about scope, transport, prerequisites, and user-visible behavior
+- `Cryptographic Assurance:` claims that actually depend on trusting the underlying crypto implementation
