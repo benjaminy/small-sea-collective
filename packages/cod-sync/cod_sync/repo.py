@@ -8,6 +8,7 @@ Work-tree-requiring methods raise NoWorkTreeError in that mode.
 """
 
 import pathlib
+from typing import List, Optional, Dict, Union
 
 from cod_sync.protocol import GitCmdFailed, gitCmd as _gitCmd
 
@@ -19,7 +20,7 @@ class RepoError(Exception):
     debugging but is not part of the advertised API.
     """
 
-    def __init__(self, message, cause=None):
+    def __init__(self, message: str, cause: Optional[Exception] = None):
         super().__init__(message)
         self.cause = cause
 
@@ -27,7 +28,7 @@ class RepoError(Exception):
 class NoWorkTreeError(RepoError):
     """Raised when a work-tree method is called on a CACHED Repo."""
 
-    def __init__(self, method_name, git_dir):
+    def __init__(self, method_name: str, git_dir: pathlib.Path):
         super().__init__(
             f"{method_name}() requires a work_tree but Repo({git_dir}) is in CACHED mode"
         )
@@ -36,7 +37,7 @@ class NoWorkTreeError(RepoError):
 class ConflictError(RepoError):
     """Raised by merge() when the merge leaves unresolved conflicts."""
 
-    def __init__(self, conflict_paths):
+    def __init__(self, conflict_paths: List[str]):
         super().__init__(f"Merge conflict in: {', '.join(conflict_paths)}")
         self.conflict_paths = conflict_paths
 
@@ -47,30 +48,40 @@ class Repo:
     work_tree=None means CACHED mode (bare-style, no checkout files).
     """
 
-    def __init__(self, git_dir, work_tree=None):
+    def __init__(
+        self, git_dir: Union[str, pathlib.Path], work_tree: Optional[Union[str, pathlib.Path]] = None
+    ):
         self.git_dir = pathlib.Path(git_dir)
         self.work_tree = pathlib.Path(work_tree) if work_tree else None
+
+    def with_work_tree(self, work_tree: Union[str, pathlib.Path]) -> "Repo":
+        """Return a new Repo instance with the same git_dir and a new work_tree."""
+        return Repo(self.git_dir, work_tree)
+
+    def config(self, key: str, value: str):
+        """Set a config value in the repository."""
+        self._run(["config", key, value])
 
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
 
-    def _base_args(self):
+    def _base_args(self) -> List[str]:
         """git args that identify this repo for any command."""
         return ["--git-dir", str(self.git_dir)]
 
-    def _wt_args(self):
+    def _wt_args(self) -> List[str]:
         """Additional args when a work-tree is needed."""
         return ["--work-tree", str(self.work_tree)]
 
-    def _run(self, extra_args, raise_on_error=True):
+    def _run(self, extra_args: List[str], raise_on_error: bool = True):
         """Run a git command with the repo's identity args prepended."""
         try:
             return _gitCmd(self._base_args() + extra_args, raise_on_error=raise_on_error)
         except GitCmdFailed as exc:
             raise RepoError(str(exc), cause=exc) from exc
 
-    def _run_wt(self, extra_args, raise_on_error=True, method_name="<unknown>"):
+    def _run_wt(self, extra_args: List[str], raise_on_error: bool = True, method_name: str = "<unknown>"):
         """Run a git command that requires the work-tree."""
         if self.work_tree is None:
             raise NoWorkTreeError(method_name, self.git_dir)
@@ -87,7 +98,7 @@ class Repo:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def init(git_dir, initial_branch="main"):
+    def init(git_dir: Union[str, pathlib.Path], initial_branch: str = "main") -> "Repo":
         """Create a new repo at git_dir with core.bare=false.
 
         Uses bare-init so that git_dir IS the git directory (no .git/
@@ -105,25 +116,25 @@ class Repo:
     # Read-only introspection (safe in CACHED and CHECKED_OUT modes)
     # ------------------------------------------------------------------ #
 
-    def head(self):
+    def head(self) -> Optional[str]:
         """Return the SHA of HEAD, or None if the repo has no commits."""
         result = self._run(["rev-parse", "HEAD"], raise_on_error=False)
         if result.returncode != 0:
             return None
         return result.stdout.strip() or None
 
-    def has_commits(self):
+    def has_commits(self) -> bool:
         """Return True if HEAD resolves to a commit."""
         return self.head() is not None
 
-    def resolve_ref(self, ref_name):
+    def resolve_ref(self, ref_name: str) -> Optional[str]:
         """Return the SHA for ref_name, or None if it doesn't exist."""
         result = self._run(["rev-parse", "--verify", ref_name], raise_on_error=False)
         if result.returncode != 0:
             return None
         return result.stdout.strip() or None
 
-    def is_ancestor(self, maybe_ancestor, descendant="HEAD"):
+    def is_ancestor(self, maybe_ancestor: str, descendant: str = "HEAD") -> bool:
         """Return True if maybe_ancestor is an ancestor of descendant."""
         result = self._run(
             ["merge-base", "--is-ancestor", maybe_ancestor, descendant],
@@ -131,7 +142,7 @@ class Repo:
         )
         return result.returncode == 0
 
-    def log(self, limit=10):
+    def log(self, limit: int = 10) -> List[Dict[str, str]]:
         """Return up to limit log entries as list of dicts with 'sha' and 'message'."""
         result = self._run(
             ["log", f"--max-count={limit}", "--oneline", "--format=%H %s"],
@@ -151,7 +162,7 @@ class Repo:
     # Work-tree operations (require work_tree to be set)
     # ------------------------------------------------------------------ #
 
-    def status(self):
+    def status(self) -> List[Dict[str, str]]:
         """Return porcelain status as list of dicts with 'xy' and 'path'."""
         result = self._run_wt(
             ["status", "--porcelain"], method_name="status"
@@ -163,14 +174,14 @@ class Repo:
             entries.append({"xy": line[:2], "path": line[3:]})
         return entries
 
-    def stage(self, files=None):
+    def stage(self, files: Optional[List[str]] = None):
         """Stage files for commit. If files is None, stages everything."""
         if files is None:
             self._run_wt(["add", "--all"], method_name="stage")
         else:
             self._run_wt(["add", "--"] + list(files), method_name="stage")
 
-    def commit(self, message):
+    def commit(self, message: str) -> Optional[str]:
         """Commit staged changes. Returns the new SHA, or None if nothing staged."""
         check = self._run_wt(
             ["diff", "--cached", "--quiet"], raise_on_error=False, method_name="commit"
@@ -184,14 +195,14 @@ class Repo:
         """Refresh work tree to HEAD (git checkout HEAD -- .)."""
         self._run_wt(["checkout", "HEAD", "--", "."], method_name="checkout_head")
 
-    def checkout_branch(self, branch, start_point=None):
+    def checkout_branch(self, branch: str, start_point: Optional[str] = None):
         """Create or reset branch to start_point (or HEAD if omitted)."""
         args = ["checkout", "-B", branch]
         if start_point is not None:
             args.append(start_point)
         self._run_wt(args, method_name="checkout_branch")
 
-    def merge(self, ref):
+    def merge(self, ref: str):
         """Merge ref into the current branch. Raises ConflictError on conflicts."""
         result = self._run_wt(
             ["merge", ref], raise_on_error=False, method_name="merge"
@@ -203,7 +214,7 @@ class Repo:
             # Non-conflict failure — wrap as generic RepoError
             raise RepoError(f"merge {ref!r} failed (exit {result.returncode})")
 
-    def conflict_paths(self):
+    def conflict_paths(self) -> List[str]:
         """Return list of paths with unresolved conflicts."""
         result = self._run_wt(
             ["diff", "--name-only", "--diff-filter=U"],

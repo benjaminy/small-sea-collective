@@ -1365,8 +1365,7 @@ def _initialize_user_db(root_dir, ident, nickname, device):
     )
 
     repo_dir = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
-    CodSync.gitCmd(["init", "-b", "main", str(repo_dir)])
-    nts_repo = _Repo(repo_dir / ".git", repo_dir)
+    nts_repo = _Repo.init(repo_dir / ".git").with_work_tree(repo_dir)
     nts_repo.stage(["core.db"])
     nts_repo.commit("Welcome to Small Sea Collective")
 
@@ -1575,8 +1574,9 @@ def prepare_identity_bootstrap(root_dir, welcome_bundle_b64):
         conn.commit()
 
     sync_dir = participant_dir / "NoteToSelf" / "Sync"
-    if not (sync_dir / ".git").exists():
-        CodSync.gitCmd(["init", "-b", "main", str(sync_dir)])
+    repo = _Repo(sync_dir / ".git", sync_dir)
+    if not repo.git_dir.exists():
+        _Repo.init(repo.git_dir)
 
     return {
         "participant_hex": bundle.participant_hex,
@@ -1646,7 +1646,7 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
     fetched_sha = cod.fetch_from_remote(["main"])
     if fetched_sha is None:
         raise RuntimeError("Failed to fetch NoteToSelf during identity bootstrap")
-    CodSync.gitCmd(["-C", str(sync_dir), "checkout", "main"])
+    _Repo(sync_dir / ".git", sync_dir).checkout_branch("main", start_point=fetched_sha)
     return finalize_identity_bootstrap(root_dir, prepared)
 
 
@@ -2473,14 +2473,8 @@ def _install_sqlite_merge_driver(team_sync_dir):
         merge_bin = "splice-sqlite-merge"
 
     driver_cmd = f"{merge_bin} %O %A %B %L %P"
-    CodSync.gitCmd(
-        [
-            "-C",
-            str(team_sync_dir),
-            "config",
-            "merge.splice-sqlite.driver",
-            driver_cmd,
-        ]
+    _Repo(team_sync_dir / ".git", team_sync_dir).config(
+        "merge.splice-sqlite.driver", driver_cmd
     )
 
 
@@ -3591,9 +3585,8 @@ def create_team(root_dir, participant_hex, team_name):
         )
 
     # --- Git init ---
-    CodSync.gitCmd(["init", "-b", "main", str(team_sync_dir)])
+    repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
     _install_sqlite_merge_driver(team_sync_dir)
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db", ".gitattributes"])
     repo.commit(f"New team: {team_name}")
 
@@ -3745,7 +3738,7 @@ def accept_invitation(
     # Use git init + fetch_from_remote + checkout rather than clone_from_remote,
     # so this works when the workspace lives inside an existing git repo.
 
-    CodSync.gitCmd(["init", "-b", "main", str(team_sync_dir)])
+    repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
 
     saved_cwd = os.getcwd()
     os.chdir(team_sync_dir)
@@ -3760,7 +3753,7 @@ def accept_invitation(
             raise RuntimeError(
                 f"Failed to fetch team repo from inviter's cloud (code {result}; {inviter_url})"
             )
-        CodSync.gitCmd(["checkout", "main"])
+        repo.checkout_branch("main", start_point=result)
     finally:
         os.chdir(saved_cwd)
 

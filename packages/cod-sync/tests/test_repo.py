@@ -233,3 +233,126 @@ def test_no_work_tree_error_on_cached_repo(scratch_dir):
 
     with pytest.raises(NoWorkTreeError):
         repo.status()
+
+
+# ---------------------------------------------------------------------------
+# resolve_ref
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_ref(scratch_dir):
+    work = pathlib.Path(scratch_dir) / "work"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+
+    (work / "f.txt").write_text("v1\n")
+    repo.stage(["f.txt"])
+    sha = repo.commit("c1")
+
+    assert repo.resolve_ref("main") == sha
+    assert repo.resolve_ref("HEAD") == sha
+    assert repo.resolve_ref("nonexistent") is None
+
+
+# ---------------------------------------------------------------------------
+# is_ancestor
+# ---------------------------------------------------------------------------
+
+
+def test_is_ancestor(scratch_dir):
+    work = pathlib.Path(scratch_dir) / "work"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+
+    (work / "f.txt").write_text("v1\n")
+    repo.stage(["f.txt"])
+    sha1 = repo.commit("c1")
+
+    (work / "f.txt").write_text("v2\n")
+    repo.stage(["f.txt"])
+    sha2 = repo.commit("c2")
+
+    assert repo.is_ancestor(sha1, sha2) is True
+    assert repo.is_ancestor(sha2, sha1) is False
+    assert repo.is_ancestor(sha1, "HEAD") is True
+
+
+# ---------------------------------------------------------------------------
+# log
+# ---------------------------------------------------------------------------
+
+
+def test_log(scratch_dir):
+    work = pathlib.Path(scratch_dir) / "work"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+
+    repo.log()  # Should handle empty repo (return [])
+
+    (work / "f.txt").write_text("v1\n")
+    repo.stage(["f.txt"])
+    repo.commit("first")
+
+    (work / "f.txt").write_text("v2\n")
+    repo.stage(["f.txt"])
+    repo.commit("second")
+
+    entries = repo.log(limit=5)
+    assert len(entries) == 2
+    assert entries[0]["message"] == "second"
+    assert entries[1]["message"] == "first"
+    assert len(entries[0]["sha"]) == 40
+
+
+# ---------------------------------------------------------------------------
+# checkout_branch
+# ---------------------------------------------------------------------------
+
+
+def test_checkout_branch(scratch_dir):
+    work = pathlib.Path(scratch_dir) / "work"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+
+    (work / "f.txt").write_text("base\n")
+    repo.stage(["f.txt"])
+    repo.commit("base")
+
+    repo.checkout_branch("feature")
+    (work / "f.txt").write_text("feature\n")
+    repo.stage(["f.txt"])
+    repo.commit("feature commit")
+
+    assert repo.resolve_ref("feature") == repo.head()
+    assert (work / "f.txt").read_text() == "feature\n"
+
+    # Switch back to main. To avoid resetting main to feature (HEAD),
+    # we must specify main as the start point.
+    repo.checkout_branch("main", start_point="main")
+    assert (work / "f.txt").read_text() == "base\n"
+
+
+# ---------------------------------------------------------------------------
+# with_work_tree
+# ---------------------------------------------------------------------------
+
+
+def test_with_work_tree(scratch_dir):
+    git_dir = pathlib.Path(scratch_dir) / "repo.git"
+    work_tree = pathlib.Path(scratch_dir) / "work"
+    work_tree.mkdir()
+
+    repo_cached = Repo.init(git_dir)
+    assert repo_cached.work_tree is None
+
+    repo_wt = repo_cached.with_work_tree(work_tree)
+    assert repo_wt.git_dir == git_dir
+    assert repo_wt.work_tree == work_tree
+
+    # Verify repo_wt can perform work-tree ops
+    (work_tree / "f.txt").write_text("hello\n")
+    # Need identity for commit
+    _git_config(git_dir)
+    repo_wt.stage(["f.txt"])
+    repo_wt.commit("msg")
+    assert repo_wt.head() is not None

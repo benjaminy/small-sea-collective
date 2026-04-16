@@ -43,7 +43,7 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=11437, _h
     fetched_sha = cod.fetch_from_remote(["main"])
     if fetched_sha is None:
         raise RuntimeError("Failed to fetch NoteToSelf during identity bootstrap")
-    CodSyncProtocol.gitCmd(["-C", str(sync_dir), "checkout", "main"])
+    _Repo(sync_dir / ".git", sync_dir).checkout_branch("main", start_point=fetched_sha)
     return provisioning.finalize_identity_bootstrap(root_dir, prepared)
 
 
