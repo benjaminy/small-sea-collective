@@ -104,6 +104,7 @@ from small_sea_note_to_self.sender_keys import (
     deserialize_distribution_message,
     deserialize_sender_key_record,
     distribution_message_from_record,
+    load_peer_sender_key,
     load_team_sender_key,
     receiver_record_from_distribution,
     save_peer_sender_key,
@@ -269,6 +270,28 @@ def _linked_team_bootstrap_session_row(root_dir, participant_hex: str, bootstrap
         ).fetchone()
 
 
+def _open_linked_team_bootstrap_session_for_team(root_dir, participant_hex: str, team_id: bytes):
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        conn.row_factory = sqlite3.Row
+        return conn.execute(
+            """
+            SELECT bootstrap_id, team_id, device_id, team_device_public_key,
+                   team_device_private_key, x3dh_identity_dh_public_key,
+                   x3dh_identity_dh_private_key, x3dh_identity_signing_public_key,
+                   x3dh_identity_signing_private_key, signed_prekey_id,
+                   signed_prekey_public_key, signed_prekey_private_key,
+                   one_time_prekey_id, one_time_prekey_public_key,
+                   one_time_prekey_private_key, ratchet_state_json, finalized_at,
+                   response_payload_json, created_at
+            FROM linked_team_bootstrap_session
+            WHERE team_id = ? AND finalized_at IS NULL
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (team_id,),
+        ).fetchone()
+
+
 def _store_linked_team_bootstrap_session(
     root_dir,
     participant_hex: str,
@@ -420,6 +443,17 @@ def _clear_pending_linked_team_bootstrap(root_dir, participant_hex: str, bootstr
             (bootstrap_id,),
         )
         conn.commit()
+
+
+def _distribution_matches_record(distribution, record) -> bool:
+    return (
+        record.group_id == distribution.group_id
+        and record.sender_device_key_id == distribution.sender_device_key_id
+        and record.chain_id == distribution.sender_chain_id
+        and record.iteration == distribution.iteration
+        and record.chain_key == distribution.chain_key
+        and record.signing_public_key == distribution.signing_public_key
+    )
 
 
 REDISTRIBUTION_ONE_TIME_PREKEY_COUNT = 5
@@ -2006,6 +2040,15 @@ def prepare_linked_device_team_join(root_dir, participant_hex, team_name):
     existing_sender_key = load_team_sender_key(device_local_db_path(root_dir, participant_hex), team_id)
     if existing_sender_key is not None:
         raise ValueError(f"Device already has an active sender key for team '{team_name}'")
+    existing_session = _open_linked_team_bootstrap_session_for_team(
+        root_dir,
+        participant_hex,
+        team_id,
+    )
+    if existing_session is not None:
+        raise ValueError(
+            f"Linked-team bootstrap already in progress for team '{team_name}'"
+        )
 
     team_device_key, team_device_private_key = generate_key_pair(ProtectionLevel.DAILY)
     x3dh_identity = generate_identity_key_pair()
@@ -2405,26 +2448,49 @@ def complete_linked_device_bootstrap(
     team_id, member_id = _team_row(root_dir, participant_hex, team_name)
 
     pending = _load_pending_linked_team_bootstrap(root_dir, participant_hex, bootstrap_id)
-    if pending is None:
-        raise ValueError("No pending linked-team bootstrap breadcrumb found")
-    if pending["team_id"] != team_id:
-        raise ValueError("Pending bootstrap breadcrumb belongs to a different team")
-    if distribution.sender_device_key_id != key_id_from_public(
-        pending["peer_team_device_public_key"]
-    ):
-        raise ValueError("Payload 3 sender stream does not match the pending proposed key")
+    trusted_keys = get_trusted_device_keys_for_member(
+        root_dir, participant_hex, team_name, member_id
+    )
+    trusted_key_by_id = {
+        key_id_from_public(public_key): public_key
+        for public_key in trusted_keys
+    }
+
+    peer_public_key = None
+    if pending is not None:
+        if pending["team_id"] != team_id:
+            raise ValueError("Pending bootstrap breadcrumb belongs to a different team")
+        if distribution.sender_device_key_id != key_id_from_public(
+            pending["peer_team_device_public_key"]
+        ):
+            raise ValueError("Payload 3 sender stream does not match the pending proposed key")
+        peer_public_key = pending["peer_team_device_public_key"]
+        if peer_public_key not in trusted_keys:
+            raise ValueError("Pending bootstrap key is not trusted for this member")
+    else:
+        peer_public_key = trusted_key_by_id.get(distribution.sender_device_key_id)
+        if peer_public_key is None:
+            raise ValueError("No pending linked-team bootstrap breadcrumb found")
+
     if not _verify_signature(
-        pending["peer_team_device_public_key"],
+        peer_public_key,
         payload_bytes,
         bytes.fromhex(payload["team_device_signature"]),
     ):
         raise ValueError("Payload 3 team-device signature is invalid")
 
-    trusted_keys = get_trusted_device_keys_for_member(
-        root_dir, participant_hex, team_name, member_id
+    existing_record = load_peer_sender_key(
+        device_local_db_path(root_dir, participant_hex),
+        team_id,
+        distribution.sender_device_key_id,
     )
-    if pending["peer_team_device_public_key"] not in trusted_keys:
-        raise ValueError("Pending bootstrap key is not trusted for this member")
+    if pending is None:
+        if existing_record is None or not _distribution_matches_record(distribution, existing_record):
+            raise ValueError("No pending linked-team bootstrap breadcrumb found")
+        return {
+            "bootstrap_id_hex": bootstrap_id.hex(),
+            "sender_device_key_id_hex": distribution.sender_device_key_id.hex(),
+        }
 
     save_peer_sender_key(
         device_local_db_path(root_dir, participant_hex),
