@@ -3,6 +3,65 @@
 Branch: `issue-13-vault-peer-update-ux`
 Tracking issue: [#13 — SharedFileVault — teammate update detection and pull UX](https://github.com/benjaminy/small-sea-collective/issues/13)
 
+## What landed
+
+### 1. Signal-count watermark persistence (`sync.py`)
+
+Vault config now stores `[peer_signal_watermarks."{team}"."{member_id}"] = int`.
+Helpers: `get_signal_watermark`, `set_signal_watermark`, `clear_signal_watermark`.
+`load_config` defaults the table to `{}` for older configs.
+`_dump_toml` serializes it with quoted TOML keys, consistent with `team_sessions`.
+
+### 2. Observe-before-fetch watermark advance (`fetch_via_hub`)
+
+`fetch_via_hub` snapshots the peer's `signal_count` from `GET /session/peers`
+before the actual fetch, then writes it as the new watermark on success.
+A `try/except` ensures peer-listing failures never block the fetch.
+The phantom-hint trade-off (one extra round-trip if the peer pushes
+concurrently) is documented in both code and this plan.
+
+### 3. `PeerUpdateStatus` signal fields
+
+`current_signal_count`, `last_seen_signal_count` added as dataclass fields.
+`has_unfetched_hint` added as a `@property`.
+`peer_update_status()` accepts `current_signal_count=` kwarg and reads the
+watermark from config to populate `last_seen_signal_count`.
+
+### 4. Peer-panel fragment endpoint and polling (`web.py`)
+
+New `GET /teams/{team}/niches/{niche}/peer_panel` returns the peer-panel
+HTML fragment only.
+`_build_peers` helper threads `signal_count` from `session_peers()` into
+`peer_update_status`, shared by both the full niche-detail and the fragment
+endpoint.
+`signal_count` from `list_team_peers` now flows into `peer_update_status`
+via `_build_peers`.
+
+### 5. UI copy, badge, and polling (`peer_panel.html`, `niche_detail.html`)
+
+`●` badge beside peer label when `has_unfetched_hint and not ready_to_merge
+and not already_merged`.
+Copy: "Has changes since your last fetch" (status tone, not prompt tone).
+Legend line: "team-scoped, approximate."
+Peer-panel container has a unique sanitized ID
+(`peer-panel-{team}-{niche}` with spaces/slashes replaced by `-`).
+`hx-trigger="every 20s[document.visibilityState === 'visible']"` polls the
+fragment endpoint, pausing when the tab is hidden.
+
+### 6. Tests
+
+9 new tests covering: watermark round-trip, persistence alongside session
+tokens, hint flip logic (`has_unfetched_hint` True/False), watermark advance
+on fetch (using seeded `peer_counts`), other-peer isolation, peer-panel
+fragment with no session vs. active session, and the full
+hint-on → fetch → hint-off integration flow.
+All 59 shared-file-vault tests pass.
+
+### 7. Follow-up issues filed
+
+- [#92](https://github.com/benjaminy/small-sea-collective/issues/92) — per-niche attribution via registry-diff
+- [#93](https://github.com/benjaminy/small-sea-collective/issues/93) — SSE push-refresh via `/notifications/watch`
+
 ## Context
 
 Issue #5's Hub-backed sync layer is in place (see
