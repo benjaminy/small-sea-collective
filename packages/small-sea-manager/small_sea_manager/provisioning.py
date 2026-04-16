@@ -25,7 +25,6 @@ from sqlalchemy.orm import Session, declarative_base
 Base = declarative_base()
 
 import shutil
-import subprocess
 
 
 def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
