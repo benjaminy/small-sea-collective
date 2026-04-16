@@ -219,6 +219,121 @@ Per-team join remains a separate later flow:
 3. A device already participating in that team issues the necessary trust
    material (`membership` / `device_link`).
 
+#### Linked-device team bootstrap into an existing team
+
+The current implemented slice is **per-team** and **same-member**: an already
+linked device can be bootstrapped into one existing team by another device that
+already belongs to the same participant in that team. This is not a blanket
+"join every known team" operation. Each team is bootstrapped independently.
+
+Protocol/product boundary:
+
+- **Payload 0 prerequisite** — Before linked-team bootstrap begins, the joining
+  device must already know the team exists in shared NoteToSelf and must already
+  have a readable baseline clone of that team's repo. The current same-member
+  bootstrap flow does **not** solve team discovery or baseline delivery by
+  itself.
+  Evidence: `prepare_linked_device_team_join(...)` looks up the team from the
+  local NoteToSelf `team` row via `_team_row(...)` in
+  `small_sea_manager/provisioning.py`; the micro tests still prepare that team
+  baseline explicitly with `_copy_team_baseline(...)` in
+  `tests/test_linked_device_bootstrap.py`.
+- **Scope of the current slice** — The current flow bootstraps the new device
+  into one team using a sibling device of the same member. It does not
+  automatically redistribute every other sender device's sender key to the new
+  device.
+  Evidence: the flow is implemented in
+  `prepare_linked_device_team_join(...)`,
+  `create_linked_device_bootstrap(...)`,
+  `finalize_linked_device_bootstrap(...)`, and
+  `complete_linked_device_bootstrap(...)` in
+  `small_sea_manager/provisioning.py`. The concrete "Bob exists too" boundary
+  is exercised in
+  `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
+  in `tests/test_linked_device_bootstrap.py`.
+- **Payload 3 transport status** — The joining device still returns its sender
+  distribution payload to the authorizing device as an explicit follow-up
+  artifact. This slice does not yet define a fully automatic Hub-mediated
+  return path.
+  Evidence: `finalize_linked_device_bootstrap(...)` returns
+  `sender_distribution_payload`, and `complete_linked_device_bootstrap(...)`
+  consumes it in `small_sea_manager/provisioning.py`.
+
+Current same-member flow:
+
+1. The joining device calls `prepare_linked_device_team_join(...)`, generates a
+   fresh team-device keypair plus X3DH prekeys, stores the bootstrap session in
+   device-local NoteToSelf state, and emits a signed join-request bundle.
+   Evidence: `prepare_linked_device_team_join(...)` and the
+   `linked_team_bootstrap_session` table in
+   `small-sea-note-to-self/small_sea_note_to_self/sql/device_local_schema.sql`.
+2. An already-live sibling device calls `create_linked_device_bootstrap(...)`,
+   verifies the NoteToSelf signature and proposed team-device signature, issues
+   the `device_link` cert, encrypts the current sender-key distribution through
+   X3DH + ratchet, and records a pending bootstrap breadcrumb.
+   Evidence: `create_linked_device_bootstrap(...)` in
+   `small_sea_manager/provisioning.py`.
+3. The joining device calls `finalize_linked_device_bootstrap(...)`, verifies
+   the cert and authorizing device signature, stores the sibling device's sender
+   state locally, persists its own team-device key, initializes its own sender
+   state, stores the `device_link` cert in the local team DB, and emits payload
+   3.
+   Evidence: `finalize_linked_device_bootstrap(...)` in
+   `small_sea_manager/provisioning.py`.
+4. The authorizing sibling device calls `complete_linked_device_bootstrap(...)`
+   and stores the joining device's sender state as a peer receiver record.
+   Evidence: `complete_linked_device_bootstrap(...)` in
+   `small_sea_manager/provisioning.py`.
+
+Historical boundary and visibility:
+
+- The newly linked device starts with fresh sender-key state. It does **not**
+  receive old sender-chain state for messages sent before bootstrap completed.
+  Evidence: `test_linked_device_bootstrap_round_trip_same_member` asserts that
+  a pre-bootstrap encrypted message cannot be decrypted after bootstrap.
+- That test is **repo-local protocol evidence**, not a full cryptographic
+  assurance. It depends on current Cuttlefish group-encryption behavior in a
+  pre-alpha repo where crypto internals are still evolving.
+  Evidence: `group_encrypt(...)` / `group_decrypt(...)` in
+  `packages/cuttlefish/cuttlefish/group.py`, plus the linked-device bootstrap
+  test above.
+- After same-member bootstrap, the new device can read future traffic from the
+  sibling device that bootstrapped it, but it may still be blind to future
+  traffic from other senders until those senders redistribute their own sender
+  keys.
+  Evidence: `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
+  in `tests/test_linked_device_bootstrap.py`.
+
+Retry/idempotency status in the current slice:
+
+- Repeating `prepare_linked_device_team_join(...)` while an unfinalized bootstrap
+  session already exists for the same team is rejected rather than silently
+  orphaning the first session.
+  Evidence: `prepare_linked_device_team_join(...)` and
+  `test_linked_device_bootstrap_prepare_reentry_is_rejected`.
+- Repeating `finalize_linked_device_bootstrap(...)` for the same bootstrap bundle
+  is idempotent once the response payload has been stored.
+  Evidence: `finalize_linked_device_bootstrap(...)` and
+  `test_linked_device_bootstrap_retry_after_interrupted_finalize_is_idempotent`.
+- Repeating `complete_linked_device_bootstrap(...)` with the same signed payload
+  is idempotent after the peer sender state has already been stored, even if the
+  previous attempt crashed before clearing the pending breadcrumb.
+  Evidence: `complete_linked_device_bootstrap(...)` and
+  `test_linked_device_bootstrap_retry_after_interrupted_complete_is_idempotent`.
+- Repeating `create_linked_device_bootstrap(...)` for the same request is **not
+  yet** specified as idempotent in this slice and should be treated as a current
+  limitation until the branch or a follow-up issue defines that behavior more
+  tightly.
+
+Storage boundary:
+
+- Linked-team bootstrap session state is device-local NoteToSelf state, not
+  shared NoteToSelf sync state. The `linked_team_bootstrap_session` table lives
+  in `NoteToSelf/Local/device_local.db` and persists as normal local schema; it
+  is not a shared `NoteToSelf/Sync/core.db` table.
+  Evidence: `small-sea-note-to-self/small_sea_note_to_self/sql/device_local_schema.sql`
+  and `test_linked_device_bootstrap_round_trip_same_member`.
+
 #### Unify with existing identity — secondary (oops) flow
 
 For the case where Small Sea was set up on a new device independently (creating a separate participant UUID) and the user wants to declare it the same person as an existing installation.
