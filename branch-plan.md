@@ -107,6 +107,19 @@ Tests should assert semantic equivalence at that level, not raw ciphertext
 equality, unless the implementation deliberately stores and replays the exact
 serialized response.
 
+That means the branch should consciously choose one implementation strategy if
+it goes with idempotent replay:
+
+- **store-and-replay**: persist the original bootstrap bundle (or the exact
+  response ingredients needed to reproduce it byte-for-byte) and return that on
+  retry
+- **re-derive-and-re-encrypt**: rebuild a logically equivalent bundle on retry,
+  accepting that encrypted bytes may differ
+
+Before choosing re-derive-and-re-encrypt, the branch should confirm whether
+`finalize_linked_device_bootstrap(...)` cares about exact response bytes versus
+only the signed semantic fields inside the bundle.
+
 ### 3. Do not confuse request replay with a new bootstrap attempt
 
 A second call with the exact same join request bundle is not the same thing as a
@@ -140,6 +153,9 @@ It should separately identify:
 
 - replay behavior after a completed successful create
 - crash-recovery behavior after partial writes but before a bundle was returned
+- whether current tests/fixtures already give us a real git repo in the team
+  `Sync/` directory so git-history assertions are actually possible without
+  extra harness work
 
 ### 2. Choose and implement one retry policy
 
@@ -155,6 +171,11 @@ The branch should also explicitly decide whether crash-mid-create recovery is in
 scope here or is being deferred. If deferred, the branch should document the
 current limitation clearly.
 
+If crash-mid-create is deferred, the branch should describe the exact stuck
+state, not just say "recovery is deferred." In particular, it should state what
+the system looks like if a crash lands after cert issuance but before breadcrumb
+write and bundle return.
+
 ### 3. Add focused micro tests
 
 Minimum required coverage:
@@ -168,6 +189,13 @@ Minimum required coverage:
 
 If the branch chooses idempotent replay, the test should prove that replay does
 not create spurious duplicate cert rows or inconsistent breadcrumbs.
+
+If the branch chooses store-and-replay, the test should prove the stored replay
+path is what later finalize expects.
+
+If the branch chooses re-derive-and-re-encrypt, the test should prove the
+newly generated bundle is still acceptable to
+`finalize_linked_device_bootstrap(...)`.
 
 ### 4. Update permanent docs
 
@@ -197,6 +225,10 @@ with a citation to the backing test or code path.
   same logical create step, that is probably a bug.
 - This branch should reuse the current `#69` documentation language instead of
   inventing a parallel description of the bootstrap flow.
+- If the branch relies on git-history assertions, it should first confirm the
+  playground/test fixture actually leaves a live git repo in the team `Sync/`
+  directory. If not, the plan should either add the needed fixture support or
+  narrow the validation claim honestly.
 
 ## Validation
 
@@ -220,6 +252,8 @@ with a citation to the backing test or code path.
 - avoid broad edits outside the linked-device bootstrap seam
 - confirm the chosen retry policy does not create duplicate git commits for the
   same logical create step
+- if crash-mid-create is deferred, confirm `spec.md` describes the actual
+  resulting stuck state rather than naming it only as an abstract limitation
 
 ## Skeptic-facing wrap-up
 
@@ -231,4 +265,6 @@ The final branch summary should answer:
 3. Which test proves the retry policy?
 4. Does the replay create duplicate certs, duplicate pending breadcrumbs, or
    extra commits?
-5. What remains intentionally outside this branch?
+5. If crash-mid-create is deferred, what exact state is the system left in
+   after the crash and how would an operator recognize that?
+6. What remains intentionally outside this branch?
