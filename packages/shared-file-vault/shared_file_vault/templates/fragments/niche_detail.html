@@ -25,50 +25,12 @@
       <button class="btn btn-primary" type="submit">Push</button>
     </form>
   </div>
-  {% if team_session_status == "active" %}
-    {% if peers %}
-    <div style="display:flex; gap:0.75rem; flex-wrap:wrap; margin-bottom:0.75rem">
-      {% for peer in peers %}
-      <div style="border:1px solid #d6d3d1; border-radius:0.75rem; padding:0.75rem; min-width:15rem">
-        <div style="font-weight:600; margin-bottom:0.5rem">{{ peer.label }}</div>
-        {% if peer.update_status.ready_to_merge and peer.update_status.parked_sha %}
-        <p class="notice notice-ok" style="margin-bottom:0.5rem; font-size:0.88rem">
-          Changes from this teammate are available ({{ peer.update_status.parked_sha[:8] }}).
-        </p>
-        {% elif peer.update_status.already_merged and peer.update_status.parked_sha %}
-        <p style="color:#57534e; font-size:0.88rem; margin-bottom:0.5rem">
-          Latest fetched ({{ peer.update_status.parked_sha[:8] }}) is already merged.
-        </p>
-        {% endif %}
-        <div style="display:flex; gap:0.5rem; flex-wrap:wrap">
-          <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/fetch"
-                hx-target="#niche-detail"
-                hx-swap="innerHTML">
-            <input type="hidden" name="from_member_id" value="{{ peer.member_id }}">
-            <button class="btn btn-secondary" type="submit">
-              Check For Updates
-            </button>
-          </form>
-          {% if peer.update_status.ready_to_merge %}
-          <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/merge"
-                hx-target="#niche-detail"
-                hx-swap="innerHTML">
-            <input type="hidden" name="from_member_id" value="{{ peer.member_id }}">
-            <button class="btn btn-primary" type="submit">
-              Merge Changes
-            </button>
-          </form>
-          {% endif %}
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <p style="color:#78716c; font-size:0.88rem; margin-bottom:0.75rem">
-      No teammates are currently discoverable for this team session.
-    </p>
-    {% endif %}
-  {% endif %}
+  <div id="peer-panel-{{ team_name }}-{{ niche_name }}"
+       hx-get="/teams/{{ team_name }}/niches/{{ niche_name }}/peer_panel"
+       hx-trigger="every 20s[document.visibilityState === 'visible']"
+       hx-swap="innerHTML">
+    {% include "fragments/peer_panel.html" %}
+  </div>
   <p style="color:#78716c; font-size:0.88rem">
     Push, fetch, and merge go through the Hub using this team session.
   </p>

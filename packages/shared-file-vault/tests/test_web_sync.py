@@ -322,3 +322,104 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     assert merge_resp.status_code == 200
     assert f"Merged parked changes from {env['alice_member_id_hex']}." in merge_resp.text
     assert (bob_checkout / "notes.txt").read_text() == "hello again\n"
+
+
+def test_peer_panel_fragment_no_session(playground_dir, monkeypatch):
+    config_file = f"{playground_dir}/vault.toml"
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", config_file)
+
+    vault_root = f"{playground_dir}/vault"
+    participant_hex = "aa" * 16
+    vault.init_vault(vault_root, participant_hex)
+    vault.create_niche(vault_root, participant_hex, "ProjectX", "docs")
+
+    vault_app = create_app(vault_root, participant_hex)
+    client = TestClient(vault_app)
+
+    resp = client.get("/teams/ProjectX/niches/docs/peer_panel")
+    assert resp.status_code == 200
+    # No active session → no peer cards rendered
+    assert "Check For Updates" not in resp.text
+
+
+def test_peer_panel_fragment_active_session(playground_dir, minio_server_gen, monkeypatch):
+    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    root = env["root"]
+    http = env["http"]
+
+    vault_root = str(root / "vault-alice")
+    vault.init_vault(vault_root, env["alice_hex"])
+    vault.create_niche(vault_root, env["alice_hex"], "ProjectX", "docs")
+
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
+    sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+
+    vault_app = create_app(vault_root, env["alice_hex"], _http_client=http)
+    client = TestClient(vault_app)
+
+    resp = client.get("/teams/ProjectX/niches/docs/peer_panel")
+    assert resp.status_code == 200
+    # Active session with a known peer → Check For Updates present
+    assert "Check For Updates" in resp.text
+
+
+def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    from small_sea_client.client import SmallSeaClient, SmallSeaSession
+    from small_sea_hub.server import app as hub_app
+
+    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    root = env["root"]
+    http = env["http"]
+
+    alice_vault_root = str(root / "vault-alice")
+    bob_vault_root = str(root / "vault-bob")
+    vault.init_vault(alice_vault_root, env["alice_hex"])
+    vault.init_vault(bob_vault_root, env["bob_hex"])
+
+    alice_checkout = root / "alice-checkout"
+    bob_checkout = root / "bob-checkout"
+
+    vault.create_niche(alice_vault_root, env["alice_hex"], "ProjectX", "docs")
+    vault.add_checkout(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout))
+    (alice_checkout / "notes.txt").write_text("v1\n")
+    vault.publish(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout), message="init")
+
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
+    sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    sync.push_via_hub(alice_vault_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
+
+    # Bob logs in.
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
+    bob_login = sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+
+    # Seed peer_counts so /session/peers reports Alice's signal_count = 3.
+    # The background watcher is not running in TestClient; we set it directly.
+    bob_session = SmallSeaSession(SmallSeaClient(port=11437, _http_client=http), bob_login.session_token)
+    bob_berth_id_hex = bob_session.session_info()["berth_id"]
+    if not hasattr(hub_app.state, "peer_counts"):
+        hub_app.state.peer_counts = {}
+    hub_app.state.peer_counts[(bob_berth_id_hex, env["alice_member_id_hex"])] = 3
+
+    vault.create_niche(bob_vault_root, env["bob_hex"], "ProjectX", "docs")
+
+    bob_app = create_app(bob_vault_root, env["bob_hex"], _http_client=http)
+    bob_client = TestClient(bob_app)
+
+    # Before fetch: signal_count(3) > watermark(0) → hint shown.
+    panel_resp = bob_client.get("/teams/ProjectX/niches/docs/peer_panel")
+    assert panel_resp.status_code == 200
+    assert "Has changes since your last fetch" in panel_resp.text
+
+    # Bob fetches — watermark advances to 3, hint clears.
+    vault.add_checkout(bob_vault_root, env["bob_hex"], "ProjectX", "docs", str(bob_checkout))
+    fetch_resp = bob_client.post(
+        "/teams/ProjectX/niches/docs/fetch",
+        data={"from_member_id": env["alice_member_id_hex"]},
+    )
+    assert fetch_resp.status_code == 200
+
+    panel_resp = bob_client.get("/teams/ProjectX/niches/docs/peer_panel")
+    assert panel_resp.status_code == 200
+    assert "Has changes since your last fetch" not in panel_resp.text

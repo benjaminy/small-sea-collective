@@ -67,6 +67,42 @@ def create_app(
             },
         )
 
+    def _build_peers(request: Request, team_name: str, niche_name: str) -> list[dict]:
+        """Return peer list annotated with update status, or [] if no active session."""
+        vr, ph = _vr(request), _ph(request)
+        if _session_state(request, team_name) != "active":
+            return []
+        try:
+            peers = sync.list_team_peers(
+                team_name,
+                hub_port=_hub_port(request),
+                _http_client=_http_client(request),
+            )
+            for peer in peers:
+                peer["update_status"] = sync.peer_update_status(
+                    vr,
+                    ph,
+                    team_name,
+                    niche_name,
+                    peer["member_id"],
+                    current_signal_count=int(peer.get("signal_count", 0)),
+                )
+        except sync.VaultSyncError:
+            peers = []
+        return peers
+
+    def _peer_panel_response(request: Request, team_name: str, niche_name: str):
+        return templates.TemplateResponse(
+            "fragments/peer_panel.html",
+            {
+                "request": request,
+                "team_name": team_name,
+                "niche_name": niche_name,
+                "team_session_status": _session_state(request, team_name),
+                "peers": _build_peers(request, team_name, niche_name),
+            },
+        )
+
     def _niche_detail_response(
         request: Request,
         team_name: str,
@@ -78,25 +114,7 @@ def create_app(
     ):
         vr, ph = _vr(request), _ph(request)
         team_session_status = _session_state(request, team_name)
-        if team_session_status == "active":
-            try:
-                peers = sync.list_team_peers(
-                    team_name,
-                    hub_port=_hub_port(request),
-                    _http_client=_http_client(request),
-                )
-                for peer in peers:
-                    peer["update_status"] = sync.peer_update_status(
-                        vr,
-                        ph,
-                        team_name,
-                        niche_name,
-                        peer["member_id"],
-                    )
-            except sync.VaultSyncError:
-                peers = []
-        else:
-            peers = []
+        peers = _build_peers(request, team_name, niche_name)
         checkout = vault.get_checkout(vr, ph, team_name, niche_name)
         checkout_status = (
             vault.status(vr, ph, team_name, niche_name, checkout)
@@ -170,6 +188,13 @@ def create_app(
     @app.get("/teams/{team_name}/niches/{niche_name}", response_class=HTMLResponse)
     async def niche_detail(request: Request, team_name: str, niche_name: str):
         return _niche_detail_response(request, team_name, niche_name)
+
+    @app.get(
+        "/teams/{team_name}/niches/{niche_name}/peer_panel", response_class=HTMLResponse
+    )
+    async def peer_panel(request: Request, team_name: str, niche_name: str):
+        """Lightweight fragment endpoint for background peer-panel polling."""
+        return _peer_panel_response(request, team_name, niche_name)
 
     @app.post("/teams/{team_name}/session/request", response_class=HTMLResponse)
     async def team_session_request(request: Request, team_name: str):
