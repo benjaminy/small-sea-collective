@@ -260,3 +260,35 @@ Item 8 should be presented as a labeled list with one line per claim, so a revie
 
 - `Protocol/Product Boundary:` claims about scope, transport, prerequisites, and user-visible behavior
 - `Cryptographic Assurance:` claims that actually depend on trusting the underlying crypto implementation
+
+## Outcome
+
+This branch implemented the current audit-and-tightening slice rather than
+restarting issue #69 as greenfield protocol design.
+
+What landed:
+
+- `packages/small-sea-manager/small_sea_manager/provisioning.py` now rejects
+  prepare-stage re-entry for the same team while a bootstrap is still in flight
+- `complete_linked_device_bootstrap(...)` is now retry-safe after the peer
+  sender state has already been stored, even if the prior attempt crashed before
+  clearing the pending breadcrumb
+- `packages/small-sea-manager/tests/test_linked_device_bootstrap.py` now covers
+  same-member round trip, invalid join signatures, finalize retry idempotency,
+  complete retry idempotency, prepare re-entry rejection, and the concrete
+  "Bob exists too" redistribution boundary
+- `packages/small-sea-manager/spec.md` now contains the durable per-team
+  linked-device bootstrap description, explicit payload-0/payload-3 boundaries,
+  historical-access boundary, and evidence references
+- issue `#69` received a status update documenting what this branch proves and
+  what remains outside the slice
+
+Validation completed:
+
+- `uv run pytest packages/small-sea-manager/tests/test_linked_device_bootstrap.py`
+- `uv run pytest packages/small-sea-manager/tests/test_sender_key_rotation.py`
+
+Known remaining limitation intentionally left for follow-up:
+
+- `create_linked_device_bootstrap(...)` retry semantics are still not tightened
+  into a clearly idempotent story in this branch
