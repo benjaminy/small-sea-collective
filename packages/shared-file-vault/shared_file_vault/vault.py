@@ -355,14 +355,12 @@ def _has_commits(git_dir):
 
 
 def _make_work_tree(git_dir, dest):
-    """Link dest to git_dir and populate it if the repo has commits.
+    """Create dest and populate it from git_dir if the repo has commits.
 
-    Writes a .git pointer file (same format as git init --separate-git-dir).
-    Does not touch git_dir's config, so multiple work trees can coexist.
+    The checkout receives only user files; git metadata stays in git_dir.
     """
     dest = pathlib.Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
-    (dest / ".git").write_text(f"gitdir: {pathlib.Path(git_dir).resolve()}\n")
     if _has_commits(git_dir):
         gitCmd([
             "--git-dir", str(git_dir), "--work-tree", str(dest),
@@ -490,11 +488,9 @@ def _cod_push(git_dir, remote):
 def _cod_pull(git_dir, checkout, remote):
     """Fetch from remote and merge into the user checkout.
 
-    Uses repo_dir=git_dir for fetch (no work tree needed) and
-    repo_dir=checkout for merge (git writes files into the checkout).
-    Both instances share the same bundle_tmp_dir so the temp remote name
-    and path are identical and the merge step finds the remote set up
-    during fetch.
+    Uses repo_dir=git_dir for fetch (no work tree needed). The merge step
+    uses explicit --git-dir/--work-tree flags; remotes set up on git_dir
+    during fetch are visible here.
     """
     btd = _bundle_tmp_dir(git_dir)
     cod_fetch = CS.CodSync("cloud", bundle_tmp_dir=btd, repo_dir=git_dir)
@@ -504,8 +500,25 @@ def _cod_pull(git_dir, checkout, remote):
     if fetch_result is None:
         raise RuntimeError("pull failed: could not fetch from remote")
 
-    cod_merge = CS.CodSync("cloud", bundle_tmp_dir=btd, repo_dir=checkout)
-    exit_code = cod_merge.merge_from_remote(["main"])
+    tmp_remote = "cloud-codsync-bundle-tmp"
+    git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
+    head_result = gitCmd(
+        ["--git-dir", str(git_dir), "rev-parse", "--verify", "HEAD"],
+        raise_on_error=False,
+    )
+    if head_result.returncode != 0:
+        # Unborn branch — adopt fetched branch as initial local branch.
+        result = gitCmd(
+            git_prefix + ["checkout", "-B", "main", f"{tmp_remote}/main"],
+            raise_on_error=False,
+        )
+        exit_code = result.returncode
+    else:
+        result = gitCmd(
+            git_prefix + ["merge", f"{tmp_remote}/main"],
+            raise_on_error=False,
+        )
+        exit_code = result.returncode
     if exit_code != 0:
         raise MergeConflictError(_conflict_paths(git_dir, checkout))
 
@@ -524,22 +537,17 @@ def _cod_fetch(git_dir, remote, pin_to_ref):
 def _cod_merge_ref(git_dir, checkout, ref_name):
     """Merge a parked peer ref into the user checkout.
 
-    Uses repo_dir=checkout so git writes files into the checkout directory.
-    The checkout's .git pointer resolves git_dir automatically, so remotes
-    set up on git_dir (e.g. from a preceding fetch) are visible here.
+    Uses explicit --git-dir/--work-tree flags throughout.
     """
-    cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir), repo_dir=checkout)
+    git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
     if _has_commits(git_dir):
-        exit_code = cod.merge_from_ref(ref_name)
-        if exit_code != 0:
+        result = gitCmd(git_prefix + ["merge", ref_name], raise_on_error=False)
+        if result.returncode != 0:
             raise MergeConflictError(_conflict_paths(git_dir, checkout))
     else:
         # No local history: initialise the branch from the parked peer ref.
         # Content conflicts are impossible here; GitCmdFailed propagates as-is.
-        gitCmd([
-            "--git-dir", str(git_dir), "--work-tree", str(checkout),
-            "checkout", "-B", "main", ref_name,
-        ])
+        gitCmd(git_prefix + ["checkout", "-B", "main", ref_name])
 
 
 # ---------------------------------------------------------------------------
