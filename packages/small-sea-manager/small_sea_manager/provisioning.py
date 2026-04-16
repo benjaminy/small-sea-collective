@@ -25,7 +25,6 @@ from sqlalchemy.orm import Session, declarative_base
 Base = declarative_base()
 
 import shutil
-import subprocess
 
 
 def _enable_sqlite_foreign_keys(dbapi_connection, _connection_record) -> None:
@@ -42,6 +41,7 @@ def _sqlite_engine(db_path) -> object:
     return engine
 
 import cod_sync.protocol as CodSync
+from cod_sync.repo import Repo as _Repo
 from cuttlefish import (
     generate_bootstrap_keypair,
     generate_bootstrap_signing_keypair,
@@ -850,8 +850,9 @@ def _publish_local_device_prekey_bundle(
         finally:
             engine.dispose()
         if commit_message is not None:
-            CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-            CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", commit_message])
+            repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+            repo.stage(["core.db"])
+            repo.commit(commit_message)
 
     return {
         "device_key_id": device_key_id,
@@ -1363,11 +1364,9 @@ def _initialize_user_db(root_dir, ident, nickname, device):
     )
 
     repo_dir = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
-    CodSync.gitCmd(["init", "-b", "main", str(repo_dir)])
-    CodSync.gitCmd(["-C", str(repo_dir), "add", "core.db"])
-    CodSync.gitCmd(
-        ["-C", str(repo_dir), "commit", "-m", f"Welcome to Small Sea Collective"]
-    )
+    nts_repo = _Repo.init(repo_dir / ".git").with_work_tree(repo_dir)
+    nts_repo.stage(["core.db"])
+    nts_repo.commit("Welcome to Small Sea Collective")
 
 
 def create_identity_join_request(root_dir):
@@ -1456,10 +1455,9 @@ def authorize_identity_join(
         remote_descriptor = _single_note_to_self_remote_descriptor(root_dir, participant_hex)
     if inserted_user_device:
         repo_dir = root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync"
-        CodSync.gitCmd(["-C", str(repo_dir), "add", "core.db"])
-        CodSync.gitCmd(
-            ["-C", str(repo_dir), "commit", "-m", f"Admit device {artifact.device_id_hex[:8]}"]
-        )
+        nts_repo = _Repo(repo_dir / ".git", repo_dir)
+        nts_repo.stage(["core.db"])
+        nts_repo.commit(f"Admit device {artifact.device_id_hex[:8]}")
         if remote_descriptor.get("protocol") == "localfolder":
             _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
 
@@ -1575,8 +1573,9 @@ def prepare_identity_bootstrap(root_dir, welcome_bundle_b64):
         conn.commit()
 
     sync_dir = participant_dir / "NoteToSelf" / "Sync"
-    if not (sync_dir / ".git").exists():
-        CodSync.gitCmd(["init", "-b", "main", str(sync_dir)])
+    repo = _Repo(sync_dir / ".git", sync_dir)
+    if not repo.git_dir.exists():
+        _Repo.init(repo.git_dir)
 
     return {
         "participant_hex": bundle.participant_hex,
@@ -1646,7 +1645,7 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
     fetched_sha = cod.fetch_from_remote(["main"])
     if fetched_sha is None:
         raise RuntimeError("Failed to fetch NoteToSelf during identity bootstrap")
-    CodSync.gitCmd(["-C", str(sync_dir), "checkout", "main"])
+    _Repo(sync_dir / ".git", sync_dir).checkout_branch("main", start_point=fetched_sha)
     return finalize_identity_bootstrap(root_dir, prepared)
 
 
@@ -2357,10 +2356,9 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     finally:
         engine.dispose()
     if cert_inserted:
-        CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-        CodSync.gitCmd(
-            ["-C", str(team_sync_dir), "commit", "-m", "Received device link cert from bootstrap"]
-        )
+        repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+        repo.stage(["core.db"])
+        repo.commit("Received device link cert from bootstrap")
 
     response_payload = {
         "bootstrap_id": bootstrap_id.hex(),
@@ -2474,14 +2472,8 @@ def _install_sqlite_merge_driver(team_sync_dir):
         merge_bin = "splice-sqlite-merge"
 
     driver_cmd = f"{merge_bin} %O %A %B %L %P"
-    CodSync.gitCmd(
-        [
-            "-C",
-            str(team_sync_dir),
-            "config",
-            "merge.splice-sqlite.driver",
-            driver_cmd,
-        ]
+    _Repo(team_sync_dir / ".git", team_sync_dir).config(
+        "merge.splice-sqlite.driver", driver_cmd
     )
 
 
@@ -3287,10 +3279,9 @@ def remove_member(root_dir, participant_hex, team_name, member):
         engine.dispose()
 
     team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
-    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-    CodSync.gitCmd(
-        ["-C", str(team_sync_dir), "commit", "-m", f"Removed member {removed_member_id.hex()}"]
-    )
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo.stage(["core.db"])
+    repo.commit(f"Removed member {removed_member_id.hex()}")
 
     _delete_peer_sender_key_rows(
         device_local_db_path(root_dir, participant_hex),
@@ -3359,8 +3350,9 @@ def issue_device_link_for_member(root_dir, participant_hex, team_name, linked_de
     finally:
         engine.dispose()
 
-    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", "Linked additional team device"])
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo.stage(["core.db"])
+    repo.commit("Linked additional team device")
     return cert
 
 
@@ -3592,10 +3584,10 @@ def create_team(root_dir, participant_hex, team_name):
         )
 
     # --- Git init ---
-    CodSync.gitCmd(["init", "-b", "main", str(team_sync_dir)])
+    repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
     _install_sqlite_merge_driver(team_sync_dir)
-    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
-    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"New team: {team_name}"])
+    repo.stage(["core.db", ".gitattributes"])
+    repo.commit(f"New team: {team_name}")
 
     return {
         "team_id_hex": team_id.hex(),
@@ -3681,8 +3673,9 @@ def create_invitation(
 
     # Git commit the updated DB
     team_sync_dir = participant_dir / team_name / "Sync"
-    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Created invitation"])
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo.stage(["core.db"])
+    repo.commit("Created invitation")
 
     return token_b64
 
@@ -3744,7 +3737,7 @@ def accept_invitation(
     # Use git init + fetch_from_remote + checkout rather than clone_from_remote,
     # so this works when the workspace lives inside an existing git repo.
 
-    CodSync.gitCmd(["init", "-b", "main", str(team_sync_dir)])
+    repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
 
     saved_cwd = os.getcwd()
     os.chdir(team_sync_dir)
@@ -3759,7 +3752,7 @@ def accept_invitation(
             raise RuntimeError(
                 f"Failed to fetch team repo from inviter's cloud (code {result}; {inviter_url})"
             )
-        CodSync.gitCmd(["checkout", "main"])
+        repo.checkout_branch("main", start_point=result)
     finally:
         os.chdir(saved_cwd)
 
@@ -3843,10 +3836,9 @@ def accept_invitation(
     team_engine.dispose()
 
     # --- Git commit the DB changes ---
-    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db", ".gitattributes"])
-    CodSync.gitCmd(
-        ["-C", str(team_sync_dir), "commit", "-m", f"Joined team: {team_name}"]
-    )
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo.stage(["core.db", ".gitattributes"])
+    repo.commit(f"Joined team: {team_name}")
 
     # --- Build and return acceptance response (no credentials) ---
     acceptance_data = {
@@ -4007,8 +3999,9 @@ def complete_invitation_acceptance(
     engine.dispose()
 
     team_sync_dir = participant_dir / team_name / "Sync"
-    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", f"Accepted invitation"])
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo.stage(["core.db"])
+    repo.commit("Accepted invitation")
 
     save_peer_sender_key(
         device_local_db_path(root_dir, participant_hex),
@@ -4229,8 +4222,9 @@ def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
         )
     engine.dispose()
     team_sync_dir = root_dir / "Participants" / participant_hex / team_name / "Sync"
-    CodSync.gitCmd(["-C", str(team_sync_dir), "add", "core.db"])
-    CodSync.gitCmd(["-C", str(team_sync_dir), "commit", "-m", "Revoked invitation"])
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo.stage(["core.db"])
+    repo.commit("Revoked invitation")
 
 
 def get_nickname(root_dir, participant_hex):
