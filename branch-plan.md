@@ -53,19 +53,42 @@ These are safe in both CACHED and CHECKED_OUT modes:
 
 ### Methods — work-tree operations
 
-These require `work_tree` to be set:
+These require `work_tree` to be set. When called on a Repo with
+`work_tree=None`, they raise `NoWorkTreeError` (see Exception Model below)
+instead of letting the underlying git command fail with a cryptic message.
 
 - `status() -> list[dict]` — `git status --porcelain`
 - `stage(files=None)` — `git add <files>` or `git add --all`
-- `commit(message) -> str` — `git commit`, returns SHA
+- `commit(message) -> str | None` — SHA on success, None if nothing staged
 - `checkout_head()` — `git checkout HEAD -- .` (refresh work tree)
 - `checkout_branch(branch, start_point=None)` — `git checkout -B ...`
-- `merge(ref) -> int` — `git merge <ref>`, returns exit code
+- `merge(ref)` — `git merge <ref>`; raises `ConflictError` on conflict
 - `conflict_paths() -> list[str]` — `git diff --name-only --diff-filter=U`
 
 ### Methods — repo setup
 
-- `@staticmethod init(git_dir) -> Repo` — `git init --bare` + `core.bare = false`
+- `@staticmethod init(git_dir, initial_branch="main") -> Repo` —
+  `git init --bare -b <initial_branch>` + `core.bare = false`
+
+### Exception Model
+
+All Repo errors derive from `RepoError` so callers can handle repo-level
+failures without knowing git is the implementation. The hierarchy:
+
+- `RepoError` — base class for all Repo failures. Wraps the underlying
+  `GitCmdFailed` so the raw git info is preserved for debugging but is not
+  part of the advertised API.
+- `NoWorkTreeError(RepoError)` — raised when a work-tree-requiring method
+  is called on a Repo with `work_tree=None`. Message names the method and
+  the repo's `git_dir`.
+- `ConflictError(RepoError)` — raised by `merge()` when the merge leaves
+  unresolved conflicts. Carries `conflict_paths: list[str]` so callers
+  don't need to call `conflict_paths()` separately.
+
+This is the principal step toward hiding "cod-sync uses git." It does not
+fully get us there — `gitCmd` and `GitCmdFailed` still exist internally,
+and `CodSync` still exposes `gitCmd` publicly — but every new `Repo` call
+site no longer sees git-specific exception types.
 
 ### What stays on CodSync
 
@@ -119,7 +142,8 @@ intended public API for local repo operations.
 
 Add micro tests for `Repo` covering at least: `init`, `has_commits`, `head`,
 `stage`, `commit`, `commit` returning `None` when nothing staged, `status`,
-`checkout_head`.
+`checkout_head`, `merge` raising `ConflictError` with paths populated, and
+a work-tree method raising `NoWorkTreeError` on a CACHED Repo.
 
 ### 2. Convert manager's stage/check/commit sites
 
