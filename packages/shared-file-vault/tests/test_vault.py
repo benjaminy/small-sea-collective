@@ -60,8 +60,8 @@ def test_add_checkout(playground_dir):
     dest = pathlib.Path(playground_dir) / "checkout" / "docs"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "docs", str(dest))
 
-    # .git pointer file exists in the checkout
-    assert (dest / ".git").exists()
+    # Checkout contains no vault/git bookkeeping files
+    assert not (dest / ".git").exists()
 
     # Checkout is tracked in checkouts.db
     checkouts = list_checkouts(playground_dir, PARTICIPANT, TEAM, "docs")
