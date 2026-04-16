@@ -212,13 +212,12 @@ The validation bar for this branch should be unusually explicit so a skeptical r
 - run any adjacent sender-key or identity/bootstrap micro tests touched by the changes
 - if the audit reveals a missing behavior claim, add a focused micro test that fails before the fix and passes after it
 - confirm with tests that pre-bootstrap encrypted history is still unreadable on the newly linked device, while describing this as repo-local protocol evidence rather than definitive crypto assurance if the underlying Cuttlefish layer is still placeholder
-- add or tighten at least one focused check that makes the current redistribution boundary visible rather than leaving it as an unstated assumption if the branch continues to claim the new device is only partially live/visible after same-member bootstrap
+- add or tighten a concrete "Bob exists too" check that makes the current redistribution boundary visible rather than leaving it as an unstated assumption if the branch continues to claim the new device is only partially live/visible after same-member bootstrap
+- if the branch decides on intended prepare-stage re-entry behavior, back that decision with a focused test rather than leaving it as prose-only guidance
 
 Preferred focused checks if this branch adds tests:
 
-- a "Bob exists too" scenario where Device B completes same-member bootstrap but still lacks Bob's sender-key distribution afterward
 - a negative cross-member scenario showing that a join request for Member B cannot be accepted as if it belonged to Member A
-- a prepare-stage re-entry scenario covering crash/retry before finalize
 - a create-stage duplicate-submission scenario on the authorizing device
 - a complete-stage crash/retry scenario on the authorizing device
 
@@ -242,6 +241,7 @@ Minimum `packages/small-sea-manager/spec.md` update content:
 - state the current redistribution boundary for other senders/devices
 - state the current transport/status of payload 3
 - name any retry/idempotency limitations that remain after this branch
+- for each claim that is backed by repo-local protocol evidence, cite the test or code path that supports it so a future reader can verify the claim without reconstructing the audit from scratch
 
 ### Skeptic-facing wrap-up
 
