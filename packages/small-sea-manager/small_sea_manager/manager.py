@@ -1,8 +1,8 @@
 import pathlib
-import subprocess
 from typing import Optional
 
 import cod_sync.protocol as CodSyncProtocol
+from cod_sync.repo import Repo as _Repo
 from cod_sync.protocol import BootstrapProxyRemote, CodSync, SmallSeaRemote
 from small_sea_client.client import SmallSeaClient
 from small_sea_manager import provisioning
@@ -172,17 +172,9 @@ class TeamManager:
         session.ensure_cloud_ready()
         repo_dir = self._note_to_self_repo_dir()
         # Stage and commit any uncommitted NoteToSelf DB changes.
-        stage_result = CodSyncProtocol.gitCmd(
-            ["-C", str(repo_dir), "add", "core.db"], raise_on_error=False
-        )
-        if stage_result.returncode == 0:
-            status = CodSyncProtocol.gitCmd(
-                ["-C", str(repo_dir), "diff", "--cached", "--quiet"], raise_on_error=False
-            )
-            if status.returncode != 0:
-                CodSyncProtocol.gitCmd(
-                    ["-C", str(repo_dir), "commit", "-m", "Update NoteToSelf"]
-                )
+        nts_repo = _Repo(repo_dir / ".git", repo_dir)
+        nts_repo.stage(["core.db"])
+        nts_repo.commit("Update NoteToSelf")
         remote = SmallSeaRemote(session.token, base_url=self.client._base_url, client=self.client._http_client)
         cs = CodSync("origin", repo_dir=repo_dir)
         cs.remote = remote
@@ -447,14 +439,7 @@ class TeamManager:
         return self.root_dir / "Participants" / self.participant_hex / team_name / "Sync"
 
     def _git_head(self, repo_dir: pathlib.Path) -> Optional[str]:
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(repo_dir), "rev-parse", "HEAD"],
-                capture_output=True, text=True, check=True,
-            )
-            return result.stdout.strip()
-        except Exception:
-            return None
+        return _Repo(repo_dir / ".git", repo_dir).head()
 
     def _push_status_file(self, team_name: str) -> pathlib.Path:
         # Stored alongside (not inside) the Sync git repo to avoid polluting it.
