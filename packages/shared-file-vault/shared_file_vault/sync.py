@@ -130,6 +130,13 @@ class PeerUpdateStatus:
     niche_sha: str | None
     last_fetched_sha: str | None
     last_merged_sha: str | None
+    current_signal_count: int = 0
+    last_seen_signal_count: int = 0
+
+    @property
+    def has_unfetched_hint(self) -> bool:
+        """True when the peer's signal count has advanced past the local watermark."""
+        return self.current_signal_count > self.last_seen_signal_count
 
 
 @dataclass
@@ -155,6 +162,7 @@ def load_config() -> dict:
     with open(path, "rb") as f:
         config = tomllib.load(f)
     config.setdefault("team_sessions", {})
+    config.setdefault("peer_signal_watermarks", {})
     return config
 
 
@@ -187,6 +195,17 @@ def _dump_toml(config: dict) -> str:
         lines.append(f"[team_sessions.{json.dumps(team_name)}]")
         lines.append(f"session_token = {json.dumps(str(token))}")
 
+    watermarks = config.get("peer_signal_watermarks") or {}
+    for wm_team in sorted(watermarks):
+        team_wm = watermarks[wm_team] or {}
+        if not team_wm:
+            continue
+        if lines:
+            lines.append("")
+        lines.append(f"[peer_signal_watermarks.{json.dumps(wm_team)}]")
+        for member_id in sorted(team_wm):
+            lines.append(f"{json.dumps(member_id)} = {int(team_wm[member_id])}")
+
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -205,6 +224,34 @@ def clear_session_token(team_name: str) -> None:
     team_sessions = config.setdefault("team_sessions", {})
     if team_name in team_sessions:
         team_sessions.pop(team_name, None)
+        save_config(config)
+
+
+def get_signal_watermark(team_name: str, member_id: str) -> int:
+    """Return the last-seen signal count for a peer, defaulting to 0."""
+    config = load_config()
+    return (
+        (config.get("peer_signal_watermarks") or {})
+        .get(team_name, {})
+        .get(member_id, 0)
+    )
+
+
+def set_signal_watermark(team_name: str, member_id: str, count: int) -> None:
+    """Persist a signal-count watermark for a peer."""
+    config = load_config()
+    watermarks = config.setdefault("peer_signal_watermarks", {})
+    watermarks.setdefault(team_name, {})
+    watermarks[team_name][member_id] = int(count)
+    save_config(config)
+
+
+def clear_signal_watermark(team_name: str, member_id: str) -> None:
+    """Remove any persisted signal-count watermark for a peer."""
+    config = load_config()
+    watermarks = config.get("peer_signal_watermarks") or {}
+    if team_name in watermarks and member_id in watermarks[team_name]:
+        del watermarks[team_name][member_id]
         save_config(config)
 
 
@@ -438,6 +485,20 @@ def fetch_via_hub(
 ) -> FetchResult:
     """Fetch a registry and niche from a peer through the Hub without merging."""
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+
+    # Observe signal_count BEFORE fetching. If the peer pushes again during
+    # the fetch, we intentionally record the pre-second-push count so the
+    # next poll shows a hint (phantom-hint trade-off: one extra no-op fetch
+    # beats silently dropping a signal). Non-fatal if peers cannot be listed.
+    observed_signal_count = 0
+    try:
+        for peer in session.session_peers():
+            if peer["member_id"] == from_member_id:
+                observed_signal_count = int(peer.get("signal_count", 0))
+                break
+    except Exception:
+        pass
+
     registry_sha = vault.fetch_registry(
         vault_root,
         participant_hex,
@@ -453,6 +514,10 @@ def fetch_via_hub(
         from_member_id,
         make_peer_niche_remote(team_name, niche_name, from_member_id, session),
     )
+
+    # Advance the watermark now that the fetch succeeded.
+    set_signal_watermark(team_name, from_member_id, observed_signal_count)
+
     return FetchResult(
         member_id=from_member_id,
         registry_sha=registry_sha,
@@ -531,8 +596,15 @@ def peer_update_status(
     team_name: str,
     niche_name: str,
     member_id: str,
+    *,
+    current_signal_count: int = 0,
 ) -> PeerUpdateStatus:
-    """Return combined registry+niche parked-update state for one peer."""
+    """Return combined registry+niche parked-update state for one peer.
+
+    current_signal_count should be supplied from the most recent
+    GET /session/peers response so that has_unfetched_hint can compare
+    it against the locally persisted watermark.
+    """
     registry_status = vault.peer_update_status(
         vault_root, participant_hex, team_name, "registry", None, member_id
     )
@@ -553,6 +625,8 @@ def peer_update_status(
         niche_sha=niche_status["parked_sha"],
         last_fetched_sha=niche_status["last_fetched_sha"] or registry_status["last_fetched_sha"],
         last_merged_sha=niche_status["last_merged_sha"] or registry_status["last_merged_sha"],
+        current_signal_count=current_signal_count,
+        last_seen_signal_count=get_signal_watermark(team_name, member_id),
     )
 
 

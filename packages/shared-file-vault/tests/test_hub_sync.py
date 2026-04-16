@@ -167,6 +167,155 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     }
 
 
+def test_signal_watermark_roundtrip(tmp_path, monkeypatch):
+    config_file = tmp_path / "vault.toml"
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(config_file))
+
+    assert sync.get_signal_watermark("TeamA", "aa" * 16) == 0
+
+    sync.set_signal_watermark("TeamA", "aa" * 16, 5)
+    sync.set_signal_watermark("TeamA", "bb" * 16, 2)
+    sync.set_signal_watermark("TeamB", "aa" * 16, 9)
+
+    assert sync.get_signal_watermark("TeamA", "aa" * 16) == 5
+    assert sync.get_signal_watermark("TeamA", "bb" * 16) == 2
+    assert sync.get_signal_watermark("TeamB", "aa" * 16) == 9
+    # Unrelated team/member still 0
+    assert sync.get_signal_watermark("TeamC", "cc" * 16) == 0
+
+    sync.clear_signal_watermark("TeamA", "aa" * 16)
+    assert sync.get_signal_watermark("TeamA", "aa" * 16) == 0
+    # Other entries untouched
+    assert sync.get_signal_watermark("TeamA", "bb" * 16) == 2
+
+
+def test_signal_watermark_persists_alongside_session_token(tmp_path, monkeypatch):
+    config_file = tmp_path / "vault.toml"
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(config_file))
+
+    sync.save_config(
+        {
+            "vault_root": "/tmp/v",
+            "team_sessions": {"TeamA": {"session_token": "tok"}},
+        }
+    )
+    sync.set_signal_watermark("TeamA", "aa" * 16, 7)
+
+    loaded = sync.load_config()
+    assert loaded["team_sessions"]["TeamA"]["session_token"] == "tok"
+    assert loaded["peer_signal_watermarks"]["TeamA"]["aa" * 16] == 7
+
+
+def test_peer_update_status_has_unfetched_hint(tmp_path, monkeypatch, playground_dir):
+    config_file = tmp_path / "vault.toml"
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(config_file))
+
+    root = playground_dir
+    participant = "bb" * 16
+    member_id = "cc" * 16
+    team = "HintTeam"
+    niche = "files"
+
+    vault.init_vault(root, participant)
+    vault.create_niche(root, participant, team, niche)
+
+    # No watermark set → current 3 > watermark 0 → hint True
+    status = sync.peer_update_status(root, participant, team, niche, member_id,
+                                     current_signal_count=3)
+    assert status.has_unfetched_hint is True
+    assert status.current_signal_count == 3
+    assert status.last_seen_signal_count == 0
+
+    # Set watermark to match → hint False
+    sync.set_signal_watermark(team, member_id, 3)
+    status = sync.peer_update_status(root, participant, team, niche, member_id,
+                                     current_signal_count=3)
+    assert status.has_unfetched_hint is False
+
+    # current 0, watermark 0 → hint False (never pushed)
+    status = sync.peer_update_status(root, participant, team, niche, "dd" * 16,
+                                     current_signal_count=0)
+    assert status.has_unfetched_hint is False
+
+
+def test_fetch_via_hub_advances_watermark(playground_dir, minio_server_gen, monkeypatch):
+    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    root = env["root"]
+    http = env["http"]
+
+    alice_vault_root = str(root / "vault-alice")
+    bob_vault_root = str(root / "vault-bob")
+    vault.init_vault(alice_vault_root, env["alice_hex"])
+    vault.init_vault(bob_vault_root, env["bob_hex"])
+
+    alice_checkout = root / "alice-checkout"
+    vault.create_niche(alice_vault_root, env["alice_hex"], "ProjectX", "docs")
+    vault.add_checkout(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout))
+    (alice_checkout / "file.txt").write_text("hello\n")
+    vault.publish(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout), message="init")
+
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
+    sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    sync.push_via_hub(alice_vault_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
+
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
+    bob_token = sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+
+    # Seed peer_counts so /session/peers reports Alice's signal as 5.
+    # The background watcher is not running in TestClient, so we set it directly.
+    bob_session = SmallSeaSession(SmallSeaClient(port=11437, _http_client=http), bob_token.session_token)
+    bob_berth_id_hex = bob_session.session_info()["berth_id"]
+    if not hasattr(app.state, "peer_counts"):
+        app.state.peer_counts = {}
+    app.state.peer_counts[(bob_berth_id_hex, env["alice_member_id_hex"])] = 5
+
+    assert sync.get_signal_watermark("ProjectX", env["alice_member_id_hex"]) == 0
+
+    sync.fetch_via_hub(
+        bob_vault_root, env["bob_hex"], "ProjectX", "docs",
+        env["alice_member_id_hex"], _http_client=http,
+    )
+
+    # Watermark should equal the observed signal_count (5)
+    assert sync.get_signal_watermark("ProjectX", env["alice_member_id_hex"]) == 5
+
+
+def test_fetch_via_hub_does_not_touch_other_peers_watermark(playground_dir, minio_server_gen, monkeypatch):
+    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    root = env["root"]
+    http = env["http"]
+
+    alice_vault_root = str(root / "vault-alice")
+    bob_vault_root = str(root / "vault-bob")
+    vault.init_vault(alice_vault_root, env["alice_hex"])
+    vault.init_vault(bob_vault_root, env["bob_hex"])
+
+    alice_checkout = root / "alice-checkout"
+    vault.create_niche(alice_vault_root, env["alice_hex"], "ProjectX", "docs")
+    vault.add_checkout(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout))
+    (alice_checkout / "file.txt").write_text("hello\n")
+    vault.publish(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout), message="init")
+
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
+    sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    sync.push_via_hub(alice_vault_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
+
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
+    sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+
+    # Plant a watermark for a different fake peer
+    other_member = "ff" * 16
+    sync.set_signal_watermark("ProjectX", other_member, 99)
+
+    sync.fetch_via_hub(
+        bob_vault_root, env["bob_hex"], "ProjectX", "docs",
+        env["alice_member_id_hex"], _http_client=http,
+    )
+
+    # Other peer's watermark is untouched
+    assert sync.get_signal_watermark("ProjectX", other_member) == 99
+
+
 def test_sync_config_roundtrip_and_remote_prefixes(tmp_path, monkeypatch):
     config_file = tmp_path / "vault.toml"
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(config_file))
