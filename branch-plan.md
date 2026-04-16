@@ -37,6 +37,8 @@ What still looks unresolved relative to the original issue wording:
   already-live sibling device of the same member
 - there is not yet evidence that every other active sender device in the team
   automatically redistributes sender-key material to the new device
+- there is not yet evidence that the "payload 3" return trip has a settled
+  product transport beyond manual or test-local handoff
 - the issue text still reads like a design-and-implement ticket, while the code
   now looks closer to "audit, tighten, document, and decide whether the
   remaining gap belongs in a follow-up issue"
@@ -73,6 +75,8 @@ After this branch lands:
    - a newly linked device can become an honest recipient for future encrypted
      team traffic
    - the historical-access boundary is enforced honestly
+   - any intentionally incomplete product behavior is called out plainly rather
+     than being mistaken for a broken bootstrap
    - repo integrity was maintained while reconciling the stale issue assumptions
 
 ## Scope Decisions Already Made
@@ -93,11 +97,23 @@ redistribute their sender keys too."
 Unless the audit proves otherwise, the latter should remain follow-up work
 rather than being silently folded into this branch.
 
+The branch should still document the user-visible consequence clearly: without a
+follow-up redistribution path, the new device may be able to read Alice's
+future traffic before it can read future traffic from every other active sender
+in the team.
+
 ### 3. Prefer clean clarification over backward-compatible shims
 
 This repo is pre-alpha. If the issue text, specs, comments, or helper names are
 misleading after the reorganization, the branch should correct them directly
 instead of preserving stale terminology.
+
+### 4. Treat transport and UX caveats as first-class acceptance criteria
+
+Even if this branch keeps manual or out-of-band exchange in place, it should
+say so explicitly. A bootstrap flow that works cryptographically but leaves the
+user "partially blind" or stuck on an unspecified payload handoff should not be
+described as more complete than it really is.
 
 ## In Scope
 
@@ -126,6 +142,8 @@ Confirm that the present flow really provides all of the following:
 - the new device can decrypt future encrypted team bundles after bootstrap
 - the new device cannot decrypt pre-bootstrap sender-key history
 - retry/finalize behavior remains idempotent for interrupted local execution
+- the current transport story for the joining device's return payload is stated
+  honestly in code or docs rather than being left implicit in test-only wiring
 
 ### 3. Tighten implementation only where the audit finds a real gap
 
@@ -156,6 +174,12 @@ By the end of the branch we should know which of these is true:
 - `#69` still needs a narrow finishing change in the same-member flow
 - the remaining gap is actually a different issue and should be split out
 
+That decision should explicitly address:
+
+- whether missing Bob/other-sender redistribution is a blocker for closing #69
+- whether payload 3 transport is intentionally manual in this slice
+- what user-visible expectation we set for linked-device history access
+
 ## Out Of Scope
 
 - redesigning identity bootstrap
@@ -167,6 +191,8 @@ By the end of the branch we should know which of these is true:
 - inventing a larger "all devices in the team instantly redistribute to the new
   device" mechanism unless we explicitly discover that the current issue already
   promised that and the branch is intentionally expanded
+- silently treating product/UX caveats as solved when they are only solved in
+  tests or by manual operator handoff
 
 ## Implementation Notes
 
@@ -177,6 +203,16 @@ By the end of the branch we should know which of these is true:
 - Any code changes should preserve the architectural rule that Small Sea
   internet traffic goes through the Hub; local bootstrap orchestration and local
   micro tests should stay local-first.
+- The branch should be careful not to overclaim "bootstrap complete" if the
+  actual outcome is "same-member bootstrap works, broader sender visibility
+  still depends on later redistribution."
+- If payload 3 currently depends on manual return transport, that should be
+  named as the current slice boundary, not hidden behind direct function calls
+  in micro tests.
+- The honest historical boundary is a security choice, but it is also a product
+  expectation problem. If the code keeps the current forward-only behavior, the
+  docs/specs should say that prominently enough that a user would not infer
+  full history sync from the phrase "linked device."
 
 ## Validation
 
@@ -193,6 +229,9 @@ reviewer can see both functional success and repo-integrity preservation.
   fails before the fix and passes after it
 - confirm with tests that pre-bootstrap encrypted history is still unreadable on
   the newly linked device
+- if possible, add or tighten one focused check that makes the current
+  redistribution boundary visible rather than leaving it as an unstated
+  assumption
 
 ### Integrity proof
 
@@ -202,6 +241,8 @@ reviewer can see both functional success and repo-integrity preservation.
   satisfy stale issue wording
 - prefer small, local edits over broad protocol churn
 - document any remaining non-goals explicitly so the branch does not overclaim
+- make any manual transport assumptions around payload 3 explicit so a reviewer
+  can distinguish protocol completeness from test harness convenience
 
 ### Skeptic-facing wrap-up
 
@@ -212,3 +253,7 @@ The final branch summary should answer these questions directly:
 3. Which tests or code paths prove the honest historical boundary?
 4. Why does the final code fit the reorganized architecture better than the old
    issue assumptions did?
+5. What happens today for "other senders in the team" after the linked device
+   is bootstrapped?
+6. Is payload 3 still a manual return-trip in this slice, and if so, where is
+   that boundary documented?
