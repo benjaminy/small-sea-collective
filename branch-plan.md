@@ -32,10 +32,14 @@ Today that function does all of the following on the authorizing device:
 - records a pending bootstrap breadcrumb
 - emits the bootstrap bundle
 
-That means a crash or duplicate submission on the authorizing side may land in
-an awkward state between "cert already issued / breadcrumb already stored" and
-"same request retried." This branch exists to make that behavior honest and
-predictable.
+That means the authorizing side has at least two distinct retry problems:
+
+- **replay of a completed create**: the first call succeeded and returned a
+  bootstrap bundle, then the same join request bundle is submitted again
+- **crash recovery during create**: the first call crashed after some state was
+  written but before a bundle was returned to the caller
+
+This branch exists to make that behavior honest and predictable.
 
 ## Problem Statement
 
@@ -47,6 +51,14 @@ should `create_linked_device_bootstrap(...)` do?"
 
 The branch should not leave the answer implicit in SQLite side effects or git
 history accidents.
+
+It should also be explicit about whether it handles:
+
+- replay of a completed create
+- crash recovery from partial authorizer-side writes
+
+If it only solves one of those, the other should be documented as an intentional
+remaining limitation.
 
 ## Proposed Goal
 
@@ -82,6 +94,19 @@ Given the rest of the bootstrap flow already leans toward retry safety, the
 default candidate should be idempotent replay unless the audit shows a strong
 reason not to do that.
 
+For this branch, "same result" does **not** need to mean bitwise-identical
+bootstrap bundle bytes. The bundle contains encrypted content and may involve
+fresh randomness. The meaningful identity is likely:
+
+- same `bootstrap_id`
+- same `device_link` cert / trust effect
+- same logical bootstrap payload content and follow-up behavior
+- no duplicate persistent side effects
+
+Tests should assert semantic equivalence at that level, not raw ciphertext
+equality, unless the implementation deliberately stores and replays the exact
+serialized response.
+
 ### 3. Do not confuse request replay with a new bootstrap attempt
 
 A second call with the exact same join request bundle is not the same thing as a
@@ -91,6 +116,10 @@ should be careful to distinguish:
 - replay of the same prepared request
 - a later brand-new request with a different bootstrap ID and different
   ephemeral material
+
+If this branch does not settle the "new bootstrap ID while another create-side
+breadcrumb is still pending for the same team" case, it should name that
+explicitly as a remaining limitation rather than leaving it implicit.
 
 ## In Scope
 
@@ -107,6 +136,11 @@ Trace exactly what happens on first successful create:
 The audit should identify which pieces already behave idempotently and which do
 not.
 
+It should separately identify:
+
+- replay behavior after a completed successful create
+- crash-recovery behavior after partial writes but before a bundle was returned
+
 ### 2. Choose and implement one retry policy
 
 The branch should decide whether duplicate replay of the same valid join request
@@ -117,6 +151,10 @@ should:
 
 Whichever choice we make, it should be intentional, narrow, and test-backed.
 
+The branch should also explicitly decide whether crash-mid-create recovery is in
+scope here or is being deferred. If deferred, the branch should document the
+current limitation clearly.
+
 ### 3. Add focused micro tests
 
 Minimum required coverage:
@@ -125,6 +163,8 @@ Minimum required coverage:
   same join request bundle twice
 - one assertion about resulting cert history / pending bootstrap state so a
   skeptic can see whether replay duplicates or reuses state
+- one assertion about git history state so a skeptic can see whether replay
+  creates an extra commit for the same logical create step
 
 If the branch chooses idempotent replay, the test should prove that replay does
 not create spurious duplicate cert rows or inconsistent breadcrumbs.
@@ -143,15 +183,18 @@ with a citation to the backing test or code path.
 - redesigning the linked-device bootstrap payload shapes
 - general sender-key rotation policy
 - a broad Cuttlefish hardening branch
+- the "new bootstrap ID while another create-side breadcrumb for the same team
+  is still pending" case, unless the implementation naturally settles it as
+  part of the retry policy work
 
 ## Implementation Notes
 
 - The repo is pre-alpha, so if current behavior is accidental or confusing, this
   branch should choose the clearest design rather than preserving awkward
   behavior for compatibility.
-- The branch should watch for git side effects carefully: if replay currently
-  creates extra commits for the same logical create step, that is probably a
-  bug, not harmless noise.
+- The branch should treat duplicate git commits as a concrete correctness issue,
+  not just cosmetic noise. If replay currently creates extra commits for the
+  same logical create step, that is probably a bug.
 - This branch should reuse the current `#69` documentation language instead of
   inventing a parallel description of the bootstrap flow.
 
@@ -165,6 +208,8 @@ with a citation to the backing test or code path.
   or complete behavior
 - if replay is rejected, prove the rejection is stable and intentional rather
   than a downstream accidental failure
+- if crash-mid-create recovery is in scope, add a focused interrupted-create
+  test and prove the retried behavior is the intended one
 
 ### Integrity proof
 
@@ -173,6 +218,8 @@ with a citation to the backing test or code path.
 - confirm any `spec.md` update cites the test or code path backing the retry
   claim
 - avoid broad edits outside the linked-device bootstrap seam
+- confirm the chosen retry policy does not create duplicate git commits for the
+  same logical create step
 
 ## Skeptic-facing wrap-up
 
