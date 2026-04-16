@@ -97,11 +97,25 @@ semantic way to clear it is to actually fetch. Specifics:
   - `get_signal_watermark(team_name, member_id) -> int`
   - `set_signal_watermark(team_name, member_id, count) -> None`
   - `clear_signal_watermark(team_name, member_id) -> None`
+- In `load_config`, add `config.setdefault("peer_signal_watermarks", {})`
+  alongside the existing `team_sessions` default, so older config files
+  without the table never produce `None` when the helpers read it.
+- Update `_dump_toml` to serialise the new nested table, iterating over
+  `peer_signal_watermarks` with the same `json.dumps()`-quoting convention
+  already used for `team_sessions` keys.
 - In `fetch_via_hub`, read the *observed* `signal_count` from
   `session_peers()` for that member *before* the fetch, then after the
   fetch succeeds, write it as the new watermark. Observing before fetch
   avoids a race where a peer pushes a second time during the fetch and we
   accidentally mark that second push as already seen.
+
+  **Phantom-hint trade-off:** if Bob pushes *during* Alice's fetch, Alice's
+  watermark is set to the pre-second-push count, so the next poll will show
+  the hint again even though her fetch already retrieved the latest content.
+  She'll click "Check For Updates," find nothing new, and the watermark
+  advances to the new count. This one extra round-trip is the deliberate
+  cost of the observe-before-fetch strategy; the alternative (observe
+  after) risks silently dropping a signal.
 
 Micro tests:
 
@@ -115,8 +129,10 @@ Micro tests:
 - Extend `PeerUpdateStatus` with two fields:
   - `current_signal_count: int`
   - `last_seen_signal_count: int`
-  and a derived property `has_unfetched_hint: bool` (true when
-  `current_signal_count > last_seen_signal_count`).
+  and a `@property has_unfetched_hint: bool` (true when
+  `current_signal_count > last_seen_signal_count`). Using `@property` on
+  the dataclass keeps the derived logic co-located with the fields and
+  avoids passing a third boolean through every call site.
 - Plumb `signal_count` from `session_peers()` into `peer_update_status`
   consumers. Today `_niche_detail_response` calls `list_team_peers` then
   `peer_update_status` separately — combine so the peer card has
@@ -134,9 +150,12 @@ Micro tests:
   the peer-panel HTML fragment only (no surrounding niche detail).
 - Factor the peer-panel rendering out of `_niche_detail_response` into a
   helper so both full-page and fragment responses use it.
-- Add `hx-get` + `hx-trigger="every 20s"` to the peer-panel container in
-  `niche_detail.html`. Pause polling when the page is hidden if htmx has
-  a straightforward way (`hx-trigger="every 20s[document.visibilityState === 'visible']"`).
+- Give the peer-panel container a stable unique ID (e.g.
+  `id="peer-panel-{{ team_name }}-{{ niche_name }}"`) so htmx's swap
+  target is unambiguous, especially if multiple niche tabs are ever open.
+- Add `hx-get` + `hx-trigger="every 20s[document.visibilityState === 'visible']"`
+  to the peer-panel container. The visibility guard is valid htmx syntax
+  and skips pointless network requests while the tab is backgrounded.
 
 Micro tests (pytest + FastAPI TestClient):
 
@@ -146,9 +165,12 @@ Micro tests (pytest + FastAPI TestClient):
 ### 4. UI copy and styling (`templates/fragments/niche_detail.html`)
 
 - Add a small "has-changes" badge next to `peer.label` when
-  `peer.update_status.has_unfetched_hint` is true and
-  `peer.update_status.ready_to_merge` is false (so we don't double-show
-  pre-fetch and post-fetch hints).
+  `peer.update_status.has_unfetched_hint` is true and neither
+  `ready_to_merge` nor `already_merged` is true. This prevents
+  double-badging in the post-fetch states and handles the edge case where
+  a merge has just completed but the watermark hasn't advanced yet (the
+  `already_merged` guard keeps the badge from reappearing spuriously in
+  that window).
 - Copy: "Has changes since your last fetch" on hover/title, badge shows a
   dot or "●".
 - Add a small explanatory line under the peer panel noting the hint is
