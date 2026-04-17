@@ -268,3 +268,29 @@ The final branch summary should answer:
 5. If crash-mid-create is deferred, what exact state is the system left in
    after the crash and how would an operator recognize that?
 6. What remains intentionally outside this branch?
+
+Current answers after implementation:
+
+1. Replaying the same valid join request bundle to
+   `create_linked_device_bootstrap(...)` now returns the originally stored
+   `bootstrap_bundle` from the pending create-side breadcrumb instead of minting
+   a fresh encrypted response.
+2. That is the right pre-alpha behavior because it preserves one logical
+   authorizer action, avoids re-encryption ambiguity, keeps replay stable for
+   the joining device, and prevents duplicate side effects.
+3. The retry policy is proven by
+   `test_linked_device_bootstrap_create_replay_returns_stored_bundle_without_extra_commit`
+   in `packages/small-sea-manager/tests/test_linked_device_bootstrap.py`.
+4. Replay does not create duplicate cert rows, duplicate pending breadcrumbs, or
+   extra commits. The replay test asserts one `device_link` cert row, one
+   pending create-side breadcrumb, and unchanged git commit count on the second
+   call.
+5. If a crash lands after cert issuance but before the pending breadcrumb with
+   stored bundle is written, the team DB can contain the new `device_link` cert
+   while no replayable bootstrap bundle exists in local device state. The
+   joining device has nothing to finalize, and the authorizing device cannot
+   replay from stored state. An operator would recognize this as changed team
+   trust state without a corresponding pending create-side breadcrumb/bundle for
+   that bootstrap attempt.
+6. Automatic recovery or rollback for that mid-create crash window remains
+   intentionally outside this branch.
