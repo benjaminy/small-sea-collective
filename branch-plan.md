@@ -22,20 +22,33 @@ Rewrite architecture and spec language so it accurately reflects the accepted tr
 
 1. **Read access is effectively endpoint-trust-scoped.** Remove any language implying the protocol enforces a cryptographic read-access boundary between admitted and non-admitted parties. The real boundary is what endpoints choose to do.
 2. **Linked-device admission is a unilateral identity-owner act (sibling handoff).** The existing sibling bootstraps the new device. No per-sender redistribution ceremony. The `device_link` cert chain satisfies the same crypto rules automatically.
-3. **Teammate admission is inviter-orchestrated admin-quorum proposal/approval/publish.** Describe the full flow: proposal shell published at initiation (before invitee responds), invitee-signed acceptance transcript, admin approvals scoped to members but executed by anchor-trusted device signatures, inviter observes quorum and publishes finalization.
+3. **Teammate admission is inviter-orchestrated admin-quorum proposal/approval/publish.** Describe the full flow: proposal shell published at initiation (before the invitee is contacted), invitee-signed acceptance transcript, admin approvals scoped to members but executed by anchor-trusted device signatures, inviter observes quorum and publishes finalization.
 4. **Approvals are transcript-bound and anchor-verified.** Governance-snapshot anchor (team-history commit hash / Cod Sync link ID) freezes admin roster, membership roster, and member→device mapping. Every signer verifies the frozen state at the anchor independently.
 5. **Approvals are member-scoped votes exercised by anchor-trusted device signatures.** One vote per `admin_member_id`; devices linked after the anchor cannot vote on that proposal.
 6. **Transport metadata is NOT frozen into the immutable admission transcript.** Admission binds device keys and the inviter-allocated `member_id` only. Post-admission transport setup is a separate flow (B7).
 7. **Rotation means exclusion or hygiene, never admission.** Collapse all rotation language to these two purposes.
+8. **Proposals are non-durable; invalidate on any governance-state change.** A proposal anchored to a team-history snapshot is dead the moment the admin roster, membership roster, or member→device mapping changes relative to that anchor (or the proposal expires). It cannot be a durable bearer capability that survives security-relevant team-state changes.
 
 ## Specific Sections To Rewrite (From Issue-97 Plan)
 
 ### `architecture.md`
-- §"Fully Decentralized Team Management": rewrite rotation paragraph (exclusion + hygiene). Add paragraphs on admin-quorum, governance-snapshot anchoring (including member→device mapping), member/device approval bridge, inviter-as-finalizer, inviter-allocated `member_id`, early proposal-shell visibility, transport out of transcript, non-durable proposals.
+- §"Fully Decentralized Team Management": rewrite rotation paragraph (exclusion + hygiene). Add paragraphs on admin-quorum, governance-snapshot anchoring (including member→device mapping), member/device approval bridge (expressed as a verifiable derivation, not just a policy rule — see spec.md note below), inviter-as-finalizer, inviter-allocated `member_id`, early proposal-shell visibility, transport out of transcript, non-durable proposals and their invalidation trigger.
 
 ### `packages/small-sea-manager/spec.md`
 - §"Linked-device team bootstrap": rewrite historical-boundary and slice-scope subsections to reflect join-time-forward access and sibling-handoff model.
-- §"Invitations" and §"Invitation Protocol (detailed)": describe inviter-orchestrated, transcript-bound proposal/approval/publish model. Spell out: inviter writes finalization (not invitee), `member_id` is inviter-allocated, approvals are member-scoped via anchor-trusted device signatures, transport published post-admission via announce-endpoint flow (not frozen in transcript).
+- §"Invitations" and §"Invitation Protocol (detailed)": describe inviter-orchestrated, transcript-bound proposal/approval/publish model. Spell out: inviter writes finalization (not invitee), `member_id` is inviter-allocated, approvals are member-scoped via anchor-trusted device signatures, transport published post-admission via announce-endpoint flow (not frozen in transcript). The member/device approval bridge must be expressed as a step-by-step derivation a verifier can replay (device_link certs at the anchor map device public keys to member_ids → approval is valid iff signing key appears in such a cert that maps to a current-admin member_id), not just stated as a policy rule.
+- **SQL schema fragments:** spec.md contains SQL table definitions for the invitation/admission flow that follow the old model (e.g., the existing `invitation` table). B1 must not leave those intact — they will mislead implementers who read schema before prose. Replace each stale schema block with a placeholder of the form:
+
+  ```
+  -- [SCHEMA TBD — to be defined in B5]
+  -- Target fields (from accepted model): proposal_id, nonce, team_history_anchor,
+  --   frozen_governance_digest, inviter_member_id (= finalizer_member_id),
+  --   pre_allocated_invitee_member_id, state, created_at, expires_at;
+  --   plus acceptance_transcript, admin_approval_signatures (separate rows).
+  -- Transport metadata (cloud endpoint etc.) is NOT part of this schema.
+  ```
+
+  The placeholder names the target fields so the intent is clear, but explicitly defers the authoritative definition to B5.
 
 ### `Documentation/open-architecture-questions.md`
 - §5 "Identity Model": add settled-decisions subsection citing the reframe. Cover: endpoint-trust framing, admin-quorum, transcript binding (transport explicitly excluded), governance anchor (including member→device mapping), member/device approval bridge, inviter-as-finalizer, inviter-allocated `member_id`, early proposal-shell publication, non-durable proposals.
@@ -59,7 +72,7 @@ Done when a skeptical reviewer confirms all three groups:
 
 For **each** of the four files independently:
 
-1. None of the following old-model claims appear: (a) a cryptographic read-access boundary the protocol enforces, (b) per-sender redistribution required before a new linked device can read, (c) invitee publishes their own admission to team DB.
+1. None of the following old-model claims appear: (a) a cryptographic read-access boundary the protocol enforces, (b) per-sender redistribution required before a new linked device can read, (c) invitee publishes their own admission to team DB, (d) invitee selects or generates their own `member_id`.
 2. Rotation is described only as exclusion or hygiene — never as an admission mechanism.
 3. Transport metadata is explicitly noted as excluded from the admission transcript; post-admission transport setup is described as a separate flow.
 
