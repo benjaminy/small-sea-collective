@@ -1,7 +1,10 @@
 import pathlib
+import sqlite3
 from types import SimpleNamespace
 
+import cod_sync.protocol as CS
 from fastapi.testclient import TestClient
+from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
 import small_sea_manager.provisioning as Provisioning
 from small_sea_manager.manager import TeamManager, _CORE_APP
@@ -67,3 +70,109 @@ def test_manager_web_pin_flow_updates_cached_session_state(playground_dir, monke
     assert manager.session_state("NoteToSelf", mode="passthrough") == "active"
     assert manager.get_pending_id("NoteToSelf", mode="passthrough") is None
     assert captured["confirm"] == ("pending-123", "321")
+
+
+def _push_to_localfolder(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
+    cod = CS.CodSync("origin", repo_dir=repo_dir)
+    cod.remote = CS.LocalFolderRemote(str(cloud_dir))
+    cod.push_to_remote(["main"])
+
+
+def test_admission_event_dismissals_persist_across_manager_instances(playground_dir):
+    root = pathlib.Path(playground_dir)
+    cloud_dir = root / "cloud"
+    cloud_dir.mkdir()
+
+    alice_hex = Provisioning.create_new_participant(root, "Alice")
+    Provisioning.add_cloud_storage(root, alice_hex, protocol="localfolder", url=str(cloud_dir))
+    Provisioning.create_team(root, alice_hex, "ProjectX")
+
+    linked_public_key = generate_key_pair(ProtectionLevel.DAILY)[0].public_key
+    linked_cert = Provisioning.issue_device_link_for_member(root, alice_hex, "ProjectX", linked_public_key)
+    invitation_token = Provisioning.create_invitation(
+        root,
+        alice_hex,
+        "ProjectX",
+        {"protocol": "localfolder", "url": str(cloud_dir)},
+        invitee_label="Bob",
+    )
+    assert invitation_token
+
+    manager = TeamManager(root, alice_hex)
+    team = manager.get_team("ProjectX")
+    event_types = {(event.event_type, event.artifact_id_hex) for event in team["admission_events"]}
+    assert ("linked_device", linked_cert.cert_id.hex()) in event_types
+    pending_invitation = next(
+        event for event in team["admission_events"] if event.event_type == "invitation_pending"
+    )
+
+    manager.dismiss_admission_event(
+        "ProjectX",
+        pending_invitation.event_type,
+        pending_invitation.artifact_id_hex,
+    )
+
+    manager_reloaded = TeamManager(root, alice_hex)
+    team_reloaded = manager_reloaded.get_team("ProjectX")
+    reloaded_types = {(event.event_type, event.artifact_id_hex) for event in team_reloaded["admission_events"]}
+    assert ("linked_device", linked_cert.cert_id.hex()) in reloaded_types
+    assert (pending_invitation.event_type, pending_invitation.artifact_id_hex) not in reloaded_types
+
+
+def test_manager_web_renders_admin_and_non_admin_admission_controls(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_cloud = root / "alice-cloud"
+    bob_cloud = root / "bob-cloud"
+    alice_cloud.mkdir()
+    bob_cloud.mkdir()
+
+    alice_hex = Provisioning.create_new_participant(root, "Alice")
+    bob_hex = Provisioning.create_new_participant(root, "Bob")
+    Provisioning.add_cloud_storage(root, alice_hex, protocol="localfolder", url=str(alice_cloud))
+    Provisioning.add_cloud_storage(root, bob_hex, protocol="localfolder", url=str(bob_cloud))
+
+    team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
+    alice_repo = root / "Participants" / alice_hex / "ProjectX" / "Sync"
+    _push_to_localfolder(alice_repo, alice_cloud)
+
+    token_b64 = Provisioning.create_invitation(
+        root,
+        alice_hex,
+        "ProjectX",
+        {"protocol": "localfolder", "url": str(alice_cloud)},
+        invitee_label="Bob",
+    )
+    _push_to_localfolder(alice_repo, alice_cloud)
+
+    bob_acceptance = Provisioning.accept_invitation(
+        root,
+        bob_hex,
+        token_b64,
+        inviter_remote=CS.LocalFolderRemote(str(alice_cloud)),
+    )
+
+    bob_self_id_hex = next(
+        team["self_in_team"] for team in Provisioning.list_teams(root, bob_hex) if team["name"] == "ProjectX"
+    )
+    bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
+    with sqlite3.connect(str(bob_team_db)) as conn:
+        conn.execute(
+            "UPDATE berth_role SET role = 'read-only' WHERE member_id = ?",
+            (bytes.fromhex(bob_self_id_hex),),
+        )
+        conn.commit()
+
+    Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", bob_acceptance)
+
+    alice_app = create_app(root, alice_hex)
+    alice_client = TestClient(alice_app)
+    alice_html = alice_client.get("/teams/ProjectX").text
+    assert "Admission finalized for Bob" in alice_html
+    assert "Exclude" in alice_html
+
+    bob_app = create_app(root, bob_hex)
+    bob_client = TestClient(bob_app)
+    bob_html = bob_client.get("/teams/ProjectX").text
+    assert "Invitation open for Bob" in bob_html
+    assert "Revoke" not in bob_html
+    assert "Exclude" not in bob_html

@@ -11,7 +11,9 @@ import pathlib
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 from fastapi.testclient import TestClient
+import small_sea_hub.server as Server
 from small_sea_hub.server import app
+from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -40,18 +42,17 @@ def _open_session(http, nickname, team, mode="encrypted"):
 def _setup_backend_and_session(root):
     backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
     app.state.backend = backend
+    app.state.logger = backend.logger
     # Initialize watcher state that the lifespan would normally set up
-    if not hasattr(app.state, "self_signal_counts"):
-        app.state.self_signal_counts = {}
+    app.state.self_signal_counts = {}
     if not hasattr(app.state, "peer_signal_events"):
         import asyncio
         app.state.peer_signal_events = {}
-    if not hasattr(app.state, "peer_counts"):
-        app.state.peer_counts = {}
-    if not hasattr(app.state, "watched_sessions"):
-        app.state.watched_sessions = {}
-    if not hasattr(app.state, "watched_peers"):
-        app.state.watched_peers = {}
+    else:
+        app.state.peer_signal_events = {}
+    app.state.peer_counts = {}
+    app.state.watched_sessions = {}
+    app.state.watched_peers = {}
     http = TestClient(app)
     return backend, http
 
@@ -147,3 +148,35 @@ def test_existing_peer_watch_behavior_unaffected(playground_dir):
     data = resp.json()
     assert "updated" in data
     assert "self_updated_count" not in data
+
+
+def test_team_db_revision_pulses_watchers_for_device_link_only_changes(playground_dir, monkeypatch):
+    """A device_link-only team DB change wakes berth waiters even without member-list changes."""
+    root = pathlib.Path(playground_dir)
+    cloud_dir = root / "cloud"
+    cloud_dir.mkdir()
+    alice_hex = Provisioning.create_new_participant(root, "Alice")
+    Provisioning.add_cloud_storage(root, alice_hex, protocol="localfolder", url=str(cloud_dir))
+    Provisioning.create_team(root, alice_hex, "ProjectX")
+    backend, http = _setup_backend_and_session(root)
+
+    token = _open_session(http, "Alice", "ProjectX")
+    berth_id_hex = backend._lookup_session(token).berth_id.hex()
+
+    pulses: list[str] = []
+
+    def capture_pulse(_app, candidate_berth_id_hex):
+        pulses.append(candidate_berth_id_hex)
+
+    monkeypatch.setattr(Server, "_pulse_berth_event", capture_pulse)
+    monkeypatch.setattr(Server, "_refresh_local_runtime_signal", lambda *_args, **_kwargs: None)
+
+    Server._watcher_pass(app)
+    pulses.clear()
+
+    linked_public_key = generate_key_pair(ProtectionLevel.DAILY)[0].public_key
+    Provisioning.issue_device_link_for_member(root, alice_hex, "ProjectX", linked_public_key)
+
+    Server._watcher_pass(app)
+
+    assert berth_id_hex in pulses

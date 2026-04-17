@@ -350,8 +350,9 @@ Response:
 ```
 
 `updated` is empty on timeout or on a structural change (membership update, local `notify=True`
-upload from another session on the same berth). An empty response is not an error — it is the
-signal to re-enumerate the current peer list before the next watch call.
+upload from another session on the same berth, or any local team-DB revision change detected by
+the watcher). An empty response is not an error — it is the signal to re-enumerate local team
+state before the next watch call.
 
 ---
 

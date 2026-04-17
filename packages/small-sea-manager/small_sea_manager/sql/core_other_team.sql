@@ -71,3 +71,11 @@ CREATE TABLE IF NOT EXISTS device_prekey_bundle (
     published_at TEXT NOT NULL,
     FOREIGN KEY (device_key_id) REFERENCES team_device(device_key_id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS admission_event_disposition (
+    event_type TEXT NOT NULL,
+    artifact_id BLOB NOT NULL,
+    disposition TEXT NOT NULL CHECK(disposition IN ('dismissed')),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (event_type, artifact_id)
+);

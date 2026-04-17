@@ -10,7 +10,7 @@
   <table>
     <thead>
       <tr>
-        <th>Member ID</th>
+        <th>Member</th>
         <th>Core berth role</th>
         <th></th>
       </tr>
@@ -19,7 +19,12 @@
       {% for m in members %}
       <tr>
         <td>
+          {% if m.display_name %}
+          <span>{{ m.display_name }}</span>
+          <span class="muted" style="margin-left:0.4rem">{{ m.id[:12] }}…</span>
+          {% else %}
           <span class="mono">{{ m.id[:12] }}…</span>
+          {% endif %}
           {% if m.is_self %}<span class="badge badge-self" style="margin-left:0.5rem">you</span>{% endif %}
         </td>
         <td>
@@ -32,8 +37,16 @@
           {% endif %}
         </td>
         <td style="text-align:right; white-space:nowrap">
-          <button class="btn btn-disabled" disabled title="Not yet implemented">Remove</button>
-          <span class="stub-label">not yet implemented</span>
+          {% if m.can_remove %}
+          <form hx-post="/teams/{{ team_name }}/members/{{ m.id }}/remove"
+                hx-target="#team-detail"
+                hx-swap="innerHTML"
+                style="display:inline">
+            <button class="btn btn-danger btn-sm" type="submit">Remove</button>
+          </form>
+          {% else %}
+          <span class="stub-label">—</span>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
@@ -55,8 +68,8 @@
       Paste the acceptance token sent back by the invitee.
     </p>
     <form hx-post="/teams/{{ team_name }}/complete-acceptance"
-          hx-target="#members-{{ team_name }}"
-          hx-swap="outerHTML">
+          hx-target="#team-detail"
+          hx-swap="innerHTML">
       <textarea name="acceptance_token" placeholder="Paste acceptance token here…" required></textarea>
       <button class="btn btn-primary" type="submit">Complete acceptance</button>
     </form>

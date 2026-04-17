@@ -1326,7 +1326,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 56
+USER_SCHEMA_VERSION = 57
 
 
 # ---- Provisioning functions ----
@@ -1846,6 +1846,8 @@ def _migrate_team_db(conn, from_version):
         )
     if from_version < 56:
         _migrate_team_db_to_member_and_team_device(conn)
+    if from_version < 57:
+        _ensure_admission_event_disposition_table(conn)
 
 
 def _table_columns(conn, table_name: str) -> list[str]:
@@ -1858,6 +1860,19 @@ def _table_exists(conn, table_name: str) -> bool:
         {"name": table_name},
     ).fetchone()
     return row is not None
+
+
+def _ensure_admission_event_disposition_table(conn) -> None:
+    conn.execute(
+        text(
+            "CREATE TABLE IF NOT EXISTS admission_event_disposition ("
+            "event_type TEXT NOT NULL, "
+            "artifact_id BLOB NOT NULL, "
+            "disposition TEXT NOT NULL CHECK(disposition IN ('dismissed')), "
+            "updated_at TEXT NOT NULL, "
+            "PRIMARY KEY (event_type, artifact_id))"
+        )
+    )
 
 
 def _migrate_team_db_to_member_and_team_device(conn) -> None:
@@ -1986,6 +2001,7 @@ def _migrate_team_db_to_member_and_team_device(conn) -> None:
     invitation_columns = set(_table_columns(conn, "invitation"))
     if "acceptor_device_key_id" not in invitation_columns:
         conn.execute(text("ALTER TABLE invitation ADD COLUMN acceptor_device_key_id BLOB"))
+    _ensure_admission_event_disposition_table(conn)
 def _rename_sender_key_column_if_present(conn, table_name: str) -> None:
     columns = {
         row[1]
@@ -4358,7 +4374,7 @@ def list_members(root_dir, participant_hex, team_name):
     engine = _sqlite_engine(team_db_path)
 
     with engine.begin() as conn:
-        members = conn.execute(text("SELECT id FROM member")).fetchall()
+        members = conn.execute(text("SELECT id, display_name FROM member")).fetchall()
         role_rows = conn.execute(
             text("SELECT member_id, berth_id, role FROM berth_role")
         ).fetchall()
@@ -4373,7 +4389,11 @@ def list_members(root_dir, participant_hex, team_name):
         )
 
     return [
-        {"id": row[0].hex(), "berth_roles": roles_by_member.get(row[0].hex(), [])}
+        {
+            "id": row[0].hex(),
+            "display_name": row[1],
+            "berth_roles": roles_by_member.get(row[0].hex(), []),
+        }
         for row in members
     ]
 
@@ -4401,3 +4421,30 @@ def list_invitations(root_dir, participant_hex, team_name):
         }
         for row in rows
     ]
+
+
+def dismiss_admission_event(root_dir, participant_hex, team_name, event_type, artifact_id_hex):
+    """Persist a local dismissal for one admission event."""
+    root_dir = pathlib.Path(root_dir)
+    team_db_path = (
+        root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
+    )
+    ensure_team_db_schema(team_db_path)
+    engine = _sqlite_engine(team_db_path)
+    try:
+        with engine.begin() as conn:
+            _ensure_admission_event_disposition_table(conn)
+            conn.execute(
+                text(
+                    "INSERT OR REPLACE INTO admission_event_disposition "
+                    "(event_type, artifact_id, disposition, updated_at) "
+                    "VALUES (:event_type, :artifact_id, 'dismissed', :updated_at)"
+                ),
+                {
+                    "event_type": event_type,
+                    "artifact_id": bytes.fromhex(artifact_id_hex),
+                    "updated_at": _now_iso(),
+                },
+            )
+    finally:
+        engine.dispose()

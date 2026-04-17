@@ -14,12 +14,32 @@
 </div>
 
 {% if joined_locally %}
+{% if team_notice %}
+<div class="detail-section" style="padding-top:0.4rem; padding-bottom:0.4rem;">
+  <p class="notice notice-ok">{{ team_notice }}</p>
+</div>
+{% endif %}
+{% if team_error %}
+<div class="detail-section" style="padding-top:0.4rem; padding-bottom:0.4rem;">
+  <p class="notice notice-err">{{ team_error }}</p>
+</div>
+{% endif %}
 <div class="detail-section" style="padding-top:0.4rem; padding-bottom:0.4rem;">
   {% include "fragments/team_session.html" %}
 </div>
 
 <div class="detail-section" style="padding-top:0.4rem; padding-bottom:0.4rem">
   <div id="sync-result"></div>
+</div>
+
+<div class="detail-section">
+  <h3>Admission Events</h3>
+  {% include "fragments/admission_events.html" %}
+  <div id="admission-events-watch-{{ team_name }}"
+       hx-get="/teams/{{ team_name }}/admission-events/watch"
+       hx-trigger="load delay:{% if team_session_status == 'active' %}0.2s{% else %}5s{% endif %}"
+       hx-swap="outerHTML"
+       style="display:none"></div>
 </div>
 
 <div class="detail-section">

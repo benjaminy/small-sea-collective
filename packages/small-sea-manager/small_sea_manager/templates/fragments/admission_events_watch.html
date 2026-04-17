@@ -1,0 +1,9 @@
+<div id="admission-events-watch-{{ team_name }}"
+     hx-get="/teams/{{ team_name }}/admission-events/watch"
+     hx-trigger="load delay:{{ watch_delay }}"
+     hx-swap="outerHTML"
+     style="display:none">
+</div>
+<div id="admission-events-{{ team_name }}" hx-swap-oob="outerHTML">
+  {% include "fragments/admission_events.html" %}
+</div>

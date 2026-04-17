@@ -29,6 +29,22 @@ Current-vs-future expectation by class:
 - Completed invitation transcripts awaiting quorum: event-model and watch-path support in B2; real awaiting-quorum production and multi-admin approval flows depend on B5.
 - Finalized admissions: fully implementable in B2 for visibility; objection/exclusion affordance should resolve through the existing exclusion path, not a new governance primitive.
 
+## Implementation Outcome
+
+What landed in this branch:
+
+- A Manager-side admission-event model with named B5 extension points in code for `proposal_shell` and `awaiting_quorum`, while only current-model event types are produced at runtime.
+- A persisted per-team `admission_event_disposition` table keyed by `(event_type, artifact_id)` so ignored prompts survive restarts without mutating the underlying invitation or cert rows.
+- A dedicated admission-events UI section in Manager with admin-only action controls, plus explicit `Ignore` and post-finalization `Exclude` affordances.
+- A Hub watcher change that pulses berth waiters on local team-DB revision changes, so `device_link`-only updates and other admission-relevant DB changes wake the Manager refresh loop even when peer-count semantics do not change.
+- A Manager long-poll loop that re-renders admission events from local team state via the Hub watch path instead of blind fixed-interval polling.
+
+Intentional deltas from the original plan:
+
+- No multi-admin approval landed; B2 remains current-model only.
+- Current `invitation.status = 'pending'` rows serve as the runtime stand-in for "invitation visible / open" prompts.
+- Real proposal-shell and awaiting-quorum runtime states remain B5 work; in B2 they are represented only as reserved extension points in the event model.
+
 ## Provisional Decisions Before Implementation
 
 These are the assumptions B2 should start from. Early implementation work may confirm them or force a revision, but they should not remain unstated until mid-branch.

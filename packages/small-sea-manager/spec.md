@@ -117,6 +117,7 @@ Stores the shared state for one team. All members maintain their own copy; chang
 | `berth_role` | Per-member, per-berth role assignments: `read-only` or `read-write` |
 | `invitation` | Invitation records (pending, accepted, revoked) |
 | `team_device` | One row per team device; device identity and cloud endpoint metadata used for Cod Sync pull live here |
+| `admission_event_disposition` | Manager-local dismissals for admission prompts, keyed by `(event_type, artifact_id)` so ignored prompts stay ignored across restarts without mutating the underlying governance artifact |
 
 
 ---
