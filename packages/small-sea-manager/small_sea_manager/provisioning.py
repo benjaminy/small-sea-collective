@@ -4351,6 +4351,17 @@ def list_teams(root_dir, participant_hex):
     ]
 
 
+def get_self_in_team(root_dir, participant_hex, team_name):
+    """Return this participant's member ID for one team, or None if absent."""
+    root_dir = pathlib.Path(root_dir)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute(
+            "SELECT self_in_team FROM team WHERE name = ?",
+            (team_name,),
+        ).fetchone()
+    return row[0].hex() if row is not None else None
+
+
 def list_members(root_dir, participant_hex, team_name):
     """List members of a team with their berth roles. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)

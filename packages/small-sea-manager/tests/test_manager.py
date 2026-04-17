@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
 import small_sea_manager.provisioning as Provisioning
+from small_sea_manager.admission_events import AdmissionEventType
 from small_sea_manager.manager import TeamManager, _CORE_APP
 from small_sea_manager.web import create_app
 
@@ -100,10 +101,10 @@ def test_admission_event_dismissals_persist_across_manager_instances(playground_
 
     manager = TeamManager(root, alice_hex)
     team = manager.get_team("ProjectX")
-    event_types = {(event.event_type, event.artifact_id_hex) for event in team["admission_events"]}
-    assert ("linked_device", linked_cert.cert_id.hex()) in event_types
+    event_types = {(event.event_type.value, event.artifact_id_hex) for event in team["admission_events"]}
+    assert (AdmissionEventType.LINKED_DEVICE.value, linked_cert.cert_id.hex()) in event_types
     pending_invitation = next(
-        event for event in team["admission_events"] if event.event_type == "invitation_pending"
+        event for event in team["admission_events"] if event.event_type is AdmissionEventType.INVITATION_PENDING
     )
 
     manager.dismiss_admission_event(
@@ -114,9 +115,9 @@ def test_admission_event_dismissals_persist_across_manager_instances(playground_
 
     manager_reloaded = TeamManager(root, alice_hex)
     team_reloaded = manager_reloaded.get_team("ProjectX")
-    reloaded_types = {(event.event_type, event.artifact_id_hex) for event in team_reloaded["admission_events"]}
-    assert ("linked_device", linked_cert.cert_id.hex()) in reloaded_types
-    assert (pending_invitation.event_type, pending_invitation.artifact_id_hex) not in reloaded_types
+    reloaded_types = {(event.event_type.value, event.artifact_id_hex) for event in team_reloaded["admission_events"]}
+    assert (AdmissionEventType.LINKED_DEVICE.value, linked_cert.cert_id.hex()) in reloaded_types
+    assert (pending_invitation.event_type.value, pending_invitation.artifact_id_hex) not in reloaded_types
 
 
 def test_manager_web_renders_admin_and_non_admin_admission_controls(playground_dir):
@@ -178,3 +179,22 @@ def test_manager_web_renders_admin_and_non_admin_admission_controls(playground_d
     assert "Invitation open for Bob" in bob_html
     assert "Revoke" not in bob_html
     assert "Exclude" not in bob_html
+
+
+def test_admission_watch_endpoint_backs_off_when_hub_wait_unavailable(playground_dir, monkeypatch):
+    participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_team(playground_dir, participant_hex, "ProjectX")
+    app = create_app(playground_dir, participant_hex)
+    client = TestClient(app)
+    manager = app.state.manager
+
+    manager.set_session("ProjectX", "token-encrypted")
+    monkeypatch.setattr(
+        manager,
+        "wait_for_team_admission_signal",
+        lambda team_name, timeout=15: False,
+    )
+
+    response = client.get("/teams/ProjectX/admission-events/watch")
+    assert response.status_code == 200
+    assert 'load delay:5s' in response.text

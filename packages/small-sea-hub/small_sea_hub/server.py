@@ -160,7 +160,10 @@ def _run_runtime_reconciliation_for_session(app: FastAPI, session_hex: str):
                 artifact["target_device_key_id_hex"][:8],
                 msg,
             )
-    session_info["team_db_revision"] = revision
+    try:
+        session_info["team_db_revision"] = _team_db_revision(session_info["team_db_path"])
+    except FileNotFoundError:
+        session_info["team_db_revision"] = None
     return True
 
 

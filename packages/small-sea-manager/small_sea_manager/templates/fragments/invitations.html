@@ -32,8 +32,10 @@
         <td style="text-align:right">
           {% if inv.status == "pending" and viewer_is_admin %}
           <form hx-post="/teams/{{ team_name }}/invitations/{{ inv.id }}/revoke"
+                hx-sync="#team-detail:replace"
                 hx-target="#team-detail"
                 hx-swap="innerHTML"
+                hx-on::after-request="htmx.trigger(document.body, 'team-action')"
                 style="display:inline">
             <button class="btn btn-danger" type="submit">Revoke</button>
           </form>
@@ -58,8 +60,10 @@
     </p>
     <form class="inline-form"
           hx-post="/teams/{{ team_name }}/invitations"
+          hx-sync="#team-detail:replace"
           hx-target="#invitation-token-area"
-          hx-swap="innerHTML">
+          hx-swap="innerHTML"
+          hx-on::after-request="htmx.trigger(document.body, 'team-action')">
       <input type="text" name="invitee_label" placeholder="Label (who is this for?)">
       <select name="role">
         <option value="admin">admin</option>

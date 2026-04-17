@@ -1,6 +1,7 @@
 <div id="admission-events-watch-{{ team_name }}"
      hx-get="/teams/{{ team_name }}/admission-events/watch"
-     hx-trigger="load delay:{{ watch_delay }}"
+     hx-trigger="load delay:{{ watch_delay }}, team-action from:body"
+     hx-sync="#team-detail:replace"
      hx-swap="outerHTML"
      style="display:none">
 </div>

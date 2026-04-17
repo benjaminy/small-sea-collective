@@ -22,7 +22,7 @@ class AdmissionEventType(str, Enum):
 
 @dataclass(frozen=True)
 class AdmissionEvent:
-    event_type: str
+    event_type: AdmissionEventType
     artifact_id_hex: str
     occurred_at: str | None
     title: str
@@ -84,7 +84,7 @@ def _linked_device_events(conn, dismissed, *, self_member_id_hex: str | None, vi
             )
         events.append(
             AdmissionEvent(
-                event_type=AdmissionEventType.LINKED_DEVICE.value,
+                event_type=AdmissionEventType.LINKED_DEVICE,
                 artifact_id_hex=artifact_id_hex,
                 occurred_at=issued_at,
                 title=title,
@@ -124,8 +124,8 @@ def _invitation_events(conn, dismissed, *, self_member_id_hex: str | None, viewe
     ) in rows:
         artifact_id_hex = invitation_id.hex()
         if status == "pending":
-            event_type = AdmissionEventType.INVITATION_PENDING.value
-            if (event_type, artifact_id_hex) in dismissed:
+            event_type = AdmissionEventType.INVITATION_PENDING
+            if (event_type.value, artifact_id_hex) in dismissed:
                 continue
             label = invitee_label or "unlabelled invitee"
             events.append(
@@ -149,8 +149,8 @@ def _invitation_events(conn, dismissed, *, self_member_id_hex: str | None, viewe
             continue
 
         if status == "accepted":
-            event_type = AdmissionEventType.INVITATION_FINALIZED.value
-            if (event_type, artifact_id_hex) in dismissed:
+            event_type = AdmissionEventType.INVITATION_FINALIZED
+            if (event_type.value, artifact_id_hex) in dismissed:
                 continue
             accepted_by_hex = accepted_by.hex() if accepted_by is not None else None
             label = invitee_label or _member_label(accepted_display_name, accepted_by_hex)
@@ -173,6 +173,7 @@ def _invitation_events(conn, dismissed, *, self_member_id_hex: str | None, viewe
                     can_exclude=viewer_is_admin and accepted_by_hex not in {None, self_member_id_hex},
                 )
             )
+            continue
     return events
 
 

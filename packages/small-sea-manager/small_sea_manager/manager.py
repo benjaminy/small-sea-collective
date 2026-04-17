@@ -284,9 +284,10 @@ class TeamManager:
             }
         members = provisioning.list_members(self.root_dir, self.participant_hex, team_name)
         invitations = provisioning.list_invitations(self.root_dir, self.participant_hex, team_name)
-        self_in_team = next(
-            (team["self_in_team"] for team in self.list_teams() if team["name"] == team_name),
-            None,
+        self_in_team = provisioning.get_self_in_team(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
         )
         viewer_is_admin = False
         if self_in_team is not None:

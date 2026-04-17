@@ -57,6 +57,11 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             },
         )
 
+    def _watch_delay(active: bool, *, hub_available: bool = True) -> str:
+        if not active:
+            return "5s"
+        return "0.2s" if hub_available else "5s"
+
     def _mark_member_fields(team: dict[str, Any]) -> list[dict[str, Any]]:
         self_in_team = team.get("self_in_team")
         members: list[dict[str, Any]] = []
@@ -95,6 +100,9 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "sync_status": mgr.get_team_sync_status(team_name),
             "team_session_status": mgr.session_state(team_name, _ENCRYPTED),
             "team_session_mode_badge": _mode_badge(_ENCRYPTED),
+            "admission_watch_delay": _watch_delay(
+                mgr.session_state(team_name, _ENCRYPTED) == "active"
+            ),
             "team_notice": notice,
             "team_error": error,
         }
@@ -467,8 +475,9 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     async def watch_admission_events(request: Request, team_name: str):
         mgr = _mgr(request)
         active = mgr.session_state(team_name, _ENCRYPTED) == "active"
+        hub_available = True
         if active:
-            await asyncio.to_thread(
+            hub_available = await asyncio.to_thread(
                 mgr.wait_for_team_admission_signal,
                 team_name,
                 15,
@@ -481,7 +490,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "team_name": team_name,
                 "admission_events": team.get("admission_events", []),
                 "viewer_is_admin": team.get("viewer_is_admin", False),
-                "watch_delay": "0.2s" if active else "5s",
+                "watch_delay": _watch_delay(active, hub_available=hub_available),
             },
         )
 
