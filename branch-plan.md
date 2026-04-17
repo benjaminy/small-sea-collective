@@ -36,6 +36,7 @@ These are the assumptions B2 should start from. Early implementation work may co
 1. **Hub watch path:** assume the existing Hub watcher path can be extended or reused with only small changes, and that B2 should preserve the current boundary where Hub wakes sessions and Manager interprets team state. Phase 2 confirms this assumption first before broader UI work proceeds.
 2. **Approval scope in B2:** B2 does **not** implement multi-admin quorum approval. Any actionable "approve" control in B2 must be limited to flows that are coherent in the current model, and should be labeled to avoid implying B5-style quorum support. For future-state proposal-shell / awaiting-quorum events, B2 may expose non-actionable placeholders or clearly disabled controls, but should not claim real quorum approvals.
 3. **Ignore persistence:** ignored/dismissed prompts must survive process restarts, so B2 should plan on persisted Manager-owned local state rather than in-memory bookkeeping.
+4. **Likely ignore storage shape:** the leading candidate is a small per-team durable table in `core_other_team.sql` keyed by admission-event identity, unless implementation discovers a cleaner Manager-owned store with the same durability and locality properties.
 
 ## Design Direction
 
@@ -76,6 +77,8 @@ For finalized admissions, the user-facing affordance may say "Object" or "Exclud
 
 B2 should use persisted, Manager-owned local state for dismissed prompts so ignore behavior survives restarts and sync cycles. The exact mechanism can be finalized during implementation, but it should be an explicit design choice up front: e.g. a small Manager-local table or similar durable store keyed by admission-event identity and disposition state. In-memory suppression is not sufficient.
 
+Leading candidate: an `admission_event_disposition` table in the per-team DB schema storing event identity, disposition, and timestamp. B2 does not need to lock this schema in immediately, but the branch should evaluate this option first because it matches the per-team scope of the prompts.
+
 ## Expected Change Areas
 
 ### Hub integration
@@ -87,6 +90,7 @@ B2 should use persisted, Manager-owned local state for dismissed prompts so igno
 Likely work:
 
 - confirm whether existing `/notifications/watch` structural wakeups are sufficient or need an added admission-focused signal path
+- explicitly verify that `device_link`-only updates wake Manager promptly, rather than assuming member-list changes cover them
 - ensure local team-repo updates trigger prompt wakeups for active Manager sessions
 - document any new watch contract precisely in `packages/small-sea-hub/spec.md`
 
@@ -106,6 +110,7 @@ Likely work:
 - add explicit object/exclude affordance for finalized admissions
 - keep current invitation creation/acceptance flow working while adding the event layer
 - extend or replace `packages/small-sea-manager/small_sea_manager/templates/fragments/invitations.html` so invitation rows become one input to a broader admission-events presentation rather than the only surface
+- guard admin-only controls in the rendered UI, not only in backend handlers
 
 ### Manager provisioning / data model support
 
@@ -134,6 +139,8 @@ Then read the existing linked-device and invitation flows end to end and define 
 
 This phase should end with a small, explicit Manager-side event model implemented in code, rather than ad hoc conditionals in templates.
 
+As part of this phase, explicitly test the risky case called out above: a new `device_link` cert written to team state without a membership-row change. If that does not wake Manager promptly through the current Hub watch path, revise the Hub plan before proceeding.
+
 ### Phase 2: Wire prompt wakeups through Hub watch integration
 
 Use the existing Hub watcher path if it can wake Manager reliably on relevant team-repo changes. Only add new watch semantics if the existing empty-`updated` structural signal or current peer-count path is insufficient.
@@ -143,6 +150,7 @@ This phase exists to confirm or revise the provisional watch decision made above
 Question to resolve explicitly:
 
 - Can Manager learn "re-read team state now" quickly enough from the current Hub behavior, or do we need a distinct admission/update axis?
+- If not, is the smallest fix a broader structural pulse, a DB/file-change-triggered pulse, or an admission-relevant self/team signal rather than a semantics-heavy new watcher?
 
 Prefer the smallest Hub change that gives Manager prompt wakeups.
 
@@ -185,23 +193,25 @@ Done when a skeptical reviewer can verify all three groups below.
 3. When a finalized admission appears, Manager surfaces a distinct objection/exclusion affordance rather than only passive status text.
 4. Ignore/dismiss behavior works locally and predictably: ignored prompts do not immediately reappear on the next poll unless the underlying governance state materially changed.
 5. Ignore/dismiss state survives Manager process restarts.
+6. Non-admin users do not see admin-only governance controls in the rendered UI.
 
 ### Goal: the implementation is future-safe for B5
 
-6. The Manager UI is driven by a small admission-event derivation layer, not by scattered template conditionals keyed only to today's `invitation.status`.
-7. The Hub does not learn invitation/governance semantics beyond what is necessary to wake Manager sessions; governance interpretation remains in Manager.
-8. The event model has documented, unused extension points for proposal-shell and awaiting-quorum states, reviewable by inspection even if those states are not yet produced by runtime code in B2.
-9. No branch-local design choice hard-codes the old single-row invitation model as the permanent shape of admissions.
+7. The Manager UI is driven by a small admission-event derivation layer, not by scattered template conditionals keyed only to today's `invitation.status`.
+8. The Hub does not learn invitation/governance semantics beyond what is necessary to wake Manager sessions; governance interpretation remains in Manager.
+9. The event model has documented, unused extension points for proposal-shell and awaiting-quorum states, reviewable by inspection even if those states are not yet produced by runtime code in B2.
+10. No branch-local design choice hard-codes the old single-row invitation model as the permanent shape of admissions.
 
 ### Goal: repo integrity and confidence
 
-10. Micro tests cover the full path from state change to prompt visibility for at least:
+11. Micro tests cover the full path from state change to prompt visibility for at least:
    - linked-device visibility
    - invitation/proposal visibility
    - finalized-admission objection visibility
-11. Existing invitation-flow and Hub watch micro tests still pass, or are updated with a clear rationale that preserves behavior.
-12. The Hub-as-gateway rule is preserved: no new direct network paths are introduced in Manager or other packages.
-13. The Manager-database exclusivity rule is preserved: no non-Manager package starts reading team `core.db` directly for admission semantics.
+12. Micro tests or targeted verification cover the `device_link`-without-membership-change wakeup path explicitly.
+13. Existing invitation-flow and Hub watch micro tests still pass, or are updated with a clear rationale that preserves behavior.
+14. The Hub-as-gateway rule is preserved: no new direct network paths are introduced in Manager or other packages.
+15. The Manager-database exclusivity rule is preserved: no non-Manager package starts reading team `core.db` directly for admission semantics.
 
 ## Out Of Scope
 
