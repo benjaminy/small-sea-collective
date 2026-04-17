@@ -586,7 +586,7 @@ Alice (inviter)                    Bob (invitee)         Other admins
   |    hash (freezes admin/member/      |                      |
   |    device mapping at snapshot)      |                      |
   |  → publishes proposal shell to      |                      |
-  |    ProjectX/Sync/core.db            |                      |
+  |    {TeamName}/Sync/core.db            |                      |
   |  → commits + pushes via Hub         |                      |
   |  → returns token_b64                |                      |
   |                                (proposal now visible)      |
@@ -597,7 +597,7 @@ Alice (inviter)                    Bob (invitee)         Other admins
   |                      → opens NoteToSelf Hub session        |
   |                      → Hub /cloud_proxy fetches Alice's    |
   |                        team bundle chain (anonymous read)  |
-  |                      → clones ProjectX/Sync locally        |
+  |                      → clones {TeamName}/Sync locally        |
   |                      → generates fresh team device keypair |
   |                      → signs acceptance blob binding to    |
   |                        inviter-allocated member_id and     |
