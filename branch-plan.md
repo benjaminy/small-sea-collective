@@ -34,7 +34,7 @@ Current-vs-future expectation by class:
 What landed in this branch:
 
 - A Manager-side admission-event model with named B5 extension points in code for `proposal_shell` and `awaiting_quorum`, while only current-model event types are produced at runtime.
-- A persisted per-team `admission_event_disposition` table keyed by `(event_type, artifact_id)` so ignored prompts survive restarts without mutating the underlying invitation or cert rows.
+- A persisted per-team local sidecar store keyed by `(event_type, artifact_id)` so ignored prompts survive restarts without mutating the underlying invitation or cert rows or becoming synced team state.
 - A dedicated admission-events UI section in Manager with admin-only action controls, plus explicit `Ignore` and post-finalization `Exclude` affordances.
 - A Hub watcher change that pulses berth waiters on local team-DB revision changes, so `device_link`-only updates and other admission-relevant DB changes wake the Manager refresh loop even when peer-count semantics do not change.
 - A Manager long-poll loop that re-renders admission events from local team state via the Hub watch path instead of blind fixed-interval polling.
@@ -52,7 +52,7 @@ These are the assumptions B2 should start from. Early implementation work may co
 1. **Hub watch path:** assume the existing Hub watcher path can be extended or reused with only small changes, and that B2 should preserve the current boundary where Hub wakes sessions and Manager interprets team state. Phase 2 confirms this assumption first before broader UI work proceeds.
 2. **Approval scope in B2:** B2 does **not** implement multi-admin quorum approval. Any actionable "approve" control in B2 must be limited to flows that are coherent in the current model, and should be labeled to avoid implying B5-style quorum support. For future-state proposal-shell / awaiting-quorum events, B2 may expose non-actionable placeholders or clearly disabled controls, but should not claim real quorum approvals.
 3. **Ignore persistence:** ignored/dismissed prompts must survive process restarts, so B2 should plan on persisted Manager-owned local state rather than in-memory bookkeeping.
-4. **Likely ignore storage shape:** the leading candidate is a small per-team durable table in `core_other_team.sql` keyed by admission-event identity, unless implementation discovers a cleaner Manager-owned store with the same durability and locality properties.
+4. **Likely ignore storage shape:** the leading candidate is a small per-team durable, Manager-owned sidecar store keyed by admission-event identity, rather than synced team state in `Sync/core.db`.
 5. **Admission-event identity is a Phase 1 deliverable:** B2 should define one explicit identity scheme for dismissible admission events so schema work does not guess. The likely shape is `event_type + artifact_id`, where `artifact_id` is derived from the underlying governance artifact (for example a cert fingerprint / cert ID for `device_link` visibility, and proposal/admission ID for invitation-derived events).
 
 ## Design Direction
@@ -94,7 +94,7 @@ For finalized admissions, the user-facing affordance may say "Object" or "Exclud
 
 B2 should use persisted, Manager-owned local state for dismissed prompts so ignore behavior survives restarts and sync cycles. The exact mechanism can be finalized during implementation, but it should be an explicit design choice up front: e.g. a small Manager-local table or similar durable store keyed by admission-event identity and disposition state. In-memory suppression is not sufficient.
 
-Leading candidate: an `admission_event_disposition` table in the per-team DB schema storing event identity, disposition, and timestamp. B2 does not need to lock this schema in immediately, but the branch should evaluate this option first because it matches the per-team scope of the prompts.
+Leading candidate: a small per-team sidecar store holding event identity, disposition, and timestamp. B2 does not need to lock the exact file/schema shape in immediately, but it should remain Manager-local and outside synced team state.
 
 To keep schema work unblocked, Phase 1 should explicitly define the admission-event identity contract that such a table would key on, rather than leaving later implementation to infer it from UI code.
 

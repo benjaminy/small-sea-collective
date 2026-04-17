@@ -1326,7 +1326,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 57
+USER_SCHEMA_VERSION = 56
 
 
 # ---- Provisioning functions ----
@@ -1846,8 +1846,6 @@ def _migrate_team_db(conn, from_version):
         )
     if from_version < 56:
         _migrate_team_db_to_member_and_team_device(conn)
-    if from_version < 57:
-        _ensure_admission_event_disposition_table(conn)
 
 
 def _table_columns(conn, table_name: str) -> list[str]:
@@ -1860,19 +1858,6 @@ def _table_exists(conn, table_name: str) -> bool:
         {"name": table_name},
     ).fetchone()
     return row is not None
-
-
-def _ensure_admission_event_disposition_table(conn) -> None:
-    conn.execute(
-        text(
-            "CREATE TABLE IF NOT EXISTS admission_event_disposition ("
-            "event_type TEXT NOT NULL, "
-            "artifact_id BLOB NOT NULL, "
-            "disposition TEXT NOT NULL CHECK(disposition IN ('dismissed')), "
-            "updated_at TEXT NOT NULL, "
-            "PRIMARY KEY (event_type, artifact_id))"
-        )
-    )
 
 
 def _migrate_team_db_to_member_and_team_device(conn) -> None:
@@ -2001,7 +1986,8 @@ def _migrate_team_db_to_member_and_team_device(conn) -> None:
     invitation_columns = set(_table_columns(conn, "invitation"))
     if "acceptor_device_key_id" not in invitation_columns:
         conn.execute(text("ALTER TABLE invitation ADD COLUMN acceptor_device_key_id BLOB"))
-    _ensure_admission_event_disposition_table(conn)
+
+
 def _rename_sender_key_column_if_present(conn, table_name: str) -> None:
     columns = {
         row[1]
@@ -4423,28 +4409,50 @@ def list_invitations(root_dir, participant_hex, team_name):
     ]
 
 
+def _admission_event_store_path(root_dir, participant_hex, team_name):
+    root_dir = pathlib.Path(root_dir)
+    team_dir = root_dir / "Participants" / participant_hex / team_name
+    team_dir.mkdir(parents=True, exist_ok=True)
+    return team_dir / "admission-events-local.db"
+
+
+def _ensure_admission_event_store(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS admission_event_disposition (
+            event_type TEXT NOT NULL,
+            artifact_id BLOB NOT NULL,
+            disposition TEXT NOT NULL CHECK(disposition IN ('dismissed')),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (event_type, artifact_id)
+        )
+        """
+    )
+
+
+def list_dismissed_admission_events(root_dir, participant_hex, team_name):
+    db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+    with sqlite3.connect(db_path) as conn:
+        _ensure_admission_event_store(conn)
+        rows = conn.execute(
+            "SELECT event_type, artifact_id "
+            "FROM admission_event_disposition "
+            "WHERE disposition = 'dismissed'"
+        ).fetchall()
+    return {(row[0], row[1].hex()) for row in rows}
+
+
 def dismiss_admission_event(root_dir, participant_hex, team_name, event_type, artifact_id_hex):
     """Persist a local dismissal for one admission event."""
-    root_dir = pathlib.Path(root_dir)
-    team_db_path = (
-        root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
-    )
-    ensure_team_db_schema(team_db_path)
-    engine = _sqlite_engine(team_db_path)
-    try:
-        with engine.begin() as conn:
-            _ensure_admission_event_disposition_table(conn)
-            conn.execute(
-                text(
-                    "INSERT OR REPLACE INTO admission_event_disposition "
-                    "(event_type, artifact_id, disposition, updated_at) "
-                    "VALUES (:event_type, :artifact_id, 'dismissed', :updated_at)"
-                ),
-                {
-                    "event_type": event_type,
-                    "artifact_id": bytes.fromhex(artifact_id_hex),
-                    "updated_at": _now_iso(),
-                },
-            )
-    finally:
-        engine.dispose()
+    db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+    with sqlite3.connect(db_path) as conn:
+        _ensure_admission_event_store(conn)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO admission_event_disposition
+            (event_type, artifact_id, disposition, updated_at)
+            VALUES (?, ?, 'dismissed', ?)
+            """,
+            (event_type, bytes.fromhex(artifact_id_hex), _now_iso()),
+        )
+        conn.commit()

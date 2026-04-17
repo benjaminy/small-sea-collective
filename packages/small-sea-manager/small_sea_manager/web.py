@@ -1,5 +1,6 @@
 """FastAPI + Jinja2 + htmx web UI for the Small Sea Manager."""
 
+import asyncio
 import pathlib
 from typing import Any
 
@@ -7,6 +8,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from small_sea_manager.admission_events import AdmissionEventType
 from small_sea_manager.manager import TeamManager, _CORE_APP
 
 _template_dir = pathlib.Path(__file__).parent / "templates"
@@ -57,12 +59,14 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
 
     def _mark_member_fields(team: dict[str, Any]) -> list[dict[str, Any]]:
         self_in_team = team.get("self_in_team")
-        members = team["members"]
-        for member in members:
+        members: list[dict[str, Any]] = []
+        for raw_member in team["members"]:
+            member = dict(raw_member)
             member["is_self"] = member["id"] == self_in_team
             roles = member.get("berth_roles", [])
             member["core_role"] = roles[0]["role"] if roles else None
             member["can_remove"] = team.get("viewer_is_admin", False) and not member["is_self"]
+            members.append(member)
         return members
 
     def _team_detail_context(mgr: TeamManager, team_name: str, *, notice: str = None, error: str = None):
@@ -446,9 +450,14 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     ):
         mgr = _mgr(request)
         try:
+            AdmissionEventType(event_type)
+            bytes.fromhex(artifact_id)
             mgr.dismiss_admission_event(team_name, event_type, artifact_id)
             notice = "Admission prompt dismissed."
             error = None
+        except ValueError as e:
+            notice = None
+            error = f"Invalid admission event identity: {e}"
         except Exception as e:
             notice = None
             error = str(e)
@@ -459,7 +468,11 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         mgr = _mgr(request)
         active = mgr.session_state(team_name, _ENCRYPTED) == "active"
         if active:
-            mgr.wait_for_team_admission_signal(team_name, timeout=15)
+            await asyncio.to_thread(
+                mgr.wait_for_team_admission_signal,
+                team_name,
+                15,
+            )
         team = mgr.get_team(team_name)
         return templates.TemplateResponse(
             "fragments/admission_events_watch.html",

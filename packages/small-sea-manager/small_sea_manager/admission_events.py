@@ -36,10 +36,6 @@ class AdmissionEvent:
     can_exclude: bool = False
 
 
-def _team_db_path(root_dir, participant_hex: str, team_name: str) -> pathlib.Path:
-    return pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync" / "core.db"
-
-
 def _member_label(display_name: str | None, member_id_hex: str | None) -> str:
     if display_name:
         return display_name
@@ -48,21 +44,7 @@ def _member_label(display_name: str | None, member_id_hex: str | None) -> str:
     return "unknown member"
 
 
-def _load_dismissed_keys(conn) -> set[tuple[str, str]]:
-    if not provisioning._table_exists(conn, "admission_event_disposition"):
-        return set()
-    rows = conn.execute(
-        text(
-            "SELECT event_type, artifact_id "
-            "FROM admission_event_disposition "
-            "WHERE disposition = 'dismissed'"
-        )
-    ).fetchall()
-    return {(row[0], row[1].hex()) for row in rows}
-
-
-def _linked_device_events(conn, *, self_member_id_hex: str | None, viewer_is_admin: bool):
-    dismissed = _load_dismissed_keys(conn)
+def _linked_device_events(conn, dismissed, *, self_member_id_hex: str | None, viewer_is_admin: bool):
     rows = conn.execute(
         text(
             "SELECT kc.cert_id, kc.issued_at, kc.claims, td.member_id, m.display_name "
@@ -118,8 +100,7 @@ def _linked_device_events(conn, *, self_member_id_hex: str | None, viewer_is_adm
     return events
 
 
-def _invitation_events(conn, *, self_member_id_hex: str | None, viewer_is_admin: bool):
-    dismissed = _load_dismissed_keys(conn)
+def _invitation_events(conn, dismissed, *, self_member_id_hex: str | None, viewer_is_admin: bool):
     rows = conn.execute(
         text(
             "SELECT i.id, i.status, i.invitee_label, i.role, i.created_at, i.accepted_at, "
@@ -203,18 +184,25 @@ def list_admission_events(
     self_member_id_hex: str | None,
     viewer_is_admin: bool,
 ) -> list[AdmissionEvent]:
-    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    team_db_path = pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync" / "core.db"
+    dismissed = provisioning.list_dismissed_admission_events(
+        root_dir,
+        participant_hex,
+        team_name,
+    )
     engine = provisioning._sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
             events = _linked_device_events(
                 conn,
+                dismissed,
                 self_member_id_hex=self_member_id_hex,
                 viewer_is_admin=viewer_is_admin,
             )
             events.extend(
                 _invitation_events(
                     conn,
+                    dismissed,
                     self_member_id_hex=self_member_id_hex,
                     viewer_is_admin=viewer_is_admin,
                 )

@@ -1,3 +1,4 @@
+import logging
 import pathlib
 from typing import Optional
 
@@ -9,6 +10,7 @@ from small_sea_manager import admission_events
 from small_sea_manager import provisioning
 
 _CORE_APP = "SmallSeaCollectiveCore"
+_LOG = logging.getLogger(__name__)
 
 
 def create_identity_join_request(root_dir):
@@ -414,6 +416,8 @@ class TeamManager:
 
     def dismiss_admission_event(self, team_name, event_type, artifact_id_hex):
         """Dismiss an admission event locally for this team clone."""
+        admission_events.AdmissionEventType(event_type)
+        bytes.fromhex(artifact_id_hex)
         provisioning.dismiss_admission_event(
             self.root_dir,
             self.participant_hex,
@@ -538,6 +542,7 @@ class TeamManager:
         except SmallSeaHubUnavailable:
             return False
         except Exception:
+            _LOG.exception("Admission-event watch failed for team %s", team_name)
             return False
         return bool(result.get("updated")) or result == {"updated": {}}
 
