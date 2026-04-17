@@ -239,14 +239,11 @@ Protocol/product boundary:
   baseline explicitly with `_copy_team_baseline(...)` in
   `tests/test_linked_device_bootstrap.py`.
 - **Scope of the current slice** — The current flow bootstraps the new device
-  into one team using a sibling device of the same member. The target model
-  (B3) calls for the sibling to hand off its snapshot of peer sender keys as
-  part of the bootstrap bundle, giving the new device join-time-forward access
-  across all senders the sibling held. The current implementation does not yet
-  perform this peer-sender-key handoff; that gap is exercised by
-  `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
-  in `tests/test_linked_device_bootstrap.py`, which reflects interim state and
-  is retired by B3.
+  into one team using a sibling device of the same member. As part of bootstrap,
+  the sibling hands off its snapshot of peer sender keys, giving the new device
+  join-time-forward access across all senders the sibling held. Each team is
+  bootstrapped independently; this is not a blanket "join every known team"
+  operation.
   Evidence: the flow is implemented in
   `prepare_linked_device_team_join(...)`,
   `create_linked_device_bootstrap(...)`,
@@ -291,9 +288,9 @@ Historical boundary and visibility:
 
 - **The access policy is join-time-forward.** The new device inherits the
   sibling's snapshot of peer sender keys at bootstrap time and can read forward
-  from that point. It does not receive ciphertext from before the `device_link`
-  cert was published — that historical material was encrypted without the new
-  device's keys.
+  from that point across all senders the sibling held. It does not receive
+  ciphertext from before the `device_link` cert was published — that historical
+  material was encrypted without the new device's keys.
   Evidence: `test_linked_device_bootstrap_round_trip_same_member` asserts that
   a pre-bootstrap encrypted message cannot be decrypted after bootstrap.
 - That test is **repo-local protocol evidence**, not a full cryptographic
@@ -302,12 +299,13 @@ Historical boundary and visibility:
   Evidence: `group_encrypt(...)` / `group_decrypt(...)` in
   `packages/cuttlefish/cuttlefish/group.py`, plus the linked-device bootstrap
   test above.
-- **Peer sender-key handoff is B3 scope.** The current implementation does not
-  yet have the sibling hand off its snapshot of peer sender keys. Until B3
-  lands, the new device has join-time-forward access for the sibling's own
-  traffic but may not yet decrypt other senders' future traffic without their
-  separate redistribution. `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
-  exercises this interim boundary; it is retired and replaced by B3.
+
+> **Implementation status (B3 scope):** The peer-sender-key handoff is not yet
+> fully implemented. In the current code, the sibling does not yet pass its
+> snapshot of peer sender keys as part of the bootstrap bundle.
+> `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
+> exercises this code gap and is retired by B3. The normative model above
+> describes the accepted design; the current code reflects interim state.
 
 Retry/idempotency status in the current slice:
 
