@@ -47,18 +47,37 @@ Rewrite architecture and spec language so it accurately reflects the accepted tr
 
 Read each file in full, identify all passages that conflict with the accepted model, and rewrite them. Add new sections where the accepted model introduces concepts not yet present. Keep doc voice consistent with existing style.
 
-After editing each file, do a pass checking that no old-model language (e.g., "only admitted readers can decrypt," "must redistribute to new device before it can read," "invitee publishes own admission") survived.
+After editing each file, do a pass checking that no old-model language (e.g., "only admitted readers can decrypt," "must redistribute to new device before it can read," "invitee publishes own admission") survived in that file.
+
+Before declaring done, do a repo-wide grep for the most likely stale-model phrases (e.g., "can decrypt," "redistribution," "invitee.*publish," "admits.*read") and confirm any hits are either in the four target files and already updated, or are in code/tests/archive where old language is expected and harmless.
 
 ## Validation
 
-Done when a skeptical reviewer confirms:
+Done when a skeptical reviewer confirms all three groups:
 
-1. No file retains language claiming a cryptographic read-access boundary the protocol cannot enforce.
-2. Linked-device admission is described as sibling handoff + `device_link` cert; no per-sender redistribution step.
-3. Teammate admission describes the full inviter-orchestrated flow with proposal shell, signed acceptance transcript, anchor-verified approvals, and inviter-published finalization.
-4. Rotation is described only as exclusion or hygiene in all four files.
-5. Transport metadata is explicitly noted as excluded from the admission transcript and handled post-admission.
-6. No code files were modified.
+### Goal: four target files match the accepted model
+
+For **each** of the four files independently:
+
+1. None of the following old-model claims appear: (a) a cryptographic read-access boundary the protocol enforces, (b) per-sender redistribution required before a new linked device can read, (c) invitee publishes their own admission to team DB.
+2. Rotation is described only as exclusion or hygiene — never as an admission mechanism.
+3. Transport metadata is explicitly noted as excluded from the admission transcript; post-admission transport setup is described as a separate flow.
+
+### Goal: cross-document consistency on the subtle points
+
+A reviewer who reads any one of the four files and then any other gets the same answer to each of these:
+
+4. **Who allocates `member_id`?** All four files agree: the inviter, at proposal creation.
+5. **Who publishes finalization?** All four files agree: the inviter (never the invitee).
+6. **What does the governance anchor freeze?** All four files agree: admin roster, membership roster, AND member→device mapping.
+7. **When does the proposal shell become visible to other admins?** All four files agree: at initiation, before the invitee is contacted.
+8. **What is bound in the admission transcript?** All four files agree: device keys and `member_id`; transport metadata explicitly excluded.
+
+### Goal: repo integrity
+
+9. A repo-wide search finds no old-model language in non-archived, non-code files outside the four target files. Any hits are documented and either false positives or intentionally deferred.
+10. No code files were modified. No GitHub issue state was changed (that is B6).
+11. The four target files remain internally consistent: no section contradicts another within the same file.
 
 ## Out Of Scope
 
