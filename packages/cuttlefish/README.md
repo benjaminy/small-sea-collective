@@ -34,6 +34,14 @@ Small Sea follows Signal-style layering:
 - Double Ratchet provides forward secrecy and post-compromise recovery
 - Sender Keys make team broadcast efficient
 
+**Sender key state is a protocol-layer access convention, not a cryptographic
+enforcement boundary.** Distributing a sender key to a party signals that they
+are expected to be a legitimate reader; it does not prevent an admitted party
+from relaying plaintext or receiver state to others. Read access is therefore
+endpoint-trust-scoped. The admission flows (linked-device sibling handoff and
+inviter-orchestrated teammate admission) determine who holds sender key state;
+see `architecture.md` §1 for the full model.
+
 The Hub's crypto surface stays narrow:
 
 - The **Hub** depends on `cuttlefish.group` for encrypted team sessions.
