@@ -37,6 +37,7 @@ These are the assumptions B2 should start from. Early implementation work may co
 2. **Approval scope in B2:** B2 does **not** implement multi-admin quorum approval. Any actionable "approve" control in B2 must be limited to flows that are coherent in the current model, and should be labeled to avoid implying B5-style quorum support. For future-state proposal-shell / awaiting-quorum events, B2 may expose non-actionable placeholders or clearly disabled controls, but should not claim real quorum approvals.
 3. **Ignore persistence:** ignored/dismissed prompts must survive process restarts, so B2 should plan on persisted Manager-owned local state rather than in-memory bookkeeping.
 4. **Likely ignore storage shape:** the leading candidate is a small per-team durable table in `core_other_team.sql` keyed by admission-event identity, unless implementation discovers a cleaner Manager-owned store with the same durability and locality properties.
+5. **Admission-event identity is a Phase 1 deliverable:** B2 should define one explicit identity scheme for dismissible admission events so schema work does not guess. The likely shape is `event_type + artifact_id`, where `artifact_id` is derived from the underlying governance artifact (for example a cert fingerprint / cert ID for `device_link` visibility, and proposal/admission ID for invitation-derived events).
 
 ## Design Direction
 
@@ -78,6 +79,8 @@ For finalized admissions, the user-facing affordance may say "Object" or "Exclud
 B2 should use persisted, Manager-owned local state for dismissed prompts so ignore behavior survives restarts and sync cycles. The exact mechanism can be finalized during implementation, but it should be an explicit design choice up front: e.g. a small Manager-local table or similar durable store keyed by admission-event identity and disposition state. In-memory suppression is not sufficient.
 
 Leading candidate: an `admission_event_disposition` table in the per-team DB schema storing event identity, disposition, and timestamp. B2 does not need to lock this schema in immediately, but the branch should evaluate this option first because it matches the per-team scope of the prompts.
+
+To keep schema work unblocked, Phase 1 should explicitly define the admission-event identity contract that such a table would key on, rather than leaving later implementation to infer it from UI code.
 
 ## Expected Change Areas
 
@@ -133,6 +136,7 @@ First, confirm the provisional Hub-watch assumption above: start by checking whe
 Then read the existing linked-device and invitation flows end to end and define the minimal event taxonomy B2 needs. For each target event class from issue #99, answer:
 
 - what concrete DB artifact or derived condition will represent it today?
+- what explicit admission-event identity key will represent it for dismissal / deduplication purposes?
 - who should see it?
 - what action buttons, if any, should appear?
 - what local state, if any, is needed to stop resurfacing a prompt the user already chose to ignore?
@@ -199,7 +203,7 @@ Done when a skeptical reviewer can verify all three groups below.
 
 7. The Manager UI is driven by a small admission-event derivation layer, not by scattered template conditionals keyed only to today's `invitation.status`.
 8. The Hub does not learn invitation/governance semantics beyond what is necessary to wake Manager sessions; governance interpretation remains in Manager.
-9. The event model has documented, unused extension points for proposal-shell and awaiting-quorum states, reviewable by inspection even if those states are not yet produced by runtime code in B2.
+9. The event model has named but currently unproduced extension points for proposal-shell and awaiting-quorum states, visible by inspection in the Python event model itself (for example enum/dataclass variants plus a short comment noting the B5 dependency).
 10. No branch-local design choice hard-codes the old single-row invitation model as the permanent shape of admissions.
 
 ### Goal: repo integrity and confidence
@@ -219,6 +223,7 @@ Done when a skeptical reviewer can verify all three groups below.
 - Reworking the cryptographic admission transcript format.
 - Changing team-governance policy semantics beyond what is needed to surface visibility and invoke existing exclusion behavior.
 - Backward-compatibility shims for obsolete invitation states beyond what is necessary to keep the current pre-alpha code coherent.
+- Degraded visibility behavior when the Hub is unreachable or down. B2 assumes the Hub-backed wakeup path; offline fallback / stale-state UX is not addressed here.
 
 ## Wrap-Up Notes
 
