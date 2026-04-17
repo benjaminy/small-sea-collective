@@ -34,11 +34,14 @@ Three foundation-level holes closed:
 
 ### Third revision (this pass)
 
-Three further foundation-level fixes addressing distributed-validity and ownership-boundary concerns:
+Further foundation-level fixes addressing distributed-validity, ownership-boundary, and early-governance-visibility concerns:
 
-- **Governance snapshot is a concrete, verifiable anchor** (a team-history commit hash / Cod Sync link ID), not a prose set of admin IDs. The frozen admin set is whatever the team DB says at that anchor. Every approver, the finalizer, and every peer can independently verify validity against the anchor. This closes the distributed-validity hole where two honest admins could disagree about whether the same finalization was legitimate.
-- **The inviter is the canonical finalizer**, named in the transcript at proposal creation. The inviter initiates, relays the invitee's signed transcript, collects other admins' approvals, observes quorum met, and publishes the finalization. Quorum-closing is an observation the inviter makes, not an identity-assignment event. Concurrent approval races cannot produce different admitting authorities because the publisher is fixed from the start.
-- **The inviter allocates the team-local `member_id`** at proposal creation. The invitee's acceptance transcript binds to the allocated ID but does not choose it. The invitee still generates their own device keys, cloud endpoint, and other material that is genuinely theirs; the team-local namespace stays governance-owned.
+- **Governance snapshot is a concrete, verifiable anchor** (a team-history commit hash / Cod Sync link ID), not a prose set of admin IDs. The frozen admin set is whatever the team DB says at that anchor. Every approver, the finalizer, and every peer can independently verify validity against the anchor.
+- **The inviter is the canonical finalizer**, named in the transcript at proposal creation. The inviter initiates, relays the invitee's signed transcript, collects other admins' approvals, observes quorum met, and publishes the finalization. Quorum-closing is an observation the inviter makes, not an identity-assignment event.
+- **The inviter allocates the team-local `member_id`** at proposal creation. The invitee's acceptance transcript binds to the allocated ID but does not choose it.
+- **Admin approvals are member-scoped votes exercised by anchor-trusted device signatures.** The policy actor is the admin member; the cryptographic actor is one of that member's device keys already trusted at the governance anchor. Devices linked after the anchor do not gain approval power for that proposal.
+- **Mutable transport state is moved out of the immutable admission transcript.** The invitee's concrete device keys and allocated `member_id` are transcript-bound; cloud endpoint publication happens only after admission finalizes, as a normal post-admission update.
+- **Proposal shells are published at initiation, before invitee response.** Other admins see that an invite has started before the invitee has invested work or disclosed device material.
 
 The inviter's special, orchestrating role throughout the flow — initiation, gathering the invitee's signed transcript, gathering other admins' approvals, publishing the finalization — is the cleanest available model. It matches the user-level story ("Alice is running this invite"), it eliminates race-sensitivity in admitting authority, and it degenerates to today's informal flow at `quorum = 1`.
 
@@ -65,7 +68,7 @@ Adopt the following model as the honest foundation for Small Sea's read/write ac
 1. **Read access is effectively endpoint-trust-scoped.** Any currently-admitted party (teammate or sibling device) can, in principle, proxy plaintext or hand over receiver state to anyone they choose. The protocol cannot prevent this and should stop pretending to.
 2. **Linked sibling device admission is a unilateral identity-owner act.** The existing sibling hands off whatever the new device needs. The sibling issues a `device_link` cert signed over the new device's concrete public keys and publishes that cert into the team DB. Other teammates observe the new device via the published cert and may object post-hoc by exclusion (see point 5). Linked-device admission therefore satisfies the transcript-binding, trusted-publisher, and governance-anchor rules automatically via the existing cert-issuance model.
 3. **New-teammate admission is an inviter-orchestrated, transcript-bound, admin-quorum flow**, with the following non-negotiable crypto properties:
-   - **Inviter's orchestrating role.** One admin is the inviter for a given proposal. The inviter initiates the proposal, delivers the token to the invitee OOB, receives the invitee's signed acceptance transcript (OOB or via cloud-proxy), publishes the proposal+transcript to team DB, collects other admins' approvals (for `quorum > 1`), observes when the quorum is met, and publishes the finalization mutation. The inviter is the canonical finalizer, named in the transcript from the start (`finalizer_member_id = inviter_member_id`).
+   - **Inviter's orchestrating role.** One admin is the inviter for a given proposal. The inviter initiates the proposal, publishes a proposal shell to team DB immediately, delivers the token to the invitee OOB, receives the invitee's signed acceptance transcript (OOB or via cloud-proxy), updates the proposal with the completed transcript, collects other admins' approvals (for `quorum > 1`), observes when the quorum is met, and publishes the finalization mutation. The inviter is the canonical finalizer, named in the transcript from the start (`finalizer_member_id = inviter_member_id`).
    - **Governance snapshot anchor.** Every proposal is anchored to a concrete, verifiable team-history reference at creation time: the team's `Sync/core.db` commit hash (or the equivalent Cod Sync link ID). The frozen governance state at the anchor includes the admin roster, the membership roster, AND the member→device mapping. Every approver, the finalizer, and every future peer can replay the team history to the anchor and independently verify the frozen state. Proposals that do not match the anchor are invalid.
    - **Member/device bridge for approvals.** Admin approvals are policy-scoped to member but crypto-scoped to device. An approval is valid iff signed by a device key that the anchor's member→device mapping shows as linked to a current admin. Duplicate approvals from multiple devices of the same admin dedupe to one vote per `admin_member_id`. Devices linked after the anchor (via later `device_link` issuance) cannot approve that proposal; under the non-durable rule below, any such device-mapping change invalidates the proposal anyway, so this is belt-and-suspenders.
    - **Inviter allocates the team-local `member_id`.** At proposal creation the inviter mints a fresh UUIDv7 `member_id` for the invitee, records it in the proposal, and commits to it. The invitee's acceptance transcript binds to the allocated ID; the invitee does not choose it.
@@ -86,7 +89,7 @@ The first-order argument is that the current "Bob must redistribute his sender k
 
 The sharper, second-order argument — motivating admin-quorum admission — is that the *real* unresolved problem is not "can the protocol stop proxying?" (it cannot) but "how does the framework reduce ugly admit/remove churn when teammates disagree?" Moving disagreement earlier, into a proposal/approval stage before admission finalizes, is what governance primitives should be buying.
 
-The third-order argument, shaping these revisions: governance primitives must be crypto-precise to avoid foundation-level regrets. Transcript binding, trusted-approver finalization, non-durable proposals, governance-snapshot anchoring, fixed-inviter-as-finalizer, governance-owned `member_id` allocation, an explicit member/device bridge for approvals, a transport-state cut that keeps the immutable transcript immutable, and early proposal-shell visibility are not polish on top of quorum — they are the shape that makes quorum an honest primitive. Each closes a distinct class of failure that would otherwise become painful to retrofit out.
+The third-order argument, shaping these revisions: governance primitives must be crypto-precise to avoid foundation-level regrets. Transcript binding, trusted-finalizer publication, non-durable proposals, governance-snapshot anchoring, fixed-inviter-as-finalizer, governance-owned `member_id` allocation, an explicit member/device bridge for approvals, a transport-state cut that keeps the immutable transcript immutable, and early proposal-shell visibility are not polish on top of quorum — they are the shape that makes quorum an honest primitive. Each closes a distinct class of failure that would otherwise become painful to retrofit out.
 
 ## Strongest Counter-Arguments Considered
 
@@ -135,7 +138,7 @@ The third-order argument, shaping these revisions: governance primitives must be
 Any issue scoped to "distribute sender keys to newly linked devices from every other sender." Exact candidates identified during implementation.
 
 ### Add
-- **"Admin-quorum admission: inviter-orchestrated, transcript-bound, anchor-verified proposal/approval/publish for new teammates."** Schema for proposals (team-history anchor reference, pre-allocated `member_id`, frozen-governance-state digest covering admin roster, membership roster, and member→device mapping, finalizer_member_id); proposal-shell publication at initiation (before invitee response); signed-acceptance-transcript rows (bind device keys and `member_id` only — transport explicitly excluded); admin-approval-signature rows keyed by (proposal_id, admin_member_id) with device-key signatures validated against the anchor's member→device mapping and deduped per admin; invalidation on governance-state change (including device-mapping changes) or expiry; inviter-publishes-finalization. This is the ticket B5 lives under.
+- **"Admin-quorum admission: inviter-orchestrated, transcript-bound, anchor-verified proposal/approval/publish for new teammates."** Schema for proposals (team-history anchor reference, pre-allocated `member_id`, frozen-governance-state digest covering admin roster, membership roster, and member→device mapping, finalizer_member_id); proposal-shell publication at initiation (before invitee response); signed-acceptance-transcript rows (bind device keys and `member_id` only — transport explicitly excluded); admin-approval-signature rows that preserve both `admin_member_id` and `approver_device_key_id`, with device-key signatures validated against the anchor's member→device mapping and quorum counted over distinct admin members; invalidation on governance-state change (including device-mapping changes) or expiry; inviter-publishes-finalization. This is the ticket B5 lives under.
 - **"Replace historical-access test for same-member linked-device bootstrap."** Retire the "requires real redistribution" test; add (a) B reads Bob's current traffic via A's peer sender key, (b) Bob rotating-excluding B cuts B off from Bob's subsequent traffic absent active proxying.
 - **"Admission-event visibility and objection affordance."** Manager/Hub watch path that surfaces new `device_link` certs, new invitation proposals (so frozen-set admins can approve or withhold), and finalized admissions, with first-class objection affordance.
 - **"Spec and architecture doc sweep for endpoint-truth language."** Rewrite read-confidentiality language. Add framing on rotation's two purposes, on transcript-bound admin-quorum, on trusted-inviter-finalizer, on governance-snapshot anchoring, on member/device approval bridge, on transport out of transcript, on early proposal-shell visibility.
@@ -151,7 +154,7 @@ Touch `architecture.md`, `packages/small-sea-manager/spec.md`, `Documentation/op
 
 ### B2. Admission-event visibility and objection affordance
 
-When a new `device_link` cert, a new invitation proposal, or a finalized admission appears in team DB, every existing peer's Manager surfaces it promptly. Admins in the frozen set of an open proposal see it prominently so they can approve or withhold. First-class UI affordance for "object" (invokes exclusion primitive) on finalized admissions.
+When a new `device_link` cert, a new invitation proposal shell, a completed invitation transcript awaiting quorum, or a finalized admission appears in team DB, every existing peer's Manager surfaces it promptly. Admins in the frozen set of an open proposal see it prominently so they can approve or withhold. First-class UI affordance for "object" (invokes exclusion primitive) on finalized admissions.
 
 **Why this is load-bearing:** under quorum, visibility is what makes "non-approval" a meaningful act. Admins cannot decide on proposals they do not see.
 
@@ -170,7 +173,7 @@ Replace bespoke payload-3 with B calling `redistribute_sender_key(...)` post-boo
 Largest follow-up chunk. Scope:
 
 - Per-team settings: `admission_quorum` (default 1), `proposal_expiry`.
-- New team-DB schema: proposal rows carrying proposal ID, nonce, inviter member ID (doubles as finalizer), team-history anchor reference (commit hash or link ID), pre-allocated invitee `member_id`, frozen-admin-set digest, state, created_at, expires_at; acceptance-transcript rows or fields keyed by proposal ID; admin-approval-signature rows keyed by (proposal_id, admin_member_id) carrying signatures over the full transcript digest; finalization mutation published by the inviter.
+- New team-DB schema: proposal rows carrying proposal ID, nonce, inviter member ID (doubles as finalizer), team-history anchor reference (commit hash or link ID), pre-allocated invitee `member_id`, frozen-admin-set digest, state, created_at, expires_at; acceptance-transcript rows or fields keyed by proposal ID; admin-approval-signature rows preserving both `admin_member_id` and `approver_device_key_id`, carrying signatures over the full transcript digest, with quorum semantics counting distinct `admin_member_id`s over valid rows; finalization mutation published by the inviter.
 - Flow implementation:
   1. Inviter creates proposal (anchored to current team history; allocates invitee's `member_id`; records frozen-governance-state digest covering admin roster, membership roster, member→device mapping) and publishes the proposal shell to team DB. Team DB now contains a proposal row in "awaiting invitee" state; other admins see it immediately.
   2. Inviter delivers the proposal token OOB to the invitee.
@@ -216,7 +219,7 @@ B3, B4, B5 otherwise schedulable in any order once B2 has landed. B7 is otherwis
 
 - `architecture.md` §"Fully Decentralized Team Management": rewrite rotation paragraph (exclusion + hygiene). Add paragraphs on admin-quorum, governance-snapshot anchoring (including member→device mapping), member/device approval bridge, inviter-as-finalizer, inviter-allocated `member_id`, early proposal-shell visibility, transport out of transcript, non-durable proposals.
 - `packages/small-sea-manager/spec.md` §"Linked-device team bootstrap": rewrite historical-boundary and slice-scope subsections.
-- `packages/small-sea-manager/spec.md` §"Invitations" and §"Invitation Protocol (detailed)": describe inviter-orchestrated, transcript-bound proposal/approval/publish model. Spell out that the inviter writes the finalization mutation (not the invitee) and that the `member_id` is inviter-allocated.
+- `packages/small-sea-manager/spec.md` §"Invitations" and §"Invitation Protocol (detailed)": describe inviter-orchestrated, transcript-bound proposal/approval/publish model. Spell out that the inviter writes the finalization mutation (not the invitee), that the `member_id` is inviter-allocated, that approvals are member-scoped votes exercised by anchor-trusted device signatures, and that transport metadata is published later via the B7-style announce-endpoint flow rather than frozen into the admission transcript.
 - `Documentation/open-architecture-questions.md` §5 "Identity Model": add a settled-decisions subsection citing the reframe, admin-quorum, transcript binding (with transport explicitly excluded), governance anchor (including member→device mapping), member/device approval bridge, inviter-as-finalizer, inviter-allocated `member_id`, early proposal-shell publication, non-durable proposals.
 - `packages/cuttlefish/README.md` sender-keys and trust sections: reconcile language in B1.
 
@@ -224,7 +227,7 @@ B3, B4, B5 otherwise schedulable in any order once B2 has landed. B7 is otherwis
 
 The deliverable is this document. "Done" when a skeptical reviewer can confirm:
 
-1. Decision stated precisely enough that later branches can be measured against it. Each foundation-level crypto property — transcript binding, governance-snapshot anchor, inviter-as-canonical-finalizer, inviter-allocated `member_id`, non-durable proposals — is named explicitly at the top level, not buried.
+1. Decision stated precisely enough that later branches can be measured against it. Each foundation-level crypto property — transcript binding, governance-snapshot anchor, member-scoped approvals via anchor-trusted device signatures, inviter-as-canonical-finalizer, inviter-allocated `member_id`, transport explicitly excluded from the immutable transcript, early proposal-shell visibility, and non-durable proposals — is named explicitly at the top level, not buried.
 2. Each follow-up chunk has a one-paragraph scope clearly smaller than a re-plan of the whole reframe.
 3. GitHub issue deltas are executable.
 4. Ordering constraints are spelled out.
@@ -232,7 +235,7 @@ The deliverable is this document. "Done" when a skeptical reviewer can confirm:
 
 ## Out Of Scope For This Branch
 
-- Per-branch plans for B1–B6.
+- Per-branch plans for B1–B7.
 - Code changes.
 - GitHub issue edits.
 - Final sequencing of B3/B4/B5 beyond "Ordering Constraints."
@@ -247,7 +250,7 @@ The deliverable is this document. "Done" when a skeptical reviewer can confirm:
 A reviewer accepting this meta-plan should be able to answer:
 
 1. **What decision is being asked for?** Accept or reject the five-point model, including all sub-bullets of point 3.
-2. **What changes in the codebase if accepted?** Nothing immediately. B1–B6 are the planned follow-ups.
+2. **What changes in the codebase if accepted?** Nothing immediately. B1–B7 are the planned follow-ups.
 3. **What existing work becomes obsolete?** Admission-flavored parts of #69's design and its "requires real redistribution" test. Invitation flow's invitee-publishes-own-admission pattern.
 4. **What existing work stays correct?** #43's rotation-on-removal primitive. `device_link` cert chaining. `redistribute_sender_key(...)` as the exclusion + own-key-publication substrate.
 5. **What is new?** Admin-quorum admission for new teammates with the following non-negotiable properties: inviter's orchestrating role, governance-snapshot anchor (covering admin roster, membership roster, and member→device mapping), member/device bridge for approvals with per-admin dedupe, inviter-allocated `member_id`, transcript binding over invitee's concrete device keys (explicitly NOT over transport state), early proposal-shell publication at initiation, inviter-published finalization, non-durable proposals. Plus a sibling capability (B7) for members to announce/update their own incoming cloud endpoint independently of admission.
