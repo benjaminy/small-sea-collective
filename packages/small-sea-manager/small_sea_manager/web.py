@@ -8,7 +8,6 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
-from small_sea_manager.admission_events import AdmissionEventType
 from small_sea_manager.manager import TeamManager, _CORE_APP
 
 _template_dir = pathlib.Path(__file__).parent / "templates"
@@ -31,6 +30,11 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
 
     def _mgr(request: Request) -> TeamManager:
         return request.app.state.manager
+
+    def _validated_team_name(team_name: str) -> str:
+        if "/" in team_name or "\\" in team_name or ".." in team_name:
+            raise ValueError("Invalid team name")
+        return team_name
 
     def _hub_connection_ctx(request: Request, error: str = None):
         mgr = _mgr(request)
@@ -458,9 +462,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     ):
         mgr = _mgr(request)
         try:
-            AdmissionEventType(event_type)
-            bytes.fromhex(artifact_id)
-            mgr.dismiss_admission_event(team_name, event_type, artifact_id)
+            mgr.dismiss_admission_event(_validated_team_name(team_name), event_type, artifact_id)
             notice = "Admission prompt dismissed."
             error = None
         except ValueError as e:
@@ -474,6 +476,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.get("/teams/{team_name}/admission-events/watch", response_class=HTMLResponse)
     async def watch_admission_events(request: Request, team_name: str):
         mgr = _mgr(request)
+        team_name = _validated_team_name(team_name)
         active = mgr.session_state(team_name, _ENCRYPTED) == "active"
         hub_available = True
         if active:

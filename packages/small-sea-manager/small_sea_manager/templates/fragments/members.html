@@ -42,7 +42,6 @@
                 hx-sync="#team-detail:replace"
                 hx-target="#team-detail"
                 hx-swap="innerHTML"
-                hx-on::after-request="htmx.trigger(document.body, 'team-action')"
                 style="display:inline">
             <button class="btn btn-danger btn-sm" type="submit">Remove</button>
           </form>
@@ -72,8 +71,7 @@
     <form hx-post="/teams/{{ team_name }}/complete-acceptance"
           hx-sync="#team-detail:replace"
           hx-target="#team-detail"
-          hx-swap="innerHTML"
-          hx-on::after-request="htmx.trigger(document.body, 'team-action')">
+          hx-swap="innerHTML">
       <textarea name="acceptance_token" placeholder="Paste acceptance token here…" required></textarea>
       <button class="btn btn-primary" type="submit">Complete acceptance</button>
     </form>

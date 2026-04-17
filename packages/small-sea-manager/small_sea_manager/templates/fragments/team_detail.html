@@ -37,7 +37,7 @@
   {% include "fragments/admission_events.html" %}
   <div id="admission-events-watch-{{ team_name }}"
        hx-get="/teams/{{ team_name }}/admission-events/watch"
-       hx-trigger="load delay:{{ admission_watch_delay }}, team-action from:body"
+       hx-trigger="load delay:{{ admission_watch_delay }}, refresh"
        hx-sync="#team-detail:replace"
        hx-swap="outerHTML"
        style="display:none"></div>
