@@ -244,7 +244,8 @@ Protocol/product boundary:
   join-time-forward access across all senders the sibling held. Each team is
   bootstrapped independently; this is not a blanket "join every known team"
   operation.
-  Evidence: the flow is implemented in
+  Evidence of bootstrap flow structure (peer-sender-key handoff is B3 scope;
+  see implementation-status note below):
   `prepare_linked_device_team_join(...)`,
   `create_linked_device_bootstrap(...)`,
   `finalize_linked_device_bootstrap(...)`, and
