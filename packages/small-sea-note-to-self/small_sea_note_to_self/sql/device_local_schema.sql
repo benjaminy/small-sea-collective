@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS pending_linked_team_bootstrap (
     team_id BLOB NOT NULL,
     peer_device_id BLOB NOT NULL,
     peer_team_device_public_key BLOB NOT NULL,
+    bootstrap_bundle TEXT,
     created_at TEXT NOT NULL
 );
 

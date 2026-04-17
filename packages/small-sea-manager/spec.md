@@ -320,10 +320,20 @@ Retry/idempotency status in the current slice:
   previous attempt crashed before clearing the pending breadcrumb.
   Evidence: `complete_linked_device_bootstrap(...)` and
   `test_linked_device_bootstrap_retry_after_interrupted_complete_is_idempotent`.
-- Repeating `create_linked_device_bootstrap(...)` for the same request is **not
-  yet** specified as idempotent in this slice and should be treated as a current
-  limitation until the branch or a follow-up issue defines that behavior more
-  tightly.
+- Repeating `create_linked_device_bootstrap(...)` with the exact same valid join
+  request bundle is handled by **store-and-replay**: the authorizing device
+  returns the originally stored bootstrap bundle from the pending bootstrap
+  breadcrumb instead of minting a fresh encrypted response, and does not create
+  another cert commit for the same logical create step.
+  Evidence: `create_linked_device_bootstrap(...)` and
+  `test_linked_device_bootstrap_create_replay_returns_stored_bundle_without_extra_commit`.
+- Crash-mid-create is still a current limitation. If the authorizing device
+  crashes after cert issuance but before the pending breadcrumb with stored
+  bootstrap bundle is written, the team DB can contain the issued `device_link`
+  cert while no replayable bootstrap bundle exists. In that state the joining
+  device has nothing to finalize, retry cannot replay from stored state, and
+  operator recovery requires manual cleanup or a new bootstrap attempt with
+  fresh request material.
 
 Storage boundary:
 

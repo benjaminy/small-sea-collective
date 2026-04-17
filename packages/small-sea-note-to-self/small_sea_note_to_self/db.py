@@ -6,7 +6,7 @@ from pathlib import Path
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
 SHARED_SCHEMA_VERSION = 56
-LOCAL_SCHEMA_VERSION = 8
+LOCAL_SCHEMA_VERSION = 9
 
 
 def note_to_self_sync_db_path(root_dir: str | Path, participant_hex: str) -> Path:
@@ -176,6 +176,16 @@ def _migrate_device_local_db(conn: sqlite3.Connection, current_version: int) -> 
             );
             """
         )
+    if current_version < 9:
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(pending_linked_team_bootstrap)").fetchall()
+        }
+        if "bootstrap_bundle" not in columns:
+            conn.execute(
+                "ALTER TABLE pending_linked_team_bootstrap "
+                "ADD COLUMN bootstrap_bundle TEXT"
+            )
 
 
 def _rename_sender_key_column_if_present(conn: sqlite3.Connection, table_name: str) -> None:

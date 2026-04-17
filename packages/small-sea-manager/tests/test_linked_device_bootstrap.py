@@ -3,6 +3,7 @@ import json
 import pathlib
 import shutil
 import sqlite3
+import subprocess
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -42,6 +43,15 @@ def _copy_team_baseline(root1, root2, participant_hex: str, team_name: str, team
 def _row_count(db_path, sql, params=()):
     with sqlite3.connect(db_path) as conn:
         return conn.execute(sql, params).fetchone()[0]
+
+
+def _git_commit_count(repo_dir: pathlib.Path) -> int:
+    return int(
+        subprocess.check_output(
+            ["git", "-C", str(repo_dir), "rev-list", "--count", "HEAD"],
+            text=True,
+        ).strip()
+    )
 
 
 def _team_db(root: pathlib.Path, participant_hex: str, team_name: str) -> pathlib.Path:
@@ -282,6 +292,61 @@ def test_linked_device_bootstrap_rejects_invalid_join_signatures(playground_dir)
             "ProjectX",
             base64.b64encode(json.dumps(tampered_team).encode("utf-8")).decode("ascii"),
         )
+
+
+def test_linked_device_bootstrap_create_replay_returns_stored_bundle_without_extra_commit(
+    playground_dir,
+):
+    workspace = pathlib.Path(playground_dir)
+    root1 = workspace / "install-a"
+    root2 = workspace / "install-b"
+    cloud_dir = workspace / "cloud"
+    root1.mkdir()
+    root2.mkdir()
+    cloud_dir.mkdir()
+
+    alice_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
+
+    join_request = create_identity_join_request(root2)
+    manager1 = TeamManager(root1, alice_hex)
+    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+
+    team_result = manager1.create_team("ProjectX")
+    team_id = bytes.fromhex(team_result["team_id_hex"])
+    member_id = bytes.fromhex(team_result["member_id_hex"])
+    _copy_team_baseline(root1, root2, alice_hex, "ProjectX", team_id, member_id)
+
+    manager2 = TeamManager(root2, alice_hex)
+    prepared = manager2.prepare_linked_device_team_join("ProjectX")
+
+    team_repo_dir = _team_db(root1, alice_hex, "ProjectX").parent
+    before_commits = _git_commit_count(team_repo_dir)
+
+    created = manager1.create_linked_device_bootstrap(
+        "ProjectX",
+        prepared["join_request_bundle"],
+    )
+    after_first_create_commits = _git_commit_count(team_repo_dir)
+    replayed = manager1.create_linked_device_bootstrap(
+        "ProjectX",
+        prepared["join_request_bundle"],
+    )
+    after_replay_commits = _git_commit_count(team_repo_dir)
+
+    assert replayed == created
+    assert after_first_create_commits == before_commits + 1
+    assert after_replay_commits == after_first_create_commits
+    assert _row_count(
+        device_local_db_path(root1, alice_hex),
+        "SELECT COUNT(*) FROM pending_linked_team_bootstrap",
+    ) == 1
+
+    with sqlite3.connect(_team_db(root1, alice_hex, "ProjectX")) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM key_certificate WHERE cert_type = 'device_link'"
+        ).fetchone()[0] == 1
 
 
 def test_linked_device_bootstrap_retry_after_interrupted_finalize_is_idempotent(

@@ -404,19 +404,22 @@ def _store_pending_linked_team_bootstrap(
     team_id: bytes,
     peer_device_id: bytes,
     peer_team_device_public_key: bytes,
+    bootstrap_bundle: str | None = None,
 ) -> None:
     with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
         conn.execute(
             """
             INSERT OR REPLACE INTO pending_linked_team_bootstrap (
-                bootstrap_id, team_id, peer_device_id, peer_team_device_public_key, created_at
-            ) VALUES (?, ?, ?, ?, ?)
+                bootstrap_id, team_id, peer_device_id, peer_team_device_public_key,
+                bootstrap_bundle, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 bootstrap_id,
                 team_id,
                 peer_device_id,
                 peer_team_device_public_key,
+                bootstrap_bundle,
                 _now_iso(),
             ),
         )
@@ -428,7 +431,8 @@ def _load_pending_linked_team_bootstrap(root_dir, participant_hex: str, bootstra
         conn.row_factory = sqlite3.Row
         return conn.execute(
             """
-            SELECT bootstrap_id, team_id, peer_device_id, peer_team_device_public_key, created_at
+            SELECT bootstrap_id, team_id, peer_device_id, peer_team_device_public_key,
+                   bootstrap_bundle, created_at
             FROM pending_linked_team_bootstrap
             WHERE bootstrap_id = ?
             """,
@@ -453,6 +457,20 @@ def _distribution_matches_record(distribution, record) -> bool:
         and record.iteration == distribution.iteration
         and record.chain_key == distribution.chain_key
         and record.signing_public_key == distribution.signing_public_key
+    )
+
+
+def _pending_bootstrap_matches_request(
+    pending,
+    *,
+    team_id: bytes,
+    peer_device_id: bytes,
+    peer_team_device_public_key: bytes,
+) -> bool:
+    return (
+        pending["team_id"] == team_id
+        and pending["peer_device_id"] == peer_device_id
+        and pending["peer_team_device_public_key"] == peer_team_device_public_key
     )
 
 
@@ -2142,6 +2160,24 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
     ):
         raise ValueError("Join request Team X signature is invalid")
 
+    pending = _load_pending_linked_team_bootstrap(root_dir, participant_hex, bootstrap_id)
+    if pending is not None:
+        if not _pending_bootstrap_matches_request(
+            pending,
+            team_id=team_id,
+            peer_device_id=device_id,
+            peer_team_device_public_key=proposed_team_device_public_key,
+        ):
+            raise ValueError("Existing pending bootstrap does not match the replayed join request")
+        if pending["bootstrap_bundle"] is None:
+            raise ValueError(
+                "Pending bootstrap exists without a stored bundle; manual cleanup is required"
+            )
+        return {
+            "bootstrap_id_hex": bootstrap_id.hex(),
+            "bootstrap_bundle": pending["bootstrap_bundle"],
+        }
+
     cert = issue_device_link_for_member(
         root_dir,
         participant_hex,
@@ -2171,15 +2207,6 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
         associated_data=associated_data,
     )
 
-    _store_pending_linked_team_bootstrap(
-        root_dir,
-        participant_hex,
-        bootstrap_id=bootstrap_id,
-        team_id=team_id,
-        peer_device_id=device_id,
-        peer_team_device_public_key=proposed_team_device_public_key,
-    )
-
     _authorizer_private_key, authorizer_public_key = get_current_team_device_key(
         root_dir,
         participant_hex,
@@ -2199,9 +2226,19 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
         _authorizer_private_key,
         response_bytes,
     ).hex()
+    bootstrap_bundle = _tokenize(response_body)
+    _store_pending_linked_team_bootstrap(
+        root_dir,
+        participant_hex,
+        bootstrap_id=bootstrap_id,
+        team_id=team_id,
+        peer_device_id=device_id,
+        peer_team_device_public_key=proposed_team_device_public_key,
+        bootstrap_bundle=bootstrap_bundle,
+    )
     return {
         "bootstrap_id_hex": bootstrap_id.hex(),
-        "bootstrap_bundle": _tokenize(response_body),
+        "bootstrap_bundle": bootstrap_bundle,
     }
 
 
