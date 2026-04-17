@@ -239,18 +239,18 @@ Protocol/product boundary:
   baseline explicitly with `_copy_team_baseline(...)` in
   `tests/test_linked_device_bootstrap.py`.
 - **Scope of the current slice** — The current flow bootstraps the new device
-  into one team using a sibling device of the same member. It does not
-  automatically redistribute every other sender device's sender key to the new
-  device.
-  Evidence: the flow is implemented in
+  into one team using a sibling device of the same member. As part of bootstrap,
+  the sibling hands off its snapshot of peer sender keys, giving the new device
+  join-time-forward access across all senders the sibling held. Each team is
+  bootstrapped independently; this is not a blanket "join every known team"
+  operation.
+  Evidence of bootstrap flow structure (peer-sender-key handoff is B3 scope;
+  see implementation-status note below):
   `prepare_linked_device_team_join(...)`,
   `create_linked_device_bootstrap(...)`,
   `finalize_linked_device_bootstrap(...)`, and
   `complete_linked_device_bootstrap(...)` in
-  `small_sea_manager/provisioning.py`. The concrete "Bob exists too" boundary
-  is exercised in
-  `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
-  in `tests/test_linked_device_bootstrap.py`.
+  `small_sea_manager/provisioning.py`.
 - **Payload 3 transport status** — The joining device still returns its sender
   distribution payload to the authorizing device as an explicit follow-up
   artifact. This slice does not yet define a fully automatic Hub-mediated
@@ -287,8 +287,11 @@ Current same-member flow:
 
 Historical boundary and visibility:
 
-- The newly linked device starts with fresh sender-key state. It does **not**
-  receive old sender-chain state for messages sent before bootstrap completed.
+- **The access policy is join-time-forward.** The new device inherits the
+  sibling's snapshot of peer sender keys at bootstrap time and can read forward
+  from that point across all senders the sibling held. It does not receive
+  ciphertext from before the `device_link` cert was published — that historical
+  material was encrypted without the new device's keys.
   Evidence: `test_linked_device_bootstrap_round_trip_same_member` asserts that
   a pre-bootstrap encrypted message cannot be decrypted after bootstrap.
 - That test is **repo-local protocol evidence**, not a full cryptographic
@@ -297,12 +300,13 @@ Historical boundary and visibility:
   Evidence: `group_encrypt(...)` / `group_decrypt(...)` in
   `packages/cuttlefish/cuttlefish/group.py`, plus the linked-device bootstrap
   test above.
-- After same-member bootstrap, the new device can read future traffic from the
-  sibling device that bootstrapped it, but it may still be blind to future
-  traffic from other senders until those senders redistribute their own sender
-  keys.
-  Evidence: `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
-  in `tests/test_linked_device_bootstrap.py`.
+
+> **Implementation status (B3 scope):** The peer-sender-key handoff is not yet
+> fully implemented. In the current code, the sibling does not yet pass its
+> snapshot of peer sender keys as part of the bootstrap bundle.
+> `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
+> exercises this code gap and is retired by B3. The normative model above
+> describes the accepted design; the current code reflects interim state.
 
 Retry/idempotency status in the current slice:
 
@@ -426,44 +430,80 @@ See §Invitation Protocol for the full step-by-step.
 
 #### Create invitation
 
-Inserts a pending `invitation` row in the team DB. Produces a token for out-of-band delivery.
+Initiates an invitation proposal: allocates a fresh UUIDv7 `member_id` for the
+prospective invitee, anchors the proposal to the current team-history commit
+hash (freezing the admin roster, membership roster, and member→device mapping
+at that snapshot), records a proposal shell in team DB, commits and pushes, and
+returns a proposal token for out-of-band delivery to the invitee.
 
-Inputs: `team_name`, optional `invitee_label` (human note for who this is for), `role` (default: admin).
+Inputs: `team_name`, optional `invitee_label`, `role` (default: admin).
 
-Token contents: invitation ID, nonce, team name, inviter member ID, inviter display name, inviter cloud endpoint (protocol + URL only — no credentials), inviter bucket name. Privacy is provided by E2E encryption (issue #0008), not by keeping the bucket private.
+Token contents: proposal ID, nonce, team name, inviter member ID, inviter display
+name, inviter cloud endpoint (protocol + URL only — no credentials), and the
+pre-allocated invitee `member_id`. Privacy is provided by E2E encryption
+(issue #0008), not by access control.
 
-An invitation is therefore a coordination convenience, not the sole source of
-truth for whether someone is "really" in the team. It is a conventional way of
-proposing and propagating a membership update.
+The proposal shell is visible to all admins in the frozen governance set as
+soon as it is pushed — before the invitee is contacted.
 
 #### List invitations
 
-Reads `invitation` rows from team DB. Does not query the Hub.
+Reads invitation proposal rows from team DB. Does not query the Hub.
 
 #### Revoke invitation
 
-Updates `invitation.status` to `revoked` for a pending invitation. Commits.
+Marks a pending proposal as revoked. A revoked proposal cannot be finalized.
+Commits.
 
 #### Accept invitation (invitee side)
 
-Takes an out-of-band token. All cloud I/O goes through the Hub:
+Takes an out-of-band proposal token. All cloud I/O goes through the Hub:
 
-1. Opens a NoteToSelf Hub session, calls `GET /cloud_proxy` (using an `ExplicitProxyRemote`) to download the inviter's team bundle chain. The Hub proxies the bytes using appropriate credentials — the Manager never contacts cloud storage directly.
-2. Clones the team repo locally, records member/device rows in the shared team DB, installs the splice-sqlite merge driver, and adds a Team pointer to NoteToSelf DB. (All local DB/git ops; no network.)
-3. Opens a team Hub session, calls `POST /cloud/setup` to create the acceptor's bucket, then pushes via Cod Sync through the Hub.
+1. Opens a NoteToSelf Hub session, calls `GET /cloud_proxy` to download the
+   inviter's team bundle chain. The Hub proxies the bytes — the Manager never
+   contacts cloud storage directly.
+2. Clones the team repo locally, installs the splice-sqlite merge driver, and
+   adds a Team pointer to NoteToSelf DB. (All local DB/git ops; no network.)
+3. Generates a fresh team device keypair (bootstrap-encryption key + signing
+   key).
+4. Signs an acceptance blob binding to the inviter-allocated `member_id` and
+   the proposal ID/nonce. Cloud endpoints are **not** included in the
+   acceptance blob — transport is configured post-admission (B7 scope).
 
-Returns an acceptance token for out-of-band delivery back to the inviter.
+Returns the signed acceptance blob for out-of-band delivery back to the
+inviter. The invitee does **not** write any rows to the shared team DB at this
+stage. The invitee never publishes their own admission.
 
-#### Complete invitation acceptance (inviter side)
+#### Finalize invitation (inviter side)
 
-Takes the out-of-band acceptance token. Validates nonce. Marks invitation
-`accepted`. Adds the acceptor as a member with the role specified in the
-original invitation. Adds or updates the acceptor's `team_device` row with its
-cloud location. Commits.
+Takes the invitee's out-of-band acceptance blob. The inviter:
 
-As with any other Core-berth mutation, this matters to the broader team only to
-the extent that other participants incorporate this updated view into their own
-clone.
+1. Verifies the acceptance blob (signature valid, binds to the correct
+   `member_id` and proposal nonce).
+2. Assembles the full admission transcript: proposal ID/nonce, team-history
+   anchor reference, frozen-governance-state digest (covers admin roster,
+   membership roster, and member→device mapping at the anchor), inviter/
+   finalizer `member_id`, pre-allocated invitee `member_id`, and the invitee's
+   signed acceptance blob carrying the invitee's concrete device keys.
+   Transport metadata is explicitly excluded from the transcript.
+3. Signs an approval over the transcript (counts as 1 toward quorum). Publishes
+   transcript + approval as an update to the existing proposal row.
+4. For `quorum > 1`: waits for other admins' approval signatures to accrue in
+   team DB. Each approval is valid iff its signing key appears in a
+   `device_link` cert at the anchor that maps to a current-admin `member_id`
+   (the member/device bridge derivation). Quorum counts distinct
+   `admin_member_id`s over valid approval rows; multiple approvals from
+   different devices of the same admin dedupe to one vote.
+5. Upon observing quorum met, signs and publishes the finalization mutation.
+   Commits.
+
+After finalization, the newly admitted member sets up their incoming cloud
+endpoint via the member-transport-configuration flow (B7) and then publishes
+their own sender key via `redistribute_sender_key(...)`.
+
+DB schema for proposals, acceptance transcripts, and approval signatures: see
+[SQL Schemas → Team schema](#sql-schemas) below — the current `invitation`
+table is a placeholder pending the B5 schema definition.
 
 ---
 
@@ -534,54 +574,92 @@ The out-of-sync state is a two-part story:
 ## Invitation Protocol (detailed)
 
 Invitation data is exchanged out-of-band. Hub API calls handle all cloud I/O.
+The inviter orchestrates the entire flow; the invitee never writes to the
+shared team DB.
 
 ```
-Alice                                Bob
-  |                                    |
-  | create_invitation()                |
-  |  → writes invitation row to        |
-  |    ProjectX/Sync/core.db           |
-  |  → commits git                     |
-  |  → returns token_b64               |
-  |                                    |
-  | push via Hub (team session)        |
-  |                                    |
-  | ---- token_b64 (out of band) ----> |
-  |                                    |
-  |                   accept_invitation(token_b64)
-  |                    → opens NoteToSelf Hub session
-  |                    → Hub /cloud_proxy fetches Alice's
-  |                      team bundle chain (anonymous read)
-  |                    → clones ProjectX/Sync locally
-  |                    → adds Bob as member in team DB
-  |                    → adds Alice as peer in team DB
-  |                    → pushes to Bob's cloud
-  |                    → adds ProjectX pointer to
-  |                      Bob's NoteToSelf DB
-  |                    → commits git
-  |                    → returns acceptance_b64
-  |                                    |
-  |                    → opens team Hub session
-  |                    → pushes to Bob's cloud via Hub
-  |                    → returns acceptance_b64
-  |                                    |
-  | <-- acceptance_b64 (out of band) - |
-  |                                    |
-  | complete_invitation_acceptance(acceptance_b64)
-  |  → validates nonce
-  |  → marks invitation accepted
-  |  → adds Bob as member + peer
-  |  → grants Bob's berth_role
-  |  → commits git
+Alice (inviter)                    Bob (invitee)         Other admins
+  |                                     |                      |
+  | create_invitation()                 |                      |
+  |  → allocates invitee member_id      |                      |
+  |  → anchors to team-history commit   |                      |
+  |    hash (freezes admin/member/      |                      |
+  |    device mapping at snapshot)      |                      |
+  |  → publishes proposal shell to      |                      |
+  |    {TeamName}/Sync/core.db            |                      |
+  |  → commits + pushes via Hub         |                      |
+  |  → returns token_b64                |                      |
+  |                                (proposal now visible)      |
+  |                                     |                      |
+  | ---- token_b64 (out of band) -----> |                      |
+  |                                     |                      |
+  |                     accept_invitation(token_b64)           |
+  |                      → opens NoteToSelf Hub session        |
+  |                      → Hub /cloud_proxy fetches Alice's    |
+  |                        team bundle chain (anonymous read)  |
+  |                      → clones {TeamName}/Sync locally        |
+  |                      → generates fresh team device keypair |
+  |                      → signs acceptance blob binding to    |
+  |                        inviter-allocated member_id and     |
+  |                        proposal nonce                      |
+  |                        (NO cloud endpoint in blob)         |
+  |                      → returns acceptance_b64              |
+  |                                     |                      |
+  | <--- acceptance_b64 (out of band) - |                      |
+  |                                     |                      |
+  | finalize_invitation(acceptance_b64) |                      |
+  |  → verifies acceptance blob         |                      |
+  |  → assembles admission transcript   |                      |
+  |    (anchor, member_id, invitee keys;|                      |
+  |     NO transport metadata)          |                      |
+  |  → signs approval over transcript   |                      |
+  |  → publishes transcript + approval  |                      |
+  |    as update to proposal row        |                      |
+  |  → commits + pushes via Hub         |                      |
+  |                                     |           (syncs; verifies transcript
+  |                                     |            against anchor; signs
+  |                                     |            approval if quorum > 1;
+  |                                     |            pushes approval row)
+  |                                     |                      |
+  | [inviter observes quorum met]       |                      |
+  |  → publishes finalization mutation  |                      |
+  |  → commits + pushes via Hub         |                      |
+  |                                     |                      |
+  | ---- finalization notice (OOB) ---> |                      |
+  |                                     |                      |
+  |              [Bob runs B7 transport-config flow to stand   |
+  |               up incoming cloud endpoint, then publishes   |
+  |               own sender key via redistribute_sender_key]  |
 ```
 
-**Token contents:** invitation ID, nonce, team name, inviter member ID, inviter cloud endpoint (protocol + URL only — no credentials), inviter bucket name.
+**Token contents:** proposal ID, nonce, team name, inviter member ID, inviter
+display name, inviter cloud endpoint (protocol + URL only — no credentials),
+pre-allocated invitee `member_id`.
 
-**Acceptance token contents:** invitation ID, nonce, acceptor member ID, acceptor cloud endpoint (protocol + URL only — no credentials), acceptor bucket name.
+**Acceptance blob contents:** proposal ID, nonce, the invitee's concrete device
+bootstrap-encryption key and signing key, confirmation of the inviter-allocated
+`member_id`. No cloud endpoint — transport is not part of the admission
+transcript.
 
-**Security model:** Inviter's bucket is publicly readable (anonymous reads via unsigned requests). Privacy is provided by E2E encryption (issue #0008), not by access control. Credentials are never transmitted in tokens or stored in the `peer` table.
+**Security model:** Inviter's bucket is publicly readable (anonymous reads via
+unsigned requests). Privacy is provided by E2E encryption (issue #0008), not
+by access control. Credentials are never transmitted in tokens.
 
-**Double-accept protection:** `complete_invitation_acceptance` checks that the invitation status is `pending` before proceeding. A second acceptor presenting a different acceptance token will be rejected with a "not pending" error.
+**Quorum at default (`quorum = 1`):** Other-admin approval step is skipped;
+inviter proceeds directly from publishing transcript + own approval to
+publishing finalization.
+
+**Proposal invalidation:** If the admin roster, membership roster, or
+member→device mapping changes relative to the anchor before finalization, the
+proposal is invalid and cannot be finalized. The inviter must start a new
+proposal from the updated state.
+
+**Member/device bridge for approvals:** Each approval signature is validated
+against the member→device mapping frozen at the anchor. An approval is valid
+iff the signing device key appears in a `device_link` cert at the anchor that
+maps to a current-admin `member_id`. Approvals by post-anchor devices or
+non-admins are rejected; multiple approvals from devices of the same admin
+dedupe to one vote per `admin_member_id`.
 
 ---
 
@@ -763,20 +841,18 @@ CREATE TABLE IF NOT EXISTS berth_role (
     FOREIGN KEY (berth_id)  REFERENCES team_app_berth(id)  ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS invitation (
-    id                BLOB PRIMARY KEY,
-    nonce             BLOB NOT NULL,
-    status            TEXT NOT NULL DEFAULT 'pending',
-    invitee_label     TEXT,
-    role              TEXT NOT NULL DEFAULT 'admin',  -- role to grant on acceptance
-    created_at        TEXT NOT NULL,
-    accepted_at       TEXT,
-    accepted_by       BLOB,
-    acceptor_device_key_id BLOB,
-    acceptor_protocol TEXT,
-    acceptor_url      TEXT
-    -- no credential columns: privacy is E2E, not access-control
-);
+-- [SCHEMA TBD — to be defined in B5]
+-- Target fields (from accepted model):
+--   proposal table: proposal_id, nonce, team_history_anchor (commit hash),
+--     frozen_governance_digest, inviter_member_id (= finalizer_member_id),
+--     pre_allocated_invitee_member_id, role, invitee_label, state,
+--     created_at, expires_at
+--   acceptance_transcript: proposal_id (FK), invitee_device_bootstrap_key,
+--     invitee_device_signing_key, invitee_acceptance_signature
+--   admin_approval_signatures: proposal_id (FK), admin_member_id,
+--     approver_device_key_id, transcript_digest, signature, created_at
+-- Transport metadata (cloud endpoints etc.) is NOT part of this schema;
+-- that is configured post-admission via the B7 member-transport flow.
 
 CREATE TABLE IF NOT EXISTS team_device (
     device_key_id BLOB PRIMARY KEY,

@@ -13,7 +13,22 @@ Small Sea Collective is a framework for building collaborative team applications
 ## Technical Pillars
 
 ### 1. Fully Decentralized Team Management
-Small Sea uses Signal-inspired cryptographic protocols ([X3DH](https://signal.org/docs/specifications/x3dh/) and [Double Ratchet](https://signal.org/docs/specifications/doubleratchet/)) to manage identity and group membership. Teammates certify each other's identities, effectively building a decentralized web of trust. Key rotation helps exclude removed members from future readable updates.
+Small Sea uses Signal-inspired cryptographic protocols ([X3DH](https://signal.org/docs/specifications/x3dh/) and [Double Ratchet](https://signal.org/docs/specifications/doubleratchet/)) to manage identity and group membership. Teammates certify each other's identities, effectively building a decentralized web of trust.
+
+**Read access is endpoint-trust-scoped.** Any admitted party — teammate or sibling device — can in principle proxy plaintext or hand over receiver state to anyone they choose. The protocol cannot prevent this; it relies on the social commitment of admitted parties rather than a cryptographic enforcement boundary.
+
+**Key rotation serves two purposes: exclusion and hygiene.** Exclusion handles removal and post-admission objections, both via the same rotate-with-exclusion primitive. Hygiene is routine and semantically neutral. Rotation is never used to admit a new party.
+
+**Linked-device admission is a unilateral identity-owner act.** An existing sibling device bootstraps the new device by handing off current team state and the sibling's snapshot of peer sender keys. The sibling issues a `device_link` cert over the new device's concrete public keys and publishes it to the team DB. Other teammates observe the new device via the published cert; objection is handled post-hoc by exclusion. The new device's access is join-time-forward: it reads from what the sibling held at bootstrap time and does not receive historical ciphertext encrypted before the cert was published.
+
+**Teammate admission is an inviter-orchestrated, transcript-bound, admin-quorum flow.**
+
+- *Governance-snapshot anchor.* Every proposal is anchored to a verifiable team-history reference (the team's `Sync/core.db` commit hash). The anchor freezes the admin roster, membership roster, and member→device mapping. Every participant can independently replay team history to the anchor and verify the frozen state.
+- *Proposal shell published at initiation.* The inviter allocates a fresh UUIDv7 `member_id` for the invitee and publishes a proposal shell to team DB before the invitee is contacted. Other admins in the frozen governance set see the proposal immediately and can withhold approval or object before the invitee has invested any effort.
+- *Transcript binding.* The invitee generates fresh keys and signs an acceptance blob binding to the inviter-allocated `member_id`. The inviter assembles the full admission transcript over the invitee's concrete device keys and the allocated `member_id`. Transport metadata (cloud endpoints) is explicitly excluded from the immutable transcript; post-admission transport setup is a separate flow.
+- *Member/device approval bridge.* Each admin approval is a member-scoped vote executed by a device-key signature. An approval is valid iff the signing key appears in a `device_link` cert at the anchor that maps to a current-admin `member_id`. This bridge is a step-by-step derivation any verifier can replay: cert chain at the anchor → device key → member ID → admin roster check. Approvals from devices linked after the anchor, or from non-admins at the anchor, are rejected. Multiple approvals from different devices of the same admin dedupe to one vote.
+- *Inviter-published finalization.* The inviter observes quorum met and publishes the finalization mutation. The invitee never publishes their own admission. `quorum = 1` is the default; the inviter's own approval alone meets quorum and the end-to-end flow reduces to Alice-initiates → Bob-returns-signed-transcript → Alice-approves-and-publishes.
+- *Non-durable proposals.* Proposals are invalidated by any governance-state change relative to the anchor: admin roster changes, membership roster changes, or member→device mapping changes. Proposals also expire after a per-team window. An invalidated proposal cannot be finalized; it is not a durable bearer capability.
 
 There is no central membership oracle and no globally authoritative admin
 service. Each participant maintains a local clone of the team's history and
@@ -67,8 +82,10 @@ conventions rather than by a central authority.
 In concrete technical terms:
 
 - **Read permission** means peers participating in the protocol should do the
-  key exchange and future key rotation needed for that member to read updates
-  in that berth.
+  key exchange needed for that member to read updates in that berth. This is a
+  protocol convention enforced by social contract, not a cryptographic
+  enforcement boundary: admitted parties can in principle proxy plaintext or
+  receiver state out of band.
 - **Write permission** means peers participating in the protocol should pay
   attention to that member's updates for that berth and merge them into their
   own clone.

@@ -131,6 +131,57 @@ Answers:
 - The backup key question is important.
    As is common with E2E encrypted systems, the base keys that encrypt the data can themselves be copied and encrypted with lots of other keys for different purposes (local use, sharing, backup)
 
+### Settled Decisions (from issue-97 trust-domain reframe)
+
+The following questions from this section are settled. See `architecture.md` §1
+and `packages/small-sea-manager/spec.md` for the full descriptions.
+
+- **Read access is endpoint-trust-scoped.** Any admitted party can in principle
+  proxy plaintext or receiver state to others. The protocol does not and cannot
+  enforce a cryptographic read-access boundary between admitted and non-admitted
+  parties. The real boundary is the social commitment of admitted parties.
+
+- **Linked-device admission is a unilateral identity-owner act (sibling
+  handoff).** The existing sibling bootstraps the new device by handing off
+  current team state and the sibling's peer sender keys, and publishes a
+  `device_link` cert over the new device's concrete public keys. The new
+  device's access is join-time-forward from the bootstrap snapshot. No
+  per-sender redistribution ceremony is required for admission.
+
+- **Teammate admission is an inviter-orchestrated, transcript-bound,
+  admin-quorum flow.** Key properties that are non-negotiable:
+  - The inviter allocates the invitee's `member_id` at proposal creation; the
+    invitee does not choose it.
+  - A governance-snapshot anchor (team-history commit hash) freezes the admin
+    roster, membership roster, and member→device mapping. Every signer verifies
+    independently against the anchor.
+  - Admin approvals are member-scoped votes exercised by anchor-trusted device
+    signatures. The member/device bridge is a step-by-step derivation: device
+    key → `device_link` cert at anchor → `member_id` → admin roster check.
+  - The admission transcript binds the invitee's concrete device keys and the
+    pre-allocated `member_id`. Transport metadata (cloud endpoints) is
+    explicitly excluded.
+  - The proposal shell is published to team DB at initiation, before the
+    invitee is contacted, so other admins can approve or withhold early.
+  - The inviter observes quorum met and publishes finalization. The invitee
+    never publishes their own admission.
+  - `quorum = 1` is the default; the inviter's own approval alone meets
+    quorum, preserving Alice-invites / Bob-responds / Alice-finalizes UX.
+
+- **Proposals are non-durable.** A proposal is invalidated by any
+  governance-state change relative to the anchor (admin roster, membership
+  roster, or member→device mapping) or by expiry. An invalidated proposal
+  cannot be finalized.
+
+- **Rotation means exclusion or hygiene, never admission.** Exclusion handles
+  removal and post-admission objections via the rotate-with-exclusion
+  primitive. Hygiene is routine and semantically neutral.
+
+- **Post-admission transport setup is a separate flow (B7).** A newly admitted
+  member configures their incoming cloud endpoint after finalization via a
+  signed announce-endpoint mutation. This capability is independent of
+  admission and is also how existing members change cloud providers.
+
 
 
 ---
