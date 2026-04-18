@@ -507,6 +507,73 @@ DB schema for proposals, acceptance transcripts, and approval signatures: see
 [SQL Schemas → Team schema](#sql-schemas) below — the current `invitation`
 table is a placeholder pending the B5 schema definition.
 
+#### Member transport configuration (B7)
+
+Mutable incoming transport is member-scoped state published after admission,
+not part of the immutable admission transcript.
+
+The team DB therefore carries a separate append-only signed table:
+
+| Column | Meaning |
+|-------|---------|
+| `announcement_id` | UUIDv7 primary key; also the ordering key for "newest wins" |
+| `member_id` | Team-local identity whose incoming transport is being published |
+| `protocol` | Transport protocol (`s3`, `dropbox`, `localfolder`, etc.) |
+| `url` | Endpoint base URL |
+| `bucket` | Bucket or folder prefix peers must use for this member's incoming path |
+| `announced_at` | Display/audit timestamp only; not the ordering authority |
+| `signer_key_id` | Device key that signed the announcement |
+| `signature` | Signature over the canonical payload |
+
+Canonical signed payload fields are:
+
+- `announcement_id`
+- `member_id`
+- `protocol`
+- `url`
+- `bucket`
+- `announced_at`
+- `signer_key_id`
+
+Verification and selection rules:
+
+1. Team DB sync may bring in any syntactically valid row.
+2. Effective transport for a member is selected by descending UUIDv7
+   `announcement_id`, not by `announced_at`.
+3. A row is usable iff its signature verifies under `signer_key_id` and that
+   signer resolves, at derivation time, to one of the member's currently
+   trusted device keys via the team DB's `key_certificate` history.
+4. Invalid or no-longer-trusted rows remain inert data; they do not become
+   effective routing state.
+
+Important implementation bridge:
+
+- team DB `key_certificate` rows omit `team_id` because the team is implicit in
+  the DB file
+- when reconstructing `wrasse_trust.identity.KeyCertificate` objects from DB
+  rows, callers must inject the enclosing team's `team_id`
+- callers must also bridge DB field names to dataclass fields:
+  `issuer_member_id -> issuer_participant_id`,
+  `issued_at -> issued_at_iso`,
+  and JSON-decode `claims TEXT -> claims dict`
+
+Current trust-removal semantics are intentionally modest: in today's codebase,
+"signer no longer trusted" means the relevant trust path is no longer present
+in the adopted `key_certificate` view. B7 does not depend on a revocation-cert
+issuance path.
+
+Current runtime status exposed by Manager reads is:
+
+- `announced` — a valid transport announcement is selected
+- `legacy-fallback` — routing still relies on legacy `team_device` transport
+  fields
+- `missing` — no usable current transport exists
+
+The `legacy-fallback` path is **temporary** compatibility infrastructure while
+current admission flows still populate `team_device(protocol, url, bucket)`.
+Once B5 removes admission-time transport coupling, this fallback should be
+deleted and peer routing should rely only on the B7 announcement flow.
+
 ---
 
 ### App Management

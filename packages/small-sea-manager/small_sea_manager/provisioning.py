@@ -13,6 +13,7 @@ import os
 import pathlib
 import secrets
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -128,6 +129,14 @@ from wrasse_trust.keys import (
     ProtectionLevel,
     generate_key_pair,
     key_id_from_public,
+)
+from wrasse_trust.transport import (
+    EffectiveTransportSelection,
+    MemberTransportAnnouncement,
+    TransportEndpoint,
+    canonical_member_transport_announcement_bytes,
+    key_certificate_from_team_db_record,
+    select_effective_member_transport,
 )
 
 
@@ -1326,7 +1335,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 56
+USER_SCHEMA_VERSION = 57
 
 
 # ---- Provisioning functions ----
@@ -1846,6 +1855,21 @@ def _migrate_team_db(conn, from_version):
         )
     if from_version < 56:
         _migrate_team_db_to_member_and_team_device(conn)
+    if from_version < 57:
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS member_transport_announcement ("
+                "announcement_id BLOB PRIMARY KEY, "
+                "member_id BLOB NOT NULL, "
+                "protocol TEXT NOT NULL, "
+                "url TEXT NOT NULL, "
+                "bucket TEXT NOT NULL, "
+                "announced_at TEXT NOT NULL, "
+                "signer_key_id BLOB NOT NULL, "
+                "signature BLOB NOT NULL, "
+                "FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE)"
+            )
+        )
 
 
 def _table_columns(conn, table_name: str) -> list[str]:
@@ -2682,20 +2706,100 @@ def _load_team_certificates(conn, team_id: bytes) -> list[KeyCertificate]:
     certs = []
     for row in rows:
         certs.append(
-            KeyCertificate(
-                cert_id=row[0],
-                cert_type=parse_cert_type(row[1]),
+            key_certificate_from_team_db_record(
                 team_id=team_id,
+                cert_id=row[0],
+                cert_type=row[1],
                 subject_key_id=row[2],
                 subject_public_key=row[3],
                 issuer_key_id=row[4],
-                issuer_participant_id=row[5],
-                issued_at_iso=row[6],
-                claims=json.loads(row[7]),
+                issuer_member_id=row[5],
+                issued_at=row[6],
+                claims_json=row[7],
                 signature=row[8],
             )
         )
     return certs
+
+
+def _load_member_transport_announcements(conn) -> list[MemberTransportAnnouncement]:
+    rows = conn.execute(
+        text(
+            "SELECT announcement_id, member_id, protocol, url, bucket, announced_at, "
+            "signer_key_id, signature "
+            "FROM member_transport_announcement ORDER BY announcement_id DESC"
+        )
+    ).fetchall()
+    return [
+        MemberTransportAnnouncement(
+            announcement_id=row[0],
+            member_id=row[1],
+            protocol=row[2],
+            url=row[3],
+            bucket=row[4],
+            announced_at=row[5],
+            signer_key_id=row[6],
+            signature=row[7],
+        )
+        for row in rows
+    ]
+
+
+def _device_public_keys_by_key_id(conn) -> dict[bytes, bytes]:
+    rows = conn.execute(
+        text("SELECT device_key_id, public_key FROM team_device")
+    ).fetchall()
+    return {row[0]: row[1] for row in rows}
+
+
+def _legacy_transport_by_member(conn) -> dict[bytes, TransportEndpoint]:
+    # TEMPORARY: remove when B5 stops relying on admission-time team_device
+    # transport fields as a compatibility fallback.
+    rows = conn.execute(
+        text(
+            "SELECT member_id, protocol, url, bucket "
+            "FROM team_device "
+            "WHERE url IS NOT NULL "
+            "ORDER BY member_id ASC, created_at ASC, device_key_id ASC"
+        )
+    ).fetchall()
+    fallback: dict[bytes, TransportEndpoint] = {}
+    for member_id, protocol, url, bucket in rows:
+        if member_id in fallback:
+            continue
+        if protocol is None or url is None:
+            continue
+        fallback[member_id] = TransportEndpoint(
+            protocol=protocol,
+            url=url,
+            bucket=bucket or "",
+        )
+    return fallback
+
+
+def _effective_transports_by_member(
+    conn,
+    *,
+    team_id: bytes,
+    member_ids: list[bytes],
+) -> dict[bytes, EffectiveTransportSelection]:
+    certs = _load_team_certificates(conn, team_id)
+    announcements = _load_member_transport_announcements(conn)
+    device_public_keys = _device_public_keys_by_key_id(conn)
+    fallback_by_member = _legacy_transport_by_member(conn)
+    trusted_by_member = resolve_trusted_device_keys_by_member(certs, team_id)
+    return {
+        member_id: select_effective_member_transport(
+            member_id=member_id,
+            announcements=announcements,
+            certs=certs,
+            team_id=team_id,
+            device_public_keys_by_key_id=device_public_keys,
+            legacy_fallback=fallback_by_member.get(member_id),
+            trusted_public_keys=trusted_by_member.get(member_id, set()),
+        )
+        for member_id in member_ids
+    }
 
 
 def _team_row(root_dir, participant_hex, team_name):
@@ -2761,6 +2865,73 @@ def get_trusted_device_keys_by_member(root_dir, participant_hex, team_name):
 def _team_sync_dir(root_dir, participant_hex, team_name) -> pathlib.Path:
     team_name = _validate_team_name(team_name)
     return pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync"
+
+
+def announce_member_transport(
+    root_dir,
+    participant_hex,
+    team_name,
+    *,
+    protocol: str,
+    url: str,
+    bucket: str,
+) -> dict:
+    root_dir = pathlib.Path(root_dir)
+    team_id, member_id = _team_row(root_dir, participant_hex, team_name)
+    private_key, public_key = get_current_team_device_key(root_dir, participant_hex, team_name)
+    announcement_id = uuid7()
+    signer_key_id = key_id_from_public(public_key)
+    announcement = MemberTransportAnnouncement(
+        announcement_id=announcement_id,
+        member_id=member_id,
+        protocol=protocol,
+        url=url,
+        bucket=bucket,
+        announced_at=_now_iso(),
+        signer_key_id=signer_key_id,
+        signature=b"",
+    )
+    signature = _sign_bytes(
+        private_key,
+        canonical_member_transport_announcement_bytes(announcement),
+    )
+    signed_announcement = replace(announcement, signature=signature)
+    team_db_path = _team_sync_dir(root_dir, participant_hex, team_name) / "core.db"
+    ensure_team_db_schema(team_db_path)
+    engine = _sqlite_engine(team_db_path)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "INSERT INTO member_transport_announcement "
+                    "(announcement_id, member_id, protocol, url, bucket, announced_at, "
+                    "signer_key_id, signature) "
+                    "VALUES (:announcement_id, :member_id, :protocol, :url, :bucket, "
+                    ":announced_at, :signer_key_id, :signature)"
+                ),
+                {
+                    "announcement_id": signed_announcement.announcement_id,
+                    "member_id": signed_announcement.member_id,
+                    "protocol": signed_announcement.protocol,
+                    "url": signed_announcement.url,
+                    "bucket": signed_announcement.bucket,
+                    "announced_at": signed_announcement.announced_at,
+                    "signer_key_id": signed_announcement.signer_key_id,
+                    "signature": signed_announcement.signature,
+                },
+            )
+    finally:
+        engine.dispose()
+    return {
+        "announcement_id_hex": signed_announcement.announcement_id.hex(),
+        "member_id_hex": signed_announcement.member_id.hex(),
+        "signer_key_id_hex": signed_announcement.signer_key_id.hex(),
+        "protocol": signed_announcement.protocol,
+        "url": signed_announcement.url,
+        "bucket": signed_announcement.bucket,
+        "announced_at": signed_announcement.announced_at,
+        "team_id_hex": team_id.hex(),
+    }
 
 
 def _team_db_path(root_dir, participant_hex, team_name) -> pathlib.Path:
@@ -4372,6 +4543,7 @@ def get_self_in_team(root_dir, participant_hex, team_name):
 def list_members(root_dir, participant_hex, team_name):
     """List members of a team with their berth roles. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
+    team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     engine = _sqlite_engine(team_db_path)
 
@@ -4380,6 +4552,11 @@ def list_members(root_dir, participant_hex, team_name):
         role_rows = conn.execute(
             text("SELECT member_id, berth_id, role FROM berth_role")
         ).fetchall()
+        transport_by_member = _effective_transports_by_member(
+            conn,
+            team_id=team_id,
+            member_ids=[row[0] for row in members],
+        )
 
     engine.dispose()
 
@@ -4390,14 +4567,31 @@ def list_members(root_dir, participant_hex, team_name):
             {"berth_id": r[1].hex(), "role": r[2]}
         )
 
-    return [
-        {
-            "id": row[0].hex(),
-            "display_name": row[1],
-            "berth_roles": roles_by_member.get(row[0].hex(), []),
-        }
-        for row in members
-    ]
+    result = []
+    for row in members:
+        member_id = row[0]
+        transport = transport_by_member.get(member_id)
+        transport_dict = None
+        if transport is not None and transport.transport is not None:
+            transport_dict = {
+                "protocol": transport.transport.protocol,
+                "url": transport.transport.url,
+                "bucket": transport.transport.bucket,
+            }
+        result.append(
+            {
+                "id": member_id.hex(),
+                "display_name": row[1],
+                "berth_roles": roles_by_member.get(member_id.hex(), []),
+                "transport_status": transport.status if transport is not None else "missing",
+                "effective_transport": transport_dict,
+                "needs_transport_announcement": (
+                    member_id == self_in_team
+                    and (transport is None or transport.status == "missing")
+                ),
+            }
+        )
+    return result
 
 
 def list_invitations(root_dir, participant_hex, team_name):

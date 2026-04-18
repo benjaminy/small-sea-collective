@@ -33,6 +33,12 @@ from small_sea_hub.crypto import (commit_encrypted_upload,
                                   prepare_encrypted_upload)
 from small_sea_note_to_self.db import attached_note_to_self_connection
 from small_sea_note_to_self.ids import uuid7
+from wrasse_trust.transport import (
+    MemberTransportAnnouncement,
+    TransportEndpoint,
+    key_certificate_from_team_db_record,
+    select_effective_member_transport,
+)
 
 
 class SmallSeaBackendExn(Exception):
@@ -1171,31 +1177,27 @@ class SmallSeaBackend:
         member_id = bytes.fromhex(member_id_hex)
         conn = sqlite3.connect(team_db_path)
         try:
-            row = conn.execute(
-                """
-                SELECT protocol, url, bucket
-                FROM team_device
-                WHERE member_id = ?
-                  AND url IS NOT NULL
-                ORDER BY created_at ASC, device_key_id ASC
-                LIMIT 1
-                """,
-                (member_id,),
-            ).fetchone()
+            transport = self._effective_peer_transport(conn, ss_session.team_id, member_id)
         finally:
             conn.close()
 
-        if row is None:
+        if transport is None:
             raise SmallSeaNotFoundExn(f"No peer found for member {member_id_hex}")
 
-        protocol, url, bucket = row
+        protocol = transport.protocol
+        url = transport.url
+        bucket = transport.bucket
 
         if protocol == "s3":
             import boto3
             from botocore import UNSIGNED
             from botocore.config import Config as BotoConfig
 
-            bucket_name = bucket or f"ss-{ss_session.berth_id.hex()[:16]}"
+            if not bucket:
+                raise SmallSeaBackendExn(
+                    "Peer transport for s3 is missing a bucket; refusing to derive one"
+                )
+            bucket_name = bucket
             s3_client = boto3.client(
                 "s3",
                 endpoint_url=url,
@@ -1222,6 +1224,101 @@ class SmallSeaBackend:
 
         else:
             raise SmallSeaBackendExn(f"Unsupported peer protocol: {protocol}")
+
+    def _table_exists(self, conn, table_name: str) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
+
+    def _load_team_certificates(self, conn, team_id: bytes):
+        if not self._table_exists(conn, "key_certificate"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT cert_id, cert_type, subject_key_id, subject_public_key,
+                   issuer_key_id, issuer_member_id, issued_at, claims, signature
+            FROM key_certificate ORDER BY issued_at ASC
+            """
+        ).fetchall()
+        return [
+            key_certificate_from_team_db_record(
+                team_id=team_id,
+                cert_id=row[0],
+                cert_type=row[1],
+                subject_key_id=row[2],
+                subject_public_key=row[3],
+                issuer_key_id=row[4],
+                issuer_member_id=row[5],
+                issued_at=row[6],
+                claims_json=row[7],
+                signature=row[8],
+            )
+            for row in rows
+        ]
+
+    def _load_member_transport_announcements(self, conn):
+        if not self._table_exists(conn, "member_transport_announcement"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT announcement_id, member_id, protocol, url, bucket, announced_at,
+                   signer_key_id, signature
+            FROM member_transport_announcement
+            ORDER BY announcement_id DESC
+            """
+        ).fetchall()
+        return [
+            MemberTransportAnnouncement(
+                announcement_id=row[0],
+                member_id=row[1],
+                protocol=row[2],
+                url=row[3],
+                bucket=row[4],
+                announced_at=row[5],
+                signer_key_id=row[6],
+                signature=row[7],
+            )
+            for row in rows
+        ]
+
+    def _device_public_keys_by_key_id(self, conn) -> dict[bytes, bytes]:
+        if not self._table_exists(conn, "team_device"):
+            return {}
+        rows = conn.execute("SELECT device_key_id, public_key FROM team_device").fetchall()
+        return {row[0]: row[1] for row in rows}
+
+    def _legacy_transport_for_member(self, conn, member_id: bytes) -> TransportEndpoint | None:
+        # TEMPORARY: remove when B5 stops relying on admission-time team_device
+        # transport fields as a compatibility fallback.
+        if not self._table_exists(conn, "team_device"):
+            return None
+        row = conn.execute(
+            """
+            SELECT protocol, url, bucket
+            FROM team_device
+            WHERE member_id = ?
+              AND url IS NOT NULL
+            ORDER BY created_at ASC, device_key_id ASC
+            LIMIT 1
+            """,
+            (member_id,),
+        ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            return None
+        return TransportEndpoint(protocol=row[0], url=row[1], bucket=row[2] or "")
+
+    def _effective_peer_transport(self, conn, team_id: bytes, member_id: bytes) -> TransportEndpoint | None:
+        selection = select_effective_member_transport(
+            member_id=member_id,
+            announcements=self._load_member_transport_announcements(conn),
+            certs=self._load_team_certificates(conn, team_id),
+            team_id=team_id,
+            device_public_keys_by_key_id=self._device_public_keys_by_key_id(conn),
+            legacy_fallback=self._legacy_transport_for_member(conn, member_id),
+        )
+        return selection.transport
 
     # ---- Notifications ----
 

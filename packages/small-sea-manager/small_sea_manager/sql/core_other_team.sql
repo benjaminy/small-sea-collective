@@ -65,6 +65,18 @@ CREATE TABLE IF NOT EXISTS key_certificate (
     FOREIGN KEY (issuer_member_id) REFERENCES member(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS member_transport_announcement (
+    announcement_id BLOB PRIMARY KEY,
+    member_id BLOB NOT NULL,
+    protocol TEXT NOT NULL,
+    url TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    announced_at TEXT NOT NULL,
+    signer_key_id BLOB NOT NULL,
+    signature BLOB NOT NULL,
+    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS device_prekey_bundle (
     device_key_id BLOB PRIMARY KEY,
     prekey_bundle_json TEXT NOT NULL,

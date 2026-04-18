@@ -439,6 +439,29 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             error = str(e)
         return _render_team_detail(request, team_name, notice=notice, error=error)
 
+    @app.post("/teams/{team_name}/transport", response_class=HTMLResponse)
+    async def announce_transport(
+        request: Request,
+        team_name: str,
+        protocol: str = Form(...),
+        url: str = Form(...),
+        bucket: str = Form(...),
+    ):
+        mgr = _mgr(request)
+        try:
+            mgr.announce_member_transport(
+                team_name,
+                protocol=protocol.strip(),
+                url=url.strip(),
+                bucket=bucket.strip(),
+            )
+            notice = "Transport announcement published."
+            error = None
+        except Exception as e:
+            notice = None
+            error = str(e)
+        return _render_team_detail(request, team_name, notice=notice, error=error)
+
     @app.post("/teams/{team_name}/members/{member_id}/remove", response_class=HTMLResponse)
     async def remove_member(request: Request, team_name: str, member_id: str):
         mgr = _mgr(request)

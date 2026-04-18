@@ -13,6 +13,7 @@ dependencies = [
     "pyobjus>=1.2.3",
     "small-sea-note-to-self",
     "sqlalchemy>=2.0.44",
+    "wrasse-trust",
 ]
 
 [project.optional-dependencies]
@@ -27,3 +28,4 @@ build-backend = "hatchling.build"
 [tool.uv.sources]
 cuttlefish = { workspace = true }
 small-sea-note-to-self = { workspace = true }
+wrasse-trust = { workspace = true }
