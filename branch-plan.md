@@ -158,6 +158,10 @@ Concretely:
 
 This keeps one real implementation of the rule without introducing a Manager API dependency or duplicating logic in two packages.
 
+One bridging detail is non-negotiable: the synced team DB's `key_certificate` table does **not** store `team_id` because team identity is implicit at the DB level. But `wrasse-trust.identity` filters certificates by `cert.team_id == team_id`. So when Manager or Hub reconstructs `KeyCertificate` objects from SQLite rows, it must inject the team's own `team_id` into each object instead of leaving it `None`.
+
+If this bridge is missed, trust traversal silently returns no trusted devices for every member, every announcement becomes invalid, and routing quietly falls back to legacy behavior. The branch should treat this DB-to-`KeyCertificate` reconstruction step as a first-class part of the implementation, not an incidental detail.
+
 Because `wrasse-trust` is not currently declared as a dependency of either Manager or Hub, this branch must also update:
 
 - `packages/small-sea-manager/pyproject.toml`
@@ -222,7 +226,22 @@ This branch should therefore expose a team-visible diagnostic status alongside e
 
 This is primarily a read/diagnostic state, not a write authorization state. It lets peers distinguish "Alice has not yet published transport" from generic routing breakage.
 
-### 12. One effective-transport helper, shared semantics everywhere
+### 12. "Signer no longer trusted" means trust removal in today's infrastructure
+
+The plan's derivation-time trust rule should be phrased against the infrastructure that actually exists today.
+
+In the current codebase:
+
+- `wrasse-trust.identity` trust traversal does not consult revocation certificates for member-device trust
+- `CertType.REVOCATION` exists in the enum, but issuance/verification support is not wired into the normal member trust path B7 would use
+
+So for B7, "a signer ceases to be trusted" should be understood and tested as:
+
+- the relevant `device_link` / membership trust path is no longer present in the local team DB view
+
+That may happen because rows are removed from the adopted team state or because later trust logic grows a stronger revocation mechanism. B7 should not pretend that full revocation-certificate infrastructure is required for this branch.
+
+### 13. One effective-transport helper, shared semantics everywhere
 
 The branch should define one canonical rule for:
 
@@ -254,6 +273,7 @@ The anti-goal is duplicating "latest valid announcement else fallback" logic acr
 - `packages/small-sea-manager/small_sea_manager/provisioning.py`
   - Manager-side write path for transport announcements
   - Member-list/query helpers extended to expose effective transport and transport status for UI/tests
+  - DB-row bridge that reconstructs `KeyCertificate` objects with the enclosing team's `team_id`
 
 ### Shared trust/selection module
 
@@ -325,6 +345,7 @@ Success criteria for this phase:
 - we can compute effective transport for a member without touching UI or Hub yet
 - ordering is by UUIDv7 `announcement_id`, not by `announced_at`
 - Manager and Hub dependency manifests are updated so the shared module is importable in both packages
+- DB-loaded certificates reconstruct with the enclosing `team_id`, so signer-trust traversal is non-empty for valid members
 
 ### Phase 2: Integrate the helper into Manager and Hub reads
 
@@ -371,10 +392,12 @@ Update `spec.md`, tighten any affected comments, and finish the micro tests. If 
 6. **Invalid rows are ignored, not deleted.** This matches the actual sync model.
 7. **Shared rule lives in a shared module, not in Manager.** Hub and Manager both call the same transport-selection implementation.
 8. **UUID generation stays in `small-sea-note-to-self`; ordering logic lives in the shared transport-selection module.**
-9. **Peer bucket for current routing is looked up, not derived.** Algorithmic derivation remains only where still semantically valid.
-10. **Expose both local write-side and peer-visible read-side status.** B5 needs the former; teammates diagnosing routing need the latter.
-11. **Temporary `team_device` fallback stays only until B5 removes admission-time transport coupling.**
-12. **No tombstone in this branch unless implementation demands it.** A replacement announcement is enough for the stated scope.
+9. **DB-to-`KeyCertificate` reconstruction injects the team's `team_id`.** The DB row does not carry it; the bridge must.
+10. **Peer bucket for current routing is looked up, not derived.** Algorithmic derivation remains only where still semantically valid.
+11. **Expose both local write-side and peer-visible read-side status.** B5 needs the former; teammates diagnosing routing need the latter.
+12. **"No longer trusted" is tested against current trust-path removal, not assumed revocation-cert infrastructure.**
+13. **Temporary `team_device` fallback stays only until B5 removes admission-time transport coupling.**
+14. **No tombstone in this branch unless implementation demands it.** A replacement announcement is enough for the stated scope.
 
 ## Risks And How This Plan Contains Them
 
@@ -410,6 +433,10 @@ If Manager and Hub do not declare `wrasse-trust`, implementation stalls on impor
 
 Once peer bucket becomes looked-up transport metadata, any remaining derivation-based peer-routing path is a latent bug. The plan contains that by requiring an explicit audit of those call sites in the implementation phase.
 
+### Risk: trust traversal silently sees zero valid signers
+
+Because `key_certificate` rows do not carry `team_id`, a naive reconstruction into `KeyCertificate(team_id=None, ...)` makes `wrasse-trust.identity` filter out every cert. The plan contains this by explicitly requiring `team_id` injection during DB-to-certificate reconstruction and by validating that valid announcements are actually selected, not just that fallback still works.
+
 ### Risk: fallback logic becomes permanent mud
 
 The branch should label fallback as temporary in both plan and spec so later cleanup work has a clear target.
@@ -434,25 +461,26 @@ Done when a skeptical reviewer can verify every item below with code, micro test
 9. A bad announcement does not break Hub peer download when a valid announcement or fallback transport exists.
 10. An announcement whose signer was once trusted but is no longer trusted becomes inert under the documented derivation-time policy.
 11. Changing only `announced_at` does not let an older announcement outrank a newer one; ordering is driven by `announcement_id`.
+12. Valid signer-trust traversal succeeds for real DB-loaded certificates because reconstructed `KeyCertificate` objects carry the enclosing team's `team_id`.
 
 ### Goal: runtime actually uses the new model
 
-12. The Hub peer-download path no longer resolves peers by directly selecting `team_device.protocol/url/bucket` as the primary source of truth.
-13. A peer-download micro test demonstrates that the Hub uses the newer valid announcement when one exists.
-14. Peer-routing code paths no longer compute another member's bucket algorithmically when current transport announcements are in play.
+13. The Hub peer-download path no longer resolves peers by directly selecting `team_device.protocol/url/bucket` as the primary source of truth.
+14. A peer-download micro test demonstrates that the Hub uses the newer valid announcement when one exists.
+15. Peer-routing code paths no longer compute another member's bucket algorithmically when current transport announcements are in play.
 
 ### Goal: transition from current main remains intact
 
-15. If no valid transport announcement exists, routing still works through the temporary legacy `team_device` fallback.
-16. Existing invitation/admission flows still populate enough state for the fallback path to work until B5 lands.
-17. The Manager exposes a "transport not yet configured" state that B5 can reuse after finalization.
+16. If no valid transport announcement exists, routing still works through the temporary legacy `team_device` fallback.
+17. Existing invitation/admission flows still populate enough state for the fallback path to work until B5 lands.
+18. The Manager exposes a "transport not yet configured" state that B5 can reuse after finalization.
 
 ### Goal: repo integrity is improved, not just feature count
 
-18. Effective transport is derived in one shared-module boundary rather than duplicated queries.
-19. `team_device` remains device identity/trust data; the new mutable transport behavior lives in its own schema object.
-20. Manager and Hub both declare the shared module dependency explicitly in their package manifests.
-21. The spec explains the UUIDv7 ordering rule, derivation-time trust rule, temporary fallback, and intended future cleanup, so the repo is easier to reason about after the branch than before it.
+19. Effective transport is derived in one shared-module boundary rather than duplicated queries.
+20. `team_device` remains device identity/trust data; the new mutable transport behavior lives in its own schema object.
+21. Manager and Hub both declare the shared module dependency explicitly in their package manifests.
+22. The spec explains the UUIDv7 ordering rule, derivation-time trust rule, current trust-removal semantics, temporary fallback, and intended future cleanup, so the repo is easier to reason about after the branch than before it.
 
 ## Concrete Micro Tests To Expect
 
@@ -470,6 +498,8 @@ At minimum, the branch should land tests equivalent to these:
 10. Hub peer download still succeeds via fallback when only invalid announcements are present.
 11. Peer-routing lookup uses announced bucket metadata rather than an algorithmically derived peer bucket.
 12. Team/member reads report a peer-visible transport status that distinguishes announced transport, legacy fallback, and missing transport.
+13. DB-loaded `key_certificate` rows reconstructed with injected `team_id` produce a non-empty trusted-device set for a valid member.
+14. Trust-removal behavior is tested by removing the relevant trust-path cert rows from the local team DB view, not by assuming revocation-certificate issuance exists.
 
 If the implementation needs one extra helper-level micro test to prove deterministic tie-breaking, add it.
 
