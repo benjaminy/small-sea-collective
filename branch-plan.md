@@ -26,7 +26,7 @@ When this branch is done, the repo should have all of the following properties:
 
 1. A member can publish a signed transport announcement after admission without re-admission.
 2. A later signed publication from the same member supersedes the earlier one for routing.
-3. Routing decisions are derived in one place from "latest valid member transport announcement, otherwise temporary legacy fallback."
+3. Routing decisions are derived in one place from "latest valid member transport announcement by `announcement_id`, otherwise temporary legacy fallback."
 4. Manager and Hub use the same effective-transport rule.
 5. Invalid announcements do not affect routing.
 6. The implementation reduces accidental coupling by separating stable device identity (`team_device`) from mutable member transport state.
@@ -110,7 +110,15 @@ Signed payload fields:
 
 The signature does **not** need to name a target device, but it **does** need to bind the claimed signer. The authorization rule is that `signer_key_id` must resolve, via `key_certificate`, to a trusted device of `member_id` under the policy below.
 
-### 3. Verification is on derivation/use, not on merge
+### 3. Ordering is by `announcement_id`, not by `announced_at`
+
+The effective transport for a member is chosen by sorting candidate rows by `announcement_id` UUIDv7 ordering, newest first.
+
+`announced_at` remains in the row, but only as a display/audit field. It is not the conflict-resolution authority.
+
+This avoids the obvious "sign one row with a far-future timestamp and freeze routing forever" problem that comes from treating a client-supplied signed timestamp as the primary ordering key.
+
+### 4. Verification is on derivation/use, not on merge
 
 The trusted behavior is:
 
@@ -121,7 +129,7 @@ The trusted behavior is:
 
 This is more realistic than pretending sync has a row-level reject hook that does not currently exist.
 
-### 4. Signer trust is evaluated at derivation time
+### 5. Signer trust is evaluated at derivation time
 
 For this branch, "trusted signer" means trusted **at derivation time**, not trusted at original announcement time.
 
@@ -132,7 +140,25 @@ That means:
 
 This is the simplest rule that matches the current codebase. It avoids introducing a heavier governance-state anchor model just for B7. The UX consequence is real and should be documented explicitly: revoking a signer device can also withdraw transport announcements that only that signer authenticated.
 
-### 5. Temporary legacy fallback stays only as a bridge to current main
+### 6. Shared rule means a shared module, not a Manager-owned helper
+
+The effective-transport rule cannot live only in `small_sea_manager/provisioning.py`. Hub is a separate package and should not import Manager internals.
+
+This branch should therefore introduce a small dependency-light shared module for transport-announcement canonicalization, verification, ordering, and selection. The best fit is a narrow module under `packages/wrasse-trust`, because the core logic is trust derivation plus signature verification over synced team-DB rows.
+
+Concretely:
+
+- Manager and Hub each remain responsible for loading raw SQLite rows from the local team DB
+- the shared module is responsible for:
+  - canonical payload construction/parsing
+  - signature verification
+  - signer-trust evaluation from `key_certificate` rows
+  - ordering by UUIDv7 `announcement_id`
+  - choosing the effective transport from candidate rows
+
+This keeps one real implementation of the rule without introducing a Manager API dependency or duplicating logic in two packages.
+
+### 7. Temporary legacy fallback stays only as a bridge to current main
 
 Because current admission flow still writes `protocol/url/bucket` into `team_device`, and because B5 has not yet removed transport from the admission transcript, B7 should include a narrow transitional fallback:
 
@@ -140,7 +166,29 @@ Because current admission flow still writes `protocol/url/bucket` into `team_dev
 
 This is a bridge for the current repo state, not a forever-model commitment. The spec and code comments should say that plainly.
 
-### 6. One effective-transport helper, shared semantics everywhere
+### 8. Bucket semantics shift from derivation to lookup for peer routing
+
+Today some code paths can derive a peer bucket algorithmically. Under B7, the effective peer bucket becomes transport metadata that must be looked up from the member's valid announcement.
+
+That means this branch must explicitly audit peer-routing call sites and separate two cases:
+
+- **still derivable:** local/self bucket creation and invitation/bootstrap artifacts that are intentionally tied to current pre-B5 behavior
+- **no longer derivable:** runtime routing to another member's current incoming endpoint
+
+Any peer-routing path that keeps deriving another member's bucket instead of looking it up will be wrong once announcements are live.
+
+### 9. B5 handoff should attach to an explicit "transport not configured" hook
+
+B7 should leave a concrete integration seam for B5 rather than a vague future dependency.
+
+The branch should therefore add a Manager-visible state such as `transport_configured` / `needs_transport_announcement` for the local member in a team. The same team-detail surface that supports self-announcement should be able to render a "transport not yet configured" state.
+
+That gives B5 a precise attachment point:
+
+- after a newly admitted member observes finalization and has local cloud configuration available, B5 directs them into the existing B7 self-announcement path
+- until that happens, the UI can truthfully show that team membership exists but incoming transport is not yet configured
+
+### 10. One effective-transport helper, shared semantics everywhere
 
 The branch should define one canonical rule for:
 
@@ -160,16 +208,22 @@ The anti-goal is duplicating "latest valid announcement else fallback" logic acr
 ### Provisioning / core logic
 
 - `packages/small-sea-manager/small_sea_manager/provisioning.py`
-  - Canonical payload builder and signer for transport announcements
-  - Verification helper for announcement rows
-  - Effective-transport lookup helper for a `member_id`
+  - Manager-side write path for transport announcements
   - Member-list/query helpers extended to expose effective transport for UI/tests
+
+### Shared trust/selection module
+
+- `packages/wrasse-trust/...`
+  - Canonical payload builder/parser for transport announcements
+  - Verification helper for announcement rows
+  - Effective-transport selection logic over candidate rows + cert rows
+  - UUIDv7 ordering helper for announcement selection
 
 ### Manager session/business layer
 
 - `packages/small-sea-manager/small_sea_manager/manager.py`
   - Public method for self-announcement
-  - Team/member read paths updated to surface effective transport
+  - Team/member read paths updated to surface effective transport and `needs_transport_announcement` for the local member
 
 ### Web UI
 
@@ -185,6 +239,7 @@ The anti-goal is duplicating "latest valid announcement else fallback" logic acr
 
 - `packages/small-sea-hub/small_sea_hub/backend.py`
   - Peer download path switched from direct `team_device` lookup to the shared effective-transport rule
+  - Audit and fix any peer-routing path that still derives another member's bucket instead of looking it up
 
 This is a must-have, not a stretch goal. Without it, B7 would update metadata that the runtime does not actually use.
 
@@ -216,12 +271,15 @@ Add the new table and implement three small, explicit primitives:
 2. `verify_member_transport_announcement(...)`
 3. `get_effective_member_transport(...)`
 
+Before finishing this phase, place verification/selection logic in the shared module rather than in Manager-only code.
+
 Success criteria for this phase:
 
 - we can create a signed row locally
 - we can verify a good row
 - we can reject a tampered or unauthorized row
 - we can compute effective transport for a member without touching UI or Hub yet
+- ordering is by UUIDv7 `announcement_id`, not by `announced_at`
 
 ### Phase 2: Integrate the helper into Manager and Hub reads
 
@@ -230,9 +288,11 @@ Update the read side first so both Manager and Hub consume the same effective-tr
 Success criteria:
 
 - manager-side team/member reads can surface effective transport
+- manager-side team/member reads can surface `needs_transport_announcement` for the local member
 - the Hub peer-download path resolves peers through the effective-transport helper rather than directly from `team_device`
 - if an announcement exists, runtime routing uses it
 - if no announcement exists, runtime routing still uses the temporary legacy fallback
+- peer-routing code paths no longer derive another member's bucket algorithmically
 
 ### Phase 3: Add the Manager UI write path
 
@@ -249,6 +309,7 @@ Success criteria:
 
 - the current member can publish transport from the team detail page
 - the same template refresh shows the newly effective transport after submission
+- the local member surface can also show "transport not yet configured," which B5 can reuse after admission finalization
 
 ### Phase 4: Documentation and validation pass
 
@@ -258,12 +319,14 @@ Update `spec.md`, tighten any affected comments, and finish the micro tests. If 
 
 1. **Member-scoped target, device-scoped signer.** This is the cleanest match to the issue and the runtime.
 2. **Append-only signed rows.** Better fit for git-synced team DBs than in-place mutation.
-3. **Newest valid `announced_at` wins.** If tie-breaking is needed, use `announcement_id` as a deterministic secondary sort.
+3. **Newest valid `announcement_id` wins.** `announcement_id` UUIDv7 is the ordering key; `announced_at` is display/audit metadata only.
 4. **`signer_key_id` is part of the signed payload.** Claimed signer identity must be authenticity-protected.
 5. **Signer trust is evaluated at derivation time.** Revoked-signer announcements become inert.
 6. **Invalid rows are ignored, not deleted.** This matches the actual sync model.
-7. **Temporary `team_device` fallback stays only until B5 removes admission-time transport coupling.**
-8. **No tombstone in this branch unless implementation demands it.** A replacement announcement is enough for the stated scope.
+7. **Shared rule lives in a shared module, not in Manager.** Hub and Manager both call the same transport-selection implementation.
+8. **Peer bucket for current routing is looked up, not derived.** Algorithmic derivation remains only where still semantically valid.
+9. **Temporary `team_device` fallback stays only until B5 removes admission-time transport coupling.**
+10. **No tombstone in this branch unless implementation demands it.** A replacement announcement is enough for the stated scope.
 
 ## Risks And How This Plan Contains Them
 
@@ -283,6 +346,18 @@ If we only test "happy path row exists," we will not know whether signer authori
 
 Because signer trust is evaluated at derivation time, revoking a signer can deactivate its transport announcement. The plan contains this by making the policy explicit in spec, tests, and validation rather than leaving it as accidental behavior.
 
+### Risk: future-dated timestamps freeze routing
+
+If `announced_at` were the ordering authority, one far-future timestamp could dominate forever. The plan avoids that by making UUIDv7 `announcement_id` the only ordering key.
+
+### Risk: "shared helper" collapses into duplication
+
+If the helper stays in Manager, Hub will either duplicate it or grow a bad dependency. The plan resolves this up front by putting verification/selection logic in a small shared module.
+
+### Risk: bucket derivation silently misroutes peers
+
+Once peer bucket becomes looked-up transport metadata, any remaining derivation-based peer-routing path is a latent bug. The plan contains that by requiring an explicit audit of those call sites in the implementation phase.
+
 ### Risk: fallback logic becomes permanent mud
 
 The branch should label fallback as temporary in both plan and spec so later cleanup work has a clear target.
@@ -294,7 +369,7 @@ Done when a skeptical reviewer can verify every item below with code, micro test
 ### Goal: a member can publish and later replace transport
 
 1. There is a concrete write path that creates a signed `member_transport_announcement` row for the current member.
-2. A second announcement from the same member with later `announced_at` supersedes the first for effective transport.
+2. A second announcement from the same member with a newer UUIDv7 `announcement_id` supersedes the first for effective transport.
 3. The Manager UI exposes a working self-announcement action for the current member.
 4. The team detail view shows each member's effective transport, not raw `team_device` columns.
 
@@ -305,36 +380,41 @@ Done when a skeptical reviewer can verify every item below with code, micro test
 7. A bad announcement does not change Manager-visible effective transport.
 8. A bad announcement does not break Hub peer download when a valid announcement or fallback transport exists.
 9. An announcement whose signer was once trusted but is no longer trusted becomes inert under the documented derivation-time policy.
+10. Changing only `announced_at` does not let an older announcement outrank a newer one; ordering is driven by `announcement_id`.
 
 ### Goal: runtime actually uses the new model
 
-10. The Hub peer-download path no longer resolves peers by directly selecting `team_device.protocol/url/bucket` as the primary source of truth.
-11. A peer-download micro test demonstrates that the Hub uses the newer valid announcement when one exists.
+11. The Hub peer-download path no longer resolves peers by directly selecting `team_device.protocol/url/bucket` as the primary source of truth.
+12. A peer-download micro test demonstrates that the Hub uses the newer valid announcement when one exists.
+13. Peer-routing code paths no longer compute another member's bucket algorithmically when current transport announcements are in play.
 
 ### Goal: transition from current main remains intact
 
-12. If no valid transport announcement exists, routing still works through the temporary legacy `team_device` fallback.
-13. Existing invitation/admission flows still populate enough state for the fallback path to work until B5 lands.
+14. If no valid transport announcement exists, routing still works through the temporary legacy `team_device` fallback.
+15. Existing invitation/admission flows still populate enough state for the fallback path to work until B5 lands.
+16. The Manager exposes a "transport not yet configured" state that B5 can reuse after finalization.
 
 ### Goal: repo integrity is improved, not just feature count
 
-14. Effective transport is derived in one named helper boundary rather than duplicated queries.
-15. `team_device` remains device identity/trust data; the new mutable transport behavior lives in its own schema object.
-16. The spec explains the temporary fallback, the derivation-time trust rule, and the intended future cleanup, so the repo is easier to reason about after the branch than before it.
+17. Effective transport is derived in one shared-module boundary rather than duplicated queries.
+18. `team_device` remains device identity/trust data; the new mutable transport behavior lives in its own schema object.
+19. The spec explains the UUIDv7 ordering rule, derivation-time trust rule, temporary fallback, and intended future cleanup, so the repo is easier to reason about after the branch than before it.
 
 ## Concrete Micro Tests To Expect
 
 At minimum, the branch should land tests equivalent to these:
 
 1. Valid self-announcement creates a row whose signature verifies.
-2. Latest valid announcement wins over an older valid announcement from the same member.
+2. Latest valid UUIDv7 `announcement_id` wins over an older valid announcement from the same member.
 3. Announcement signed by a device linked to a different member is ignored.
 4. Tampered payload/signature is ignored.
 5. Changing only `signer_key_id` invalidates verification because the signer identity is inside the signed payload.
 6. A once-valid announcement becomes inert after signer revocation under the documented derivation-time policy.
-7. No announcement present -> effective transport falls back to legacy `team_device`.
-8. Hub peer download chooses announced transport over fallback transport.
-9. Hub peer download still succeeds via fallback when only invalid announcements are present.
+7. A far-future `announced_at` on an older `announcement_id` does not outrank a newer announcement.
+8. No announcement present -> effective transport falls back to legacy `team_device`.
+9. Hub peer download chooses announced transport over fallback transport.
+10. Hub peer download still succeeds via fallback when only invalid announcements are present.
+11. Peer-routing lookup uses announced bucket metadata rather than an algorithmically derived peer bucket.
 
 If the implementation needs one extra helper-level micro test to prove deterministic tie-breaking, add it.
 
