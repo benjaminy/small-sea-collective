@@ -4426,12 +4426,11 @@ def list_invitations(root_dir, participant_hex, team_name):
 def _admission_event_store_path(root_dir, participant_hex, team_name):
     root_dir = pathlib.Path(root_dir)
     team_name = _validate_team_name(team_name)
-    team_dir = root_dir / "Participants" / participant_hex / team_name
-    team_dir.mkdir(parents=True, exist_ok=True)
-    return team_dir / "admission-events-local.db"
+    return root_dir / "Participants" / participant_hex / team_name / "admission-events-local.db"
 
 
 def _ensure_admission_event_store(conn) -> None:
+    # Callers are responsible for transaction scope / commit behavior.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS admission_event_disposition (
@@ -4460,6 +4459,7 @@ def list_dismissed_admission_events(root_dir, participant_hex, team_name):
 def dismiss_admission_event(root_dir, participant_hex, team_name, event_type, artifact_id_hex):
     """Persist a local dismissal for one admission event."""
     db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
         _ensure_admission_event_store(conn)
         conn.execute(

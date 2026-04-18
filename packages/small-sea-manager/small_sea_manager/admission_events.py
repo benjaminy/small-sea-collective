@@ -107,6 +107,7 @@ def _invitation_events(conn, dismissed, *, self_member_id_hex: str | None, viewe
             "i.accepted_by, m.display_name "
             "FROM invitation AS i "
             "LEFT JOIN member AS m ON m.id = i.accepted_by "
+            "WHERE i.status IN ('pending', 'accepted') "
             "ORDER BY COALESCE(i.accepted_at, i.created_at) DESC, i.id DESC"
         )
     ).fetchall()

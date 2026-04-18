@@ -132,7 +132,7 @@ def test_manager_web_renders_admin_and_non_admin_admission_controls(playground_d
     Provisioning.add_cloud_storage(root, alice_hex, protocol="localfolder", url=str(alice_cloud))
     Provisioning.add_cloud_storage(root, bob_hex, protocol="localfolder", url=str(bob_cloud))
 
-    team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
+    Provisioning.create_team(root, alice_hex, "ProjectX")
     alice_repo = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     _push_to_localfolder(alice_repo, alice_cloud)
 
@@ -198,3 +198,22 @@ def test_admission_watch_endpoint_backs_off_when_hub_wait_unavailable(playground
     response = client.get("/teams/ProjectX/admission-events/watch")
     assert response.status_code == 200
     assert 'load delay:5s' in response.text
+
+
+def test_admission_watch_endpoint_stays_fast_when_hub_wait_succeeds(playground_dir, monkeypatch):
+    participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_team(playground_dir, participant_hex, "ProjectX")
+    app = create_app(playground_dir, participant_hex)
+    client = TestClient(app)
+    manager = app.state.manager
+
+    manager.set_session("ProjectX", "token-encrypted")
+    monkeypatch.setattr(
+        manager,
+        "wait_for_team_admission_signal",
+        lambda team_name, timeout=15: True,
+    )
+
+    response = client.get("/teams/ProjectX/admission-events/watch")
+    assert response.status_code == 200
+    assert 'load delay:0.2s' in response.text
