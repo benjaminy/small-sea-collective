@@ -7,197 +7,342 @@
 **Related issues:** #97 (accepted trust-domain reframe), #100 (spec/doc sweep, B1), #99 (admission-event visibility, B2)
 **Related prior plan:** `Archive/branch-plan-issue-97-trust-domain-reframe.md`
 **Related docs:** `architecture.md`, `packages/small-sea-manager/spec.md`
-**Related code of interest:** `packages/small-sea-manager/small_sea_manager/provisioning.py`, `packages/small-sea-manager/small_sea_manager/sql/core_other_team.sql`, `packages/small-sea-manager/small_sea_manager/web.py`, `packages/small-sea-manager/small_sea_manager/manager.py`
+**Related code of interest:** `packages/small-sea-manager/small_sea_manager/provisioning.py`, `packages/small-sea-manager/small_sea_manager/sql/core_other_team.sql`, `packages/small-sea-manager/small_sea_manager/manager.py`, `packages/small-sea-manager/small_sea_manager/web.py`, `packages/small-sea-hub/small_sea_hub/backend.py`
 
 ## Purpose
 
-Allow a member to announce or update their own incoming cloud endpoint independently of admission. This is the B7 capability from the issue-97 meta-plan.
+Implement the B7 capability from the issue-97 meta-plan: a team member can publish or update their own incoming transport coordinates after admission, and peers will use the latest valid publication when routing outgoing sync traffic to that member.
 
-Transport metadata is intentionally absent from the immutable admission transcript (the transcript binds device keys and the allocated `member_id`, not cloud endpoint details). That means a freshly admitted member has no registered endpoint until they run this flow; and any existing member who changes cloud providers has no path to update peers' routing tables. This branch provides that path.
+This capability is needed for two concrete cases:
 
-The two use cases are:
-1. **Post-admission setup:** A newly admitted invitee finishes the B5 flow cryptographically admitted but transport-inert. They use this flow to stand up their incoming cloud endpoint and announce it to the team.
-2. **Provider change:** An existing member switches cloud providers or recovers a lost account and needs to push a new endpoint to all peers.
+1. A newly admitted member finishes the current admission flow with a valid membership/device identity but later needs to publish their real incoming endpoint.
+2. An existing member changes providers, rotates buckets, or recovers from cloud-account loss and needs teammates to route to the new endpoint.
 
-Both cases use the same signed announce-endpoint mutation.
+The branch should land a clean, explicit model for this transport update flow rather than deepening the accidental coupling between admission-time `team_device` rows and current peer-routing behavior.
 
-## Scope (Intentionally Narrow)
+## Tear-Down Of The Current Plan
 
-**In scope (from issue #102):**
-- Signed `announce_endpoint` mutation written into team DB
-- Signature verification rule: the mutation must be signed by one of the announcing member's currently-linked device keys
-- Outgoing-routing update on the receiving side when peers sync a new announcement
+The previous draft identified the right problem but had four weaknesses that would make implementation and review shaky:
 
-**Explicitly out of scope:**
+1. It described B7 as a **member** capability, then modeled it as a **device-targeted** update. That does not match the issue-97 meta-plan, which explicitly describes B7 as updating the local mapping of `member -> endpoint`.
+2. It listed mostly Manager files, but the current runtime peer download path in `small-sea-hub` reads transport directly from `team_device`. Any plan that omits the Hub integration point is incomplete.
+3. It relied on "invalid rows are silently dropped on sync." In this repo, team DB state is git-synced and merged locally; there is no existing trusted "reject before merge" path for individual rows. The realistic model is "invalid rows may exist in the local DB but are ignored by the effective-transport derivation logic."
+4. It treated the existing `team_device.protocol/url/bucket` columns as if they were a natural long-term home for mutable transport state. In practice they are legacy admission/bootstrap-era fields. Current Hub lookup is already member-scoped (`WHERE member_id = ? LIMIT 1`), so doubling down on device-scoped transport would cement the wrong abstraction.
+
+This rewrite fixes those weaknesses and turns the validation section into something a skeptical reviewer can falsify.
+
+## Branch Goals
+
+When this branch is done, the repo should have all of the following properties:
+
+1. A member can publish a signed transport announcement after admission without re-admission.
+2. A later signed publication from the same member supersedes the earlier one for routing.
+3. Routing decisions are derived in one place from "latest valid member transport announcement, otherwise temporary legacy fallback."
+4. Manager and Hub use the same effective-transport rule.
+5. Invalid announcements do not affect routing.
+6. The implementation reduces accidental coupling by separating stable device identity (`team_device`) from mutable member transport state.
+
+## Scope
+
+**In scope:**
+
+- New signed, append-only team-DB record for member transport announcements
+- Verification rule: signer must be one of the announcing member's currently trusted device keys
+- Effective-transport derivation helper used by both Manager and Hub
+- Minimal Manager UI/web flow for self-announcement
+- Spec/doc updates
+- Micro tests that prove routing changes and invalid-announcement safety
+
+**Out of scope:**
+
 - Cloud-provider onboarding UX
-- Billing or account-recovery flows
-- Migration of in-flight messages from an old endpoint
-- Per-device vs. per-member endpoint semantics beyond what the mutation naturally provides
+- Billing, recovery workflows, or token management
+- Multi-endpoint load balancing or provider failover
+- Automatic migration of in-flight messages from an old endpoint
+- Invitation-flow rework (B5)
+- Revocation/tombstone semantics unless implementation proves they are immediately necessary
 
 ## Current State
 
-The existing `team_device` table has `protocol`, `url`, `bucket` columns set at admission/bootstrap time. There is currently no mechanism for a member to update these post-admission via a signed mutation. Peers' outgoing routing is therefore fixed to whatever was written at admission, with no update path short of re-admission.
+Today the synced team DB stores transport-like fields on `team_device`:
 
-The `key_certificate` table and `issue_device_link_cert` / `verify_device_link_cert` infrastructure already provide the member→device mapping needed to verify that a given signer is an authorized device for the announcing member.
+- `packages/small-sea-manager/small_sea_manager/sql/core_other_team.sql`
+- `packages/small-sea-manager/spec.md`
+- invitation micro tests in `packages/small-sea-manager/tests/test_invitation.py`
 
-## Design Direction
+That data currently enters the team DB at admission/bootstrap time. The Hub's peer download path in `packages/small-sea-hub/small_sea_hub/backend.py` resolves a peer endpoint by querying `team_device` by `member_id` and picking one row. In other words:
 
-### Mutation shape: a new `endpoint_announcement` table
+- the schema stores transport on device rows
+- the runtime already behaves as if transport is member-scoped
+- there is no explicit post-admission signed publication flow
 
-Rather than in-place updates to `team_device`, introduce a new `endpoint_announcement` table in the synced team DB. Each row is an immutable, signed record of one endpoint publication:
+That is exactly the kind of accidental model drift B7 should clean up.
 
-```
-endpoint_announcement (
-    announcement_id  BLOB PRIMARY KEY,   -- UUIDv7
-    device_key_id    BLOB NOT NULL,       -- the device whose endpoint is being set
-    protocol         TEXT NOT NULL,
-    url              TEXT NOT NULL,
-    bucket           TEXT NOT NULL,
-    announced_at     TEXT NOT NULL,       -- ISO-8601 UTC
-    signer_key_id    BLOB NOT NULL,       -- device key that signed this row
-    signature        BLOB NOT NULL        -- sig over canonical payload (below)
-    FOREIGN KEY (device_key_id) REFERENCES team_device(device_key_id)
+## Design Decision
+
+### 1. Transport is member-scoped state, published by a trusted device
+
+The announcing subject is a `member_id`, not a `device_key_id`.
+
+The signer is still device-scoped, because signatures are made by concrete device keys. But the payload being asserted is "member M wants teammates to route to endpoint E," not "device D has endpoint E."
+
+That matches the B7 meta-plan wording, the current Hub lookup behavior, and the real use cases (provider switch, account recovery, post-admission setup).
+
+### 2. Use a new append-only `member_transport_announcement` table
+
+Do not mutate `team_device` in place. Do not add more mutable semantics to those columns.
+
+Introduce an immutable signed table in the team DB:
+
+```sql
+member_transport_announcement (
+    announcement_id BLOB PRIMARY KEY,   -- UUIDv7
+    member_id       BLOB NOT NULL,
+    protocol        TEXT NOT NULL,
+    url             TEXT NOT NULL,
+    bucket          TEXT NOT NULL,
+    announced_at    TEXT NOT NULL,      -- ISO-8601 UTC
+    signer_key_id   BLOB NOT NULL,
+    signature       BLOB NOT NULL,
+    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 )
 ```
 
-The signed payload covers: `announcement_id`, `device_key_id`, `protocol`, `url`, `bucket`, `announced_at`. The `signer_key_id` must be a device key currently linked to the same member as `device_key_id` (verified via `key_certificate` chain).
+Signed payload fields:
 
-Rationale for a separate table rather than mutating `team_device`:
-- The team DB is a synced git repo; signed, append-only rows are simpler to reason about than in-place updates.
-- Multiple announcements (e.g. during a provider transition) can coexist; the latest by `announced_at` wins for routing.
-- The `team_device` rows continue to reflect what was written at admission and need not be touched.
+- `announcement_id`
+- `member_id`
+- `protocol`
+- `url`
+- `bucket`
+- `announced_at`
 
-### Verification rule
+The signature does **not** need to name a target device. The authorization rule is that `signer_key_id` must currently resolve, via `key_certificate`, to a trusted device of `member_id`.
 
-When a peer syncs a new `endpoint_announcement` row, it verifies:
-1. `signer_key_id` appears in a valid `device_link` cert in `key_certificate` linking it to a `member_id`.
-2. `device_key_id` is also linked (via `key_certificate`) to the same `member_id`.
-3. The `signature` over the canonical payload is valid under `signer_key_id`'s public key.
-4. `announced_at` is not in the future (within a small clock-skew tolerance).
+### 3. Verification is on derivation/use, not on merge
 
-Announcements that fail verification are silently dropped; they do not corrupt the peer's routing table.
+The trusted behavior is:
 
-### Outgoing-routing update
+1. Team DB sync may bring in any syntactically valid row.
+2. Effective transport for a member is derived by scanning announcements newest-first.
+3. The first row whose signature and signer authorization validate is used.
+4. Invalid rows remain inert data; they do not become effective routing state.
 
-Peers derive the current endpoint for a given device by taking the latest valid `endpoint_announcement` row for that `device_key_id` (by `announced_at`). If no announcement exists, fall back to whatever `protocol/url/bucket` was written at admission into `team_device` (preserving backward compatibility).
+This is more realistic than pretending sync has a row-level reject hook that does not currently exist.
 
-The Manager function that looks up a peer's outgoing cloud coordinates should become a small helper that applies this "latest announcement wins, fall back to team_device" rule, rather than querying `team_device` directly. This centralizes the routing derivation in one place.
+### 4. Temporary legacy fallback stays only as a bridge to current main
 
-### Manager-side flow for self-announcement
+Because current admission flow still writes `protocol/url/bucket` into `team_device`, and because B5 has not yet removed transport from the admission transcript, B7 should include a narrow transitional fallback:
 
-A member announcing their own endpoint will:
-1. Gather `protocol`, `url`, `bucket` from their own cloud configuration.
-2. Construct the canonical payload.
-3. Sign it with their current device signing key.
-4. Write the row to their own copy of the team DB.
-5. On next sync, peers receive the new row and update their routing.
+- if a member has no valid `member_transport_announcement`, derive transport from existing `team_device` rows using the current behavior
 
-The Manager UI should expose a way to trigger this for the post-admission case and for provider-change cases. The exact UX is lightweight for now: a form or a button in the team member detail view that invokes the announce-endpoint path. No billing/provisioning UX required.
+This is a bridge for the current repo state, not a forever-model commitment. The spec and code comments should say that plainly.
+
+### 5. One effective-transport helper, shared semantics everywhere
+
+The branch should define one canonical rule for:
+
+- Manager UI display of a member's current transport
+- any manager-side peer-routing decisions
+- Hub peer download routing
+
+The anti-goal is duplicating "latest valid announcement else fallback" logic across multiple ad hoc queries.
 
 ## Expected Change Areas
 
-### DB schema
+### Schema
 
 - `packages/small-sea-manager/small_sea_manager/sql/core_other_team.sql`
-  - Add `endpoint_announcement` table.
+  - Add `member_transport_announcement`
 
-### Provisioning / data model
+### Provisioning / core logic
 
 - `packages/small-sea-manager/small_sea_manager/provisioning.py`
-  - `announce_endpoint(...)`: builds canonical payload, signs, writes row to team DB.
-  - `verify_endpoint_announcement(...)`: verifies a synced row against the member→device mapping.
-  - Routing-lookup helper: "latest valid announcement or fall back to team_device."
-  - Wire verification into the sync path so incoming announcement rows are checked on receipt.
+  - Canonical payload builder and signer for transport announcements
+  - Verification helper for announcement rows
+  - Effective-transport lookup helper for a `member_id`
+  - Member-list/query helpers extended to expose effective transport for UI/tests
 
-### Web / Manager
+### Manager session/business layer
+
+- `packages/small-sea-manager/small_sea_manager/manager.py`
+  - Public method for self-announcement
+  - Team/member read paths updated to surface effective transport
+
+### Web UI
 
 - `packages/small-sea-manager/small_sea_manager/web.py`
-  - Handler for the announce-endpoint action.
-- `packages/small-sea-manager/small_sea_manager/manager.py`
-  - Use the routing-lookup helper wherever outgoing cloud coordinates are currently read directly from `team_device`.
-- Templates (likely `templates/fragments/members.html` or a new fragment)
-  - UI affordance to trigger self-announcement.
+  - POST route for self-announcement
+  - Team detail context updated to show effective transport
+
+- `packages/small-sea-manager/small_sea_manager/templates/fragments/members.html`
+  - Minimal self-service form on the viewer's own member row, or immediately adjacent to it
+  - Read-only display of effective transport for members
+
+### Hub runtime
+
+- `packages/small-sea-hub/small_sea_hub/backend.py`
+  - Peer download path switched from direct `team_device` lookup to the shared effective-transport rule
+
+This is a must-have, not a stretch goal. Without it, B7 would update metadata that the runtime does not actually use.
 
 ### Docs
 
 - `packages/small-sea-manager/spec.md`
-  - Add a section describing the announce-endpoint mutation shape, verification rule, and routing derivation.
-- Update the B7 reference in `Architecture.md` if that doc was updated in B1/issue-100.
+  - Add B7 transport-announcement section
+  - Clarify that `team_device` is device identity plus legacy bootstrap-era transport, while current mutable transport publication is member-scoped
+
+- `architecture.md`
+  - Small update if needed to keep B7 aligned with the accepted issue-97 model
+
+### Micro tests
+
+- `packages/small-sea-manager/tests/`
+  - New focused micro tests for announcement signing/verification and effective lookup
+  - Existing invitation/admission tests updated only as needed for the new helper-driven behavior
+
+- `packages/small-sea-hub/tests/`
+  - Focused micro test for peer-download routing using the new lookup rule
 
 ## Implementation Approach
 
-### Phase 1: Schema and core mutation
+### Phase 1: Nail the data model and helper boundary
 
-Add the `endpoint_announcement` table. Implement `announce_endpoint(...)` (write path) and `verify_endpoint_announcement(...)` (read/verify path). Write micro tests against a minimal in-memory DB showing:
-- A valid announcement can be written and read back.
-- A tampered signature is rejected.
-- A signer not linked to the device's member is rejected.
+Add the new table and implement three small, explicit primitives:
 
-### Phase 2: Routing-lookup helper and sync integration
+1. `announce_member_transport(...)`
+2. `verify_member_transport_announcement(...)`
+3. `get_effective_member_transport(...)`
 
-Implement the routing-lookup helper ("latest announcement wins, fall back to team_device"). Wire `verify_endpoint_announcement(...)` into the sync path so newly received rows are validated before being used for routing. Confirm backward compatibility: existing teams with no announcement rows still route correctly via the `team_device` fallback.
+Success criteria for this phase:
 
-### Phase 3: Manager UI and web handler
+- we can create a signed row locally
+- we can verify a good row
+- we can reject a tampered or unauthorized row
+- we can compute effective transport for a member without touching UI or Hub yet
 
-Expose announce-endpoint in the Manager UI. The minimal surface is a form in the team member view that collects protocol/url/bucket and fires the announcement. Wire through the web handler to `announce_endpoint(...)`. Confirm the UI shows the current effective endpoint (from announcement or fallback) for each peer.
+### Phase 2: Integrate the helper into Manager reads
 
-### Phase 4: Docs and micro tests
+Update manager-side team/member reads so the team detail surface can show effective transport. Keep the UI simple; the important thing is that displayed state comes from the same helper the runtime will use.
 
-Update `spec.md`. Add end-to-end micro tests covering:
-- Member announces endpoint → peer syncs → peer's routing lookup returns the new coordinates.
-- Member announces a second time (provider change) → peer routing updates to the newer announcement.
-- Invalid announcement (bad signature, wrong signer member) does not corrupt peer routing.
-- Backward-compatible path: peer with no announcement rows routes via `team_device`.
+Success criteria:
+
+- member listing can show effective transport
+- self-announcement path can be invoked from the manager layer
+
+### Phase 3: Integrate the helper into Hub peer routing
+
+Replace the direct `team_device` query in the Hub's peer-download path with the effective-transport lookup rule.
+
+Success criteria:
+
+- if an announcement exists, Hub routes to it
+- if no announcement exists, Hub still routes via the temporary legacy fallback
+- invalid announcements do not break peer downloads
+
+### Phase 4: Add minimal web affordance
+
+Expose a low-complexity self-service path in the Manager UI:
+
+- enter `protocol`, `url`, `bucket`
+- submit
+- write announcement
+- refresh detail view showing the newly effective transport
+
+This branch does not need polished provider onboarding. It needs a trustworthy control surface for the signed publication.
+
+### Phase 5: Documentation and validation pass
+
+Update `spec.md`, tighten any affected comments, and finish the micro tests. If the implementation teaches us a better naming split than "announcement" vs "effective transport," fold that back into the plan before archiving it.
 
 ## Provisional Decisions
 
-1. **Append-only table, not in-place update.** Rationale above. Revisit only if the append history creates operational pain (e.g. unbounded growth); that is not a concern at pre-alpha scale.
-2. **Latest-by-`announced_at` wins.** A monotonic sequence ID (UUIDv7 for `announcement_id`) is an alternative tiebreaker but `announced_at` is human-readable and sufficient for now.
-3. **Silent drop for invalid announcements.** Noisy errors on sync would surface configuration mistakes as crashes; dropped rows are safely ignorable and the routing fallback keeps things working.
-4. **Signer must be same-member, not necessarily same-device.** A member with multiple devices should be able to announce an endpoint for device A by signing with device B, provided both are currently linked to the same member. This matches the meta-plan's "signed by one of their own currently-linked device keys."
-5. **No revocation record for old announcements.** Old rows are simply superseded by newer ones. If a member wants to "unset" an endpoint they announce a tombstone or rely on the `team_device` fallback — exact tombstone design is deferred unless it surfaces as a need during implementation.
+1. **Member-scoped target, device-scoped signer.** This is the cleanest match to the issue and the runtime.
+2. **Append-only signed rows.** Better fit for git-synced team DBs than in-place mutation.
+3. **Newest valid `announced_at` wins.** If tie-breaking is needed, use `announcement_id` as a deterministic secondary sort.
+4. **Invalid rows are ignored, not deleted.** This matches the actual sync model.
+5. **Temporary `team_device` fallback stays only until B5 removes admission-time transport coupling.**
+6. **No tombstone in this branch unless implementation demands it.** A replacement announcement is enough for the stated scope.
+
+## Risks And How This Plan Contains Them
+
+### Risk: we accidentally deepen the wrong abstraction
+
+If we keep hanging mutable transport state off `team_device`, later B5 cleanup gets harder. The plan avoids that by introducing a member-scoped table now.
+
+### Risk: Manager and Hub drift again
+
+If Manager displays one thing and Hub routes another, B7 is not really done. The plan requires one effective-transport rule and names the Hub file up front.
+
+### Risk: verification becomes performative instead of real
+
+If we only test "happy path row exists," we will not know whether signer authorization is actually enforced. The validation matrix below includes explicit wrong-member and tampered-signature cases.
+
+### Risk: fallback logic becomes permanent mud
+
+The branch should label fallback as temporary in both plan and spec so later cleanup work has a clear target.
 
 ## Validation
 
-Done when a skeptical reviewer can verify all groups below.
+Done when a skeptical reviewer can verify every item below with code, micro tests, or direct inspection.
 
-### Goal: a member can announce and update their endpoint
+### Goal: a member can publish and later replace transport
 
-1. A freshly admitted member (no endpoint row in `team_device`) can call `announce_endpoint(...)`, producing a row that peers can read and verify.
-2. An existing member can call `announce_endpoint(...)` a second time with new coordinates, and after sync, peers' routing reflects the newer announcement.
-3. The Manager UI exposes a working announce-endpoint affordance in the team member view.
-4. The UI shows the current effective endpoint (latest announcement, or admission-time fallback) for each peer.
+1. There is a concrete write path that creates a signed `member_transport_announcement` row for the current member.
+2. A second announcement from the same member with later `announced_at` supersedes the first for effective transport.
+3. The Manager UI exposes a working self-announcement action for the current member.
+4. The team detail view shows each member's effective transport, not raw `team_device` columns.
 
-### Goal: verification is correctly enforced
+### Goal: authorization and integrity are real
 
-5. An announcement signed by a key not linked (via `key_certificate`) to the same member as `device_key_id` is rejected.
-6. A tampered payload (signature does not match) is rejected.
-7. A rejected announcement does not modify the peer's routing table.
+5. An announcement whose `signer_key_id` is not currently trusted for `member_id` is ignored by effective-transport lookup.
+6. A tampered signature is ignored by effective-transport lookup.
+7. A bad announcement does not change Manager-visible effective transport.
+8. A bad announcement does not break Hub peer download when a valid announcement or fallback transport exists.
 
-### Goal: backward compatibility
+### Goal: runtime actually uses the new model
 
-8. Teams with no `endpoint_announcement` rows route correctly via the `team_device` fallback.
-9. No existing provisioning or invitation flow breaks.
+9. The Hub peer-download path no longer resolves peers by directly selecting `team_device.protocol/url/bucket` as the primary source of truth.
+10. A peer-download micro test demonstrates that the Hub uses the newer valid announcement when one exists.
 
-### Goal: repo integrity
+### Goal: transition from current main remains intact
 
-10. Micro tests cover all four cases from Phase 4.
-11. The routing-lookup logic is in one place, not scattered.
-12. No non-Manager package begins reading `team_device` or `endpoint_announcement` directly.
+11. If no valid transport announcement exists, routing still works through the temporary legacy `team_device` fallback.
+12. Existing invitation/admission flows still populate enough state for the fallback path to work until B5 lands.
+
+### Goal: repo integrity is improved, not just feature count
+
+13. Effective transport is derived in one named helper boundary rather than duplicated queries.
+14. `team_device` remains device identity/trust data; the new mutable transport behavior lives in its own schema object.
+15. The spec explains the temporary fallback and the intended future cleanup, so the repo is easier to reason about after the branch than before it.
+
+## Concrete Micro Tests To Expect
+
+At minimum, the branch should land tests equivalent to these:
+
+1. Valid self-announcement creates a row whose signature verifies.
+2. Latest valid announcement wins over an older valid announcement from the same member.
+3. Announcement signed by a device linked to a different member is ignored.
+4. Tampered payload/signature is ignored.
+5. No announcement present -> effective transport falls back to legacy `team_device`.
+6. Hub peer download chooses announced transport over fallback transport.
+7. Hub peer download still succeeds via fallback when only invalid announcements are present.
+
+If the implementation needs one extra helper-level micro test to prove deterministic tie-breaking, add it.
 
 ## Out Of Scope
 
-- Cloud-provider onboarding or provisioning UX.
-- Billing or account-recovery integration.
-- Migration of messages in-flight to a retiring endpoint.
-- Multi-endpoint routing (one device, multiple provider fallbacks).
-- Endpoint revocation / tombstone design unless it surfaces during implementation.
-- The B5 invitation-flow rework that depends on this capability; B5 remains a separate branch.
+- Provider-specific setup wizards
+- Background health checks for published endpoints
+- Multi-device transport specialization
+- Automatic cleanup/removal of superseded announcement rows
+- Transport revocation/tombstones
+- B5 invitation transcript cleanup
 
 ## Wrap-Up Notes
 
-When this branch is complete:
+When the branch is complete:
 
-1. Update this plan with what actually landed and any deltas from the initial approach.
+1. Update this plan to reflect what actually landed, especially whether fallback remained purely transitional.
 2. Archive it as `Archive/branch-plan-issue-102-member-transport-configuration.md`.
-3. Note any B5 dependencies or gaps that remain so the B5 branch plan can pick them up cleanly.
+3. Note any cleanup that B5 or a follow-on branch should do, especially removal of residual `team_device` transport coupling.
