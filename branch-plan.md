@@ -104,6 +104,8 @@ Planned shape:
 
 This is a deliberate wire-format break for pending old bootstrap bundles. That is acceptable in this pre-alpha branch and should be stated plainly in the spec.
 
+Implementation note before coding: this plan currently assumes peer receiver records can be round-tripped through `distribution_message_from_record(...)` and later restored on the new device through `receiver_record_from_distribution(...)`. That assumption should be verified against the actual Cuttlefish / sender-key record shape before implementation proceeds. If advanced peer receiver records cannot be safely serialized that way, this branch needs a dedicated receiver-state serialization path rather than forcing them through the sender-distribution format.
+
 ### 3. Finalize becomes the end of bootstrap
 
 `finalize_linked_device_bootstrap(...)` should:
@@ -167,6 +169,7 @@ The real enforced boundary remains later rotation with exclusion. The micro test
 - add positive proof that handed-off peer state makes immediate join-time-forward readability real
 - add negative proof that later rotate-with-exclusion still cuts the new device off
 - retire complete-step idempotency coverage, or replace it with coverage around the new live flow
+- explicitly remove or change the old end-of-test assertion that pending bootstrap row count returns to zero, because that assertion depended on `complete_linked_device_bootstrap(...)` clearing the row
 
 ### `packages/small-sea-manager/spec.md`
 
@@ -204,6 +207,13 @@ This should prove:
 
 Add a micro test showing that the honest sibling handoff does **not** erase the real boundary created by later rotation.
 
+Fixture note before coding: this test needs Bob to be a real sender participant, not just a membership stub. The current `_add_remote_member_to_team(...)` helper creates team membership and a `team_device` row, but not the full local sender/prekey state needed for meaningful redistribution. For this test to prove anything, Bob must have:
+
+- a real sender key in some install's local DB
+- a published prekey bundle in team DB so redistribution targeting Bob's device is actually possible
+
+The implementation should decide this fixture shape up front. A small three-install fixture is the clearest option. A more synthetic setup is acceptable only if it still creates a real redistributable Bob device state end to end.
+
 This should prove:
 
 - after bootstrap, the new device can read Bob's current traffic
@@ -230,8 +240,9 @@ The branch is done when a skeptical reviewer can verify all of the following fro
 5. The new device's own sender-key publication happens through `redistribute_sender_key(...)`, not a bespoke payload-3 return artifact.
 6. `complete_linked_device_bootstrap(...)` is no longer part of the live linked-device bootstrap flow.
 7. The old micro test encoding the outdated trust model is gone or rewritten to assert the new behavior.
-8. `packages/small-sea-manager/spec.md` describes the implemented flow accurately, including the baseline prerequisite and the new post-finalize redistribution step.
-9. The branch does not introduce broader coupling or transport assumptions outside Manager's local bootstrap logic.
+8. The implementation has verified that peer sender-key state is serialized and restored through a representation that preserves usable receiver state at the intended chain position; if `distribution_message_from_record(...)` is insufficient for peer records, the code uses a dedicated path instead of relying on an invalid assumption.
+9. `packages/small-sea-manager/spec.md` describes the implemented flow accurately, including the baseline prerequisite and the new post-finalize redistribution step.
+10. The branch does not introduce broader coupling or transport assumptions outside Manager's local bootstrap logic.
 
 ## Skeptic-Facing Integrity Checks
 
