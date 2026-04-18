@@ -248,3 +248,11 @@ When this branch is complete:
 1. Update this plan with what actually landed and any deltas from the initial approach.
 2. Archive it as `Archive/branch-plan-issue-99-admission-event-visibility.md`.
 3. Call out any remaining B5 dependencies explicitly so a later branch can pick them up without re-discovering the visibility boundary.
+
+## Implementation notes
+
+- Admission prompt dismissals should remain Manager-local sidecar state, not synced team state in Sync/core.db.
+- Hub watcher wakeups for admission visibility ended up needing berth pulses on local team-DB revision changes, not just peer-count/member-list changes.
+- The Manager watch loop needs explicit Hub-down backoff and htmx request coordination; otherwise governance UI can thrash or briefly show stale state.
+- proposal_shell / awaiting_quorum are still only reserved event-model extension points; B5 must supply real runtime artifacts before those prompts become meaningful.
+- Linked-device events landed as informational visibility only; no separate approval path was added.
