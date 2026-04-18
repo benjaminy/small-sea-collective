@@ -71,6 +71,8 @@ def key_certificate_from_team_db_record(
 def canonical_member_transport_announcement_bytes(
     announcement: MemberTransportAnnouncement,
 ) -> bytes:
+    # `signature` is intentionally excluded: callers sign these canonical bytes
+    # and store the resulting signature alongside the row.
     obj = {
         "announcement_id": announcement.announcement_id.hex(),
         "announced_at": announcement.announced_at,
@@ -101,13 +103,15 @@ def select_effective_member_transport(
     *,
     member_id: bytes,
     announcements: list[MemberTransportAnnouncement],
-    certs: list[KeyCertificate],
+    certs: list[KeyCertificate] | None = None,
     team_id: bytes,
     device_public_keys_by_key_id: dict[bytes, bytes],
     legacy_fallback: TransportEndpoint | None = None,
     trusted_public_keys: set[bytes] | None = None,
 ) -> EffectiveTransportSelection:
     if trusted_public_keys is None:
+        if certs is None:
+            raise ValueError("certs are required when trusted_public_keys is not provided")
         trusted_public_keys = trusted_device_keys_for_member(certs, team_id, member_id)
     relevant = [
         announcement for announcement in announcements if announcement.member_id == member_id

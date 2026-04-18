@@ -526,3 +526,17 @@ When the branch is complete:
 1. Update this plan to reflect what actually landed, especially whether fallback remained purely transitional.
 2. Archive it as `Archive/branch-plan-issue-102-member-transport-configuration.md`.
 3. Note any cleanup that B5 or a follow-on branch should do, especially removal of residual `team_device` transport coupling.
+
+### Post-implementation notes:
+
+- B7 landed with a shared wrasse-trust transport-selection module, not Manager-owned logic.
+- announcement_id UUIDv7 is the ordering key in the implementation; announced_at is audit/display only.
+- Current trust-removal behavior is implemented via absence of trust-path cert rows, not revocation-cert issuance.
+- needs_transport_announcement ended up intentionally narrower than the draft implied: it only fires for missing, not legacy-fallback, to avoid prompting pre-B7 members unnecessarily.
+- Residual cleanup left for later: Manager and Hub still have separate DB-row loading helpers around the shared selection logic.
+
+### Follow-up notes
+
+- A small follow-up issue for “unify transport/certificate DB-loading helpers between Manager and Hub” so the row-bridge code doesn’t drift.
+- A B5 note that it should reuse the existing missing / needs_transport_announcement UI state after admission finalization.
+- Optionally, a trust-layer issue for “real revocation support in member-device trust traversal” if you want the codebase to eventually move beyond “trust path removed from local DB view.”
