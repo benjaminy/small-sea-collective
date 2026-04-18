@@ -189,3 +189,27 @@ def load_peer_sender_key(
     finally:
         conn.close()
     return _record_from_row(row)
+
+
+def load_all_peer_sender_keys(db_path: str | Path, team_id: bytes) -> list[SenderKeyRecord]:
+    conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = conn.execute(
+            """
+            SELECT group_id, sender_device_key_id, chain_id, chain_key, iteration,
+                   signing_public_key, signing_private_key, skipped_message_keys
+            FROM peer_sender_key
+            WHERE team_id = ?
+            ORDER BY sender_device_key_id ASC
+            """,
+            (team_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    records = []
+    for row in rows:
+        record = _record_from_row(row)
+        if record is not None:
+            records.append(record)
+    return records

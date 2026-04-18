@@ -246,20 +246,20 @@ Protocol/product boundary:
   join-time-forward access across all senders the sibling held. Each team is
   bootstrapped independently; this is not a blanket "join every known team"
   operation.
-  Evidence of bootstrap flow structure (peer-sender-key handoff is B3 scope;
-  see implementation-status note below):
+  Evidence of bootstrap flow structure:
   `prepare_linked_device_team_join(...)`,
   `create_linked_device_bootstrap(...)`,
   `finalize_linked_device_bootstrap(...)`, and
-  `complete_linked_device_bootstrap(...)` in
+  `redistribute_sender_key(...)` in
   `small_sea_manager/provisioning.py`.
-- **Payload 3 transport status** — The joining device still returns its sender
-  distribution payload to the authorizing device as an explicit follow-up
-  artifact. This slice does not yet define a fully automatic Hub-mediated
-  return path.
-  Evidence: `finalize_linked_device_bootstrap(...)` returns
-  `sender_distribution_payload`, and `complete_linked_device_bootstrap(...)`
-  consumes it in `small_sea_manager/provisioning.py`.
+- **Payload 3 transport status** — The old bespoke payload-3 follow-up is
+  retired. After bootstrap finalization, the joining device publishes its own
+  sender key through the normal `redistribute_sender_key(...)` path, and other
+  devices receive it through `receive_sender_key_distribution(...)`.
+  Evidence: `finalize_linked_device_bootstrap(...)`,
+  `redistribute_sender_key(...)`, and
+  `receive_sender_key_distribution(...)` in
+  `small_sea_manager/provisioning.py`.
 
 Current same-member flow:
 
@@ -271,20 +271,27 @@ Current same-member flow:
    `small-sea-note-to-self/small_sea_note_to_self/sql/device_local_schema.sql`.
 2. An already-live sibling device calls `create_linked_device_bootstrap(...)`,
    verifies the NoteToSelf signature and proposed team-device signature, issues
-   the `device_link` cert, encrypts the current sender-key distribution through
-   X3DH + ratchet, and records a pending bootstrap breadcrumb.
+   the `device_link` cert, encrypts an X3DH + ratchet bootstrap envelope
+   containing its own current sender-key distribution plus its current snapshot
+   of peer sender-key receiver state for the team, and records a pending
+   bootstrap breadcrumb.
    Evidence: `create_linked_device_bootstrap(...)` in
    `small_sea_manager/provisioning.py`.
 3. The joining device calls `finalize_linked_device_bootstrap(...)`, verifies
    the cert and authorizing device signature, stores the sibling device's sender
-   state locally, persists its own team-device key, initializes its own sender
-   state, stores the `device_link` cert in the local team DB, and emits payload
-   3.
+   state plus the handed-off peer sender-key snapshot locally, persists its own
+   team-device key, initializes its own sender state, publishes its Team-X
+   prekey bundle, stores the `device_link` cert in the local team DB, and
+   returns success.
    Evidence: `finalize_linked_device_bootstrap(...)` in
    `small_sea_manager/provisioning.py`.
-4. The authorizing sibling device calls `complete_linked_device_bootstrap(...)`
-   and stores the joining device's sender state as a peer receiver record.
-   Evidence: `complete_linked_device_bootstrap(...)` in
+4. The joining device later calls `redistribute_sender_key(...)` to publish its
+   own sender key to the trusted devices it should reach. In micro tests, the
+   authorizing sibling receives that distribution through
+   `receive_sender_key_distribution(...)`.
+   Evidence: `redistribute_sender_key(...)`,
+   `receive_sender_key_distribution(...)`, and
+   `test_linked_device_bootstrap_round_trip_same_member` in
    `small_sea_manager/provisioning.py`.
 
 Historical boundary and visibility:
@@ -294,21 +301,21 @@ Historical boundary and visibility:
   from that point across all senders the sibling held. It does not receive
   ciphertext from before the `device_link` cert was published — that historical
   material was encrypted without the new device's keys.
-  Evidence: `test_linked_device_bootstrap_round_trip_same_member` asserts that
-  a pre-bootstrap encrypted message cannot be decrypted after bootstrap.
+  Evidence: `test_linked_device_bootstrap_peer_sender_keys_transferred` asserts
+  that a pre-bootstrap Bob message remains unreadable while a post-bootstrap Bob
+  message is readable after the sibling hands off Bob's current receiver state.
+- **Skipped-key caches are not part of the handoff format.** The bootstrap
+  envelope serializes peer receiver state through `SenderKeyDistributionMessage`,
+  which carries the current chain position but not any cached
+  `skipped_message_keys`. If the sibling had stored skipped keys for out-of-order
+  delivery before bootstrap, the new device does not inherit those cached keys.
+  This is an accepted limitation of the current pre-alpha handoff format.
 - That test is **repo-local protocol evidence**, not a full cryptographic
   assurance. It depends on current Cuttlefish group-encryption behavior in a
   pre-alpha repo where crypto internals are still evolving.
   Evidence: `group_encrypt(...)` / `group_decrypt(...)` in
   `packages/cuttlefish/cuttlefish/group.py`, plus the linked-device bootstrap
   test above.
-
-> **Implementation status (B3 scope):** The peer-sender-key handoff is not yet
-> fully implemented. In the current code, the sibling does not yet pass its
-> snapshot of peer sender keys as part of the bootstrap bundle.
-> `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
-> exercises this code gap and is retired by B3. The normative model above
-> describes the accepted design; the current code reflects interim state.
 
 Retry/idempotency status in the current slice:
 
@@ -318,14 +325,9 @@ Retry/idempotency status in the current slice:
   Evidence: `prepare_linked_device_team_join(...)` and
   `test_linked_device_bootstrap_prepare_reentry_is_rejected`.
 - Repeating `finalize_linked_device_bootstrap(...)` for the same bootstrap bundle
-  is idempotent once the response payload has been stored.
+  is idempotent once the success result has been stored.
   Evidence: `finalize_linked_device_bootstrap(...)` and
   `test_linked_device_bootstrap_retry_after_interrupted_finalize_is_idempotent`.
-- Repeating `complete_linked_device_bootstrap(...)` with the same signed payload
-  is idempotent after the peer sender state has already been stored, even if the
-  previous attempt crashed before clearing the pending breadcrumb.
-  Evidence: `complete_linked_device_bootstrap(...)` and
-  `test_linked_device_bootstrap_retry_after_interrupted_complete_is_idempotent`.
 - Repeating `create_linked_device_bootstrap(...)` with the exact same valid join
   request bundle is handled by **store-and-replay**: the authorizing device
   returns the originally stored bootstrap bundle from the pending bootstrap
@@ -333,6 +335,11 @@ Retry/idempotency status in the current slice:
   another cert commit for the same logical create step.
   Evidence: `create_linked_device_bootstrap(...)` and
   `test_linked_device_bootstrap_create_replay_returns_stored_bundle_without_extra_commit`.
+- `complete_linked_device_bootstrap(...)` is retired from the live flow and now
+  raises a clear `NotImplementedError` directing callers to finalize and then
+  use `redistribute_sender_key(...)`.
+  Evidence: `complete_linked_device_bootstrap(...)` in
+  `small_sea_manager/provisioning.py`.
 - Crash-mid-create is still a current limitation. If the authorizing device
   crashes after cert issuance but before the pending breadcrumb with stored
   bootstrap bundle is written, the team DB can contain the issued `device_link`
@@ -340,6 +347,10 @@ Retry/idempotency status in the current slice:
   device has nothing to finalize, retry cannot replay from stored state, and
   operator recovery requires manual cleanup or a new bootstrap attempt with
   fresh request material.
+- Pending bootstrap breadcrumbs are currently retained after successful
+  finalize so create-side store-and-replay continues to work. Cleanup of
+  completed rows is deferred for a narrower follow-up rather than folded into
+  this branch.
 
 Storage boundary:
 
