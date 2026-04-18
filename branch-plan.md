@@ -276,3 +276,8 @@ When implementation is complete:
 2. Move it to `Archive/branch-plan-issue-69-linked-device-bootstrap.md`.
 3. Close #69 and #101 if the shipped behavior and tests match the validation section.
 4. Record any true follow-up work separately instead of leaving protocol ambiguity in this plan.
+
+### Post-implementation notes:
+
+- Skipped-key handoff gap: linked-device bootstrap transfers current peer receiver position but not cached skipped_message_keys, so a newly linked device may fail to decrypt delayed out-of-order messages the sibling could still decrypt.
+- Pending bootstrap cleanup: pending_linked_team_bootstrap rows are intentionally retained for create-side replay; define a cleanup policy once replay and crash-recovery semantics are revisited.
