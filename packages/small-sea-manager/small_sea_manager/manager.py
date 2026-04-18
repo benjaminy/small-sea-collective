@@ -1,13 +1,16 @@
+import logging
 import pathlib
 from typing import Optional
 
 import cod_sync.protocol as CodSyncProtocol
 from cod_sync.repo import Repo as _Repo
 from cod_sync.protocol import BootstrapProxyRemote, CodSync, SmallSeaRemote
-from small_sea_client.client import SmallSeaClient
+from small_sea_client.client import SmallSeaClient, SmallSeaHubUnavailable
+from small_sea_manager import admission_events
 from small_sea_manager import provisioning
 
 _CORE_APP = "SmallSeaCollectiveCore"
+_LOG = logging.getLogger(__name__)
 
 
 def create_identity_join_request(root_dir):
@@ -275,14 +278,39 @@ class TeamManager:
                 "joined_locally": False,
                 "members": [],
                 "invitations": [],
+                "admission_events": [],
+                "viewer_is_admin": False,
+                "self_in_team": None,
             }
         members = provisioning.list_members(self.root_dir, self.participant_hex, team_name)
         invitations = provisioning.list_invitations(self.root_dir, self.participant_hex, team_name)
+        self_in_team = provisioning.get_self_in_team(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+        )
+        viewer_is_admin = False
+        if self_in_team is not None:
+            for member in members:
+                if member["id"] != self_in_team:
+                    continue
+                roles = member.get("berth_roles", [])
+                viewer_is_admin = any(role["role"] == "read-write" for role in roles)
+                break
         return {
             "name": team_name,
             "joined_locally": True,
             "members": members,
             "invitations": invitations,
+            "admission_events": admission_events.list_admission_events(
+                self.root_dir,
+                self.participant_hex,
+                team_name,
+                self_member_id_hex=self_in_team,
+                viewer_is_admin=viewer_is_admin,
+            ),
+            "viewer_is_admin": viewer_is_admin,
+            "self_in_team": self_in_team,
         }
 
     def delete_team(self, team_name):
@@ -387,6 +415,18 @@ class TeamManager:
             self.root_dir, self.participant_hex, team_name, invitation_id
         )
 
+    def dismiss_admission_event(self, team_name, event_type, artifact_id_hex):
+        """Dismiss an admission event locally for this team clone."""
+        admission_events.AdmissionEventType(event_type)
+        bytes.fromhex(artifact_id_hex)
+        provisioning.dismiss_admission_event(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            event_type,
+            artifact_id_hex,
+        )
+
     def accept_invitation(self, token_b64):
         """Accept an invitation token (acceptor side). Returns an acceptance token.
 
@@ -487,6 +527,25 @@ class TeamManager:
         provisioning.complete_invitation_acceptance(
             self.root_dir, self.participant_hex, team_name, acceptance_b64
         )
+
+    def wait_for_team_admission_signal(self, team_name: str, timeout: int = 15) -> bool:
+        """Wait for a Hub-backed berth pulse that may imply fresh admission events."""
+        key = (team_name, "encrypted")
+        session = self._sessions.get(key)
+        if session is None:
+            return False
+        try:
+            known = {
+                peer["member_id"]: int(peer.get("signal_count", 0))
+                for peer in session.session_peers()
+            }
+            result = session.watch_notifications(known, timeout=timeout)
+        except SmallSeaHubUnavailable:
+            return False
+        except Exception:
+            _LOG.exception("Admission-event watch failed for team %s", team_name)
+            return False
+        return "updated" in result
 
     # --- Notification services ---
 

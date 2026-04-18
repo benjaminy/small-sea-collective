@@ -1,0 +1,56 @@
+<div id="admission-events-{{ team_name }}">
+  {% if notice %}
+  <p class="notice notice-ok">{{ notice }}</p>
+  {% endif %}
+  {% if error %}
+  <p class="notice notice-err">{{ error }}</p>
+  {% endif %}
+
+  {% if admission_events %}
+    {% for event in admission_events %}
+    <div class="admission-event-card">
+      <div class="row" style="justify-content:space-between; align-items:flex-start; gap:0.75rem;">
+        <div style="min-width:0">
+          <div class="row" style="gap:0.4rem; flex-wrap:wrap; margin-bottom:0.2rem;">
+            <span class="badge {{ event.badge_class }}">{{ event.badge_label }}</span>
+            {% if event.occurred_at %}
+            <span class="muted" style="font-size:0.8rem">{{ event.occurred_at[:16].replace('T', ' ') }}</span>
+            {% endif %}
+          </div>
+          <p style="font-weight:600; color:#1c1917">{{ event.title }}</p>
+          <p style="font-size:0.86rem; color:#57534e; margin-top:0.15rem">{{ event.summary }}</p>
+        </div>
+        <div class="row" style="gap:0.35rem; flex-wrap:wrap; justify-content:flex-end;">
+          {% if event.can_revoke and viewer_is_admin and event.invitation_id_hex %}
+          <form hx-post="/teams/{{ team_name }}/invitations/{{ event.invitation_id_hex }}/revoke"
+                hx-sync="#team-detail:replace"
+                hx-target="#team-detail"
+                hx-swap="innerHTML">
+            <button class="btn btn-secondary btn-sm" type="submit">Revoke</button>
+          </form>
+          {% endif %}
+          {% if event.can_exclude and viewer_is_admin and event.member_id_hex %}
+          <form hx-post="/teams/{{ team_name }}/members/{{ event.member_id_hex }}/remove"
+                hx-sync="#team-detail:replace"
+                hx-target="#team-detail"
+                hx-swap="innerHTML">
+            <button class="btn btn-danger btn-sm" type="submit">Exclude</button>
+          </form>
+          {% endif %}
+          {% if event.can_dismiss %}
+          <form hx-post="/teams/{{ team_name }}/admission-events/{{ event.event_type.value }}/{{ event.artifact_id_hex }}/dismiss"
+                hx-sync="#team-detail:replace"
+                hx-target="#admission-events-{{ team_name }}"
+                hx-swap="outerHTML"
+                hx-on::after-request="htmx.trigger('#admission-events-watch-{{ team_name }}', 'refresh')">
+            <button class="btn btn-secondary btn-sm" type="submit">Ignore</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+    {% endfor %}
+  {% else %}
+  <p style="color:#78716c; font-size:0.88rem">No active admission prompts.</p>
+  {% endif %}
+</div>

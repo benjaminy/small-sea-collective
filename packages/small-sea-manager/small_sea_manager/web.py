@@ -1,6 +1,8 @@
 """FastAPI + Jinja2 + htmx web UI for the Small Sea Manager."""
 
+import asyncio
 import pathlib
+from typing import Any
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
@@ -51,6 +53,78 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "team_session_status": mgr.session_state(team_name, _ENCRYPTED),
                 "session_error": error,
                 "team_session_mode_badge": _mode_badge(_ENCRYPTED),
+            },
+        )
+
+    def _watch_delay(active: bool, *, hub_available: bool = True) -> str:
+        if not active:
+            return "5s"
+        return "0.2s" if hub_available else "5s"
+
+    def _mark_member_fields(team: dict[str, Any]) -> list[dict[str, Any]]:
+        self_in_team = team.get("self_in_team")
+        members: list[dict[str, Any]] = []
+        for raw_member in team["members"]:
+            member = dict(raw_member)
+            member["is_self"] = member["id"] == self_in_team
+            roles = member.get("berth_roles", [])
+            member["core_role"] = roles[0]["role"] if roles else None
+            member["can_remove"] = team.get("viewer_is_admin", False) and not member["is_self"]
+            members.append(member)
+        return members
+
+    def _team_detail_context(mgr: TeamManager, team_name: str, *, notice: str = None, error: str = None):
+        team = mgr.get_team(team_name)
+        if not team.get("joined_locally"):
+            return {
+                "team_name": team_name,
+                "joined_locally": False,
+                "members": [],
+                "invitations": [],
+                "admission_events": [],
+                "viewer_is_admin": False,
+                "sync_status": None,
+                "team_session_status": "none",
+                "team_session_mode_badge": None,
+                "team_notice": notice,
+                "team_error": error,
+            }
+        return {
+            "team_name": team_name,
+            "joined_locally": True,
+            "members": _mark_member_fields(team),
+            "invitations": team["invitations"],
+            "admission_events": team["admission_events"],
+            "viewer_is_admin": team["viewer_is_admin"],
+            "sync_status": mgr.get_team_sync_status(team_name),
+            "team_session_status": mgr.session_state(team_name, _ENCRYPTED),
+            "team_session_mode_badge": _mode_badge(_ENCRYPTED),
+            "admission_watch_delay": _watch_delay(
+                mgr.session_state(team_name, _ENCRYPTED) == "active"
+            ),
+            "team_notice": notice,
+            "team_error": error,
+        }
+
+    def _render_team_detail(request: Request, team_name: str, *, notice: str = None, error: str = None):
+        mgr = _mgr(request)
+        return templates.TemplateResponse(
+            "fragments/team_detail.html",
+            {"request": request, **_team_detail_context(mgr, team_name, notice=notice, error=error)},
+        )
+
+    def _render_admission_events(request: Request, team_name: str, *, notice: str = None, error: str = None):
+        mgr = _mgr(request)
+        team = mgr.get_team(team_name)
+        return templates.TemplateResponse(
+            "fragments/admission_events.html",
+            {
+                "request": request,
+                "team_name": team_name,
+                "admission_events": team.get("admission_events", []),
+                "viewer_is_admin": team.get("viewer_is_admin", False),
+                "notice": notice,
+                "error": error,
             },
         )
 
@@ -154,44 +228,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
 
     @app.get("/teams/{team_name}", response_class=HTMLResponse)
     async def team_detail(request: Request, team_name: str):
-        mgr = _mgr(request)
-        team = mgr.get_team(team_name)
-        if not team.get("joined_locally"):
-            return templates.TemplateResponse(
-                "fragments/team_detail.html",
-                {
-                    "request": request,
-                    "team_name": team_name,
-                    "joined_locally": False,
-                    "members": [],
-                    "invitations": [],
-                    "sync_status": None,
-                    "team_session_status": "none",
-                    "team_session_mode_badge": None,
-                },
-            )
-        all_teams = mgr.list_teams()
-        self_in_team = next(
-            (t["self_in_team"] for t in all_teams if t["name"] == team_name), None
-        )
-        members = team["members"]
-        for m in members:
-            m["is_self"] = m["id"] == self_in_team
-            roles = m.get("berth_roles", [])
-            m["core_role"] = roles[0]["role"] if roles else None
-        return templates.TemplateResponse(
-            "fragments/team_detail.html",
-            {
-                "request": request,
-                "team_name": team_name,
-                "joined_locally": True,
-                "members": members,
-                "invitations": team["invitations"],
-                "sync_status": mgr.get_team_sync_status(team_name),
-                "team_session_status": mgr.session_state(team_name, _ENCRYPTED),
-                "team_session_mode_badge": _mode_badge(_ENCRYPTED),
-            },
-        )
+        return _render_team_detail(request, team_name)
 
     # ------------------------------------------------------------------ #
     # Team sessions (PIN flow per team)
@@ -294,7 +331,13 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             error = str(e)
         return templates.TemplateResponse(
             "fragments/invitation_token.html",
-            {"request": request, "team_name": team_name, "token": token, "error": error},
+            {
+                "request": request,
+                "team_name": team_name,
+                "token": token,
+                "error": error,
+                "team": _mgr(request).get_team(team_name),
+            },
         )
 
     @app.post(
@@ -304,18 +347,12 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         mgr = _mgr(request)
         try:
             mgr.revoke_invitation(team_name, inv_id)
+            notice = "Invitation revoked."
             error = None
         except Exception as e:
+            notice = None
             error = str(e)
-        return templates.TemplateResponse(
-            "fragments/invitations.html",
-            {
-                "request": request,
-                "team_name": team_name,
-                "invitations": mgr.list_invitations(team_name),
-                "error": error,
-            },
-        )
+        return _render_team_detail(request, team_name, notice=notice, error=error)
 
     # ------------------------------------------------------------------ #
     # Cloud storage
@@ -400,23 +437,57 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         except Exception as e:
             notice = None
             error = str(e)
-        all_teams = mgr.list_teams()
-        self_in_team = next(
-            (t["self_in_team"] for t in all_teams if t["name"] == team_name), None
-        )
-        members = mgr.list_members(team_name)
-        for m in members:
-            m["is_self"] = m["id"] == self_in_team
-            roles = m.get("berth_roles", [])
-            m["core_role"] = roles[0]["role"] if roles else None
+        return _render_team_detail(request, team_name, notice=notice, error=error)
+
+    @app.post("/teams/{team_name}/members/{member_id}/remove", response_class=HTMLResponse)
+    async def remove_member(request: Request, team_name: str, member_id: str):
+        mgr = _mgr(request)
+        try:
+            mgr.remove_member(team_name, member_id)
+            notice = "Member excluded and team sender key rotated."
+            error = None
+        except Exception as e:
+            notice = None
+            error = str(e)
+        return _render_team_detail(request, team_name, notice=notice, error=error)
+
+    @app.post("/teams/{team_name}/admission-events/{event_type}/{artifact_id}/dismiss", response_class=HTMLResponse)
+    async def dismiss_admission_event(
+        request: Request, team_name: str, event_type: str, artifact_id: str
+    ):
+        mgr = _mgr(request)
+        try:
+            mgr.dismiss_admission_event(team_name, event_type, artifact_id)
+            notice = "Admission prompt dismissed."
+            error = None
+        except ValueError as e:
+            notice = None
+            error = f"Invalid admission event identity: {e}"
+        except Exception as e:
+            notice = None
+            error = str(e)
+        return _render_admission_events(request, team_name, notice=notice, error=error)
+
+    @app.get("/teams/{team_name}/admission-events/watch", response_class=HTMLResponse)
+    async def watch_admission_events(request: Request, team_name: str):
+        mgr = _mgr(request)
+        active = mgr.session_state(team_name, _ENCRYPTED) == "active"
+        hub_available = True
+        if active:
+            hub_available = await asyncio.to_thread(
+                mgr.wait_for_team_admission_signal,
+                team_name,
+                15,
+            )
+        team = mgr.get_team(team_name)
         return templates.TemplateResponse(
-            "fragments/members.html",
+            "fragments/admission_events_watch.html",
             {
                 "request": request,
                 "team_name": team_name,
-                "members": members,
-                "notice": notice,
-                "error": error,
+                "admission_events": team.get("admission_events", []),
+                "viewer_is_admin": team.get("viewer_is_admin", False),
+                "watch_delay": _watch_delay(active, hub_available=hub_available),
             },
         )
 

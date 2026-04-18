@@ -118,6 +118,8 @@ Stores the shared state for one team. All members maintain their own copy; chang
 | `invitation` | Invitation records (pending, accepted, revoked) |
 | `team_device` | One row per team device; device identity and cloud endpoint metadata used for Cod Sync pull live here |
 
+Manager-local admission prompt dismissals are stored in a per-team sidecar DB outside `Sync/`, keyed by `(event_type, artifact_id)`, so ignored prompts persist across restarts without becoming synced team state.
+
 
 ---
 

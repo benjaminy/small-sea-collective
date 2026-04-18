@@ -30,13 +30,16 @@
         </td>
         <td style="font-size:0.83rem; color:#78716c">{{ inv.created_at[:10] if inv.created_at else "—" }}</td>
         <td style="text-align:right">
-          {% if inv.status == "pending" %}
+          {% if inv.status == "pending" and viewer_is_admin %}
           <form hx-post="/teams/{{ team_name }}/invitations/{{ inv.id }}/revoke"
-                hx-target="#invitations-{{ team_name }}"
-                hx-swap="outerHTML"
+                hx-sync="#team-detail:replace"
+                hx-target="#team-detail"
+                hx-swap="innerHTML"
                 style="display:inline">
             <button class="btn btn-danger" type="submit">Revoke</button>
           </form>
+          {% elif inv.status == "pending" %}
+          <span class="stub-label">admin only</span>
           {% endif %}
         </td>
       </tr>
@@ -56,6 +59,7 @@
     </p>
     <form class="inline-form"
           hx-post="/teams/{{ team_name }}/invitations"
+          hx-sync="#team-detail:replace"
           hx-target="#invitation-token-area"
           hx-swap="innerHTML">
       <input type="text" name="invitee_label" placeholder="Label (who is this for?)">

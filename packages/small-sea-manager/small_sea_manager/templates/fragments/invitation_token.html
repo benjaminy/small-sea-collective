@@ -14,3 +14,16 @@
   </p>
 </div>
 {% endif %}
+
+{% if team %}
+<div id="admission-events-{{ team_name }}" hx-swap-oob="outerHTML">
+  {% with admission_events=team.admission_events, viewer_is_admin=team.viewer_is_admin, notice=None, error=None %}
+    {% include "fragments/admission_events.html" %}
+  {% endwith %}
+</div>
+<div id="invitations-{{ team_name }}" hx-swap-oob="outerHTML">
+  {% with invitations=team.invitations, viewer_is_admin=team.viewer_is_admin, error=None %}
+    {% include "fragments/invitations.html" %}
+  {% endwith %}
+</div>
+{% endif %}

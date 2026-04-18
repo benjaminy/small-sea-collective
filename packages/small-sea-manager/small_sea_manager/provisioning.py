@@ -1986,6 +1986,8 @@ def _migrate_team_db_to_member_and_team_device(conn) -> None:
     invitation_columns = set(_table_columns(conn, "invitation"))
     if "acceptor_device_key_id" not in invitation_columns:
         conn.execute(text("ALTER TABLE invitation ADD COLUMN acceptor_device_key_id BLOB"))
+
+
 def _rename_sender_key_column_if_present(conn, table_name: str) -> None:
     columns = {
         row[1]
@@ -2757,11 +2759,18 @@ def get_trusted_device_keys_by_member(root_dir, participant_hex, team_name):
 
 
 def _team_sync_dir(root_dir, participant_hex, team_name) -> pathlib.Path:
+    team_name = _validate_team_name(team_name)
     return pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync"
 
 
 def _team_db_path(root_dir, participant_hex, team_name) -> pathlib.Path:
     return _team_sync_dir(root_dir, participant_hex, team_name) / "core.db"
+
+
+def _validate_team_name(team_name: str) -> str:
+    if "/" in team_name or "\\" in team_name or ".." in team_name:
+        raise ValueError("Invalid team name")
+    return team_name
 
 
 def has_local_team_clone(root_dir, participant_hex, team_name) -> bool:
@@ -4349,16 +4358,25 @@ def list_teams(root_dir, participant_hex):
     ]
 
 
+def get_self_in_team(root_dir, participant_hex, team_name):
+    """Return this participant's member ID for one team, or None if absent."""
+    root_dir = pathlib.Path(root_dir)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute(
+            "SELECT self_in_team FROM team WHERE name = ?",
+            (team_name,),
+        ).fetchone()
+    return row[0].hex() if row is not None else None
+
+
 def list_members(root_dir, participant_hex, team_name):
     """List members of a team with their berth roles. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
-    team_db_path = (
-        root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
-    )
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     engine = _sqlite_engine(team_db_path)
 
     with engine.begin() as conn:
-        members = conn.execute(text("SELECT id FROM member")).fetchall()
+        members = conn.execute(text("SELECT id, display_name FROM member")).fetchall()
         role_rows = conn.execute(
             text("SELECT member_id, berth_id, role FROM berth_role")
         ).fetchall()
@@ -4373,7 +4391,11 @@ def list_members(root_dir, participant_hex, team_name):
         )
 
     return [
-        {"id": row[0].hex(), "berth_roles": roles_by_member.get(row[0].hex(), [])}
+        {
+            "id": row[0].hex(),
+            "display_name": row[1],
+            "berth_roles": roles_by_member.get(row[0].hex(), []),
+        }
         for row in members
     ]
 
@@ -4381,9 +4403,7 @@ def list_members(root_dir, participant_hex, team_name):
 def list_invitations(root_dir, participant_hex, team_name):
     """List invitations for a team. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
-    team_db_path = (
-        root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
-    )
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     engine = _sqlite_engine(team_db_path)
 
     with engine.begin() as conn:
@@ -4401,3 +4421,53 @@ def list_invitations(root_dir, participant_hex, team_name):
         }
         for row in rows
     ]
+
+
+def _admission_event_store_path(root_dir, participant_hex, team_name):
+    root_dir = pathlib.Path(root_dir)
+    team_name = _validate_team_name(team_name)
+    return root_dir / "Participants" / participant_hex / team_name / "admission-events-local.db"
+
+
+def _ensure_admission_event_store(conn) -> None:
+    # Callers are responsible for transaction scope / commit behavior.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS admission_event_disposition (
+            event_type TEXT NOT NULL,
+            artifact_id BLOB NOT NULL,
+            disposition TEXT NOT NULL CHECK(disposition IN ('dismissed')),
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (event_type, artifact_id)
+        )
+        """
+    )
+
+
+def list_dismissed_admission_events(root_dir, participant_hex, team_name):
+    db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+    with sqlite3.connect(db_path) as conn:
+        _ensure_admission_event_store(conn)
+        rows = conn.execute(
+            "SELECT event_type, artifact_id "
+            "FROM admission_event_disposition "
+            "WHERE disposition = 'dismissed'"
+        ).fetchall()
+    return {(row[0], row[1].hex()) for row in rows}
+
+
+def dismiss_admission_event(root_dir, participant_hex, team_name, event_type, artifact_id_hex):
+    """Persist a local dismissal for one admission event."""
+    db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        _ensure_admission_event_store(conn)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO admission_event_disposition
+            (event_type, artifact_id, disposition, updated_at)
+            VALUES (?, ?, 'dismissed', ?)
+            """,
+            (event_type, bytes.fromhex(artifact_id_hex), _now_iso()),
+        )
+        conn.commit()

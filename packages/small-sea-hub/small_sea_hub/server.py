@@ -122,15 +122,15 @@ def _team_db_revision(team_db_path: str):
 def _run_runtime_reconciliation_for_session(app: FastAPI, session_hex: str):
     session_info = app.state.watched_sessions.get(session_hex)
     if session_info is None:
-        return
+        return False
     if session_info.get("watch_self_only"):
-        return
+        return False
     try:
         revision = _team_db_revision(session_info["team_db_path"])
     except FileNotFoundError:
-        return
+        return False
     if revision == session_info.get("team_db_revision"):
-        return
+        return False
 
     ss_session = app.state.backend._lookup_session(session_hex)
     result = Provisioning.reconcile_runtime_state(
@@ -160,7 +160,11 @@ def _run_runtime_reconciliation_for_session(app: FastAPI, session_hex: str):
                 artifact["target_device_key_id_hex"][:8],
                 msg,
             )
-    session_info["team_db_revision"] = revision
+    try:
+        session_info["team_db_revision"] = _team_db_revision(session_info["team_db_path"])
+    except FileNotFoundError:
+        session_info["team_db_revision"] = None
+    return True
 
 
 def _process_runtime_inbox_from_member(
@@ -313,7 +317,10 @@ def _watcher_pass(app: FastAPI):
     # Refresh peer lists for all active sessions before polling signals.
     for session_hex in list(app.state.watched_sessions):
         _refresh_session_peers(app, session_hex)
-        _run_runtime_reconciliation_for_session(app, session_hex)
+        if _run_runtime_reconciliation_for_session(app, session_hex):
+            berth_id_hex = app.state.watched_sessions.get(session_hex, {}).get("berth_id_hex")
+            if berth_id_hex:
+                _pulse_berth_event(app, berth_id_hex)
         _refresh_local_runtime_signal(app, session_hex)
         _refresh_note_to_self_self_signal(app, session_hex)
 
