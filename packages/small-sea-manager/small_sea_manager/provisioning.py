@@ -105,6 +105,7 @@ from small_sea_note_to_self.sender_keys import (
     deserialize_distribution_message,
     deserialize_sender_key_record,
     distribution_message_from_record,
+    load_all_peer_sender_keys,
     load_peer_sender_key,
     load_team_sender_key,
     receiver_record_from_distribution,
@@ -2223,7 +2224,19 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
     if sender_key_record is None:
         raise ValueError(f"No local sender key found for team '{team_name}'")
     sender_distribution = distribution_message_from_record(sender_key_record)
-    plaintext = _json_bytes(serialize_distribution_message(sender_distribution))
+    peer_sender_distributions = [
+        serialize_distribution_message(distribution_message_from_record(peer_record))
+        for peer_record in load_all_peer_sender_keys(
+            device_local_db_path(root_dir, participant_hex),
+            team_id,
+        )
+    ]
+    plaintext = _json_bytes(
+        {
+            "own_sender_distribution": serialize_distribution_message(sender_distribution),
+            "peer_sender_distributions": peer_sender_distributions,
+        }
+    )
     associated_data = _json_bytes(
         {"bootstrap_id": bootstrap_id.hex(), "team_id": team_id.hex()}
     )
@@ -2269,7 +2282,7 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
 
 
 def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, bootstrap_bundle):
-    """Finish a same-member bootstrap on the joining device and emit payload 3."""
+    """Finish a same-member bootstrap on the joining device."""
     root_dir = pathlib.Path(root_dir)
     response = _untokenize(bootstrap_bundle)
     response_body = {
@@ -2318,10 +2331,7 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         raise ValueError("Bootstrap bundle device_link cert is invalid")
     if session_row["finalized_at"] is not None and session_row["response_payload_json"]:
         response_payload = json.loads(session_row["response_payload_json"])
-        return {
-            "bootstrap_id_hex": bootstrap_id.hex(),
-            "sender_distribution_payload": _tokenize(response_payload),
-        }
+        return response_payload
 
     identity = IdentityKeyPair(
         dh_public_key=session_row["x3dh_identity_dh_public_key"],
@@ -2361,14 +2371,22 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         _deserialize_encrypted_message(response["ratchet_message"]),
         associated_data=associated_data,
     )
+    decrypted_payload = json.loads(plaintext.decode("utf-8"))
     authorizer_distribution = deserialize_distribution_message(
-        json.loads(plaintext.decode("utf-8"))
+        decrypted_payload["own_sender_distribution"]
     )
     save_peer_sender_key(
         device_local_db_path(root_dir, participant_hex),
         team_id,
         receiver_record_from_distribution(authorizer_distribution),
     )
+    for peer_distribution_data in decrypted_payload["peer_sender_distributions"]:
+        peer_distribution = deserialize_distribution_message(peer_distribution_data)
+        save_peer_sender_key(
+            device_local_db_path(root_dir, participant_hex),
+            team_id,
+            receiver_record_from_distribution(peer_distribution),
+        )
 
     team_device_private_key = session_row["team_device_private_key"]
     if team_device_private_key is None:
@@ -2467,14 +2485,8 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         repo.commit("Received device link cert from bootstrap")
 
     response_payload = {
-        "bootstrap_id": bootstrap_id.hex(),
-        "sender_distribution": serialize_distribution_message(sender_distribution),
+        "bootstrap_id_hex": bootstrap_id.hex(),
     }
-    response_payload_bytes = _json_bytes(response_payload)
-    response_payload["team_device_signature"] = _sign_bytes(
-        team_device_private_key,
-        response_payload_bytes,
-    ).hex()
 
     _update_linked_team_bootstrap_session(
         root_dir,
@@ -2486,10 +2498,7 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         response_payload_json=json.dumps(response_payload, sort_keys=True),
     )
 
-    return {
-        "bootstrap_id_hex": bootstrap_id.hex(),
-        "sender_distribution_payload": _tokenize(response_payload),
-    }
+    return response_payload
 
 
 def complete_linked_device_bootstrap(
@@ -2498,73 +2507,10 @@ def complete_linked_device_bootstrap(
     team_name,
     sender_distribution_payload,
 ):
-    """Finish payload 3 on the authorizing device and store the peer receiver state."""
-    root_dir = pathlib.Path(root_dir)
-    payload = _untokenize(sender_distribution_payload)
-    payload_body = {
-        "bootstrap_id": payload["bootstrap_id"],
-        "sender_distribution": payload["sender_distribution"],
-    }
-    payload_bytes = _json_bytes(payload_body)
-    bootstrap_id = bytes.fromhex(payload["bootstrap_id"])
-    distribution = deserialize_distribution_message(payload["sender_distribution"])
-    team_id, member_id = _team_row(root_dir, participant_hex, team_name)
-
-    pending = _load_pending_linked_team_bootstrap(root_dir, participant_hex, bootstrap_id)
-    trusted_keys = get_trusted_device_keys_for_member(
-        root_dir, participant_hex, team_name, member_id
+    raise NotImplementedError(
+        "complete_linked_device_bootstrap is retired; finalize the bootstrap and "
+        "then publish the new device sender key via redistribute_sender_key"
     )
-    trusted_key_by_id = {
-        key_id_from_public(public_key): public_key
-        for public_key in trusted_keys
-    }
-
-    peer_public_key = None
-    if pending is not None:
-        if pending["team_id"] != team_id:
-            raise ValueError("Pending bootstrap breadcrumb belongs to a different team")
-        if distribution.sender_device_key_id != key_id_from_public(
-            pending["peer_team_device_public_key"]
-        ):
-            raise ValueError("Payload 3 sender stream does not match the pending proposed key")
-        peer_public_key = pending["peer_team_device_public_key"]
-        if peer_public_key not in trusted_keys:
-            raise ValueError("Pending bootstrap key is not trusted for this member")
-    else:
-        peer_public_key = trusted_key_by_id.get(distribution.sender_device_key_id)
-        if peer_public_key is None:
-            raise ValueError("No pending linked-team bootstrap breadcrumb found")
-
-    if not _verify_signature(
-        peer_public_key,
-        payload_bytes,
-        bytes.fromhex(payload["team_device_signature"]),
-    ):
-        raise ValueError("Payload 3 team-device signature is invalid")
-
-    existing_record = load_peer_sender_key(
-        device_local_db_path(root_dir, participant_hex),
-        team_id,
-        distribution.sender_device_key_id,
-    )
-    if pending is None:
-        if existing_record is None or not _distribution_matches_record(distribution, existing_record):
-            raise ValueError("No pending linked-team bootstrap breadcrumb found")
-        return {
-            "bootstrap_id_hex": bootstrap_id.hex(),
-            "sender_device_key_id_hex": distribution.sender_device_key_id.hex(),
-        }
-
-    save_peer_sender_key(
-        device_local_db_path(root_dir, participant_hex),
-        team_id,
-        receiver_record_from_distribution(distribution),
-    )
-    _clear_pending_linked_team_bootstrap(root_dir, participant_hex, bootstrap_id)
-    return {
-        "bootstrap_id_hex": bootstrap_id.hex(),
-        "sender_device_key_id_hex": distribution.sender_device_key_id.hex(),
-    }
 
 
 def _init_team_db(db_path):

@@ -59,6 +59,14 @@ When this branch is done, the linked-device bootstrap flow for one team should b
 
 The special-purpose `complete_linked_device_bootstrap(...)` step is no longer part of the live protocol.
 
+## Landed Notes
+
+The implementation in this branch verified the main pre-coding risk called out during review:
+
+- peer receiver records round-trip correctly for this bootstrap use case through `distribution_message_from_record(...)` -> `receiver_record_from_distribution(...)` at the current chain position
+- the micro tests use a real Bob installation for peer-handoff and exclusion coverage rather than the old membership-only stub
+- the old end-of-round-trip assertion that pending bootstrap rows return to zero was removed, because the row now remains a create-side replay artifact
+
 ## In Scope
 
 - Change the bootstrap plaintext so it can carry peer sender-key handoff, not just the authorizer's own sender distribution.

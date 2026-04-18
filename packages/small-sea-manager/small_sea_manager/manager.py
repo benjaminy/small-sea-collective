@@ -408,7 +408,7 @@ class TeamManager:
         )
 
     def complete_linked_device_bootstrap(self, team_name, sender_distribution_payload):
-        """Store the linked device's sender distribution on the authorizing device."""
+        """Deprecated bootstrap step retained only to surface a clear error."""
         return provisioning.complete_linked_device_bootstrap(
             self.root_dir,
             self.participant_hex,
