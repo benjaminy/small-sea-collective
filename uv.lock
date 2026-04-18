@@ -1124,6 +1124,7 @@ dependencies = [
     { name = "pyobjus" },
     { name = "small-sea-note-to-self" },
     { name = "sqlalchemy" },
+    { name = "wrasse-trust" },
 ]
 
 [package.optional-dependencies]
@@ -1144,6 +1145,7 @@ requires-dist = [
     { name = "respx", marker = "extra == 'test'", specifier = ">=0.21.0" },
     { name = "small-sea-note-to-self", editable = "packages/small-sea-note-to-self" },
     { name = "sqlalchemy", specifier = ">=2.0.44" },
+    { name = "wrasse-trust", editable = "packages/wrasse-trust" },
 ]
 provides-extras = ["test"]
 
@@ -1163,6 +1165,7 @@ dependencies = [
     { name = "small-sea-note-to-self" },
     { name = "splice-merge" },
     { name = "sqlalchemy" },
+    { name = "wrasse-trust" },
 ]
 
 [package.metadata]
@@ -1178,6 +1181,7 @@ requires-dist = [
     { name = "small-sea-note-to-self", editable = "packages/small-sea-note-to-self" },
     { name = "splice-merge", editable = "packages/splice-merge" },
     { name = "sqlalchemy", specifier = ">=2.0.44" },
+    { name = "wrasse-trust", editable = "packages/wrasse-trust" },
 ]
 
 [[package]]

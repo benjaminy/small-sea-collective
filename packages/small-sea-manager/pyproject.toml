@@ -8,6 +8,7 @@ dependencies = [
     "cod-sync",
     "cuttlefish",
     "splice-merge",
+    "wrasse-trust",
     "click>=8.0",
     "cryptography>=46.0.3",
     "fastapi[standard]>=0.118.0",
@@ -25,6 +26,7 @@ small-sea-note-to-self = { workspace = true }
 cod-sync = { workspace = true }
 cuttlefish = { workspace = true }
 splice-merge = { workspace = true }
+wrasse-trust = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

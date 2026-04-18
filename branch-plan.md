@@ -162,6 +162,12 @@ One bridging detail is non-negotiable: the synced team DB's `key_certificate` ta
 
 If this bridge is missed, trust traversal silently returns no trusted devices for every member, every announcement becomes invalid, and routing quietly falls back to legacy behavior. The branch should treat this DB-to-`KeyCertificate` reconstruction step as a first-class part of the implementation, not an incidental detail.
 
+That bridge should be one explicit helper, not ad hoc field mapping at call sites. In addition to injecting `team_id`, it must handle the current schema-to-dataclass mismatches:
+
+- DB `issuer_member_id` -> `KeyCertificate.issuer_participant_id`
+- DB `issued_at` -> `KeyCertificate.issued_at_iso`
+- DB `claims` `TEXT` -> `KeyCertificate.claims` `dict` via JSON decode
+
 Because `wrasse-trust` is not currently declared as a dependency of either Manager or Hub, this branch must also update:
 
 - `packages/small-sea-manager/pyproject.toml`
@@ -238,6 +244,7 @@ In the current codebase:
 So for B7, "a signer ceases to be trusted" should be understood and tested as:
 
 - the relevant `device_link` / membership trust path is no longer present in the local team DB view
+- in concrete micro tests, simulate this by removing the relevant `device_link` cert row rather than by issuing a revocation cert
 
 That may happen because rows are removed from the adopted team state or because later trust logic grows a stronger revocation mechanism. B7 should not pretend that full revocation-certificate infrastructure is required for this branch.
 
@@ -491,7 +498,7 @@ At minimum, the branch should land tests equivalent to these:
 3. Announcement signed by a device linked to a different member is ignored.
 4. Tampered payload/signature is ignored.
 5. Changing only `signer_key_id` invalidates verification because the signer identity is inside the signed payload.
-6. A once-valid announcement becomes inert after signer revocation under the documented derivation-time policy.
+6. A once-valid announcement becomes inert after trust removal under the documented derivation-time policy; in the micro test, simulate this by removing the relevant `device_link` cert row.
 7. A far-future `announced_at` on an older `announcement_id` does not outrank a newer announcement.
 8. No announcement present -> effective transport falls back to legacy `team_device`.
 9. Hub peer download chooses announced transport over fallback transport.

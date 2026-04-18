@@ -332,6 +332,17 @@ class TeamManager:
             member,
         )
 
+    def announce_member_transport(self, team_name, *, protocol: str, url: str, bucket: str):
+        """Publish a signed transport announcement for the current member."""
+        return provisioning.announce_member_transport(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            protocol=protocol,
+            url=url,
+            bucket=bucket,
+        )
+
     def reconcile_runtime_state(self, team_name):
         """Reconcile local runtime state against the adopted team view."""
         return provisioning.reconcile_runtime_state(
