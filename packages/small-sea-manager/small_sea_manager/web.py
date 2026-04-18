@@ -31,11 +31,6 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     def _mgr(request: Request) -> TeamManager:
         return request.app.state.manager
 
-    def _validated_team_name(team_name: str) -> str:
-        if "/" in team_name or "\\" in team_name or ".." in team_name:
-            raise ValueError("Invalid team name")
-        return team_name
-
     def _hub_connection_ctx(request: Request, error: str = None):
         mgr = _mgr(request)
         return templates.TemplateResponse(
@@ -462,7 +457,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     ):
         mgr = _mgr(request)
         try:
-            mgr.dismiss_admission_event(_validated_team_name(team_name), event_type, artifact_id)
+            mgr.dismiss_admission_event(team_name, event_type, artifact_id)
             notice = "Admission prompt dismissed."
             error = None
         except ValueError as e:
@@ -476,7 +471,6 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.get("/teams/{team_name}/admission-events/watch", response_class=HTMLResponse)
     async def watch_admission_events(request: Request, team_name: str):
         mgr = _mgr(request)
-        team_name = _validated_team_name(team_name)
         active = mgr.session_state(team_name, _ENCRYPTED) == "active"
         hub_available = True
         if active:

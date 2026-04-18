@@ -44,7 +44,7 @@ def _member_label(display_name: str | None, member_id_hex: str | None) -> str:
     return "unknown member"
 
 
-def _linked_device_events(conn, dismissed, *, self_member_id_hex: str | None, viewer_is_admin: bool):
+def _linked_device_events(conn, dismissed, *, self_member_id_hex: str | None):
     rows = conn.execute(
         text(
             "SELECT kc.cert_id, kc.issued_at, kc.claims, td.member_id, m.display_name "
@@ -198,7 +198,6 @@ def list_admission_events(
                 conn,
                 dismissed,
                 self_member_id_hex=self_member_id_hex,
-                viewer_is_admin=viewer_is_admin,
             )
             events.extend(
                 _invitation_events(

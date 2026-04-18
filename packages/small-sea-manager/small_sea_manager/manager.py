@@ -545,7 +545,7 @@ class TeamManager:
         except Exception:
             _LOG.exception("Admission-event watch failed for team %s", team_name)
             return False
-        return bool(result.get("updated")) or result == {"updated": {}}
+        return "updated" in result
 
     # --- Notification services ---
 

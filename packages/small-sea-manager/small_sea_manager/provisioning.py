@@ -2759,11 +2759,18 @@ def get_trusted_device_keys_by_member(root_dir, participant_hex, team_name):
 
 
 def _team_sync_dir(root_dir, participant_hex, team_name) -> pathlib.Path:
+    team_name = _validate_team_name(team_name)
     return pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync"
 
 
 def _team_db_path(root_dir, participant_hex, team_name) -> pathlib.Path:
     return _team_sync_dir(root_dir, participant_hex, team_name) / "core.db"
+
+
+def _validate_team_name(team_name: str) -> str:
+    if "/" in team_name or "\\" in team_name or ".." in team_name:
+        raise ValueError("Invalid team name")
+    return team_name
 
 
 def has_local_team_clone(root_dir, participant_hex, team_name) -> bool:
@@ -4365,9 +4372,7 @@ def get_self_in_team(root_dir, participant_hex, team_name):
 def list_members(root_dir, participant_hex, team_name):
     """List members of a team with their berth roles. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
-    team_db_path = (
-        root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
-    )
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     engine = _sqlite_engine(team_db_path)
 
     with engine.begin() as conn:
@@ -4398,9 +4403,7 @@ def list_members(root_dir, participant_hex, team_name):
 def list_invitations(root_dir, participant_hex, team_name):
     """List invitations for a team. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
-    team_db_path = (
-        root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
-    )
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     engine = _sqlite_engine(team_db_path)
 
     with engine.begin() as conn:
@@ -4422,6 +4425,7 @@ def list_invitations(root_dir, participant_hex, team_name):
 
 def _admission_event_store_path(root_dir, participant_hex, team_name):
     root_dir = pathlib.Path(root_dir)
+    team_name = _validate_team_name(team_name)
     team_dir = root_dir / "Participants" / participant_hex / team_name
     team_dir.mkdir(parents=True, exist_ok=True)
     return team_dir / "admission-events-local.db"
