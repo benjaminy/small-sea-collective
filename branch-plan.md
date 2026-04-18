@@ -1,169 +1,259 @@
-# Branch Plan: Linked-Device Bootstrap — Sibling Handoff + Payload-3 Reframe
+# Branch Plan: Linked-Device Bootstrap Reframe
 
-**Branch:** `issue-69-linked-device-bootstrap`
-**Base:** `main`
-**Primary issue:** #69 "Bootstrap encrypted team access for a newly linked device"
-**Also closes:** #101 "historical-access test replacement"
-**Kind:** Implementation branch. Code + micro tests.
-**Related prior plans:** `Archive/branch-plan-issue-97-trust-domain-reframe.md` (B3 + B4)
-**Related docs:** `packages/small-sea-manager/spec.md` (§"Linked-device team bootstrap")
-**Related code:** `packages/small-sea-manager/small_sea_manager/provisioning.py`, `packages/small-sea-manager/tests/test_linked_device_bootstrap.py`
+**Branch:** `issue-69-linked-device-bootstrap`  
+**Base:** `main`  
+**Primary issue:** #69 "Bootstrap encrypted team access for a newly linked device"  
+**Also closes:** #101 "historical-access test replacement"  
+**Kind:** Implementation branch. Code + spec + micro tests.  
+**Related prior plan:** `Archive/branch-plan-issue-97-trust-domain-reframe.md`  
+**Related docs:** `architecture.md`, `packages/small-sea-manager/spec.md`  
+**Primary code area:** `packages/small-sea-manager/small_sea_manager/provisioning.py`  
+**Primary micro tests:** `packages/small-sea-manager/tests/test_linked_device_bootstrap.py`
 
 ## Purpose
 
-Two follow-up chunks from the accepted trust-domain reframe land together here:
+Issue #69 is the implementation follow-up to the trust-domain reframe accepted in #97.
 
-- **B3** — The authorizing sibling now includes its full snapshot of peer sender-key receiver state in the bootstrap bundle. The new device can read current and future peer traffic from the moment of bootstrap without waiting for each sender to redistribute.
-- **B4** — Payload-3 is retired as a bespoke OOB exchange. The new device publishes its own sender key via the standard `redistribute_sender_key(...)` primitive after finalization, just like any other member.
+The old linked-device flow still treats readability from other senders as if it only becomes legitimate after each sender separately redistributes to the new device. That is the wrong model for a same-member sibling bootstrap. If Alice's existing device can already read Bob's traffic, that device can hand Alice's new device the receiver state it already holds. The honest bootstrap should model that reality directly.
 
-Both changes are expressible in the same set of files and belong in the same branch.
+This branch should therefore make linked-device bootstrap do exactly three things:
+
+- let an already-readable sibling hand off the current team-readable state it already possesses
+- let the newly linked device read join-time-forward traffic immediately after bootstrap finalization
+- move the new device's own sender-key publication onto the normal `redistribute_sender_key(...)` path instead of a bespoke "payload 3" ceremony
+
+## Repo Context This Plan Assumes
+
+- Small Sea is local-first and pre-alpha; clean protocol shape is preferred over compatibility shims.
+- Linked-device bootstrap is a **same-member** flow, not general teammate admission.
+- Read access is **endpoint-trust-scoped**, not a cryptographic boundary between sibling devices.
+- All internet transport concerns remain out of scope here; this branch is about local bootstrap state and protocol shape inside Manager.
+- The current implementation seam is:
+  `prepare_linked_device_team_join(...)` ->
+  `create_linked_device_bootstrap(...)` ->
+  `finalize_linked_device_bootstrap(...)` ->
+  `complete_linked_device_bootstrap(...)`
+- The current implementation already requires a pre-existing team baseline on the joining device (`Payload 0 prerequisite` in the spec and `_copy_team_baseline(...)` in tests). That remains true in this branch.
 
 ## Current State
 
-`create_linked_device_bootstrap` encrypts only the sibling's own sender distribution through X3DH + ratchet. `finalize_linked_device_bootstrap` decrypts it, saves it as a peer record, and returns a `sender_distribution_payload` (payload-3) for the new device's own sender key. `complete_linked_device_bootstrap` on the sibling side consumes payload-3 and stores the new device's sender key as a peer record.
+Today the authorizing sibling encrypts only its **own** sender distribution into the bootstrap bundle. On the new device, `finalize_linked_device_bootstrap(...)` stores that as a peer sender key, initializes the new device's own sender key, and returns a bespoke follow-up artifact. The sibling then consumes that artifact in `complete_linked_device_bootstrap(...)` and stores the new device's sender key.
 
-`test_linked_device_bootstrap_requires_real_redistribution_for_other_senders` explicitly asserts that after bootstrap the new device cannot read Bob's sender traffic — this test was correct under the old model and is wrong in spirit under the accepted reframe.
+That leaves a gap relative to issue #69:
 
-The spec §"Linked-device team bootstrap" already describes the accepted design with a "B3 scope" implementation-status note marking the gap.
+- the new device does **not** receive peer sender-key receiver state already held by the sibling
+- the test suite still encodes the old assumption that Bob must redistribute before the new device can honestly read Bob's traffic
+- the flow still has a dedicated payload-3 handoff instead of using ordinary sender-key redistribution
 
-## Scope
+## Branch Outcome
 
-**In scope:**
+When this branch is done, the linked-device bootstrap flow for one team should be:
 
-- Extend the ratchet plaintext in `create_linked_device_bootstrap` to include all peer sender distributions from the sibling's local DB
-- Update `finalize_linked_device_bootstrap` to deserialize and store all peer sender distributions; retire the payload-3 return value
-- Retire `complete_linked_device_bootstrap` (or hollow it out to a no-op stub with a deprecation note)
-- Update pending-breadcrumb lifecycle: clear at end of `create_linked_device_bootstrap` (after bundle is written) rather than in `complete`
-- Retire `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
-- Update `test_linked_device_bootstrap_round_trip_same_member` for the new flow (no payload-3 step; new device calls `redistribute_sender_key`, sibling receives via `receive_sender_key_distribution`)
-- Add test: new device can read current and future peer traffic after sibling handoff
-- Add test: later rotate-with-exclusion by another sender cuts the new device off from that sender's subsequent traffic
-- Retire/update idempotency tests for `complete_linked_device_bootstrap` (retire the test; the complete function is no longer part of the live flow)
-- Spec update: remove the implementation-status note, update the step list, update the payload-3 transport status note to describe redirect to `redistribute_sender_key`
+1. The joining device prepares a join request exactly as it does now.
+2. The authorizing sibling issues the `device_link` cert and encrypts a bootstrap bundle containing:
+   - the sibling's own sender distribution
+   - the sibling's current snapshot of peer sender-key receiver state for this team
+3. The joining device finalizes bootstrap, stores that handed-off receiver state locally, publishes its Team-X prekey bundle as it already does today, and returns a simple success result.
+4. After finalization, the joining device publishes its own sender key through `redistribute_sender_key(...)`.
+5. Other devices, including the authorizing sibling in micro tests, receive that redistribution through the normal `receive_sender_key_distribution(...)` path.
 
-**Out of scope:**
+The special-purpose `complete_linked_device_bootstrap(...)` step is no longer part of the live protocol.
 
-- Hub-mediated redistribution delivery (tests simulate delivery by calling `receive_sender_key_distribution` directly)
+## In Scope
+
+- Change the bootstrap plaintext so it can carry peer sender-key handoff, not just the authorizer's own sender distribution.
+- Update finalize so it stores the sibling's peer snapshot on the new device.
+- Retire payload-3 as a bespoke protocol step.
+- Update the spec to describe linked-device bootstrap as a join-time-forward sibling handoff.
+- Replace the obsolete historical-access micro test with tests that prove the new model.
+- Keep create/finalize retry behavior solid enough to satisfy a skeptical reviewer.
+
+## Out Of Scope
+
+- Team discovery or baseline delivery for the joining device
+- Hub-mediated delivery of redistributions
+- Invitation / teammate-admission governance
 - Periodic sender-key rotation policy (#73)
-- Invitation-flow rework (B5 / #98)
-- Broad new-teammate admission governance
+- Steady-state watch/routing behavior beyond the bootstrap seam (#59)
+- Backward-compatible handling of older bootstrap bundles
 
 ## Design Decisions
 
-### 1. Ratchet plaintext format change
+### 1. Treat sibling handoff as the honest bootstrap primitive
 
-The plaintext encrypted in `create_linked_device_bootstrap` changes from a bare serialized distribution message to a JSON envelope:
+The branch should implement the issue's intended trust model directly: the sibling hands off the receiver state it already has. We should not preserve test or API shape that implies "real readability" only appears after sender-by-sender redistribution.
+
+This means the bootstrap bundle must include more than the sibling's own sender distribution. It must also carry the sibling's snapshot of peer sender-key state already present in local device storage for that team.
+
+### 2. Use a structured bootstrap envelope
+
+The ratchet-encrypted plaintext in `create_linked_device_bootstrap(...)` should become a JSON envelope rather than a single serialized distribution message.
+
+Planned shape:
 
 ```json
 {
-  "own_sender_distribution": { ... },
-  "peer_sender_distributions": [ { ... }, { ... } ]
+  "own_sender_distribution": { "...": "..." },
+  "peer_sender_distributions": [
+    { "...": "..." }
+  ]
 }
 ```
 
-`own_sender_distribution` carries the sibling's own distribution (existing behavior). `peer_sender_distributions` carries all peer distributions loaded from the sibling's `device_local` DB for this team, serialized in the same `serialize_distribution_message(...)` format.
+`own_sender_distribution` preserves current behavior for the authorizing sibling's active sender stream. `peer_sender_distributions` contains serialized distributions reconstructed from the sibling's locally stored peer receiver records for the same team.
 
-`finalize_linked_device_bootstrap` deserializes both fields. It saves each peer distribution via `save_peer_sender_key(...)` → `receiver_record_from_distribution(...)`, same as it currently saves the sibling's own distribution.
+This is a deliberate wire-format break for pending old bootstrap bundles. That is acceptable in this pre-alpha branch and should be stated plainly in the spec.
 
-This is a wire-format break between the old and new bootstrap bundles. Any pending bootstrap bundle created before this branch lands is incompatible. That is acceptable for a pre-alpha codebase. The branch plan should note the break explicitly in the spec.
+### 3. Finalize becomes the end of bootstrap
 
-### 2. Payload-3 retired; new device calls `redistribute_sender_key`
+`finalize_linked_device_bootstrap(...)` should:
 
-`finalize_linked_device_bootstrap` no longer returns `sender_distribution_payload`. Its return value becomes `{"bootstrap_id_hex": "..."}` (success signal).
+- verify the bundle as it does now
+- decrypt the envelope
+- store the authorizer's sender distribution as a peer record
+- store every handed-off peer distribution as a peer record
+- publish the new device's Team-X prekey bundle as it already does today
+- return a simple success payload such as `{"bootstrap_id_hex": ...}`
 
-After finalize, the calling code (Manager API or test) is responsible for calling `redistribute_sender_key(...)` to publish the new device's sender key to all other trusted devices. This is the standard redistribution path used by any member who rotates or initializes a sender key.
+It should no longer emit `sender_distribution_payload`.
 
-`complete_linked_device_bootstrap` is retired. The function body is replaced with a `raise NotImplementedError` or removed entirely. All call sites in tests are updated.
+### 4. The new device's own sender key publication should use normal redistribution
 
-### 3. Pending-breadcrumb lifecycle
+After finalize, the new device should call `redistribute_sender_key(...)`. In tests, the returned artifacts can be passed directly into `receive_sender_key_distribution(...)` on the sibling side. This keeps the post-bootstrap behavior aligned with the standard sender-key machinery already used elsewhere in the codebase.
 
-The pending bootstrap breadcrumb on the sibling side is currently cleared by `complete_linked_device_bootstrap`. With complete retired, it is cleared at the end of `create_linked_device_bootstrap` once the bundle has been committed to the pending breadcrumb table (i.e., right before return). The store-and-replay idempotency for a repeated create call with the same join request is preserved: if a breadcrumb already exists, the stored bundle is returned immediately, and then the row is not re-cleared since it's already gone.
+This branch should therefore remove the live role of `complete_linked_device_bootstrap(...)`. Because the repo is pre-alpha, the preferred outcome is to remove it from the flow entirely rather than preserve it for compatibility. If deleting it is noisier than helpful in this branch, a temporary `NotImplementedError` is acceptable, but the plan should treat that as a cleanup compromise, not the target design.
 
-Wait — if we clear after writing the breadcrumb, the row would be gone immediately. That breaks the store-and-replay check: a second call to create with the same join request would find no breadcrumb and issue a fresh cert. This is a behavior change.
+### 5. Do not let breadcrumb cleanup dictate protocol shape
 
-**Resolution:** Keep the breadcrumb row alive until the new device's cert is visible in the team DB git log (too complex), OR accept that the create store-and-replay now only works if the two create calls happen within the same invocation (not useful). **Simplest viable option:** clear the breadcrumb in `create_linked_device_bootstrap` by leaving clearing as a separate, lower-priority cleanup step and removing the `_row_count` assertions from the round-trip test that currently check pending breadcrumb count. The idempotency test for `create_replay` is kept as-is since that test only cares that the stored bundle is returned, not that the breadcrumb is then cleared.
+The current draft plan was right to notice a problem: create-side replay and complete-side cleanup are coupled today. Once payload-3 is retired, that coupling no longer makes sense.
 
-Concretely:
-- Remove the `assert _row_count(...pending_linked_team_bootstrap...) == 0` assertion from `test_linked_device_bootstrap_round_trip_same_member` (that check was contingent on `complete` clearing it)
-- The create-replay idempotency test is unaffected since it doesn't check the count after the fact
-- Leave a TODO comment in `create_linked_device_bootstrap` noting that breadcrumb clearing belongs to a future cleanup pass
+The clean branch goal is:
 
-### 4. `redistribute_sender_key` requires sibling's prekey bundle on new device
+- keep authorizer-side replay/idempotency for repeated `create_linked_device_bootstrap(...)` calls with the same bootstrap id
+- stop treating the pending row as proof that a special "complete" step still exists
 
-After `finalize_linked_device_bootstrap`, the new device calls `redistribute_sender_key(...)` to send its own sender key to all other trusted devices. This requires that the team DB on the new device contains prekey bundles for all recipients (so the redistribution can be X3DH-encrypted per recipient).
+This branch should prefer the smallest design that preserves replay semantics without reintroducing a fake protocol stage. Concretely, that means:
 
-In the current test setup, `_copy_team_baseline` copies the team sync dir from root1 to root2 before bootstrap. After finalize, the new device's own prekey bundle is published to the team DB (already done in finalize via `_publish_local_device_prekey_bundle`). The sibling's prekey bundle was present in the copied baseline. So `redistribute_sender_key` on the new device (root2) should produce at least one artifact targeting the sibling.
+- do **not** move the protocol back toward payload-3 just to have a cleanup trigger
+- do **not** weaken replay guarantees to paper over the cleanup question
+- allow the pending bootstrap record to remain a create-side replay artifact for now, with cleanup either omitted or handled by a narrower follow-up if needed
 
-The sibling then calls `receive_sender_key_distribution(...)` with that artifact to store the new device's sender key as a peer record. In tests this is done directly; in production this would go through Hub.
+If implementation reveals an even cleaner approach, it is acceptable, but the rewrite should explicitly avoid the earlier plan's muddled "clear it here, but maybe not really" state.
 
-### 5. Join-time-forward policy is now real, not aspirational
+### 6. Join-time-forward means "current and future from the handed-off snapshot"
 
-After this branch, the new device genuinely inherits the sibling's peer sender-key snapshot and can decrypt current and future traffic from those senders without any sender needing to take an additional step. This matches the accepted trust-domain reframe and should be stated plainly in the spec without qualifications about future redistribution requirements.
+The new device should still be unable to read historical ciphertext from before the relevant sender-key state existed on that device. But once the sibling has handed off the current receiver snapshot, the new device should be able to read traffic encrypted after bootstrap finalization by those already-known senders.
+
+The real enforced boundary remains later rotation with exclusion. The micro tests and spec should make that visible.
 
 ## Expected Change Areas
 
 ### `packages/small-sea-manager/small_sea_manager/provisioning.py`
 
-- `create_linked_device_bootstrap`: change plaintext to the JSON envelope; load all peer sender distributions from local DB and include them in `peer_sender_distributions`
-- `finalize_linked_device_bootstrap`: parse the new envelope; save own + peer distributions; remove payload-3 return, return `{"bootstrap_id_hex": "..."}`
-- `complete_linked_device_bootstrap`: retire (raise NotImplementedError or remove)
+- `create_linked_device_bootstrap(...)`
+  - load peer sender-key records from local device storage for the team
+  - serialize them into the encrypted bootstrap envelope
+- `finalize_linked_device_bootstrap(...)`
+  - parse the new envelope
+  - store the handed-off peer sender-key state locally
+  - remove bespoke payload-3 output
+- `complete_linked_device_bootstrap(...)`
+  - remove, or reduce to an explicit non-live stub if deletion is too disruptive for this branch
 
 ### `packages/small-sea-manager/tests/test_linked_device_bootstrap.py`
 
-- Remove `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
-- Update `test_linked_device_bootstrap_round_trip_same_member`:
-  - Remove `complete_linked_device_bootstrap` call
-  - Add: new device calls `redistribute_sender_key`; sibling calls `receive_sender_key_distribution` with the artifact
-  - Assert sibling now has new device's sender key (via redistribution, not payload-3)
-  - Remove `assert _row_count(...pending_linked_team_bootstrap...) == 0`
-- Add `test_linked_device_bootstrap_peer_sender_keys_transferred`: new device can read current/future Bob traffic after sibling handoff without Bob doing anything
-- Add `test_linked_device_bootstrap_exclusion_cuts_off_peer`: after sibling handoff gives new device Bob's sender key, Bob calls `rotate_team_sender_key` + `redistribute_sender_key` (excluding new device), and new device cannot decrypt post-rotation Bob traffic
-- Retire `test_linked_device_bootstrap_retry_after_interrupted_complete_is_idempotent` (complete no longer exists)
-- Other idempotency tests (`create_replay`, `finalize_retry`) are unchanged or minimally updated
+- update the same-member round-trip micro test to use normal redistribution after finalize
+- replace the obsolete "requires real redistribution for other senders" micro test
+- add positive proof that handed-off peer state makes immediate join-time-forward readability real
+- add negative proof that later rotate-with-exclusion still cuts the new device off
+- retire complete-step idempotency coverage, or replace it with coverage around the new live flow
 
 ### `packages/small-sea-manager/spec.md`
 
-- Remove the B3 implementation-status note
-- Update the step list: finalize no longer emits payload-3; add step "new device calls `redistribute_sender_key(...)` to publish its own sender key to all trusted peers"
-- Remove step 4 (`complete_linked_device_bootstrap`) or replace it with the redistribution receive step
-- Update the payload-3 transport status note to say payload-3 is retired; new device uses standard redistribution
-- Update the "join-time-forward" description to remove the "interim state" hedging; the handoff is now real
+- remove the B3 implementation-status hedging
+- describe sibling handoff of peer sender-key state as the implemented design
+- describe payload-3 as retired in favor of standard redistribution
+- keep the baseline-clone prerequisite explicit
+
+## Micro Test Plan
+
+### 1. Update the existing same-member round-trip micro test
+
+`test_linked_device_bootstrap_round_trip_same_member`
+
+This should prove:
+
+- bootstrap finalization succeeds without `complete_linked_device_bootstrap(...)`
+- the new device can read new traffic from the authorizing sibling
+- the new device can publish its own sender key through `redistribute_sender_key(...)`
+- the sibling can receive that distribution through `receive_sender_key_distribution(...)`
+- both sides can then exchange fresh traffic normally
+
+### 2. Replace the obsolete historical-access test with a positive sibling-handoff test
+
+Replace `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders`
+with a micro test that sets up Bob as another sender already readable by the authorizing sibling.
+
+This should prove:
+
+- before bootstrap, the sibling can read Bob's traffic
+- after bootstrap finalization, the new device has Bob's handed-off receiver state
+- Bob can send a new post-bootstrap message and the new device can decrypt it without Bob taking any additional action
+
+### 3. Add an exclusion-boundary micro test
+
+Add a micro test showing that the honest sibling handoff does **not** erase the real boundary created by later rotation.
+
+This should prove:
+
+- after bootstrap, the new device can read Bob's current traffic
+- Bob later rotates and redistributes while excluding the new device
+- the new device cannot decrypt Bob's post-rotation traffic
+
+### 4. Preserve retry/idempotency coverage for the live stages
+
+At minimum, keep strong micro test coverage for:
+
+- create replay returning the stored bundle without extra commit churn
+- finalize retry remaining idempotent after an interrupted finalize path
+
+If code changes alter return shapes, the assertions should change accordingly, but the behavior guarantee should remain.
 
 ## Validation
 
-Done when a skeptical reviewer can confirm every item below from code or tests:
+The branch is done when a skeptical reviewer can verify all of the following from code, spec, and micro tests:
 
-1. `create_linked_device_bootstrap` encodes both own and peer sender distributions in the bootstrap bundle.
-2. `finalize_linked_device_bootstrap` stores all peer sender distributions from the bundle.
-3. A newly bootstrapped device can decrypt a current (post-bootstrap) message from a remote sender (Bob) without Bob taking any additional step.
-4. If Bob later rotates-with-exclusion targeting the new device, the new device cannot decrypt Bob's post-rotation traffic.
-5. After finalize, the new device calls `redistribute_sender_key(...)` and the sibling can receive the new device's sender key via `receive_sender_key_distribution(...)`.
-6. `complete_linked_device_bootstrap` is no longer part of the live bootstrap flow (function removed or raises NotImplementedError).
-7. `test_linked_device_bootstrap_requires_real_redistribution_for_other_senders` is gone.
-8. The spec §"Linked-device team bootstrap" accurately describes the implemented flow with no B3-scope hedging.
+1. The bootstrap bundle now carries both the authorizer's own sender distribution and the sibling's snapshot of peer sender-key state for the team.
+2. `finalize_linked_device_bootstrap(...)` stores that handed-off peer state on the joining device.
+3. A newly linked device can decrypt post-bootstrap traffic from another sender whose receiver state was handed off by the sibling, without any extra action by that sender.
+4. The new device still cannot decrypt excluded post-rotation traffic after that sender rotates them out.
+5. The new device's own sender-key publication happens through `redistribute_sender_key(...)`, not a bespoke payload-3 return artifact.
+6. `complete_linked_device_bootstrap(...)` is no longer part of the live linked-device bootstrap flow.
+7. The old micro test encoding the outdated trust model is gone or rewritten to assert the new behavior.
+8. `packages/small-sea-manager/spec.md` describes the implemented flow accurately, including the baseline prerequisite and the new post-finalize redistribution step.
+9. The branch does not introduce broader coupling or transport assumptions outside Manager's local bootstrap logic.
 
-## Concrete Micro Tests To Expect
+## Skeptic-Facing Integrity Checks
 
-1. **Existing `test_linked_device_bootstrap_round_trip_same_member` updated**: same-member round trip works without payload-3; sibling receives new device's sender key via redistribution.
-2. **New `test_linked_device_bootstrap_peer_sender_keys_transferred`**: setup has Bob as a remote sender with a sender key on the sibling; after sibling bootstrap, new device can decrypt a Bob message that was encrypted post-bootstrap.
-3. **New `test_linked_device_bootstrap_exclusion_cuts_off_peer`**: Bob rotates-excluding new device; new device cannot decrypt Bob's post-rotation messages; the pre-exclusion session is still intact (new device can still decrypt the pre-rotation Bob message that arrived during the handoff window).
-4. **Existing create-replay idempotency test unchanged**: calling create twice with the same join request still returns the stored bundle.
-5. **Existing finalize-retry idempotency test still passes** (or is updated minimally if the return shape changes).
+A smart skeptic reviewing this branch should be able to answer "yes" to both categories below.
 
-## Out Of Scope
+### Goals accomplished
 
-- Revocation-cert infrastructure for signer trust
-- Multi-team bootstrap automation
-- Hub-mediated redistribution delivery path
-- Admission-event visibility for device_link certs (#99, already closed)
-- Invitation-flow transcript binding (B5 / #98)
-- Periodic sender-key rotation (#73)
+- Does the code now implement the issue's honest same-member bootstrap model rather than the obsolete sender-by-sender-admission model?
+- Do the micro tests prove both the positive case (handoff grants immediate join-time-forward readability) and the negative case (later exclusion still bites)?
+
+### Repo integrity maintained or improved
+
+- Is the protocol shape simpler after the branch, with less bespoke bootstrap-only machinery?
+- Did we reuse existing sender-key redistribution primitives instead of creating another parallel path?
+- Does the spec now match the code more closely than before?
+- Are retry/idempotency guarantees still covered for the stages that remain live?
 
 ## Wrap-Up Notes
 
-When the branch is complete:
+When implementation is complete:
 
-1. Update this plan to reflect what actually landed, especially whether any pending-breadcrumb behavior was changed beyond the documented decision.
-2. Archive it as `Archive/branch-plan-issue-69-linked-device-bootstrap.md`.
-3. Close issues #69 and #101.
-4. Note any follow-up work: e.g., pending-breadcrumb cleanup, Hub-mediated redistribution delivery path.
+1. Update this plan to reflect what actually landed.
+2. Move it to `Archive/branch-plan-issue-69-linked-device-bootstrap.md`.
+3. Close #69 and #101 if the shipped behavior and tests match the validation section.
+4. Record any true follow-up work separately instead of leaving protocol ambiguity in this plan.
