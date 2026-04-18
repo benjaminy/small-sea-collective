@@ -416,6 +416,8 @@ def _store_pending_linked_team_bootstrap(
     peer_team_device_public_key: bytes,
     bootstrap_bundle: str | None = None,
 ) -> None:
+    # Intentionally retained after finalize for create-side store-and-replay.
+    # Cleanup of completed breadcrumbs is deferred for now.
     with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
         conn.execute(
             """
@@ -2225,6 +2227,11 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
         raise ValueError(f"No local sender key found for team '{team_name}'")
     sender_distribution = distribution_message_from_record(sender_key_record)
     peer_sender_distributions = [
+        # Peer receiver records and local sender records share the same current
+        # chain-position fields needed by SenderKeyDistributionMessage, so this
+        # reuse is valid for bootstrap handoff. This intentionally drops any
+        # skipped_message_keys cached on the sibling's receiver record because
+        # the distribution-message format cannot represent them.
         serialize_distribution_message(distribution_message_from_record(peer_record))
         for peer_record in load_all_peer_sender_keys(
             device_local_db_path(root_dir, participant_hex),

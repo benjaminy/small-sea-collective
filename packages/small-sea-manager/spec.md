@@ -304,6 +304,12 @@ Historical boundary and visibility:
   Evidence: `test_linked_device_bootstrap_peer_sender_keys_transferred` asserts
   that a pre-bootstrap Bob message remains unreadable while a post-bootstrap Bob
   message is readable after the sibling hands off Bob's current receiver state.
+- **Skipped-key caches are not part of the handoff format.** The bootstrap
+  envelope serializes peer receiver state through `SenderKeyDistributionMessage`,
+  which carries the current chain position but not any cached
+  `skipped_message_keys`. If the sibling had stored skipped keys for out-of-order
+  delivery before bootstrap, the new device does not inherit those cached keys.
+  This is an accepted limitation of the current pre-alpha handoff format.
 - That test is **repo-local protocol evidence**, not a full cryptographic
   assurance. It depends on current Cuttlefish group-encryption behavior in a
   pre-alpha repo where crypto internals are still evolving.
@@ -341,6 +347,10 @@ Retry/idempotency status in the current slice:
   device has nothing to finalize, retry cannot replay from stored state, and
   operator recovery requires manual cleanup or a new bootstrap attempt with
   fresh request material.
+- Pending bootstrap breadcrumbs are currently retained after successful
+  finalize so create-side store-and-replay continues to work. Cleanup of
+  completed rows is deferred for a narrower follow-up rather than folded into
+  this branch.
 
 Storage boundary:
 
