@@ -175,3 +175,56 @@ def test_select_effective_member_transport_binds_signer_key_id_in_signature():
     assert selection.status == "legacy-fallback"
     assert selection.transport is not None
     assert selection.transport.bucket == "fallback-bucket"
+
+
+def test_select_effective_member_transport_rejects_other_members_signer():
+    alice_key, alice_private_key = generate_key_pair(ProtectionLevel.DAILY)
+    bob_key, bob_private_key = generate_key_pair(ProtectionLevel.DAILY)
+    alice_member_id = bytes.fromhex("33" * 16)
+    bob_member_id = bytes.fromhex("44" * 16)
+    alice_membership = issue_membership_cert(
+        alice_key,
+        alice_key,
+        alice_private_key,
+        TEAM_ID,
+        issuer_member_id=alice_member_id,
+        admitted_member_id=alice_member_id,
+    )
+    bob_membership = issue_membership_cert(
+        bob_key,
+        bob_key,
+        bob_private_key,
+        TEAM_ID,
+        issuer_member_id=bob_member_id,
+        admitted_member_id=bob_member_id,
+    )
+    bad_announcement = _signed_announcement(
+        announcement_id=bytes.fromhex("04" * 16),
+        member_id=alice_member_id,
+        protocol="s3",
+        url="http://wrong-member.example",
+        bucket="wrong-member-bucket",
+        announced_at="2026-01-01T00:00:00+00:00",
+        signer_private_key=bob_private_key,
+        signer_key_id=key_id_from_public(bob_key.public_key),
+    )
+
+    selection = select_effective_member_transport(
+        member_id=alice_member_id,
+        announcements=[bad_announcement],
+        certs=[alice_membership, bob_membership],
+        team_id=TEAM_ID,
+        device_public_keys_by_key_id={
+            key_id_from_public(alice_key.public_key): alice_key.public_key,
+            key_id_from_public(bob_key.public_key): bob_key.public_key,
+        },
+        legacy_fallback=TransportEndpoint(
+            protocol="s3",
+            url="http://fallback.example",
+            bucket="fallback-bucket",
+        ),
+    )
+
+    assert selection.status == "legacy-fallback"
+    assert selection.transport is not None
+    assert selection.transport.bucket == "fallback-bucket"

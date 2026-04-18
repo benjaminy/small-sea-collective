@@ -1193,7 +1193,11 @@ class SmallSeaBackend:
             from botocore import UNSIGNED
             from botocore.config import Config as BotoConfig
 
-            bucket_name = bucket or f"ss-{ss_session.berth_id.hex()[:16]}"
+            if not bucket:
+                raise SmallSeaBackendExn(
+                    "Peer transport for s3 is missing a bucket; refusing to derive one"
+                )
+            bucket_name = bucket
             s3_client = boto3.client(
                 "s3",
                 endpoint_url=url,
@@ -1286,6 +1290,8 @@ class SmallSeaBackend:
         return {row[0]: row[1] for row in rows}
 
     def _legacy_transport_for_member(self, conn, member_id: bytes) -> TransportEndpoint | None:
+        # TEMPORARY: remove when B5 stops relying on admission-time team_device
+        # transport fields as a compatibility fallback.
         if not self._table_exists(conn, "team_device"):
             return None
         row = conn.execute(

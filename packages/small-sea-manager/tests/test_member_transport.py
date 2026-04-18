@@ -52,7 +52,7 @@ def test_announce_member_transport_updates_manager_member_status(playground_dir)
     team_before = manager.get_team("ProjectX")
     alice_before = next(member for member in team_before["members"] if member["id"] == team_before["self_in_team"])
     assert alice_before["transport_status"] == "legacy-fallback"
-    assert alice_before["needs_transport_announcement"] is True
+    assert alice_before["needs_transport_announcement"] is False
 
     announced = manager.announce_member_transport(
         "ProjectX",
@@ -131,7 +131,7 @@ def test_transport_announcement_becomes_inert_after_device_link_removal(playgrou
     team_after = manager.get_team("ProjectX")
     alice_after = next(member for member in team_after["members"] if member["id"] == team_after["self_in_team"])
     assert alice_after["transport_status"] == "legacy-fallback"
-    assert alice_after["needs_transport_announcement"] is True
+    assert alice_after["needs_transport_announcement"] is False
 
 
 def test_transport_announcement_route_updates_team_detail(playground_dir):

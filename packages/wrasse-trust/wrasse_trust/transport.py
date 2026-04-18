@@ -105,8 +105,10 @@ def select_effective_member_transport(
     team_id: bytes,
     device_public_keys_by_key_id: dict[bytes, bytes],
     legacy_fallback: TransportEndpoint | None = None,
+    trusted_public_keys: set[bytes] | None = None,
 ) -> EffectiveTransportSelection:
-    trusted_public_keys = trusted_device_keys_for_member(certs, team_id, member_id)
+    if trusted_public_keys is None:
+        trusted_public_keys = trusted_device_keys_for_member(certs, team_id, member_id)
     relevant = [
         announcement for announcement in announcements if announcement.member_id == member_id
     ]

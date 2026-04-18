@@ -13,6 +13,7 @@ import os
 import pathlib
 import secrets
 import sqlite3
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import (
@@ -2752,6 +2753,8 @@ def _device_public_keys_by_key_id(conn) -> dict[bytes, bytes]:
 
 
 def _legacy_transport_by_member(conn) -> dict[bytes, TransportEndpoint]:
+    # TEMPORARY: remove when B5 stops relying on admission-time team_device
+    # transport fields as a compatibility fallback.
     rows = conn.execute(
         text(
             "SELECT member_id, protocol, url, bucket "
@@ -2784,6 +2787,7 @@ def _effective_transports_by_member(
     announcements = _load_member_transport_announcements(conn)
     device_public_keys = _device_public_keys_by_key_id(conn)
     fallback_by_member = _legacy_transport_by_member(conn)
+    trusted_by_member = resolve_trusted_device_keys_by_member(certs, team_id)
     return {
         member_id: select_effective_member_transport(
             member_id=member_id,
@@ -2792,6 +2796,7 @@ def _effective_transports_by_member(
             team_id=team_id,
             device_public_keys_by_key_id=device_public_keys,
             legacy_fallback=fallback_by_member.get(member_id),
+            trusted_public_keys=trusted_by_member.get(member_id, set()),
         )
         for member_id in member_ids
     }
@@ -2890,16 +2895,7 @@ def announce_member_transport(
         private_key,
         canonical_member_transport_announcement_bytes(announcement),
     )
-    signed_announcement = MemberTransportAnnouncement(
-        announcement_id=announcement.announcement_id,
-        member_id=announcement.member_id,
-        protocol=announcement.protocol,
-        url=announcement.url,
-        bucket=announcement.bucket,
-        announced_at=announcement.announced_at,
-        signer_key_id=announcement.signer_key_id,
-        signature=signature,
-    )
+    signed_announcement = replace(announcement, signature=signature)
     team_db_path = _team_sync_dir(root_dir, participant_hex, team_name) / "core.db"
     ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
@@ -4591,7 +4587,7 @@ def list_members(root_dir, participant_hex, team_name):
                 "effective_transport": transport_dict,
                 "needs_transport_announcement": (
                     member_id == self_in_team
-                    and (transport is None or transport.status != "announced")
+                    and (transport is None or transport.status == "missing")
                 ),
             }
         )
