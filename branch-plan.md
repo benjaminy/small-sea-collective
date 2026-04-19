@@ -5,7 +5,7 @@
 **Primary issue:** #107 "Linked-device bootstrap does not transfer skipped-message caches for peer sender keys"
 **Kind:** Implementation branch. Code + micro tests + narrow spec updates.
 **Related issues:** #69 (linked-device bootstrap), #97 (trust-domain reframe / accepted read-boundary model)
-**Related docs:** `README.md`, `architecture.md`, `packages/small-sea-manager/spec.md`
+**Related docs:** `architecture.md`, `packages/small-sea-manager/spec.md`
 **Related code of interest:**
 - `packages/small-sea-manager/small_sea_manager/provisioning.py`
 - `packages/small-sea-manager/small_sea_manager/sender_keys.py`
@@ -150,7 +150,9 @@ In `create_linked_device_bootstrap(...)`:
 1. Load peer sender records once.
 2. Build `peer_sender_distributions` from that in-memory list.
 3. Build `peer_sender_skipped_keys` from the same list, reusing the existing
-   hex-serialization logic already reflected by `_serialize_skipped(...)`.
+   string/int/hex shape already reflected by `_serialize_skipped(...)`, but do
+   **not** call `_serialize_skipped(...)` directly because it returns a JSON
+   string via `json.dumps(...)`.
 4. Remove the stale inline comment that says skipped keys are intentionally
    dropped.
 
@@ -179,31 +181,40 @@ The branch should prefer one of these two implementation styles:
 1. Minimal inline serialization/deserialization inside `provisioning.py`, if the
    logic stays short and obvious.
 2. Small helper(s) in `sender_keys.py` if that noticeably improves readability
-   and avoids duplicating the string/int/hex conversions.
+   and avoids duplicating the string/int/hex conversions without reusing the
+   JSON-string wrapper helper.
 
 What we should avoid:
 
 - Spreading ad hoc JSON-shape knowledge across several unrelated functions.
 - Refactoring bootstrap or sender-key code more broadly "while we are here."
 - Adding compatibility wrappers for non-existent future formats.
+- Accidentally double-encoding skipped-key data by calling
+  `_serialize_skipped(...)` directly for a nested JSON field.
 
 ## Required Test Changes
 
-The first draft understated this part. One new micro test is not enough; at
-least one existing micro test must change because it currently encodes the old
-behavior as correct.
+The first draft understated this part. The branch needs one new micro test, but
+it should preserve the useful boundary evidence already present in the existing
+in-order scenario.
 
-### Existing Test To Update
+### Existing Test To Preserve
 
-`test_linked_device_bootstrap_peer_sender_keys_transferred` should stop proving
-"pre-bootstrap Bob message unreadable on the new linked device" and instead
-prove the new intended behavior.
+`test_linked_device_bootstrap_peer_sender_keys_transferred` should remain as the
+in-order historical-boundary test unless implementation details force a small
+rename or cleanup.
 
-That test name may still be fine, but its assertions need to change so it now
-verifies that previously readable peer state remains readable after bootstrap,
-not that the historical message fails.
+Its current core assertion is still valuable after this branch: if Alice
+received Bob's pre-bootstrap message in order and therefore advanced past it
+without caching a skipped key, the new linked device should still **not** be
+able to decrypt that old message. That unreadability remains correct because no
+skipped key existed to transfer.
 
-### New Or Revised Scenario
+This branch should not "fix" that assertion away. Doing so would confuse
+historical readability with skipped-key transfer and would weaken the evidence
+for the join-time-forward boundary.
+
+### New Scenario To Add
 
 The validating scenario should exercise the actual skipped-key path, not merely
 "message from before bootstrap." The important case is:
@@ -218,14 +229,18 @@ The validating scenario should exercise the actual skipped-key path, not merely
 6. B can decrypt the earlier Bob message that requires one of those cached
    skipped keys.
 
-That scenario is better evidence than the current test because it proves the
-exact omission being fixed rather than a looser historical-read story.
+That scenario complements the current test rather than replacing it:
+
+- the existing in-order test keeps proving the historical boundary; and
+- the new out-of-order test proves the skipped-key handoff that this branch is
+  actually fixing.
 
 ### Test Coverage Expectations
 
 Validation for this branch should include:
 
 - A micro test covering the out-of-order/skipped-key handoff.
+- The existing in-order historical-boundary micro test still passing.
 - Existing linked-device bootstrap micro tests still passing, especially:
   retry-after-interrupted-finalize idempotency, reentry rejection, and exclusion
   behavior.
@@ -244,8 +259,10 @@ The current spec text says:
 
 After this branch, that will no longer be true. The spec should instead say:
 
+- the in-order historical-boundary case remains unchanged: a pre-bootstrap
+  message is still unreadable on the new device when no skipped key was cached;
 - linked-device bootstrap transfers the sibling's current peer receiver state,
-  including cached skipped-message keys; and
+  including cached skipped-message keys in the out-of-order case; and
 - the remaining boundary is still join-time-forward in the sense that the new
   device receives only the sibling's current readable snapshot, not arbitrary
   earlier ciphertext outside that state.
@@ -327,12 +344,16 @@ The reviewer can verify:
    peer distribution messages.
 2. The create side derives both payload fields from one load of peer sender
    records.
-3. The finalize side restores skipped keys onto the correct receiver records
+3. The payload stores skipped keys as nested JSON objects, not JSON strings
+   embedded inside JSON.
+4. The finalize side restores skipped keys onto the correct receiver records
    before persisting them.
-4. A linked-device bootstrap micro test now demonstrates that a skipped-key case
+5. The existing in-order historical-boundary micro test still proves that an
+   unreadable old message stays unreadable when no skipped key was cached.
+6. A linked-device bootstrap micro test now demonstrates that a skipped-key case
    survives the handoff.
-5. Retry/idempotency micro tests still pass.
-6. `packages/small-sea-manager/spec.md` no longer describes skipped-key loss as
+7. Retry/idempotency micro tests still pass.
+8. `packages/small-sea-manager/spec.md` no longer describes skipped-key loss as
    intended behavior.
 
 ### Repo Integrity
