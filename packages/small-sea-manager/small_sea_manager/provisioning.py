@@ -989,6 +989,9 @@ def _proposal_quorum(conn) -> int:
 
 
 def _approval_count(conn, proposal_id: bytes, transcript_digest: bytes) -> int:
+    # Quorum counting trusts rows that made it into the shared DB. We do not
+    # re-verify signatures here on every count because this branch still relies
+    # on the sync/write-acceptance model rather than an isolated authority layer.
     row = conn.execute(
         text(
             "SELECT COUNT(DISTINCT admin_member_id) "
@@ -4510,6 +4513,7 @@ def complete_invitation_acceptance(
 
             transcript_digest = _proposal_transcript_digest(transcript_payload)
             now = _now_iso()
+            quorum = _proposal_quorum(conn)
             conn.execute(
                 text(
                     "UPDATE admission_proposal SET "
@@ -4522,7 +4526,7 @@ def complete_invitation_acceptance(
                 ),
                 {
                     "proposal_id": proposal_id,
-                    "state": "awaiting_quorum" if _proposal_quorum(conn) > 1 else "finalized",
+                    "state": "awaiting_quorum" if quorum > 1 else "awaiting_invitee",
                     "acceptance_recorded_at": now,
                     "invitee_device_public_key": invitee_device_public_key,
                     "invitee_bootstrap_key": invitee_bootstrap_key,
@@ -4594,6 +4598,14 @@ def complete_invitation_acceptance(
                         "finalized_at": now,
                         "finalization_signature": finalization_signature,
                     },
+                )
+            else:
+                conn.execute(
+                    text(
+                        "UPDATE admission_proposal SET state = 'awaiting_quorum' "
+                        "WHERE proposal_id = :proposal_id"
+                    ),
+                    {"proposal_id": proposal_id},
                 )
 
     engine.dispose()
