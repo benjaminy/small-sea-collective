@@ -8,6 +8,7 @@
 # schema is the shared contract between the two packages.
 
 import base64
+import hashlib
 import json
 import os
 import pathlib
@@ -774,6 +775,277 @@ def _bucket_name_for_protocol(protocol: str, member_id: bytes, berth_id: bytes) 
     return f"ss-{berth_id.hex()[:16]}"
 
 
+_DEFAULT_ADMISSION_QUORUM = 1
+_DEFAULT_PROPOSAL_EXPIRY_SECONDS = 7 * 24 * 60 * 60
+
+
+def _sha256_bytes(payload: bytes) -> bytes:
+    return hashlib.sha256(payload).digest()
+
+
+def _team_head_commit(team_sync_dir: pathlib.Path) -> str:
+    head = _Repo(team_sync_dir / ".git", team_sync_dir).head()
+    if head is None:
+        raise ValueError("Team repo has no HEAD commit")
+    return head
+
+
+def _team_setting(conn, key: str, default: str) -> str:
+    row = conn.execute(
+        text("SELECT value FROM team_setting WHERE key = :key"),
+        {"key": key},
+    ).fetchone()
+    return row[0] if row is not None else default
+
+
+def set_team_admission_policy(
+    root_dir,
+    participant_hex,
+    team_name,
+    *,
+    quorum: int | None = None,
+    proposal_expiry_seconds: int | None = None,
+) -> None:
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    ensure_team_db_schema(team_db_path)
+    engine = _sqlite_engine(team_db_path)
+    try:
+        with engine.begin() as conn:
+            if quorum is not None:
+                if quorum < 1:
+                    raise ValueError("admission quorum must be at least 1")
+                conn.execute(
+                    text(
+                        "INSERT OR REPLACE INTO team_setting (key, value) VALUES "
+                        "('admission_quorum', :value)"
+                    ),
+                    {"value": str(quorum)},
+                )
+            if proposal_expiry_seconds is not None:
+                if proposal_expiry_seconds <= 0:
+                    raise ValueError("proposal expiry must be positive")
+                conn.execute(
+                    text(
+                        "INSERT OR REPLACE INTO team_setting (key, value) VALUES "
+                        "('proposal_expiry_seconds', :value)"
+                    ),
+                    {"value": str(proposal_expiry_seconds)},
+                )
+    finally:
+        engine.dispose()
+
+
+def _team_admission_policy(conn) -> tuple[int, int]:
+    quorum = int(_team_setting(conn, "admission_quorum", str(_DEFAULT_ADMISSION_QUORUM)))
+    expiry = int(
+        _team_setting(
+            conn,
+            "proposal_expiry_seconds",
+            str(_DEFAULT_PROPOSAL_EXPIRY_SECONDS),
+        )
+    )
+    return quorum, expiry
+
+
+def _proposal_expiry(now: datetime, expiry_seconds: int) -> str:
+    return datetime.fromtimestamp(now.timestamp() + expiry_seconds, timezone.utc).isoformat()
+
+
+def _proposal_transcript_payload(
+    *,
+    proposal_id: bytes,
+    nonce: bytes,
+    team_id: bytes,
+    invitee_member_id: bytes,
+    invitee_device_public_key: bytes,
+    invitee_bootstrap_key: bytes,
+) -> dict[str, str]:
+    return {
+        "proposal_id": proposal_id.hex(),
+        "nonce": nonce.hex(),
+        "team_id": team_id.hex(),
+        "invitee_member_id": invitee_member_id.hex(),
+        "invitee_device_public_key": invitee_device_public_key.hex(),
+        "invitee_bootstrap_key": invitee_bootstrap_key.hex(),
+    }
+
+
+def _proposal_transcript_digest(payload: dict[str, str]) -> bytes:
+    return _sha256_bytes(_json_bytes(payload))
+
+
+def _approval_payload(*, proposal_id: bytes, transcript_digest: bytes, admin_member_id: bytes) -> bytes:
+    return _json_bytes(
+        {
+            "proposal_id": proposal_id.hex(),
+            "transcript_digest": transcript_digest.hex(),
+            "admin_member_id": admin_member_id.hex(),
+        }
+    )
+
+
+def _finalization_payload(*, proposal_id: bytes, transcript_digest: bytes, invitee_member_id: bytes) -> bytes:
+    return _json_bytes(
+        {
+            "proposal_id": proposal_id.hex(),
+            "transcript_digest": transcript_digest.hex(),
+            "invitee_member_id": invitee_member_id.hex(),
+        }
+    )
+
+
+def _role_to_core_berth_role(role: str) -> str:
+    if role == "admin":
+        return "read-write"
+    if role in {"contributor", "observer"}:
+        return "read-only"
+    raise ValueError(f"Unknown invitation role: {role}")
+
+
+def _governance_snapshot(conn) -> dict[str, object]:
+    member_ids = [row[0].hex() for row in conn.execute(text("SELECT id FROM member ORDER BY id")).fetchall()]
+    admin_ids = [
+        row[0].hex()
+        for row in conn.execute(
+            text(
+                "SELECT br.member_id "
+                "FROM berth_role br "
+                "JOIN team_app_berth tab ON tab.id = br.berth_id "
+                "JOIN app a ON a.id = tab.app_id "
+                "WHERE a.name = 'SmallSeaCollectiveCore' AND br.role = 'read-write' "
+                "ORDER BY br.member_id"
+            )
+        ).fetchall()
+    ]
+    member_devices: dict[str, list[str]] = {member_id_hex: [] for member_id_hex in member_ids}
+    for member_id, device_key_id in conn.execute(
+        text("SELECT member_id, device_key_id FROM team_device ORDER BY member_id, device_key_id")
+    ).fetchall():
+        member_devices.setdefault(member_id.hex(), []).append(device_key_id.hex())
+    return {
+        "admins": admin_ids,
+        "members": member_ids,
+        "member_devices": member_devices,
+    }
+
+
+def _governance_digest(snapshot: dict[str, object]) -> bytes:
+    return _sha256_bytes(_json_bytes(snapshot))
+
+
+def _load_admission_proposal_row(conn, proposal_id: bytes):
+    row = conn.execute(
+        text(
+            "SELECT proposal_id, nonce, team_id, inviter_member_id, invitee_member_id, "
+            "invitee_label, role, anchor_commit, governance_digest, governance_snapshot_json, "
+            "state, created_at, expires_at, acceptance_recorded_at, invitee_device_public_key, "
+            "invitee_bootstrap_key, acceptance_signature, transcript_digest, transcript_json, "
+            "finalized_at, finalization_signature, invalid_reason "
+            "FROM admission_proposal WHERE proposal_id = :proposal_id"
+        ),
+        {"proposal_id": proposal_id},
+    ).fetchone()
+    if row is None:
+        raise ValueError("Admission proposal not found")
+    return row
+
+
+def _load_governance_snapshot_json(proposal_row) -> dict[str, object]:
+    return json.loads(proposal_row[9])
+
+
+def _proposal_is_still_valid(conn, proposal_row) -> tuple[bool, str | None]:
+    state = proposal_row[10]
+    if state == "finalized":
+        return False, "Proposal is already finalized"
+    if state in {"invalidated", "expired"}:
+        return False, f"Proposal is already {state}"
+    now_iso = _now_iso()
+    if proposal_row[12] < now_iso:
+        conn.execute(
+            text(
+                "UPDATE admission_proposal SET state = 'expired', invalid_reason = 'expired' "
+                "WHERE proposal_id = :proposal_id"
+            ),
+            {"proposal_id": proposal_row[0]},
+        )
+        return False, "Proposal has expired"
+    current_snapshot = _governance_snapshot(conn)
+    if _governance_digest(current_snapshot) != proposal_row[8]:
+        conn.execute(
+            text(
+                "UPDATE admission_proposal SET state = 'invalidated', "
+                "invalid_reason = 'governance_drift' WHERE proposal_id = :proposal_id"
+            ),
+            {"proposal_id": proposal_row[0]},
+        )
+        return False, "Proposal invalidated by governance drift"
+    return True, None
+
+
+def _proposal_quorum(conn) -> int:
+    quorum, _expiry = _team_admission_policy(conn)
+    return quorum
+
+
+def _approval_count(conn, proposal_id: bytes, transcript_digest: bytes) -> int:
+    row = conn.execute(
+        text(
+            "SELECT COUNT(DISTINCT admin_member_id) "
+            "FROM admin_approval "
+            "WHERE proposal_id = :proposal_id AND transcript_digest = :transcript_digest"
+        ),
+        {"proposal_id": proposal_id, "transcript_digest": transcript_digest},
+    ).fetchone()
+    return int(row[0]) if row is not None else 0
+
+
+def _proposal_has_quorum(conn, proposal_row) -> bool:
+    transcript_digest = proposal_row[17]
+    if transcript_digest is None:
+        return False
+    return _approval_count(conn, proposal_row[0], transcript_digest) >= _proposal_quorum(conn)
+
+
+def _proposal_admin_device_is_valid(snapshot: dict[str, object], admin_member_id: bytes, approver_device_key_id: bytes) -> bool:
+    admin_member_id_hex = admin_member_id.hex()
+    if admin_member_id_hex not in snapshot.get("admins", []):
+        return False
+    member_devices = snapshot.get("member_devices", {})
+    if not isinstance(member_devices, dict):
+        return False
+    return approver_device_key_id.hex() in member_devices.get(admin_member_id_hex, [])
+
+
+def _insert_admin_approval(
+    conn,
+    *,
+    proposal_id: bytes,
+    admin_member_id: bytes,
+    approver_device_key_id: bytes,
+    signature: bytes,
+    transcript_digest: bytes,
+) -> None:
+    conn.execute(
+        text(
+            "INSERT OR REPLACE INTO admin_approval "
+            "(approval_id, proposal_id, admin_member_id, approver_device_key_id, "
+            "transcript_digest, signature, created_at) "
+            "VALUES (:approval_id, :proposal_id, :admin_member_id, :approver_device_key_id, "
+            ":transcript_digest, :signature, :created_at)"
+        ),
+        {
+            "approval_id": uuid7(),
+            "proposal_id": proposal_id,
+            "admin_member_id": admin_member_id,
+            "approver_device_key_id": approver_device_key_id,
+            "transcript_digest": transcript_digest,
+            "signature": signature,
+            "created_at": _now_iso(),
+        },
+    )
+
+
 def _upsert_member_row(
     conn,
     member_id: bytes,
@@ -1338,7 +1610,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 57
+USER_SCHEMA_VERSION = 58
 
 
 # ---- Provisioning functions ----
@@ -1871,6 +2143,56 @@ def _migrate_team_db(conn, from_version):
                 "signer_key_id BLOB NOT NULL, "
                 "signature BLOB NOT NULL, "
                 "FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE)"
+            )
+        )
+    if from_version < 58:
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS team_setting ("
+                "key TEXT PRIMARY KEY, "
+                "value TEXT NOT NULL)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS admission_proposal ("
+                "proposal_id BLOB PRIMARY KEY, "
+                "nonce BLOB NOT NULL, "
+                "team_id BLOB NOT NULL, "
+                "inviter_member_id BLOB NOT NULL, "
+                "invitee_member_id BLOB NOT NULL, "
+                "invitee_label TEXT, "
+                "role TEXT NOT NULL DEFAULT 'admin', "
+                "anchor_commit TEXT NOT NULL, "
+                "governance_digest BLOB NOT NULL, "
+                "governance_snapshot_json TEXT NOT NULL, "
+                "state TEXT NOT NULL, "
+                "created_at TEXT NOT NULL, "
+                "expires_at TEXT NOT NULL, "
+                "acceptance_recorded_at TEXT, "
+                "invitee_device_public_key BLOB, "
+                "invitee_bootstrap_key BLOB, "
+                "acceptance_signature BLOB, "
+                "transcript_digest BLOB, "
+                "transcript_json TEXT, "
+                "finalized_at TEXT, "
+                "finalization_signature BLOB, "
+                "invalid_reason TEXT)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS admin_approval ("
+                "approval_id BLOB PRIMARY KEY, "
+                "proposal_id BLOB NOT NULL, "
+                "admin_member_id BLOB NOT NULL, "
+                "approver_device_key_id BLOB NOT NULL, "
+                "transcript_digest BLOB NOT NULL, "
+                "signature BLOB NOT NULL, "
+                "created_at TEXT NOT NULL, "
+                "UNIQUE (proposal_id, approver_device_key_id), "
+                "FOREIGN KEY (proposal_id) REFERENCES admission_proposal(proposal_id) "
+                "ON DELETE CASCADE)"
             )
         )
 
@@ -3857,11 +4179,8 @@ def create_team(root_dir, participant_hex, team_name):
 def create_invitation(
     root_dir, participant_hex, team_name, inviter_cloud, invitee_label=None, role="admin"
 ):
-    """Create an invitation token for a team.
-
-    inviter_cloud: dict with keys protocol and url (endpoint only — no credentials).
-    Returns a base64-encoded JSON token string.
-    """
+    """Create a transcript-bound admission proposal token for a team."""
+    _role_to_core_berth_role(role)
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
 
@@ -3877,14 +4196,16 @@ def create_invitation(
     inviter_display_name = get_nickname(root_dir, participant_hex) or None
 
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
+    ensure_team_db_schema(team_db_path)
     team_engine = _sqlite_engine(team_db_path)
+    team_sync_dir = participant_dir / team_name / "Sync"
 
     inviter_sender_key = load_team_sender_key(
         device_local_db_path(root_dir, participant_hex), team_id
     )
     if inviter_sender_key is None:
         raise ValueError(f"No sender key found for team '{team_name}'")
-    _inviter_private_key, inviter_device_public_key = get_current_team_device_key(
+    _inviter_private_key, _inviter_device_public_key = get_current_team_device_key(
         root_dir, participant_hex, team_name
     )
 
@@ -3896,44 +4217,69 @@ def create_invitation(
         ).fetchone()
     if berth_row is None:
         raise ValueError(f"No berth found in team DB for '{team_name}'")
-    berth_id_hex = berth_row[0].hex()
     inviter_bucket = _bucket_name_for_protocol(inviter_cloud["protocol"], inviter_member_id, berth_row[0])
 
-    # Create invitation row
-    inv_id = uuid7()
+    proposal_id = uuid7()
+    invitee_member_id = uuid7()
     nonce = secrets.token_bytes(16)
-    now = datetime.now(timezone.utc).isoformat()
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
 
     with team_engine.begin() as conn:
+        quorum, expiry_seconds = _team_admission_policy(conn)
+        if quorum < 1:
+            raise ValueError("Admission quorum must be at least 1")
+        anchor_commit = _team_head_commit(team_sync_dir)
+        governance_snapshot = _governance_snapshot(conn)
+        governance_digest = _governance_digest(governance_snapshot)
         conn.execute(
             text(
-                "INSERT INTO invitation (id, nonce, status, invitee_label, role, created_at) "
-                "VALUES (:id, :nonce, 'pending', :label, :role, :created_at)"
+                "INSERT INTO admission_proposal ("
+                "proposal_id, nonce, team_id, inviter_member_id, invitee_member_id, "
+                "invitee_label, role, anchor_commit, governance_digest, governance_snapshot_json, "
+                "state, created_at, expires_at"
+                ") VALUES ("
+                ":proposal_id, :nonce, :team_id, :inviter_member_id, :invitee_member_id, "
+                ":invitee_label, :role, :anchor_commit, :governance_digest, :governance_snapshot_json, "
+                "'awaiting_invitee', :created_at, :expires_at)"
             ),
-            {"id": inv_id, "nonce": nonce, "label": invitee_label, "role": role, "created_at": now},
+            {
+                "proposal_id": proposal_id,
+                "nonce": nonce,
+                "team_id": team_id,
+                "inviter_member_id": inviter_member_id,
+                "invitee_member_id": invitee_member_id,
+                "invitee_label": invitee_label,
+                "role": role,
+                "anchor_commit": anchor_commit,
+                "governance_digest": governance_digest,
+                "governance_snapshot_json": _json_dumps_sorted(governance_snapshot),
+                "created_at": now,
+                "expires_at": _proposal_expiry(now_dt, expiry_seconds),
+            },
         )
 
-    # Build token — credentials are never included; bucket is publicly readable.
+    # Build token with only the material the invitee needs for transcript-bound admission.
     token_data = {
-        "invitation_id": inv_id.hex(),
+        "proposal_id": proposal_id.hex(),
+        "invitation_id": proposal_id.hex(),
         "nonce": nonce.hex(),
         "team_id": team_id.hex(),
         "team_name": team_name,
         "inviter_member_id": inviter_member_id.hex(),
+        "invitee_member_id": invitee_member_id.hex(),
         "inviter_display_name": inviter_display_name,
+        "invitee_label": invitee_label,
+        "role": role,
         "inviter_cloud": {"protocol": inviter_cloud["protocol"], "url": inviter_cloud["url"]},
         "inviter_bucket": inviter_bucket,
-        "inviter_device_public_key": inviter_device_public_key.hex(),
         "inviter_sender_key": serialize_sender_key_record(inviter_sender_key),
     }
-    token_json = json.dumps(token_data)
-    token_b64 = base64.b64encode(token_json.encode()).decode()
+    token_b64 = _tokenize(token_data)
 
-    # Git commit the updated DB
-    team_sync_dir = participant_dir / team_name / "Sync"
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
-    repo.commit("Created invitation")
+    repo.commit("Created admission proposal")
 
     return token_b64
 
@@ -3946,44 +4292,31 @@ def accept_invitation(
     acceptor_remote=None,
     acceptor_member_id=None,
 ):
-    """Accept a team invitation token (acceptor side).
+    """Accept a transcript-bound team invitation token (invitee side).
 
-    Clones the team repo from the inviter's cloud, adds self as member,
-    and returns an acceptance response for the inviter. The caller is
-    responsible for pushing to the acceptor's own cloud after this returns
-    (typically via a Hub team session).
-
-    inviter_remote: CodSyncRemote for reading the inviter's (public) bucket.
-    acceptor_remote: ignored (deprecated; push is now the caller's responsibility).
-    acceptor_member_id: pre-generated member ID bytes (optional). When None a
-        new UUID is generated. Pass a pre-generated ID when the acceptor's
-        bucket must be derived before this call (e.g. Dropbox folder-prefix).
-    Returns a base64-encoded acceptance response JSON string.
+    The invitee may clone the repo and prepare local keys, but does not write
+    their own admission into the team DB.
     """
     root_dir = pathlib.Path(root_dir)
 
-    # Decode token
-    token_json = base64.b64decode(token_b64).decode()
-    token = json.loads(token_json)
+    token = _untokenize(token_b64)
     team_name = token["team_name"]
     team_id = bytes.fromhex(token["team_id"])
     inviter_member_id = bytes.fromhex(token["inviter_member_id"])
     inviter_cloud = token["inviter_cloud"]  # protocol + url only, no credentials
     inviter_bucket = token["inviter_bucket"]
     inviter_display_name = token.get("inviter_display_name") or None
-    inviter_device_public_key = bytes.fromhex(token["inviter_device_public_key"])
     inviter_sender_key = deserialize_distribution_message(token["inviter_sender_key"])
-    invitation_id = bytes.fromhex(token["invitation_id"])
+    proposal_id = bytes.fromhex(token["proposal_id"])
     nonce = bytes.fromhex(token["nonce"])
-
-    # Read acceptor's own cloud config (URL only; credentials stay in Hub)
-    acceptor_cloud_full = get_cloud_storage(root_dir, acceptor_participant_hex)
-    acceptor_cloud = {"protocol": acceptor_cloud_full["protocol"], "url": acceptor_cloud_full["url"]}
+    invitee_member_id = bytes.fromhex(token["invitee_member_id"])
 
     # Use pre-generated member ID if provided (required when acceptor_remote must
     # be constructed before this call, e.g. Dropbox folder-prefix naming).
     if acceptor_member_id is None:
-        acceptor_member_id = uuid7()
+        acceptor_member_id = invitee_member_id
+    if acceptor_member_id != invitee_member_id:
+        raise ValueError("Invitation token member binding mismatch")
 
     acceptor_dir = root_dir / "Participants" / acceptor_participant_hex
 
@@ -4017,10 +4350,13 @@ def accept_invitation(
     # --- Install sqlite merge driver ---
     _install_sqlite_merge_driver(team_sync_dir)
 
-    # --- Add team membership pointer to acceptor's NoteToSelf ---
-    # Only a lightweight Team reference goes in NoteToSelf; structural data
-    # (App, TeamAppBerth, BerthRole) lives in the team DB, which was cloned above.
     with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM team WHERE name = ?",
+            (team_name,),
+        ).fetchone()
+        if existing is not None:
+            raise ValueError(f"Team '{team_name}' already exists in NoteToSelf")
         conn.execute(
             "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
             (team_id, team_name, acceptor_member_id),
@@ -4032,115 +4368,71 @@ def accept_invitation(
         root_dir, acceptor_participant_hex, team_id
     )
     acceptor_device_key_id = key_id_from_public(team_keys["device_key"].public_key)
+
+    team_db_path = team_sync_dir / "core.db"
+    ensure_team_db_schema(team_db_path)
+    # Team sender state is local-only and does not publish admission.
     save_peer_sender_key(
         device_local_db_path(root_dir, acceptor_participant_hex),
         team_id,
         receiver_record_from_distribution(inviter_sender_key),
     )
-    acceptor_sender_key = _initialize_team_sender_key_state(
+    _initialize_team_sender_key_state(
         device_local_db_path(root_dir, acceptor_participant_hex),
         team_id,
         key_id_from_public(team_keys["device_key"].public_key),
     )
 
-    # --- Record visible member/device rows in the cloned DB ---
-    team_db_path = team_sync_dir / "core.db"
-    ensure_team_db_schema(team_db_path)
-    team_engine = _sqlite_engine(team_db_path)
-    if acceptor_cloud["protocol"] == "dropbox":
-        acceptor_bucket = f"ss-{acceptor_member_id.hex()[:16]}"
-    else:
-        with team_engine.begin() as conn:
-            berth_row = conn.execute(
-                text("SELECT id FROM team_app_berth LIMIT 1")
-            ).fetchone()
-        acceptor_bucket = _bucket_name_for_protocol(
-            acceptor_cloud["protocol"],
-            acceptor_member_id,
-            berth_row[0],
-        )
+    with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
+        device_row = _current_device_row(conn)
+        invitee_bootstrap_key = device_row[1]
+    transcript_payload = _proposal_transcript_payload(
+        proposal_id=proposal_id,
+        nonce=nonce,
+        team_id=team_id,
+        invitee_member_id=acceptor_member_id,
+        invitee_device_public_key=team_keys["device_key"].public_key,
+        invitee_bootstrap_key=invitee_bootstrap_key,
+    )
+    acceptance_signature = _sign_bytes(
+        team_keys["device_private_key"],
+        _json_bytes(transcript_payload),
+    )
 
-    with team_engine.begin() as conn:
-        _upsert_member_row(conn, inviter_member_id, display_name=inviter_display_name)
-        _upsert_team_device_row(
-            conn,
-            inviter_member_id,
-            inviter_device_public_key,
-            protocol=inviter_cloud["protocol"],
-            url=inviter_cloud["url"],
-            bucket=inviter_bucket,
-        )
-        _upsert_member_row(
-            conn,
-            acceptor_member_id,
-            display_name=get_nickname(root_dir, acceptor_participant_hex) or None,
-        )
-        _upsert_team_device_row(
-            conn,
-            acceptor_member_id,
-            team_keys["device_key"].public_key,
-            protocol=acceptor_cloud["protocol"],
-            url=acceptor_cloud["url"],
-            bucket=acceptor_bucket,
-        )
-        _publish_local_device_prekey_bundle(
-            root_dir,
-            acceptor_participant_hex,
-            team_name,
-            conn=conn,
-            team_id=team_id,
-            team_device_public_key=team_keys["device_key"].public_key,
-        )
-    team_engine.dispose()
-
-    # --- Git commit the DB changes ---
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
-    repo.stage(["core.db", ".gitattributes"])
-    repo.commit(f"Joined team: {team_name}")
-
-    # --- Build and return acceptance response (no credentials) ---
     acceptance_data = {
-        "invitation_id": invitation_id.hex(),
+        "proposal_id": proposal_id.hex(),
+        "invitation_id": proposal_id.hex(),
         "nonce": nonce.hex(),
         "team_id": team_id.hex(),
+        "invitee_member_id": acceptor_member_id.hex(),
         "acceptor_member_id": acceptor_member_id.hex(),
+        "invitee_device_key_id": acceptor_device_key_id.hex(),
         "acceptor_device_key_id": acceptor_device_key_id.hex(),
+        "invitee_device_public_key": team_keys["device_key"].public_key.hex(),
         "acceptor_device_public_key": team_keys["device_key"].public_key.hex(),
-        "acceptor_cloud": acceptor_cloud,
-        "acceptor_bucket": acceptor_bucket,
-        "acceptor_sender_key": serialize_distribution_message(acceptor_sender_key),
+        "invitee_bootstrap_key": invitee_bootstrap_key.hex(),
+        "acceptance_signature": acceptance_signature.hex(),
     }
-    acceptance_json = json.dumps(acceptance_data)
-    acceptance_b64 = base64.b64encode(acceptance_json.encode()).decode()
-
-    return acceptance_b64
+    return _tokenize(acceptance_data)
 
 
 def complete_invitation_acceptance(
     root_dir, participant_hex, team_name, acceptance_b64
 ):
-    """Complete an invitation acceptance (inviter side).
-
-    Decodes the acceptance response, validates it against the invitation row,
-    and adds the acceptor as a member + peer in the inviter's team DB.
-    """
+    """Record acceptance and finalize immediately when quorum is met."""
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
 
-    # Decode acceptance response
-    acceptance_json = base64.b64decode(acceptance_b64).decode()
-    acceptance = json.loads(acceptance_json)
-    invitation_id = bytes.fromhex(acceptance["invitation_id"])
+    acceptance = _untokenize(acceptance_b64)
+    proposal_id = bytes.fromhex(acceptance["proposal_id"])
     nonce = bytes.fromhex(acceptance["nonce"])
     team_id = bytes.fromhex(acceptance["team_id"])
-    acceptor_member_id = bytes.fromhex(acceptance["acceptor_member_id"])
-    acceptor_device_key_id = bytes.fromhex(acceptance["acceptor_device_key_id"])
-    acceptor_device_public_key = bytes.fromhex(acceptance["acceptor_device_public_key"])
-    acceptor_cloud = acceptance["acceptor_cloud"]
-    acceptor_bucket = acceptance["acceptor_bucket"]
-    acceptor_sender_key = deserialize_distribution_message(acceptance["acceptor_sender_key"])
+    invitee_member_id = bytes.fromhex(acceptance["invitee_member_id"])
+    invitee_device_key_id = bytes.fromhex(acceptance["invitee_device_key_id"])
+    invitee_device_public_key = bytes.fromhex(acceptance["invitee_device_public_key"])
+    invitee_bootstrap_key = bytes.fromhex(acceptance["invitee_bootstrap_key"])
+    acceptance_signature = bytes.fromhex(acceptance["acceptance_signature"])
 
-    # Find and validate the invitation in the inviter's team DB
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
     ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
@@ -4148,7 +4440,7 @@ def complete_invitation_acceptance(
         root_dir, participant_hex, team_name
     )
     inviter_device_key = _participant_key_from_public(inviter_public_key)
-    acceptor_device_key = _participant_key_from_public(acceptor_device_public_key)
+    acceptor_device_key = _participant_key_from_public(invitee_device_public_key)
 
     user_db_path = participant_dir / "NoteToSelf" / "Sync" / "core.db"
     user_engine = _sqlite_engine(user_db_path)
@@ -4172,100 +4464,302 @@ def complete_invitation_acceptance(
         issuer_private_key=inviter_private_key,
         team_id=team_id,
         issuer_member_id=inviter_member_id,
-        admitted_member_id=acceptor_member_id,
+        admitted_member_id=invitee_member_id,
     )
     if not verify_membership_cert(
         membership_cert,
         issuer_public_key=inviter_public_key,
         team_id=team_id,
         issuer_member_id=inviter_member_id,
-        admitted_member_id=acceptor_member_id,
-        subject_public_key=acceptor_device_public_key,
+        admitted_member_id=invitee_member_id,
+        subject_public_key=invitee_device_public_key,
     ):
-        raise ValueError("Failed to issue a valid membership cert for the acceptor")
+        raise ValueError("Failed to issue a valid membership cert for the invitee")
 
+    failure_reason = None
     with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT nonce, status, invitee_label FROM invitation WHERE id = :id"),
-            {"id": invitation_id},
-        ).fetchone()
-
-        if row is None:
-            engine.dispose()
-            raise ValueError("Invitation not found")
-
-        if row[1] != "pending":
-            engine.dispose()
-            raise ValueError(f"Invitation is not pending (status: {row[1]})")
-        if row[0] != nonce:
-            engine.dispose()
+        proposal_row = _load_admission_proposal_row(conn, proposal_id)
+        ok, reason = _proposal_is_still_valid(conn, proposal_row)
+        if not ok:
+            failure_reason = reason
+        elif proposal_row[10] != "awaiting_invitee":
+            raise ValueError(f"Proposal is not awaiting invitee acceptance (state: {proposal_row[10]})")
+        elif proposal_row[1] != nonce:
             raise ValueError("Nonce mismatch")
+        elif proposal_row[2] != team_id:
+            raise ValueError("Acceptance team_id does not match proposal")
+        elif proposal_row[4] != invitee_member_id:
+            raise ValueError("Acceptance member_id does not match proposal")
+        else:
+            transcript_payload = _proposal_transcript_payload(
+                proposal_id=proposal_id,
+                nonce=nonce,
+                team_id=team_id,
+                invitee_member_id=invitee_member_id,
+                invitee_device_public_key=invitee_device_public_key,
+                invitee_bootstrap_key=invitee_bootstrap_key,
+            )
+            if key_id_from_public(invitee_device_public_key) != invitee_device_key_id:
+                raise ValueError("Acceptance device_key_id does not match invitee public key")
+            if not _verify_signature(
+                invitee_device_public_key,
+                _json_bytes(transcript_payload),
+                acceptance_signature,
+            ):
+                raise ValueError("Acceptance signature is invalid")
 
-        now = datetime.now(timezone.utc).isoformat()
-        conn.execute(
-            text(
-                "UPDATE invitation SET status='accepted', accepted_at=:now, "
-                "accepted_by=:member_id, acceptor_device_key_id=:device_key_id, "
-                "acceptor_protocol=:protocol, "
-                "acceptor_url=:url "
-                "WHERE id = :id"
-            ),
-            {
-                "id": invitation_id,
-                "now": now,
-                "member_id": acceptor_member_id,
-                "device_key_id": acceptor_device_key_id,
-                "protocol": acceptor_cloud["protocol"],
-                "url": acceptor_cloud["url"],
-            },
-        )
-
-        # Add acceptor as member + device in inviter's team DB (URL only, no credentials)
-        _upsert_member_row(conn, acceptor_member_id, display_name=row[2])
-        _store_team_certificate(conn, membership_cert, issuer_member_id=inviter_member_id)
-        stored_device_key_id = _upsert_team_device_row(
-            conn,
-            acceptor_member_id,
-            acceptor_device_public_key,
-            protocol=acceptor_cloud["protocol"],
-            url=acceptor_cloud["url"],
-            bucket=acceptor_bucket,
-        )
-        if stored_device_key_id != acceptor_device_key_id:
-            raise ValueError("Acceptance device_key_id does not match acceptor public key")
-
-        # Grant the acceptor read-write on all berths (default).
-        # The inviter (admin) can change this later.
-        berth_row = conn.execute(
-            text("SELECT id FROM team_app_berth LIMIT 1")
-        ).fetchone()
-        if berth_row is not None:
+            transcript_digest = _proposal_transcript_digest(transcript_payload)
+            now = _now_iso()
             conn.execute(
                 text(
-                    "INSERT INTO berth_role (id, member_id, berth_id, role) "
-                    "VALUES (:id, :mid, :bid, :role)"
+                    "UPDATE admission_proposal SET "
+                    "state = :state, acceptance_recorded_at = :acceptance_recorded_at, "
+                    "invitee_device_public_key = :invitee_device_public_key, "
+                    "invitee_bootstrap_key = :invitee_bootstrap_key, "
+                    "acceptance_signature = :acceptance_signature, "
+                    "transcript_digest = :transcript_digest, transcript_json = :transcript_json "
+                    "WHERE proposal_id = :proposal_id"
                 ),
                 {
-                    "id": uuid7(),
-                    "mid": acceptor_member_id,
-                    "bid": berth_row[0],
-                    "role": "read-write",
+                    "proposal_id": proposal_id,
+                    "state": "awaiting_quorum" if _proposal_quorum(conn) > 1 else "finalized",
+                    "acceptance_recorded_at": now,
+                    "invitee_device_public_key": invitee_device_public_key,
+                    "invitee_bootstrap_key": invitee_bootstrap_key,
+                    "acceptance_signature": acceptance_signature,
+                    "transcript_digest": transcript_digest,
+                    "transcript_json": _json_dumps_sorted(transcript_payload),
                 },
             )
+            approval_signature = _sign_bytes(
+                inviter_private_key,
+                _approval_payload(
+                    proposal_id=proposal_id,
+                    transcript_digest=transcript_digest,
+                    admin_member_id=inviter_member_id,
+                ),
+            )
+            _insert_admin_approval(
+                conn,
+                proposal_id=proposal_id,
+                admin_member_id=inviter_member_id,
+                approver_device_key_id=key_id_from_public(inviter_public_key),
+                signature=approval_signature,
+                transcript_digest=transcript_digest,
+            )
 
-    # Dispose engine to release file locks before git operations
+            refreshed_row = _load_admission_proposal_row(conn, proposal_id)
+            if _proposal_has_quorum(conn, refreshed_row):
+                _upsert_member_row(conn, invitee_member_id, display_name=proposal_row[5])
+                _store_team_certificate(conn, membership_cert, issuer_member_id=inviter_member_id)
+                stored_device_key_id = _upsert_team_device_row(
+                    conn,
+                    invitee_member_id,
+                    invitee_device_public_key,
+                )
+                if stored_device_key_id != invitee_device_key_id:
+                    raise ValueError("Acceptance device_key_id does not match invitee public key")
+
+                berth_rows = conn.execute(text("SELECT id FROM team_app_berth")).fetchall()
+                core_role = _role_to_core_berth_role(proposal_row[6])
+                for berth_row in berth_rows:
+                    conn.execute(
+                        text(
+                            "INSERT INTO berth_role (id, member_id, berth_id, role) "
+                            "VALUES (:id, :member_id, :berth_id, :role)"
+                        ),
+                        {
+                            "id": uuid7(),
+                            "member_id": invitee_member_id,
+                            "berth_id": berth_row[0],
+                            "role": core_role,
+                        },
+                    )
+                finalization_signature = _sign_bytes(
+                    inviter_private_key,
+                    _finalization_payload(
+                        proposal_id=proposal_id,
+                        transcript_digest=transcript_digest,
+                        invitee_member_id=invitee_member_id,
+                    ),
+                )
+                conn.execute(
+                    text(
+                        "UPDATE admission_proposal SET state = 'finalized', "
+                        "finalized_at = :finalized_at, finalization_signature = :finalization_signature "
+                        "WHERE proposal_id = :proposal_id"
+                    ),
+                    {
+                        "proposal_id": proposal_id,
+                        "finalized_at": now,
+                        "finalization_signature": finalization_signature,
+                    },
+                )
+
     engine.dispose()
+    if failure_reason is not None:
+        raise ValueError(failure_reason)
 
     team_sync_dir = participant_dir / team_name / "Sync"
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
-    repo.commit("Accepted invitation")
+    repo.commit("Recorded admission acceptance")
 
-    save_peer_sender_key(
-        device_local_db_path(root_dir, participant_hex),
-        team_id,
-        receiver_record_from_distribution(acceptor_sender_key),
+
+def sign_admin_approval(root_dir, participant_hex, team_name, proposal_id_hex):
+    root_dir = pathlib.Path(root_dir)
+    proposal_id = bytes.fromhex(proposal_id_hex)
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    ensure_team_db_schema(team_db_path)
+    engine = _sqlite_engine(team_db_path)
+    approver_private_key, approver_public_key = get_current_team_device_key(
+        root_dir,
+        participant_hex,
+        team_name,
     )
+    approver_device_key_id = key_id_from_public(approver_public_key)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute(
+            "SELECT self_in_team FROM team WHERE name = ?",
+            (team_name,),
+        ).fetchone()
+    if row is None:
+        raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
+    admin_member_id = row[0]
+    failure_reason = None
+    try:
+        with engine.begin() as conn:
+            proposal_row = _load_admission_proposal_row(conn, proposal_id)
+            ok, reason = _proposal_is_still_valid(conn, proposal_row)
+            if not ok:
+                failure_reason = reason
+            elif proposal_row[17] is None:
+                raise ValueError("Proposal does not have a recorded transcript yet")
+            else:
+                snapshot = _load_governance_snapshot_json(proposal_row)
+                if not _proposal_admin_device_is_valid(snapshot, admin_member_id, approver_device_key_id):
+                    raise ValueError("Approver device was not linked to an admin at the proposal anchor")
+                signature = _sign_bytes(
+                    approver_private_key,
+                    _approval_payload(
+                        proposal_id=proposal_id,
+                        transcript_digest=proposal_row[17],
+                        admin_member_id=admin_member_id,
+                    ),
+                )
+                _insert_admin_approval(
+                    conn,
+                    proposal_id=proposal_id,
+                    admin_member_id=admin_member_id,
+                    approver_device_key_id=approver_device_key_id,
+                    signature=signature,
+                    transcript_digest=proposal_row[17],
+                )
+    finally:
+        engine.dispose()
+    if failure_reason is not None:
+        raise ValueError(failure_reason)
+    repo_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    repo = _Repo(repo_dir / ".git", repo_dir)
+    repo.stage(["core.db"])
+    repo.commit("Recorded admin approval")
+
+
+def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
+    root_dir = pathlib.Path(root_dir)
+    proposal_id = bytes.fromhex(proposal_id_hex)
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    ensure_team_db_schema(team_db_path)
+    engine = _sqlite_engine(team_db_path)
+    inviter_private_key, inviter_public_key = get_current_team_device_key(
+        root_dir,
+        participant_hex,
+        team_name,
+    )
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute(
+            "SELECT self_in_team FROM team WHERE name = ?",
+            (team_name,),
+        ).fetchone()
+    if row is None:
+        raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
+    self_member_id = row[0]
+    failure_reason = None
+    try:
+        with engine.begin() as conn:
+            proposal_row = _load_admission_proposal_row(conn, proposal_id)
+            ok, reason = _proposal_is_still_valid(conn, proposal_row)
+            if not ok:
+                failure_reason = reason
+            elif proposal_row[3] != self_member_id:
+                raise ValueError("Only the inviter may finalize this proposal")
+            elif proposal_row[17] is None or proposal_row[14] is None:
+                raise ValueError("Proposal transcript is incomplete")
+            elif not _proposal_has_quorum(conn, proposal_row):
+                raise ValueError("Proposal has not met quorum")
+            else:
+                invitee_member_id = proposal_row[4]
+                invitee_device_public_key = proposal_row[14]
+                membership_cert = issue_membership_cert(
+                    subject_key=_participant_key_from_public(invitee_device_public_key),
+                    issuer_key=_participant_key_from_public(inviter_public_key),
+                    issuer_private_key=inviter_private_key,
+                    team_id=proposal_row[2],
+                    issuer_member_id=self_member_id,
+                    admitted_member_id=invitee_member_id,
+                )
+                _upsert_member_row(conn, invitee_member_id, display_name=proposal_row[5])
+                _store_team_certificate(conn, membership_cert, issuer_member_id=self_member_id)
+                _upsert_team_device_row(conn, invitee_member_id, invitee_device_public_key)
+                berth_rows = conn.execute(text("SELECT id FROM team_app_berth")).fetchall()
+                role = _role_to_core_berth_role(proposal_row[6])
+                for berth_row in berth_rows:
+                    existing = conn.execute(
+                        text(
+                            "SELECT 1 FROM berth_role WHERE member_id = :member_id AND berth_id = :berth_id"
+                        ),
+                        {"member_id": invitee_member_id, "berth_id": berth_row[0]},
+                    ).fetchone()
+                    if existing is None:
+                        conn.execute(
+                            text(
+                                "INSERT INTO berth_role (id, member_id, berth_id, role) "
+                                "VALUES (:id, :member_id, :berth_id, :role)"
+                            ),
+                            {
+                                "id": uuid7(),
+                                "member_id": invitee_member_id,
+                                "berth_id": berth_row[0],
+                                "role": role,
+                            },
+                        )
+                conn.execute(
+                    text(
+                        "UPDATE admission_proposal SET state = 'finalized', "
+                        "finalized_at = :finalized_at, finalization_signature = :finalization_signature "
+                        "WHERE proposal_id = :proposal_id"
+                    ),
+                    {
+                        "proposal_id": proposal_id,
+                        "finalized_at": _now_iso(),
+                        "finalization_signature": _sign_bytes(
+                            inviter_private_key,
+                            _finalization_payload(
+                                proposal_id=proposal_id,
+                                transcript_digest=proposal_row[17],
+                                invitee_member_id=invitee_member_id,
+                            ),
+                        ),
+                    },
+                )
+    finally:
+        engine.dispose()
+    if failure_reason is not None:
+        raise ValueError(failure_reason)
+    repo_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    repo = _Repo(repo_dir / ".git", repo_dir)
+    repo.stage(["core.db"])
+    repo.commit("Finalized admission proposal")
 
 
 def add_notification_service(
@@ -4459,30 +4953,35 @@ def remove_cloud_storage(root_dir, participant_hex, storage_id_hex):
 
 
 def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
-    """Set an invitation's status to 'revoked'. Raises ValueError if not pending."""
+    """Invalidate an open admission proposal."""
     root_dir = pathlib.Path(root_dir)
     team_db_path = (
         root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
     )
     invitation_id = bytes.fromhex(invitation_id_hex)
+    ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
     with engine.begin() as conn:
         row = conn.execute(
-            text("SELECT status FROM invitation WHERE id = :id"), {"id": invitation_id}
+            text("SELECT state FROM admission_proposal WHERE proposal_id = :id"),
+            {"id": invitation_id},
         ).fetchone()
         if row is None:
-            raise ValueError("Invitation not found")
-        if row[0] != "pending":
-            raise ValueError(f"Invitation is not pending (status: {row[0]})")
+            raise ValueError("Admission proposal not found")
+        if row[0] not in {"awaiting_invitee", "awaiting_quorum"}:
+            raise ValueError(f"Proposal is not revocable (state: {row[0]})")
         conn.execute(
-            text("UPDATE invitation SET status = 'revoked' WHERE id = :id"),
+            text(
+                "UPDATE admission_proposal SET state = 'invalidated', invalid_reason = 'revoked' "
+                "WHERE proposal_id = :id"
+            ),
             {"id": invitation_id},
         )
     engine.dispose()
     team_sync_dir = root_dir / "Participants" / participant_hex / team_name / "Sync"
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
-    repo.commit("Revoked invitation")
+    repo.commit("Revoked admission proposal")
 
 
 def get_nickname(root_dir, participant_hex):
@@ -4570,14 +5069,18 @@ def list_members(root_dir, participant_hex, team_name):
 
 
 def list_invitations(root_dir, participant_hex, team_name):
-    """List invitations for a team. Returns list of dicts."""
+    """List admission proposals for a team. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
 
     with engine.begin() as conn:
         rows = conn.execute(
-            text("SELECT id, status, invitee_label, role, created_at FROM invitation")
+            text(
+                "SELECT proposal_id, state, invitee_label, role, created_at "
+                "FROM admission_proposal ORDER BY created_at DESC, proposal_id DESC"
+            )
         ).fetchall()
 
     return [

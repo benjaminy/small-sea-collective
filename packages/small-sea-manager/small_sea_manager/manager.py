@@ -534,9 +534,27 @@ class TeamManager:
             self._push_status_file(team_name).write_text(head)
 
     def complete_invitation_acceptance(self, team_name, acceptance_b64):
-        """Complete an acceptance (inviter side): add acceptor as member + peer."""
+        """Record invitee acceptance and finalize when quorum is met."""
         provisioning.complete_invitation_acceptance(
             self.root_dir, self.participant_hex, team_name, acceptance_b64
+        )
+
+    def sign_admin_approval(self, team_name, proposal_id):
+        """Record this admin's approval for a transcript-bound admission proposal."""
+        provisioning.sign_admin_approval(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            proposal_id,
+        )
+
+    def finalize_admission(self, team_name, proposal_id):
+        """Finalize a quorum-met admission proposal as the inviter."""
+        provisioning.finalize_admission(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            proposal_id,
         )
 
     def wait_for_team_admission_signal(self, team_name: str, timeout: int = 15) -> bool:

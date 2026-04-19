@@ -21,6 +21,22 @@
           <p style="font-size:0.86rem; color:#57534e; margin-top:0.15rem">{{ event.summary }}</p>
         </div>
         <div class="row" style="gap:0.35rem; flex-wrap:wrap; justify-content:flex-end;">
+          {% if event.can_approve and viewer_is_admin and event.proposal_id_hex %}
+          <form hx-post="/teams/{{ team_name }}/invitations/{{ event.proposal_id_hex }}/approve"
+                hx-sync="#team-detail:replace"
+                hx-target="#team-detail"
+                hx-swap="innerHTML">
+            <button class="btn btn-secondary btn-sm" type="submit">Approve</button>
+          </form>
+          {% endif %}
+          {% if event.can_finalize and viewer_is_admin and event.proposal_id_hex %}
+          <form hx-post="/teams/{{ team_name }}/invitations/{{ event.proposal_id_hex }}/finalize"
+                hx-sync="#team-detail:replace"
+                hx-target="#team-detail"
+                hx-swap="innerHTML">
+            <button class="btn btn-secondary btn-sm" type="submit">Finalize</button>
+          </form>
+          {% endif %}
           {% if event.can_revoke and viewer_is_admin and event.invitation_id_hex %}
           <form hx-post="/teams/{{ team_name }}/invitations/{{ event.invitation_id_hex }}/revoke"
                 hx-sync="#team-detail:replace"
