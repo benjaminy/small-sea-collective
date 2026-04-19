@@ -550,6 +550,76 @@ def test_linked_device_bootstrap_peer_sender_keys_transferred(playground_dir):
     assert plaintext == b"hello from Bob"
 
 
+def test_linked_device_bootstrap_transfers_skipped_peer_sender_keys(playground_dir):
+    workspace = pathlib.Path(playground_dir)
+    root1 = workspace / "install-a"
+    root2 = workspace / "install-b"
+    bob_root = workspace / "install-bob"
+    cloud_dir = workspace / "cloud"
+    root1.mkdir()
+    root2.mkdir()
+    bob_root.mkdir()
+    cloud_dir.mkdir()
+
+    alice_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
+    bob_hex = create_new_participant(bob_root, "Bob")
+
+    join_request = create_identity_join_request(root2)
+    manager1 = TeamManager(root1, alice_hex)
+    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+
+    team_result = manager1.create_team("ProjectX")
+    team_id = bytes.fromhex(team_result["team_id_hex"])
+    member_id = bytes.fromhex(team_result["member_id_hex"])
+    bob = _bootstrap_remote_member_installation(
+        root1,
+        alice_hex,
+        bob_root,
+        bob_hex,
+        "ProjectX",
+        team_id,
+        member_id,
+    )
+    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, member_id)
+
+    local_db1 = device_local_db_path(root1, alice_hex)
+    local_db2 = device_local_db_path(root2, alice_hex)
+    bob_sender = load_team_sender_key(bob["local_db"], team_id)
+    assert bob_sender is not None
+
+    alice_peer_for_bob = load_peer_sender_key(local_db1, team_id, bob["device_key_id"])
+    assert alice_peer_for_bob is not None
+    bob_sender, first_bob_message = group_encrypt(team_id, bob_sender, b"first from Bob")
+    bob_sender, second_bob_message = group_encrypt(team_id, bob_sender, b"second from Bob")
+    save_team_sender_key(bob["local_db"], team_id, bob_sender)
+
+    alice_peer_for_bob, plaintext = group_decrypt(second_bob_message, alice_peer_for_bob)
+    assert plaintext == b"second from Bob"
+    assert alice_peer_for_bob.skipped_message_keys
+    save_peer_sender_key(local_db1, team_id, alice_peer_for_bob)
+
+    manager2 = TeamManager(root2, alice_hex)
+    prepared = manager2.prepare_linked_device_team_join("ProjectX")
+    created = manager1.create_linked_device_bootstrap(
+        "ProjectX",
+        prepared["join_request_bundle"],
+    )
+    finalized = manager2.finalize_linked_device_bootstrap(
+        "ProjectX",
+        created["bootstrap_bundle"],
+    )
+    assert "bootstrap_id_hex" in finalized
+
+    root2_peer_for_bob = load_peer_sender_key(local_db2, team_id, bob["device_key_id"])
+    assert root2_peer_for_bob is not None
+    assert root2_peer_for_bob.skipped_message_keys == alice_peer_for_bob.skipped_message_keys
+
+    root2_peer_for_bob, plaintext = group_decrypt(first_bob_message, root2_peer_for_bob)
+    assert plaintext == b"first from Bob"
+
+
 def test_linked_device_bootstrap_exclusion_cuts_off_peer(playground_dir):
     workspace = pathlib.Path(playground_dir)
     root1 = workspace / "install-a"

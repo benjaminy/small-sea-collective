@@ -2226,22 +2226,30 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
     if sender_key_record is None:
         raise ValueError(f"No local sender key found for team '{team_name}'")
     sender_distribution = distribution_message_from_record(sender_key_record)
+    peer_sender_records = load_all_peer_sender_keys(
+        device_local_db_path(root_dir, participant_hex),
+        team_id,
+    )
     peer_sender_distributions = [
         # Peer receiver records and local sender records share the same current
         # chain-position fields needed by SenderKeyDistributionMessage, so this
-        # reuse is valid for bootstrap handoff. This intentionally drops any
-        # skipped_message_keys cached on the sibling's receiver record because
-        # the distribution-message format cannot represent them.
+        # reuse is valid for bootstrap handoff.
         serialize_distribution_message(distribution_message_from_record(peer_record))
-        for peer_record in load_all_peer_sender_keys(
-            device_local_db_path(root_dir, participant_hex),
-            team_id,
-        )
+        for peer_record in peer_sender_records
     ]
+    peer_sender_skipped_keys = {
+        peer_record.sender_device_key_id.hex(): {
+            str(iteration): key.hex()
+            for iteration, key in peer_record.skipped_message_keys.items()
+        }
+        for peer_record in peer_sender_records
+        if peer_record.skipped_message_keys
+    }
     plaintext = _json_bytes(
         {
             "own_sender_distribution": serialize_distribution_message(sender_distribution),
             "peer_sender_distributions": peer_sender_distributions,
+            "peer_sender_skipped_keys": peer_sender_skipped_keys,
         }
     )
     associated_data = _json_bytes(
@@ -2387,12 +2395,26 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         team_id,
         receiver_record_from_distribution(authorizer_distribution),
     )
+    peer_sender_skipped_keys = decrypted_payload.get("peer_sender_skipped_keys", {})
     for peer_distribution_data in decrypted_payload["peer_sender_distributions"]:
         peer_distribution = deserialize_distribution_message(peer_distribution_data)
+        peer_record = receiver_record_from_distribution(peer_distribution)
+        raw_skipped_keys = peer_sender_skipped_keys.get(
+            peer_distribution.sender_device_key_id.hex(),
+            {},
+        )
+        if raw_skipped_keys:
+            peer_record = replace(
+                peer_record,
+                skipped_message_keys={
+                    int(iteration): bytes.fromhex(key_hex)
+                    for iteration, key_hex in raw_skipped_keys.items()
+                },
+            )
         save_peer_sender_key(
             device_local_db_path(root_dir, participant_hex),
             team_id,
-            receiver_record_from_distribution(peer_distribution),
+            peer_record,
         )
 
     team_device_private_key = session_row["team_device_private_key"]

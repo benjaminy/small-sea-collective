@@ -304,18 +304,24 @@ Historical boundary and visibility:
   Evidence: `test_linked_device_bootstrap_peer_sender_keys_transferred` asserts
   that a pre-bootstrap Bob message remains unreadable while a post-bootstrap Bob
   message is readable after the sibling hands off Bob's current receiver state.
-- **Skipped-key caches are not part of the handoff format.** The bootstrap
-  envelope serializes peer receiver state through `SenderKeyDistributionMessage`,
-  which carries the current chain position but not any cached
-  `skipped_message_keys`. If the sibling had stored skipped keys for out-of-order
-  delivery before bootstrap, the new device does not inherit those cached keys.
-  This is an accepted limitation of the current pre-alpha handoff format.
+- **Skipped-key caches are part of the sibling snapshot handed off at
+  bootstrap.** The bootstrap envelope still serializes current chain position
+  through `SenderKeyDistributionMessage`, and it now carries cached
+  `skipped_message_keys` as a parallel bootstrap payload field keyed by sender
+  device key id. If the sibling had stored skipped keys because peer messages
+  arrived out of order before bootstrap, the new device inherits those cached
+  keys and can decrypt the same pending messages the sibling could decrypt at
+  bootstrap time.
+  Evidence: `test_linked_device_bootstrap_transfers_skipped_peer_sender_keys`
+  exercises an out-of-order Bob-message case where Alice caches a skipped key,
+  bootstraps a sibling device, and the new device decrypts the earlier Bob
+  message from the transferred skipped-key state.
 - That test is **repo-local protocol evidence**, not a full cryptographic
   assurance. It depends on current Cuttlefish group-encryption behavior in a
   pre-alpha repo where crypto internals are still evolving.
   Evidence: `group_encrypt(...)` / `group_decrypt(...)` in
   `packages/cuttlefish/cuttlefish/group.py`, plus the linked-device bootstrap
-  test above.
+  tests above.
 
 Retry/idempotency status in the current slice:
 
