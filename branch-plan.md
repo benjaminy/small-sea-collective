@@ -5,7 +5,8 @@
 **Primary issue:** #98 "admin-quorum admission"  
 **Kind:** Implementation branch. Code + micro tests.  
 **Related issues:** #97 (accepted trust-domain reframe), #99 (admission-event visibility, B2), #100 (spec/doc sweep, B1), #102 (member transport configuration, B7)  
-**Related prior plan:** `Archive/branch-plan-issue-97-trust-domain-reframe.md`
+**Related prior plan:** `Archive/branch-plan-issue-97-trust-domain-reframe.md`  
+**Related code of interest:** `packages/small-sea-manager/small_sea_manager/provisioning.py`, `packages/small-sea-manager/small_sea_manager/sql/core_other_team.sql`, `packages/small-sea-manager/small_sea_manager/manager.py`, `packages/small-sea-manager/small_sea_manager/web.py`, `packages/small-sea-manager/small_sea_manager/templates/fragments/invitations.html`, `packages/small-sea-hub/`
 
 ## Purpose
 
@@ -36,22 +37,23 @@ The implementation is only acceptable if all of these remain true:
 5. `quorum = 1` is the default and works end-to-end without requiring extra admin UX.
 6. `quorum > 1` uses the same core data model and verification rules, not a parallel code path with different semantics.
 7. Post-admission transport configuration stays out of the immutable transcript and continues through the B7 flow.
-8. Only `small-sea-manager` reads or writes the core team DB directly.
+8. This branch must not weaken the existing rule that only `small-sea-manager` reads or writes the core team DB directly.
 
 ## Branch Goals
 
 When this branch is done, the repo should provide all of the following:
 
 1. An inviter can create an admission proposal shell anchored to the current governance snapshot and containing a pre-allocated invitee `member_id`.
-2. That shell is visible immediately through the existing B2 admission-events path, before the invitee is contacted.
+2. That shell is visible immediately through the existing B2 admission-events path before the invitation token is delivered to the invitee.
 3. The invitee can generate device keys and return a signed acceptance blob that binds those keys to the allocated `member_id`, without writing to team DB.
 4. The inviter can verify the acceptance blob, assemble the transcript, sign an approval, and publish finalization when quorum is met.
 5. At `quorum = 1`, inviter approval and finalization succeed in the same end-to-end flow.
 6. At `quorum > 1`, other admins can add valid approvals that count by distinct `admin_member_id`, not by device.
 7. Governance drift or expiry invalidates a proposal and blocks finalization.
 8. The old invitee-self-admission path is removed or reduced to a hard failure that cannot produce admission.
-9. Newly admitted members are handed off to the B7 transport-announcement flow after admission, not during transcript creation.
-10. The branch lands enough micro tests to prove the new trust boundary, not just the happy path.
+9. The admission flow handles the invitee role explicitly, with the plan stating whether that role is stored on the proposal or derived elsewhere at finalization.
+10. Newly admitted members are handed off to the B7 transport-announcement flow after admission, not during transcript creation.
+11. The branch lands enough micro tests to prove the new trust boundary, not just the happy path.
 
 ## In Scope
 
@@ -60,12 +62,14 @@ When this branch is done, the repo should provide all of the following:
 - Proposal shell creation anchored to a verifiable team-history commit
 - Governance digest over the frozen admin roster, membership roster, and member-to-device mapping
 - Inviter allocation of invitee `member_id`
+- Explicit handling of the invitee role carried by the admission flow
 - Invitee-side acceptance signing with no team-DB write
 - Transcript digesting and admin approval signatures over that digest
 - Approval validation against anchor-era device linkage and admin membership
 - Lazy invalidation on governance drift or expiry
 - Inviter-published finalization
 - Activation of B2 `proposal_shell` and `awaiting_quorum` runtime states
+- Any required Hub watcher-contract work so Manager observers wake up on relevant DB-state changes
 - Post-finalization handoff into B7 transport announcement
 - Spec/doc updates needed to keep repo docs consistent with shipped behavior
 - Retirement of the old invitee-writes-own-admission path
@@ -103,6 +107,7 @@ Admission should revolve around a proposal row, not a loose sequence of invitati
 Expected fields:
 
 - Identity: `proposal_id`, `nonce`, `team_id`, `inviter_member_id`, `invitee_member_id`
+- Intended admission outcome: invitee role, unless the implementation deliberately keeps role outside the proposal and documents the reason
 - Governance anchor: `anchor_commit`, `governance_digest`
 - Lifecycle: `state`, `created_at`, `expires_at`
 - Invitee transcript material: signing key, bootstrap key, acceptance signature, transcript digest
@@ -162,6 +167,17 @@ For higher quorum:
 
 The same proposal row, transcript digest, approval validation, and invalidation logic should serve both quorum modes.
 
+### 7. B2 activation is partly a watcher-contract problem, not just a state-model problem
+
+The B2 lesson should be preserved explicitly here: landing the right DB states is not sufficient if Manager observers are only woken for peer-count changes and not for the berth/DB mutations that carry admission-event visibility.
+
+For B5, activating `proposal_shell` and `awaiting_quorum` means both of these happen:
+
+1. The new proposal/admission states are written correctly into the synced DB and event model.
+2. The Hub-to-Manager watcher contract wakes berth waiters when those DB changes arrive, so the existing UI path actually refreshes.
+
+If the first part lands without the second, the branch can look complete in review while still regressing real behavior because the UI never wakes up to show the new state transitions.
+
 ## Risks And Failure Modes To Design Against
 
 The first draft mostly described the happy design. This branch plan should explicitly guard against these failure modes:
@@ -173,6 +189,8 @@ The first draft mostly described the happy design. This branch plan should expli
 5. UI or web routes start owning admission rules that belong in provisioning logic.
 6. The old `invitation` table remains half-authoritative, causing the repo to carry two overlapping admission models.
 7. B7 transport setup leaks back into the transcript, muddying the immutable trust artifact.
+8. B5 lands the new proposal states in DB but the Hub/Manager watcher contract does not wake the existing UI path, so visibility silently regresses.
+9. Role handling is left implicit and the final admitted role differs from what the inviter intended.
 
 The implementation should reduce each of these to a clearly testable rule.
 
@@ -189,12 +207,14 @@ The implementation should reduce each of these to a clearly testable rule.
 
 - `packages/small-sea-manager/small_sea_manager/provisioning.py`
   - Create proposal shell
+  - Own the single authoritative proposal-validity helper used by every mutation entry point
   - Sign invitee acceptance transcript without DB writes
   - Record transcript
   - Validate approvals against anchor state
   - Finalize admission
   - Invalidate or expire proposals on attempted use
   - Retire the old `accept_invitation` self-admission behavior
+  - Carry the invitee role through proposal creation and finalization, or deliberately document why that role is determined elsewhere
 
 ### Manager session / business layer
 
@@ -210,6 +230,12 @@ The implementation should reduce each of these to a clearly testable rule.
 - `packages/small-sea-manager/small_sea_manager/templates/fragments/invitations.html`
   - Render real `proposal_shell` and `awaiting_quorum` states through the existing event model
   - Surface B7 transport-next-step handoff after finalized admission
+
+### Hub watcher contract
+
+- `packages/small-sea-hub/`
+  - Ensure berth waiters/observers are pulsed on the DB-state changes that make proposal-shell and awaiting-quorum visibility real in Manager
+  - Keep this within the existing watcher contract rather than introducing a parallel notification path
 
 ### Micro tests
 
@@ -231,6 +257,7 @@ Implement the schema and the smallest set of helpers that let the rest of the br
 3. Anchor verification
 4. Proposal validity checks
 5. Approval-counting rules
+6. One authoritative provisioning helper for "proposal is still valid" reused by every mutation entry point
 
 Exit criteria:
 
@@ -271,14 +298,16 @@ Exit criteria:
 Add:
 
 1. Real B2 event activation for proposal shell and awaiting quorum
-2. B7 post-finalization transport handoff
-3. Removal or hard-disablement of invitee self-admission
-4. Doc/spec updates needed to match the shipped behavior
+2. Any Hub watcher-contract changes required so those states become visible without manual refresh or unrelated wakeups
+3. B7 post-finalization transport handoff
+4. Removal or hard-disablement of invitee self-admission
+5. Doc/spec updates needed to match the shipped behavior
 
 Exit criteria:
 
 - The old path cannot produce teammate admission.
 - The event model reflects real runtime transitions.
+- The watcher path wakes the UI on the relevant DB changes.
 - Post-admission transport setup is still a separate flow.
 
 ## Validation
@@ -311,15 +340,16 @@ The branch is done only when a skeptical reviewer can verify both correctness an
 
 14. Creating a proposal produces the B2 `proposal_shell` state in the existing event/UI path.
 15. Recording transcript without enough approvals produces the B2 `awaiting_quorum` state.
-16. Finalized admission transitions the new member into the B7 `needs_transport_announcement` handoff rather than embedding transport metadata in the transcript.
+16. The relevant Hub/Manager watcher path wakes on those DB-state changes, so visibility is live behavior rather than stale-until-refresh behavior.
+17. Finalized admission transitions the new member into the B7 `needs_transport_announcement` handoff rather than embedding transport metadata in the transcript.
 
 ### E. Repo integrity is maintained or improved
 
-17. Admission rules live in reusable provisioning/helpers rather than being duplicated across manager/web/UI layers.
-18. The branch does not introduce a second authoritative admission model alongside the new one.
-19. Naming and state transitions align with `architecture.md` and existing B2/B7 language.
-20. Micro tests stay local-only and do not introduce network dependence.
-21. Any deleted or rewritten prior tests are updated with rationale that clarifies the trust-boundary change rather than silently dropping coverage.
+18. Admission rules live in reusable provisioning/helpers rather than being duplicated across manager/web/UI layers.
+19. The branch does not introduce a second authoritative admission model alongside the new one.
+20. Naming, role handling, and state transitions align with `architecture.md` and existing B2/B7 language.
+21. Micro tests stay local-only and do not introduce network dependence.
+22. Any deleted or rewritten prior tests are updated with rationale that clarifies the trust-boundary change rather than silently dropping coverage.
 
 ## Micro Tests To Land
 
@@ -335,6 +365,8 @@ The exact filenames can change, but the branch should land evidence for at least
 8. Expired proposal cannot progress.
 9. Attempted invitee self-admission no longer works.
 10. Governance digest derivation matches an independently recomputed snapshot in test.
+11. Visibility-path test or equivalent evidence proves proposal-shell and awaiting-quorum state changes wake the Manager observer path.
+12. The admitted role matches the role carried by the flow.
 
 ## Open Questions To Resolve During Implementation
 
@@ -343,7 +375,6 @@ These do not block the branch plan, but they should be answered explicitly in th
 1. Does the new flow fully replace the `invitation` table for teammate admission, or does that table remain as a compatibility/UI artifact for now?
 2. What is the cleanest storage location for `admission_quorum` and proposal expiry so that the settings model does not become more fragmented?
 3. What exact API/form shape is minimal but sufficient for other-admin approval at `quorum > 1`?
-4. Which helper owns the authoritative "proposal is still valid" decision so every mutation path can reuse it?
 
 ## Wrap-Up Notes
 
