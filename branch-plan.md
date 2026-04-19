@@ -16,6 +16,8 @@ The key correction is not cosmetic. Today the invitee can write themselves into 
 
 This branch should fully land the production shape for `quorum = 1` and land the core schema, verification, and micro-testable logic for `quorum > 1` without spending effort on polished multi-admin UX.
 
+For this plan, **governance drift** has a precise meaning: any change relative to the proposal's anchor in the admin roster, membership roster, or member-to-device mapping. Those are the only changes that invalidate a proposal in this branch.
+
 ## Why This Plan Needs To Be Strict
 
 This branch changes the trust boundary for teammate admission. A loose implementation would be worse than the current one because it could look more rigorous while still leaving hidden authority leaks.
@@ -54,6 +56,7 @@ When this branch is done, the repo should provide all of the following:
 9. The admission flow handles the invitee role explicitly, with the plan stating whether that role is stored on the proposal or derived elsewhere at finalization.
 10. Newly admitted members are handed off to the B7 transport-announcement flow after admission, not during transcript creation.
 11. The branch lands enough micro tests to prove the new trust boundary, not just the happy path.
+12. The invitation token for this flow is narrowed to the material the invitee actually needs to sign acceptance, instead of carrying the old self-admission payload.
 
 ## In Scope
 
@@ -63,6 +66,7 @@ When this branch is done, the repo should provide all of the following:
 - Governance digest over the frozen admin roster, membership roster, and member-to-device mapping
 - Inviter allocation of invitee `member_id`
 - Explicit handling of the invitee role carried by the admission flow
+- Redesign of the invitation token contents for transcript-bound admission
 - Invitee-side acceptance signing with no team-DB write
 - Transcript digesting and admin approval signatures over that digest
 - Approval validation against anchor-era device linkage and admin membership
@@ -93,6 +97,8 @@ Today:
 3. The inviter later syncs and observes that write.
 
 That is the wrong authority split. The invitee currently authors the mutation that effectively makes them a teammate.
+
+The current invitation token is correspondingly too powerful for the replacement flow because it carries material for the old self-admission path. This branch should narrow the token to what the invitee actually needs in order to clone the team repo if necessary, generate keys, and sign acceptance against the proposal.
 
 B2 already reserved `proposal_shell` and `awaiting_quorum` in the event model, but those names are still placeholders rather than real runtime states.
 
@@ -130,6 +136,18 @@ Approval counting is member-scoped but signature execution is device-scoped. The
 
 Quorum is counted over distinct `admin_member_id`s with valid approvals for the current transcript digest.
 
+### 2a. The invitation token should be deliberately narrow
+
+The replacement flow should not keep the old invitation token shape by inertia. The token contents are security-relevant because they determine what authority and configuration material reaches the invitee before admission is finalized.
+
+The plan should treat the new token as carrying only the minimum material needed for the invitee side of the flow, such as:
+
+- proposal identity and anti-confusion material, including `proposal_id` and `nonce`
+- enough team-repo/bootstrap coordinates for the invitee to obtain the repo state needed to complete acceptance
+- any information required to bind the signed acceptance to the correct team and proposal
+
+It should not continue carrying material that only made sense for invitee-authored self-admission, such as the old endpoint/self-write payload, unless a concrete need is identified and justified.
+
 ### 3. Governance anchoring must be independently replayable
 
 At proposal creation time, the inviter records the team repo commit hash and a digest over the admin roster, membership roster, and member-to-device mapping at that commit.
@@ -141,7 +159,7 @@ The implementation should prefer helpers that make the derivation inspectable an
 This branch does not need a sweeper. It does need every mutation step to refuse progress if:
 
 - the proposal is expired, or
-- the current governance state no longer matches the anchored digest
+- the current governance state no longer matches the anchored digest because of governance drift in the admin roster, membership roster, or member-to-device mapping
 
 When that happens, the proposal should transition to `invalidated` or `expired` as part of the failed step so the failure is durable and visible.
 
@@ -187,10 +205,11 @@ The first draft mostly described the happy design. This branch plan should expli
 3. Approval verification checks current admin state but not anchor-era device linkage, letting newly linked devices retroactively vote.
 4. Governance drift is checked in one path but forgotten in another, especially the finalize step.
 5. UI or web routes start owning admission rules that belong in provisioning logic.
-6. The old `invitation` table remains half-authoritative, causing the repo to carry two overlapping admission models.
+6. The old `invitation` table remains half-authoritative for teammate admission, causing the repo to carry two overlapping admission models.
 7. B7 transport setup leaks back into the transcript, muddying the immutable trust artifact.
 8. B5 lands the new proposal states in DB but the Hub/Manager watcher contract does not wake the existing UI path, so visibility silently regresses.
 9. Role handling is left implicit and the final admitted role differs from what the inviter intended.
+10. The new invitation token accidentally preserves authority or configuration material from the old self-admission flow that the invitee no longer needs.
 
 The implementation should reduce each of these to a clearly testable rule.
 
@@ -202,12 +221,14 @@ The implementation should reduce each of these to a clearly testable rule.
   - Add `admission_proposal`
   - Add `admin_approval`
   - Add or extend storage for `admission_quorum` and proposal expiry settings
+  - Make the intended role storage explicit if role is carried on the proposal/finalization path
 
 ### Provisioning / core logic
 
 - `packages/small-sea-manager/small_sea_manager/provisioning.py`
   - Create proposal shell
   - Own the single authoritative proposal-validity helper used by every mutation entry point
+  - Define and parse the narrowed invitation token shape for transcript-bound admission
   - Sign invitee acceptance transcript without DB writes
   - Record transcript
   - Validate approvals against anchor state
@@ -258,6 +279,7 @@ Implement the schema and the smallest set of helpers that let the rest of the br
 4. Proposal validity checks
 5. Approval-counting rules
 6. One authoritative provisioning helper for "proposal is still valid" reused by every mutation entry point
+7. Invitation-token shape narrowed to the material needed for repo access and transcript signing
 
 Exit criteria:
 
@@ -339,14 +361,14 @@ The branch is done only when a skeptical reviewer can verify both correctness an
 ### D. Runtime behavior matches the architecture and related branches
 
 14. Creating a proposal produces the B2 `proposal_shell` state in the existing event/UI path.
-15. Recording transcript without enough approvals produces the B2 `awaiting_quorum` state.
+15. Recording transcript without enough approvals produces the B2 `awaiting_quorum` state when `quorum > 1`; at `quorum = 1`, that state is skipped because inviter approval immediately satisfies quorum.
 16. The relevant Hub/Manager watcher path wakes on those DB-state changes, so visibility is live behavior rather than stale-until-refresh behavior.
 17. Finalized admission transitions the new member into the B7 `needs_transport_announcement` handoff rather than embedding transport metadata in the transcript.
 
 ### E. Repo integrity is maintained or improved
 
 18. Admission rules live in reusable provisioning/helpers rather than being duplicated across manager/web/UI layers.
-19. The branch does not introduce a second authoritative admission model alongside the new one.
+19. The branch does not leave the old `invitation` table authoritative for teammate admission alongside the new proposal model.
 20. Naming, role handling, and state transitions align with `architecture.md` and existing B2/B7 language.
 21. Micro tests stay local-only and do not introduce network dependence.
 22. Any deleted or rewritten prior tests are updated with rationale that clarifies the trust-boundary change rather than silently dropping coverage.
@@ -367,14 +389,14 @@ The exact filenames can change, but the branch should land evidence for at least
 10. Governance digest derivation matches an independently recomputed snapshot in test.
 11. Visibility-path test or equivalent evidence proves proposal-shell and awaiting-quorum state changes wake the Manager observer path.
 12. The admitted role matches the role carried by the flow.
+13. Invitation-token test or equivalent evidence proves the new token contains only the material needed for transcript-bound admission and not the old self-admission payload.
 
 ## Open Questions To Resolve During Implementation
 
 These do not block the branch plan, but they should be answered explicitly in the implementation notes or final plan update:
 
-1. Does the new flow fully replace the `invitation` table for teammate admission, or does that table remain as a compatibility/UI artifact for now?
-2. What is the cleanest storage location for `admission_quorum` and proposal expiry so that the settings model does not become more fragmented?
-3. What exact API/form shape is minimal but sufficient for other-admin approval at `quorum > 1`?
+1. What is the cleanest storage location for `admission_quorum` and proposal expiry so that the settings model does not become more fragmented?
+2. What exact API/form shape is minimal but sufficient for other-admin approval at `quorum > 1`?
 
 ## Wrap-Up Notes
 
