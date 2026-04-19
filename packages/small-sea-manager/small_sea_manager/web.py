@@ -354,6 +354,34 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             error = str(e)
         return _render_team_detail(request, team_name, notice=notice, error=error)
 
+    @app.post(
+        "/teams/{team_name}/invitations/{inv_id}/approve", response_class=HTMLResponse
+    )
+    async def approve_invitation(request: Request, team_name: str, inv_id: str):
+        mgr = _mgr(request)
+        try:
+            mgr.sign_admin_approval(team_name, inv_id)
+            notice = "Admin approval recorded."
+            error = None
+        except Exception as e:
+            notice = None
+            error = str(e)
+        return _render_team_detail(request, team_name, notice=notice, error=error)
+
+    @app.post(
+        "/teams/{team_name}/invitations/{inv_id}/finalize", response_class=HTMLResponse
+    )
+    async def finalize_invitation(request: Request, team_name: str, inv_id: str):
+        mgr = _mgr(request)
+        try:
+            mgr.finalize_admission(team_name, inv_id)
+            notice = "Admission finalized."
+            error = None
+        except Exception as e:
+            notice = None
+            error = str(e)
+        return _render_team_detail(request, team_name, notice=notice, error=error)
+
     # ------------------------------------------------------------------ #
     # Cloud storage
     # ------------------------------------------------------------------ #
@@ -432,7 +460,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         mgr = _mgr(request)
         try:
             mgr.complete_invitation_acceptance(team_name, acceptance_token)
-            notice = "Acceptance complete — new member added."
+            notice = "Acceptance recorded."
             error = None
         except Exception as e:
             notice = None

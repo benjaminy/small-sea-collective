@@ -31,9 +31,12 @@ class AdmissionEvent:
     badge_class: str
     member_id_hex: str | None = None
     invitation_id_hex: str | None = None
+    proposal_id_hex: str | None = None
     can_dismiss: bool = True
     can_revoke: bool = False
     can_exclude: bool = False
+    can_approve: bool = False
+    can_finalize: bool = False
 
 
 def _member_label(display_name: str | None, member_id_hex: str | None) -> str:
@@ -101,6 +104,127 @@ def _linked_device_events(conn, dismissed, *, self_member_id_hex: str | None):
 
 
 def _invitation_events(conn, dismissed, *, self_member_id_hex: str | None, viewer_is_admin: bool):
+    proposal_rows = conn.execute(
+        text(
+            "SELECT proposal_id, state, invitee_label, role, created_at, finalized_at, "
+            "invitee_member_id, inviter_member_id, transcript_digest "
+            "FROM admission_proposal "
+            "WHERE state IN ('awaiting_invitee', 'awaiting_quorum', 'finalized') "
+            "ORDER BY COALESCE(finalized_at, created_at) DESC, proposal_id DESC"
+        )
+    ).fetchall()
+
+    if proposal_rows:
+        events: list[AdmissionEvent] = []
+        for (
+            proposal_id,
+            state,
+            invitee_label,
+            role,
+            created_at,
+            finalized_at,
+            invitee_member_id,
+            inviter_member_id,
+            transcript_digest,
+        ) in proposal_rows:
+            artifact_id_hex = proposal_id.hex()
+            member_id_hex = invitee_member_id.hex() if invitee_member_id is not None else None
+            if state == "awaiting_invitee":
+                event_type = AdmissionEventType.PROPOSAL_SHELL
+                if (event_type.value, artifact_id_hex) in dismissed:
+                    continue
+                events.append(
+                    AdmissionEvent(
+                        event_type=event_type,
+                        artifact_id_hex=artifact_id_hex,
+                        occurred_at=created_at,
+                        title=f"Proposal shell open for {invitee_label or 'unlabelled invitee'}",
+                        summary=(
+                            f"Transcript-bound admission proposal created for role `{role}`. "
+                            "This shell should be visible before the invitation token is delivered."
+                        ),
+                        badge_label="proposal shell",
+                        badge_class="badge-amber",
+                        member_id_hex=member_id_hex,
+                        invitation_id_hex=artifact_id_hex,
+                        proposal_id_hex=artifact_id_hex,
+                        can_dismiss=True,
+                        can_revoke=viewer_is_admin,
+                    )
+                )
+                continue
+            if state == "awaiting_quorum":
+                event_type = AdmissionEventType.AWAITING_QUORUM
+                if (event_type.value, artifact_id_hex) in dismissed:
+                    continue
+                quorum_row = conn.execute(
+                    text(
+                        "SELECT COUNT(DISTINCT admin_member_id) FROM admin_approval "
+                        "WHERE proposal_id = :proposal_id AND transcript_digest = :transcript_digest"
+                    ),
+                    {
+                        "proposal_id": proposal_id,
+                        "transcript_digest": transcript_digest,
+                    },
+                ).fetchone()
+                quorum_count = int(quorum_row[0]) if quorum_row is not None else 0
+                quorum_target = int(
+                    provisioning._team_setting(conn, "admission_quorum", "1")
+                )
+                can_finalize = (
+                    viewer_is_admin
+                    and self_member_id_hex is not None
+                    and inviter_member_id is not None
+                    and inviter_member_id.hex() == self_member_id_hex
+                    and quorum_count >= quorum_target
+                )
+                events.append(
+                    AdmissionEvent(
+                        event_type=event_type,
+                        artifact_id_hex=artifact_id_hex,
+                        occurred_at=created_at,
+                        title=f"Awaiting quorum for {invitee_label or 'unlabelled invitee'}",
+                        summary=(
+                            f"Transcript recorded for role `{role}`. "
+                            f"{quorum_count} of {quorum_target} distinct admin approvals recorded."
+                        ),
+                        badge_label="awaiting quorum",
+                        badge_class="badge-amber",
+                        member_id_hex=member_id_hex,
+                        invitation_id_hex=artifact_id_hex,
+                        proposal_id_hex=artifact_id_hex,
+                        can_dismiss=True,
+                        can_revoke=viewer_is_admin,
+                        can_approve=viewer_is_admin,
+                        can_finalize=can_finalize,
+                    )
+                )
+                continue
+            if state == "finalized":
+                event_type = AdmissionEventType.INVITATION_FINALIZED
+                if (event_type.value, artifact_id_hex) in dismissed:
+                    continue
+                events.append(
+                    AdmissionEvent(
+                        event_type=event_type,
+                        artifact_id_hex=artifact_id_hex,
+                        occurred_at=finalized_at or created_at,
+                        title=f"Admission finalized for {invitee_label or _member_label(None, member_id_hex)}",
+                        summary=(
+                            "This transcript-bound admission has been finalized in the current team view. "
+                            "Transport setup remains a separate post-admission step."
+                        ),
+                        badge_label="finalized",
+                        badge_class="badge-green",
+                        member_id_hex=member_id_hex,
+                        invitation_id_hex=artifact_id_hex,
+                        proposal_id_hex=artifact_id_hex,
+                        can_dismiss=True,
+                        can_exclude=viewer_is_admin and member_id_hex not in {None, self_member_id_hex},
+                    )
+                )
+        return events
+
     rows = conn.execute(
         text(
             "SELECT i.id, i.status, i.invitee_label, i.role, i.created_at, i.accepted_at, "

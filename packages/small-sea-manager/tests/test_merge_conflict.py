@@ -7,13 +7,17 @@ import os
 import pathlib
 import shutil
 import sqlite3
-import tempfile
+import subprocess
+from datetime import datetime, timezone
 
 import cod_sync.protocol as CS
-from small_sea_manager.provisioning import (_install_sqlite_merge_driver,
-                                                 create_invitation,
-                                                 create_new_participant,
-                                                 create_team)
+import small_sea_manager.provisioning as provisioning
+from small_sea_manager.provisioning import (
+    _install_sqlite_merge_driver,
+    create_invitation,
+    create_new_participant,
+    create_team,
+)
 
 ALICE_CLOUD = {
     "protocol": "file",
@@ -84,10 +88,10 @@ def test_concurrent_invitations_merge(playground_dir):
     cod2.fetch_from_remote(["main"])
     cod2.merge_from_remote(["main"])
 
-    # 8. Assert: device 2's core.db has BOTH Bob and Carol invitations
+    # 8. Assert: device 2's core.db has BOTH Bob and Carol admission proposals
     conn2 = sqlite3.connect(str(team_sync_2 / "core.db"))
     invitations_2 = conn2.execute(
-        "SELECT invitee_label FROM invitation ORDER BY invitee_label"
+        "SELECT invitee_label FROM admission_proposal ORDER BY invitee_label"
     ).fetchall()
     conn2.close()
     labels_2 = {row[0] for row in invitations_2}
@@ -105,10 +109,10 @@ def test_concurrent_invitations_merge(playground_dir):
     cod1.fetch_from_remote(["main"])
     cod1.merge_from_remote(["main"])
 
-    # 10. Assert: device 1 also has both invitations
+    # 10. Assert: device 1 also has both proposals
     conn1 = sqlite3.connect(str(team_sync_1 / "core.db"))
     invitations_1 = conn1.execute(
-        "SELECT invitee_label FROM invitation ORDER BY invitee_label"
+        "SELECT invitee_label FROM admission_proposal ORDER BY invitee_label"
     ).fetchall()
     conn1.close()
     labels_1 = {row[0] for row in invitations_1}
@@ -117,30 +121,66 @@ def test_concurrent_invitations_merge(playground_dir):
 
 
 def _create_invitation_on_device(team_sync_dir, invitee_label):
-    """Insert an invitation directly into the team DB and commit."""
+    """Insert an admission proposal directly into the team DB and commit."""
     import secrets
-    import struct
-    import time
-    from datetime import datetime, timezone
-
-    def uuid7():
-        timestamp_ms = int(time.time() * 1000)
-        rand_bytes = secrets.token_bytes(10)
-        b = struct.pack(">Q", timestamp_ms)[2:]
-        b += bytes([(0x70 | (rand_bytes[0] & 0x0F)), rand_bytes[1]])
-        b += bytes([0x80 | (rand_bytes[2] & 0x3F)]) + rand_bytes[3:10]
-        return b
 
     db_path = pathlib.Path(team_sync_dir) / "core.db"
+    head_commit = subprocess.run(
+        ["git", "-C", str(team_sync_dir), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
     conn = sqlite3.connect(str(db_path))
+    conn.row_factory = sqlite3.Row
+    member_ids = [row[0].hex() for row in conn.execute("SELECT id FROM member ORDER BY id").fetchall()]
+    admin_ids = [
+        row[0].hex()
+        for row in conn.execute(
+            """
+            SELECT br.member_id
+            FROM berth_role br
+            JOIN team_app_berth tab ON tab.id = br.berth_id
+            JOIN app a ON a.id = tab.app_id
+            WHERE a.name = 'SmallSeaCollectiveCore' AND br.role = 'read-write'
+            ORDER BY br.member_id
+            """
+        ).fetchall()
+    ]
+    member_devices: dict[str, list[str]] = {member_id_hex: [] for member_id_hex in member_ids}
+    for member_id, device_key_id in conn.execute(
+        "SELECT member_id, device_key_id FROM team_device ORDER BY member_id, device_key_id"
+    ).fetchall():
+        member_devices.setdefault(member_id.hex(), []).append(device_key_id.hex())
+    governance_snapshot = {
+        "admins": admin_ids,
+        "members": member_ids,
+        "member_devices": member_devices,
+    }
+    governance_digest = provisioning._governance_digest(governance_snapshot)
+    # The team DB is scoped to one team and does not persist a team_id column.
+    # For this merge test we only need a stable non-null value to exercise
+    # concurrent append-only proposal rows through the sqlite merge driver.
+    pseudo_team_id = conn.execute("SELECT id FROM app LIMIT 1").fetchone()["id"]
+    team_row = conn.execute("SELECT id FROM member ORDER BY id LIMIT 1").fetchone()
     conn.execute(
-        "INSERT INTO invitation (id, nonce, status, invitee_label, role, created_at) "
-        "VALUES (?, ?, 'pending', ?, 'admin', ?)",
+        "INSERT INTO admission_proposal ("
+        "proposal_id, nonce, team_id, inviter_member_id, invitee_member_id, "
+        "invitee_label, role, anchor_commit, governance_digest, governance_snapshot_json, "
+        "state, created_at, expires_at"
+        ") VALUES (?, ?, ?, ?, ?, ?, 'admin', ?, ?, ?, 'awaiting_invitee', ?, ?)",
         (
-            uuid7(),
+            provisioning.uuid7(),
             secrets.token_bytes(16),
+            pseudo_team_id,
+            team_row["id"],
+            provisioning.uuid7(),
             invitee_label,
+            head_commit,
+            governance_digest,
+            provisioning._json_dumps_sorted(governance_snapshot),
             datetime.now(timezone.utc).isoformat(),
+            provisioning._proposal_expiry(datetime.now(timezone.utc), 7 * 24 * 60 * 60),
         ),
     )
     conn.commit()

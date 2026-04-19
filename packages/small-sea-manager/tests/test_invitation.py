@@ -104,7 +104,7 @@ def test_create_invitation(playground_dir):
     # Verify invitation row exists
     invitations = list_invitations(root, alice_hex, "ProjectX")
     assert len(invitations) == 1
-    assert invitations[0]["status"] == "pending"
+    assert invitations[0]["status"] == "awaiting_invitee"
     assert invitations[0]["invitee_label"] == "Bob"
 
 
@@ -207,10 +207,17 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert len(bob_member_id_hex) == 32
     assert acceptance["team_id"] == token_data["team_id"]
     assert len(acceptance["acceptor_device_public_key"]) == 64
-    assert acceptance["acceptor_sender_key"]["group_id"] == token_data["team_id"]
-    assert acceptance["acceptor_sender_key"]["sender_device_key_id"] == key_id_from_public(
-        bytes.fromhex(acceptance["acceptor_device_public_key"])
-    ).hex()
+    assert "acceptor_sender_key" not in acceptance
+    assert "acceptor_cloud" not in acceptance
+    assert "acceptor_bucket" not in acceptance
+
+    bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
+    with sqlite3.connect(str(bob_team_db)) as conn:
+        bob_member_rows = conn.execute(
+            "SELECT id FROM member WHERE id = ?",
+            (bytes.fromhex(bob_member_id_hex),),
+        ).fetchall()
+    assert bob_member_rows == []
 
     # -- Alice: complete the acceptance --
     complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
@@ -218,7 +225,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     # --- Verify Alice's invitation is accepted ---
     invitations = list_invitations(root, alice_hex, "ProjectX")
     assert len(invitations) == 1
-    assert invitations[0]["status"] == "accepted"
+    assert invitations[0]["status"] == "finalized"
 
     # --- Verify Alice's team DB has 2 members, a device row for Bob, and 2 berth_roles ---
     alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
@@ -242,8 +249,8 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     )
     assert bob_team_device_row[1] == bytes.fromhex(acceptance["acceptor_device_key_id"])
     assert bob_team_device_row[2] == bytes.fromhex(acceptance["acceptor_device_public_key"])
-    assert bob_team_device_row[3] == "s3"
-    assert bob_team_device_row[4] == bob_minio["endpoint"]
+    assert bob_team_device_row[3] is None
+    assert bob_team_device_row[4] is None
 
     bob_cert_row = aconn.execute(
         "SELECT cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, "
@@ -289,20 +296,19 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert role_map[bob_member_id_hex] == "read-write"
     aconn.close()
 
-    # --- Verify Bob's team DB carries both member rows and both device rows locally ---
+    # --- Verify Bob's local clone still reflects the pre-finalization team view until sync ---
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
     members = bconn.execute(
         "SELECT id, display_name FROM member ORDER BY id"
     ).fetchall()
-    assert len(members) == 2
+    assert len(members) == 1
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
-    assert bob_member_id_hex in member_ids
     team_devices = bconn.execute(
         "SELECT member_id, public_key, protocol, url FROM team_device ORDER BY member_id, device_key_id"
     ).fetchall()
-    assert len(team_devices) == 2
+    assert len(team_devices) == 1
     alice_team_device = next(
         row for row in team_devices if row[0] == bytes.fromhex(alice_member_id_hex)
     )
@@ -374,9 +380,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
         "FROM peer_sender_key WHERE team_id = ? AND sender_device_key_id = ?",
         (bytes.fromhex(token_data["team_id"]), bob_sender_device_key_id),
     ).fetchone()
-    assert bob_peer_sender_key is not None
-    assert bob_peer_sender_key[0] == bob_sender_device_key_id
-    assert bob_peer_sender_key[1] is None
+    assert bob_peer_sender_key is None
     auconn.close()
     aulconn.close()
 
@@ -386,7 +390,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
         ["git", "-C", str(bob_sync), "log", "--oneline"], capture_output=True, text=True
     )
     assert result.returncode == 0
-    assert "Joined team: ProjectX" in result.stdout
+    assert "Created admission proposal" in result.stdout
 
 
 def test_double_accept_rejected(playground_dir, minio_server_gen):
@@ -458,5 +462,5 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
     carol_manager = TeamManager(root, carol_hex, _http_client=http)
     carol_acceptance_b64 = carol_manager.accept_invitation(token)
 
-    with pytest.raises(ValueError, match="not pending"):
+    with pytest.raises(ValueError, match="already finalized"):
         complete_invitation_acceptance(root, alice_hex, "ProjectX", carol_acceptance_b64)

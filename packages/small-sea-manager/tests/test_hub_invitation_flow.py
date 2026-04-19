@@ -172,21 +172,22 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     ).fetchall()
     assert len(team_devices) == 2
     bob_device = next(row for row in team_devices if row[0].hex() == bob_member_id_hex)
-    assert bob_device[2] == "s3"
+    # Transport is now a post-admission B7 step rather than part of invitee acceptance.
+    assert bob_device[2] is None
+    assert bob_device[3] is None
     aconn.close()
 
-    # ---- Verify Bob's team DB carries both member rows locally ----
+    # ---- Bob's local clone remains pre-finalization until he syncs again ----
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
     members = bconn.execute("SELECT id FROM member").fetchall()
-    assert len(members) == 2
+    assert len(members) == 1
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
-    assert bob_member_id_hex in member_ids
     team_devices = bconn.execute(
         "SELECT member_id, protocol, url FROM team_device ORDER BY member_id, device_key_id"
     ).fetchall()
-    assert len(team_devices) == 2
+    assert len(team_devices) == 1
     alice_device = next(row for row in team_devices if row[0].hex() == alice_member_id_hex)
     assert alice_device[1] == "s3"
     bconn.close()

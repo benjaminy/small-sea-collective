@@ -104,7 +104,7 @@ def test_admission_event_dismissals_persist_across_manager_instances(playground_
     event_types = {(event.event_type.value, event.artifact_id_hex) for event in team["admission_events"]}
     assert (AdmissionEventType.LINKED_DEVICE.value, linked_cert.cert_id.hex()) in event_types
     pending_invitation = next(
-        event for event in team["admission_events"] if event.event_type is AdmissionEventType.INVITATION_PENDING
+        event for event in team["admission_events"] if event.event_type is AdmissionEventType.PROPOSAL_SHELL
     )
 
     manager.dismiss_admission_event(
@@ -176,7 +176,7 @@ def test_manager_web_renders_admin_and_non_admin_admission_controls(playground_d
     bob_app = create_app(root, bob_hex)
     bob_client = TestClient(bob_app)
     bob_html = bob_client.get("/teams/ProjectX").text
-    assert "Invitation open for Bob" in bob_html
+    assert "Proposal shell open for Bob" in bob_html
     assert "Revoke" not in bob_html
     assert "Exclude" not in bob_html
 

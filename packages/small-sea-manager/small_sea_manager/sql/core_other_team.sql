@@ -41,6 +41,48 @@ CREATE TABLE IF NOT EXISTS invitation (
     acceptor_url TEXT
 );
 
+CREATE TABLE IF NOT EXISTS team_setting (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admission_proposal (
+    proposal_id BLOB PRIMARY KEY,
+    nonce BLOB NOT NULL,
+    team_id BLOB NOT NULL,
+    inviter_member_id BLOB NOT NULL,
+    invitee_member_id BLOB NOT NULL,
+    invitee_label TEXT,
+    role TEXT NOT NULL DEFAULT 'admin',
+    anchor_commit TEXT NOT NULL,
+    governance_digest BLOB NOT NULL,
+    governance_snapshot_json TEXT NOT NULL,
+    state TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    acceptance_recorded_at TEXT,
+    invitee_device_public_key BLOB,
+    invitee_bootstrap_key BLOB,
+    acceptance_signature BLOB,
+    transcript_digest BLOB,
+    transcript_json TEXT,
+    finalized_at TEXT,
+    finalization_signature BLOB,
+    invalid_reason TEXT
+);
+
+CREATE TABLE IF NOT EXISTS admin_approval (
+    approval_id BLOB PRIMARY KEY,
+    proposal_id BLOB NOT NULL,
+    admin_member_id BLOB NOT NULL,
+    approver_device_key_id BLOB NOT NULL,
+    transcript_digest BLOB NOT NULL,
+    signature BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE (proposal_id, approver_device_key_id),
+    FOREIGN KEY (proposal_id) REFERENCES admission_proposal(proposal_id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS team_device (
     device_key_id BLOB PRIMARY KEY,
     member_id BLOB NOT NULL,
