@@ -263,101 +263,190 @@ Minimum micro-test coverage:
 
 ## Concrete Change Areas
 
-### 1. `packages/small-sea-hub/small_sea_hub/server.py` (and/or `backend.py`)
+### 1. `packages/small-sea-manager/small_sea_manager/admission_events.py`
 
-- extend the adopted-view watch handler to enumerate admission events after
-  reconciliation and dispatch new `LINKED_DEVICE` items through the
-  configured notification adapter,
-- take care to share rather than duplicate the existing `ntfy` / `gotify`
-  adapter plumbing.
+- keep `list_admission_events(...)` as the UI-facing aggregator,
+- add a **Manager-owned, notification-specific helper** that returns only the
+  linked-device events eligible for push delivery, already filtered by
+  `self_member_id_hex` and by device-local disposition state,
+- make that helper return notification-ready metadata (`title`, `summary`,
+  `member_id_hex`, `artifact_id_hex`, `occurred_at`) so the Hub does not need
+  to learn admission-event SQL, event taxonomy rules, or dismissal semantics.
 
-### 2. `packages/small-sea-manager/small_sea_manager/admission_events.py`
+### 2. `packages/small-sea-manager/small_sea_manager/provisioning.py`
 
-- expose a narrow helper the Hub can call to list events for a team,
-  parameterized by `self_member_id_hex`, filtered to notification-relevant
-  items. Keep `list_admission_events` unchanged in behavior for the UI path.
+- extend the existing device-local `admission_event_disposition` store rather
+  than creating a parallel dedupe store,
+- expand disposition vocabulary from only `dismissed` to at least
+  `dismissed` and `notified`, preserving device-local scope,
+- add narrow helpers such as "list notified", "mark notified", and "dismiss"
+  so callers do not manipulate the disposition table ad hoc.
 
-### 3. `packages/small-sea-manager/small_sea_manager/provisioning.py`
+### 3. `packages/small-sea-hub/small_sea_hub/server.py` (and possibly `backend.py`)
 
-- add a small device-local dedupe table (or reuse the existing
-  admission-event dismissal table) keyed by
-  `(team_id, event_type, artifact_id_hex)` with a `notified_at` column
-  distinct from `dismissed_at` where useful.
+- extend the existing adopted-view watch path immediately after
+  `reconcile_runtime_state(...)`,
+- ask the Manager-owned helper for newly visible linked-device notification
+  candidates,
+- dispatch each candidate through the existing notification adapter plumbing,
+- record successful dispatch back through the Manager-owned disposition helper,
+- keep Hub responsibility limited to watcher timing, adapter delivery, and
+  best-effort error handling.
 
 ### 4. Specs
 
-- `packages/small-sea-hub/spec.md`: add the observer-side watch → notification
-  seam.
-- `packages/small-sea-manager/spec.md`: describe the shared event enumeration
-  and dedupe row.
+- `packages/small-sea-hub/spec.md`: document that the watcher now has two
+  independent side effects after adopted-view change:
+  reconciliation for crypto/runtime artifacts, and push delivery for
+  newly-visible teammate linked-device events.
+- `packages/small-sea-manager/spec.md`: document that Manager remains the owner
+  of admission-event interpretation, filtering, and device-local disposition
+  state, even when the Hub triggers notification delivery.
 
 ### 5. Tests
 
-- new Hub micro test covering items 1–6 in §In Scope 5,
-- small Manager test for the dedupe-row wiring if dismissal is the same row.
+- add focused Hub micro tests for watch-triggered notification dispatch and
+  non-redispatch,
+- add focused Manager micro tests for linked-device candidate enumeration and
+  disposition transitions,
+- prefer fake/in-memory notification adapters in micro tests rather than
+  Darwin- or service-specific behavior.
+
+## Implementation Strategy
+
+### Phase 1. Stabilize the seam
+
+Create the smallest Manager-owned helper that can answer:
+"For this participant and team, which linked-device admission events are
+eligible for notification right now?"
+
+That helper should encapsulate:
+
+- linked-device event selection,
+- self-vs-teammate filtering,
+- dismissal/notified suppression,
+- payload text derivation.
+
+The Hub should only consume the helper result and should not carry any new SQL
+or event-type branching beyond "send these results via the configured adapter."
+
+### Phase 2. Reuse one local disposition model
+
+Do not introduce a second dedupe database. This branch is about observability,
+not storage-model expansion. Reusing `admission_event_disposition` keeps the
+behavior auditable:
+
+- `dismissed` means "hide from the UI and suppress notification",
+- `notified` means "notification already sent; keep card visible",
+- both remain local to one device clone.
+
+### Phase 3. Hook the watcher without widening scope
+
+The adopted-view watcher already notices relevant local team-DB changes and
+already has the notification adapters wired. The branch should only insert the
+new observer-side step into that existing loop. It should not:
+
+- add a new background worker,
+- add a second polling mechanism,
+- invent new admission event types,
+- change sender-key redistribution behavior.
 
 ## Validation
 
-This branch should convince a skeptical reviewer if all of the following are
-true after it lands:
+This branch should be considered complete only if it supplies evidence for both
+behavioral correctness and repo integrity.
 
-- adopting a `device_link` cert for a teammate produces exactly one OS-level
-  notification on the adopting device, covered by a micro test,
-- self-linked `device_link` does not produce an OS-level notification, covered
-  by a micro test,
-- re-pulling the same cert, or restarting the Hub, does not re-notify, covered
-  by a micro test,
-- dismissal and notification are consistent: dismissing the UI card before the
-  notification fires suppresses the notification, covered by a micro test,
-- no new sender-key crypto, no new rotation policy, no automatic sender-by-
-  sender redistribution on sibling link — review confirms scope was held,
-- the Manager UI still renders admission events exactly as before,
-- specs describe the observer flow clearly enough that a new reader can locate
-  which component owns which responsibility.
+### A. Behavioral proof
+
+These should be demonstrated by micro tests, not just by reasoning:
+
+1. adopting a teammate `device_link` cert causes exactly one push dispatch on
+   the observing device,
+2. adopting the same cert again does not cause a second dispatch,
+3. restarting the Hub after a successful dispatch does not cause a second
+   dispatch,
+4. self-linked-device events remain visible in the Manager UI but do not
+   dispatch,
+5. dismissing the event before dispatch suppresses dispatch,
+6. dispatching the notification does not auto-dismiss the UI card,
+7. non-`LINKED_DEVICE` admission events do not ride along accidentally,
+8. a benignly orphaned or excluded-member-linked `device_link` row is ignored
+   without crashing.
+
+### B. Architectural proof
+
+The branch should also make a skeptical reviewer comfortable that the repo got
+cleaner, not just different. Review should be able to confirm all of:
+
+1. the Hub still owns delivery mechanics only; it does not gain new
+   admission-event SQL or event-taxonomy knowledge,
+2. the Manager remains the only package defining how admission events are
+   discovered, filtered, titled, and locally suppressed,
+3. notification dedupe remains device-local and unsynced,
+4. no network path bypasses the Hub,
+5. no sender-key rotation, redistribution policy, or teammate-admission logic
+   changes as collateral damage,
+6. the UI rendering path still goes through `list_admission_events(...)` and
+   preserves existing behavior except where the new disposition semantics are
+   intentionally shared.
+
+### C. Human proof
+
+In addition to tests, the branch should leave behind a short "how to convince
+yourself" manual check path in the updated plan or wrap-up notes:
+
+1. link a new sibling device for a teammate in a local playground,
+2. observe one push notification on the watcher device,
+3. reload the Manager UI and confirm the linked-device card is still present,
+4. dismiss the card,
+5. re-run the watcher path or restart the Hub and confirm no repeat page,
+6. repeat with a self-linked device and confirm card-only behavior.
 
 ## Risks to Avoid
 
-- Letting the Hub start reading the admission-event taxonomy directly (keep
-  it going through `admission_events`).
-- Accidentally using synced team-DB state to store notification dedupe
-  (must stay device-local).
-- Re-introducing member-scoped conflation in the watch path when identifying
-  "teammate vs self."
-- Making the notification payload actionable in ways that duplicate the
-  Manager UI's affordances — keep it a pointer, not a control surface.
-- Sliding into #73-style periodic rotation or #43 redistribution policy.
+- Letting the Hub grow new admission-event SQL or duplicated event-taxonomy
+  logic. It may call Manager-owned helpers; it should not become a second
+  admission-events implementation.
+- Accidentally using synced team-DB state to store notification dedupe.
+  Disposition state must remain device-local.
+- Re-introducing member-scoped conflation when determining whether an event is
+  "self" or "teammate." The whole point of this branch is device visibility.
+- Auto-dismissing the UI card when a notification is sent. Notification and UI
+  prompt are related, but not the same user action.
+- Making notification payloads carry approval/exclusion controls rather than
+  acting as a pointer back to Manager.
+- Sliding into #73-style hygiene rotation, #43 redistribution policy, or #98
+  invitation/quorum work.
 
 ## Open Questions
 
-### Q1. Reuse dismissal table or add a sibling row?
+### Q1. Exact shape of disposition reuse
 
-The dismissal table already exists and is keyed by
-`(event_type, artifact_id)`. Easiest path is to add a nullable `notified_at`
-column to the same row and treat `dismissed_at IS NOT NULL OR notified_at IS NOT NULL`
-as "do not re-notify." Alternative is a separate table. Preference: extend
-the existing table, but the implementation branch should confirm column
-evolution is acceptable for the current schema version policy.
+The current store uses one `disposition` value per `(event_type, artifact_id)`.
+If we want both "notified" and "dismissed" recorded independently, we need to
+choose between:
 
-### Q2. Which notification adapter is the default target?
+- allowing multiple rows per event keyed by `(event_type, artifact_id, disposition)`, or
+- keeping one row and treating `dismissed` as dominant over `notified`.
 
-The Hub already has `ntfy.py` and `gotify.py` adapters. The branch should
-confirm which is wired up in the current default Hub config path and whether
-a local fallback (e.g. `osascript` on Darwin for dev) is worth adding for
-micro-test ergonomics, or whether tests should inject a fake adapter.
-Preference: inject a fake adapter in tests, do not add a Darwin-only path.
+Preference: allow both states to be represented cleanly, but keep the API tiny.
 
-### Q3. Scope of "teammate" for the filter
+### Q2. Delivery failure semantics
 
-`team_device.member_id != self_member_id` is the obvious filter. Edge case:
-a `device_link` cert for a removed / excluded member. The schema FK cascade
-should delete the `team_device` row on member removal, so the join will drop
-the row; behavior is a benign no-op. Worth a regression-style micro test but
-not a design change.
+Should a failed adapter publish leave the event eligible for retry on the next
+watch pass? That is probably the right default, but the plan should make it
+explicit: only successful publishes record `notified`.
+
+### Q3. Initial backlog semantics
+
+When this branch first lands on an existing clone with older undismissed
+linked-device events, should those be paged once or treated as pre-existing
+history? The cleanest current interpretation is "new to this device-local
+disposition store means eligible," but this may create one-time upgrade noise.
+The implementation should choose explicitly and test the chosen behavior.
 
 ### Q4. Batching
 
-If many linked-device events land in one adoption (unlikely in real use but
-possible for a long-offline device), should we collapse to one notification
-with a count, or emit N? Preference: emit up to a small cap (e.g. 3)
-individually, then one summary if more — but this can start as "emit N" and
-tighten later if noisy.
+If many eligible linked-device events appear in one watcher pass, should the
+Hub emit one notification per event or a capped summary? Preference: start with
+one per event unless tests or manual validation show unacceptable noise.
