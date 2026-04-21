@@ -370,6 +370,12 @@ historical backlog; any artifact not present during seeding becomes eligible the
 next time it is first observed locally. This avoids paging users for ancient
 history and is robust to issuer clock skew.
 
+Seeding is a one-shot backlog suppression pass; it cannot distinguish
+genuinely-new-but-freshly-arrived events from older history on first open for a
+team. If a `device_link` cert arrives in the same initial pull that makes the
+team first visible on this device, it is treated as backlog and remains visible
+only via the UI card. That is an accepted trade-off, not a correctness bug.
+
 Seeding is a per-team action and should happen at first open of that team's
 disposition store after the schema bump, in the same transaction as the table
 creation / rebuild work rather than in a separate migration worker.
@@ -392,6 +398,10 @@ Delivery semantics are also decided here:
 - only a publish that returns success records `notified`,
 - publish failure or exception records nothing and retries naturally on the
   next watcher tick,
+- recording `notified` should use insert-if-absent semantics so overlapping
+  watcher instances converge on one durable mark without global locking,
+- one surplus publish caused by a concurrent watcher race is acceptable in this
+  slice; preventing that perfectly is not worth adding cross-process locking,
 - no explicit retry queue or backoff is added in this slice.
 
 ## Validation
@@ -405,6 +415,9 @@ These should be demonstrated by micro tests, not just by reasoning:
 
 1. adopting a teammate `device_link` cert causes exactly one push dispatch on
    the observing device,
+   This should explicitly include the fresh-team path: zero linked-device
+   artifacts visible at seeding time, then one new teammate link arrives and
+   dispatches.
 2. adopting the same cert again does not cause a second dispatch,
 3. restarting the Hub after a successful dispatch does not cause a second
    dispatch,
