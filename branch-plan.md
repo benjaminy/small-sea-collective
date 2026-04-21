@@ -224,10 +224,12 @@ through whichever notification adapter the Hub is configured to use
 
 ### 3. Device-local dedupe seam
 
-Add a small device-local persistence keyed by `(team_id, event_type, artifact_id_hex)`
-that records "notified at". The watch pass filters this out before dispatch.
-Wire the Manager's existing "dismiss" path so a dismissal records the same
-row (or treats it as equivalent) to avoid re-paging after the user has
+Extend the existing per-team, device-local admission-event disposition store so
+it can record notification-side dedupe as well as UI dismissal. The store is
+already team-scoped by file location, so no redundant `team_id` column should
+be introduced. The watch pass filters out artifacts already marked in local
+disposition state. Wire the Manager's existing "dismiss" path so a dismissal
+records the same local fact family and prevents re-paging after the user has
 already acted.
 
 ### 4. Self-vs-teammate discrimination
@@ -289,6 +291,8 @@ Minimum micro-test coverage:
   `dismissed` and `notified`, preserving device-local scope,
 - widen the primary key to `(event_type, artifact_id, disposition)` so
   `dismissed` and `notified` can coexist as independent facts for one event,
+- treat this as a SQLite table-rebuild migration, not a simple `ALTER TABLE`:
+  rename old table, create new schema, copy rows forward, drop old table,
 - add narrow helpers such as "list notified", "mark notified", and "dismiss"
   so callers do not manipulate the disposition table ad hoc.
 
@@ -357,13 +361,18 @@ The storage shape is decided now: record dispositions as independent rows keyed
 by `(event_type, artifact_id, disposition)`. Suppression and dedupe checks are
 simple existence queries over those rows.
 
-Initial backlog semantics are also decided now: when the upgraded disposition
-store is first initialized on a device, seed `notified` rows for every
-currently-existing `LINKED_DEVICE` event visible in that local team view, and
-persist a migration timestamp. Only linked-device certs whose effective event
-time is strictly later than that migration timestamp are eligible for first-time
-push delivery. This avoids paging users for ancient history the first time the
-branch runs on an established clone.
+Initial backlog semantics are also decided now, using **local observation**
+rather than issuer-provided timestamps: on first open of the upgraded
+disposition store for a given team, seed `notified` rows for every
+currently-visible `LINKED_DEVICE` artifact in that local team view. Any
+linked-device artifact already present during that seeding pass is suppressed as
+historical backlog; any artifact not present during seeding becomes eligible the
+next time it is first observed locally. This avoids paging users for ancient
+history and is robust to issuer clock skew.
+
+Seeding is a per-team action and should happen at first open of that team's
+disposition store after the schema bump, in the same transaction as the table
+creation / rebuild work rather than in a separate migration worker.
 
 ### Phase 3. Hook the watcher without widening scope
 
@@ -405,8 +414,8 @@ These should be demonstrated by micro tests, not just by reasoning:
 6. dispatching the notification does not auto-dismiss the UI card,
 7. a publish failure or missing adapter leaves the event eligible so a later
    successful tick can still dispatch it,
-8. first-run backlog seeding suppresses historical linked-device events while
-   still allowing newly-issued ones after the migration point,
+8. artifacts present at seeding time are suppressed as backlog, while artifacts
+   first observed after seeding are eligible,
 9. non-`LINKED_DEVICE` admission events do not ride along accidentally,
 10. a benignly orphaned or excluded-member-linked `device_link` row is ignored
     without crashing.
