@@ -145,6 +145,11 @@ A `device_link` cert the local device itself just issued or just joined
 through should not fire an OS notification, even though it still appears in
 the Manager-UI event list.
 
+`self_member_id` here is the **observing device's member identity**, not the
+issuer of the cert. So if two of Alice's devices both observe Alice linking a
+third Alice device, neither observing device pages. That is intentional: this
+slice is about "another teammate linked a new sibling device" visibility.
+
 **Why:** the reframe's threat model is "sibling admits a new device the other
 teammates did not expect." Self-linking is a deliberate user action in the same
 user-agent session; paging them for it is noise.
@@ -161,10 +166,10 @@ avoids duplicating event taxonomy inside the Hub.
 
 ### S3. Dedupe is device-local and durable
 
-"Already notified" state is kept device-local (note-to-self or a Hub-local
-table). Key is `(team, event_type, artifact_id)` — the same key
-`admission_events.html` dismisses on. Restarting the Hub must not re-page the
-user for events already seen.
+"Already notified" state is kept device-local in the existing Manager-owned
+admission-event disposition store, not in synced team state and not in a new
+Hub-local table. Restarting the Hub must not re-page the user for events
+already seen.
 
 **Why:** dedupe state is not useful to other devices and must not depend on
 synced mutable state.
@@ -174,6 +179,9 @@ synced mutable state.
 If a user clicks "Ignore" on an admission-event card, that dismissal should
 also mark the notification-side dedupe so we do not re-page on the next watch
 tick. Conversely, receiving the notification does not auto-dismiss the card.
+
+If a dismissal races with an in-flight publish attempt, one final notification
+is acceptable; the dismissal must suppress later ticks.
 
 **Why:** the card is the place to take action (exclude, etc.); the notification
 is the prompt. One dismissal affordance, two surfaces.
@@ -279,6 +287,8 @@ Minimum micro-test coverage:
   than creating a parallel dedupe store,
 - expand disposition vocabulary from only `dismissed` to at least
   `dismissed` and `notified`, preserving device-local scope,
+- widen the primary key to `(event_type, artifact_id, disposition)` so
+  `dismissed` and `notified` can coexist as independent facts for one event,
 - add narrow helpers such as "list notified", "mark notified", and "dismiss"
   so callers do not manipulate the disposition table ad hoc.
 
@@ -286,6 +296,8 @@ Minimum micro-test coverage:
 
 - extend the existing adopted-view watch path immediately after
   `reconcile_runtime_state(...)`,
+- reuse the watcher's existing per-session / per-team iteration rather than
+  inventing a second enumeration loop,
 - ask the Manager-owned helper for newly visible linked-device notification
   candidates,
 - dispatch each candidate through the existing notification adapter plumbing,
@@ -329,6 +341,7 @@ That helper should encapsulate:
 
 The Hub should only consume the helper result and should not carry any new SQL
 or event-type branching beyond "send these results via the configured adapter."
+This is an in-process Python call, not a new HTTP seam.
 
 ### Phase 2. Reuse one local disposition model
 
@@ -340,6 +353,18 @@ behavior auditable:
 - `notified` means "notification already sent; keep card visible",
 - both remain local to one device clone.
 
+The storage shape is decided now: record dispositions as independent rows keyed
+by `(event_type, artifact_id, disposition)`. Suppression and dedupe checks are
+simple existence queries over those rows.
+
+Initial backlog semantics are also decided now: when the upgraded disposition
+store is first initialized on a device, seed `notified` rows for every
+currently-existing `LINKED_DEVICE` event visible in that local team view, and
+persist a migration timestamp. Only linked-device certs whose effective event
+time is strictly later than that migration timestamp are eligible for first-time
+push delivery. This avoids paging users for ancient history the first time the
+branch runs on an established clone.
+
 ### Phase 3. Hook the watcher without widening scope
 
 The adopted-view watcher already notices relevant local team-DB changes and
@@ -350,6 +375,15 @@ new observer-side step into that existing loop. It should not:
 - add a second polling mechanism,
 - invent new admission event types,
 - change sender-key redistribution behavior.
+
+Delivery semantics are also decided here:
+
+- if no notification adapter is configured, skip dispatch, record nothing, and
+  leave the event eligible for later ticks,
+- only a publish that returns success records `notified`,
+- publish failure or exception records nothing and retries naturally on the
+  next watcher tick,
+- no explicit retry queue or backoff is added in this slice.
 
 ## Validation
 
@@ -369,9 +403,13 @@ These should be demonstrated by micro tests, not just by reasoning:
    dispatch,
 5. dismissing the event before dispatch suppresses dispatch,
 6. dispatching the notification does not auto-dismiss the UI card,
-7. non-`LINKED_DEVICE` admission events do not ride along accidentally,
-8. a benignly orphaned or excluded-member-linked `device_link` row is ignored
-   without crashing.
+7. a publish failure or missing adapter leaves the event eligible so a later
+   successful tick can still dispatch it,
+8. first-run backlog seeding suppresses historical linked-device events while
+   still allowing newly-issued ones after the migration point,
+9. non-`LINKED_DEVICE` admission events do not ride along accidentally,
+10. a benignly orphaned or excluded-member-linked `device_link` row is ignored
+    without crashing.
 
 ### B. Architectural proof
 
@@ -388,14 +426,17 @@ cleaner, not just different. Review should be able to confirm all of:
    changes as collateral damage,
 6. the UI rendering path still goes through `list_admission_events(...)` and
    preserves existing behavior except where the new disposition semantics are
-   intentionally shared.
+   intentionally shared,
+7. the watcher still uses the existing adopted-view loop rather than a second
+   parallel team-enumeration mechanism.
 
 ### C. Human proof
 
 In addition to tests, the branch should leave behind a short "how to convince
-yourself" manual check path in the updated plan or wrap-up notes:
+yourself" manual check path that works with the repo's actual local harness:
 
-1. link a new sibling device for a teammate in a local playground,
+1. start from a local playground with two participant roots / Managers sharing
+   one team,
 2. observe one push notification on the watcher device,
 3. reload the Manager UI and confirm the linked-device card is still present,
 4. dismiss the card,
@@ -420,32 +461,7 @@ yourself" manual check path in the updated plan or wrap-up notes:
 
 ## Open Questions
 
-### Q1. Exact shape of disposition reuse
-
-The current store uses one `disposition` value per `(event_type, artifact_id)`.
-If we want both "notified" and "dismissed" recorded independently, we need to
-choose between:
-
-- allowing multiple rows per event keyed by `(event_type, artifact_id, disposition)`, or
-- keeping one row and treating `dismissed` as dominant over `notified`.
-
-Preference: allow both states to be represented cleanly, but keep the API tiny.
-
-### Q2. Delivery failure semantics
-
-Should a failed adapter publish leave the event eligible for retry on the next
-watch pass? That is probably the right default, but the plan should make it
-explicit: only successful publishes record `notified`.
-
-### Q3. Initial backlog semantics
-
-When this branch first lands on an existing clone with older undismissed
-linked-device events, should those be paged once or treated as pre-existing
-history? The cleanest current interpretation is "new to this device-local
-disposition store means eligible," but this may create one-time upgrade noise.
-The implementation should choose explicitly and test the chosen behavior.
-
-### Q4. Batching
+### Q1. Batching
 
 If many eligible linked-device events appear in one watcher pass, should the
 Hub emit one notification per event or a capped summary? Preference: start with
