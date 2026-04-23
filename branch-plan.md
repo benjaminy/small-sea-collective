@@ -488,3 +488,16 @@ yourself" manual check path that works with the repo's actual local harness:
 If many eligible linked-device events appear in one watcher pass, should the
 Hub emit one notification per event or a capped summary? Preference: start with
 one per event unless tests or manual validation show unacceptable noise.
+
+## Follow-Up Hardening
+
+### F1. Real pull-to-adopt integration test
+
+The current micro tests validate the post-adoption state by inserting a
+teammate `device_link` cert directly into the observer's local team DB. That is
+the right focused test shape for this branch, but a later hardening branch
+should add one integration-level path where Bob publishes a real team-DB change,
+Alice pulls and adopts it through Cod Sync / splice merge, and the Hub watcher
+then emits the linked-device notification. That would protect against future
+schema or adoption-path changes that still leave the direct-insert micro tests
+green.

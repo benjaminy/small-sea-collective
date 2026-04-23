@@ -202,8 +202,11 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
         attempts.append("missing")
         raise SmallSea.SmallSeaNotFoundExn("No notification service configured")
 
-    def _success(*_args, **_kwargs):
+    sent_payloads = []
+
+    def _success(_session_hex, message, title=None):
         attempts.append("sent")
+        sent_payloads.append((title, message))
         return True, "msg-1", ""
 
     monkeypatch.setattr(backend, "send_notification", _missing_adapter)
@@ -217,6 +220,9 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
     monkeypatch.setattr(backend, "send_notification", _success)
     assert _run_runtime_reconciliation_for_session(app, session_hex) is False
     assert attempts == ["missing", "sent"]
+    assert sent_payloads
+    assert "`" not in sent_payloads[0][0]
+    assert "`" not in sent_payloads[0][1]
     assert (
         AdmissionEvents.AdmissionEventType.LINKED_DEVICE.value,
         linked_cert.cert_id.hex(),

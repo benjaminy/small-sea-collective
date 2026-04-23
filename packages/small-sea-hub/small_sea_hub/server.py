@@ -121,10 +121,9 @@ def _send_linked_device_notification(app: FastAPI, session_hex: str, team_name: 
     Returns True only when the adapter publish succeeds. Missing adapters and
     transient publish failures leave the event eligible for later watcher ticks.
     """
-    from small_sea_hub.backend import SmallSeaNotFoundExn as _NotFound
-
+    summary = candidate.summary.replace("`", "")
     message = (
-        f"{team_name}: {candidate.summary} "
+        f"{team_name}: {summary} "
         "Open Manager admission events for details."
     )
     try:
@@ -141,7 +140,7 @@ def _send_linked_device_notification(app: FastAPI, session_hex: str, team_name: 
             )
             return False
         return True
-    except _NotFound:
+    except SmallSeaNotFoundExn:
         return False
     except Exception as exc:
         logger.warning(
@@ -170,7 +169,9 @@ def _notify_linked_device_events_for_session(app: FastAPI, session_hex: str, ss_
             ss_session.team_name,
             exc,
         )
-        return True
+        # A broken helper/schema path should not force a noisy retry loop on
+        # every watcher tick. Later team-DB changes will naturally try again.
+        return False
 
     retry_needed = False
     for candidate in candidates:
