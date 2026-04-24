@@ -501,3 +501,49 @@ Alice pulls and adopts it through Cod Sync / splice merge, and the Hub watcher
 then emits the linked-device notification. That would protect against future
 schema or adoption-path changes that still leave the direct-insert micro tests
 green.
+
+## Wrap-Up
+
+### Outcome
+
+This branch completed the remaining observability slice of issue #59. Newly
+visible teammate linked devices now produce watcher-driven push notifications
+through the Hub's configured notification adapter, while self-linked devices
+remain card-only in the Manager UI. Notification dedupe is device-local and
+durable, and dismissal suppresses future re-paging without auto-dismissing the
+card.
+
+### What Landed
+
+- Manager-owned linked-device notification candidate helper, so the Hub does
+  not duplicate admission-event SQL or taxonomy logic.
+- Device-local admission-event disposition migration with independent
+  `dismissed` and `notified` rows plus one-shot per-team backlog seeding.
+- Hub watcher notification delivery with plain-text payloads, success-only
+  `notified` marking, retry after missing adapter / publish failure, and
+  separate retry tracking from runtime-reconciliation revision tracking.
+- Spec updates documenting the Manager/Hub responsibility split and the local
+  seeding / retry behavior.
+
+### Validation Completed
+
+The following local micro/integration-adjacent test slices passed while wrapping
+the branch:
+
+- `uv run pytest packages/small-sea-manager/tests/test_manager.py -q`
+- `uv run pytest packages/small-sea-hub/tests/test_runtime_watch.py -q`
+- `uv run pytest packages/small-sea-manager/tests/test_device_link.py packages/small-sea-manager/tests/test_linked_device_bootstrap.py packages/small-sea-hub/tests/test_note_to_self_self_signal.py -q`
+- `uv run pytest packages/small-sea-manager/tests/test_member_transport.py packages/small-sea-hub/tests/test_peer_transport.py -q`
+- `uv run pytest packages/small-sea-manager/tests/test_sender_key_rotation.py -q`
+
+These covered the new notification behavior, backlog seeding, retry semantics,
+self-vs-teammate filtering, and regression risk around linked-device,
+transport, watcher, and sender-key rotation behavior.
+
+### Scope Check
+
+This branch did **not** change sender-key redistribution policy, hygiene
+rotation policy, same-member bootstrap mechanics, or teammate-admission quorum
+logic. On that basis, issue #59 is considered complete from a product/scope
+perspective, with follow-up hardening limited to the real pull-to-adopt test
+noted above.
