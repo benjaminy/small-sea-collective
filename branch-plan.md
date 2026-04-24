@@ -24,10 +24,10 @@ This branch establishes the durable shape of app bootstrap:
 - Apps may only **request** sessions. They never write registration state.
 - The Hub is the **observation point**: it durably records unknown-app sightings and returns structured, distinguishable rejection reasons.
 - The Manager is the **provisioning authority**: it consumes Hub sightings, syncs identity and team state, and decides what gets registered or activated.
-- App registration is **two-level**: identity-level ("this app exists for this participant") and team-level ("this app may use this team"). They are independently approved.
+- App registration is **two-level**: identity-level ("this app exists for this participant on this device") and team-level ("this app may access this team's resources"). They are independent; even if a team uses an app, it's possible for a participant to reject it on a particular device. This distinction is important because a user should be able to control at least at the berth granularity, what data is cloned on any particular device.
 - "Bundled" apps are not special at runtime. Vault becomes an ordinary Small Sea app named `SharedFileVault` that walks the same path as any third-party app would.
 
-This branch is expected to be larger than recent ones. The goal is to land the design in writing, the schema sketches required to make the design testable, and one vertical implementation slice — Vault as a non-impersonating app — with explicit follow-up issues for the rest.
+This branch is expected to be larger than recent ones. The goal is to land the design in writing, the schema sketches required to make the design testable, and one vertical implementation slice — Vault as a non-impersonating app — with explicit follow-up github issues for the rest.
 
 ## Why This Plan Needs To Be Strict
 
