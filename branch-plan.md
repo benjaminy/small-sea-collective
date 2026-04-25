@@ -73,7 +73,7 @@ The opening of this plan is too wide if the branch starts coding before these ar
 4. **Stable client identity for sightings.**
    `client_name` must be a stable app-chosen client installation label for this participant/device/app, not a PID, random request ID, or per-process session name. If the app cannot provide a stable value, the client library must derive one from local app configuration before sending requests.
 5. **Branch cut line.**
-   The plan should explicitly separate the v1 Vault bootstrap slice from follow-up work such as automated same-app race convergence, sync-side materialization opt-out, and richer cross-device sighting flows.
+   See §Branch Cut Line. The plan should explicitly separate the v1 Vault bootstrap slice from follow-up work such as automated same-app race convergence, sync-side materialization opt-out, and richer cross-device sighting flows.
 6. **Discovery scope for this branch.**
    Record whether this branch includes a new Hub read API for app self-configuration, or whether apps only get the structured rejection and the instruction to open Manager.
 
@@ -118,6 +118,15 @@ V1 firing predicates:
 | `participant_berth_missing` | Exactly one candidate app row matches the friendly name, and the app is activated for the requested team, but the participant has no NoteToSelf `team_app_berth` for that app. |
 | `team_berth_missing` | Exactly one candidate app row matches the friendly name, and the app is registered for the participant in NoteToSelf, but no `team_app_berth` exists for the requested team. |
 | `app_friendly_name_ambiguous` | More than one candidate app row matches the friendly name in the participant/team resolution scope. |
+
+V1 cross-scope resolution is intentionally name-bridged. The Hub independently
+looks up the requested friendly name in the participant's NoteToSelf registration
+scope and the requested team's activation scope. Local app IDs are random and do
+not align across those scopes in v1, so a session can open when there is exactly
+one participant-side candidate and exactly one team-side candidate for the same
+friendly name. If either side has multiple candidates for that friendly name, the
+Hub returns `app_friendly_name_ambiguous`. This is a deliberate v1 simplification
+and the reason future same-app convergence work belongs in §Sub-Issues to Spawn.
 
 ## Red-Test Rule
 
@@ -179,7 +188,7 @@ Rationale:
 - This follows the human-scale coordination principle in `architecture.md`: preserve ambiguity for human repair rather than silently inventing global identity.
 - Small Sea has no central app registry, so friendly names cannot be authoritative. Two developers may independently create apps with the same name, and the correct local-first behavior is to preserve both identities until a human or team explicitly unifies them.
 - Names are claims, labels, and routing hints. They are not proof of sameness.
-- Same-app registration races are rare enough at v1 scale that they can use the same conservative repair path: preserve the duplicate rows, reject ambiguous Hub requests, and let Manager unification repair the state.
+- Same-app registration races are rare enough at v1 scale that they can use the same conservative repair path: preserve the duplicate rows, reject ambiguous Hub requests, and let Manager unification repair the state. A future witness-based shortcut is tracked in §Sub-Issues to Spawn #3.
 - The v1 Vault slice still uses `SharedFileVault` as the requested friendly name, but neither Manager nor Vault gets a private registration path because of that name.
 
 Implementation note for this branch: if full `app_unification` would make the branch too large, keep unification as a schema sketch and issue follow-up, but avoid any deterministic name-derived identity writes that would force two unrelated same-name apps to collapse.
@@ -197,7 +206,7 @@ Rationale:
 - `activate_app_for_team(...)` must choose a concrete row-shape now; this is not safely deferrable once synced team DB rows start landing in tests.
 - Deterministic name-derived IDs give a cheap convergence story only by assuming a global namespace that Small Sea explicitly does not have.
 - Manager is the generic provisioning authority, not a registry of blessed bundled apps. It should not know that Vault exists except as data supplied through the same registration/activation operations used for any app.
-- Human-scale repair is acceptable for rare same-app races in v1. The important invariant is that ambiguous same-name state is preserved and surfaced, not silently resolved by row order.
+- Human-scale repair is acceptable for rare same-app races in v1. The important invariant is that ambiguous same-name state is preserved and surfaced, not silently resolved by row order. A future witness-based shortcut is tracked in §Sub-Issues to Spawn #3.
 - Pre-alpha freedom is best spent avoiding the wrong durable writes in the first place. If this branch cannot land a generic local-app-ID shape, it should stay in plan iteration rather than shipping a Vault-specific identity shortcut.
 
 Open implementation question for Phase 2: decide the minimal local-app-ID row shape needed for the Vault slice. Do not proceed with generic `uuid5(team_id, friendly_name)` writes or any Manager-side `SharedFileVault` special case.
@@ -297,7 +306,7 @@ Exit gate: the branch contains a red end-to-end test skeleton that names the exp
 Exit gate: Hub micro tests cover success plus each shipped rejection reason, including duplicate-friendly-name ambiguity; the migration is visibly additive-only; retries from the same stable `client_name` upsert one sighting row rather than growing the table unboundedly; and the new code writes only to `small_sea_collective_local.db`.
 
 **Phase 2 — Manager registration and activation.**
-- Choose and document the minimal local-app-ID row shape before writing Manager registration/activation rows. V1 should use random locally generated IDs, not name-derived deterministic IDs.
+- Choose and document the minimal local-app-ID row shape before writing Manager registration/activation rows. V1 must use random locally generated IDs, not name-derived deterministic IDs.
 - Participant-level registration in `provisioning.py`: writes the NoteToSelf `app` row, the NoteToSelf `team_app_berth`, and creates the `NoteToSelf/{App}` directory.
 - Team-level activation in `provisioning.py`: writes the team DB `app` row, `team_app_berth`, and `berth_role` for current members without using name-derived deterministic IDs or any Vault-specific/bundled-app-specific branch.
 - Sightings consumer: Manager reads sightings from the Hub endpoint when the user explicitly opens the relevant Manager surface, runs the sync-then-re-evaluate loop, and surfaces remaining sightings to the user.
