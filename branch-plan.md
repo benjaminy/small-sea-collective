@@ -25,7 +25,8 @@ This branch establishes the durable shape of app bootstrap:
 - The Hub is the **observation point**: it durably records unknown-app sightings and returns structured, distinguishable rejection reasons.
 - The Manager is the **provisioning authority**: it consumes Hub sightings, syncs identity and team state, and decides what gets registered or activated.
 - App registration is **two-level**: identity-level ("this app exists for this participant on this device") and team-level ("this app may access this team's resources"). They are independent; even if a team uses an app, it's possible for a participant to reject it on a particular device. This distinction is important because a user should be able to control at least at the berth granularity, what data is cloned on any particular device.
-- "Bundled" apps are not special at runtime. Vault becomes an ordinary Small Sea app named `SharedFileVault` that walks the same path as any third-party app would.
+- App friendly names are **not global identity**. A request for `SharedFileVault` is a local claim made by a client, not proof that every other `SharedFileVault` in the world is the same app. When independently-created worlds collide, Manager must preserve the distinction until a human or team explicitly unifies them.
+- "Bundled" apps are not special at runtime. Vault becomes an ordinary Small Sea app using the friendly name `SharedFileVault` and walks the same path as any third-party app would.
 
 This branch is expected to be larger than recent ones. The goal is to land the design in writing, the schema sketches required to make the design testable, and one vertical implementation slice — Vault as a non-impersonating app — with explicit follow-up github issues for the rest.
 
@@ -71,9 +72,10 @@ The opening of this plan is too wide if the branch starts coding before these ar
 4. **Minimum durable sighting record and dedupe key.**
    The plan should freeze the exact v1 fields before migration work starts. Minimum useful shape:
    `participant_hex`, `app_name`, `team_name`, `client_name`, `first_seen_at`, `last_seen_at`, `seen_count`, and machine rejection reason.
+   In this table, `app_name` means "requested friendly app name observed from this local client." It is not a global or canonical app identity.
    The table should name its upsert key explicitly so "more or less forever" does not mean one row per retry. Working v1 key: `UNIQUE(participant_hex, app_name, team_name, client_name)`.
 5. **Team-level identity model (D2).**
-   D2 cannot float into implementation. The branch must choose deterministic or random team app IDs before `activate_app_for_team(...)` lands.
+   D2 cannot float into implementation. Before `activate_app_for_team(...)` lands, the branch must choose a generic locally generated app identity shape; Manager provisioning must not contain a Vault-specific or bundled-app-specific identity path.
 6. **Discovery scope for this branch.**
    Record whether this branch includes a new Hub read API for app self-configuration, or whether apps only get the structured rejection and the instruction to open Manager.
 
@@ -103,6 +105,7 @@ Notes:
 
 - `HTTP 409` is the working choice for bootstrap/configuration failures because the request is well-formed but conflicts with current local provisioning state.
 - `404` remains reserved for genuinely unknown participant/team lookups.
+- `app` is the friendly app name claimed by the local client in this request. It is not canonical identity and must not be used to silently merge two independently-created apps.
 - `team` may be `null` if a future caller triggers the same mechanism outside a team-scoped request, but the shipped Vault slice should always send a concrete team name.
 - Manager-owned rejection dispositions are intentionally **not** represented as a separate Hub reason in v1. The Hub keeps reporting the same observation; Manager decides whether the human sees it again.
 - `transient_sync_may_resolve` is intentionally **not** in the frozen v1 wire shape unless Phase 0 can define one exact emitting condition in terms of current Hub-observable state. Default if not: do not ship it.
@@ -123,13 +126,14 @@ The implementation is only acceptable if all of these remain true:
 2. Apps never read Manager DBs directly. Anything an app needs to discover during bootstrap is exposed through a Hub HTTP endpoint, or returned in the structured rejection.
 3. The Hub's unknown-app sightings table is local Hub state only. It is never synced to peers and never read by apps.
 4. Identity-level registration and team-level activation are separately authorized decisions. The Manager UI/CLI may bundle them in a single flow for convenience, but the underlying data model treats them as distinct.
-5. Bundled apps (Vault) get no special path through the Hub. They walk the same rejection-and-registration loop as any third-party app. The only acceptable special case is sandbox-mode developer convenience (see §Sandbox dev escape hatch).
+5. Bundled apps (Vault) get no special path through the Hub or Manager provisioning. They walk the same rejection-and-registration loop as any third-party app. The only acceptable special case is sandbox-mode developer setup that calls the same generic Manager operations a human would approve (see §Sandbox dev escape hatch).
 6. Vault stops opening sessions as `SmallSeaCollectiveCore` everywhere — `sync.py`, `web.py`, CLI, and all test fixtures.
 7. The shape of the structured rejection is stable enough that an app written today can keep using the same response codes after later branches add finer-grained reasons.
 8. Rejection dispositions are Manager-owned in v1. The Hub records observations; it does not read Manager-local rejection tables to mute or reinterpret future sightings.
 9. The public Manager API stays split. `register_app_for_identity(...)` and `activate_app_for_team(...)` may share private helpers, but there is no single public entry point with a `level=` or equivalent flag.
 10. New Hub write paths in this branch write only to `small_sea_collective_local.db`. Any write to NoteToSelf or a team DB from new Hub bootstrap code is a hard no.
 11. Manager sightings refresh is explicit and user-triggered in v1. No background sightings poller ships on this branch.
+12. Friendly-name collisions are normal local-first events. If two distinct app identities both present the same friendly name, Manager must preserve both identities and surface a choice; the Hub must not collapse them by string equality.
 
 ## Branch Goals
 
@@ -142,10 +146,10 @@ When this branch is done, the repo should provide all of the following:
 5. Manager-side identity-level registration: writes the new `app` row and `team_app_berth` for the participant's NoteToSelf team, and creates the `NoteToSelf/{App}` directory. The framework does nothing further inside that directory; its contents belong to the app.
 6. Manager-side team-level activation: writes the `app` and `team_app_berth` rows in the team DB, plus `berth_role` rows for current members.
 7. Manager-side disposition handling for "I don't want this app on this device" (identity-level, in `NoteToSelf/Local/device_local.db`) and "I don't want this app on team T" (team-level, in the per-team Manager-local sidecar DB used today for admission-prompt dismissals). The Hub does not read these tables in v1; Manager uses them when deciding whether to surface a sighting again.
-8. Schema sketches for identity-level unification (`app_unification`) if D1 eventually resolves that way. Team-level v1 is resolved in this branch rather than deferred.
-9. `SharedFileVault` is the Vault's canonical app name. Vault's `sync.py`, `web.py`, CLI, tests, and fixtures all use `SharedFileVault` and never `SmallSeaCollectiveCore`.
+8. Schema sketches for app unification (`app_unification`) as the explicit recovery path for typo, rebrand, and duplicate-friendly-name cases. The branch does not need full unification behavior, but it must not write data that makes later unification impossible.
+9. `SharedFileVault` is the Vault's friendly app name for this branch. Vault's `sync.py`, `web.py`, CLI, tests, and fixtures all use `SharedFileVault` and never `SmallSeaCollectiveCore`.
 10. An end-to-end micro test that walks the full loop: fresh sandbox → Vault requests session → Hub rejects with structured reason and records sighting → Manager observes sighting → Manager registers Vault at identity level → Manager activates Vault for team T → Vault retries successfully.
-11. Optional sandbox-mode dev convenience: a single Hub or Manager endpoint that initializes the default bundled apps (currently just Vault) without walking the human prompt path. Gated behind the same sandbox flag as `/sessions/pending`.
+11. Optional sandbox-mode dev convenience: a sandbox setup endpoint that registers and activates developer-selected apps (the default fixture may include `SharedFileVault`) without walking the human prompt path. Gated behind the same sandbox flag as `/sessions/pending`, and implemented by calling generic Manager operations.
 12. Spec/doc updates so `architecture.md`, the Manager spec, and the Hub spec reflect the shipped two-level model and the new rejection vocabulary, and so the open debates are recorded as explicit open questions.
 
 ## Design Debates and Branch Resolutions
@@ -154,25 +158,35 @@ Some questions remain open for future work; others are resolved here because the
 
 ### D1. Identity-level app identity model
 
-- **D1.A — Canonical name as identity.** App identity is a single string. No new tables. Renaming is a destructive operation handled as uninstall + reinstall.
-- **D1.B — Local UUID + canonical name + `app_unification`.** Mirrors the existing `participant_unification` shape. Renaming is non-destructive. Provides a real recovery mechanism for the squatting/typo case and preserves the option of certificate-based app identity later.
+- **D1.A — Friendly name as identity.** App identity is a single string. No new tables. Renaming is a destructive operation handled as uninstall + reinstall.
+- **D1.B — Local app ID + friendly name + `app_unification`.** Mirrors the existing `participant_unification` shape. Renaming is non-destructive. Provides a real recovery mechanism for duplicate friendly names, squatting, typos, rebrands, and later certificate-based app identity.
 
-Default if undecided at implementation time: build the v1 slice against D1.A (simpler, fewer schema moves), reserve the `app_unification` table name for D1.B follow-up.
+Phase 0 resolution for this branch: **D1.B is the architectural direction.**
+
+Rationale:
+
+- Small Sea has no central app registry, so friendly names cannot be authoritative. Two developers may independently create apps with the same name, and the correct local-first behavior is to preserve both identities until a human or team explicitly unifies them.
+- Names are claims, labels, and routing hints. They are not proof of sameness.
+- The v1 Vault slice still uses `SharedFileVault` as the requested friendly name, but neither Manager nor Vault gets a private registration path because of that name.
+
+Implementation note for this branch: if full `app_unification` would make the branch too large, keep unification as a schema sketch and issue follow-up, but avoid any deterministic name-derived identity writes that would force two unrelated same-name apps to collapse.
 
 ### D2. Team-level app identity model
 
-- **D2.A — Deterministic IDs.** `app.id = uuid5(team_id, canonical_name)` and `team_app_berth.id` derived in turn. Concurrent activation by two admins converges by primary-key collision under splice-sqlite merge. No reconciliation logic needed for the common case. Does not solve typos or rebrands.
-- **D2.B — Local UUID + `app_unification` + `berth_storage` indirection.** Symmetric with D1.B. Adds a `berth_id → bucket_name / topic` indirection table that pays for itself independently (credential rotation, provider migration, compaction). Typos and rebrands fall under the same unification mechanism as concurrent activations.
+- **D2.A — Deterministic name-derived IDs.** `app.id = uuid5(team_id, friendly_name)` and `team_app_berth.id` derived in turn. Concurrent activation by two admins converges by primary-key collision under splice-sqlite merge. This is simple, but it incorrectly treats a friendly name as authoritative identity and silently collapses unrelated same-name apps.
+- **D2.B — Local app ID + `app_unification` + `berth_storage` indirection.** Symmetric with D1.B. Adds a `berth_id -> bucket_name / topic` indirection table that pays for itself independently (credential rotation, provider migration, compaction). Typos, rebrands, and same-name collisions fall under explicit unification rather than implicit string equality.
+- **D2.C — Name-derived bundled-app shortcut.** `SharedFileVault` is treated as a predeclared bundled app handle for the purpose of this branch's vertical slice. Rejected because it would make Manager provisioning know about Vault and would create a second app-registration path before the generic model is honest.
 
-Phase 0 resolution for this branch: **D2.A**.
+Phase 0 resolution for this branch: **D2.B is the architectural direction. D2.A and D2.C are rejected.**
 
 Rationale:
 
 - `activate_app_for_team(...)` must choose a concrete row-shape now; this is not safely deferrable once synced team DB rows start landing in tests.
-- Deterministic IDs give the v1 slice a cheap convergence story for concurrent activation without forcing `app_unification` or `berth_storage` into the branch.
-- Pre-alpha freedom is best spent avoiding the wrong durable writes in the first place, not relying on a later data-format break to clean them up.
+- Deterministic name-derived IDs give a cheap convergence story only by assuming a global namespace that Small Sea explicitly does not have.
+- Manager is the generic provisioning authority, not a registry of blessed bundled apps. It should not know that Vault exists except as data supplied through the same registration/activation operations used for any app.
+- Pre-alpha freedom is best spent avoiding the wrong durable writes in the first place. If this branch cannot land the generic local-app-ID shape, it should stay in plan iteration rather than shipping a Vault-specific identity shortcut.
 
-D1 may legitimately resolve differently later; symmetry is a goal but not a requirement.
+Open implementation question for Phase 0: decide the minimal local-app-ID row shape needed for the Vault slice. Do not proceed with generic `uuid5(team_id, friendly_name)` writes or any Manager-side `SharedFileVault` special case.
 
 ### D3. Discovery endpoint scope (#8 interaction)
 
@@ -187,12 +201,12 @@ If implementation later proves that Vault cannot present a minimally sane "open 
 
 ## Scope Decisions Already Made
 
-- Vault's canonical name is `SharedFileVault`. Not set in stone, but final for this branch.
-- Unification implementation is **defined now, implemented later**. Schema sketches land here; the writing/reading code lands in follow-up issues spawned from the design.
+- Vault's friendly app name is `SharedFileVault`. Not set in stone, but final for this branch.
+- Unification implementation is **defined now, implemented later** unless Phase 0 decides more of it is small enough to land in the vertical slice. Local app IDs are part of the branch's generic registration shape; the broader writing/reading behavior for unification may land in follow-up issues spawned from the design.
 - "Defined now, implemented later" means prose, not live schema. Any unification design written on this branch lives in `branch-plan.md` and the eventual Phase 6 spec prose, not in `.sql` files or migrations that the build could pick up.
-- Team-level app identity is fixed to D2.A for this branch: deterministic IDs in team DB rows.
+- Team-level app identity is not allowed to rely on name-derived deterministic IDs or predeclared bundled-app handles.
 - `NoteToSelf/{App}` berths belong to the app. The Manager creates the directory at registration time and does nothing further. No core-framework schema for it.
-- No special path for bundled apps. The sandbox dev button is the only allowed shortcut, and it lives behind the sandbox flag.
+- Bundled apps get no special Hub session path and no special Manager provisioning path. The sandbox dev button is the only allowed human-flow shortcut, and it lives behind the sandbox flag; it must call the same generic Manager operations that normal approval would call.
 - Rejection-reason transport is HTTP-level structured fields, not a strongly-typed enum. The wire shape just needs to let an app distinguish the relevant cases.
 - This branch's first shipped slice is the Vault bootstrap loop. Generic app-self-configuration APIs stay in #8 unless the code proves that separation unworkable.
 - Rejection dispositions are Manager-owned in v1. The Hub does not consult Manager-local rejection state when deciding whether to return or record a sighting.
@@ -207,13 +221,13 @@ If implementation later proves that Vault cannot present a minimally sane "open 
 - Manager-side disposition tables: identity-level rejection in `NoteToSelf/Local/device_local.db`; team-level rejection in the existing per-team Manager-local sidecar DB.
 - Renaming Vault's app identifier across all of `shared_file_vault/`, `tests/`, and any sandbox fixtures.
 - An end-to-end micro test for the full bootstrap loop (see §Validation).
-- Optional sandbox-mode dev endpoint for "initialize default apps."
+- Optional sandbox-mode dev endpoint for sandbox app setup.
 - Spec/doc updates: `architecture.md`, `packages/small-sea-manager/spec.md`, `packages/small-sea-hub/spec.md`.
 
 ## Out of Scope (Explicitly Deferred)
 
-- Implementation of `app_unification` (D1.B) or `berth_storage` indirection (D2.B) beyond schema sketches.
-- Any `.sql` file or migration for unification tables (`app_unification`, `berth_storage`) before a follow-up branch chooses to implement them.
+- Full implementation of `app_unification` behavior or `berth_storage` indirection beyond schema sketches, unless Phase 0 explicitly chooses to land more of them on this branch.
+- Any `.sql` file or migration for unification tables (`app_unification`, `berth_storage`) before Phase 0 explicitly chooses to implement them on this branch or a follow-up branch chooses to implement them.
 - Real `NoteToSelf/{App}` materialization beyond an empty directory.
 - Cross-device coordination of sightings (sightings are local Hub state, not synced).
 - Apprise / additional notification adapters in the OS prompt path.
@@ -239,9 +253,9 @@ If this branch starts to sprawl, the cut line should be explicit rather than imp
 
 **First things to cut if needed**
 
-- Sandbox-mode "initialize default apps" convenience endpoint.
+- Sandbox app setup convenience endpoint.
 - Rich disposition UX beyond the minimum plumbing needed to keep repeated prompts from flapping.
-- Detailed schema-sketch work for D1.B / D2.B beyond the notes needed to preserve the option space.
+- Detailed implementation work for full app unification / berth storage beyond the notes needed to preserve the option space.
 - `transient_sync_may_resolve`, unless Phase 0 can define a precise emitting condition that is actually useful.
 
 ## Phasing (draft)
@@ -249,8 +263,8 @@ If this branch starts to sprawl, the cut line should be explicit rather than imp
 Phases are sized for reviewability, not for hard sequencing. Several can proceed in parallel once the schema and rejection vocabulary are settled.
 
 **Phase 0 — This document.**
-Iterate on `branch-plan.md` to convergence on rejection vocabulary, registration API shape, team-level identity model, and the branch cut line. D3 is fixed to D3.A for this branch. D1 stays open; D2 is resolved here.
-Exit gate: the plan names one concrete response shape, one concrete reason vocabulary, one explicit sighting dedupe key, one resolved D2 answer, one answer on whether `transient_sync_may_resolve` exists at all, and one cut line for what this branch will refuse to absorb.
+Iterate on `branch-plan.md` to convergence on rejection vocabulary, registration API shape, app identity model, team-level identity model, and the branch cut line. D1 and D2 reject friendly-name-as-identity as the general model. D3 is fixed to D3.A for this branch.
+Exit gate: the plan names one concrete response shape, one concrete reason vocabulary, one explicit sighting dedupe key, one resolved D1/D2 direction, one answer on whether `transient_sync_may_resolve` exists at all, and one cut line for what this branch will refuse to absorb.
 
 **Phase 0.5 — Write the failing micro test skeleton first.**
 - Add the Phase 4 positive-path and negative-path tests immediately, even if they only fail on stub assertions at first.
@@ -269,7 +283,7 @@ Exit gate: Hub micro tests cover success plus each shipped rejection reason, the
 
 **Phase 2 — Manager registration and activation.**
 - Identity-level registration in `provisioning.py`: writes the NoteToSelf `app` row, the NoteToSelf `team_app_berth`, and creates the `NoteToSelf/{App}` directory.
-- Team-level activation in `provisioning.py`: writes the team DB `app` row, `team_app_berth`, and `berth_role` for current members using D2.A deterministic IDs.
+- Team-level activation in `provisioning.py`: writes the team DB `app` row, `team_app_berth`, and `berth_role` for current members without using name-derived deterministic IDs or any Vault-specific/bundled-app-specific branch.
 - Sightings consumer: Manager reads sightings from the Hub endpoint when the user explicitly opens the relevant Manager surface, runs the sync-then-re-evaluate loop, and surfaces remaining sightings to the user.
 - Disposition handling for both rejection levels stays Manager-local; the Hub is not consulted when deciding whether to re-prompt the human.
 - Thin web/CLI surface — only what Phase 4's micro test needs.
@@ -290,10 +304,11 @@ Exit gate: `rg` over `packages/shared-file-vault/` and its tests finds no remain
 - Manager performs team-level activation. Vault retries; expects success.
 - A second test: rejection-then-disposition path. After the first sighting, Manager records identity-level rejection. Vault retries; expects the same Hub rejection, and Manager suppresses a second human prompt because of its own local disposition.
 - A third test: production-mode negative case. `SMALL_SEA_SANDBOX_MODE` unset, fresh participant + team, Vault attempts a session, gets the structured rejection, and the request itself causes no `SharedFileVault` or new non-Core app rows to appear in NoteToSelf or the team DB.
+- If local app IDs land in this branch, add a collision micro test: two distinct app identities claim the same friendly name for the same team, Manager preserves both as separate observations/registrations, and no berth or app row is silently merged by name.
 Exit gate: a reviewer can read one micro test and see the reason transition from "unknown" to "not activated" to success without depending on hidden fixture magic, plus one negative test proving the request path performs no implicit registration writes.
 
 **Phase 5 — Optional sandbox dev escape hatch.**
-- Single endpoint behind `SMALL_SEA_SANDBOX_MODE=1` that registers and activates the default bundled apps (currently just Vault) for the active participant and a named team.
+- Single sandbox setup endpoint behind `SMALL_SEA_SANDBOX_MODE=1` that calls the generic Manager registration and activation operations for a developer-chosen list of app friendly names. The default sandbox fixture may include `SharedFileVault`, but Manager provisioning must not know or care that it is Vault.
 - Gated identically to `/sessions/pending`.
 Exit gate: with sandbox off, the endpoint is absent; with sandbox on, it performs no writes outside the normal Manager-owned DBs.
 
@@ -326,7 +341,7 @@ A skeptical reviewer should be able to convince themselves of all the following 
 **Bundled apps get no special path.**
 - The Vault de-impersonation test starts from zero registered apps and walks the full Hub sighting + Manager registration path before getting a session.
 - The negative production-mode test starts from zero registered apps with `SMALL_SEA_SANDBOX_MODE` unset, attempts a Vault session, receives the structured rejection, and verifies that no `SharedFileVault` app row was created as a side effect.
-- The sandbox dev button is gated behind `SMALL_SEA_SANDBOX_MODE` and is the only place in the repo that registers an app without walking the prompt path. Test verifies that turning sandbox mode off makes the endpoint return 404.
+- The sandbox dev button is gated behind `SMALL_SEA_SANDBOX_MODE` and is the only place in the repo that registers an app without walking the prompt path. It calls generic Manager operations with app data supplied by sandbox setup, not Manager-owned Vault knowledge. Test verifies that turning sandbox mode off makes the endpoint return 404.
 
 **Repo integrity.**
 - No new direct DB reads from any app package into Manager DBs (Vault is the canary).
@@ -342,8 +357,8 @@ Tracked here so they don't get lost during iteration:
 
 If an edge case tempts the branch to expand, add the follow-up issue here, link it from a code comment if the code needs a breadcrumb, and move on.
 
-1. **Implement `app_unification` (D1.B path)** if D1 resolves to local UUID + unification.
-2. **Implement `berth_storage` indirection (D2.B-style follow-up)** only if deterministic IDs later prove insufficient for concrete typo/rebrand or storage-migration cases.
+1. **Implement full `app_unification`** if this branch only lands local app IDs plus schema sketches.
+2. **Implement `berth_storage` indirection** if this branch does not land it with local app IDs, or when credential rotation/provider migration needs make it urgent.
 3. **Real `NoteToSelf/{App}` materialization** beyond the empty-directory stub.
 4. **Hub `/info` discovery endpoint** in follow-up issue #8, since D3 resolves to D3.A on this branch.
 5. **Manager web UI for sightings review and registration approval** beyond the bare-bones surface this branch lands.
@@ -356,5 +371,6 @@ If an edge case tempts the branch to expand, add the follow-up issue here, link 
 - **Schema migration risk on the Hub local DB.** Pre-alpha, but the Hub local DB now carries session state that survives restarts. The migration should be additive only; reviewers should verify no destructive `ALTER` is introduced.
 - **Test setup churn.** Vault de-impersonation will touch many test fixtures. The risk is that tests get partially migrated and pass for the wrong reason. Phase 3 acceptance must include an explicit grep gate (no `SmallSeaCollectiveCore` strings in Vault package or its tests).
 - **Rejection vocabulary stability.** Apps will start coding against the rejection shape. Choosing the wrong field names or codes here costs us later. Settle the vocabulary in Phase 0 before writing any of Phase 1.
-- **Disposition semantics under unification.** If D1 resolves to D1.B (unification), an identity-level rejection of canonical name `X` and a later unification of `X` with `Y` raises the question of whether the rejection still applies. Out of scope for this branch but worth flagging.
-- **Sandbox button blast radius.** The "initialize default apps" button must not exist outside sandbox mode. Test should verify by attempting to call it with sandbox off.
+- **Disposition semantics under unification.** If an identity-level rejection of friendly name `X` later encounters an app identity unified with `Y`, the Manager needs clear rules for whether the rejection follows the local app ID, the pre-unification friendly name, or both. Out of scope for this branch but worth flagging.
+- **Same-name app collision UX.** Manager must eventually show two apps with the same friendly name without implying they are the same app. The minimum acceptable behavior is to preserve both identities and require explicit unification; polished naming/renaming UX can follow later.
+- **Sandbox button blast radius.** The sandbox app setup button must not exist outside sandbox mode. Test should verify by attempting to call it with sandbox off.
