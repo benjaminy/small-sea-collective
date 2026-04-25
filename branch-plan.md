@@ -62,7 +62,8 @@ The opening of this plan is too wide if the branch starts coding before these ar
    `404` should be reserved for truly unknown participant/team lookups, not "Manager action may fix this."
 2. **Stable v1 rejection reasons.**
    The branch should pick one exact vocabulary for the first shipped slice and use it consistently in Hub code, specs, and micro tests.
-   At minimum the vocabulary must cover: app unknown, identity registration missing, team activation missing, and transient "Manager sync may resolve."
+   At minimum the vocabulary must cover: app unknown, identity registration missing, and team activation missing.
+   `transient_sync_may_resolve` only ships if Phase 0 can name one precise Hub-observable predicate for it; otherwise it is cut from v1 rather than becoming a catch-all.
 3. **Manager API shape.**
    The implementation should expose two clearly named operations, not one kitchen-sink helper with flags:
    `register_app_for_identity(...)`
@@ -97,7 +98,6 @@ Where `reason` in v1 is one of:
 - `app_unknown`
 - `identity_berth_missing`
 - `team_berth_missing`
-- `transient_sync_may_resolve`
 
 Notes:
 
@@ -105,6 +105,15 @@ Notes:
 - `404` remains reserved for genuinely unknown participant/team lookups.
 - `team` may be `null` if a future caller triggers the same mechanism outside a team-scoped request, but the shipped Vault slice should always send a concrete team name.
 - Manager-owned rejection dispositions are intentionally **not** represented as a separate Hub reason in v1. The Hub keeps reporting the same observation; Manager decides whether the human sees it again.
+- `transient_sync_may_resolve` is intentionally **not** in the frozen v1 wire shape unless Phase 0 can define one exact emitting condition in terms of current Hub-observable state. Default if not: do not ship it.
+
+## Red-Test Rule
+
+Before any implementation phase claims progress, Phase 4's end-to-end micro tests should exist as a failing skeleton on the branch.
+
+- Write the main positive-path test and the production-mode negative test first, with stub assertions if necessary.
+- Keep them red on the branch until later phases turn assertions green; they do not need to be mergeable in that state, but they must exist early enough to shape the contract.
+- Do not land a Hub-only rejection-contract change without the Manager-side wiring that consumes it. At least one red assertion should go green in the same review arc, so "Phase 1 done" cannot mean "new strings nobody reads."
 
 ## Non-Negotiable Invariants
 
@@ -118,6 +127,9 @@ The implementation is only acceptable if all of these remain true:
 6. Vault stops opening sessions as `SmallSeaCollectiveCore` everywhere — `sync.py`, `web.py`, CLI, and all test fixtures.
 7. The shape of the structured rejection is stable enough that an app written today can keep using the same response codes after later branches add finer-grained reasons.
 8. Rejection dispositions are Manager-owned in v1. The Hub records observations; it does not read Manager-local rejection tables to mute or reinterpret future sightings.
+9. The public Manager API stays split. `register_app_for_identity(...)` and `activate_app_for_team(...)` may share private helpers, but there is no single public entry point with a `level=` or equivalent flag.
+10. New Hub write paths in this branch write only to `small_sea_collective_local.db`. Any write to NoteToSelf or a team DB from new Hub bootstrap code is a hard no.
+11. Manager sightings refresh is explicit and user-triggered in v1. No background sightings poller ships on this branch.
 
 ## Branch Goals
 
@@ -125,7 +137,7 @@ When this branch is done, the repo should provide all of the following:
 
 1. A written design of the two-level registration model (identity-level and team-level), recorded in `architecture.md` and the Manager and Hub specs, with the remaining debates and branch resolutions explicitly named (see §Design Debates and Branch Resolutions).
 2. A Hub-side schema for durable unknown-app sightings, with enough fields to support Manager UX and dedupe, including an explicit unique key for repeated requests from the same participant/app/team/client tuple.
-3. A Hub-side structured rejection vocabulary for `/sessions/request`, frozen in the plan as a concrete wire contract, covering at least: app unknown, app known personally but no personal berth, app known personally but not activated for the requested team, and "transient — Manager sync may resolve."
+3. A Hub-side structured rejection vocabulary for `/sessions/request`, frozen in the plan as a concrete wire contract, covering at least: app unknown, app known personally but no personal berth, and app known personally but not activated for the requested team. `transient_sync_may_resolve` only lands if Phase 0 gives it one precise emitting condition.
 4. A Hub-side read endpoint that lets the Manager enumerate sightings as observations. In v1 it does not apply Manager-owned rejection/disposition filtering.
 5. Manager-side identity-level registration: writes the new `app` row and `team_app_berth` for the participant's NoteToSelf team, and creates the `NoteToSelf/{App}` directory. The framework does nothing further inside that directory; its contents belong to the app.
 6. Manager-side team-level activation: writes the `app` and `team_app_berth` rows in the team DB, plus `berth_role` rows for current members.
@@ -177,17 +189,19 @@ If implementation later proves that Vault cannot present a minimally sane "open 
 
 - Vault's canonical name is `SharedFileVault`. Not set in stone, but final for this branch.
 - Unification implementation is **defined now, implemented later**. Schema sketches land here; the writing/reading code lands in follow-up issues spawned from the design.
+- "Defined now, implemented later" means prose, not live schema. Any unification design written on this branch lives in `branch-plan.md` and the eventual Phase 6 spec prose, not in `.sql` files or migrations that the build could pick up.
 - Team-level app identity is fixed to D2.A for this branch: deterministic IDs in team DB rows.
 - `NoteToSelf/{App}` berths belong to the app. The Manager creates the directory at registration time and does nothing further. No core-framework schema for it.
 - No special path for bundled apps. The sandbox dev button is the only allowed shortcut, and it lives behind the sandbox flag.
 - Rejection-reason transport is HTTP-level structured fields, not a strongly-typed enum. The wire shape just needs to let an app distinguish the relevant cases.
 - This branch's first shipped slice is the Vault bootstrap loop. Generic app-self-configuration APIs stay in #8 unless the code proves that separation unworkable.
 - Rejection dispositions are Manager-owned in v1. The Hub does not consult Manager-local rejection state when deciding whether to return or record a sighting.
+- During implementation, `branch-plan.md` is the decision log. `spec.md` gets updated once in Phase 6 against landed behavior, not incrementally as a design memo.
 
 ## In Scope
 
 - New Hub-private SQLite table for unknown-app sightings (additive migration on `small_sea_collective_local.db`).
-- Restructuring `_resolve_berth` and `request_session` so they distinguish unknown-app, missing-personal-berth, missing-team-berth, and transient cases, and so they record sightings on the unknown branches.
+- Restructuring `_resolve_berth` and `request_session` so they distinguish unknown-app, missing-personal-berth, and missing-team-berth cases, plus a narrowly-defined transient case only if Phase 0 keeps it, and so they record sightings on the unknown branches.
 - A Hub HTTP endpoint exposing sightings (read-only) for Manager consumption, with no Hub-side filtering based on Manager-owned dispositions.
 - Manager-side identity-level registration and team-level activation as separate operations in `provisioning.py`, plus thin web/CLI exposure.
 - Manager-side disposition tables: identity-level rejection in `NoteToSelf/Local/device_local.db`; team-level rejection in the existing per-team Manager-local sidecar DB.
@@ -199,6 +213,7 @@ If implementation later proves that Vault cannot present a minimally sane "open 
 ## Out of Scope (Explicitly Deferred)
 
 - Implementation of `app_unification` (D1.B) or `berth_storage` indirection (D2.B) beyond schema sketches.
+- Any `.sql` file or migration for unification tables (`app_unification`, `berth_storage`) before a follow-up branch chooses to implement them.
 - Real `NoteToSelf/{App}` materialization beyond an empty directory.
 - Cross-device coordination of sightings (sightings are local Hub state, not synced).
 - Apprise / additional notification adapters in the OS prompt path.
@@ -206,6 +221,7 @@ If implementation later proves that Vault cannot present a minimally sane "open 
 - Any UX polish in the Manager web UI beyond what is needed for the end-to-end micro test to be observable.
 - Any change to how transport metadata flows for newly registered apps. Transport configuration is B7 territory.
 - Hub-side enforcement of which clients are allowed to request which apps (today there is none; this branch does not add any).
+- Background polling of Hub sightings from Manager.
 
 ## Branch Cut Line
 
@@ -219,12 +235,14 @@ If this branch starts to sprawl, the cut line should be explicit rather than imp
 - Vault de-impersonation to `SharedFileVault`.
 - At least one end-to-end micro test proving the full bootstrap loop from first rejection to successful retry.
 - Spec/doc updates that explain the shipped ownership boundary and rejection vocabulary.
+- Review discipline around edge cases: if an edge case threatens scope, file the follow-up issue, link it from a code comment if needed, and do not expand the branch.
 
 **First things to cut if needed**
 
 - Sandbox-mode "initialize default apps" convenience endpoint.
 - Rich disposition UX beyond the minimum plumbing needed to keep repeated prompts from flapping.
 - Detailed schema-sketch work for D1.B / D2.B beyond the notes needed to preserve the option space.
+- `transient_sync_may_resolve`, unless Phase 0 can define a precise emitting condition that is actually useful.
 
 ## Phasing (draft)
 
@@ -232,34 +250,42 @@ Phases are sized for reviewability, not for hard sequencing. Several can proceed
 
 **Phase 0 — This document.**
 Iterate on `branch-plan.md` to convergence on rejection vocabulary, registration API shape, team-level identity model, and the branch cut line. D3 is fixed to D3.A for this branch. D1 stays open; D2 is resolved here.
-Exit gate: the plan names one concrete response shape, one concrete reason vocabulary, one explicit sighting dedupe key, one resolved D2 answer, and one cut line for what this branch will refuse to absorb.
+Exit gate: the plan names one concrete response shape, one concrete reason vocabulary, one explicit sighting dedupe key, one resolved D2 answer, one answer on whether `transient_sync_may_resolve` exists at all, and one cut line for what this branch will refuse to absorb.
+
+**Phase 0.5 — Write the failing micro test skeleton first.**
+- Add the Phase 4 positive-path and negative-path tests immediately, even if they only fail on stub assertions at first.
+- Put the production-mode negative test first in its file so fixture pollution from earlier tests cannot mask regressions.
+- Audit shared fixtures before writing that negative test; in particular, verify no helper pre-registers Vault behind the scenes.
+Exit gate: the branch contains a red end-to-end test skeleton that names the expected rejection contract, and the negative test starts from a demonstrably fresh environment.
 
 **Phase 1 — Hub sightings table and structured rejection.**
 - Add `unknown_app_sighting` schema to Hub local DB (additive migration via `PRAGMA user_version`).
 - Give the table an explicit upsert key for repeat sightings from the same participant/app/team/client tuple.
+- Implement sighting bumps as one atomic SQLite `INSERT ... ON CONFLICT DO UPDATE` statement. No read-then-write dedupe logic in Python.
 - Refactor `_resolve_berth` to return a typed result distinguishing the rejection reasons in §Branch Goal 3.
 - Update `/sessions/request` to record a sighting on rejection paths and return a structured rejection body.
 - Add a Hub read endpoint (`/sightings` or similar) that returns sightings as observations only.
-Exit gate: Hub micro tests cover success plus each shipped rejection reason, the migration is visibly additive-only, and retries upsert one sighting row rather than growing the table unboundedly.
+Exit gate: Hub micro tests cover success plus each shipped rejection reason, the migration is visibly additive-only, retries upsert one sighting row rather than growing the table unboundedly, and the new code writes only to `small_sea_collective_local.db`.
 
 **Phase 2 — Manager registration and activation.**
 - Identity-level registration in `provisioning.py`: writes the NoteToSelf `app` row, the NoteToSelf `team_app_berth`, and creates the `NoteToSelf/{App}` directory.
 - Team-level activation in `provisioning.py`: writes the team DB `app` row, `team_app_berth`, and `berth_role` for current members using D2.A deterministic IDs.
-- Sightings consumer: Manager reads sightings from the Hub endpoint, runs the sync-then-re-evaluate loop, surfaces remaining sightings to the user.
+- Sightings consumer: Manager reads sightings from the Hub endpoint when the user explicitly opens the relevant Manager surface, runs the sync-then-re-evaluate loop, and surfaces remaining sightings to the user.
 - Disposition handling for both rejection levels stays Manager-local; the Hub is not consulted when deciding whether to re-prompt the human.
 - Thin web/CLI surface — only what Phase 4's micro test needs.
-Exit gate: the code exposes separate identity/team operations that a micro test can call directly, without any app package writing SQLite rows itself.
+Exit gate: the code exposes separate identity/team operations that a micro test can call directly, without any app package writing SQLite rows itself, without a merged public helper taking a `level=` parameter, and without a background sightings poller.
 
 **Phase 3 — Vault de-impersonation.**
 - Replace `_HUB_APP_NAME = "SmallSeaCollectiveCore"` with `"SharedFileVault"` in `sync.py` and `web.py`.
 - Walk the test suite. Anywhere the test setup pre-creates a Core-app session for Vault, switch it to register Vault explicitly via the new Manager APIs from Phase 2 in the fixture or test setup.
+- After the mechanical rename pass, review every file in `packages/shared-file-vault/tests/` by hand. If a file needed no structural change, ask why that test still reflects reality.
 - Remove any sandbox fixtures that grant Vault Core access by hand. Do not make Phase 3 depend on the optional sandbox convenience endpoint.
-Exit gate: `rg` over `packages/shared-file-vault/` and its tests finds no remaining runtime use of `SmallSeaCollectiveCore`, and the updated fixtures succeed via normal Manager APIs rather than a hidden shortcut.
+Exit gate: `rg` over `packages/shared-file-vault/` and its tests finds no remaining runtime use of `SmallSeaCollectiveCore`, the updated fixtures succeed via normal Manager APIs rather than a hidden shortcut, and the hand review of `packages/shared-file-vault/tests/` found no mechanically renamed tests with stale structure.
 
 **Phase 4 — End-to-end micro test.**
 - Fresh participant + team. No apps registered.
 - Vault calls `request_session(participant, "SharedFileVault", team, client)`. Expect structured rejection with reason "app unknown."
-- Manager polls Hub sightings. Expects one sighting matching the request.
+- Manager explicitly refreshes Hub sightings. Expects one sighting matching the request.
 - Manager performs identity-level registration of `SharedFileVault`. Vault retries; expects rejection with reason "app known personally but not activated for team T."
 - Manager performs team-level activation. Vault retries; expects success.
 - A second test: rejection-then-disposition path. After the first sighting, Manager records identity-level rejection. Vault retries; expects the same Hub rejection, and Manager suppresses a second human prompt because of its own local disposition.
@@ -275,6 +301,7 @@ Exit gate: with sandbox off, the endpoint is absent; with sandbox on, it perform
 - Update `architecture.md` with the two-level registration model and the unknown-app sighting concept.
 - Update `packages/small-sea-manager/spec.md` to expand §App Management, document the rejection-disposition tables, and revise the open-questions section.
 - Update `packages/small-sea-hub/spec.md` to document the sightings table, the structured rejection vocabulary, and the new endpoint.
+- Make the spec pass one-shot and descriptive: update `spec.md` against what actually landed, not as an implementation diary. Keep unification ideas as prose; if DDL examples are helpful, place them in fenced blocks in the spec rather than in live `.sql` files.
 - Record D1, D2, D3 outcomes in the open-questions sections of the affected specs.
 Exit gate: a skeptical reader can understand the trust boundary, the provisioning boundary, and the bootstrap loop from docs alone without reverse-engineering code.
 
@@ -289,10 +316,12 @@ A skeptical reviewer should be able to convince themselves of all the following 
 - `grep` for `SmallSeaCollectiveCore` in the Vault package. Should return nothing.
 - The Hub sightings table is in `small_sea_collective_local.db`, not in any Manager-owned DB. Verified by file path.
 - The negative production-mode micro test verifies that `POST /sessions/request` performs no implicit app-registration writes anywhere.
+- Code review can verify that every new Hub write in this branch targets only `small_sea_collective_local.db`.
 
 **Two-level model is real, not cosmetic.**
 - The end-to-end test in Phase 4 exercises both rejection levels distinctly. A reviewer can read the test and see the rejection reasons change between retries.
 - Manager has separate `register_app_for_identity` and `activate_app_for_team` operations. They are not collapsed into one function with optional flags.
+- Manager sightings refresh is tied to an explicit user action in the thin UI/CLI surface, not to a background poll loop.
 
 **Bundled apps get no special path.**
 - The Vault de-impersonation test starts from zero registered apps and walks the full Hub sighting + Manager registration path before getting a session.
@@ -302,6 +331,7 @@ A skeptical reviewer should be able to convince themselves of all the following 
 **Repo integrity.**
 - No new direct DB reads from any app package into Manager DBs (Vault is the canary).
 - The Hub remains a read-only consumer of Manager DBs; its writes are only to its own local DB.
+- The sightings upsert is atomic SQLite (`ON CONFLICT DO UPDATE`), not Python read-then-write logic that can lose retry counts.
 - Existing micro tests still pass. Any test that currently sets up a Vault session via `SmallSeaCollectiveCore` is rewritten to use the new path; none are deleted to make the suite green.
 
 The validation section should be revisited at end-of-branch with concrete file paths, line numbers, and named tests once the implementation lands.
@@ -309,6 +339,8 @@ The validation section should be revisited at end-of-branch with concrete file p
 ## Sub-Issues to Spawn
 
 Tracked here so they don't get lost during iteration:
+
+If an edge case tempts the branch to expand, add the follow-up issue here, link it from a code comment if the code needs a breadcrumb, and move on.
 
 1. **Implement `app_unification` (D1.B path)** if D1 resolves to local UUID + unification.
 2. **Implement `berth_storage` indirection (D2.B-style follow-up)** only if deterministic IDs later prove insufficient for concrete typo/rebrand or storage-migration cases.
