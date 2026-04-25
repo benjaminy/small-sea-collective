@@ -24,7 +24,7 @@ This branch establishes the durable shape of app bootstrap:
 - Apps may only **request** sessions. They never write registration state.
 - The Hub is the **observation point**: it durably records unknown-app sightings and returns structured, distinguishable rejection reasons.
 - The Manager is the **provisioning authority**: it consumes Hub sightings, syncs identity and team state, and decides what gets registered or activated.
-- App registration is **two-level**: identity-level ("this app exists for this participant on this device") and team-level ("this app may access this team's resources"). They are independent; even if a team uses an app, it's possible for a participant to reject it on a particular device. This distinction is important because a user should be able to control at least at the berth granularity, what data is cloned on any particular device.
+- App registration is **two-level**: participant-level ("this app exists for this participant's identity and syncs through NoteToSelf") and team-level ("this app may access this team's resources"). Device-local opt-out is a separate layer: even if a participant or team uses an app, this device can decline to materialize or prompt for it. This distinction is important because a user should be able to control, at least at berth granularity, what data is cloned on any particular device.
 - App friendly names are **not global identity**. A request for `SharedFileVault` is a local claim made by a client, not proof that every other `SharedFileVault` in the world is the same app. When independently-created worlds collide, Manager must preserve the distinction until a human or team explicitly unifies them.
 - "Bundled" apps are not special at runtime. Vault becomes an ordinary Small Sea app using the friendly name `SharedFileVault` and walks the same path as any third-party app would.
 
@@ -48,7 +48,7 @@ The branch is successful if all of the following are true in one end-to-end path
 
 1. `SharedFileVault` asks the Hub for an ordinary berth session as itself.
 2. The Hub refuses with a structured, machine-distinguishable reason and records the sighting durably.
-3. The Manager can observe that sighting and provision the missing state in two explicit steps: identity registration, then team activation.
+3. The Manager can observe that sighting and provision the missing state in two explicit steps: participant registration, then team activation.
 4. Vault retries the same ordinary session flow and succeeds.
 
 Everything else in this branch should justify itself by making that loop implementable, observable, or reviewable. If a task does not clearly serve that loop, it should default to a follow-up issue rather than expanding this branch.
@@ -61,25 +61,31 @@ The opening of this plan is too wide if the branch starts coding before these ar
    Success continues to return `200` with either `{pending_id}` or `{token}` as today.
    Bootstrap/configuration failures stop pretending to be plain "not found"; they return a structured rejection body with a stable machine field for the reason.
    `404` should be reserved for truly unknown participant/team lookups, not "Manager action may fix this."
+   Phase 0 must decide whether the v1 request includes an optional app identity hint/convergence witness. If it does not, ambiguous friendly-name states always reject until Manager resolves them.
 2. **Stable v1 rejection reasons.**
    The branch should pick one exact vocabulary for the first shipped slice and use it consistently in Hub code, specs, and micro tests.
-   At minimum the vocabulary must cover: app unknown, identity registration missing, and team activation missing.
+   At minimum the vocabulary must cover: app unknown, participant registration missing, team activation missing, and ambiguous friendly-name lookup.
    `transient_sync_may_resolve` only ships if Phase 0 can name one precise Hub-observable predicate for it; otherwise it is cut from v1 rather than becoming a catch-all.
 3. **Manager API shape.**
    The implementation should expose two clearly named operations, not one kitchen-sink helper with flags:
-   `register_app_for_identity(...)`
+   `register_app_for_participant(...)`
    `activate_app_for_team(...)`
 4. **Minimum durable sighting record and dedupe key.**
    The plan should freeze the exact v1 fields before migration work starts. Minimum useful shape:
    `participant_hex`, `app_name`, `team_name`, `client_name`, `first_seen_at`, `last_seen_at`, `seen_count`, and machine rejection reason.
    In this table, `app_name` means "requested friendly app name observed from this local client." It is not a global or canonical app identity.
+   `client_name` must be a stable app-chosen client installation label for this participant/device/app, not a PID, random request ID, or per-process session name. If the app cannot provide a stable value, the client library must derive one from local app configuration before sending requests.
    The table should name its upsert key explicitly so "more or less forever" does not mean one row per retry. Working v1 key: `UNIQUE(participant_hex, app_name, team_name, client_name)`.
+   If Phase 0 puts an app identity hint or convergence witness into the request, the sighting schema and dedupe key must either include it or explain why omitting it cannot collapse distinct same-name sightings.
 5. **Team-level identity model (D2).**
    D2 cannot float into implementation. Before `activate_app_for_team(...)` lands, the branch must choose a generic locally generated app identity shape; Manager provisioning must not contain a Vault-specific or bundled-app-specific identity path.
-6. **Discovery scope for this branch.**
+6. **Concurrent registration/activation convergence witness.**
+   Phase 0 must name the minimal witness that lets Manager distinguish "two devices/admins approved the same app identity at the same time" from "two unrelated apps share a friendly name." The witness may be an app-local high-entropy lineage ID, an activation intent row, or another explicit source-of-sameness, but it cannot be the friendly name alone.
+   The decision must also say whether the witness travels through Hub session requests, Manager sightings, Manager approval state, or only synced app rows.
+7. **Discovery scope for this branch.**
    Record whether this branch includes a new Hub read API for app self-configuration, or whether apps only get the structured rejection and the instruction to open Manager.
 
-If any of the six items above remain fuzzy, the branch is still in document-iteration mode, not implementation mode.
+If any of the seven items above remain fuzzy, the branch is still in document-iteration mode, not implementation mode.
 
 ### Phase 0 Wire Contract To Freeze
 
@@ -98,14 +104,16 @@ HTTP 409 Conflict
 Where `reason` in v1 is one of:
 
 - `app_unknown`
-- `identity_berth_missing`
+- `participant_berth_missing`
 - `team_berth_missing`
+- `app_friendly_name_ambiguous`
 
 Notes:
 
 - `HTTP 409` is the working choice for bootstrap/configuration failures because the request is well-formed but conflicts with current local provisioning state.
 - `404` remains reserved for genuinely unknown participant/team lookups.
 - `app` is the friendly app name claimed by the local client in this request. It is not canonical identity and must not be used to silently merge two independently-created apps.
+- `app_friendly_name_ambiguous` is returned when the Hub can see more than one candidate app row for the requested friendly name and the request lacks a precise app identity hint. The Hub must not pick the first row returned by SQLite, the oldest row, or the lowest ID. Manager must resolve or the client must retry with an unambiguous app identity before a session can open.
 - `team` may be `null` if a future caller triggers the same mechanism outside a team-scoped request, but the shipped Vault slice should always send a concrete team name.
 - Manager-owned rejection dispositions are intentionally **not** represented as a separate Hub reason in v1. The Hub keeps reporting the same observation; Manager decides whether the human sees it again.
 - `transient_sync_may_resolve` is intentionally **not** in the frozen v1 wire shape unless Phase 0 can define one exact emitting condition in terms of current Hub-observable state. Default if not: do not ship it.
@@ -125,30 +133,32 @@ The implementation is only acceptable if all of these remain true:
 1. Apps never write to NoteToSelf or team DBs. Their only Hub-mutating action remains opening a session and using it.
 2. Apps never read Manager DBs directly. Anything an app needs to discover during bootstrap is exposed through a Hub HTTP endpoint, or returned in the structured rejection.
 3. The Hub's unknown-app sightings table is local Hub state only. It is never synced to peers and never read by apps.
-4. Identity-level registration and team-level activation are separately authorized decisions. The Manager UI/CLI may bundle them in a single flow for convenience, but the underlying data model treats them as distinct.
+4. Participant-level registration and team-level activation are separately authorized decisions. The Manager UI/CLI may bundle them in a single flow for convenience, but the underlying data model treats them as distinct.
 5. Bundled apps (Vault) get no special path through the Hub or Manager provisioning. They walk the same rejection-and-registration loop as any third-party app. The only acceptable special case is sandbox-mode developer setup that calls the same generic Manager operations a human would approve (see §Sandbox dev escape hatch).
 6. Vault stops opening sessions as `SmallSeaCollectiveCore` everywhere — `sync.py`, `web.py`, CLI, and all test fixtures.
 7. The shape of the structured rejection is stable enough that an app written today can keep using the same response codes after later branches add finer-grained reasons.
 8. Rejection dispositions are Manager-owned in v1. The Hub records observations; it does not read Manager-local rejection tables to mute or reinterpret future sightings.
-9. The public Manager API stays split. `register_app_for_identity(...)` and `activate_app_for_team(...)` may share private helpers, but there is no single public entry point with a `level=` or equivalent flag.
+9. The public Manager API stays split. `register_app_for_participant(...)` and `activate_app_for_team(...)` may share private helpers, but there is no single public entry point with a `level=` or equivalent flag.
 10. New Hub write paths in this branch write only to `small_sea_collective_local.db`. Any write to NoteToSelf or a team DB from new Hub bootstrap code is a hard no.
 11. Manager sightings refresh is explicit and user-triggered in v1. No background sightings poller ships on this branch.
 12. Friendly-name collisions are normal local-first events. If two distinct app identities both present the same friendly name, Manager must preserve both identities and surface a choice; the Hub must not collapse them by string equality.
+13. Same-app races need a narrower convergence path than human unification. If two devices/admins register or activate the same app identity concurrently, splice-merge should converge by an explicit app identity/convergence witness, not by friendly name and not by manual cleanup after every race.
+14. Hub berth resolution must be conservative under friendly-name ambiguity. If a request names only a friendly app name and more than one candidate app row exists, the Hub returns `app_friendly_name_ambiguous` instead of choosing a row implicitly.
 
 ## Branch Goals
 
 When this branch is done, the repo should provide all of the following:
 
-1. A written design of the two-level registration model (identity-level and team-level), recorded in `architecture.md` and the Manager and Hub specs, with the remaining debates and branch resolutions explicitly named (see §Design Debates and Branch Resolutions).
+1. A written design of the two-level registration model (participant-level and team-level), recorded in `architecture.md` and the Manager and Hub specs, with the remaining debates and branch resolutions explicitly named (see §Design Debates and Branch Resolutions).
 2. A Hub-side schema for durable unknown-app sightings, with enough fields to support Manager UX and dedupe, including an explicit unique key for repeated requests from the same participant/app/team/client tuple.
-3. A Hub-side structured rejection vocabulary for `/sessions/request`, frozen in the plan as a concrete wire contract, covering at least: app unknown, app known personally but no personal berth, and app known personally but not activated for the requested team. `transient_sync_may_resolve` only lands if Phase 0 gives it one precise emitting condition.
+3. A Hub-side structured rejection vocabulary for `/sessions/request`, frozen in the plan as a concrete wire contract, covering at least: app unknown, app not registered for this participant, app registered for the participant but not activated for the requested team, and ambiguous friendly-name lookup. `transient_sync_may_resolve` only lands if Phase 0 gives it one precise emitting condition.
 4. A Hub-side read endpoint that lets the Manager enumerate sightings as observations. In v1 it does not apply Manager-owned rejection/disposition filtering.
-5. Manager-side identity-level registration: writes the new `app` row and `team_app_berth` for the participant's NoteToSelf team, and creates the `NoteToSelf/{App}` directory. The framework does nothing further inside that directory; its contents belong to the app.
+5. Manager-side participant-level registration: writes the new `app` row and `team_app_berth` for the participant's NoteToSelf team, and creates the `NoteToSelf/{App}` directory. This registration syncs across the participant's devices through NoteToSelf. The framework does nothing further inside that directory; its contents belong to the app.
 6. Manager-side team-level activation: writes the `app` and `team_app_berth` rows in the team DB, plus `berth_role` rows for current members.
-7. Manager-side disposition handling for "I don't want this app on this device" (identity-level, in `NoteToSelf/Local/device_local.db`) and "I don't want this app on team T" (team-level, in the per-team Manager-local sidecar DB used today for admission-prompt dismissals). The Hub does not read these tables in v1; Manager uses them when deciding whether to surface a sighting again.
-8. Schema sketches for app unification (`app_unification`) as the explicit recovery path for typo, rebrand, and duplicate-friendly-name cases. The branch does not need full unification behavior, but it must not write data that makes later unification impossible.
+7. Manager-side disposition handling for "I don't want this app on this device" (device-local, in `NoteToSelf/Local/device_local.db`) and "I don't want this app on team T from this device" (device-local team disposition, in the per-team Manager-local sidecar DB used today for admission-prompt dismissals). The Hub does not read these tables in v1; Manager uses them when deciding whether to surface a sighting again.
+8. Schema sketches for app unification (`app_unification`) as the explicit recovery path for typo, rebrand, and true duplicate-friendly-name cases. The branch also defines a narrower same-app convergence witness so ordinary concurrent registration/activation races do not require manual unification.
 9. `SharedFileVault` is the Vault's friendly app name for this branch. Vault's `sync.py`, `web.py`, CLI, tests, and fixtures all use `SharedFileVault` and never `SmallSeaCollectiveCore`.
-10. An end-to-end micro test that walks the full loop: fresh sandbox → Vault requests session → Hub rejects with structured reason and records sighting → Manager observes sighting → Manager registers Vault at identity level → Manager activates Vault for team T → Vault retries successfully.
+10. An end-to-end micro test that walks the full loop: fresh sandbox → Vault requests session → Hub rejects with structured reason and records sighting → Manager observes sighting → Manager registers Vault at participant level → Manager activates Vault for team T → Vault retries successfully.
 11. Optional sandbox-mode dev convenience: a sandbox setup endpoint that registers and activates developer-selected apps (the default fixture may include `SharedFileVault`) without walking the human prompt path. Gated behind the same sandbox flag as `/sessions/pending`, and implemented by calling generic Manager operations.
 12. Spec/doc updates so `architecture.md`, the Manager spec, and the Hub spec reflect the shipped two-level model and the new rejection vocabulary, and so the open debates are recorded as explicit open questions.
 
@@ -156,10 +166,10 @@ When this branch is done, the repo should provide all of the following:
 
 Some questions remain open for future work; others are resolved here because the branch cannot safely proceed without an answer.
 
-### D1. Identity-level app identity model
+### D1. Participant-level app identity model
 
 - **D1.A — Friendly name as identity.** App identity is a single string. No new tables. Renaming is a destructive operation handled as uninstall + reinstall.
-- **D1.B — Local app ID + friendly name + `app_unification`.** Mirrors the existing `participant_unification` shape. Renaming is non-destructive. Provides a real recovery mechanism for duplicate friendly names, squatting, typos, rebrands, and later certificate-based app identity.
+- **D1.B — Local app ID + friendly name + convergence witness + `app_unification`.** Mirrors the existing `participant_unification` shape. Renaming is non-destructive. Provides a real recovery mechanism for duplicate friendly names, squatting, typos, rebrands, and later certificate-based app identity. The convergence witness gives same-app concurrent registrations a cheaper path than manual unification.
 
 Phase 0 resolution for this branch: **D1.B is the architectural direction.**
 
@@ -167,6 +177,7 @@ Rationale:
 
 - Small Sea has no central app registry, so friendly names cannot be authoritative. Two developers may independently create apps with the same name, and the correct local-first behavior is to preserve both identities until a human or team explicitly unifies them.
 - Names are claims, labels, and routing hints. They are not proof of sameness.
+- At the same time, two devices belonging to one participant can race while registering the same app. Phase 0 must define a high-entropy source-of-sameness witness, such as a client-supplied app lineage ID or Manager registration intent, so that same-app races can converge without treating the friendly name as identity.
 - The v1 Vault slice still uses `SharedFileVault` as the requested friendly name, but neither Manager nor Vault gets a private registration path because of that name.
 
 Implementation note for this branch: if full `app_unification` would make the branch too large, keep unification as a schema sketch and issue follow-up, but avoid any deterministic name-derived identity writes that would force two unrelated same-name apps to collapse.
@@ -174,7 +185,7 @@ Implementation note for this branch: if full `app_unification` would make the br
 ### D2. Team-level app identity model
 
 - **D2.A — Deterministic name-derived IDs.** `app.id = uuid5(team_id, friendly_name)` and `team_app_berth.id` derived in turn. Concurrent activation by two admins converges by primary-key collision under splice-sqlite merge. This is simple, but it incorrectly treats a friendly name as authoritative identity and silently collapses unrelated same-name apps.
-- **D2.B — Local app ID + `app_unification` + `berth_storage` indirection.** Symmetric with D1.B. Adds a `berth_id -> bucket_name / topic` indirection table that pays for itself independently (credential rotation, provider migration, compaction). Typos, rebrands, and same-name collisions fall under explicit unification rather than implicit string equality.
+- **D2.B — Local app ID + convergence witness + `app_unification` + `berth_storage` indirection.** Symmetric with D1.B. Adds a `berth_id -> bucket_name / topic` indirection table that pays for itself independently (credential rotation, provider migration, compaction). Same-app concurrent activations converge by witness; typos, rebrands, and true same-name collisions fall under explicit unification rather than implicit string equality.
 - **D2.C — Name-derived bundled-app shortcut.** `SharedFileVault` is treated as a predeclared bundled app handle for the purpose of this branch's vertical slice. Rejected because it would make Manager provisioning know about Vault and would create a second app-registration path before the generic model is honest.
 
 Phase 0 resolution for this branch: **D2.B is the architectural direction. D2.A and D2.C are rejected.**
@@ -184,9 +195,10 @@ Rationale:
 - `activate_app_for_team(...)` must choose a concrete row-shape now; this is not safely deferrable once synced team DB rows start landing in tests.
 - Deterministic name-derived IDs give a cheap convergence story only by assuming a global namespace that Small Sea explicitly does not have.
 - Manager is the generic provisioning authority, not a registry of blessed bundled apps. It should not know that Vault exists except as data supplied through the same registration/activation operations used for any app.
-- Pre-alpha freedom is best spent avoiding the wrong durable writes in the first place. If this branch cannot land the generic local-app-ID shape, it should stay in plan iteration rather than shipping a Vault-specific identity shortcut.
+- Preserve-both-then-unify is correct for unrelated apps sharing a friendly name, but too heavy for the benign race where two admins activate the same app identity concurrently. The row shape must separate "same witness, converge" from "different witness, preserve and surface ambiguity."
+- Pre-alpha freedom is best spent avoiding the wrong durable writes in the first place. If this branch cannot land the generic local-app-ID shape plus convergence witness, it should stay in plan iteration rather than shipping a Vault-specific identity shortcut.
 
-Open implementation question for Phase 0: decide the minimal local-app-ID row shape needed for the Vault slice. Do not proceed with generic `uuid5(team_id, friendly_name)` writes or any Manager-side `SharedFileVault` special case.
+Open implementation question for Phase 0: decide the minimal local-app-ID row shape and convergence witness needed for the Vault slice. Do not proceed with generic `uuid5(team_id, friendly_name)` writes or any Manager-side `SharedFileVault` special case.
 
 ### D3. Discovery endpoint scope (#8 interaction)
 
@@ -210,15 +222,16 @@ If implementation later proves that Vault cannot present a minimally sane "open 
 - Rejection-reason transport is HTTP-level structured fields, not a strongly-typed enum. The wire shape just needs to let an app distinguish the relevant cases.
 - This branch's first shipped slice is the Vault bootstrap loop. Generic app-self-configuration APIs stay in #8 unless the code proves that separation unworkable.
 - Rejection dispositions are Manager-owned in v1. The Hub does not consult Manager-local rejection state when deciding whether to return or record a sighting.
+- V1 assumes the Manager surface used to fix bootstrap runs on the same device as the Hub that observed the sighting. Cross-device sighting visibility is deferred, so Manager-on-laptop cannot automatically see a Vault-on-phone sighting in this branch.
 - During implementation, `branch-plan.md` is the decision log. `spec.md` gets updated once in Phase 6 against landed behavior, not incrementally as a design memo.
 
 ## In Scope
 
 - New Hub-private SQLite table for unknown-app sightings (additive migration on `small_sea_collective_local.db`).
-- Restructuring `_resolve_berth` and `request_session` so they distinguish unknown-app, missing-personal-berth, and missing-team-berth cases, plus a narrowly-defined transient case only if Phase 0 keeps it, and so they record sightings on the unknown branches.
+- Restructuring `_resolve_berth` and `request_session` so they distinguish unknown-app, missing-participant-berth, missing-team-berth, and ambiguous-friendly-name cases, plus a narrowly-defined transient case only if Phase 0 keeps it, and so they record sightings on the unknown branches.
 - A Hub HTTP endpoint exposing sightings (read-only) for Manager consumption, with no Hub-side filtering based on Manager-owned dispositions.
-- Manager-side identity-level registration and team-level activation as separate operations in `provisioning.py`, plus thin web/CLI exposure.
-- Manager-side disposition tables: identity-level rejection in `NoteToSelf/Local/device_local.db`; team-level rejection in the existing per-team Manager-local sidecar DB.
+- Manager-side participant-level registration and team-level activation as separate operations in `provisioning.py`, plus thin web/CLI exposure.
+- Manager-side disposition tables: device-local participant-app rejection in `NoteToSelf/Local/device_local.db`; device-local team-app rejection in the existing per-team Manager-local sidecar DB. In v1, dismissals do not follow the participant to other devices.
 - Renaming Vault's app identifier across all of `shared_file_vault/`, `tests/`, and any sandbox fixtures.
 - An end-to-end micro test for the full bootstrap loop (see §Validation).
 - Optional sandbox-mode dev endpoint for sandbox app setup.
@@ -245,7 +258,7 @@ If this branch starts to sprawl, the cut line should be explicit rather than imp
 
 - Structured Hub rejection for app-bootstrap/configuration failures.
 - Durable Hub sightings plus a Manager-readable sightings endpoint.
-- Separate Manager identity-registration and team-activation operations.
+- Separate Manager participant-registration and team-activation operations.
 - Vault de-impersonation to `SharedFileVault`.
 - At least one end-to-end micro test proving the full bootstrap loop from first rejection to successful retry.
 - Spec/doc updates that explain the shipped ownership boundary and rejection vocabulary.
@@ -264,7 +277,7 @@ Phases are sized for reviewability, not for hard sequencing. Several can proceed
 
 **Phase 0 — This document.**
 Iterate on `branch-plan.md` to convergence on rejection vocabulary, registration API shape, app identity model, team-level identity model, and the branch cut line. D1 and D2 reject friendly-name-as-identity as the general model. D3 is fixed to D3.A for this branch.
-Exit gate: the plan names one concrete response shape, one concrete reason vocabulary, one explicit sighting dedupe key, one resolved D1/D2 direction, one answer on whether `transient_sync_may_resolve` exists at all, and one cut line for what this branch will refuse to absorb.
+Exit gate: the plan names one concrete response shape, one concrete reason vocabulary including ambiguous friendly-name lookup, one explicit sighting dedupe key, one stable definition of `client_name`, one minimal local-app-ID row shape, one same-app convergence witness, one resolved D1/D2 direction, one answer on whether `transient_sync_may_resolve` exists at all, and one cut line for what this branch will refuse to absorb.
 
 **Phase 0.5 — Write the failing micro test skeleton first.**
 - Add the Phase 4 positive-path and negative-path tests immediately, even if they only fail on stub assertions at first.
@@ -277,17 +290,19 @@ Exit gate: the branch contains a red end-to-end test skeleton that names the exp
 - Give the table an explicit upsert key for repeat sightings from the same participant/app/team/client tuple.
 - Implement sighting bumps as one atomic SQLite `INSERT ... ON CONFLICT DO UPDATE` statement. No read-then-write dedupe logic in Python.
 - Refactor `_resolve_berth` to return a typed result distinguishing the rejection reasons in §Branch Goal 3.
+- Refactor name-based lookup so multiple candidate app rows for the same friendly name produce `app_friendly_name_ambiguous`; no SQL path may silently choose one candidate by row order.
 - Update `/sessions/request` to record a sighting on rejection paths and return a structured rejection body.
 - Add a Hub read endpoint (`/sightings` or similar) that returns sightings as observations only.
-Exit gate: Hub micro tests cover success plus each shipped rejection reason, the migration is visibly additive-only, retries upsert one sighting row rather than growing the table unboundedly, and the new code writes only to `small_sea_collective_local.db`.
+Exit gate: Hub micro tests cover success plus each shipped rejection reason, including duplicate-friendly-name ambiguity; the migration is visibly additive-only; retries from the same stable `client_name` upsert one sighting row rather than growing the table unboundedly; and the new code writes only to `small_sea_collective_local.db`.
 
 **Phase 2 — Manager registration and activation.**
-- Identity-level registration in `provisioning.py`: writes the NoteToSelf `app` row, the NoteToSelf `team_app_berth`, and creates the `NoteToSelf/{App}` directory.
+- Participant-level registration in `provisioning.py`: writes the NoteToSelf `app` row, the NoteToSelf `team_app_berth`, and creates the `NoteToSelf/{App}` directory.
 - Team-level activation in `provisioning.py`: writes the team DB `app` row, `team_app_berth`, and `berth_role` for current members without using name-derived deterministic IDs or any Vault-specific/bundled-app-specific branch.
+- Concurrent participant-level registration and team-level activation use the Phase 0 convergence witness to make same-app retries/races idempotent, while preserving distinct rows when the witness differs.
 - Sightings consumer: Manager reads sightings from the Hub endpoint when the user explicitly opens the relevant Manager surface, runs the sync-then-re-evaluate loop, and surfaces remaining sightings to the user.
-- Disposition handling for both rejection levels stays Manager-local; the Hub is not consulted when deciding whether to re-prompt the human.
+- Disposition handling for both rejection levels stays Manager-local and device-local; the Hub is not consulted when deciding whether to re-prompt the human, and a dismissal on one device does not suppress prompts on another device in v1.
 - Thin web/CLI surface — only what Phase 4's micro test needs.
-Exit gate: the code exposes separate identity/team operations that a micro test can call directly, without any app package writing SQLite rows itself, without a merged public helper taking a `level=` parameter, and without a background sightings poller.
+Exit gate: the code exposes separate participant/team operations that a micro test can call directly, without any app package writing SQLite rows itself, without a merged public helper taking a `level=` parameter, and without a background sightings poller.
 
 **Phase 3 — Vault de-impersonation.**
 - Replace `_HUB_APP_NAME = "SmallSeaCollectiveCore"` with `"SharedFileVault"` in `sync.py` and `web.py`.
@@ -300,11 +315,12 @@ Exit gate: `rg` over `packages/shared-file-vault/` and its tests finds no remain
 - Fresh participant + team. No apps registered.
 - Vault calls `request_session(participant, "SharedFileVault", team, client)`. Expect structured rejection with reason "app unknown."
 - Manager explicitly refreshes Hub sightings. Expects one sighting matching the request.
-- Manager performs identity-level registration of `SharedFileVault`. Vault retries; expects rejection with reason "app known personally but not activated for team T."
+- Manager performs participant-level registration of `SharedFileVault`. Vault retries; expects rejection with reason "app registered for the participant but not activated for team T."
 - Manager performs team-level activation. Vault retries; expects success.
-- A second test: rejection-then-disposition path. After the first sighting, Manager records identity-level rejection. Vault retries; expects the same Hub rejection, and Manager suppresses a second human prompt because of its own local disposition.
+- A second test: rejection-then-disposition path. After the first sighting, Manager records device-local rejection. Vault retries on the same device; expects the same Hub rejection, and Manager suppresses a second human prompt because of its own local disposition.
 - A third test: production-mode negative case. `SMALL_SEA_SANDBOX_MODE` unset, fresh participant + team, Vault attempts a session, gets the structured rejection, and the request itself causes no `SharedFileVault` or new non-Core app rows to appear in NoteToSelf or the team DB.
-- If local app IDs land in this branch, add a collision micro test: two distinct app identities claim the same friendly name for the same team, Manager preserves both as separate observations/registrations, and no berth or app row is silently merged by name.
+- A collision micro test: two distinct app identities claim the same friendly name for the same team, Manager preserves both as separate observations/registrations, and the Hub returns `app_friendly_name_ambiguous` rather than silently opening either berth by name.
+- A same-app race micro test: two participant devices or two team admins register/activate the same app friendly name with the same convergence witness; after merge, the DB contains one effective app/berth identity rather than two rows that require manual unification.
 Exit gate: a reviewer can read one micro test and see the reason transition from "unknown" to "not activated" to success without depending on hidden fixture magic, plus one negative test proving the request path performs no implicit registration writes.
 
 **Phase 5 — Optional sandbox dev escape hatch.**
@@ -335,8 +351,15 @@ A skeptical reviewer should be able to convince themselves of all the following 
 
 **Two-level model is real, not cosmetic.**
 - The end-to-end test in Phase 4 exercises both rejection levels distinctly. A reviewer can read the test and see the rejection reasons change between retries.
-- Manager has separate `register_app_for_identity` and `activate_app_for_team` operations. They are not collapsed into one function with optional flags.
+- Manager has separate `register_app_for_participant` and `activate_app_for_team` operations. They are not collapsed into one function with optional flags.
 - Manager sightings refresh is tied to an explicit user action in the thin UI/CLI surface, not to a background poll loop.
+- Participant-level registration writes synced NoteToSelf state; device-local opt-out writes only local disposition tables. Tests or review notes identify both storage locations.
+
+**Collisions and races are deliberate.**
+- A duplicate-friendly-name Hub micro test proves `_resolve_berth` returns `app_friendly_name_ambiguous` instead of choosing an arbitrary app row.
+- A same-app race micro test proves concurrent registration/activation with the same convergence witness is idempotent.
+- A true collision micro test proves different convergence witnesses with the same friendly name remain distinct until explicit unification.
+- Sighting retry tests use a stable `client_name` across restarts or simulated restarts, so `seen_count` increases without unbounded row growth.
 
 **Bundled apps get no special path.**
 - The Vault de-impersonation test starts from zero registered apps and walks the full Hub sighting + Manager registration path before getting a session.
@@ -364,13 +387,15 @@ If an edge case tempts the branch to expand, add the follow-up issue here, link 
 5. **Manager web UI for sightings review and registration approval** beyond the bare-bones surface this branch lands.
 6. **App-side bootstrap helper in `small-sea-client`** so apps don't each reinvent the rejection-handling and "tell the human to open Manager" message.
 7. **Per-sighting cleanup policy.** Issue #111 says "more or less forever for now." A future issue should decide whether to age out resolved sightings.
-8. **Cross-device sighting visibility (out of scope here, possibly never).** Sightings are intentionally local. Revisit only if a concrete user need appears.
+8. **Cross-device sighting visibility (out of scope here, possibly never).** Sightings are intentionally local in v1, so bootstrap repair assumes the user opens Manager on the same device whose Hub observed the failed app request. Revisit only if a concrete user need appears.
 
 ## Risks and Open Questions
 
 - **Schema migration risk on the Hub local DB.** Pre-alpha, but the Hub local DB now carries session state that survives restarts. The migration should be additive only; reviewers should verify no destructive `ALTER` is introduced.
 - **Test setup churn.** Vault de-impersonation will touch many test fixtures. The risk is that tests get partially migrated and pass for the wrong reason. Phase 3 acceptance must include an explicit grep gate (no `SmallSeaCollectiveCore` strings in Vault package or its tests).
 - **Rejection vocabulary stability.** Apps will start coding against the rejection shape. Choosing the wrong field names or codes here costs us later. Settle the vocabulary in Phase 0 before writing any of Phase 1.
-- **Disposition semantics under unification.** If an identity-level rejection of friendly name `X` later encounters an app identity unified with `Y`, the Manager needs clear rules for whether the rejection follows the local app ID, the pre-unification friendly name, or both. Out of scope for this branch but worth flagging.
+- **Disposition semantics under unification.** If a device-local participant-app rejection of friendly name `X` later encounters an app identity unified with `Y`, the Manager needs clear rules for whether the rejection follows the local app ID, the pre-unification friendly name, or both. Out of scope for this branch but worth flagging.
 - **Same-name app collision UX.** Manager must eventually show two apps with the same friendly name without implying they are the same app. The minimum acceptable behavior is to preserve both identities and require explicit unification; polished naming/renaming UX can follow later.
+- **Same-device bootstrap assumption.** Because sightings are Hub-local in v1, the first bootstrap loop only terminates automatically when the human opens Manager on the same device that saw the app request. A cross-device flow is deferred and should not be treated as a v1 bug unless the branch accidentally promises it.
+- **Device-local disposition scope.** In v1, participant-app and team-app dismissals are both local to the device. That means another device may still prompt for the same app/team sighting. This is a deliberate scope choice, not a synced preference model.
 - **Sandbox button blast radius.** The sandbox app setup button must not exist outside sandbox mode. Test should verify by attempting to call it with sandbox off.
