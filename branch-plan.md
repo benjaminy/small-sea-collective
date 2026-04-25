@@ -175,6 +175,7 @@ Phase 0 resolution for this branch: **D1.B is the architectural direction.**
 
 Rationale:
 
+- This follows the human-scale coordination principle in `architecture.md`: preserve ambiguity for human repair rather than silently inventing global identity.
 - Small Sea has no central app registry, so friendly names cannot be authoritative. Two developers may independently create apps with the same name, and the correct local-first behavior is to preserve both identities until a human or team explicitly unifies them.
 - Names are claims, labels, and routing hints. They are not proof of sameness.
 - At the same time, two devices belonging to one participant can race while registering the same app. Phase 0 must define a high-entropy source-of-sameness witness, such as a client-supplied app lineage ID or Manager registration intent, so that same-app races can converge without treating the friendly name as identity.
@@ -195,7 +196,7 @@ Rationale:
 - `activate_app_for_team(...)` must choose a concrete row-shape now; this is not safely deferrable once synced team DB rows start landing in tests.
 - Deterministic name-derived IDs give a cheap convergence story only by assuming a global namespace that Small Sea explicitly does not have.
 - Manager is the generic provisioning authority, not a registry of blessed bundled apps. It should not know that Vault exists except as data supplied through the same registration/activation operations used for any app.
-- Preserve-both-then-unify is correct for unrelated apps sharing a friendly name, but too heavy for the benign race where two admins activate the same app identity concurrently. The row shape must separate "same witness, converge" from "different witness, preserve and surface ambiguity."
+- Human-scale repair is acceptable for true ambiguity, but same-app races should still be cheap when there is a real source-of-sameness. The row shape must separate "same witness, converge" from "different witness, preserve and surface ambiguity."
 - Pre-alpha freedom is best spent avoiding the wrong durable writes in the first place. If this branch cannot land the generic local-app-ID shape plus convergence witness, it should stay in plan iteration rather than shipping a Vault-specific identity shortcut.
 
 Open implementation question for Phase 0: decide the minimal local-app-ID row shape and convergence witness needed for the Vault slice. Do not proceed with generic `uuid5(team_id, friendly_name)` writes or any Manager-side `SharedFileVault` special case.

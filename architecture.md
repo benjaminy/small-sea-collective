@@ -50,6 +50,24 @@ The baseline synchronization method is snapshot-based 3-way merge, utilizing `gi
 
 ## Design Principles & Constraints
 
+### Human-Scale Coordination
+
+Small Sea optimizes first for small teams and human-paced collaboration, not for
+large-scale, low-latency consensus. Several dozen teammates should be treated
+as a soft upper bound for a single team; larger communities should usually be
+modeled as multiple related teams.
+
+This scale assumption is an architectural constraint. When a conflict,
+identity collision, or ambiguous sync result cannot be resolved simply and
+safely, the system should preserve the competing states and make the ambiguity
+visible rather than inventing a brittle automatic winner. A Hub rejection, a
+Manager prompt, or a parked git branch is often the correct result.
+
+The corresponding safety rule is strict: human-scale repair is acceptable, but
+silent misresolution is not. Code must not grant access by arbitrary row order,
+collapse distinct identities by friendly name, or discard one side of a
+conflict just because the rare case is inconvenient.
+
 ### The Hub as the Sole Gateway
 **All internet communication for Small Sea components must go through the Hub.**
 Applications, synchronization protocols, and internal packages must never make
