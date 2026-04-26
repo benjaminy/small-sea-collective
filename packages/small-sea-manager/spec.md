@@ -595,15 +595,51 @@ deleted and peer routing should rely only on the B7 announcement flow.
 
 ### App Management
 
-App management is primarily berth management: controlling which apps are active for each team.
+App management has two explicit levels:
+
+- **Participant-level registration** records that an app exists for this
+  participant's identity. Manager writes an `app` row and NoteToSelf
+  `team_app_berth`, creates `NoteToSelf/{AppName}/`, and commits NoteToSelf so
+  the registration can sync across the participant's devices.
+- **Team-level activation** records that an app may use a team's berth.
+  Manager writes the team DB `app` row, `team_app_berth`, and `berth_role` rows
+  for current members.
+
+These are separate operations because "I use this app" and "this app may access
+this team" are separate human decisions. Apps never write either table
+themselves; they request Hub sessions and let the Hub surface structured
+bootstrap failures for Manager to repair.
 
 #### List apps for a team
 
 Reads the `app` + `team_app_berth` tables from the team DB.
 
-#### Add app to team (create berth)
+#### Register app for participant
 
-Inserts an `app` row and a `team_app_berth` row in the team DB. Grants `berth_role` rows for all current members (using their existing role). Commits.
+`register_app_for_participant(root_dir, participant_hex, app_name)` writes the
+participant's NoteToSelf registration state using a random local app ID. It does
+not activate the app for any non-NoteToSelf team.
+
+If multiple rows already claim the same friendly name, Manager must preserve the
+ambiguity and require human repair rather than choosing one row implicitly.
+
+#### Activate app for team
+
+`activate_app_for_team(root_dir, participant_hex, team_name, app_name)` inserts
+an `app` row and a `team_app_berth` row in the team DB using a random local app
+ID. It grants `berth_role` rows for all current members using their existing Core
+role where possible, then commits the team DB.
+
+The Manager does not know about "blessed" bundled app names. Shared File Vault
+uses `SharedFileVault` through the same generic operations as any other app.
+
+#### Hub sightings
+
+The Hub records local unknown-app sightings in its own database and exposes them
+through `GET /sightings`. Manager treats that endpoint as an observation feed:
+it may show the user a prompt, sync and re-evaluate local state, register the app
+for the participant, activate it for a team, or suppress repeated prompts using
+Manager-owned local disposition state.
 
 #### Remove app from team
 

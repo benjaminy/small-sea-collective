@@ -187,7 +187,7 @@ def _open_session(endpoint: str, nickname: str, team: str) -> str:
         f"{endpoint}/sessions/request",
         json={
             "participant": nickname,
-            "app": "SmallSeaCollectiveCore",
+            "app": "SharedFileVault",
             "team": team,
             "client": "LatencyTest",
         },

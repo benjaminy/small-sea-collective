@@ -14,14 +14,15 @@ from shared_file_vault import sync, vault
 from shared_file_vault.cli import cli
 from small_sea_client.client import SmallSeaClient, SmallSeaSession
 from small_sea_hub.server import app
-from small_sea_manager.manager import TeamManager
+from small_sea_manager.manager import TeamManager, _CORE_APP
 
-def _open_session(http, nickname, team, mode="encrypted"):
+
+def _open_session(http, nickname, team, mode="encrypted", app_name=sync._HUB_APP_NAME):
     resp = http.post(
         "/sessions/request",
         json={
             "participant": nickname,
-            "app": "SmallSeaCollectiveCore",
+            "app": app_name,
             "team": team,
             "client": "Smoke Tests",
             "mode": mode,
@@ -108,6 +109,8 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
 
     alice_hex = Provisioning.create_new_participant(root, "Alice")
     bob_hex = Provisioning.create_new_participant(root, "Bob")
+    Provisioning.register_app_for_participant(root, alice_hex, sync._HUB_APP_NAME)
+    Provisioning.register_app_for_participant(root, bob_hex, sync._HUB_APP_NAME)
 
     alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
@@ -127,10 +130,15 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     )
 
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
+    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", sync._HUB_APP_NAME)
     alice_member_id_hex = team_result["member_id_hex"]
-    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
+    team_info = http.get(
+        "/session/info",
+        headers={"Authorization": f"Bearer {alice_team_token}"},
+    ).json()
+    team_bucket = f"ss-{team_info['berth_id'][:16]}"
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     _push_team_repo_via_hub(http, alice_team_token, alice_team_sync)
     _make_bucket_public(
@@ -140,6 +148,9 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         team_bucket,
     )
 
+    alice_core_team_token = _open_session(http, "Alice", "ProjectX", app_name=_CORE_APP)
+    _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync)
+
     token_b64 = Provisioning.create_invitation(
         root,
         alice_hex,
@@ -147,7 +158,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         {"protocol": "s3", "url": alice_minio["endpoint"]},
         invitee_label="Bob",
     )
-    _push_team_repo_via_hub(http, alice_team_token, alice_team_sync)
+    _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync)
 
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
     acceptance_b64 = bob_manager.accept_invitation(token_b64)
@@ -353,7 +364,9 @@ def test_login_team_pin_flow_persists_token(playground_dir, monkeypatch):
     http = TestClient(app)
 
     alice_hex = Provisioning.create_new_participant(root, "Alice")
+    Provisioning.register_app_for_participant(root, alice_hex, sync._HUB_APP_NAME)
     Provisioning.create_team(root, alice_hex, "ProjectX")
+    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", sync._HUB_APP_NAME)
 
     captured = {}
     original = backend.request_session

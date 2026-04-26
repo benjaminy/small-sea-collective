@@ -84,6 +84,19 @@ control.
 ### Database Access
 **Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
 
+### App Bootstrap
+Apps may request Hub sessions, but they do not register themselves. If an app
+asks for a session before the participant or team has provisioned the relevant
+berth, the Hub records a local sighting and returns a structured bootstrap
+rejection. The Manager is the provisioning authority: it decides whether to
+register the app for the participant, activate it for a team, suppress the
+prompt on this device, or preserve ambiguity for human repair.
+
+Participant-level registration and team-level activation are separate decisions.
+The app's friendly name is a local claim and routing hint, not global identity.
+If a friendly-name collision cannot be resolved simply and safely, the Hub must
+surface ambiguity rather than choose a row implicitly.
+
 ### Security: PIN-Based Access
 Before a client can access a berth, it must request access from the Hub. The Hub generates a PIN and sends it to the user via OS notifications. The user must enter this PIN into the client to complete the handshake, ensuring that only authorized software can access team data.
 

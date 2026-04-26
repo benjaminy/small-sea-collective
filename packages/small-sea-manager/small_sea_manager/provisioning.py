@@ -4179,6 +4179,148 @@ def create_team(root_dir, participant_hex, team_name):
     }
 
 
+def _single_app_id_by_name(conn, app_name):
+    rows = conn.execute(
+        "SELECT id FROM app WHERE name = ?",
+        (app_name,),
+    ).fetchall()
+    if len(rows) > 1:
+        raise ValueError(f"Multiple app rows found for friendly name '{app_name}'")
+    return rows[0][0] if rows else None
+
+
+def _single_app_id_by_name_sa(conn, app_name):
+    rows = conn.execute(
+        text("SELECT id FROM app WHERE name = :name"),
+        {"name": app_name},
+    ).fetchall()
+    if len(rows) > 1:
+        raise ValueError(f"Multiple app rows found for friendly name '{app_name}'")
+    return rows[0][0] if rows else None
+
+
+def register_app_for_participant(root_dir, participant_hex, app_name):
+    """Register an app for a participant's identity via NoteToSelf."""
+    root_dir = pathlib.Path(root_dir)
+    participant_dir = root_dir / "Participants" / participant_hex
+    app_dir = participant_dir / "NoteToSelf" / app_name
+    changed = False
+
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        team_row = conn.execute(
+            "SELECT id FROM team WHERE name = ?",
+            ("NoteToSelf",),
+        ).fetchone()
+        if team_row is None:
+            raise ValueError("NoteToSelf team row not found")
+        team_id = team_row[0]
+
+        app_id = _single_app_id_by_name(conn, app_name)
+        if app_id is None:
+            app_id = uuid7()
+            conn.execute(
+                "INSERT INTO app (id, name) VALUES (?, ?)",
+                (app_id, app_name),
+            )
+            changed = True
+
+        berth_row = conn.execute(
+            "SELECT id FROM team_app_berth WHERE team_id = ? AND app_id = ?",
+            (team_id, app_id),
+        ).fetchone()
+        if berth_row is None:
+            conn.execute(
+                "INSERT INTO team_app_berth (id, team_id, app_id) VALUES (?, ?, ?)",
+                (uuid7(), team_id, app_id),
+            )
+            changed = True
+
+        conn.commit()
+
+    if not app_dir.exists():
+        app_dir.mkdir(parents=True)
+        changed = True
+
+    if changed:
+        repo_dir = participant_dir / "NoteToSelf" / "Sync"
+        nts_repo = _Repo(repo_dir / ".git", repo_dir)
+        nts_repo.stage(["core.db"])
+        nts_repo.commit(f"Registered app {app_name}")
+
+    return app_id.hex()
+
+
+def activate_app_for_team(root_dir, participant_hex, team_name, app_name):
+    """Activate an app berth for a team using generic Manager provisioning."""
+    root_dir = pathlib.Path(root_dir)
+    participant_dir = root_dir / "Participants" / participant_hex
+    team_sync_dir = participant_dir / team_name / "Sync"
+    team_db_path = team_sync_dir / "core.db"
+    engine = _sqlite_engine(team_db_path)
+    changed = False
+
+    with engine.begin() as conn:
+        app_id = _single_app_id_by_name_sa(conn, app_name)
+        if app_id is None:
+            app_id = uuid7()
+            conn.execute(
+                text("INSERT INTO app (id, name) VALUES (:id, :name)"),
+                {"id": app_id, "name": app_name},
+            )
+            changed = True
+
+        berth_rows = conn.execute(
+            text("SELECT id FROM team_app_berth WHERE app_id = :app_id"),
+            {"app_id": app_id},
+        ).fetchall()
+        if len(berth_rows) > 1:
+            raise ValueError(f"Multiple berths found for app '{app_name}'")
+        if berth_rows:
+            berth_id = berth_rows[0][0]
+        else:
+            berth_id = uuid7()
+            conn.execute(
+                text("INSERT INTO team_app_berth (id, app_id) VALUES (:id, :app_id)"),
+                {"id": berth_id, "app_id": app_id},
+            )
+            changed = True
+
+        member_rows = conn.execute(text("SELECT id FROM member")).fetchall()
+        for (member_id,) in member_rows:
+            role_row = conn.execute(
+                text(
+                    "SELECT 1 FROM berth_role "
+                    "WHERE member_id = :member_id AND berth_id = :berth_id"
+                ),
+                {"member_id": member_id, "berth_id": berth_id},
+            ).fetchone()
+            if role_row is not None:
+                continue
+            role = _core_berth_role(conn, member_id) or "read-write"
+            conn.execute(
+                text(
+                    "INSERT INTO berth_role (id, member_id, berth_id, role) "
+                    "VALUES (:id, :member_id, :berth_id, :role)"
+                ),
+                {
+                    "id": uuid7(),
+                    "member_id": member_id,
+                    "berth_id": berth_id,
+                    "role": role,
+                },
+            )
+            changed = True
+
+    engine.dispose()
+
+    if changed:
+        repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+        repo.stage(["core.db"])
+        repo.commit(f"Activated app {app_name}")
+
+    return app_id.hex()
+
+
 def create_invitation(
     root_dir, participant_hex, team_name, inviter_cloud, invitee_label=None, role="admin"
 ):

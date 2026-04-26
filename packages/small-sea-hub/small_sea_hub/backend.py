@@ -49,6 +49,14 @@ class SmallSeaNotFoundExn(SmallSeaBackendExn):
     pass
 
 
+class SmallSeaAppBootstrapRequiredExn(SmallSeaBackendExn):
+    def __init__(self, reason: str, app_name: str, team_name: str):
+        self.reason = reason
+        self.app_name = app_name
+        self.team_name = team_name
+        super().__init__(reason)
+
+
 # ---- SQLAlchemy models ----
 # Hub-local session table
 
@@ -164,7 +172,7 @@ class SmallSeaBackend:
     small-sea-manager package (provisioning.py).
     """
 
-    hub_schema_version: int = 50
+    hub_schema_version: int = 51
 
     def __init__(self, root_dir, auto_approve_sessions: bool = False,
                  sandbox_mode: bool = False, log_level: str = "INFO"):
@@ -264,6 +272,11 @@ class SmallSeaBackend:
                 user_version = 50
                 print("Hub DB migrated to v50.")
 
+            if user_version == 50:
+                self._create_unknown_app_sighting_table(cursor)
+                user_version = 51
+                print("Hub DB migrated to v51.")
+
             cursor.execute(
                 f"PRAGMA user_version = {SmallSeaBackend.hub_schema_version}"
             )
@@ -284,6 +297,22 @@ class SmallSeaBackend:
         print("Hub DB schema initialized successfully.")
 
     # ---- Session management ----
+
+    @staticmethod
+    def _create_unknown_app_sighting_table(cursor):
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS unknown_app_sighting (
+                participant_hex TEXT NOT NULL,
+                app_name TEXT NOT NULL,
+                team_name TEXT NOT NULL,
+                client_name TEXT NOT NULL,
+                first_seen_at TEXT NOT NULL,
+                last_seen_at TEXT NOT NULL,
+                seen_count INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                UNIQUE(participant_hex, app_name, team_name, client_name)
+            )
+        """)
 
     def _find_participant(self, nickname):
         """Return list of (participant_dir, engine) for participants matching nickname.
@@ -337,32 +366,164 @@ class SmallSeaBackend:
             raise SmallSeaNotFoundExn(f"Team '{team_name}' not found")
         team_id = row[0]
 
+        participant_app_rows = self._app_rows_for_name(note_to_self_db, app_name)
+        if len(participant_app_rows) > 1:
+            raise SmallSeaAppBootstrapRequiredExn(
+                "app_friendly_name_ambiguous", app_name, team_name
+            )
+
         if team_name == "NoteToSelf":
-            berth_db = note_to_self_db
-        else:
-            berth_db = str(participant_dir / team_name / "Sync" / "core.db")
-
-        conn = sqlite3.connect(berth_db)
-        try:
-            app_row = conn.execute(
-                "SELECT id FROM app WHERE name = ?", (app_name,)
-            ).fetchone()
-            if app_row is None:
-                raise SmallSeaNotFoundExn(f"App '{app_name}' not found in '{team_name}'")
-            app_id = app_row[0]
-
-            berth_row = conn.execute(
-                "SELECT id FROM team_app_berth WHERE app_id = ?", (app_id,)
-            ).fetchone()
-            if berth_row is None:
-                raise SmallSeaNotFoundExn(
-                    f"No berth for app '{app_name}' in team '{team_name}'"
+            if not participant_app_rows:
+                raise SmallSeaAppBootstrapRequiredExn(
+                    "app_unknown", app_name, team_name
                 )
-            berth_id = berth_row[0]
+            app_id = participant_app_rows[0]
+            berth_id = self._single_berth_id_for_app(
+                note_to_self_db, app_id, app_name, team_name, team_id=team_id
+            )
+            return team_id, app_id, berth_id
+
+        berth_db = str(participant_dir / team_name / "Sync" / "core.db")
+        team_app_rows = self._app_rows_for_name(berth_db, app_name)
+        if len(team_app_rows) > 1:
+            raise SmallSeaAppBootstrapRequiredExn(
+                "app_friendly_name_ambiguous", app_name, team_name
+            )
+
+        if not participant_app_rows and not team_app_rows:
+            raise SmallSeaAppBootstrapRequiredExn("app_unknown", app_name, team_name)
+
+        if not participant_app_rows:
+            raise SmallSeaAppBootstrapRequiredExn(
+                "participant_berth_missing", app_name, team_name
+            )
+
+        if not team_app_rows:
+            raise SmallSeaAppBootstrapRequiredExn(
+                "team_berth_missing", app_name, team_name
+            )
+
+        # Core team sessions predate participant-level app registration. Keep
+        # that path stable while this branch moves ordinary apps onto the new
+        # bootstrap model.
+        if app_name != "SmallSeaCollectiveCore":
+            try:
+                self._single_berth_id_for_app(
+                    note_to_self_db,
+                    participant_app_rows[0],
+                    app_name,
+                    team_name,
+                )
+            except SmallSeaNotFoundExn:
+                raise SmallSeaAppBootstrapRequiredExn(
+                    "participant_berth_missing", app_name, team_name
+                )
+
+        app_id = team_app_rows[0]
+        berth_id = self._single_berth_id_for_app(berth_db, app_id, app_name, team_name)
+
+        return team_id, app_id, berth_id
+
+    @staticmethod
+    def _app_rows_for_name(db_path, app_name):
+        conn = sqlite3.connect(db_path)
+        try:
+            rows = conn.execute(
+                "SELECT id FROM app WHERE name = ?",
+                (app_name,),
+            ).fetchall()
+        finally:
+            conn.close()
+        return [row[0] for row in rows]
+
+    @staticmethod
+    def _single_berth_id_for_app(db_path, app_id, app_name, team_name, team_id=None):
+        conn = sqlite3.connect(db_path)
+        try:
+            if team_id is None:
+                rows = conn.execute(
+                    "SELECT id FROM team_app_berth WHERE app_id = ?",
+                    (app_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT id FROM team_app_berth WHERE app_id = ? AND team_id = ?",
+                    (app_id, team_id),
+                ).fetchall()
         finally:
             conn.close()
 
-        return team_id, app_id, berth_id
+        if not rows:
+            raise SmallSeaNotFoundExn(
+                f"No berth for app '{app_name}' in team '{team_name}'"
+            )
+        if len(rows) > 1:
+            raise SmallSeaAppBootstrapRequiredExn(
+                "app_friendly_name_ambiguous", app_name, team_name
+            )
+        return rows[0][0]
+
+    def record_unknown_app_sighting(
+        self, participant_hex, app_name, team_name, client_name, reason
+    ):
+        now = datetime.now(timezone.utc).isoformat()
+        conn = sqlite3.connect(self.path_local_db)
+        try:
+            conn.execute(
+                """
+                INSERT INTO unknown_app_sighting (
+                    participant_hex,
+                    app_name,
+                    team_name,
+                    client_name,
+                    first_seen_at,
+                    last_seen_at,
+                    seen_count,
+                    reason
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 1, ?)
+                ON CONFLICT(participant_hex, app_name, team_name, client_name)
+                DO UPDATE SET
+                    last_seen_at = excluded.last_seen_at,
+                    seen_count = seen_count + 1,
+                    reason = excluded.reason
+                """,
+                (
+                    participant_hex,
+                    app_name,
+                    team_name,
+                    client_name,
+                    now,
+                    now,
+                    reason,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def list_unknown_app_sightings(self):
+        conn = sqlite3.connect(self.path_local_db)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    participant_hex,
+                    app_name,
+                    team_name,
+                    client_name,
+                    first_seen_at,
+                    last_seen_at,
+                    seen_count,
+                    reason
+                FROM unknown_app_sighting
+                ORDER BY last_seen_at DESC, first_seen_at DESC
+                """
+            ).fetchall()
+        finally:
+            conn.close()
+        return [dict(row) for row in rows]
 
     @staticmethod
     def _normalize_mode(mode: Optional[str]) -> str:
@@ -390,7 +551,13 @@ class SmallSeaBackend:
 
         participant_dir, engine = matching[0]
         participant_hex = participant_dir.absolute().name
-        self._resolve_berth(participant_dir, team, app)  # validate existence
+        try:
+            self._resolve_berth(participant_dir, team, app)  # validate existence
+        except SmallSeaAppBootstrapRequiredExn as exc:
+            self.record_unknown_app_sighting(
+                participant_hex, app, team, client, exc.reason
+            )
+            raise
 
         pin = str(secrets.randbelow(1000)).zfill(3)
 
@@ -1193,11 +1360,10 @@ class SmallSeaBackend:
             from botocore import UNSIGNED
             from botocore.config import Config as BotoConfig
 
-            if not bucket:
-                raise SmallSeaBackendExn(
-                    "Peer transport for s3 is missing a bucket; refusing to derive one"
-                )
-            bucket_name = bucket
+            # S3 storage is berth-scoped. Legacy peer transport metadata may
+            # still point at the Core berth bucket, so peer reads for ordinary
+            # app sessions derive the bucket from the current session berth.
+            bucket_name = f"ss-{ss_session.berth_id.hex()[:16]}"
             s3_client = boto3.client(
                 "s3",
                 endpoint_url=url,

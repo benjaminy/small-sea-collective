@@ -20,7 +20,7 @@ from small_sea_client.client import SmallSeaClient, SmallSeaError, SmallSeaSessi
 from shared_file_vault import vault
 
 _CONFIG_PATH = pathlib.Path.home() / ".config" / "small-sea" / "vault.toml"
-_HUB_APP_NAME = "SmallSeaCollectiveCore"
+_HUB_APP_NAME = "SharedFileVault"
 _CLI_CLIENT_NAME = "SharedFileVaultCLI"
 
 
