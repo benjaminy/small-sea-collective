@@ -4,6 +4,13 @@
 **Base:** `main`
 **Primary issue:** #111 "Design app bootstrap via Hub unknown-app sightings and Manager registration"
 **Kind:** Design + first vertical implementation slice. Expected to spawn several follow-up issues.
+**Archived:** Branch wrapped after implementation, docs, validation, and follow-up issue filing.
+**Final validation:**
+- `uv run pytest packages/small-sea-hub/tests` → 75 passed
+- `uv run pytest packages/small-sea-manager/tests packages/shared-file-vault/tests` → 115 passed, 3 skipped
+- `git diff --check` → clean
+- Vault grep for `SmallSeaCollectiveCore`, `sync._HUB_APP_NAME`, and `_make_bucket_public` → no hits
+**Spawned follow-ups:** #113–#123, plus existing #8 for Hub app self-configuration.
 **Related issues:** #8 (Hub read-only API for app self-configuration), #6 (identity model for NoteToSelf and multi-device), #5 (SharedFileVault — wire push/pull sync through the Hub)
 **Related code of interest:**
 `packages/small-sea-hub/small_sea_hub/backend.py` (`_resolve_berth`, `request_session`),
