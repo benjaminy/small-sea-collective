@@ -399,26 +399,26 @@ Tracked here so they don't get lost during iteration:
 
 If an edge case tempts the branch to expand, add the follow-up issue here, link it from a code comment if the code needs a breadcrumb, and move on.
 
-1. **Implement full `app_unification`** if this branch only lands local app IDs plus schema sketches.
-2. **Implement `berth_storage` indirection** if this branch does not land it with local app IDs, or when credential rotation/provider migration needs make it urgent.
-3. **Same-app race convergence witness.** Future work may add an app lineage ID, Manager activation intent, or another source-of-sameness so benign duplicate registrations can converge automatically. V1 intentionally uses ambiguity plus human repair instead.
-4. **Real `NoteToSelf/{App}` materialization** beyond the empty-directory stub.
-5. **Sync-side materialization opt-out** so a device can decline cloning an app berth, not merely suppress prompts.
+1. **Implement full `app_unification`** if this branch only lands local app IDs plus schema sketches. Spawned as #113.
+2. **Implement `berth_storage` indirection** if this branch does not land it with local app IDs, or when credential rotation/provider migration needs make it urgent. Spawned as #114.
+3. **Same-app race convergence witness.** Future work may add an app lineage ID, Manager activation intent, or another source-of-sameness so benign duplicate registrations can converge automatically. V1 intentionally uses ambiguity plus human repair instead. Spawned as #115.
+4. **Real `NoteToSelf/{App}` materialization** beyond the empty-directory stub. Spawned as #116.
+5. **Sync-side materialization opt-out** so a device can decline cloning an app berth, not merely suppress prompts. Spawned as #117.
 6. **Hub `/info` discovery endpoint** in follow-up issue #8, since D3 resolves to D3.A on this branch.
-7. **Manager web UI for sightings review and registration approval** beyond the bare-bones surface this branch lands.
-8. **App-side bootstrap helper in `small-sea-client`** so apps don't each reinvent the rejection-handling and "tell the human to open Manager" message.
-9. **Per-sighting cleanup policy.** Issue #111 says "more or less forever for now." A future issue should decide whether to age out resolved sightings.
-10. **Cross-device sighting visibility (out of scope here, possibly never).** Sightings are intentionally local in v1, so bootstrap repair assumes the user opens Manager on the same device whose Hub observed the failed app request. Revisit only if a concrete user need appears.
+7. **Manager web UI for sightings review and registration approval** beyond the bare-bones surface this branch lands. Spawned as #118.
+8. **App-side bootstrap helper in `small-sea-client`** so apps don't each reinvent the rejection-handling and "tell the human to open Manager" message. Spawned as #119.
+9. **Per-sighting cleanup policy.** Issue #111 says "more or less forever for now." A future issue should decide whether to age out resolved sightings. Spawned as #120.
+10. **Cross-device sighting visibility (out of scope here, possibly never).** Sightings are intentionally local in v1, so bootstrap repair assumes the user opens Manager on the same device whose Hub observed the failed app request. Revisit only if a concrete user need appears. Spawned as #121.
 11. **Core participant-registration migration.** `SmallSeaCollectiveCore`
 sessions currently have a narrow Hub compatibility exception because Core
 sessions predate participant-level app registration. A follow-up should register
 Core through the same participant-level path and then remove the hardcoded
-exception from Hub berth resolution.
+exception from Hub berth resolution. Spawned as #122.
 12. **S3 member transport bucket semantics.** V1 peer S3 reads use member
 transport announcements for protocol/url discovery, but derive the bucket from
 the current session berth (`ss-{berth_id_hex[:16]}`). A follow-up should decide
 whether `member_transport_announcement.bucket` should be removed, repurposed,
-or made authoritative again for some transport class.
+or made authoritative again for some transport class. Spawned as #123.
 
 ## Risks and Open Questions
 
