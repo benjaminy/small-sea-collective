@@ -50,6 +50,24 @@ The baseline synchronization method is snapshot-based 3-way merge, utilizing `gi
 
 ## Design Principles & Constraints
 
+### Human-Scale Coordination
+
+Small Sea optimizes first for small teams and human-paced collaboration, not for
+large-scale, low-latency consensus. Several dozen teammates should be treated
+as a soft upper bound for a single team; larger communities should usually be
+modeled as multiple related teams.
+
+This scale assumption is an architectural constraint. When a conflict,
+identity collision, or ambiguous sync result cannot be resolved simply and
+safely, the system should preserve the competing states and make the ambiguity
+visible rather than inventing a brittle automatic winner. A Hub rejection, a
+Manager prompt, or a parked git branch is often the correct result.
+
+The corresponding safety rule is strict: human-scale repair is acceptable, but
+silent misresolution is not. Code must not grant access by arbitrary row order,
+collapse distinct identities by friendly name, or discard one side of a
+conflict just because the rare case is inconvenient.
+
 ### The Hub as the Sole Gateway
 **All internet communication for Small Sea components must go through the Hub.**
 Applications, synchronization protocols, and internal packages must never make
@@ -65,6 +83,19 @@ control.
 
 ### Database Access
 **Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
+
+### App Bootstrap
+Apps may request Hub sessions, but they do not register themselves. If an app
+asks for a session before the participant or team has provisioned the relevant
+berth, the Hub records a local sighting and returns a structured bootstrap
+rejection. The Manager is the provisioning authority: it decides whether to
+register the app for the participant, activate it for a team, suppress the
+prompt on this device, or preserve ambiguity for human repair.
+
+Participant-level registration and team-level activation are separate decisions.
+The app's friendly name is a local claim and routing hint, not global identity.
+If a friendly-name collision cannot be resolved simply and safely, the Hub must
+surface ambiguity rather than choose a row implicitly.
 
 ### Security: PIN-Based Access
 Before a client can access a berth, it must request access from the Hub. The Hub generates a PIN and sends it to the user via OS notifications. The user must enter this PIN into the client to complete the handshake, ensuring that only authorized software can access team data.

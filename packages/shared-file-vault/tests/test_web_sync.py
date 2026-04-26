@@ -3,16 +3,14 @@ import json
 import pathlib
 import socket
 
-import boto3
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
 
 from shared_file_vault import sync, vault
 from shared_file_vault.web import create_app
 from small_sea_hub.server import app
-from small_sea_manager.manager import TeamManager
+from small_sea_manager.manager import TeamManager, _CORE_APP
 
 
 def _free_port():
@@ -21,12 +19,12 @@ def _free_port():
         return sock.getsockname()[1]
 
 
-def _open_session(http, nickname, team, mode="encrypted"):
+def _open_session(http, nickname, team, mode="encrypted", app_name=sync.HUB_APP_NAME):
     resp = http.post(
         "/sessions/request",
         json={
             "participant": nickname,
-            "app": "SmallSeaCollectiveCore",
+            "app": app_name,
             "team": team,
             "client": "Smoke Tests",
             "mode": mode,
@@ -42,33 +40,6 @@ def _open_session(http, nickname, team, mode="encrypted"):
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
-
-
-def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        config=BotoConfig(signature_version="s3v4"),
-        region_name="us-east-1",
-    )
-    s3.put_bucket_policy(
-        Bucket=bucket_name,
-        Policy=json.dumps(
-            {
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Effect": "Allow",
-                        "Principal": "*",
-                        "Action": ["s3:GetObject"],
-                        "Resource": [f"arn:aws:s3:::{bucket_name}/*"],
-                    }
-                ],
-            }
-        ),
-    )
 
 
 def _push_team_repo_via_hub(http, session_hex, repo_dir):
@@ -95,6 +66,8 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
 
     alice_hex = Provisioning.create_new_participant(root, "Alice")
     bob_hex = Provisioning.create_new_participant(root, "Bob")
+    Provisioning.register_app_for_participant(root, alice_hex, sync.HUB_APP_NAME)
+    Provisioning.register_app_for_participant(root, bob_hex, sync.HUB_APP_NAME)
 
     alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
     backend.add_cloud_location(
@@ -114,18 +87,19 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     )
 
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
+    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", sync.HUB_APP_NAME)
     alice_member_id_hex = team_result["member_id_hex"]
-    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
-    _push_team_repo_via_hub(http, alice_team_token, alice_team_sync)
-    _make_bucket_public(
-        alice_minio["endpoint"],
-        alice_minio["access_key"],
-        alice_minio["secret_key"],
-        team_bucket,
+    resp = http.post(
+        "/cloud/setup",
+        headers={"Authorization": f"Bearer {alice_team_token}"},
     )
+    assert resp.status_code == 200, resp.text
+
+    alice_core_team_token = _open_session(http, "Alice", "ProjectX", app_name=_CORE_APP)
+    _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync)
 
     token_b64 = Provisioning.create_invitation(
         root,
@@ -134,7 +108,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         {"protocol": "s3", "url": alice_minio["endpoint"]},
         invitee_label="Bob",
     )
-    _push_team_repo_via_hub(http, alice_team_token, alice_team_sync)
+    _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync)
 
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
     acceptance_b64 = bob_manager.accept_invitation(token_b64)
@@ -180,7 +154,9 @@ def test_web_session_request_auto_approve(playground_dir, monkeypatch):
     http = TestClient(app)
 
     alice_hex = Provisioning.create_new_participant(root, "Alice")
+    Provisioning.register_app_for_participant(root, alice_hex, sync.HUB_APP_NAME)
     Provisioning.create_team(root, alice_hex, "ProjectX")
+    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", sync.HUB_APP_NAME)
 
     vault_root = str(root / "vault")
     vault.init_vault(vault_root, alice_hex)
@@ -205,7 +181,9 @@ def test_web_session_request_pin_flow(playground_dir, monkeypatch):
     http = TestClient(app)
 
     alice_hex = Provisioning.create_new_participant(root, "Alice")
+    Provisioning.register_app_for_participant(root, alice_hex, sync.HUB_APP_NAME)
     Provisioning.create_team(root, alice_hex, "ProjectX")
+    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", sync.HUB_APP_NAME)
 
     captured = {}
     original = backend.request_session

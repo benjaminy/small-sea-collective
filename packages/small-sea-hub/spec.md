@@ -99,7 +99,8 @@ The Hub has a special relationship with the Small Sea Manager app.
 Small Sea Manager writes the databases that the Hub reads to do its work: team membership, app registrations, cloud service credentials, etc.
 
 The Hub never writes to Manager's databases; it only reads them.
-Manager never reads the Hub's local database; the session table is Hub-private.
+Manager never reads the Hub's local database directly; Hub-local tables are exposed,
+when needed, through Hub APIs. Session rows remain Hub-private.
 The shared databases are the contract between them.
 
 **Directory layout the Hub expects:**
@@ -127,7 +128,7 @@ The shared databases are the contract between them.
 |---|---|
 | `nickname` | Resolving a participant by human name during session request |
 | `team` | Looking up team ID for any session (including non-NoteToSelf teams) |
-| `app`, `team_app_berth` | NoteToSelf app/berth lookup |
+| `app`, `team_app_berth` | Participant-level app registration and NoteToSelf berth lookup |
 | `cloud_storage` | Shared cloud locator metadata for routing uploads/downloads |
 | `notification_service` | Shared notification-service metadata |
 
@@ -143,7 +144,7 @@ The shared databases are the contract between them.
 
 | Table | Used for |
 |---|---|
-| `app`, `team_app_berth` | App/berth lookup for non-NoteToSelf team sessions |
+| `app`, `team_app_berth` | Team-level app activation and berth lookup |
 
 ## Cloud Storage
 
@@ -157,6 +158,11 @@ Requires `url` in shared `cloud_storage`, plus `access_key` and `secret_key`
 in local `cloud_storage_credential`.
 Bucket name is derived as `ss-{berth_id_hex[:16]}`.
 Uses AWS Signature Version 4.
+
+For peer S3 reads, member transport announcements select the peer endpoint
+(`protocol` + `url`), but the bucket for berth data is still derived from the
+current session's berth ID. In v1, `member_transport_announcement.bucket` is not
+authoritative for S3 berth routing.
 
 **Google Drive** (`protocol = "gdrive"`): OAuth2.
 Requires shared `client_id` plus local `client_secret` and `refresh_token`.
@@ -238,7 +244,8 @@ Not yet implemented. In production, the Hub will encrypt all outbound data and d
 
 ## HTTP API
 
-All endpoints except `/sessions/request` and `/sessions/confirm` require a Bearer token:
+All app-facing endpoints except `/sessions/request` and `/sessions/confirm`
+require a Bearer token:
 
 ```
 Authorization: Bearer <session_token_hex>
@@ -258,7 +265,33 @@ Response:
 ```
 (For `client = "Smoke Tests"`, also includes `"pin": "<4-digit string>"` for test automation.)
 
-Errors: `404` if the participant/team/app is not found.
+If the participant or team is unknown, the Hub returns `404`.
+
+If the request is well-formed but Manager action is required before the app can
+open a berth session, the Hub returns:
+
+```json
+{
+  "error": "app_bootstrap_required",
+  "reason": "app_unknown",
+  "app": "SharedFileVault",
+  "team": "ProjectX"
+}
+```
+
+The HTTP status is `409 Conflict`. `reason` is one of:
+
+| Reason | Meaning |
+|---|---|
+| `app_unknown` | No app row matching the requested friendly name exists in either the participant's NoteToSelf registration scope or the requested team's activation scope. |
+| `participant_berth_missing` | The app is activated for the requested team, but the participant has no NoteToSelf registration berth for it. |
+| `team_berth_missing` | The participant has registered the app, but the requested team has not activated it. |
+| `app_friendly_name_ambiguous` | More than one app row matches the requested friendly name in the relevant resolution scope; the Hub refuses to pick by row order. |
+
+For v1, app IDs are locally generated and do not align across NoteToSelf and
+team scopes. The Hub therefore bridges the two scopes by friendly-name match
+only when each side has exactly one candidate. Friendly names are not global
+identity; ambiguity is preserved for Manager repair.
 
 ---
 
@@ -271,6 +304,24 @@ Errors: `404` if the participant/team/app is not found.
 Response: `"<session_token_hex>"` (bare string).
 
 Errors: `404` if pending ID not found; `400`-level if PIN is wrong or expired.
+
+---
+
+**`GET /sightings`**
+
+Returns the Hub's local observations of app-bootstrap failures for Manager
+review. Sightings are observations, not decisions: Manager owns registration,
+activation, and any local disposition rules for suppressing repeated prompts.
+
+Requires a Bearer token for a `SmallSeaCollectiveCore` session. The Hub returns
+only sightings for that session's participant. Other app sessions receive `403`,
+and unauthenticated callers receive `401`.
+
+Each row includes `participant_hex`, `app_name`, `team_name`, `client_name`,
+`first_seen_at`, `last_seen_at`, `seen_count`, and the latest `reason`.
+
+Repeated requests from the same participant/app/team/client tuple update the
+existing sighting atomically rather than appending unbounded rows.
 
 ---
 
@@ -421,6 +472,21 @@ Manager), not the Hub's local DB. See §Notifications above.
 | `team_name`, `app_name`, `client_name` | TEXT | |
 | `pin` | TEXT | 4-digit zero-padded string |
 | `created_at`, `expires_at` | TEXT | ISO 8601; TTL is 5 minutes |
+
+**`unknown_app_sighting` table** — Hub-local app-bootstrap observations:
+
+| Column | Type | Notes |
+|---|---|---|
+| `participant_hex` | TEXT | Participant whose Hub observed the request |
+| `app_name` | TEXT | Friendly app name claimed by the client |
+| `team_name` | TEXT | Requested team name |
+| `client_name` | TEXT | Stable app-chosen client installation label |
+| `first_seen_at`, `last_seen_at` | TEXT | ISO 8601 timestamps |
+| `seen_count` | INTEGER | Incremented on repeated sightings |
+| `reason` | TEXT | Latest structured bootstrap rejection reason |
+
+Unique key: `(participant_hex, app_name, team_name, client_name)`.
+Sightings are local to this Hub and are not synced.
 
 ## Open Questions
 

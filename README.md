@@ -1,6 +1,6 @@
 # <img src="./Documentation/Images/wrasse-med.png"> Small Sea Collective
 
-### Local-_First_, General-Purpose Services _Second_
+### Local-first for teams that outlast startups
 
 Small Sea Collective is a framework that brings the [local-first](https://www.inkandswitch.com/essay/local-first/) paradigm to team collaboration. We aim to enable the deployment of applications that people can use without depending on some company's bespoke service; with confidence that their ongoing use of the application doesn't depend on some business unit keeping the lights on.
 
@@ -92,6 +92,25 @@ That decentralization is meant literally: there is no central authority over a
 team's membership or permissions, and different participants' local views can
 diverge. Small Sea provides shared history and protocol conventions, not a
 single forced global answer.
+
+### Human-Scale Local-First
+
+Small Sea is designed first for small groups of people, not for internet-scale
+coordination. A team with several dozen people is already near the upper end of
+the intended shape; larger communities should usually become multiple related
+teams.
+
+That scale assumption changes the engineering tradeoffs. When automatic
+convergence would require complex machinery, Small Sea prefers to preserve both
+sides, make the situation visible, and let a human choose when to merge, unify,
+reject, or fork. Git branches, explicit merge moments, Manager prompts, and
+structured Hub rejections are all expressions of this principle.
+
+This is not permission to lose data or silently pick winners. The system should
+be conservative: do not collapse distinct identities by friendly name, do not
+grant access by arbitrary row order, and do not hide durable ambiguity. But it
+is acceptable for rare conflicts to become human repair tasks instead of fully
+automatic distributed protocols.
 
 For more technical details, see [Architecture](architecture.md).
 

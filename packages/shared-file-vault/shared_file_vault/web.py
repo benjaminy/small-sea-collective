@@ -200,7 +200,7 @@ def create_app(
     async def team_session_request(request: Request, team_name: str):
         try:
             session, pending_id = _client(request).start_session(
-                _ph(request), "SmallSeaCollectiveCore", team_name, "SharedFileVaultWeb"
+                _ph(request), sync.HUB_APP_NAME, team_name, "SharedFileVaultWeb"
             )
             if session is not None:
                 sync.store_session_token(team_name, session.token)
