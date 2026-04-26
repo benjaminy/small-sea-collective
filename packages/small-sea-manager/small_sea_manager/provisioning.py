@@ -4296,7 +4296,9 @@ def activate_app_for_team(root_dir, participant_hex, team_name, app_name):
             ).fetchone()
             if role_row is not None:
                 continue
-            role = _core_berth_role(conn, member_id) or "read-write"
+            role = _core_berth_role(conn, member_id)
+            if role is None:
+                raise ValueError("Cannot activate app for member without Core berth role")
             conn.execute(
                 text(
                     "INSERT INTO berth_role (id, member_id, berth_id, role) "
@@ -5297,3 +5299,91 @@ def dismiss_admission_event(root_dir, participant_hex, team_name, event_type, ar
             (event_type, bytes.fromhex(artifact_id_hex), _now_iso()),
         )
         conn.commit()
+
+
+def _ensure_participant_app_disposition_store(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS participant_app_sighting_disposition (
+            app_name TEXT PRIMARY KEY,
+            disposition TEXT NOT NULL CHECK(disposition IN ('dismissed')),
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _ensure_team_app_disposition_store(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS team_app_sighting_disposition (
+            app_name TEXT PRIMARY KEY,
+            disposition TEXT NOT NULL CHECK(disposition IN ('dismissed')),
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def dismiss_participant_app_sighting(root_dir, participant_hex, app_name):
+    """Suppress participant-level prompts for an app on this device."""
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        _ensure_participant_app_disposition_store(conn)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO participant_app_sighting_disposition
+            (app_name, disposition, updated_at)
+            VALUES (?, 'dismissed', ?)
+            """,
+            (app_name, _now_iso()),
+        )
+        conn.commit()
+
+
+def dismiss_team_app_sighting(root_dir, participant_hex, team_name, app_name):
+    """Suppress team-scoped prompts for an app on this device."""
+    db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        _ensure_team_app_disposition_store(conn)
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO team_app_sighting_disposition
+            (app_name, disposition, updated_at)
+            VALUES (?, 'dismissed', ?)
+            """,
+            (app_name, _now_iso()),
+        )
+        conn.commit()
+
+
+def app_sighting_dismissed(root_dir, participant_hex, sighting):
+    """Return True if Manager should suppress this sighting on this device."""
+    app_name = sighting["app_name"]
+    team_name = sighting.get("team_name")
+    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
+        _ensure_participant_app_disposition_store(conn)
+        row = conn.execute(
+            """
+            SELECT 1 FROM participant_app_sighting_disposition
+            WHERE app_name = ? AND disposition = 'dismissed'
+            """,
+            (app_name,),
+        ).fetchone()
+        if row is not None:
+            return True
+
+    if team_name:
+        db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+        with sqlite3.connect(db_path) as conn:
+            _ensure_team_app_disposition_store(conn)
+            row = conn.execute(
+                """
+                SELECT 1 FROM team_app_sighting_disposition
+                WHERE app_name = ? AND disposition = 'dismissed'
+                """,
+                (app_name,),
+            ).fetchone()
+            if row is not None:
+                return True
+    return False

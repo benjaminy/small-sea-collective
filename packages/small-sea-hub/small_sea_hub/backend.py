@@ -403,9 +403,9 @@ class SmallSeaBackend:
                 "team_berth_missing", app_name, team_name
             )
 
-        # Core team sessions predate participant-level app registration. Keep
-        # that path stable while this branch moves ordinary apps onto the new
-        # bootstrap model.
+        # TODO(issue-111-follow-up): migrate Core session opening onto explicit
+        # participant-level registration, then remove this compatibility
+        # exception. Core team sessions predate the app-bootstrap model.
         if app_name != "SmallSeaCollectiveCore":
             try:
                 self._single_berth_id_for_app(
@@ -502,12 +502,17 @@ class SmallSeaBackend:
         finally:
             conn.close()
 
-    def list_unknown_app_sightings(self):
+    def list_unknown_app_sightings(self, participant_hex=None):
         conn = sqlite3.connect(self.path_local_db)
         conn.row_factory = sqlite3.Row
         try:
+            where_clause = ""
+            params = ()
+            if participant_hex is not None:
+                where_clause = "WHERE participant_hex = ?"
+                params = (participant_hex,)
             rows = conn.execute(
-                """
+                f"""
                 SELECT
                     participant_hex,
                     app_name,
@@ -518,8 +523,10 @@ class SmallSeaBackend:
                     seen_count,
                     reason
                 FROM unknown_app_sighting
+                {where_clause}
                 ORDER BY last_seen_at DESC, first_seen_at DESC
-                """
+                """,
+                params,
             ).fetchall()
         finally:
             conn.close()

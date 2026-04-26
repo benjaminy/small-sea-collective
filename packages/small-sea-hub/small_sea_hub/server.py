@@ -513,8 +513,8 @@ async def resend_notification(pending_id: str):
 # ---- Authorization ----
 
 
-def _require_session(authorization: str = Header(...)):
-    if not authorization.startswith("Bearer "):
+def _require_session(authorization: Optional[str] = Header(None)):
+    if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=401, detail="Missing or invalid Authorization header"
         )
@@ -687,8 +687,13 @@ async def create_bootstrap_session(req: BootstrapSessionCreateReq):
 
 
 @app.get("/sightings")
-async def list_unknown_app_sightings():
-    return app.state.backend.list_unknown_app_sightings()
+async def list_unknown_app_sightings(session_hex: str = Depends(_require_session)):
+    ss_session = app.state.backend._lookup_session(session_hex)
+    if ss_session.app_name != Settings().app_name:
+        raise HTTPException(status_code=403, detail="Manager session required")
+    return app.state.backend.list_unknown_app_sightings(
+        participant_hex=ss_session.participant_id.hex()
+    )
 
 
 @app.get("/sessions/pending")

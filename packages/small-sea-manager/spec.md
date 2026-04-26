@@ -623,6 +623,20 @@ not activate the app for any non-NoteToSelf team.
 If multiple rows already claim the same friendly name, Manager must preserve the
 ambiguity and require human repair rather than choosing one row implicitly.
 
+Future repair is expected to use explicit unification records rather than
+name-derived identity. Sketch only; this branch does not ship the live tables:
+
+```sql
+-- NoteToSelf and team DB variants follow the same idea.
+CREATE TABLE app_unification (
+    winner_app_id BLOB NOT NULL,
+    loser_app_id BLOB NOT NULL,
+    decided_at TEXT NOT NULL,
+    reason TEXT,
+    PRIMARY KEY (winner_app_id, loser_app_id)
+);
+```
+
 #### Activate app for team
 
 `activate_app_for_team(root_dir, participant_hex, team_name, app_name)` inserts
@@ -640,6 +654,17 @@ through `GET /sightings`. Manager treats that endpoint as an observation feed:
 it may show the user a prompt, sync and re-evaluate local state, register the app
 for the participant, activate it for a team, or suppress repeated prompts using
 Manager-owned local disposition state.
+
+`TeamManager.refresh_app_sightings()` reads the endpoint through a confirmed
+Core NoteToSelf session and filters out sightings dismissed on this device.
+Dismissals are local Manager state only:
+
+- participant-app dismissals live in `NoteToSelf/Local/device_local.db`
+- team-app dismissals live in the same per-team sidecar DB family used for
+  admission prompt dismissals
+
+The Hub does not consult these disposition tables; repeated app requests still
+receive the same structured rejection and continue bumping the Hub sighting.
 
 #### Remove app from team
 
@@ -1008,6 +1033,7 @@ CREATE TABLE IF NOT EXISTS device_prekey_bundle (
 | **`make_device_link_invitation()`** | Currently a stub (`pass`). The primary device-linking flow is not yet implemented. |
 | **`manager.py` sessions** | The Manager now tracks berth-scoped Hub sessions lazily via its `_sessions` cache and the web/UI PIN flow. What is still missing is the broader multi-device `NoteToSelf` sync and update-awareness story. |
 | **`participant` / `participant_unification` tables** | Not yet in the SQL schema; needs to be designed and added to NoteToSelf DB. |
+| **`app_unification` tables** | Not yet in the SQL schema. The accepted app identity model preserves duplicate friendly names with random local app IDs; a future branch should add explicit app-unification tables for typo, rebrand, collision, and same-app race repair. |
 | **NoteToSelf/{App} berths** | Per-app personal state outside of team context. Not yet designed; stub only. |
 | **Sync mailbox API** | Hub needs a mailbox abstraction to notify the Manager (and other apps) when incoming changes arrive from the internet. Shape TBD. |
 | **Credential storage** | Credentials now live in the device-local NoteToSelf DB, but they are still plaintext SQLite fields. Future work should move them behind OS keychain / vault references. |

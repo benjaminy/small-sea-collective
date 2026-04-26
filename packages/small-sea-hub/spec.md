@@ -299,6 +299,10 @@ Returns the Hub's local observations of app-bootstrap failures for Manager
 review. Sightings are observations, not decisions: Manager owns registration,
 activation, and any local disposition rules for suppressing repeated prompts.
 
+Requires a Bearer token for a `SmallSeaCollectiveCore` session. The Hub returns
+only sightings for that session's participant. Other app sessions receive `403`,
+and unauthenticated callers receive `401`.
+
 Each row includes `participant_hex`, `app_name`, `team_name`, `client_name`,
 `first_seen_at`, `last_seen_at`, `seen_count`, and the latest `reason`.
 

@@ -216,7 +216,10 @@ Rationale:
 - Human-scale repair is acceptable for rare same-app races in v1. The important invariant is that ambiguous same-name state is preserved and surfaced, not silently resolved by row order. A future witness-based shortcut is tracked in §Sub-Issues to Spawn #3.
 - Pre-alpha freedom is best spent avoiding the wrong durable writes in the first place. If this branch cannot land a generic local-app-ID shape, it should stay in plan iteration rather than shipping a Vault-specific identity shortcut.
 
-Open implementation question for Phase 2: decide the minimal local-app-ID row shape needed for the Vault slice. Do not proceed with generic `uuid5(team_id, friendly_name)` writes or any Manager-side `SharedFileVault` special case.
+Phase 2 implementation decision: the v1 Vault slice uses the existing `app`
+row shape with random locally generated UUID7 `app.id` values in each scope.
+It does not use generic `uuid5(team_id, friendly_name)` writes or any
+Manager-side `SharedFileVault` special case.
 
 ### D3. Discovery endpoint scope (#8 interaction)
 
@@ -406,6 +409,11 @@ If an edge case tempts the branch to expand, add the follow-up issue here, link 
 8. **App-side bootstrap helper in `small-sea-client`** so apps don't each reinvent the rejection-handling and "tell the human to open Manager" message.
 9. **Per-sighting cleanup policy.** Issue #111 says "more or less forever for now." A future issue should decide whether to age out resolved sightings.
 10. **Cross-device sighting visibility (out of scope here, possibly never).** Sightings are intentionally local in v1, so bootstrap repair assumes the user opens Manager on the same device whose Hub observed the failed app request. Revisit only if a concrete user need appears.
+11. **Core participant-registration migration.** `SmallSeaCollectiveCore`
+sessions currently have a narrow Hub compatibility exception because Core
+sessions predate participant-level app registration. A follow-up should register
+Core through the same participant-level path and then remove the hardcoded
+exception from Hub berth resolution.
 
 ## Risks and Open Questions
 

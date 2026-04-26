@@ -438,6 +438,36 @@ class TeamManager:
             artifact_id_hex,
         )
 
+    def refresh_app_sightings(self):
+        """Read Hub app-bootstrap sightings and apply Manager-local dispositions."""
+        session = self._open_note_to_self_session()
+        return [
+            sighting
+            for sighting in session.app_sightings()
+            if not provisioning.app_sighting_dismissed(
+                self.root_dir,
+                self.participant_hex,
+                sighting,
+            )
+        ]
+
+    def dismiss_participant_app_sighting(self, app_name):
+        """Suppress participant-level app-bootstrap prompts on this device."""
+        provisioning.dismiss_participant_app_sighting(
+            self.root_dir,
+            self.participant_hex,
+            app_name,
+        )
+
+    def dismiss_team_app_sighting(self, team_name, app_name):
+        """Suppress team-scoped app-bootstrap prompts on this device."""
+        provisioning.dismiss_team_app_sighting(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            app_name,
+        )
+
     def accept_invitation(self, token_b64):
         """Accept an invitation token (acceptor side). Returns an acceptance token.
 

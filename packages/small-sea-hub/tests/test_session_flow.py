@@ -162,10 +162,10 @@ def test_unknown_team_rejected(playground_dir):
 
 
 def test_session_requires_bearer_header(test_env):
-    """Cloud endpoints return 422 without an Authorization header."""
+    """Cloud endpoints return 401 without an Authorization header."""
     client = test_env["client"]
     resp = client.get("/cloud_file", params={"path": "foo.txt"})
-    assert resp.status_code == 422
+    assert resp.status_code == 401
 
 
 def test_invalid_bearer_rejected(test_env):
