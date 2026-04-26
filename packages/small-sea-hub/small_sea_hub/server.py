@@ -13,7 +13,11 @@ from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 import small_sea_manager.provisioning as Provisioning
-from small_sea_hub.backend import SmallSeaBackend, SmallSeaNotFoundExn
+from small_sea_hub.backend import (
+    SmallSeaAppBootstrapRequiredExn,
+    SmallSeaBackend,
+    SmallSeaNotFoundExn,
+)
 from small_sea_hub.config import Settings
 
 _templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "templates"))
@@ -509,8 +513,8 @@ async def resend_notification(pending_id: str):
 # ---- Authorization ----
 
 
-def _require_session(authorization: str = Header(...)):
-    if not authorization.startswith("Bearer "):
+def _require_session(authorization: Optional[str] = Header(None)):
+    if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(
             status_code=401, detail="Missing or invalid Authorization header"
         )
@@ -625,9 +629,20 @@ async def request_session(req: SessionRequestReq):
         if app.state.backend.auto_approve_sessions
         else req.client
     )
-    pending_id_hex, pin = small_sea.request_session(
-        req.participant, req.app, req.team, effective_client, mode=req.mode
-    )
+    try:
+        pending_id_hex, pin = small_sea.request_session(
+            req.participant, req.app, req.team, effective_client, mode=req.mode
+        )
+    except SmallSeaAppBootstrapRequiredExn as exc:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "app_bootstrap_required",
+                "reason": exc.reason,
+                "app": exc.app_name,
+                "team": exc.team_name,
+            },
+        )
     if app.state.backend.auto_approve_sessions:
         token = small_sea.confirm_session(pending_id_hex, pin)
         token_hex = token.hex()
@@ -669,6 +684,16 @@ async def create_bootstrap_session(req: BootstrapSessionCreateReq):
         expires_at_iso=req.expires_at,
     )
     return {"token": token.hex()}
+
+
+@app.get("/sightings")
+async def list_unknown_app_sightings(session_hex: str = Depends(_require_session)):
+    ss_session = app.state.backend._lookup_session(session_hex)
+    if ss_session.app_name != Settings().app_name:
+        raise HTTPException(status_code=403, detail="Manager session required")
+    return app.state.backend.list_unknown_app_sightings(
+        participant_hex=ss_session.participant_id.hex()
+    )
 
 
 @app.get("/sessions/pending")

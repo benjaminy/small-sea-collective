@@ -36,3 +36,15 @@ CREATE TABLE IF NOT EXISTS bootstrap_session (
     created_at TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS unknown_app_sighting (
+    participant_hex TEXT NOT NULL,
+    app_name TEXT NOT NULL,
+    team_name TEXT NOT NULL,
+    client_name TEXT NOT NULL,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL,
+    seen_count INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    UNIQUE(participant_hex, app_name, team_name, client_name)
+);

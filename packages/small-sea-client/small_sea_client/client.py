@@ -233,6 +233,10 @@ class SmallSeaSession:
         result = self._client._get("/session/peers", token=self._token)
         return result.get("peers", [])
 
+    def app_sightings(self) -> list[dict]:
+        """Return app-bootstrap sightings visible to this Manager/Core session."""
+        return self._client._get("/sightings", token=self._token)
+
     # ---- Cloud storage ----
 
     def ensure_cloud_ready(self) -> None:
