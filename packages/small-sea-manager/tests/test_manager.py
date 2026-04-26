@@ -8,6 +8,7 @@ from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
 import small_sea_manager.provisioning as Provisioning
 from small_sea_manager.admission_events import AdmissionEventType
+from small_sea_manager import admission_events
 from small_sea_manager.manager import TeamManager, _CORE_APP
 from small_sea_manager.web import create_app
 
@@ -79,6 +80,74 @@ def _push_to_localfolder(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
     cod.push_to_remote(["main"])
 
 
+def _create_shared_team_with_bob(root: pathlib.Path):
+    alice_cloud = root / "alice-cloud"
+    bob_cloud = root / "bob-cloud"
+    alice_cloud.mkdir()
+    bob_cloud.mkdir()
+
+    alice_hex = Provisioning.create_new_participant(root, "Alice")
+    bob_hex = Provisioning.create_new_participant(root, "Bob")
+    Provisioning.add_cloud_storage(root, alice_hex, protocol="localfolder", url=str(alice_cloud))
+    Provisioning.add_cloud_storage(root, bob_hex, protocol="localfolder", url=str(bob_cloud))
+
+    Provisioning.create_team(root, alice_hex, "ProjectX")
+    alice_repo = root / "Participants" / alice_hex / "ProjectX" / "Sync"
+    _push_to_localfolder(alice_repo, alice_cloud)
+
+    token_b64 = Provisioning.create_invitation(
+        root,
+        alice_hex,
+        "ProjectX",
+        {"protocol": "localfolder", "url": str(alice_cloud)},
+        invitee_label="Bob",
+    )
+    _push_to_localfolder(alice_repo, alice_cloud)
+
+    bob_acceptance = Provisioning.accept_invitation(
+        root,
+        bob_hex,
+        token_b64,
+        inviter_remote=CS.LocalFolderRemote(str(alice_cloud)),
+    )
+    Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", bob_acceptance)
+    return alice_hex, bob_hex
+
+
+def _insert_teammate_linked_device_event(root: pathlib.Path, observer_hex: str, teammate_hex: str):
+    team_id, teammate_member_id = Provisioning._team_row(root, teammate_hex, "ProjectX")
+    teammate_private_key, teammate_public_key = Provisioning.get_current_team_device_key(
+        root,
+        teammate_hex,
+        "ProjectX",
+    )
+    linked_public_key = generate_key_pair(ProtectionLevel.DAILY)[0].public_key
+    cert = Provisioning.issue_device_link_cert(
+        subject_key=Provisioning._participant_key_from_public(linked_public_key),
+        issuer_key=Provisioning._participant_key_from_public(teammate_public_key),
+        issuer_private_key=teammate_private_key,
+        team_id=team_id,
+        member_id=teammate_member_id,
+    )
+    assert Provisioning.verify_device_link_cert(
+        cert,
+        issuer_public_key=teammate_public_key,
+        team_id=team_id,
+        member_id=teammate_member_id,
+        subject_public_key=linked_public_key,
+    )
+
+    observer_db_path = root / "Participants" / observer_hex / "ProjectX" / "Sync" / "core.db"
+    engine = Provisioning._sqlite_engine(observer_db_path)
+    try:
+        with engine.begin() as conn:
+            Provisioning._store_team_certificate(conn, cert, issuer_member_id=teammate_member_id)
+            Provisioning._upsert_team_device_row(conn, teammate_member_id, linked_public_key)
+    finally:
+        engine.dispose()
+    return cert
+
+
 def test_admission_event_dismissals_persist_across_manager_instances(playground_dir):
     root = pathlib.Path(playground_dir)
     cloud_dir = root / "cloud"
@@ -118,6 +187,54 @@ def test_admission_event_dismissals_persist_across_manager_instances(playground_
     reloaded_types = {(event.event_type.value, event.artifact_id_hex) for event in team_reloaded["admission_events"]}
     assert (AdmissionEventType.LINKED_DEVICE.value, linked_cert.cert_id.hex()) in reloaded_types
     assert (pending_invitation.event_type.value, pending_invitation.artifact_id_hex) not in reloaded_types
+
+
+def test_linked_device_notification_candidates_seed_backlog_and_keep_notified_cards_visible(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex, bob_hex = _create_shared_team_with_bob(root)
+    alice_self_member_id = Provisioning.get_self_in_team(root, alice_hex, "ProjectX")
+
+    historical_cert = _insert_teammate_linked_device_event(root, alice_hex, bob_hex)
+
+    first_candidates = admission_events.list_linked_device_notification_candidates(
+        root,
+        alice_hex,
+        "ProjectX",
+        self_member_id_hex=alice_self_member_id,
+    )
+    assert first_candidates == []
+
+    fresh_cert = _insert_teammate_linked_device_event(root, alice_hex, bob_hex)
+    second_candidates = admission_events.list_linked_device_notification_candidates(
+        root,
+        alice_hex,
+        "ProjectX",
+        self_member_id_hex=alice_self_member_id,
+    )
+    assert [candidate.artifact_id_hex for candidate in second_candidates] == [fresh_cert.cert_id.hex()]
+
+    Provisioning.mark_admission_event_notified(
+        root,
+        alice_hex,
+        "ProjectX",
+        AdmissionEventType.LINKED_DEVICE.value,
+        fresh_cert.cert_id.hex(),
+    )
+    assert admission_events.list_linked_device_notification_candidates(
+        root,
+        alice_hex,
+        "ProjectX",
+        self_member_id_hex=alice_self_member_id,
+    ) == []
+
+    team = TeamManager(root, alice_hex).get_team("ProjectX")
+    linked_ids = {
+        event.artifact_id_hex
+        for event in team["admission_events"]
+        if event.event_type is AdmissionEventType.LINKED_DEVICE
+    }
+    assert historical_cert.cert_id.hex() in linked_ids
+    assert fresh_cert.cert_id.hex() in linked_ids
 
 
 def test_manager_web_renders_admin_and_non_admin_admission_controls(playground_dir):

@@ -218,6 +218,15 @@ At most one notification is sent per berth per watcher round, regardless of how 
 sessions or peers triggered the change. If no notification service is configured, the watcher
 skips silently.
 
+When the peer watcher adopts a new local team-DB view, it also asks the
+Manager-owned admission-event helper for newly visible teammate
+`LINKED_DEVICE` events. The Hub does not inspect admission-event SQL or decide
+event taxonomy; it only delivers the returned plain-text notification payloads
+through the configured adapter. A missing adapter or failed publish records no
+local `notified` mark, and the watcher retries eligible events on later ticks
+using notification retry state separate from runtime-reconciliation revision
+tracking.
+
 ### Future: Apprise
 
 [Apprise](https://github.com/caronc/apprise) is a Python meta-library that wraps ~100

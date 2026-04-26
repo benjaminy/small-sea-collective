@@ -696,6 +696,25 @@ Add or remove entries in the shared `notification_service` table plus the
 matching local `notification_service_credential` row. Shared fields are
 `protocol` and `url`; auth tokens stay local.
 
+#### Admission-event notification disposition
+
+The Manager owns admission-event interpretation for both the UI and Hub-triggered
+push prompts. `list_admission_events(...)` remains the UI-facing event list.
+For Hub delivery, the Manager exposes a narrower helper that returns only
+notification-eligible teammate `LINKED_DEVICE` events, already filtered for the
+observing member and local disposition state.
+
+Admission-event disposition is device-local and per-team, stored beside the
+team clone in `admission-events-local.db`. The table records independent
+`dismissed` and `notified` rows keyed by `(event_type, artifact_id,
+disposition)`. `dismissed` hides the UI card and suppresses push; `notified`
+suppresses repeat push but keeps the UI card visible.
+
+On first open after the notification-disposition schema is initialized or
+upgraded, the store seeds `notified` rows for every currently visible
+`LINKED_DEVICE` artifact in that local team view. This one-shot backlog
+suppression is based on local observation, not certificate timestamps.
+
 #### Other services (stub)
 
 Future service types include VPN providers (e.g. Tailscale) and identity/authentication services (e.g. Auth0). The Manager will provide configuration UI for each. Details TBD.

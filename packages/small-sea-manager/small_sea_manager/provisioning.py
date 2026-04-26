@@ -5257,44 +5257,210 @@ def _admission_event_store_path(root_dir, participant_hex, team_name):
     return root_dir / "Participants" / participant_hex / team_name / "admission-events-local.db"
 
 
-def _ensure_admission_event_store(conn) -> None:
-    # Callers are responsible for transaction scope / commit behavior.
+def _team_db_path(root_dir, participant_hex, team_name):
+    root_dir = pathlib.Path(root_dir)
+    team_name = _validate_team_name(team_name)
+    return root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
+
+
+def _create_admission_event_disposition_table(conn) -> None:
     conn.execute(
         """
-        CREATE TABLE IF NOT EXISTS admission_event_disposition (
+        CREATE TABLE admission_event_disposition (
             event_type TEXT NOT NULL,
             artifact_id BLOB NOT NULL,
-            disposition TEXT NOT NULL CHECK(disposition IN ('dismissed')),
+            disposition TEXT NOT NULL CHECK(disposition IN ('dismissed', 'notified')),
             updated_at TEXT NOT NULL,
-            PRIMARY KEY (event_type, artifact_id)
+            PRIMARY KEY (event_type, artifact_id, disposition)
         )
         """
     )
 
 
-def list_dismissed_admission_events(root_dir, participant_hex, team_name):
-    db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
-    with sqlite3.connect(db_path) as conn:
-        _ensure_admission_event_store(conn)
+def _ensure_admission_event_store_meta(conn) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS admission_event_store_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _admission_event_disposition_sql(conn) -> str | None:
+    row = conn.execute(
+        """
+        SELECT sql
+        FROM sqlite_master
+        WHERE type = 'table' AND name = 'admission_event_disposition'
+        """
+    ).fetchone()
+    if row is None:
+        return None
+    return row[0] or ""
+
+
+def _admission_event_store_needs_rebuild(conn) -> bool:
+    sql = _admission_event_disposition_sql(conn)
+    if sql is None:
+        return False
+    normalized = " ".join(sql.split())
+    return (
+        "CHECK(disposition IN ('dismissed', 'notified'))" not in normalized
+        or "PRIMARY KEY (event_type, artifact_id, disposition)" not in normalized
+    )
+
+
+def _rebuild_admission_event_disposition_table(conn) -> None:
+    conn.execute("ALTER TABLE admission_event_disposition RENAME TO admission_event_disposition_old")
+    _create_admission_event_disposition_table(conn)
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO admission_event_disposition
+        (event_type, artifact_id, disposition, updated_at)
+        SELECT event_type, artifact_id, disposition, updated_at
+        FROM admission_event_disposition_old
+        WHERE disposition IN ('dismissed', 'notified')
+        """
+    )
+    conn.execute("DROP TABLE admission_event_disposition_old")
+
+
+def _visible_linked_device_artifact_ids(conn, team_db_path) -> list[bytes]:
+    if team_db_path is None:
+        return []
+    team_db_path = pathlib.Path(team_db_path)
+    if not team_db_path.exists():
+        return []
+    conn.execute("ATTACH DATABASE ? AS teamdb", (str(team_db_path),))
+    try:
         rows = conn.execute(
-            "SELECT event_type, artifact_id "
-            "FROM admission_event_disposition "
-            "WHERE disposition = 'dismissed'"
+            """
+            SELECT cert_id
+            FROM teamdb.key_certificate
+            WHERE cert_type = 'device_link'
+            """
+        ).fetchall()
+    finally:
+        conn.execute("DETACH DATABASE teamdb")
+    return [row[0] for row in rows]
+
+
+def _maybe_seed_linked_device_notification_backlog(conn, team_db_path) -> None:
+    _ensure_admission_event_store_meta(conn)
+    seed_key = "linked_device_notification_seeded_v1"
+    row = conn.execute(
+        "SELECT value FROM admission_event_store_meta WHERE key = ?",
+        (seed_key,),
+    ).fetchone()
+    if row is not None:
+        return
+
+    artifact_ids = _visible_linked_device_artifact_ids(conn, team_db_path)
+    now_iso = _now_iso()
+    conn.executemany(
+        """
+        INSERT OR IGNORE INTO admission_event_disposition
+        (event_type, artifact_id, disposition, updated_at)
+        VALUES (?, ?, 'notified', ?)
+        """,
+        [
+            ("linked_device", artifact_id, now_iso)
+            for artifact_id in artifact_ids
+        ],
+    )
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO admission_event_store_meta (key, value)
+        VALUES (?, ?)
+        """,
+        (seed_key, now_iso),
+    )
+
+
+def _ensure_admission_event_store(conn, *, team_db_path=None) -> None:
+    # Callers are responsible for transaction scope / commit behavior.
+    sql = _admission_event_disposition_sql(conn)
+    if sql is None:
+        _create_admission_event_disposition_table(conn)
+    elif _admission_event_store_needs_rebuild(conn):
+        _rebuild_admission_event_disposition_table(conn)
+    _ensure_admission_event_store_meta(conn)
+    _maybe_seed_linked_device_notification_backlog(conn, team_db_path)
+
+
+def _list_admission_event_dispositions(
+    root_dir,
+    participant_hex,
+    team_name,
+    *,
+    dispositions: tuple[str, ...],
+):
+    db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    with sqlite3.connect(db_path) as conn:
+        _ensure_admission_event_store(conn, team_db_path=team_db_path)
+        placeholders = ", ".join("?" for _ in dispositions)
+        rows = conn.execute(
+            f"""
+            SELECT event_type, artifact_id
+            FROM admission_event_disposition
+            WHERE disposition IN ({placeholders})
+            """,
+            dispositions,
         ).fetchall()
     return {(row[0], row[1].hex()) for row in rows}
+
+
+def list_dismissed_admission_events(root_dir, participant_hex, team_name):
+    return _list_admission_event_dispositions(
+        root_dir,
+        participant_hex,
+        team_name,
+        dispositions=("dismissed",),
+    )
+
+
+def list_notified_admission_events(root_dir, participant_hex, team_name):
+    return _list_admission_event_dispositions(
+        root_dir,
+        participant_hex,
+        team_name,
+        dispositions=("notified",),
+    )
 
 
 def dismiss_admission_event(root_dir, participant_hex, team_name, event_type, artifact_id_hex):
     """Persist a local dismissal for one admission event."""
     db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:
-        _ensure_admission_event_store(conn)
+        _ensure_admission_event_store(conn, team_db_path=team_db_path)
         conn.execute(
             """
             INSERT OR REPLACE INTO admission_event_disposition
             (event_type, artifact_id, disposition, updated_at)
             VALUES (?, ?, 'dismissed', ?)
+            """,
+            (event_type, bytes.fromhex(artifact_id_hex), _now_iso()),
+        )
+        conn.commit()
+
+
+def mark_admission_event_notified(root_dir, participant_hex, team_name, event_type, artifact_id_hex):
+    """Persist a local "notified" mark for one admission event."""
+    db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as conn:
+        _ensure_admission_event_store(conn, team_db_path=team_db_path)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO admission_event_disposition
+            (event_type, artifact_id, disposition, updated_at)
+            VALUES (?, ?, 'notified', ?)
             """,
             (event_type, bytes.fromhex(artifact_id_hex), _now_iso()),
         )

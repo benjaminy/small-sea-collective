@@ -12,6 +12,7 @@ import pydantic
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
+from small_sea_manager import admission_events as AdmissionEvents
 import small_sea_manager.provisioning as Provisioning
 from small_sea_hub.backend import (
     SmallSeaAppBootstrapRequiredExn,
@@ -118,6 +119,85 @@ def _send_peer_notification(app: FastAPI, session_hex: str, berth_id_hex: str, l
         )
 
 
+def _send_linked_device_notification(app: FastAPI, session_hex: str, team_name: str, candidate, logger):
+    """Fire a push notification for a newly visible teammate linked-device event.
+
+    Returns True only when the adapter publish succeeds. Missing adapters and
+    transient publish failures leave the event eligible for later watcher ticks.
+    """
+    summary = candidate.summary.replace("`", "")
+    message = (
+        f"{team_name}: {summary} "
+        "Open Manager admission events for details."
+    )
+    try:
+        ok, _msg_id, err = app.state.backend.send_notification(
+            session_hex,
+            message,
+            title=candidate.title,
+        )
+        if not ok:
+            logger.warning(
+                "Linked-device notification failed for %s: %s",
+                candidate.artifact_id_hex[:8],
+                err,
+            )
+            return False
+        return True
+    except SmallSeaNotFoundExn:
+        return False
+    except Exception as exc:
+        logger.warning(
+            "Linked-device notification error for %s: %s",
+            candidate.artifact_id_hex[:8],
+            exc,
+        )
+        return False
+
+
+def _notify_linked_device_events_for_session(app: FastAPI, session_hex: str, ss_session) -> bool:
+    session_info = app.state.watched_sessions.get(session_hex)
+    if session_info is None:
+        return False
+    self_member_id_hex = session_info.get("self_in_team")
+    try:
+        candidates = AdmissionEvents.list_linked_device_notification_candidates(
+            app.state.backend.root_dir,
+            ss_session.participant_id.hex(),
+            ss_session.team_name,
+            self_member_id_hex=self_member_id_hex,
+        )
+    except Exception as exc:
+        app.state.logger.warning(
+            "Linked-device candidate enumeration failed for %s: %s",
+            ss_session.team_name,
+            exc,
+        )
+        # A broken helper/schema path should not force a noisy retry loop on
+        # every watcher tick. Later team-DB changes will naturally try again.
+        return False
+
+    retry_needed = False
+    for candidate in candidates:
+        if not _send_linked_device_notification(
+            app,
+            session_hex,
+            ss_session.team_name,
+            candidate,
+            app.state.logger,
+        ):
+            retry_needed = True
+            continue
+        Provisioning.mark_admission_event_notified(
+            app.state.backend.root_dir,
+            ss_session.participant_id.hex(),
+            ss_session.team_name,
+            AdmissionEvents.AdmissionEventType.LINKED_DEVICE.value,
+            candidate.artifact_id_hex,
+        )
+    return retry_needed
+
+
 def _team_db_revision(team_db_path: str):
     stat = pathlib.Path(team_db_path).stat()
     return (stat.st_mtime_ns, stat.st_size)
@@ -133,42 +213,57 @@ def _run_runtime_reconciliation_for_session(app: FastAPI, session_hex: str):
         revision = _team_db_revision(session_info["team_db_path"])
     except FileNotFoundError:
         return False
-    if revision == session_info.get("team_db_revision"):
+    team_db_revision = session_info.get("team_db_revision")
+    linked_device_notification_revision = session_info.get("linked_device_notification_revision")
+    linked_device_retry_needed = bool(session_info.get("linked_device_notification_retry_needed"))
+    revision_changed = revision != team_db_revision
+    should_run_reconciliation = revision_changed
+    should_run_notifications = (
+        revision != linked_device_notification_revision
+        or linked_device_retry_needed
+    )
+    if not should_run_reconciliation and not should_run_notifications:
         return False
 
     ss_session = app.state.backend._lookup_session(session_hex)
-    result = Provisioning.reconcile_runtime_state(
-        app.state.backend.root_dir,
-        ss_session.participant_id.hex(),
-        ss_session.team_name,
-    )
-    for artifact in result.get("redistribution_artifacts", []):
-        ok, _etag, msg = app.state.backend.upload_runtime_artifact(
-            session_hex,
-            artifact["artifact_path"],
-            artifact["distribution_payload"].encode("utf-8"),
+    if should_run_reconciliation:
+        result = Provisioning.reconcile_runtime_state(
+            app.state.backend.root_dir,
+            ss_session.participant_id.hex(),
+            ss_session.team_name,
         )
-        if ok:
-            Provisioning.mark_redistribution_delivery(
-                app.state.backend.root_dir,
-                ss_session.participant_id.hex(),
-                team_id=bytes.fromhex(result["team_id_hex"]),
-                sender_device_key_id=bytes.fromhex(artifact["sender_device_key_id_hex"]),
-                sender_chain_id=bytes.fromhex(artifact["sender_chain_id_hex"]),
-                target_device_key_id=bytes.fromhex(artifact["target_device_key_id_hex"]),
+        for artifact in result.get("redistribution_artifacts", []):
+            ok, _etag, msg = app.state.backend.upload_runtime_artifact(
+                session_hex,
+                artifact["artifact_path"],
+                artifact["distribution_payload"].encode("utf-8"),
             )
-        else:
-            app.state.logger.warning(
-                "Runtime artifact upload failed for %s -> %s: %s",
-                artifact["sender_device_key_id_hex"][:8],
-                artifact["target_device_key_id_hex"][:8],
-                msg,
-            )
+            if ok:
+                Provisioning.mark_redistribution_delivery(
+                    app.state.backend.root_dir,
+                    ss_session.participant_id.hex(),
+                    team_id=bytes.fromhex(result["team_id_hex"]),
+                    sender_device_key_id=bytes.fromhex(artifact["sender_device_key_id_hex"]),
+                    sender_chain_id=bytes.fromhex(artifact["sender_chain_id_hex"]),
+                    target_device_key_id=bytes.fromhex(artifact["target_device_key_id_hex"]),
+                )
+            else:
+                app.state.logger.warning(
+                    "Runtime artifact upload failed for %s -> %s: %s",
+                    artifact["sender_device_key_id_hex"][:8],
+                    artifact["target_device_key_id_hex"][:8],
+                    msg,
+                )
+    if should_run_notifications:
+        retry_needed = _notify_linked_device_events_for_session(app, session_hex, ss_session)
+        session_info["linked_device_notification_revision"] = revision
+        session_info["linked_device_notification_retry_needed"] = retry_needed
     try:
-        session_info["team_db_revision"] = _team_db_revision(session_info["team_db_path"])
+        if should_run_reconciliation:
+            session_info["team_db_revision"] = _team_db_revision(session_info["team_db_path"])
     except FileNotFoundError:
         session_info["team_db_revision"] = None
-    return True
+    return revision_changed
 
 
 def _process_runtime_inbox_from_member(
@@ -585,6 +680,8 @@ def _register_session_peers(session_hex: str):
                 "berth_id_hex": berth_id_hex,
                 "team_db_path": None,
                 "team_db_revision": None,
+                "linked_device_notification_revision": None,
+                "linked_device_notification_retry_needed": False,
                 "self_signal_etag": etag,
                 "self_signal_count": current_count,
                 "ignore_self_signal_count": None,
@@ -600,6 +697,8 @@ def _register_session_peers(session_hex: str):
             "berth_id_hex": berth_id_hex,
             "team_db_path": team_db_path,
             "team_db_revision": None,
+            "linked_device_notification_revision": None,
+            "linked_device_notification_retry_needed": False,
             "self_signal_etag": None,
             "self_in_team": Provisioning._team_row(
                 app.state.backend.root_dir,

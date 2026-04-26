@@ -39,6 +39,15 @@ class AdmissionEvent:
     can_finalize: bool = False
 
 
+@dataclass(frozen=True)
+class LinkedDeviceNotificationCandidate:
+    artifact_id_hex: str
+    occurred_at: str | None
+    title: str
+    summary: str
+    member_id_hex: str
+
+
 def _member_label(display_name: str | None, member_id_hex: str | None) -> str:
     if display_name:
         return display_name
@@ -340,3 +349,47 @@ def list_admission_events(
         key=lambda event: (event.occurred_at or "", event.artifact_id_hex),
         reverse=True,
     )
+
+
+def list_linked_device_notification_candidates(
+    root_dir,
+    participant_hex: str,
+    team_name: str,
+    *,
+    self_member_id_hex: str | None,
+) -> list[LinkedDeviceNotificationCandidate]:
+    team_db_path = pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync" / "core.db"
+    suppressed = provisioning.list_dismissed_admission_events(
+        root_dir,
+        participant_hex,
+        team_name,
+    ) | provisioning.list_notified_admission_events(
+        root_dir,
+        participant_hex,
+        team_name,
+    )
+    engine = provisioning._sqlite_engine(team_db_path)
+    try:
+        with engine.begin() as conn:
+            events = _linked_device_events(
+                conn,
+                suppressed,
+                self_member_id_hex=self_member_id_hex,
+            )
+    finally:
+        engine.dispose()
+
+    candidates: list[LinkedDeviceNotificationCandidate] = []
+    for event in events:
+        if event.member_id_hex in {None, self_member_id_hex}:
+            continue
+        candidates.append(
+            LinkedDeviceNotificationCandidate(
+                artifact_id_hex=event.artifact_id_hex,
+                occurred_at=event.occurred_at,
+                title=event.title,
+                summary=event.summary,
+                member_id_hex=event.member_id_hex,
+            )
+        )
+    return candidates
