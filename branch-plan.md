@@ -140,20 +140,27 @@ Before any implementation phase claims progress, Phase 4's end-to-end micro test
 
 The implementation is only acceptable if all of these remain true:
 
+**Trust boundary.**
 1. Apps never write to NoteToSelf or team DBs. Their only Hub-mutating action remains opening a session and using it.
 2. Apps never read Manager DBs directly. Anything an app needs to discover during bootstrap is exposed through a Hub HTTP endpoint, or returned in the structured rejection.
-3. The Hub's unknown-app sightings table is local Hub state only. It is never synced to peers and never read by apps.
+3. New Hub write paths in this branch write only to `small_sea_collective_local.db`. Any write to NoteToSelf or a team DB from new Hub bootstrap code is a hard no.
 4. Participant-level registration and team-level activation are separately authorized decisions. The Manager UI/CLI may bundle them in a single flow for convenience, but the underlying data model treats them as distinct.
+
+**Vault honesty.**
 5. Bundled apps (Vault) get no special path through the Hub or Manager provisioning. They walk the same rejection-and-registration loop as any third-party app. The only acceptable special case is sandbox-mode developer setup that calls the same generic Manager operations a human would approve (see §Sandbox dev escape hatch).
 6. Vault stops opening sessions as `SmallSeaCollectiveCore` everywhere — `sync.py`, `web.py`, CLI, and all test fixtures.
-7. The shape of the structured rejection is stable enough that an app written today can keep using the same response codes after later branches add finer-grained reasons.
-8. Rejection dispositions are Manager-owned in v1. The Hub records observations; it does not read Manager-local rejection tables to mute or reinterpret future sightings.
-9. The public Manager API stays split. `register_app_for_participant(...)` and `activate_app_for_team(...)` may share private helpers, but there is no single public entry point with a `level=` or equivalent flag.
-10. New Hub write paths in this branch write only to `small_sea_collective_local.db`. Any write to NoteToSelf or a team DB from new Hub bootstrap code is a hard no.
-11. Manager sightings refresh is explicit and user-triggered in v1. No background sightings poller ships on this branch.
-12. Friendly-name collisions are normal local-first events. If two distinct app identities both present the same friendly name, Manager must preserve both identities and surface a choice; the Hub must not collapse them by string equality.
-13. Same-app races are handled conservatively in v1. If concurrent registration or activation produces duplicate same-name rows, the Hub returns `app_friendly_name_ambiguous` and Manager repair/unification resolves it. Future branches may add an automated same-app convergence witness.
-14. Hub berth resolution must be conservative under friendly-name ambiguity. If more than one candidate app row exists, the Hub returns `app_friendly_name_ambiguous` instead of choosing a row implicitly.
+7. The public Manager API stays split. `register_app_for_participant(...)` and `activate_app_for_team(...)` may share private helpers, but there is no single public entry point with a `level=` or equivalent flag.
+
+**Name conservatism.**
+8. Friendly-name collisions are normal local-first events. If two distinct app identities both present the same friendly name, Manager must preserve both identities and surface a choice; the Hub must not collapse them by string equality.
+9. Hub berth resolution must be conservative under friendly-name ambiguity. If more than one candidate app row exists, the Hub returns `app_friendly_name_ambiguous` instead of choosing a row implicitly.
+10. Same-app races are handled conservatively in v1. If concurrent registration or activation produces duplicate same-name rows, the Hub returns `app_friendly_name_ambiguous` and Manager repair/unification resolves it. Future branches may add an automated same-app convergence witness.
+
+**V1 operating constraints.**
+11. The Hub's unknown-app sightings table is local Hub state only. It is never synced to peers and never read by apps.
+12. The shape of the structured rejection is stable enough that an app written today can keep using the same response codes after later branches add finer-grained reasons.
+13. Rejection dispositions are Manager-owned in v1. The Hub records observations; it does not read Manager-local rejection tables to mute or reinterpret future sightings.
+14. Manager sightings refresh is explicit and user-triggered in v1. No background sightings poller ships on this branch.
 
 ## Branch Goals
 
