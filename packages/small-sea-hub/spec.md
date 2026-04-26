@@ -159,6 +159,11 @@ in local `cloud_storage_credential`.
 Bucket name is derived as `ss-{berth_id_hex[:16]}`.
 Uses AWS Signature Version 4.
 
+For peer S3 reads, member transport announcements select the peer endpoint
+(`protocol` + `url`), but the bucket for berth data is still derived from the
+current session's berth ID. In v1, `member_transport_announcement.bucket` is not
+authoritative for S3 berth routing.
+
 **Google Drive** (`protocol = "gdrive"`): OAuth2.
 Requires shared `client_id` plus local `client_secret` and `refresh_token`.
 The Hub refreshes the access token transparently before each operation and

@@ -97,7 +97,9 @@ def _signed_announcement(*, member_id: bytes, signer_private_key: bytes, signer_
     )
 
 
-def test_peer_download_prefers_announced_transport(playground_dir, minio_server_gen):
+def test_peer_download_uses_announced_endpoint_and_session_berth_bucket(
+    playground_dir, minio_server_gen
+):
     root = pathlib.Path(playground_dir)
     minio = minio_server_gen(port=19920)
     backend = SmallSea.SmallSeaBackend(root_dir=root)
@@ -120,7 +122,7 @@ def test_peer_download_prefers_announced_transport(playground_dir, minio_server_
     announced_bucket = "peer-transport-announced"
     s3 = _make_bucket_public(minio, fallback_bucket)
     _make_bucket_public(minio, announced_bucket)
-    s3.put_object(Bucket=fallback_bucket, Key="peer.txt", Body=b"fallback")
+    s3.put_object(Bucket=fallback_bucket, Key="peer.txt", Body=b"berth")
     s3.put_object(Bucket=announced_bucket, Key="peer.txt", Body=b"announced")
 
     Provisioning.announce_member_transport(
@@ -139,7 +141,7 @@ def test_peer_download_prefers_announced_transport(playground_dir, minio_server_
     )
 
     assert ok is True
-    assert data == b"announced"
+    assert data == b"berth"
 
 
 def test_peer_download_falls_back_when_announcement_signature_is_invalid(

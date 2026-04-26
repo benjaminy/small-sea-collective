@@ -414,6 +414,11 @@ sessions currently have a narrow Hub compatibility exception because Core
 sessions predate participant-level app registration. A follow-up should register
 Core through the same participant-level path and then remove the hardcoded
 exception from Hub berth resolution.
+12. **S3 member transport bucket semantics.** V1 peer S3 reads use member
+transport announcements for protocol/url discovery, but derive the bucket from
+the current session berth (`ss-{berth_id_hex[:16]}`). A follow-up should decide
+whether `member_transport_announcement.bucket` should be removed, repurposed,
+or made authoritative again for some transport class.
 
 ## Risks and Open Questions
 
