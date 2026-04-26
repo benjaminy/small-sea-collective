@@ -255,6 +255,40 @@ def test_manager_refreshes_sightings_and_applies_local_disposition(playground_di
     assert manager.refresh_app_sightings() == []
 
 
+def test_manager_participant_app_disposition_suppresses_sighting(playground_dir):
+    backend, participant_hex, client = _fresh_env(playground_dir)
+    resp = _request_vault_session(client)
+    assert resp.status_code == 409
+    token = _open_core_session(client)
+    manager = TeamManager(backend.root_dir, participant_hex, _http_client=client)
+    manager.set_session("NoteToSelf", token, mode="passthrough")
+
+    manager.dismiss_participant_app_sighting(_VAULT_APP)
+
+    assert manager.refresh_app_sightings() == []
+
+
+def test_team_app_disposition_requires_known_team(playground_dir):
+    backend, participant_hex, client = _fresh_env(playground_dir)
+    manager = TeamManager(backend.root_dir, participant_hex, _http_client=client)
+
+    try:
+        manager.dismiss_team_app_sighting("MissingTeam", _VAULT_APP)
+    except ValueError as exc:
+        assert "MissingTeam" in str(exc)
+    else:
+        raise AssertionError("Expected unknown team dismissal to fail")
+
+    sidecar = (
+        backend.root_dir
+        / "Participants"
+        / participant_hex
+        / "MissingTeam"
+        / "admission-events-local.db"
+    )
+    assert not sidecar.exists()
+
+
 def test_participant_berth_missing_rejection(playground_dir):
     backend, _participant_hex, client = _fresh_env(playground_dir)
     team_db = _team_db(backend.root_dir, _participant_hex, _TEAM)

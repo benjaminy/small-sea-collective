@@ -5302,6 +5302,9 @@ def dismiss_admission_event(root_dir, participant_hex, team_name, event_type, ar
 
 
 def _ensure_participant_app_disposition_store(conn) -> None:
+    # V1 dispositions key by friendly name. This intentionally follows the
+    # current branch-plan risk posture: duplicate-name/unification semantics are
+    # deferred until app_unification exists.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS participant_app_sighting_disposition (
@@ -5314,6 +5317,9 @@ def _ensure_participant_app_disposition_store(conn) -> None:
 
 
 def _ensure_team_app_disposition_store(conn) -> None:
+    # V1 dispositions key by friendly name. This intentionally follows the
+    # current branch-plan risk posture: duplicate-name/unification semantics are
+    # deferred until app_unification exists.
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS team_app_sighting_disposition (
@@ -5342,6 +5348,14 @@ def dismiss_participant_app_sighting(root_dir, participant_hex, app_name):
 
 def dismiss_team_app_sighting(root_dir, participant_hex, team_name, app_name):
     """Suppress team-scoped prompts for an app on this device."""
+    with attached_note_to_self_connection(root_dir, participant_hex) as nts:
+        team_row = nts.execute(
+            "SELECT 1 FROM team WHERE name = ?",
+            (team_name,),
+        ).fetchone()
+    if team_row is None:
+        raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
+
     db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path) as conn:

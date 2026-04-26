@@ -3,10 +3,8 @@ import json
 import pathlib
 import socket
 
-import boto3
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
 
 from shared_file_vault import sync, vault
@@ -42,33 +40,6 @@ def _open_session(http, nickname, team, mode="encrypted", app_name=sync.HUB_APP_
     )
     assert resp.status_code == 200, resp.text
     return resp.json()
-
-
-def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        config=BotoConfig(signature_version="s3v4"),
-        region_name="us-east-1",
-    )
-    s3.put_bucket_policy(
-        Bucket=bucket_name,
-        Policy=json.dumps(
-            {
-                "Version": "2012-10-17",
-                "Statement": [
-                    {
-                        "Effect": "Allow",
-                        "Principal": "*",
-                        "Action": ["s3:GetObject"],
-                        "Resource": [f"arn:aws:s3:::{bucket_name}/*"],
-                    }
-                ],
-            }
-        ),
-    )
 
 
 def _push_team_repo_via_hub(http, session_hex, repo_dir):
@@ -120,23 +91,12 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     alice_member_id_hex = team_result["member_id_hex"]
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
-    team_info = http.get(
-        "/session/info",
-        headers={"Authorization": f"Bearer {alice_team_token}"},
-    ).json()
-    team_bucket = f"ss-{team_info['berth_id'][:16]}"
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     resp = http.post(
         "/cloud/setup",
         headers={"Authorization": f"Bearer {alice_team_token}"},
     )
     assert resp.status_code == 200, resp.text
-    _make_bucket_public(
-        alice_minio["endpoint"],
-        alice_minio["access_key"],
-        alice_minio["secret_key"],
-        team_bucket,
-    )
 
     alice_core_team_token = _open_session(http, "Alice", "ProjectX", app_name=_CORE_APP)
     _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync)
