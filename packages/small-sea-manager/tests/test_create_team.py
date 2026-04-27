@@ -121,6 +121,19 @@ def test_core_participant_registration_is_idempotent(playground_dir):
     assert _app_and_berth_counts(db_path, CORE_APP) == (1, 1)
 
 
+def test_core_team_activation_is_idempotent(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    create_team(root, alice_hex, "CoolProject")
+    db_path = _team_db(root, alice_hex, "CoolProject")
+
+    before = _app_and_berth_counts(db_path, CORE_APP)
+    activate_app_for_team(root, alice_hex, "CoolProject", CORE_APP)
+
+    assert before == (1, 1)
+    assert _app_and_berth_counts(db_path, CORE_APP) == (1, 1)
+
+
 def test_create_team(playground_dir):
     root = pathlib.Path(playground_dir)
 

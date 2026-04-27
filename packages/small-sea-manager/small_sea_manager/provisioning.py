@@ -1665,7 +1665,7 @@ def _initialize_user_db(root_dir, ident, nickname, device):
                 "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
                 (team_id, "NoteToSelf", b"0"),
             )
-            _ensure_participant_app_registration(
+            _app_id, _changed = _ensure_participant_app_registration(
                 conn,
                 team_id,
                 "SmallSeaCollectiveCore",
@@ -1698,10 +1698,11 @@ def _initialize_user_db(root_dir, ident, nickname, device):
         signing_private_key_bytes,
     )
 
-    os.makedirs(
-        root_dir / "Participants" / ident.hex() / "NoteToSelf" / "SmallSeaCollectiveCore",
-        exist_ok=False,
+    app_dir = (
+        root_dir / "Participants" / ident.hex() / "NoteToSelf" / "SmallSeaCollectiveCore"
     )
+    if not app_dir.exists():
+        app_dir.mkdir(parents=True)
 
     repo_dir = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
     nts_repo = _Repo.init(repo_dir / ".git").with_work_tree(repo_dir)
@@ -4123,10 +4124,12 @@ def create_team(root_dir, participant_hex, team_name):
     creator_display_name = get_nickname(root_dir, participant_hex) or None
     with team_engine.begin() as conn:
         _upsert_member_row(conn, member_id, display_name=creator_display_name)
+        # The creator is the only member present while bootstrapping Core for a
+        # new team, so every current member receives the initial Core role.
         _app_id, berth_id, _changed = _ensure_team_app_activation(
             conn,
             "SmallSeaCollectiveCore",
-            lambda row_member_id: "read-write" if row_member_id == member_id else None,
+            lambda _member_id: "read-write",
         )
         try:
             creator_cloud = get_cloud_storage(root_dir, participant_hex)

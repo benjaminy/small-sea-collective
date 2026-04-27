@@ -406,6 +406,11 @@ def test_core_team_session_requires_participant_core_berth(playground_dir):
     backend, participant_hex, client = _fresh_env(playground_dir)
     nts_db = _note_to_self_db(backend.root_dir, participant_hex)
 
+    resp = _request_core_team_session(client)
+
+    assert resp.status_code == 200
+    assert "pending_id" in resp.json()
+
     with sqlite3.connect(nts_db) as conn:
         conn.execute(
             """
