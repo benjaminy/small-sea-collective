@@ -7,13 +7,45 @@ import pytest
 from small_sea_note_to_self.db import device_local_db_path
 
 from small_sea_manager.provisioning import _deserialize_cert, _serialize_cert
-from small_sea_manager.provisioning import (create_new_participant,
-                                                 create_team)
+from small_sea_manager.provisioning import (
+    activate_app_for_team,
+    create_new_participant,
+    create_team,
+    register_app_for_participant,
+)
 from wrasse_trust.identity import CertType, issue_cert, verify_membership_cert
 from wrasse_trust.keys import generate_hierarchy, key_id_from_public
 
 
 ALICE_ID = b"alice-id-bytes00"
+CORE_APP = "SmallSeaCollectiveCore"
+VAULT_APP = "SharedFileVault"
+
+
+def _note_to_self_db(root, participant_hex):
+    return root / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
+
+
+def _team_db(root, participant_hex, team_name):
+    return root / "Participants" / participant_hex / team_name / "Sync" / "core.db"
+
+
+def _app_and_berth_counts(db_path, app_name):
+    with sqlite3.connect(str(db_path)) as conn:
+        app_count = conn.execute(
+            "SELECT COUNT(*) FROM app WHERE name = ?",
+            (app_name,),
+        ).fetchone()[0]
+        berth_count = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM team_app_berth tab
+            JOIN app a ON a.id = tab.app_id
+            WHERE a.name = ?
+            """,
+            (app_name,),
+        ).fetchone()[0]
+    return app_count, berth_count
 
 
 def test_serialize_deserialize_cert_round_trip():
@@ -64,6 +96,42 @@ def test_deserialize_cert_requires_known_cert_type():
                 "signature": "55" * 64,
             }
         )
+
+
+def test_create_new_participant_registers_core_like_an_app(playground_dir):
+    root = pathlib.Path(playground_dir)
+
+    alice_hex = create_new_participant(root, "Alice")
+
+    assert (
+        root / "Participants" / alice_hex / "NoteToSelf" / CORE_APP
+    ).is_dir()
+    assert _app_and_berth_counts(_note_to_self_db(root, alice_hex), CORE_APP) == (1, 1)
+
+
+def test_core_participant_registration_is_idempotent(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    db_path = _note_to_self_db(root, alice_hex)
+
+    before = _app_and_berth_counts(db_path, CORE_APP)
+    register_app_for_participant(root, alice_hex, CORE_APP)
+
+    assert before == (1, 1)
+    assert _app_and_berth_counts(db_path, CORE_APP) == (1, 1)
+
+
+def test_core_team_activation_is_idempotent(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    create_team(root, alice_hex, "CoolProject")
+    db_path = _team_db(root, alice_hex, "CoolProject")
+
+    before = _app_and_berth_counts(db_path, CORE_APP)
+    activate_app_for_team(root, alice_hex, "CoolProject", CORE_APP)
+
+    assert before == (1, 1)
+    assert _app_and_berth_counts(db_path, CORE_APP) == (1, 1)
 
 
 def test_create_team(playground_dir):
@@ -235,3 +303,28 @@ def test_create_team(playground_dir):
     )
     assert result.returncode == 0
     assert "New team: CoolProject" in result.stdout
+
+
+def test_core_team_activation_matches_generic_app_shape(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    result = create_team(root, alice_hex, "CoolProject")
+    team_db = _team_db(root, alice_hex, "CoolProject")
+
+    activate_app_for_team(root, alice_hex, "CoolProject", VAULT_APP)
+
+    with sqlite3.connect(str(team_db)) as conn:
+        rows = conn.execute(
+            """
+            SELECT a.name, tab.id, br.role
+            FROM app a
+            JOIN team_app_berth tab ON tab.app_id = a.id
+            JOIN berth_role br ON br.berth_id = tab.id
+            ORDER BY a.name
+            """
+        ).fetchall()
+
+    by_app = {row[0]: (row[1], row[2]) for row in rows}
+    assert set(by_app) == {CORE_APP, VAULT_APP}
+    assert by_app[CORE_APP][0] == bytes.fromhex(result["berth_id_hex"])
+    assert by_app[CORE_APP][1] == by_app[VAULT_APP][1] == "read-write"

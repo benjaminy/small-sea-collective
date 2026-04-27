@@ -1661,18 +1661,14 @@ def _initialize_user_db(root_dir, ident, nickname, device):
                 (device_id, encryption_public_key_bytes, signing_public_key_bytes),
             )
             team_id = uuid7()
-            app_id = uuid7()
             conn.execute(
                 "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
                 (team_id, "NoteToSelf", b"0"),
             )
-            conn.execute(
-                "INSERT INTO app (id, name) VALUES (?, ?)",
-                (app_id, "SmallSeaCollectiveCore"),
-            )
-            conn.execute(
-                "INSERT INTO team_app_berth (id, team_id, app_id) VALUES (?, ?, ?)",
-                (uuid7(), team_id, app_id),
+            _app_id, _changed = _ensure_participant_app_registration(
+                conn,
+                team_id,
+                "SmallSeaCollectiveCore",
             )
             encryption_key_path = _note_to_self_device_encryption_key_path(
                 root_dir, ident.hex(), device_id
@@ -1701,6 +1697,12 @@ def _initialize_user_db(root_dir, ident, nickname, device):
         _note_to_self_device_signing_key_path(root_dir, ident.hex(), device_id),
         signing_private_key_bytes,
     )
+
+    app_dir = (
+        root_dir / "Participants" / ident.hex() / "NoteToSelf" / "SmallSeaCollectiveCore"
+    )
+    if not app_dir.exists():
+        app_dir.mkdir(parents=True)
 
     repo_dir = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
     nts_repo = _Repo.init(repo_dir / ".git").with_work_tree(repo_dir)
@@ -4119,20 +4121,27 @@ def create_team(root_dir, participant_hex, team_name):
     team_engine = _init_team_db(team_db_path)
 
     # Populate the team DB: creator member, app, berth, and creator's role.
-    app_id = uuid7()
-    berth_id = uuid7()
     creator_display_name = get_nickname(root_dir, participant_hex) or None
-    try:
-        creator_cloud = get_cloud_storage(root_dir, participant_hex)
-        creator_protocol = creator_cloud["protocol"]
-        creator_url = creator_cloud["url"]
-        creator_bucket = _bucket_name_for_protocol(creator_protocol, member_id, berth_id)
-    except ValueError:
-        creator_protocol = None
-        creator_url = None
-        creator_bucket = None
     with team_engine.begin() as conn:
         _upsert_member_row(conn, member_id, display_name=creator_display_name)
+        # The creator is the only member present while bootstrapping Core for a
+        # new team, so every current member receives the initial Core role.
+        _app_id, berth_id, _changed = _ensure_team_app_activation(
+            conn,
+            "SmallSeaCollectiveCore",
+            lambda _member_id: "read-write",
+        )
+        try:
+            creator_cloud = get_cloud_storage(root_dir, participant_hex)
+            creator_protocol = creator_cloud["protocol"]
+            creator_url = creator_cloud["url"]
+            creator_bucket = _bucket_name_for_protocol(
+                creator_protocol, member_id, berth_id
+            )
+        except ValueError:
+            creator_protocol = None
+            creator_url = None
+            creator_bucket = None
         _upsert_team_device_row(
             conn,
             member_id,
@@ -4142,21 +4151,6 @@ def create_team(root_dir, participant_hex, team_name):
             bucket=creator_bucket,
         )
         _store_team_certificate(conn, membership_cert, issuer_member_id=member_id)
-        conn.execute(
-            text("INSERT INTO app (id, name) VALUES (:id, :name)"),
-            {"id": app_id, "name": "SmallSeaCollectiveCore"},
-        )
-        conn.execute(
-            text("INSERT INTO team_app_berth (id, app_id) VALUES (:id, :app_id)"),
-            {"id": berth_id, "app_id": app_id},
-        )
-        conn.execute(
-            text(
-                "INSERT INTO berth_role (id, member_id, berth_id, role) "
-                "VALUES (:id, :mid, :bid, :role)"
-            ),
-            {"id": uuid7(), "mid": member_id, "bid": berth_id, "role": "read-write"},
-        )
         _publish_local_device_prekey_bundle(
             root_dir,
             participant_hex,
@@ -4199,6 +4193,32 @@ def _single_app_id_by_name_sa(conn, app_name):
     return rows[0][0] if rows else None
 
 
+def _ensure_participant_app_registration(conn, team_id, app_name):
+    """Ensure NoteToSelf has an app row and berth for this participant app."""
+    changed = False
+    app_id = _single_app_id_by_name(conn, app_name)
+    if app_id is None:
+        app_id = uuid7()
+        conn.execute(
+            "INSERT INTO app (id, name) VALUES (?, ?)",
+            (app_id, app_name),
+        )
+        changed = True
+
+    berth_row = conn.execute(
+        "SELECT id FROM team_app_berth WHERE team_id = ? AND app_id = ?",
+        (team_id, app_id),
+    ).fetchone()
+    if berth_row is None:
+        conn.execute(
+            "INSERT INTO team_app_berth (id, team_id, app_id) VALUES (?, ?, ?)",
+            (uuid7(), team_id, app_id),
+        )
+        changed = True
+
+    return app_id, changed
+
+
 def register_app_for_participant(root_dir, participant_hex, app_name):
     """Register an app for a participant's identity via NoteToSelf."""
     root_dir = pathlib.Path(root_dir)
@@ -4215,26 +4235,9 @@ def register_app_for_participant(root_dir, participant_hex, app_name):
             raise ValueError("NoteToSelf team row not found")
         team_id = team_row[0]
 
-        app_id = _single_app_id_by_name(conn, app_name)
-        if app_id is None:
-            app_id = uuid7()
-            conn.execute(
-                "INSERT INTO app (id, name) VALUES (?, ?)",
-                (app_id, app_name),
-            )
-            changed = True
-
-        berth_row = conn.execute(
-            "SELECT id FROM team_app_berth WHERE team_id = ? AND app_id = ?",
-            (team_id, app_id),
-        ).fetchone()
-        if berth_row is None:
-            conn.execute(
-                "INSERT INTO team_app_berth (id, team_id, app_id) VALUES (?, ?, ?)",
-                (uuid7(), team_id, app_id),
-            )
-            changed = True
-
+        app_id, changed = _ensure_participant_app_registration(
+            conn, team_id, app_name
+        )
         conn.commit()
 
     if not app_dir.exists():
@@ -4250,6 +4253,65 @@ def register_app_for_participant(root_dir, participant_hex, app_name):
     return app_id.hex()
 
 
+def _ensure_team_app_activation(conn, app_name, role_for_member):
+    """Ensure a team DB has an app berth and member roles for that app."""
+    changed = False
+    app_id = _single_app_id_by_name_sa(conn, app_name)
+    if app_id is None:
+        app_id = uuid7()
+        conn.execute(
+            text("INSERT INTO app (id, name) VALUES (:id, :name)"),
+            {"id": app_id, "name": app_name},
+        )
+        changed = True
+
+    berth_rows = conn.execute(
+        text("SELECT id FROM team_app_berth WHERE app_id = :app_id"),
+        {"app_id": app_id},
+    ).fetchall()
+    if len(berth_rows) > 1:
+        raise ValueError(f"Multiple berths found for app '{app_name}'")
+    if berth_rows:
+        berth_id = berth_rows[0][0]
+    else:
+        berth_id = uuid7()
+        conn.execute(
+            text("INSERT INTO team_app_berth (id, app_id) VALUES (:id, :app_id)"),
+            {"id": berth_id, "app_id": app_id},
+        )
+        changed = True
+
+    member_rows = conn.execute(text("SELECT id FROM member")).fetchall()
+    for (member_id,) in member_rows:
+        role_row = conn.execute(
+            text(
+                "SELECT 1 FROM berth_role "
+                "WHERE member_id = :member_id AND berth_id = :berth_id"
+            ),
+            {"member_id": member_id, "berth_id": berth_id},
+        ).fetchone()
+        if role_row is not None:
+            continue
+        role = role_for_member(member_id)
+        if role is None:
+            raise ValueError("Cannot activate app for member without Core berth role")
+        conn.execute(
+            text(
+                "INSERT INTO berth_role (id, member_id, berth_id, role) "
+                "VALUES (:id, :member_id, :berth_id, :role)"
+            ),
+            {
+                "id": uuid7(),
+                "member_id": member_id,
+                "berth_id": berth_id,
+                "role": role,
+            },
+        )
+        changed = True
+
+    return app_id, berth_id, changed
+
+
 def activate_app_for_team(root_dir, participant_hex, team_name, app_name):
     """Activate an app berth for a team using generic Manager provisioning."""
     root_dir = pathlib.Path(root_dir)
@@ -4260,58 +4322,11 @@ def activate_app_for_team(root_dir, participant_hex, team_name, app_name):
     changed = False
 
     with engine.begin() as conn:
-        app_id = _single_app_id_by_name_sa(conn, app_name)
-        if app_id is None:
-            app_id = uuid7()
-            conn.execute(
-                text("INSERT INTO app (id, name) VALUES (:id, :name)"),
-                {"id": app_id, "name": app_name},
-            )
-            changed = True
-
-        berth_rows = conn.execute(
-            text("SELECT id FROM team_app_berth WHERE app_id = :app_id"),
-            {"app_id": app_id},
-        ).fetchall()
-        if len(berth_rows) > 1:
-            raise ValueError(f"Multiple berths found for app '{app_name}'")
-        if berth_rows:
-            berth_id = berth_rows[0][0]
-        else:
-            berth_id = uuid7()
-            conn.execute(
-                text("INSERT INTO team_app_berth (id, app_id) VALUES (:id, :app_id)"),
-                {"id": berth_id, "app_id": app_id},
-            )
-            changed = True
-
-        member_rows = conn.execute(text("SELECT id FROM member")).fetchall()
-        for (member_id,) in member_rows:
-            role_row = conn.execute(
-                text(
-                    "SELECT 1 FROM berth_role "
-                    "WHERE member_id = :member_id AND berth_id = :berth_id"
-                ),
-                {"member_id": member_id, "berth_id": berth_id},
-            ).fetchone()
-            if role_row is not None:
-                continue
-            role = _core_berth_role(conn, member_id)
-            if role is None:
-                raise ValueError("Cannot activate app for member without Core berth role")
-            conn.execute(
-                text(
-                    "INSERT INTO berth_role (id, member_id, berth_id, role) "
-                    "VALUES (:id, :member_id, :berth_id, :role)"
-                ),
-                {
-                    "id": uuid7(),
-                    "member_id": member_id,
-                    "berth_id": berth_id,
-                    "role": role,
-                },
-            )
-            changed = True
+        app_id, _berth_id, changed = _ensure_team_app_activation(
+            conn,
+            app_name,
+            lambda member_id: _core_berth_role(conn, member_id),
+        )
 
     engine.dispose()
 
@@ -4508,6 +4523,9 @@ def accept_invitation(
             "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
             (team_id, team_name, acceptor_member_id),
         )
+        # Core participant registration is identity-wide in NoteToSelf. Hub
+        # berth resolution currently accepts any NoteToSelf Core berth for the
+        # app, so accepting a team invitation does not add a per-team Core row.
         conn.commit()
 
     # --- Generate local current device key ---
