@@ -2,6 +2,18 @@
 
 Tracks GitHub issue #122 — follow-up to issue #111.
 
+**Branch:** `issue-122-core-participant-registration`
+**Archived:** Branch wrapped after implementation, review feedback, and
+validation.
+**Final validation:**
+- `uv run pytest packages/small-sea-manager/tests/test_create_team.py packages/small-sea-hub/tests/test_app_bootstrap.py` -> 20 passed
+- `uv run pytest packages/small-sea-manager/tests/test_invitation.py` -> 4 passed
+- `uv run pytest packages/small-sea-hub/tests` -> 78 passed
+- `uv run pytest packages/shared-file-vault/tests` -> 59 passed, 3 skipped
+- `uv run pytest packages/small-sea-manager/tests` -> 60 passed
+- `git diff --check` -> clean
+- `rg -n "if app_name != \"SmallSeaCollectiveCore\"|issue-111-follow-up" packages/small-sea-hub packages/small-sea-manager` -> no hits
+
 ## Goal
 
 Register `SmallSeaCollectiveCore` through the same participant-level
@@ -229,11 +241,34 @@ To convince a skeptical reviewer that repo integrity is maintained or improved:
 
 ## Wrap-up
 
-When the branch is ready to land:
+Actual implementation matched the plan:
 
-1. Update this plan with any decisions that diverged from what is written
-   here (the in-connection helper factoring in step 1, the
-   `accept_invitation` no-op in step 3, and the role-resolver split in step
-   2 are the load-bearing choices to re-confirm).
-2. Move it to `Archive/branch-plan-issue-122-core-participant-registration.md`
-   per the AGENTS.md workflow.
+- `_ensure_participant_app_registration` is the shared NoteToSelf-side SQL
+  primitive behind Core initialization and public participant app registration.
+- `_ensure_team_app_activation` is the shared team-side SQLAlchemy primitive
+  behind Core team creation and public team app activation.
+- `_initialize_user_db` now registers Core through the participant primitive
+  and creates `NoteToSelf/SmallSeaCollectiveCore/` using the same directory
+  convention as `register_app_for_participant`.
+- `create_team` now activates Core through the team primitive. The role
+  resolver returns `"read-write"` for every current member because the creator
+  is the only member present while bootstrapping a new team's Core berth.
+- `accept_invitation` remains a no-op for Core participant registration, with
+  an in-code comment recording the load-bearing assumption that Hub
+  participant-berth lookup is identity-wide in NoteToSelf rather than scoped
+  per external team.
+- `backend.py:_resolve_berth` now runs the participant-berth check
+  unconditionally, so Core no longer has a Hub bypass.
+
+Review feedback was incorporated before wrap-up:
+
+- Aligned Core app directory creation with `register_app_for_participant`.
+- Unpacked ignored helper return values for readability.
+- Clarified the `create_team` role-resolver assumption.
+- Added symmetric Core team-activation idempotency coverage.
+- Added a positive Core team-session assertion next to the negative
+  missing-participant-berth regression.
+
+This plan has been moved to
+`Archive/branch-plan-issue-122-core-participant-registration.md` per the
+AGENTS.md workflow.
