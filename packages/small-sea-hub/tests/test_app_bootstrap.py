@@ -144,12 +144,24 @@ def _team_berth_rows(db_path, app_id):
         ).fetchall()
 
 
-def _assert_bootstrap_rejection(resp, reason):
+def _request_core_team_session(client):
+    return client.post(
+        "/sessions/request",
+        json={
+            "participant": "alice",
+            "app": _CORE_APP,
+            "team": _TEAM,
+            "client": "Smoke Tests",
+        },
+    )
+
+
+def _assert_bootstrap_rejection(resp, reason, app_name=_VAULT_APP):
     assert resp.status_code == 409
     assert resp.json() == {
         "error": "app_bootstrap_required",
         "reason": reason,
-        "app": _VAULT_APP,
+        "app": app_name,
         "team": _TEAM,
     }
 
@@ -388,6 +400,26 @@ def test_cross_scope_name_bridge_allows_distinct_random_app_ids(playground_dir):
 
     assert resp.status_code == 200
     assert "pending_id" in resp.json()
+
+
+def test_core_team_session_requires_participant_core_berth(playground_dir):
+    backend, participant_hex, client = _fresh_env(playground_dir)
+    nts_db = _note_to_self_db(backend.root_dir, participant_hex)
+
+    with sqlite3.connect(nts_db) as conn:
+        conn.execute(
+            """
+            DELETE FROM team_app_berth
+            WHERE app_id = (SELECT id FROM app WHERE name = ?)
+            """,
+            (_CORE_APP,),
+        )
+        conn.commit()
+
+    resp = _request_core_team_session(client)
+
+    _assert_bootstrap_rejection(resp, "participant_berth_missing", app_name=_CORE_APP)
+    assert _sighting_rows(backend)[0]["reason"] == "participant_berth_missing"
 
 
 def test_vault_bootstrap_loop_rejects_then_registers_then_activates(playground_dir):

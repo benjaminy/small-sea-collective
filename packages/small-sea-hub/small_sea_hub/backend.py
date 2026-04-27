@@ -403,21 +403,17 @@ class SmallSeaBackend:
                 "team_berth_missing", app_name, team_name
             )
 
-        # TODO(issue-111-follow-up): migrate Core session opening onto explicit
-        # participant-level registration, then remove this compatibility
-        # exception. Core team sessions predate the app-bootstrap model.
-        if app_name != "SmallSeaCollectiveCore":
-            try:
-                self._single_berth_id_for_app(
-                    note_to_self_db,
-                    participant_app_rows[0],
-                    app_name,
-                    team_name,
-                )
-            except SmallSeaNotFoundExn:
-                raise SmallSeaAppBootstrapRequiredExn(
-                    "participant_berth_missing", app_name, team_name
-                )
+        try:
+            self._single_berth_id_for_app(
+                note_to_self_db,
+                participant_app_rows[0],
+                app_name,
+                team_name,
+            )
+        except SmallSeaNotFoundExn:
+            raise SmallSeaAppBootstrapRequiredExn(
+                "participant_berth_missing", app_name, team_name
+            )
 
         app_id = team_app_rows[0]
         berth_id = self._single_berth_id_for_app(berth_db, app_id, app_name, team_name)

@@ -365,6 +365,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     buconn.close()
     bulconn.close()
 
+    bob_team_token = _open_session(http, "Bob", "ProjectX", mode="passthrough")
+    assert isinstance(bob_team_token, str)
+
     alice_user_db = root / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
     auconn = sqlite3.connect(str(alice_user_db))
     alice_local_db = device_local_db_path(root, alice_hex)
