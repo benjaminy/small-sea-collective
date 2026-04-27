@@ -81,6 +81,8 @@ The branch should commit the answers below in `branch-plan.md` *before* any test
    - fully resolved rows are suppressed;
    - unresolved rows use the current missing reason (`app_unknown`, `participant_berth_missing`, `team_berth_missing`, or `app_friendly_name_ambiguous`), even if the Hub row's stored reason is older.
    This keeps the Hub contract unchanged while making the UI honest after each Manager action.
+7. **Unknown or not-yet-synced teams.** If a Hub sighting references a `team_name` that this Manager device cannot currently find in NoteToSelf/local team state, Manager must keep the row visible with the stored Hub reason and disable registration/activation actions that require the missing team. It may still offer participant-level dismissal, and may offer team-level dismissal only if the existing dismissal primitive can validate the team. Silent-drop is not allowed; invisible stuck prompts are worse than a conservative row.
+8. **Null-team sightings.** V1 Vault sightings always send a team. If a future Hub row has `team_name = null`, the fragment must hide team-scoped actions (`Activate for team`, `Dismiss team prompt`) and keep only participant-level actions that match the current reason. Do not invent a team selector on this branch.
 
 If any of these change during implementation, update this plan first.
 
@@ -103,12 +105,15 @@ The negative-path skeletons (per-reason render, dismissal hides row, dismissal d
 ## Phase 1 — TeamManager wrappers + web routes
 
 - Add a provisioning-level helper used by `TeamManager.refresh_app_sightings()` to re-evaluate each Hub sighting against local NoteToSelf/team DB state. It should mirror the already-shipped Hub v1 predicates closely enough to answer only this question: "is this prompt still actionable, and if so, which of the four reasons is current?" It must not write state.
+  - Put a short comment on the helper pointing at the Hub predicate source (`small_sea_hub/backend.py::_resolve_berth`) so future edits see the intentional duplication.
+  - Unknown/not-yet-synced teams must return a visible conservative prompt using the stored Hub reason, not disappear.
 - Add `register_app_for_participant(self, app_name)` and `activate_app_for_team(self, team_name, app_name)` to `TeamManager` as one-line delegates to `provisioning`.
+- Treat the action routes as idempotent double-submit safe because `register_app_for_participant` and `activate_app_for_team` are find-or-insert primitives. Add a micro test or route assertion showing a repeated Register/Activate POST does not create duplicate app or berth rows.
 - Add the five routes in §Phase 0 #1 to `web.py`. Each route follows the existing Manager web pattern: catch the exception, render the same fragment with `error=str(e)`, and otherwise return the fragment only.
 - The `register` route calls `mgr.register_app_for_participant(app_name)` then re-runs `mgr.refresh_app_sightings()` so the rendered list reflects the new reason. Same pattern for `activate`, `dismiss-participant`, and `dismiss-team`.
 - Hub I/O is still only reached transitively through `TeamManager.refresh_app_sightings()`. The action routes also refresh after the local mutation, but every such call is the consequence of a deliberate user POST and still stays behind `TeamManager`.
 
-Exit gate: green current-state refresh tests plus per-route happy-path tests; `web.py` contains no SQL, no Hub HTTP client calls, no `provisioning` import, and no reason-specific branching outside the fragment context passed to Jinja.
+Exit gate: green current-state refresh tests, parity tests, idempotency tests, and per-route happy-path tests; `web.py` contains no SQL, no Hub HTTP client calls, no `provisioning` import, and no reason-specific branching outside the fragment context passed to Jinja.
 
 ## Phase 2 — Template + index wiring
 
@@ -120,19 +125,29 @@ Exit gate: green current-state refresh tests plus per-route happy-path tests; `w
     - `participant_berth_missing` → Register participant app, Dismiss participant prompt, Dismiss team prompt.
     - `team_berth_missing` → Activate for team, Dismiss participant prompt, Dismiss team prompt.
     - `app_friendly_name_ambiguous` → Dismiss participant prompt, Dismiss team prompt. Add a one-liner pointing the user at the CLI / future unification work.
+  - If `team_name` is missing or unknown locally, hide team-scoped action buttons and show a conservative "team not available on this device yet" line. The row remains visible.
 - Empty state: explicit copy ("No app-bootstrap prompts.").
 - Hub-disconnected state: render a passive card with the Refresh button disabled and the "Connect to Hub…" hint, so the user is not silently shown a stale list.
 - Wire it into `index.html` as its own card with `hx-target` pointing at the fragment id. The Refresh button is the only way to populate the list; no auto-load on page render (refresh has a network cost and `index.html` must remain useful even when the Hub is offline).
 
-Exit gate: render tests for each of the four reasons assert the expected form targets/button labels are present and the forbidden ones are absent. Empty-state and Hub-disconnected states each have a render test.
+Exit gate: render tests for each of the four reasons assert the expected form targets/button labels are present and the forbidden ones are absent. Empty-state, Hub-disconnected, unknown-team, and null-team states each have a render test.
 
 ## Phase 3 — End-to-end micro tests + integrity probes
 
 - Land the Phase 0.5 end-to-end test in green form.
 - Add per-reason render tests (Phase 2 exit gate).
 - Add current-state refresh tests: after participant registration, an old `app_unknown` Hub observation is returned as `team_berth_missing`; after team activation too, the same observation is suppressed as resolved.
+- Add a Hub/Manager predicate-parity micro test. Build a matrix of fixture states and drive each through both Hub `POST /sessions/request` and `TeamManager.refresh_app_sightings()`, asserting the current Manager reason matches the Hub rejection reason:
+  - no participant app row and no team app row → `app_unknown`
+  - participant app/berth only → `team_berth_missing`
+  - team app/berth only → `participant_berth_missing`
+  - both participant and team app/berth rows → Hub succeeds and Manager suppresses the sighting as resolved
+  - duplicate same-name candidate rows in either scope → `app_friendly_name_ambiguous`
+  This is the guardrail against future predicate-parity drift when `_resolve_berth` changes.
+- Add unknown-team/null-team tests: such rows remain visible, do not crash refresh/rendering, and do not expose team-scoped actions unless the team is locally known.
 - Add a dismissal test: participant-level dismissal hides every team-scoped variant of the same `app_name`; team-scoped dismissal hides only the (team, app) pair.
 - Add a "dismissal does not register" test: after `POST /app-sightings/dismiss-participant`, NoteToSelf has zero `app` rows for the dismissed app and zero `team_app_berth` rows. This proves the UI does not silently call the registration primitive when the user picks Dismiss.
+- Add a double-submit test: repeated `POST /app-sightings/register` and repeated `POST /app-sightings/activate` leave exactly one matching app row and one matching berth row in their respective scopes.
 - Add an integrity test or explicit validation grep proving the web layer has no direct provisioning or Hub boundary violations:
   - `rg "small_sea_manager import provisioning|from small_sea_manager import provisioning|sqlite3|httpx|app_sighting_dismissed|INSERT|UPDATE|DELETE" packages/small-sea-manager/small_sea_manager/web.py` returns nothing.
   - `rg "register_app_for_participant\\(|activate_app_for_team\\(|dismiss_participant_app_sighting\\(|dismiss_team_app_sighting\\(" packages/small-sea-manager/small_sea_manager/web.py` returns only the route calls on `mgr`, not imports or helper functions.
@@ -154,6 +169,7 @@ A reviewer should be able to convince themselves of all of the following without
 - One render test per reason asserts the exact set of action buttons (#114-style strict matching, not "contains").
 - One render test asserts that `app_friendly_name_ambiguous` deliberately exposes only Dismiss buttons.
 - Current-state refresh tests prove the UI is not replaying stale Hub reasons after Manager actions.
+- A predicate-parity test proves Manager's current-state recheck agrees with Hub `_resolve_berth` for the v1 state matrix.
 - The end-to-end test exercises the reason transition `app_unknown → team_berth_missing → success` via the UI.
 
 **The web layer is thin.**
@@ -167,6 +183,10 @@ A reviewer should be able to convince themselves of all of the following without
 
 **Refresh is user-triggered.**
 - No `setInterval`-style htmx polling on the sightings card. Confirmed by template grep: no `hx-trigger="every"`, no `load`-trigger on the sightings list.
+
+**Edge sightings stay visible.**
+- Unknown-team sightings are visible and conservative rather than silently dropped.
+- Null-team sightings hide team-scoped actions and do not invent a team choice on this branch.
 
 **Hub-Manager boundary holds.**
 - `web.py` makes no direct HTTP calls to the Hub; all Hub I/O still goes through `TeamManager` / `SmallSeaClient`.
@@ -185,6 +205,8 @@ This section will be revisited at end-of-branch with concrete file paths, line n
 - **htmx swap target stability.** The card has to re-render in place after every action without disturbing other htmx targets on `index.html`. Risk: an action accidentally swaps the wrong fragment or replaces the whole index. Mitigation: per-route render tests assert the response body matches `app_sightings.html`, not `index.html`.
 - **Refresh requires an active NoteToSelf session.** If the user clicks Refresh while the Hub session has expired, `refresh_app_sightings()` will raise. The Phase 1 exception path must catch and render an inline error rather than 500-ing. Test covers this case.
 - **Stale Hub observations.** Hub rows are durable observations and remain after a prompt is fixed. If Manager refresh does not re-evaluate them locally, the UI would keep asking the user to fix an already-fixed app. Mitigation: Phase 1 adds current-state filtering below `TeamManager`, with micro tests for `app_unknown → team_berth_missing → resolved`.
+- **Predicate-parity drift.** Manager's current-state recheck duplicates Hub `_resolve_berth` predicates by design. Mitigation: a parity micro test exercises the same fixture matrix through both Hub and Manager, and the recheck helper carries a pointer comment to the Hub source.
+- **Unknown team sightings.** A Hub row can reference a team this Manager device has not adopted yet. Mitigation: keep the row visible with conservative copy and no unsafe team-scoped actions; never silently drop it.
 - **Ambiguous-friendly-name guidance.** v1 has no in-UI unification flow. Worst-case the user dismisses both rows and never resolves the ambiguity. This is the same risk #111 already accepted; the only new exposure is that the UI now makes the dismissal one-click instead of code-only. Acceptable for v1.
 - **Index page weight.** Adding a new top-level card grows `index.html`. If this card and the existing Cloud-storage card start to compete for attention, follow-up UX work belongs in a separate branch, not here.
 - **Test file growth.** If `test_manager.py` grows past ~700 lines, split sightings tests into `test_app_sightings_ui.py`. Decision criterion: a reviewer should still be able to find a single test by reading filenames.
