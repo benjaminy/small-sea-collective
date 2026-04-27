@@ -76,6 +76,13 @@ This keeps initial identity creation atomic enough for current pre-alpha
 expectations without adding a second post-welcome commit, while still making
 the SQL writer shared with ordinary participant app registration.
 
+Observable behavior change to flag in the PR description: after this step,
+`create_new_participant` newly creates an empty
+`Participants/{hex}/NoteToSelf/SmallSeaCollectiveCore/` directory, matching
+the layout `register_app_for_participant` already produces for ordinary apps.
+This is intentional and is the visible side effect that proves Core now uses
+the same writer.
+
 ### 2. Route Core's team-creation berth through the activation primitive
 
 In `create_team`, replace the direct `INSERT INTO app` /
@@ -120,8 +127,15 @@ check for any team by finding the NoteToSelf Core `team_app_berth`. Adding a
 per-team `NoteToSelf/SmallSeaCollectiveCore/{team}` entry would duplicate
 state without changing observable session behavior.
 
-Add a short code comment only if the implementation touches the invitation
-body. Otherwise the micro tests below are enough to lock the behavior.
+Load-bearing assumption to record explicitly: this no-op is only safe because
+`_resolve_berth`'s participant-side check uses
+`_single_berth_id_for_app(..., team_id=None)`, i.e. it accepts any NoteToSelf
+berth for the app regardless of which team the session is for. If that lookup
+is ever tightened to a per-`(team, app)` shape, this step has to be revisited
+and `accept_invitation` must then write a per-team participant Core entry. A
+short code comment in `accept_invitation` should call this out so a future
+change to the lookup does not silently break the invitee's first Core
+session.
 
 ### 4. Remove the Hub Core exception
 
@@ -217,8 +231,9 @@ To convince a skeptical reviewer that repo integrity is maintained or improved:
 
 When the branch is ready to land:
 
-1. Update this plan with the actual decisions made (especially the
-   `accept_invitation` choice in step 3 and which factoring approach was
-   used in step 1).
+1. Update this plan with any decisions that diverged from what is written
+   here (the in-connection helper factoring in step 1, the
+   `accept_invitation` no-op in step 3, and the role-resolver split in step
+   2 are the load-bearing choices to re-confirm).
 2. Move it to `Archive/branch-plan-issue-122-core-participant-registration.md`
    per the AGENTS.md workflow.
