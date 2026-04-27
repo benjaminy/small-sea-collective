@@ -5,15 +5,15 @@ Tracks GitHub issue #122 — follow-up to issue #111.
 ## Goal
 
 Register `SmallSeaCollectiveCore` through the same participant-level
-registration + team-level activation paths used by ordinary apps, and remove
-the hardcoded Core exception in Hub berth resolution.
+registration + team-level activation primitives used by ordinary apps, and
+remove the hardcoded Core exception in Hub berth resolution.
 
 After this branch:
 
 - The Hub's `_resolve_berth` treats Core like any other app.
-- Manager provisioning routes Core's app/berth rows through the same helpers
-  (`register_app_for_participant`, `activate_app_for_team`) used by Shared
-  File Vault and any future Small Sea app.
+- Manager provisioning routes Core's app/berth rows through the same private
+  primitives that back `register_app_for_participant` and
+  `activate_app_for_team`, so Core no longer has a duplicate SQL writer.
 - The Hub no longer carries an `if app_name != "SmallSeaCollectiveCore":`
   branch in its session path.
 
@@ -45,62 +45,83 @@ The generic helpers already exist:
 
 ## Implementation
 
-### 1. Route Core's NoteToSelf registration through `register_app_for_participant`
+### 1. Route Core's NoteToSelf registration through the participant primitive
 
-Refactor `_initialize_user_db` so Core's participant-level entry is created by
-calling `register_app_for_participant` (or a private shared primitive that
-both share). Constraints to respect:
+Refactor the participant-registration SQL out of
+`register_app_for_participant` into a private helper that can run inside an
+existing NoteToSelf transaction, for example:
 
-- `register_app_for_participant` currently expects the NoteToSelf `team` row
-  to already exist and the `NoteToSelf/Sync` git repo to be initialized so it
-  can commit. `_initialize_user_db` runs before that repo's first commit, so
-  the simplest path is:
-  1. Keep `_initialize_user_db` responsible for creating the NoteToSelf team
-     row, device key, and initial git repo.
-  2. After the initial NoteToSelf commit, call
-     `register_app_for_participant(root_dir, participant_hex, "SmallSeaCollectiveCore")`
-     instead of the current inline INSERTs.
-- Alternative: factor out a `_register_app_for_participant_in_conn(conn, ...)`
-  helper that does only the SQL portion; have `register_app_for_participant`
-  open its own connection and commit, and have `_initialize_user_db` reuse the
-  conn-level helper inside its existing transaction. Pick whichever produces
-  the smaller diff and clearer ownership boundary.
+`_ensure_participant_app_registration(conn, team_id, app_name) -> (app_id, changed)`
+
+That helper should:
+
+- Find or insert the `app` row by friendly name, preserving the existing
+  duplicate-friendly-name guard.
+- Find or insert the `team_app_berth` row for the NoteToSelf team and app.
+- Return whether it changed SQL state, but not commit, touch git, or create
+  directories.
+
+Then:
+
+- `register_app_for_participant` keeps its public behavior: open the
+  NoteToSelf connection, call the helper, create
+  `NoteToSelf/{app_name}/` if needed, commit, and make the existing
+  `Registered app {app_name}` git commit when anything changed.
+- `_initialize_user_db` creates the NoteToSelf `team` row, calls the same SQL
+  helper for `SmallSeaCollectiveCore` inside the initial transaction, creates
+  `NoteToSelf/SmallSeaCollectiveCore/`, and includes the resulting `core.db`
+  rows in the initial "Welcome to Small Sea Collective" commit.
+
+This keeps initial identity creation atomic enough for current pre-alpha
+expectations without adding a second post-welcome commit, while still making
+the SQL writer shared with ordinary participant app registration.
 
 ### 2. Route Core's team-creation berth through the activation primitive
 
 In `create_team`, replace the direct `INSERT INTO app` /
 `INSERT INTO team_app_berth` / `INSERT INTO berth_role` block with the same
-primitive `activate_app_for_team` uses internally.
+in-connection primitive `activate_app_for_team` uses internally, for example:
 
-Caveat: `activate_app_for_team` reads `_core_berth_role(conn, member_id)` to
-decide each member's role on the new berth. For Core itself this is
-circular — there is no Core berth yet. Resolve by extracting a shared
-`_activate_app_for_team_in_conn(conn, app_name, role_for_member)` helper
-that takes an explicit role-resolver callable:
+`_ensure_team_app_activation(conn, app_name, role_for_member) -> (app_id, berth_id, changed)`
+
+This helper should:
+
+- Find or insert the team DB `app` row by friendly name, preserving the
+  existing duplicate-friendly-name guard.
+- Find or insert the `team_app_berth` row for that app.
+- For each current member, find or insert the `berth_role` row using the
+  provided role resolver.
+- Return the app ID, berth ID, and whether SQL state changed, but not commit
+  or touch git.
+
+Caveat: the public `activate_app_for_team` flow reads
+`_core_berth_role(conn, member_id)` to decide each member's role on the new
+berth. For Core itself this is circular because there is no Core berth yet.
+The shared helper resolves that by taking an explicit role-resolver callable:
 
 - `activate_app_for_team` passes `_core_berth_role` (existing behavior).
-- `create_team` passes a constant resolver returning `"read-write"` for the
-  team creator.
+- `create_team` passes a resolver that returns `"read-write"` for the creator
+  member present during team creation.
 
 This keeps the SQL shape identical between Core's first activation and any
-other app's activation, while letting the role decision differ.
+other app's activation, while letting the role decision differ. It also avoids
+calling the public `activate_app_for_team` before the new team repo has been
+initialized.
 
 ### 3. Cover the invitation path
 
-Decide whether `accept_invitation` should also call
-`register_app_for_participant` for Core when joining an existing team. Two
-options:
+Decision for this branch: `accept_invitation` remains a no-op for Core
+participant registration.
 
-- **No-op (preferred for this branch):** rely on the existing global
-  NoteToSelf/Core participant-level entry created at user-db-init.
-  `_resolve_berth`'s participant-berth check already finds it because the
-  lookup is keyed on `app_id` without `team_id`.
-- **Per-team participant entry:** call `register_app_for_participant` after
-  accept to create a `NoteToSelf/SmallSeaCollectiveCore/{team}` directory.
-  Reject this if it duplicates state without changing observable behavior.
+Reason: participant-level app registration is global to the participant's
+NoteToSelf scope, not per external team. Once `_initialize_user_db` registers
+Core for the participant, `_resolve_berth` can satisfy the participant-side
+check for any team by finding the NoteToSelf Core `team_app_berth`. Adding a
+per-team `NoteToSelf/SmallSeaCollectiveCore/{team}` entry would duplicate
+state without changing observable session behavior.
 
-Document the decision in this plan once made; if "no-op," explicitly note in
-the `accept_invitation` body why no extra call is needed.
+Add a short code comment only if the implementation touches the invitation
+body. Otherwise the micro tests below are enough to lock the behavior.
 
 ### 4. Remove the Hub Core exception
 
@@ -121,17 +142,21 @@ To convince a skeptical reviewer that the goals of the branch have been met:
 
 ### Goal 1 — Core uses the same registration path as ordinary apps
 
-- Add a micro test in `packages/small-sea-hub/tests/test_app_bootstrap.py`
-  (or sibling) asserting that, after `create_new_participant`, the Core entry
-  in NoteToSelf was created by the same code path that `register_app_for_participant`
-  uses — verified by matching the side effect: `NoteToSelf/SmallSeaCollectiveCore/`
-  directory exists and the `app` + `team_app_berth` rows are present. (If the
-  shared primitive is the only writer of those rows, that side effect uniquely
-  proves the path.)
+- Add a micro test in `packages/small-sea-manager/tests` (or the existing Hub
+  app-bootstrap tests if that gives cleaner fixtures) asserting that, after
+  `create_new_participant`, NoteToSelf has exactly one Core `app` row, exactly
+  one NoteToSelf/Core `team_app_berth` row, and a
+  `NoteToSelf/SmallSeaCollectiveCore/` directory. Because the direct inline
+  Core insert is removed, these side effects prove the shared participant
+  primitive is the only writer.
+- Add a micro test that calling `register_app_for_participant(...,
+  "SmallSeaCollectiveCore")` after participant creation is idempotent: no
+  duplicate `app` or `team_app_berth` rows and no failure. This catches drift
+  between the initialization path and the public registration path.
 - Add a micro test that, after `create_team`, the Core berth + creator's
-  read-write `berth_role` row were created by the shared activation primitive
-  by asserting the same row shape `activate_app_for_team` produces for a
-  non-Core app. The role resolver difference is the only intentional variation.
+  read-write `berth_role` row have the same row shape the shared activation
+  primitive produces for a non-Core app. The role resolver difference is the
+  only intentional variation.
 - Re-run the existing `test_vault_bootstrap_loop_rejects_then_registers_then_activates`
   test; Vault behavior must remain unchanged.
 
@@ -147,19 +172,23 @@ To convince a skeptical reviewer that the goals of the branch have been met:
   - `tests/test_app_bootstrap.py` (all participant/team berth scenarios).
   - `tests/test_runtime_watch.py`, `tests/test_cloud_api.py`,
     `tests/test_notifications.py`, `tests/test_note_to_self_self_signal.py`.
-- Add a regression micro test: with a hand-crafted participant that has *no*
-  participant-level Core entry (simulate by deleting the row after
-  participant creation), a Core session request must now produce the same
-  `participant_berth_missing` rejection as Vault would. This proves the
-  branch removed the bypass rather than merely relocating it.
+- Add a regression micro test: after participant + team creation, delete the
+  NoteToSelf `team_app_berth` row for Core while leaving the NoteToSelf Core
+  `app` row and the team DB Core activation intact. A Core team-session
+  request must now produce `participant_berth_missing` instead of succeeding.
+  This proves the branch removed the bypass rather than merely relocating it.
+- Add an invitation micro test or extend an existing one: an invitee who
+  accepts a team invitation can open a Core session for that team using the
+  participant-level Core registration created during identity initialization,
+  with no per-team participant registration write during `accept_invitation`.
 
 ### Goal 3 — End-to-end manager + hub micro tests still pass
 
 Run the broader manager/hub suites to catch any coupling we missed:
 
-- `pytest packages/small-sea-manager/tests`
-- `pytest packages/small-sea-hub/tests`
-- `pytest packages/shared-file-vault/tests`
+- `uv run pytest packages/small-sea-manager/tests`
+- `uv run pytest packages/small-sea-hub/tests`
+- `uv run pytest packages/shared-file-vault/tests`
 
 ## Integrity Checks
 
@@ -170,9 +199,10 @@ To convince a skeptical reviewer that repo integrity is maintained or improved:
   its session path. This is a net reduction in coupling between Hub and the
   set of known apps.
 - **Single source of truth for "register an app" / "activate an app":** all
-  callers — user-db-init, create_team, accept_invitation (if updated), and
-  Manager UX flows — go through one helper each. Future apps inherit this for
-  free.
+  writers go through one participant-registration primitive or one
+  team-activation primitive. Public Manager operations keep owning git commits;
+  bootstrap flows reuse the same SQL semantics inside their existing
+  transactions.
 - **No backward-compat shims:** AGENTS.md states pre-alpha so we are free to
   change the call shape rather than preserve it. We will not introduce
   migration code; existing on-disk DBs in dev environments can be recreated.
