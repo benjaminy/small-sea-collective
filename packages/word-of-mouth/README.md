@@ -4,13 +4,14 @@
 metadata to be a valid workspace member; it does not implement the app yet.
 The name "Word of Mouth" is a placeholder — see "Challenging Questions" below.
 
-Word of Mouth is a Small Sea reinterpretation of public social media. It is
-the *outward-facing* app: explicitly about sharing with the world. Other
-Small Sea apps cover private and intimate communication; this one is not
-trying to. The core idea is that posts do not broadcast directly. They
-travel from team to team because someone with standing in two teams
-deliberately carries a post between them. As the post moves, it accumulates
-a signed path of social handoffs.
+Word of Mouth is a Small Sea answer to public social media's discovery
+problem. It is the *beyond-one-team* app: explicitly about carrying things
+out of one team context and into another. Other Small Sea apps cover private
+and intimate communication; this one is not trying to. But "beyond one team"
+does not mean "to the whole world." The core idea is that posts do not
+broadcast directly. They travel from team to team because someone with
+standing in two teams deliberately carries a post between them. As the post
+moves, it accumulates a signed path of social handoffs.
 
 That path matters:
 
@@ -23,15 +24,42 @@ That path matters:
 The structure is bipartite: people on one side, teams on the other. The
 social act that matters is one person — with standing in two teams —
 choosing to carry something across. That is not a "friend of a friend"
-graph. It is a team-of-a-team bridging act, and the carrier's standing in
-*both* contexts is what gives the relay weight.
+graph. It is a membership-overlap bridge, and the carrier's standing in
+*both* team contexts is what gives the relay weight.
 
 The product question is whether the experience can feel less like shouting
 into a crowd and more like, "Someone in our book club brought this in from
 their kid's school parents group." Note what that sentence does not say: it
-names no individuals outside our context, claims no friendship, asserts no
-graph distance. It names two contexts and the person who bridged them. That
-is the social object Word of Mouth tries to make first-class.
+claims no friendship and asserts no graph distance. It names two contexts
+and the person who bridged them. That is the social object Word of Mouth
+tries to make first-class.
+
+## Sacred Invariant
+
+The central primitive is a **membership-overlap bridge**:
+
+> A person who is a member of Team A and Team B signs an intentional act of
+> carrying a relayable artifact from Team A into Team B.
+
+That bridge is the atom. Not follower edges. Not friends-of-friends. Not
+server federation. Not algorithmic recommendations. A longer path is just a
+chain of these overlap bridges, where each hop is locally meaningful because
+the carrier has standing in the source context and the destination context.
+
+This gives the app a different social geometry from ordinary social
+networking:
+
+- **People are carriers, not audiences.** The important action is not that
+  Bob follows Alice; it is that Bob belongs to two teams and chooses to spend
+  some of his standing in one team by bringing something from another.
+- **Teams are contexts, not channels.** A team is not a topic subscription
+  or feed bucket. It is the social setting that makes a bridge intelligible.
+- **Edges are deliberate, not ambient.** The app should not infer a relay
+  because two teams overlap. The overlap creates the possibility; the signed
+  carrying act creates the propagation.
+- **Local meaning beats global reach.** A relay that matters to one receiving
+  team is more successful than a relay that spreads widely but loses the
+  reason it was carried.
 
 ## The Shape
 
@@ -49,13 +77,15 @@ subreddit, server, or algorithmic audience segment. It is a group of people
 with a shared local history and a reason to trust each other at least a
 little.
 
-The interesting object is not the post itself but the *carrying act*. A
-post can be any addressable Small Sea content — a doc, a photo, a thread
-excerpt, a chat message — that already lives in some team's berth. The
-thing Word of Mouth uniquely creates is the relay: the signed, annotated
-act of carrying that content into a new team where the carrier has
-standing. Designing around the relay (not the post) is what keeps this from
-collapsing into "group chat with a forward button."
+The interesting object is not the post itself but the *carrying act*. The
+thing being carried may eventually be many kinds of Small Sea content — a
+doc, a photo, a thread excerpt, a chat message — but only after it has been
+turned into a **relayable artifact** by the source app/team policy. Word of
+Mouth should not become a generic permission bypass for arbitrary content in
+another berth. The thing Word of Mouth uniquely creates is the relay: the
+signed, annotated act of carrying that artifact into a new team where the
+carrier has standing. Designing around the relay (not the post) is what
+keeps this from collapsing into "group chat with a forward button."
 
 ## Core Loop
 
@@ -63,7 +93,8 @@ collapsing into "group chat with a forward button."
 2. Bob, also in Team A and a member of Team B, thinks Team B should see it.
 3. Bob relays the post into Team B with a note explaining why.
 4. Team B sees the post with provenance: original author, origin team,
-   Bob's relay act, and the signed path so far.
+   Bob's relay act, and at least enough signed path context to verify the
+   membership-overlap bridge that brought it here.
 5. Someone in Team B may relay it onward, extending the path.
 
 The interesting object is not only the post. It is the post plus the chain
@@ -268,12 +299,14 @@ answered generically.
    policy, it must compose with Small Sea's existing
    Admin/Contributor/Observer roles, not ignore them.
 4. **How is the path shown?**
-   Word of Mouth is the outward-facing app, not the privacy-focused one,
-   so full path visibility is a feature, not a leak. Bridges *want* to
-   be visible: being a known bridge between two communities is the
-   social product. Receivers should see carrier identities, team names,
-   and the chain back to origin. The design question is presentation,
-   not redaction.
+   Word of Mouth is not the privacy-focused app, but "make bridges
+   visible" is the invariant, not "make every upstream detail visible in
+   every context." Bridges *want* to be visible: being a known bridge
+   between two communities is the social product. Receivers should at
+   minimum see the carrier identity, source team, destination team, relay
+   note, and membership proof for the hop that brought the artifact to
+   them. Whether they also see the complete upstream chain back to origin
+   is a product/policy decision, not a law of the protocol.
 5. **What does deletion mean?**
    Once a post has crossed team boundaries, revocation cannot be magic.
    But "I posted something wrong, embarrassing, or dangerous, please get
@@ -341,13 +374,19 @@ answered generically.
 ## First Data Model Sketch
 
 This is intentionally provisional. The unique data type is the relay; the
-post can be any addressable Small Sea content.
+post can be any explicitly relayable Small Sea artifact.
 
 - `relay`: the central object. Signer, signer's source-team membership at
-  signing time, content reference (any Small Sea content hash, not
-  necessarily a Word-of-Mouth-native post), source path hash, destination
-  team berth, relay note, fan-out (other destinations being relayed to in
-  the same act), timestamp, and signature.
+  signing time, signer's destination-team membership at signing time,
+  content reference (a relayable artifact hash, not necessarily a
+  Word-of-Mouth-native post), source path hash, destination team berth,
+  relay note, fan-out (other destinations being relayed to in the same
+  act), timestamp, and signature.
+- `relayable_artifact`: the export boundary from source content into Word
+  of Mouth. It records the content hash or snapshot, source team context,
+  author/source-app policy, allowed relay scope, and any tombstone/revocation
+  pointer. It is the place where "can this be carried?" is decided before a
+  relay exists.
 - `path`: ordered relay entries, each signed by the relay actor and
   verifiable against the previous path hash.
 - `post` (optional, app-native): if Word of Mouth needs a content type of

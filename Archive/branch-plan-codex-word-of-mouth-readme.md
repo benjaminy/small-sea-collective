@@ -63,3 +63,7 @@ Design validation:
 The README now frames Word of Mouth as a team-mediated social relay app rather than a public feed clone. It names the closest prior art, especially Secure Scuttlebutt and Briar, and contrasts them with Nostr, ActivityPub, AT Protocol, and Farcaster. It records the hard open questions around consent, relay visibility, deletion, moderation, social laundering, spam, team routing pressure, and the first niche.
 
 The package has a minimal `pyproject.toml` and importable `word_of_mouth` stub so the new package directory can live in the workspace without breaking collection.
+
+## Follow-Up Concept Pass
+
+After review, the README was tightened around the sacred invariant: propagation is driven by team membership overlap, not friends-of-friends. The doc now names the `membership-overlap bridge` as the central primitive, softens "outward-facing" into "beyond-one-team," and adds `relayable_artifact` as an explicit export boundary so Word of Mouth does not become a generic permission bypass for arbitrary Small Sea content.
