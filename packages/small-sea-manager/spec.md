@@ -693,6 +693,16 @@ Reason-specific buttons are presentation only. The web layer does not import
 `provisioning`, does not write registration/disposition state directly, and does
 not call the Hub except through `TeamManager.refresh_app_sightings()`.
 
+| Current reason | Web actions |
+|---|---|
+| `app_unknown` | Register participant app, Activate for team, Dismiss participant prompt, Dismiss team prompt |
+| `participant_berth_missing` | Register participant app, Dismiss participant prompt, Dismiss team prompt |
+| `team_berth_missing` | Activate for team, Dismiss participant prompt, Dismiss team prompt |
+| `app_friendly_name_ambiguous` | Dismiss participant prompt, Dismiss team prompt |
+
+If the sighting has no team or references a team not available on this device,
+team-scoped actions are hidden and the row remains visible.
+
 #### Remove app from team
 
 Deletes the `team_app_berth` row (and cascades to `berth_role`). Commits. The app's data directory is not automatically deleted — that is the app's responsibility.

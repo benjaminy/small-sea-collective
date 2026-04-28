@@ -5622,14 +5622,14 @@ def current_app_sighting_prompt(root_dir, participant_hex, sighting):
         if len(participant_app_ids) > 1:
             return _current_sighting("app_friendly_name_ambiguous", sighting)
 
+        participant_berth_count = None
+        if participant_app_ids:
+            participant_berth_count = _berth_count_for_app(nts, participant_app_ids[0])
+
         if not team_name:
             if not participant_app_ids:
                 return _current_sighting("app_unknown", sighting, team_available=False)
-            berth_count = _berth_count_for_app(
-                nts,
-                participant_app_ids[0],
-                nts_team_id,
-            )
+            berth_count = _berth_count_for_app(nts, participant_app_ids[0], nts_team_id)
             if berth_count == 0:
                 return _current_sighting(
                     "participant_berth_missing",
@@ -5670,11 +5670,6 @@ def current_app_sighting_prompt(root_dir, participant_hex, sighting):
         if not team_app_ids:
             return _current_sighting("team_berth_missing", sighting)
 
-        with attached_note_to_self_connection(root_dir, participant_hex) as nts:
-            participant_berth_count = _berth_count_for_app(
-                nts,
-                participant_app_ids[0],
-            )
         if participant_berth_count == 0:
             return _current_sighting("participant_berth_missing", sighting)
         if participant_berth_count > 1:
@@ -5707,6 +5702,8 @@ def app_sighting_dismissed(root_dir, participant_hex, sighting):
 
     if team_name:
         db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+        # Unknown/not-yet-adopted teams do not have a local sidecar yet. Treat
+        # them as not dismissed instead of creating a DB or hiding the prompt.
         if not db_path.exists():
             return False
         with sqlite3.connect(db_path) as conn:

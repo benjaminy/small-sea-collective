@@ -48,6 +48,12 @@ def _button_labels(html):
     return [label for label in parser.buttons if label != "Refresh"]
 
 
+def _assert_fragment_response(response):
+    assert response.status_code == 200
+    assert "<html" not in response.text.lower()
+    assert '<div id="app-sightings">' in response.text
+
+
 def _fresh_env(root):
     backend = SmallSea.SmallSeaBackend(root_dir=root)
     participant_hex = Provisioning.create_new_participant(root, "alice")
@@ -223,7 +229,7 @@ def test_app_sightings_fragment_renders_exact_actions_by_reason(
 
     response = client.post("/app-sightings/refresh")
 
-    assert response.status_code == 200
+    _assert_fragment_response(response)
     assert _button_labels(response.text) == expected
 
 
@@ -243,7 +249,7 @@ def test_app_sightings_fragment_hides_team_actions_for_edge_rows(playground_dir,
 
     response = client.post("/app-sightings/refresh")
 
-    assert response.status_code == 200
+    _assert_fragment_response(response)
     assert "Team not available on this device yet" in response.text
     assert response.text.count("Register participant app") == 2
     assert "Activate for team" not in response.text
@@ -259,12 +265,12 @@ def test_vault_bootstrap_loop_via_manager_ui(playground_dir):
     assert resp.json()["reason"] == "app_unknown"
 
     resp = manager_client.post("/app-sightings/refresh")
-    assert resp.status_code == 200
+    _assert_fragment_response(resp)
     assert "Register participant app" in resp.text
     assert "Activate for team" in resp.text
 
     resp = manager_client.post("/app-sightings/register", data={"app_name": _APP})
-    assert resp.status_code == 200
+    _assert_fragment_response(resp)
     assert "team_berth_missing" in resp.text
     assert "Activate for team" in resp.text
 
@@ -272,7 +278,7 @@ def test_vault_bootstrap_loop_via_manager_ui(playground_dir):
         "/app-sightings/activate",
         data={"team_name": _TEAM, "app_name": _APP},
     )
-    assert resp.status_code == 200
+    _assert_fragment_response(resp)
     assert "No app-bootstrap prompts." in resp.text
 
     resp = _request_app_session(hub_client)
@@ -361,6 +367,25 @@ def test_unknown_team_sighting_stays_visible_and_conservative(playground_dir):
     assert prompts[0]["team_available"] is False
 
 
+def test_unknown_team_dismissal_check_does_not_create_sidecar(playground_dir):
+    backend, participant_hex, _hub_client = _fresh_env(playground_dir)
+    sighting = _sighting("app_unknown", team_name="PhoneTeam")
+    sidecar = (
+        Path(backend.root_dir)
+        / "Participants"
+        / participant_hex
+        / "PhoneTeam"
+        / "admission-events-local.db"
+    )
+
+    assert Provisioning.app_sighting_dismissed(
+        backend.root_dir,
+        participant_hex,
+        sighting,
+    ) is False
+    assert not sidecar.exists()
+
+
 def test_app_sightings_register_and_activate_are_double_submit_safe(playground_dir):
     backend, participant_hex, hub_client = _fresh_env(playground_dir)
     manager_client, _manager = _manager_web(backend.root_dir, participant_hex, hub_client)
@@ -368,7 +393,7 @@ def test_app_sightings_register_and_activate_are_double_submit_safe(playground_d
 
     for _ in range(2):
         resp = manager_client.post("/app-sightings/register", data={"app_name": _APP})
-        assert resp.status_code == 200
+        _assert_fragment_response(resp)
     assert _app_row_count(_note_to_self_db(backend.root_dir, participant_hex)) == 1
     assert _berth_count_for_app(_note_to_self_db(backend.root_dir, participant_hex)) == 1
 
@@ -377,7 +402,7 @@ def test_app_sightings_register_and_activate_are_double_submit_safe(playground_d
             "/app-sightings/activate",
             data={"team_name": _TEAM, "app_name": _APP},
         )
-        assert resp.status_code == 200
+        _assert_fragment_response(resp)
     assert _app_row_count(_team_db(backend.root_dir, participant_hex)) == 1
     assert _berth_count_for_app(_team_db(backend.root_dir, participant_hex)) == 1
 
@@ -392,7 +417,7 @@ def test_app_sightings_dismiss_does_not_register_app(playground_dir):
         data={"app_name": _APP},
     )
 
-    assert resp.status_code == 200
+    _assert_fragment_response(resp)
     assert "No app-bootstrap prompts." in resp.text
     assert _app_row_count(_note_to_self_db(backend.root_dir, participant_hex)) == 0
     assert _berth_count_for_app(_note_to_self_db(backend.root_dir, participant_hex)) == 0
