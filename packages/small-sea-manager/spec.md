@@ -656,7 +656,14 @@ for the participant, activate it for a team, or suppress repeated prompts using
 Manager-owned local disposition state.
 
 `TeamManager.refresh_app_sightings()` reads the endpoint through a confirmed
-Core NoteToSelf session and filters out sightings dismissed on this device.
+Core NoteToSelf session and returns current prompts, not raw Hub rows. The Hub
+row is a durable observation; Manager re-evaluates each sighting against local
+NoteToSelf/team DB state so an old `app_unknown` row can become
+`team_berth_missing`, or disappear once participant registration and team
+activation both exist. If a sighting references a team this device does not know
+yet, Manager keeps the row visible with conservative actions rather than
+silently dropping it.
+
 Dismissals are local Manager state only:
 
 - participant-app dismissals live in `NoteToSelf/Local/device_local.db`
@@ -665,6 +672,36 @@ Dismissals are local Manager state only:
 
 The Hub does not consult these disposition tables; repeated app requests still
 receive the same structured rejection and continue bumping the Hub sighting.
+
+#### Web review flow
+
+The Manager web UI exposes app-bootstrap sightings as a thin htmx surface on
+top of `TeamManager`:
+
+- `POST /app-sightings/refresh` renders the current prompt list.
+- `POST /app-sightings/register` calls
+  `TeamManager.register_app_for_participant(app_name)` and refreshes the list.
+- `POST /app-sightings/activate` calls
+  `TeamManager.activate_app_for_team(team_name, app_name)` and refreshes the
+  list.
+- `POST /app-sightings/dismiss-participant` records a participant-level local
+  dismissal and refreshes the list.
+- `POST /app-sightings/dismiss-team` records a team-scoped local dismissal and
+  refreshes the list.
+
+Reason-specific buttons are presentation only. The web layer does not import
+`provisioning`, does not write registration/disposition state directly, and does
+not call the Hub except through `TeamManager.refresh_app_sightings()`.
+
+| Current reason | Web actions |
+|---|---|
+| `app_unknown` | Register participant app, Activate for team, Dismiss participant prompt, Dismiss team prompt |
+| `participant_berth_missing` | Register participant app, Dismiss participant prompt, Dismiss team prompt |
+| `team_berth_missing` | Activate for team, Dismiss participant prompt, Dismiss team prompt |
+| `app_friendly_name_ambiguous` | Dismiss participant prompt, Dismiss team prompt |
+
+If the sighting has no team or references a team not available on this device,
+team-scoped actions are hidden and the row remains visible.
 
 #### Remove app from team
 

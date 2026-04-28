@@ -128,6 +128,40 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             },
         )
 
+    def _render_app_sightings(
+        request: Request,
+        *,
+        sightings: list[dict[str, Any]] | None = None,
+        notice: str = None,
+        error: str = None,
+    ):
+        mgr = _mgr(request)
+        return templates.TemplateResponse(
+            "fragments/app_sightings.html",
+            {
+                "request": request,
+                "sightings": sightings,
+                "notice": notice,
+                "error": error,
+                "session_status": mgr.session_state(_NTS_TEAM, _PASSTHROUGH),
+            },
+        )
+
+    def _refresh_app_sightings_after_action(request: Request, notice: str):
+        mgr = _mgr(request)
+        try:
+            sightings = mgr.refresh_app_sightings()
+        except Exception as e:
+            return _render_app_sightings(
+                request,
+                notice=notice,
+                error=(
+                    "Saved locally, but could not refresh sightings. "
+                    f"Reconnect to Hub and Refresh. ({e})"
+                ),
+            )
+        return _render_app_sightings(request, sightings=sightings, notice=notice)
+
     # ------------------------------------------------------------------ #
     # Full pages
     # ------------------------------------------------------------------ #
@@ -155,6 +189,9 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "teams": _teams_with_status(mgr),
                 "session_status": mgr.session_state(_NTS_TEAM, _PASSTHROUGH),
                 "session_error": None,
+                "sightings": None,
+                "notice": None,
+                "error": None,
             },
         )
 
@@ -204,6 +241,83 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         mgr = _mgr(request)
         mgr.clear_session(_NTS_TEAM, mode=_PASSTHROUGH)
         return _hub_connection_ctx(request)
+
+    # ------------------------------------------------------------------ #
+    # App-bootstrap sightings
+    # ------------------------------------------------------------------ #
+
+    @app.post("/app-sightings/refresh", response_class=HTMLResponse)
+    async def app_sightings_refresh(request: Request):
+        mgr = _mgr(request)
+        if mgr.session_state(_NTS_TEAM, _PASSTHROUGH) != "active":
+            return _render_app_sightings(
+                request,
+                error="Connect to Hub to refresh sightings.",
+            )
+        try:
+            sightings = mgr.refresh_app_sightings()
+        except Exception as e:
+            return _render_app_sightings(request, error=str(e))
+        return _render_app_sightings(request, sightings=sightings)
+
+    @app.post("/app-sightings/register", response_class=HTMLResponse)
+    async def app_sightings_register(request: Request, app_name: str = Form(...)):
+        mgr = _mgr(request)
+        try:
+            mgr.register_app_for_participant(app_name)
+        except Exception as e:
+            return _render_app_sightings(request, error=str(e))
+        return _refresh_app_sightings_after_action(
+            request,
+            f"Registered {app_name} for this participant.",
+        )
+
+    @app.post("/app-sightings/activate", response_class=HTMLResponse)
+    async def app_sightings_activate(
+        request: Request,
+        team_name: str = Form(...),
+        app_name: str = Form(...),
+    ):
+        mgr = _mgr(request)
+        try:
+            mgr.activate_app_for_team(team_name, app_name)
+        except Exception as e:
+            return _render_app_sightings(request, error=str(e))
+        return _refresh_app_sightings_after_action(
+            request,
+            f"Activated {app_name} for {team_name}.",
+        )
+
+    @app.post("/app-sightings/dismiss-participant", response_class=HTMLResponse)
+    async def app_sightings_dismiss_participant(
+        request: Request,
+        app_name: str = Form(...),
+    ):
+        mgr = _mgr(request)
+        try:
+            mgr.dismiss_participant_app_sighting(app_name)
+        except Exception as e:
+            return _render_app_sightings(request, error=str(e))
+        return _refresh_app_sightings_after_action(
+            request,
+            f"Dismissed participant prompt for {app_name}.",
+        )
+
+    @app.post("/app-sightings/dismiss-team", response_class=HTMLResponse)
+    async def app_sightings_dismiss_team(
+        request: Request,
+        team_name: str = Form(...),
+        app_name: str = Form(...),
+    ):
+        mgr = _mgr(request)
+        try:
+            mgr.dismiss_team_app_sighting(team_name, app_name)
+        except Exception as e:
+            return _render_app_sightings(request, error=str(e))
+        return _refresh_app_sightings_after_action(
+            request,
+            f"Dismissed {team_name} prompt for {app_name}.",
+        )
 
     # ------------------------------------------------------------------ #
     # Teams
