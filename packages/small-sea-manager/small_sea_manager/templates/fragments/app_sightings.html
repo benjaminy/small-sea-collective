@@ -1,0 +1,111 @@
+<div id="app-sightings">
+  <div class="detail-section">
+    {% if notice %}
+      <div class="notice notice-ok">{{ notice }}</div>
+    {% endif %}
+    {% if error %}
+      <div class="notice notice-err">{{ error }}</div>
+    {% endif %}
+
+    <form class="inline-form"
+          hx-post="/app-sightings/refresh"
+          hx-target="#app-sightings"
+          hx-swap="outerHTML">
+      {% if session_status == "active" %}
+        <button class="btn btn-secondary" type="submit">Refresh</button>
+      {% else %}
+        <button class="btn btn-disabled" type="button" disabled>Refresh</button>
+        <span class="token-instruction">Connect to Hub to refresh sightings.</span>
+      {% endif %}
+    </form>
+  </div>
+
+  {% if sightings is none %}
+    <div class="detail-section">
+      <p class="token-instruction">Refresh to check app-bootstrap prompts.</p>
+    </div>
+  {% elif not sightings %}
+    <div class="detail-section">
+      <p class="token-instruction">No app-bootstrap prompts.</p>
+    </div>
+  {% else %}
+    <div class="detail-section">
+      {% for sighting in sightings %}
+        {% set team_available = sighting.team_name and sighting.get("team_available", true) %}
+        {% set team_actions_available = team_available and not sighting.get("team_unavailable") %}
+        <div class="admission-event-card app-sighting-row" data-reason="{{ sighting.reason }}">
+          <div class="row" style="justify-content:space-between; align-items:flex-start;">
+            <div>
+              <strong>{{ sighting.app_name }}</strong>
+              <span class="badge badge-amber">{{ sighting.reason }}</span>
+              {% if sighting.team_name %}
+                <span class="badge badge-grey">{{ sighting.team_name }}</span>
+              {% else %}
+                <span class="badge badge-grey">No team</span>
+              {% endif %}
+            </div>
+            <div class="muted mono">
+              {% if sighting.last_seen_at %}{{ sighting.last_seen_at }}{% elif sighting.seen_count %}seen {{ sighting.seen_count }}{% endif %}
+            </div>
+          </div>
+
+          <p class="token-instruction" style="margin-top:0.5rem;">
+            {% if sighting.get("team_unavailable") %}
+              Team not available on this device yet. Reconnect and refresh after local team state syncs.
+            {% elif not sighting.team_name %}
+              This prompt is not scoped to a team.
+            {% elif sighting.reason == "app_unknown" %}
+              This app is not registered for the participant or activated for the team.
+            {% elif sighting.reason == "participant_berth_missing" %}
+              This app needs participant registration in NoteToSelf.
+            {% elif sighting.reason == "team_berth_missing" %}
+              This app needs team activation before it can open a session.
+            {% elif sighting.reason == "app_friendly_name_ambiguous" %}
+              Multiple apps share this friendly name. Resolve the ambiguity in CLI or future unification UI.
+            {% else %}
+              This app-bootstrap prompt needs review.
+            {% endif %}
+          </p>
+
+          <div class="inline-form" style="margin-top:0.6rem;">
+            {% if sighting.reason in ["app_unknown", "participant_berth_missing"] %}
+              <form hx-post="/app-sightings/register"
+                    hx-target="#app-sightings"
+                    hx-swap="outerHTML">
+                <input type="hidden" name="app_name" value="{{ sighting.app_name }}">
+                <button class="btn btn-primary btn-sm" type="submit">Register participant app</button>
+              </form>
+            {% endif %}
+
+            {% if sighting.reason in ["app_unknown", "team_berth_missing"] and team_actions_available %}
+              <form hx-post="/app-sightings/activate"
+                    hx-target="#app-sightings"
+                    hx-swap="outerHTML">
+                <input type="hidden" name="team_name" value="{{ sighting.team_name }}">
+                <input type="hidden" name="app_name" value="{{ sighting.app_name }}">
+                <button class="btn btn-primary btn-sm" type="submit">Activate for team</button>
+              </form>
+            {% endif %}
+
+            <form hx-post="/app-sightings/dismiss-participant"
+                  hx-target="#app-sightings"
+                  hx-swap="outerHTML">
+              <input type="hidden" name="app_name" value="{{ sighting.app_name }}">
+              <button class="btn btn-secondary btn-sm" type="submit">Dismiss participant prompt</button>
+            </form>
+
+            {% if team_actions_available %}
+              <form hx-post="/app-sightings/dismiss-team"
+                    hx-target="#app-sightings"
+                    hx-swap="outerHTML">
+                <input type="hidden" name="team_name" value="{{ sighting.team_name }}">
+                <input type="hidden" name="app_name" value="{{ sighting.app_name }}">
+                <button class="btn btn-secondary btn-sm" type="submit">Dismiss team prompt</button>
+              </form>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </div>
+  {% endif %}
+</div>

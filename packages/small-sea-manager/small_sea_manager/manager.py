@@ -441,15 +441,39 @@ class TeamManager:
     def refresh_app_sightings(self):
         """Read Hub app-bootstrap sightings and apply Manager-local dispositions."""
         session = self._open_note_to_self_session()
-        return [
-            sighting
-            for sighting in session.app_sightings()
-            if not provisioning.app_sighting_dismissed(
+        prompts = []
+        for sighting in session.app_sightings():
+            if provisioning.app_sighting_dismissed(
+                self.root_dir,
+                self.participant_hex,
+                sighting,
+            ):
+                continue
+            prompt = provisioning.current_app_sighting_prompt(
                 self.root_dir,
                 self.participant_hex,
                 sighting,
             )
-        ]
+            if prompt is not None:
+                prompts.append(prompt)
+        return prompts
+
+    def register_app_for_participant(self, app_name):
+        """Register an app for this participant via NoteToSelf."""
+        return provisioning.register_app_for_participant(
+            self.root_dir,
+            self.participant_hex,
+            app_name,
+        )
+
+    def activate_app_for_team(self, team_name, app_name):
+        """Activate an app berth for a team."""
+        return provisioning.activate_app_for_team(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            app_name,
+        )
 
     def dismiss_participant_app_sighting(self, app_name):
         """Suppress participant-level app-bootstrap prompts on this device."""

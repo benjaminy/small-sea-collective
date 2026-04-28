@@ -30,6 +30,11 @@
   <div id="team-detail"></div>
 
   <div class="card">
+    <div class="card-header">App bootstrap prompts</div>
+    {% include "fragments/app_sightings.html" %}
+  </div>
+
+  <div class="card">
     <div class="card-header">Cloud storage</div>
     <div hx-get="/cloud-storage" hx-trigger="load" hx-swap="innerHTML"></div>
   </div>

@@ -5555,6 +5555,140 @@ def dismiss_team_app_sighting(root_dir, participant_hex, team_name, app_name):
         conn.commit()
 
 
+def _app_ids_by_name(conn, app_name):
+    return [
+        row[0]
+        for row in conn.execute(
+            "SELECT id FROM app WHERE name = ?",
+            (app_name,),
+        ).fetchall()
+    ]
+
+
+def _berth_count_for_app(conn, app_id, team_id=None):
+    if team_id is None:
+        return conn.execute(
+            "SELECT COUNT(*) FROM team_app_berth WHERE app_id = ?",
+            (app_id,),
+        ).fetchone()[0]
+    return conn.execute(
+        "SELECT COUNT(*) FROM team_app_berth WHERE team_id = ? AND app_id = ?",
+        (team_id, app_id),
+    ).fetchone()[0]
+
+
+def _current_sighting(reason, sighting, *, team_available=True):
+    current = dict(sighting)
+    current["stored_reason"] = sighting.get("reason")
+    current["reason"] = reason
+    current["team_available"] = team_available
+    return current
+
+
+def _conservative_sighting(sighting):
+    current = dict(sighting)
+    current["stored_reason"] = sighting.get("reason")
+    current["team_available"] = False
+    current["team_unavailable"] = True
+    return current
+
+
+def current_app_sighting_prompt(root_dir, participant_hex, sighting):
+    """Return the current actionable prompt for a Hub sighting, or None.
+
+    This intentionally mirrors small_sea_hub/backend.py::_resolve_berth. Keep
+    the Manager/Hub parity micro test green when changing either predicate set.
+    """
+    root_dir = pathlib.Path(root_dir)
+    app_name = sighting["app_name"]
+    team_name = sighting.get("team_name")
+
+    with attached_note_to_self_connection(root_dir, participant_hex) as nts:
+        nts_team_id = nts.execute(
+            "SELECT id FROM team WHERE name = ?",
+            ("NoteToSelf",),
+        ).fetchone()[0]
+        team_id = None
+        if team_name:
+            team_row = nts.execute(
+                "SELECT id FROM team WHERE name = ?",
+                (team_name,),
+            ).fetchone()
+            if team_row is None:
+                return _conservative_sighting(sighting)
+            team_id = team_row[0]
+
+        participant_app_ids = _app_ids_by_name(nts, app_name)
+        if len(participant_app_ids) > 1:
+            return _current_sighting("app_friendly_name_ambiguous", sighting)
+
+        if not team_name:
+            if not participant_app_ids:
+                return _current_sighting("app_unknown", sighting, team_available=False)
+            berth_count = _berth_count_for_app(
+                nts,
+                participant_app_ids[0],
+                nts_team_id,
+            )
+            if berth_count == 0:
+                return _current_sighting(
+                    "participant_berth_missing",
+                    sighting,
+                    team_available=False,
+                )
+            if berth_count > 1:
+                return _current_sighting(
+                    "app_friendly_name_ambiguous",
+                    sighting,
+                    team_available=False,
+                )
+            return None
+
+        if team_name == "NoteToSelf":
+            if not participant_app_ids:
+                return _current_sighting("app_unknown", sighting)
+            berth_count = _berth_count_for_app(nts, participant_app_ids[0], team_id)
+            if berth_count == 0:
+                return _current_sighting("participant_berth_missing", sighting)
+            if berth_count > 1:
+                return _current_sighting("app_friendly_name_ambiguous", sighting)
+            return None
+
+        if not has_local_team_clone(root_dir, participant_hex, team_name):
+            return _conservative_sighting(sighting)
+
+    team_db_path = root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
+    with sqlite3.connect(team_db_path) as team:
+        team_app_ids = _app_ids_by_name(team, app_name)
+        if len(team_app_ids) > 1:
+            return _current_sighting("app_friendly_name_ambiguous", sighting)
+
+        if not participant_app_ids and not team_app_ids:
+            return _current_sighting("app_unknown", sighting)
+        if not participant_app_ids:
+            return _current_sighting("participant_berth_missing", sighting)
+        if not team_app_ids:
+            return _current_sighting("team_berth_missing", sighting)
+
+        with attached_note_to_self_connection(root_dir, participant_hex) as nts:
+            participant_berth_count = _berth_count_for_app(
+                nts,
+                participant_app_ids[0],
+            )
+        if participant_berth_count == 0:
+            return _current_sighting("participant_berth_missing", sighting)
+        if participant_berth_count > 1:
+            return _current_sighting("app_friendly_name_ambiguous", sighting)
+
+        team_berth_count = _berth_count_for_app(team, team_app_ids[0])
+        if team_berth_count == 0:
+            return _current_sighting("team_berth_missing", sighting)
+        if team_berth_count > 1:
+            return _current_sighting("app_friendly_name_ambiguous", sighting)
+
+    return None
+
+
 def app_sighting_dismissed(root_dir, participant_hex, sighting):
     """Return True if Manager should suppress this sighting on this device."""
     app_name = sighting["app_name"]
@@ -5573,6 +5707,8 @@ def app_sighting_dismissed(root_dir, participant_hex, sighting):
 
     if team_name:
         db_path = _admission_event_store_path(root_dir, participant_hex, team_name)
+        if not db_path.exists():
+            return False
         with sqlite3.connect(db_path) as conn:
             _ensure_team_app_disposition_store(conn)
             row = conn.execute(
