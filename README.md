@@ -1,6 +1,6 @@
 # <img src="./Documentation/Images/wrasse-med.png"> Small Sea Collective
 
-### Local-first for teams that outlast startups
+### Local-first for teams to build a future on
 
 Small Sea Collective is a framework that brings the [local-first](https://www.inkandswitch.com/essay/local-first/) paradigm to team collaboration. We aim to enable the deployment of applications that people can use without depending on some company's bespoke service; with confidence that their ongoing use of the application doesn't depend on some business unit keeping the lights on.
 
