@@ -3,8 +3,7 @@
 **Status:** concept-stage app.
 This package currently contains only enough metadata to be a valid workspace member; it does not implement the app yet.
 "The Hedgerow" is a working name (replacing an earlier placeholder, "Word of Mouth") pending namespace and trademark collision checks; see Challenging Question 2.
-A few load-bearing product hypotheses have firmed up alongside the name; they are listed under "Current Product Shape" below.
-They are stronger than loose brainstorms, but weaker than final requirements.
+Current Product Shape lists the load-bearing hypotheses that have emerged with the name: stronger than brainstorms, weaker than final requirements.
 Where the naming discussion exposed real design tensions, this document preserves the tension rather than pretending it has been settled.
 
 The Hedgerow is a Small Sea answer to public social media's discovery problem.
@@ -52,9 +51,8 @@ This is a design hypothesis, not a settled UI specification.
 
 ## Current Product Shape
 
-Four organizing hypotheses have firmed up alongside the name.
-The rest of this document refines them, challenges them, and records open edges.
-Specific UI/UX choices in later sections — vocabulary, provenance rendering, notification model, feed ranking — remain exploratory and will be settled later.
+The rest of this document refines these four hypotheses, challenges them, and records open edges.
+Specific UI/UX choices — vocabulary, provenance rendering, notification model, feed ranking — remain exploratory.
 
 1. **The Hedgerow's job is the connective tissue between teams**, not the inside of any single team.
    Team-internal chat, files, structured data, and notes belong in other Small Sea apps.
@@ -64,7 +62,7 @@ Specific UI/UX choices in later sections — vocabulary, provenance rendering, n
 2. **The primary user surface is a single mixed feed**, not per-team channels.
    Posts from many teams arrive in one place.
    Provenance — which team a post originated in, who carried it onward, how it reached this user — is rendered prominently on every post.
-   Teams stay visible in the UI, but as origin/destination tags and filters, not as channels you navigate into.
+   Teams stay visible in the UI, but as Hedgerow-facing origin/destination profiles and filters, not as channels you navigate into.
 
 3. **Every propagation is a deliberate human act.**
    Posts do not auto-broadcast across overlapping memberships, even when the membership graph would technically permit it.
@@ -73,7 +71,8 @@ Specific UI/UX choices in later sections — vocabulary, provenance rendering, n
 
 4. **There should probably be no escape hatch.**
    The Hedgerow has no DMs, no private team mode, and no "post only to my team" flag.
-   Content meant to stay inside a single team lives in a different Small Sea app — likely the in-team chat-equivalent, not here.
+   Hedgerow-native posts are born relayable; content meant to stay inside a single team lives in a different Small Sea app — likely the in-team chat-equivalent, not here.
+   Imported content still has to pass the source app and team's `relayable_artifact` gate before The Hedgerow can carry it.
    Keeping a single, focused job for The Hedgerow is what prevents it from collapsing back into "group chat with a forward button."
 
 ## Sacred Invariant
@@ -96,7 +95,7 @@ This gives the app a different social geometry from ordinary social networking:
 - **Teams are contexts, not channels.**
   A team is not a topic subscription or feed bucket.
   It is the social setting that makes a bridge intelligible.
-  In The Hedgerow specifically, teams do not appear as navigable rooms; they are origin and destination tags on every relay.
+  In The Hedgerow specifically, teams do not appear as navigable rooms; they are origin and destination profiles on every relay.
 - **Edges are deliberate, not ambient.**
   The app should not infer a relay because two teams overlap.
   The overlap creates the possibility; the signed carrying act creates the propagation.
@@ -107,8 +106,9 @@ This gives the app a different social geometry from ordinary social networking:
 
 The Hedgerow lives between private team chat and broadcast social media.
 
-Inside one Small Sea team, a post is ordinary app data — most of it authored in other Small Sea apps, not here.
-When a member with standing in another team decides the post should cross, they relay it: a signed carrying act that takes the post from the source team into the destination team's Hedgerow-visible set, where it appears in the mixed feeds of people entitled to see that team context.
+Every Hedgerow item is anchored in a source team context.
+It may begin as a Hedgerow-native post, or as a relayable artifact exported from another Small Sea app.
+When a member with standing in another team decides the item should cross, they relay it: a signed carrying act that takes the item from the source team into the destination team's Hedgerow-visible set, where it appears in the mixed feeds of people entitled to see that team context.
 The receiving team can engage with it, ignore it, annotate it, or relay it onward.
 Each relay adds a signed propagation hop.
 
@@ -116,27 +116,23 @@ The intended social units are existing Small Sea teams: families, projects, club
 A team is not a hashtag, subreddit, server, or algorithmic audience segment.
 It is a group of people with a shared local history and a reason to trust each other at least a little.
 
-The interesting object is not the post itself but the *carrying act*.
-The thing being carried may eventually be many kinds of Small Sea content — a doc, a photo, a thread excerpt, a chat message — but only after it has been turned into a **relayable artifact** by the source app/team policy.
+The interesting object is the *carrying act*, not the post by itself.
+The thing being carried may eventually be many kinds of Small Sea content — a doc, a photo, a thread excerpt, a chat message — but only after imported content has been turned into a **relayable artifact** by the source app/team policy.
 The Hedgerow should not become a generic permission bypass for arbitrary content in another berth.
-The thing The Hedgerow uniquely creates is the relay: the signed, annotated act of carrying that artifact into a new team where the carrier has standing.
+The thing The Hedgerow uniquely creates is the relay: the signed, stance-bearing act of carrying that artifact into a new team where the carrier has standing.
 Designing around the relay (not the post) is what keeps this from collapsing into "group chat with a forward button."
 
 ## Core Loop
 
-1. Alice writes a post in Team A.
+1. Alice writes a Hedgerow-native post in Team A.
 2. Bob, also in Team A and a member of Team B, thinks Team B should see it.
 3. Bob relays the post into Team B with a carrier stance and, optionally, a note explaining why.
-4. Team B sees the post with provenance: the original author's Hedgerow-facing profile, origin team, Bob's relay act, and at least enough signed path context to verify the membership-overlap bridge that brought it here.
+4. Team B sees the post with provenance: the original author's Hedgerow-facing profile, origin team profile, Bob's Hedgerow-facing profile, Bob's relay act, and enough signed path context to verify the membership-overlap bridge that brought it here.
 5. Someone in Team B may relay it onward, extending the path.
-
-The interesting object is not only the post.
-It is the post plus the chain of human decisions that caused it to arrive — and Bob, who is staking his standing in Team B on bringing it.
 
 ## Open UI/UX Ideas
 
-These are exploratory.
-The product-shape hypotheses above are the current strong leanings; the specifics below are not commitments, and several have known tensions and tradeoffs that need a real design pass.
+These are strong leanings and live tensions, not commitments.
 
 ### Vocabulary candidates
 
@@ -158,7 +154,6 @@ Whether to lean hard into the ecological vocabulary or treat it as background to
 - **Tend**, **nest**, **roost** — staying-with-a-thread verbs.
 
 The protocol-level word stays **relay** (a signed, verifiable propagation hop).
-User-facing copy is open.
 
 ### Mixed feed vs. team-first surface
 
@@ -176,18 +171,17 @@ That split needs design proof.
 
 "Easy to see who said this and where it came from" is a baseline for every post.
 The harder question is *how much path* to show.
-Floor: original author's Hedgerow-facing profile, origin team, last carrier's Hedgerow-facing profile, destination team.
+Floor: original author's Hedgerow-facing profile, origin team profile, last carrier's Hedgerow-facing profile, destination team profile.
 Open: whether to render the full upstream chain back to origin (richer "why me?" context but visual noise) or only the most recent hop (cleaner but loses upstream detail).
 Likely needs UI invention — neither a citation list nor a simple breadcrumb is quite right.
 
 The mixed-feed hypothesis makes provenance more important, not less.
-If teams are not the navigation tree, then every post needs to explain why it belongs in this user's view: source team, receiving team, carrier, carrier stance, optional note, and enough signed path context to make the membership-overlap bridge credible at a glance.
+If teams are not the navigation tree, then every post needs to explain why it belongs in this user's view: source team profile, receiving team profile, carrier profile, carrier stance, optional note, and enough signed path context to make the membership-overlap bridge credible at a glance.
 
 ### How teams stay visible without being navigation
 
 Since the primary surface is a mixed feed, teams cannot be the navigation tree.
-They probably appear as: prominent tags on every post, optional facets/filters, a sidebar listing the user's own teams, and per-team filtering shortcuts.
-Specific patterns (chips, segmented controls, sidebar lists) are open and will not be settled until a real design pass.
+They probably appear as: prominent Hedgerow-facing profiles on every post, optional facets/filters, a sidebar listing the user's own teams, and per-team filtering shortcuts.
 
 ### Forwarding with vs. without commentary
 
@@ -213,7 +207,7 @@ The floor is tuned deliberately low because cricket risk dominates firehose risk
 ### Notification model
 
 Slow + deliberate cuts hard against per-post push.
-A daily or weekly digest is plausibly the right default, with push reserved for direct mentions or carries that name a specific recipient.
+A daily or weekly digest is plausibly the right default, with push reserved for mentions inside relays or carries that name a specific recipient.
 Engagement metrics like daily active users will mislead — The Hedgerow succeeds if people open it occasionally and find good stuff, not constantly.
 
 ### Feed ranking
@@ -257,14 +251,11 @@ The easy contrast cases:
 The harder adjacencies — the things users will actually mistake this for:
 
 - It is not "group chat with a forward button."
-  The carrying act is signed, annotated, and intentional, not a one-click reshare.
+  The carrying act is signed, stance-bearing, destination-specific, and intentional, not a context-free reshare.
 - It is not Slack Connect or a cross-org channel.
   Relays are bridge events, not a persistent shared room between two teams.
 - It is not a mailing-list digest or a Facebook-Group crosspost.
   There is no global publishing surface, and subscribing is not the act that pulls content in — a teammate carrying it in is.
-
-Small Sea is designed for human-scale coordination.
-The Hedgerow should lean into that instead of trying to smuggle internet-scale social media into the repo under a friendlier name.
 
 ## Why Small Sea Specifically
 
@@ -276,8 +267,8 @@ Everything else Small Sea provides — local-first storage, signed identity, Hub
 
 ## Comparison Points
 
-None of these projects is the model — they are mirrors.
-Briar and Secure Scuttlebutt take social trust, local storage, and peer-to-peer propagation seriously, but both are organized around individual-to-individual graphs; The Hedgerow is organized around team-to-team bridges.
+None of these projects is the model; they are mirrors.
+Briar and Secure Scuttlebutt take social trust, local storage, and peer-to-peer propagation seriously, but both organize around individual-to-individual graphs; The Hedgerow organizes around team-to-team bridges.
 Nostr, ActivityPub, AT Protocol, and Farcaster are mostly contrast cases — they show how quickly "social protocol" turns into public infrastructure, global identity, firehoses, and moderation pressure.
 
 ### Secure Scuttlebutt
@@ -357,7 +348,7 @@ Borrow:
 Reject or rethink:
 
 - The Hedgerow is not primarily a crisis-messaging or surveillance-resistant app.
-  Privacy is not its design center; sharing outward is.
+  Containment is not its design center; accountable sharing outward is.
 - Small Sea already routes communication through the Hub abstraction, so The Hedgerow should not choose transports directly.
 - Contact-to-contact sync is a different social object than team-to-team relay.
 
@@ -422,7 +413,6 @@ The path-certification principle rules out several tempting data-model shapes:
   An inclusion proof for Bob exposes tree structure; depth implies size; comparing proofs across relays leaks membership rotation over time.
   Better: anonymous-credential-shaped primitives (BBS+, Idemix, accumulator-based membership).
   The team authority issues Bob a per-team credential once; Bob presents it as proof against the team's public key; the *list* of members is never part of any proof.
-  This is a known cryptographic problem, just not free.
 - **Carrier history baked into the certification.**
   The Q7 "Bob's last five carries into us" context is a *receiver-side* computation over relays the receiver already has — not a packet attached to each new relay.
   If it were attached, downstream receivers could profile arbitrary upstream carriers and teams they have no business knowing about.
@@ -499,11 +489,10 @@ It is not consent to be screenshotted into Twitter, Reddit, or a public mailing 
 Technical enforcement of "do not re-broadcast" is impossible, so the levers are cultural and UX:
 
 - **Provenance is part of the post.**
-  Source/destination team tags, carrier profile, and stance are visible by default.
+  Source/destination team profiles, carrier profile, and stance are visible by default.
   A post stripped of that context and tweeted is visibly missing its skin and reads as decontextualized — the same way screenshotting a Slack DM reads as a violation independent of the content.
 - **No first-class share-to-social affordance.**
   The product never invites re-export.
-  Friction matters even when surmountable.
 - **Norm-setting in onboarding and product copy.**
   "Bridges *want* to be visible" is a within-system claim; the same visibility flips from social capital to creep when it leaves the system.
   Product copy needs to make that flip legible.
@@ -552,14 +541,15 @@ The first one is the gate; nothing downstream can be answered generically.
    Also check whether *hedge*-as-finance pollutes the brand for some audiences.
    Until those checks come back clean, treat the name as promising but revocable.
 3. **Who consents to a relay?**
-   If Alice posts inside Team A, can Bob carry it to Team B by default?
-   Does Alice need to mark the post as relayable?
-   Can Team A set a norm that posts are local-only unless explicitly released?
+   For Hedgerow-native posts, authoring in The Hedgerow is the consent gesture; subsequent relays are part of the medium.
+   For imported artifacts, consent and policy live at the `relayable_artifact` boundary: source app policy, source team policy, and the author's intent all have to compose before the artifact can enter The Hedgerow.
+   Can Team A set a norm that chat excerpts are local-only unless explicitly released?
+   Can a source app offer export classes that are narrower than "anything in this berth" without recreating a per-post escape hatch inside The Hedgerow?
    Whatever the policy, it must compose with Small Sea's existing Admin/Contributor/Observer roles, not ignore them.
 4. **How is the path shown?**
-   The Hedgerow is not the privacy-focused app, but "make bridges visible" is the invariant, not "make every upstream detail visible in every context."
+   The Hedgerow is not the containment-focused app, but "make bridges visible" is the invariant, not "make every upstream detail visible in every context."
    Bridges *want* to be visible: being a known bridge between two communities is the social product.
-   Receivers should at minimum see the carrier's Hedgerow-facing profile, source team, destination team, carrier stance, optional note, and membership proof for the hop that brought the artifact to them.
+   Receivers should at minimum see the carrier's Hedgerow-facing profile, source team profile, destination team profile, carrier stance, optional note, and membership proof for the hop that brought the artifact to them.
    Whether they also see the complete upstream chain back to origin is a product/policy decision, not a law of the protocol.
 5. **What does deletion mean?**
    Once a post has crossed team boundaries, revocation cannot be magic.
@@ -567,7 +557,7 @@ The first one is the gate; nothing downstream can be answered generically.
    Whatever ships needs a credible deletion story before the first real slice: tombstone, request, key rotation, local moderation — likely all of these in different layers.
 6. **What prevents laundering?**
    A harmful post could gain legitimacy by passing through a respected team.
-   Recipients need to see each relay's annotation and dissent, not just the path.
+   Recipients need to see each relay's stance, optional commentary, and dissent, not just the path.
    Cryptographic provenance (who signed what) and social provenance (why this carries weight here) must be distinguished in the UI; conflating them recreates the blockchain pitch's "we proved a hash, therefore trust it" failure mode.
 7. **How does meaning emerge without a score?**
    A relay through a small, normally-quiet team should feel more meaningful than one through a big, chatty team that forwards everything.
@@ -582,9 +572,9 @@ The first one is the gate; nothing downstream can be answered generically.
    - The carrier's stance emoji and any optional note.
      A team that forwards everything will not write personalized notes; when a note is present, its substance is itself a scarcity signal, and unlike a counter it cannot be farmed.
      Even without a note, the stance pattern over time is honest local context.
-   - The source team's recent traffic into this receiver, drawn from what is already locally visible.
+   - The source team's recent traffic into this receiver, drawn from what is already locally visible and rendered through the source team's Hedgerow-facing profile.
 
-   No aggregation, no ranking.
+   No global aggregation, no global ranking score.
    The "rare relay from a tight team" reads as one entry in eight months with a real note; the "firehose team" reads as seven entries this week, all with the same stance and no notes.
    As a companion lever, receiver-side per-edge budgets ("more than 3 relays/week from Team A goes to a review queue") let receivers throttle locally without anyone having to compute a global metric.
 
@@ -597,11 +587,12 @@ The first one is the gate; nothing downstream can be answered generically.
    Is the answer different for read-write members and observers?
    Receiver-side budgets push some of this into a configurable per-edge policy.
 10. **What counts as authorship?**
-    A relay note can change meaning dramatically.
+    An optional relay note can change meaning dramatically.
     Is a relay-with-comment a new post that cites the old one, or the same post with attached commentary?
 11. **Can teams survive being routing infrastructure?**
     If a team becomes valuable as a bridge to another audience, social pressure may change the group itself.
-    Does the app need per-topic relay channels so the family chat does not become a news distribution hub?
+    Does the app need receiver-side queues, source-app categories, or team policy knobs so one family or club does not become a news distribution hub?
+    Any answer has to preserve the no-team-channel hypothesis rather than smuggling channel navigation back in under a different name.
 12. **How does a recipient know "why me"?**
     A signed path answers where the post came from.
     It does not necessarily answer why it reached *this* team.
@@ -619,12 +610,12 @@ The first one is the gate; nothing downstream can be answered generically.
 ## First Data Model Sketch
 
 This is intentionally provisional.
-The unique data type is the relay; the post can be any explicitly relayable Small Sea artifact.
+The unique data type is the relay; the thing carried can be any explicitly relayable Small Sea artifact.
 
 - `relay`: the central object.
   Signer, signer's source-team membership at signing time, signer's destination-team membership at signing time, content reference (a relayable artifact hash, not necessarily a Hedgerow-native post), source path hash, destination team berth, carrier stance, optional relay note, optional carry-session reference for local fan-out detection, timestamp, and signature.
 - `relayable_artifact`: the export boundary from source content into The Hedgerow.
-  It records the content hash or snapshot, source team context, author/source-app policy, allowed relay scope, and any tombstone/revocation pointer.
+  It records the content hash or snapshot, source team context, Hedgerow-facing source team profile reference, author/source-app policy, allowed relay scope, and any tombstone/revocation pointer.
   It is the place where "can this be carried?" is decided before a relay exists.
 - `hedgerow_team_profile`: optional team presentation metadata for this
   semi-public medium: Hedgerow-facing name, short description, and maybe
