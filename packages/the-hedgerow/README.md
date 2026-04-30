@@ -377,6 +377,111 @@ Reject or rethink:
 - Blockchain-backed identity and storage quotas are unnecessary here.
 - "Hub" means something different in Farcaster; in Small Sea, the Hub is the local gateway and policy boundary.
 
+## Privacy and Side Channels
+
+The Hedgerow is for sharing across teams, not for keeping things inside one.
+That asymmetry shapes what privacy means here.
+The product has no DMs and no "post only to my team" flag (see hypothesis 4).
+Anyone who posts directly into The Hedgerow is accepting that the artifact may be carried across bridges to teams the author cannot enumerate in advance.
+In the team-internal Small Sea apps, privacy is about containment; in The Hedgerow, it is about not leaking information about bystanders who never agreed to be visible.
+
+That distinction gives three load-bearing principles.
+
+### Three principles
+
+1. **People fully outside the system are fully invisible.**
+   If Alice does not use The Hedgerow at all, no Hedgerow-side artifact mentions her.
+   Content authored in other Small Sea apps cannot enter The Hedgerow as a relayable artifact without the source app and team's policy gate firing.
+   The `relayable_artifact` boundary is doing this work, and it has to be an honest gate, not a rubber stamp.
+   If the source app's policy says "this thread is team-internal, not exportable," that decision is binding even when a member tries to drag the content across.
+
+2. **Posting into The Hedgerow is the consent gesture.**
+   There is no per-post relayability toggle, no "Hedgerow-only" envelope flag, no opt-in dialogue at relay time.
+   The choice to author here, instead of in the team-internal apps, is the consent.
+   This is consistent with hypothesis 4: there is no escape hatch *within* The Hedgerow.
+   Subsequent relays are part of the social object the author signed up for.
+
+3. **Bridge certifications reveal exactly carriers and bridges — and nothing else.**
+   When Bob carries a post from Team A to Team B, the social object that needs to be authenticatable is "Bob, who really is a member of both, really did decide to bridge this."
+   Everything beyond that is bystander information that should not leak through the certification: who else is in Team A, what Team A's membership looked like before or after the relay, when Carol joined, how big the team is.
+   This principle constrains the data model now, even before fancier cryptography is in play.
+
+### What the third principle rules out
+
+The path-certification principle rules out several tempting data-model shapes:
+
+- **Membership snapshots in the relay record.**
+  A "snapshot of Team A at time T" is a roster of every member.
+  Even if a verifier only checks Bob's path through it, the snapshot itself leaks size, structure, and — across multiple relays from the same team — join/leave events.
+- **Merkle membership proofs in their naive form.**
+  An inclusion proof for Bob exposes tree structure; depth implies size; comparing proofs across relays leaks membership rotation over time.
+  Better: anonymous-credential-shaped primitives (BBS+, Idemix, accumulator-based membership).
+  The team authority issues Bob a per-team credential once; Bob presents it as proof against the team's public key; the *list* of members is never part of any proof.
+  This is a known cryptographic problem, just not free.
+- **Carrier history baked into the certification.**
+  The Q7 "Bob's last five carries into us" context is a *receiver-side* computation over relays the receiver already has — not a packet attached to each new relay.
+  If it were attached, downstream receivers could profile arbitrary upstream carriers and teams they have no business knowing about.
+- **Naming fan-out destinations in the certification.**
+  The `carry-session reference` in the data model sketch is the right shape: it lets a receiver detect "this carry was part of a larger session" without naming the other destination teams.
+  Anywhere the protocol is tempted to enumerate *which* other teams, substitute a count, a coarse pattern, or an opaque session hash.
+- **Fine-grained signed timestamps.**
+  Per-second timestamps in any verifiable or exportable form double as fine-grained activity logs for teams that have done nothing wrong.
+  The default signed granularity should be coarse (per-day) unless a specific use case requires otherwise.
+
+### Side channels worth naming
+
+Several side channels do not fall directly out of the relay record but will need explicit decisions:
+
+- **Cross-certification correlation.**
+  Two relays from the same team, verified against the same membership-state pointer, let an outside observer detect when that pointer changed — i.e., when someone joined or left the team.
+  Mitigation is to choose primitives where individual credentials do not carry a global state reference that updates on every membership change.
+  Some accumulator schemes manage this; some do not.
+- **Receipts.**
+  "Team B saw this" must stay strictly local.
+  If receipts propagate upstream, the source team gets a readership signal it should not have.
+- **Local moderation actions.**
+  Hide, pin, quarantine, and block decisions are local.
+  They must not propagate.
+- **Per-edge throttling policy.**
+  Team B's policy stance about Team A is internal to Team B.
+  A neighboring team should not learn that B is throttling A.
+- **Accumulated receiver-side profiling.**
+  Even with no aggregate score and minimal certification leakage, a receiver who tracks "how often does Bob carry from Team A" is building a model of Team A's tempo over time.
+  This is partly intentional — Q7 wants this signal locally — and partly a leak surface as it accumulates.
+  It becomes uncomfortable if the same context is exported, summarized, or made queryable across teams.
+
+### Out-of-system rebroadcast
+
+Posting to The Hedgerow is consent to *Hedgerow-style* circulation: deliberate, accountable, team-bridged.
+It is not consent to be screenshotted into Twitter, Reddit, or a public mailing list.
+Technical enforcement of "do not re-broadcast" is impossible, so the levers are cultural and UX:
+
+- **Provenance is part of the post.**
+  Source/destination team tags, carrier identity, and stance are visible by default.
+  A post stripped of that context and tweeted is visibly missing its skin and reads as decontextualized — the same way screenshotting a Slack DM reads as a violation independent of the content.
+- **No first-class share-to-social affordance.**
+  The product never invites re-export.
+  Friction matters even when surmountable.
+- **Norm-setting in onboarding and product copy.**
+  "Bridges *want* to be visible" is a within-system claim; the same visibility flips from social capital to creep when it leaves the system.
+  Product copy needs to make that flip legible.
+
+### Open questions
+
+The principles above leave several questions unsettled:
+
+- How is the upstream chain rendered to receivers? (See Q4.)
+  The principle rules out exposing non-carrier members or team-internal state, but the receiver still needs to verify the bridge back to origin.
+  The cryptographic shape of "verifiable but minimally rendered" is not settled.
+- What does the relayable_artifact gate look like in practice for each kind of source content — chat, docs, photos, structured data?
+  Each source app needs its own export policy, and the user-facing affordance for "is this exportable to The Hedgerow" needs design.
+- How are membership credentials revoked when someone leaves a team, without producing a side channel that signals their departure?
+  This intersects with Q5 (deletion) and the cross-certification correlation problem above.
+- Should authors be able to limit a post's *carrier set* — for example, "anyone in Team A may carry this" vs. "only certain members"?
+  The current model says no, on hypothesis-4 grounds and on the consent-by-posting principle, but a future use case may push back.
+- Which protocol fields are useful for verification but inappropriate to show in the feed?
+  Some signed metadata may be necessary for cryptographic correctness while still being socially noisy or revealing if rendered as user-visible context.
+
 ## Challenging Questions
 
 These are not polish questions.
