@@ -266,13 +266,37 @@ design pass.
 
 ### Forwarding with vs. without commentary
 
-A silent forward keeps the "trust the post itself" energy and reads as
-pure word-of-mouth ("hey, look at this"). A required note pushes the
-carrier into curator/editor stance, which is more deliberate but heavier.
-Both are coherent products with noticeably different cultures. Substantive
-relay notes also do anti-spam and "why me?" work (see Challenging
-Questions 7, 8, and 12). Likely the product supports both with one as
-default; which one is the default decides a lot of the tone.
+Two extremes are coherent products with very different cultures. A
+silent forward keeps the "trust the post itself" energy and reads as
+pure word-of-mouth ("hey, look at this"). A required substantive note
+pushes the carrier into curator/editor stance, which is more deliberate
+but heavier — heavy enough, in a sparse early network, to suppress
+relays that should happen.
+
+Current leaning is a middle floor: every relay must carry at least a
+single-emoji **carrier stance** — funny, interesting, confusing,
+infuriating, useful, beautiful, etc. (palette TBD) — with an optional
+note layered on top. A longer stapled commentary is fully supported and
+reads as curatorial work; minimal-commentary-with-stance is the default
+tone. Pure mute reshare is not allowed.
+
+The stance is the carrier's read of the relay act, not a reaction to
+the post itself. That framing keeps it from drifting into
+reaction-counter territory and keeps it useful as raw per-edge context
+(see Challenging Question 7): "Bob's last five carries into us were all
+🤔" is honest, eyeballable, and not farmable into a global score.
+
+Two tensions worth naming. First, the emoji palette is itself an
+editorial choice; whatever sits in the set is what the product is
+telling carriers their stance vocabulary should be, and an
+"infuriating"-shaped option invites relays the product may not want to
+encourage. Second, an emoji answers "what's the carrier's vibe?" but
+never "why *this* team?"; the latter still depends on the optional note
+plus Q7-style raw context, not on the floor itself. The floor is tuned
+deliberately low because cricket risk dominates firehose risk in the
+early phase, and because the single-team-per-relay rule (see Asymmetric
+friction) carries most of the anti-firehose load that mandatory notes
+would otherwise have to carry.
 
 ### Notification model
 
