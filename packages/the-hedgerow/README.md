@@ -72,14 +72,13 @@ Specific UI/UX choices — vocabulary, provenance rendering, notification model,
 4. **There should probably be no escape hatch.**
    The Hedgerow has no DMs, no private team mode, and no "post only to my team" flag.
    Hedgerow-native posts are born relayable; content meant to stay inside a single team lives in a different Small Sea app — likely the in-team chat-equivalent, not here.
-   Imported content still has to pass the source app and team's `relayable_artifact` gate before The Hedgerow can carry it.
    Keeping a single, focused job for The Hedgerow is what prevents it from collapsing back into "group chat with a forward button."
 
 ## Sacred Invariant
 
 The central primitive is a **membership-overlap bridge**:
 
-> A person who is a member of Team A and Team B signs an intentional act of carrying a relayable artifact from Team A into Team B.
+> A person who is a member of Team A and Team B signs an intentional act of carrying a Hedgerow post from Team A into Team B.
 
 That bridge is the atom.
 Not follower edges.
@@ -107,7 +106,7 @@ This gives the app a different social geometry from ordinary social networking:
 The Hedgerow lives between private team chat and broadcast social media.
 
 Every Hedgerow item is anchored in a source team context.
-It may begin as a Hedgerow-native post, or as a relayable artifact exported from another Small Sea app.
+It is a Hedgerow post: user-authored content stored in a Hedgerow berth.
 When a member with standing in another team decides the item should cross, they relay it: a signed carrying act that takes the item from the source team into the destination team's Hedgerow-visible set, where it appears in the mixed feeds of people entitled to see that team context.
 The receiving team can engage with it, ignore it, annotate it, or relay it onward.
 Each relay adds a signed propagation hop.
@@ -117,9 +116,9 @@ A team is not a hashtag, subreddit, server, or algorithmic audience segment.
 It is a group of people with a shared local history and a reason to trust each other at least a little.
 
 The interesting object is the *carrying act*, not the post by itself.
-The thing being carried may eventually be many kinds of Small Sea content — a doc, a photo, a thread excerpt, a chat message — but only after imported content has been turned into a **relayable artifact** by the source app/team policy.
-The Hedgerow should not become a generic permission bypass for arbitrary content in another berth.
-The thing The Hedgerow uniquely creates is the relay: the signed, stance-bearing act of carrying that artifact into a new team where the carrier has standing.
+The thing being carried may quote, summarize, reference, or paste material from elsewhere, but The Hedgerow does not need a special import protocol for that.
+If another app wants to create a Hedgerow post, it can request a Hedgerow berth session through the Hub like any other app.
+The thing The Hedgerow uniquely creates is the relay: the signed, stance-bearing act of carrying a Hedgerow post into a new team where the carrier has standing.
 Designing around the relay (not the post) is what keeps this from collapsing into "group chat with a forward button."
 
 ## Core Loop
@@ -225,7 +224,7 @@ This asymmetry is worth keeping as a north star when specific UI decisions come 
 
 The asymmetry has a sharper sub-rule: **fast per-relay, slow on fan-out.**
 A single relay action targets exactly one destination team.
-Relaying the same artifact into a second team is a second deliberate act — not a checkbox-list multi-select.
+Relaying the same post into a second team is a second deliberate act — not a checkbox-list multi-select.
 Each individual forward stays one-tap; carrying something to many places stays expensive in human attention rather than in clicks.
 This puts the natural cap on broadcast-style behavior at the UI layer instead of asking content-floor rules (mandatory notes, length minimums) to do that work.
 
@@ -372,7 +371,7 @@ Reject or rethink:
 The Hedgerow is for sharing across teams, not for keeping things inside one.
 That asymmetry shapes what privacy means here.
 The product has no DMs and no "post only to my team" flag (see hypothesis 4).
-Anyone who posts directly into The Hedgerow is accepting that the artifact may be carried across bridges to teams the author cannot enumerate in advance.
+Anyone who posts into The Hedgerow is accepting that the post may be carried across bridges to teams the author cannot enumerate in advance.
 In the team-internal Small Sea apps, privacy is about containment; in The Hedgerow, it is about not leaking information about bystanders who never agreed to be visible.
 
 That distinction gives three load-bearing principles.
@@ -381,15 +380,15 @@ That distinction gives three load-bearing principles.
 
 1. **The Hedgerow's machinery says nothing about people outside the system.**
    If Alice does not use The Hedgerow at all, the protocol data, proofs,
-   app-managed exports, and cryptographic machinery should not make claims
+   app-managed records, and cryptographic machinery should not make claims
    about her.
    A user can still type Alice's name into a post; no protocol can prevent
    ordinary human mention.
    The point is that The Hedgerow itself must not authenticate, infer, or
    leak non-participant identity as a side effect of relay verification.
-   Content authored in other Small Sea apps cannot enter The Hedgerow as a relayable artifact without the source app and team's policy gate firing.
-   The `relayable_artifact` boundary is doing this work, and it has to be an honest gate, not a rubber stamp.
-   If the source app's policy says "this thread is team-internal, not exportable," that decision is binding even when a member tries to drag the content across.
+   Other Small Sea apps are not expected to provide Hedgerow export hooks, and The Hedgerow should not pretend to police copy-paste from those contexts.
+   Privacy for other apps remains those apps' responsibility plus the team's social norms.
+   The Hedgerow's responsibility is narrower: make circulation inside The Hedgerow accountable.
 
 2. **Posting into The Hedgerow is the consent gesture.**
    There is no per-post relayability toggle, no "Hedgerow-only" envelope flag, no opt-in dialogue at relay time.
@@ -504,8 +503,6 @@ The principles above leave several questions unsettled:
 - How is the upstream chain rendered to receivers? (See Q4.)
   The principle rules out exposing non-carrier members or team-internal state, but the receiver still needs to verify the bridge back to origin.
   The cryptographic shape of "verifiable but minimally rendered" is not settled.
-- What does the relayable_artifact gate look like in practice for each kind of source content — chat, docs, photos, structured data?
-  Each source app needs its own export policy, and the user-facing affordance for "is this exportable to The Hedgerow" needs design.
 - How are membership credentials revoked when someone leaves a team, without producing a side channel that signals their departure?
   This intersects with Q5 (deletion) and the cross-certification correlation problem above.
 - Should authors be able to limit a post's *carrier set* — for example, "anyone in Team A may carry this" vs. "only certain members"?
@@ -541,15 +538,14 @@ The first one is the gate; nothing downstream can be answered generically.
    Also check whether *hedge*-as-finance pollutes the brand for some audiences.
    Until those checks come back clean, treat the name as promising but revocable.
 3. **Who consents to a relay?**
-   For Hedgerow-native posts, authoring in The Hedgerow is the consent gesture; subsequent relays are part of the medium.
-   For imported artifacts, consent and policy live at the `relayable_artifact` boundary: source app policy, source team policy, and the author's intent all have to compose before the artifact can enter The Hedgerow.
-   Can Team A set a norm that chat excerpts are local-only unless explicitly released?
-   Can a source app offer export classes that are narrower than "anything in this berth" without recreating a per-post escape hatch inside The Hedgerow?
+   Authoring in The Hedgerow is the consent gesture; subsequent relays are part of the medium.
+   If someone copies or summarizes material from another Small Sea app into a Hedgerow post, that is a social concern and possibly a source-app concern, not a special Hedgerow import category.
+   Other apps may request Hedgerow berth sessions through the normal Hub process; The Hedgerow does not need a bespoke cross-app export contract.
    Whatever the policy, it must compose with Small Sea's existing Admin/Contributor/Observer roles, not ignore them.
 4. **How is the path shown?**
    The Hedgerow is not the containment-focused app, but "make bridges visible" is the invariant, not "make every upstream detail visible in every context."
    Bridges *want* to be visible: being a known bridge between two communities is the social product.
-   Receivers should at minimum see the carrier's Hedgerow-facing profile, source team profile, destination team profile, carrier stance, optional note, and membership proof for the hop that brought the artifact to them.
+   Receivers should at minimum see the carrier's Hedgerow-facing profile, source team profile, destination team profile, carrier stance, optional note, and membership proof for the hop that brought the post to them.
    Whether they also see the complete upstream chain back to origin is a product/policy decision, not a law of the protocol.
 5. **What does deletion mean?**
    Once a post has crossed team boundaries, revocation cannot be magic.
@@ -565,7 +561,7 @@ The first one is the gate; nothing downstream can be answered generically.
    Instead, surface the raw conditions per relay and let the receiver eyeball them:
 
    - The carrier's history of relays into *this* team (last N, with timestamps and carrier stances).
-   - The carrier's recent fan-out — did they carry this same artifact into other teams in the same session or day?
+   - The carrier's recent fan-out — did they carry this same post into other teams in the same session or day?
      Since each relay targets a single team (see Asymmetric friction), fan-out is a temporal pattern, not a per-act count: the question is "is this a considered carry or a sweep?"
      This context is privacy-sensitive: naming the other destination teams may leak the carrier's memberships or other teams' existence.
      The receiver may need only a coarse signal ("also carried elsewhere today") unless the other destinations are already visible through the path and policy.
@@ -591,7 +587,7 @@ The first one is the gate; nothing downstream can be answered generically.
     Is a relay-with-comment a new post that cites the old one, or the same post with attached commentary?
 11. **Can teams survive being routing infrastructure?**
     If a team becomes valuable as a bridge to another audience, social pressure may change the group itself.
-    Does the app need receiver-side queues, source-app categories, or team policy knobs so one family or club does not become a news distribution hub?
+    Does the app need receiver-side queues, post categories, or team policy knobs so one family or club does not become a news distribution hub?
     Any answer has to preserve the no-team-channel hypothesis rather than smuggling channel navigation back in under a different name.
 12. **How does a recipient know "why me"?**
     A signed path answers where the post came from.
@@ -610,13 +606,11 @@ The first one is the gate; nothing downstream can be answered generically.
 ## First Data Model Sketch
 
 This is intentionally provisional.
-The unique data type is the relay; the thing carried can be any explicitly relayable Small Sea artifact.
+The unique data type is the relay; the thing carried is a Hedgerow post.
 
 - `relay`: the central object.
-  Signer, signer's source-team membership at signing time, signer's destination-team membership at signing time, content reference (a relayable artifact hash, not necessarily a Hedgerow-native post), source path hash, destination team berth, carrier stance, optional relay note, optional carry-session reference for local fan-out detection, timestamp, and signature.
-- `relayable_artifact`: the export boundary from source content into The Hedgerow.
-  It records the content hash or snapshot, source team context, Hedgerow-facing source team profile reference, author/source-app policy, allowed relay scope, and any tombstone/revocation pointer.
-  It is the place where "can this be carried?" is decided before a relay exists.
+  Signer, signer's source-team membership at signing time, signer's destination-team membership at signing time, post reference, source path hash, destination team berth, carrier stance, optional relay note, optional carry-session reference for local fan-out detection, timestamp, and signature.
+- `post`: Hedgerow-native authored content with an origin team context, author signature, optional body/attachments/references, and Hedgerow-facing author/team profile references.
 - `hedgerow_team_profile`: optional team presentation metadata for this
   semi-public medium: Hedgerow-facing name, short description, and maybe
   display image.
@@ -628,8 +622,6 @@ The unique data type is the relay; the thing carried can be any explicitly relay
   This is not a substitute for the signing key or membership proof; it is
   the human-readable identity rendered for authors and carriers.
 - `path`: ordered relay entries, each signed by the relay actor and verifiable against the previous path hash.
-- `post` (optional, app-native): if The Hedgerow needs a content type of its own — for posts authored directly inside a Hedgerow berth — it is author-signed content with an origin team context.
-  The relay graph should also work over any addressable Small Sea content.
 - `local_moderation`: team-local hide, pin, annotate, quarantine, or block decisions.
   These are not global truth.
 - `receipt`: local record that a team saw a post/path, useful for dedupe and future sync.
@@ -644,7 +636,7 @@ A useful first implementation slice, when the time comes, might be:
 2. Relay it into a second team where the same local sandbox has membership.
 3. Verify the relay path locally.
 4. Show both teams' local copies with different local moderation state.
-5. Render the receiver-side context surfacing from question 7 (carrier history into receiver, coarse same-artifact fan-out pattern, stance pattern, and optional note substance) using local fixture data.
+5. Render the receiver-side context surfacing from question 7 (carrier history into receiver, coarse same-post fan-out pattern, stance pattern, and optional note substance) using local fixture data.
 6. Keep all communication local or mocked in micro tests.
 
 That slice avoids public discovery, cross-device sync weirdness, global search, and full moderation policy while still testing the unique idea: signed team-to-team propagation with no aggregate score.
