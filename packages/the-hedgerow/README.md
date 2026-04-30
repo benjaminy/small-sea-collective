@@ -4,9 +4,12 @@
 metadata to be a valid workspace member; it does not implement the app
 yet. "The Hedgerow" is a working name (replacing an earlier placeholder,
 "Word of Mouth") pending namespace and trademark collision checks; see
-Challenging Question 2. A few load-bearing UX decisions have firmed up
-alongside the name; they are listed under "Top-Level Commitments" below.
-Specific UI/UX choices below them are still exploratory.
+Challenging Question 2. A few load-bearing product hypotheses have firmed
+up alongside the name; they are listed under "Current Product Shape"
+below. They are stronger than loose brainstorms, but weaker than final
+requirements. Where the naming discussion exposed real design tensions,
+this document preserves the tension rather than pretending it has been
+settled.
 
 The Hedgerow is a Small Sea answer to public social media's discovery
 problem. It is the *beyond-one-team* app: explicitly about carrying things
@@ -47,6 +50,10 @@ space is an **allotment** — the cultivated plot. The Hedgerow is what
 surrounds, separates, and connects the allotments. Things that matter
 across more than one allotment travel through the hedgerow, because
 someone with standing in two allotments deliberately carries them across.
+The point is not just transit. Like ecological edges, hedgerows keep
+neighboring communities from becoming sealed monocultures: they are where
+outside ideas, weak ties, and local surprises can cross without turning
+every field into the same field.
 
 The definite article ("*The* Hedgerow") gestures at a single emergent
 fabric made of many overlapping team-allotments, in the same shape "The
@@ -54,12 +61,22 @@ Internet" gestures at a single thing made of many local networks. The
 metaphor lines up with the engineering: every relay is a signed,
 intentional, *bridging* act, not a broadcast.
 
-## Top-Level Commitments
+One important caveat sharpened the metaphor: a hedgerow is a boundary,
+not a room. That would be awkward if the product were framed as "each
+team has its own Hedgerow." The current leaning is different: The Hedgerow
+is the mixed edge habitat where a person sees items from all the team
+contexts they are entitled to see, with provenance made explicit. Teams
+remain the permission and meaning contexts; they are not the primary
+navigation rooms. This is a design hypothesis, not a settled UI
+specification.
 
-Four organizing decisions have firmed up alongside the name. The rest of
-this document refines them but does not retract them. Specific UI/UX
-choices in later sections — vocabulary, provenance rendering, notification
-model, feed ranking — remain exploratory and will be settled later.
+## Current Product Shape
+
+Four organizing hypotheses have firmed up alongside the name. The rest of
+this document refines them, challenges them, and records open edges.
+Specific UI/UX choices in later sections — vocabulary, provenance
+rendering, notification model, feed ranking — remain exploratory and will
+be settled later.
 
 1. **The Hedgerow's job is the connective tissue between teams**, not
    the inside of any single team. Team-internal chat, files, structured
@@ -83,12 +100,12 @@ model, feed ranking — remain exploratory and will be settled later.
    ratio: each relay is someone deciding that the post is worth a
    team's attention.
 
-4. **There is no escape hatch.** The Hedgerow has no DMs, no private
-   team mode, and no "post only to my team" flag. Content meant to
-   stay inside a single team lives in a different Small Sea app —
-   likely the in-team chat-equivalent, not here. Keeping a single,
-   focused job for The Hedgerow is what prevents it from collapsing
-   back into "group chat with a forward button."
+4. **There should probably be no escape hatch.** The Hedgerow has no DMs,
+   no private team mode, and no "post only to my team" flag. Content meant
+   to stay inside a single team lives in a different Small Sea app —
+   likely the in-team chat-equivalent, not here. Keeping a single, focused
+   job for The Hedgerow is what prevents it from collapsing back into
+   "group chat with a forward button."
 
 ## Sacred Invariant
 
@@ -127,9 +144,10 @@ Inside one Small Sea team, a post is ordinary app data — most of it
 authored in other Small Sea apps, not here. When a member with standing
 in another team decides the post should cross, they relay it: a signed
 carrying act that takes the post from the source team into the
-destination team's Hedgerow feed. The receiving team can engage with it,
-ignore it, annotate it, or relay it onward. Each relay adds a signed
-propagation hop.
+destination team's Hedgerow-visible set, where it appears in the mixed
+feeds of people entitled to see that team context. The receiving team can
+engage with it, ignore it, annotate it, or relay it onward. Each relay
+adds a signed propagation hop.
 
 The intended social units are existing Small Sea teams: families, projects,
 clubs, neighborhood groups, small professional circles, and other groups
@@ -164,9 +182,9 @@ standing in Team B on bringing it.
 
 ## Open UI/UX Ideas
 
-These are exploratory. The four top-level commitments above are firm; the
-specifics below are not, and several have known tensions and tradeoffs
-that need a real design pass before they can become commitments.
+These are exploratory. The product-shape hypotheses above are the current
+strong leanings; the specifics below are not commitments, and several
+have known tensions and tradeoffs that need a real design pass.
 
 ### Vocabulary candidates
 
@@ -175,11 +193,26 @@ product copy, some may stay metaphor-only. Whether to lean hard into the
 ecological vocabulary or treat it as background tone is itself a design
 choice.
 
-- **Sow** — author a post directly into The Hedgerow.
-- **Pollinate** (or *carry*, *relay*) — bring a post across a
-  membership-overlap bridge into another team.
+- **Plant**, **sow**, **tuck**, **leave** — author or place a post
+  directly into The Hedgerow. "Sow" is the strongest ecological verb;
+  "plant" and "leave" are plainer; "tuck" has a local, note-in-a-wall
+  feel that may be too cute or may be exactly right.
+- **Pollinate** (or *carry*, *relay*, *pass along*, *bring through*) —
+  bring a post across a membership-overlap bridge into another team.
+  "Relay" stays the protocol word; "carry" is likely the clearest
+  human-facing verb.
+- **Cutting** — a relayable thing carried into a new context while
+  preserving its origin. This is thematically rich, but it may imply
+  mutability or propagation-by-cloning more strongly than the protocol
+  should.
 - **Stile** — the connection point a carrier crosses; possibly an
   in-product affordance ("met them at a stile").
+- **Gap**, **gate**, **crossing** — plainer alternatives to "stile."
+  "Gap" can sound like a security flaw; "gate" can sound like approval
+  bureaucracy; "crossing" is broadly legible.
+- **Pleach**, **quickset** — beautiful hedge-specific words that may be
+  useful as internal language but are probably too obscure for primary
+  UI copy.
 - **Allotment** — a team's space when the metaphor is being surfaced; in
   most UI text, "team" is probably still the user-facing word.
 - **Forage**, **glean**, **browse** — reading verbs.
@@ -187,6 +220,24 @@ choice.
 
 The protocol-level word stays **relay** (a signed, verifiable propagation
 hop). User-facing copy is open.
+
+### Mixed feed vs. team-first surface
+
+Earlier sketches foregrounded teams the way most Small Sea thinking does:
+pick a team, then read that team's space. The Hedgerow name makes a
+different surface plausible. If the hedgerow is the living boundary
+between cultivated plots, the primary experience may be a single mixed
+feed across all of the user's relevant teams: "walk the edge where my
+worlds overlap."
+
+That shift solves one metaphor problem and creates several product
+questions. It solves the awkwardness of "our Hedgerow" by making The
+Hedgerow the connective system rather than any team's own room. It raises
+new questions about discussion context, moderation ownership, and whether
+a mixed feed can avoid becoming ordinary social media with better
+provenance. Current leaning: posts arrive in a personal mixed feed, while
+replies and local moderation still happen in a specific team context.
+That split needs design proof.
 
 ### Provenance rendering
 
@@ -197,6 +248,12 @@ whether to render the full upstream chain back to origin (richer "why
 me?" context but visual noise) or only the most recent hop (cleaner but
 loses upstream detail). Likely needs UI invention — neither a citation
 list nor a simple breadcrumb is quite right.
+
+The mixed-feed hypothesis makes provenance more important, not less. If
+teams are not the navigation tree, then every post needs to explain why it
+belongs in this user's view: source team, receiving team, carrier, relay
+note, and enough signed path context to make the membership-overlap bridge
+credible at a glance.
 
 ### How teams stay visible without being navigation
 
@@ -438,16 +495,34 @@ answered generically.
    edge ecosystem connecting otherwise separate patches — directly into
    the brand. The article ("*The* Hedgerow") parallels "The Internet"
    as the singular emergent thing made of overlapping local pieces.
-   Notable runners-up that surfaced during the search and may still be
-   useful as in-product vocabulary: *The Tidepool* (small bounded
-   pockets that mix at high tide), *The Mangrove* (interconnected root
-   system as the global frame), *The Driftline* (ecotone-coded edge
-   ecosystem with corridor function). What still needs to settle:
-   namespace and trademark collisions (GitHub orgs, npm/PyPI, `.org`
-   domains, USPTO; Hedgerow Theatre and Hedgerow Farms have prior
-   occupancy in unrelated domains), and whether *hedge*-as-finance
-   pollutes the brand for some audiences. Until those checks come back
-   clean, treat the name as committed but revocable.
+   The naming search moved through several adjacent metaphors:
+
+   - *The Mangrove* had a strong marine/ecosystem feel, but Mangrove DAO
+     already has a real developer-facing crypto footprint. Even if the
+     product categories differ, the name risks search confusion and
+     accidental Web3/DAO associations.
+   - *The Tidepool* captured bounded local worlds connected by a larger
+     sea. It is warm, inspectable, and very Small Sea, but may sound too
+     gentle or nature-app-like if the surrounding product language gets
+     cute.
+   - *The Eddies*, *The Shoals*, *The Sound*, and *The Third Places*
+     each captured part of the desired shape: local circulation,
+     gathering, signal/place, and semi-public social pockets. None
+     captured the living edge between bounded teams as directly as
+     hedgerow.
+   - *The Hedgerow* became more compelling once the UI hypothesis shifted
+     from "each team has a channel" to "the user walks one mixed edge
+     feed where many team contexts overlap."
+
+   What still needs to settle: namespace and trademark collisions (GitHub
+   orgs, npm/PyPI, `.org` domains, USPTO). Known collision notes so far:
+   Hedgerow Software appears to be a real software company in the
+   environmental-health/regulatory domain; Healthy Hedgerows appears to
+   be a conservation app; Hedgerow Theatre, Hedgerow Farms, and The
+   Hedgerow Group occupy unrelated cultural, agricultural, or consulting
+   space. Also check whether *hedge*-as-finance pollutes the brand for
+   some audiences. Until those checks come back clean, treat the name as
+   promising but revocable.
 3. **Who consents to a relay?**
    If Alice posts inside Team A, can Bob carry it to Team B by default?
    Does Alice need to mark the post as relayable? Can Team A set a norm
