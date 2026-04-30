@@ -28,3 +28,10 @@ As an AI agent working in this repository, you must follow these rules to mainta
 ## Contextual Knowledge
 - Consult [architecture.md](architecture.md) for the core concepts (Teams, Apps, Berths) and the technical pillars (X3DH, Git-based sync).
 - Familiarize yourself with the [README.md](README.md) to understand the "Why?" behind the project's local-first philosophy.
+
+## Style Rules
+- In plain text prose files (markdown, latex, etc) use semantic line breaks
+   - Always line break after a complete sentence
+   - Line breaks within sentences are discouraged
+      - Only acceptable at natural pause points in very long sentences
+   - Do not reformat existing text to follow this rule unless specifically instructed to do so
