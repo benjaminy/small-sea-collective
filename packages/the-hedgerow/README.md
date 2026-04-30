@@ -1,10 +1,10 @@
-# Word of Mouth
+# The Hedgerow
 
 **Status:** concept-stage app. This package currently contains only enough
 metadata to be a valid workspace member; it does not implement the app yet.
-The name "Word of Mouth" is a placeholder — see "Challenging Questions" below.
+The name "The Hedgerow" is a placeholder — see "Challenging Questions" below.
 
-Word of Mouth is a Small Sea answer to public social media's discovery
+The Hedgerow is a Small Sea answer to public social media's discovery
 problem. It is the *beyond-one-team* app: explicitly about carrying things
 out of one team context and into another. Other Small Sea apps cover private
 and intimate communication; this one is not trying to. But "beyond one team"
@@ -31,7 +31,7 @@ The product question is whether the experience can feel less like shouting
 into a crowd and more like, "Someone in our book club brought this in from
 their kid's school parents group." Note what that sentence does not say: it
 claims no friendship and asserts no graph distance. It names two contexts
-and the person who bridged them. That is the social object Word of Mouth
+and the person who bridged them. That is the social object The Hedgerow
 tries to make first-class.
 
 ## Sacred Invariant
@@ -63,7 +63,7 @@ networking:
 
 ## The Shape
 
-Word of Mouth lives between private team chat and broadcast social media.
+The Hedgerow lives between private team chat and broadcast social media.
 
 Inside one Small Sea team, a post is ordinary app data in that team's Word
 of Mouth berth. If a member wants another team to see it, they re-share it
@@ -82,7 +82,7 @@ thing being carried may eventually be many kinds of Small Sea content — a
 doc, a photo, a thread excerpt, a chat message — but only after it has been
 turned into a **relayable artifact** by the source app/team policy. Word of
 Mouth should not become a generic permission bypass for arbitrary content in
-another berth. The thing Word of Mouth uniquely creates is the relay: the
+another berth. The thing The Hedgerow uniquely creates is the relay: the
 signed, annotated act of carrying that artifact into a new team where the
 carrier has standing. Designing around the relay (not the post) is what
 keeps this from collapsing into "group chat with a forward button."
@@ -122,7 +122,7 @@ The harder adjacencies — the things users will actually mistake this for:
   global publishing surface, and subscribing is not the act that pulls
   content in — a teammate carrying it in is.
 
-Small Sea is designed for human-scale coordination. Word of Mouth should
+Small Sea is designed for human-scale coordination. The Hedgerow should
 lean into that instead of trying to smuggle internet-scale social media
 into the repo under a friendlier name.
 
@@ -145,7 +145,7 @@ every other Small Sea app, necessary but not distinctive to this one.
 None of these projects is the model — they are mirrors. Briar and Secure
 Scuttlebutt take social trust, local storage, and peer-to-peer propagation
 seriously, but both are organized around individual-to-individual graphs;
-Word of Mouth is organized around team-to-team bridges. Nostr, ActivityPub,
+The Hedgerow is organized around team-to-team bridges. Nostr, ActivityPub,
 AT Protocol, and Farcaster are mostly contrast cases — they show how
 quickly "social protocol" turns into public infrastructure, global
 identity, firehoses, and moderation pressure.
@@ -155,7 +155,7 @@ identity, firehoses, and moderation pressure.
 [Secure Scuttlebutt](https://scuttlebot.io/more/protocols/secure-scuttlebutt.html)
 shares the local-first, signed-feed instincts, but it is structurally a
 *follow graph between individuals* with friends-of-friends propagation.
-Word of Mouth is bipartite: people × teams, with bridging acts as the
+The Hedgerow is bipartite: people × teams, with bridging acts as the
 propagation event. Different math, different politics, different failure
 modes. SSB is useful as a substrate inspiration; it is not the social
 model.
@@ -167,7 +167,7 @@ Borrow:
 
 Reject or rethink:
 
-- Word of Mouth is team-mediated, not individual-follow mediated.
+- The Hedgerow is team-mediated, not individual-follow mediated.
 - A global-ish gossip network of individual feeds is the wrong shape for
   the bipartite team-bridging model.
 
@@ -208,7 +208,7 @@ Reject or rethink:
 - Inbox delivery to arbitrary remote actors is broader than the desired
   first slice.
 - Public web addressing creates discovery, moderation, and takedown
-  pressures that Word of Mouth may not want at this stage.
+  pressures that The Hedgerow may not want at this stage.
 
 ### Bluesky AT Protocol
 
@@ -224,7 +224,7 @@ Borrow:
 
 Reject or rethink:
 
-- AT Protocol is built for large public networks; Word of Mouth is not.
+- AT Protocol is built for large public networks; The Hedgerow is not.
 - Big relays and firehose services would distort the team-bridging
   premise.
 - Domain-based public identity is not the same as Small Sea team
@@ -242,11 +242,11 @@ Borrow:
 
 Reject or rethink:
 
-- Word of Mouth is not primarily a crisis-messaging or
+- The Hedgerow is not primarily a crisis-messaging or
   surveillance-resistant app. Privacy is not its design center; sharing
   outward is.
 - Small Sea already routes communication through the Hub abstraction, so
-  Word of Mouth should not choose transports directly.
+  The Hedgerow should not choose transports directly.
 - Contact-to-contact sync is a different social object than team-to-team
   relay.
 
@@ -282,7 +282,7 @@ answered generically.
    it and they stay generic. Currently deferred — but flag any feature
    debate that would be settled by a niche choice.
 2. **What is the name?**
-   "Word of Mouth" is a placeholder. Word-of-mouth in real life is
+   "The Hedgerow" is a placeholder. Word-of-mouth in real life is
    informal, untraceable, deniable; this app is signed, audited, and
    pathed — the opposite. The design points toward a nautical-bridging
    name with a fine point. Candidates in play: *Hail* (the verb of
@@ -299,7 +299,7 @@ answered generically.
    policy, it must compose with Small Sea's existing
    Admin/Contributor/Observer roles, not ignore them.
 4. **How is the path shown?**
-   Word of Mouth is not the privacy-focused app, but "make bridges
+   The Hedgerow is not the privacy-focused app, but "make bridges
    visible" is the invariant, not "make every upstream detail visible in
    every context." Bridges *want* to be visible: being a known bridge
    between two communities is the social product. Receivers should at
@@ -379,18 +379,18 @@ post can be any explicitly relayable Small Sea artifact.
 - `relay`: the central object. Signer, signer's source-team membership at
   signing time, signer's destination-team membership at signing time,
   content reference (a relayable artifact hash, not necessarily a
-  Word-of-Mouth-native post), source path hash, destination team berth,
+  Hedgerow-native post), source path hash, destination team berth,
   relay note, fan-out (other destinations being relayed to in the same
   act), timestamp, and signature.
-- `relayable_artifact`: the export boundary from source content into Word
-  of Mouth. It records the content hash or snapshot, source team context,
+- `relayable_artifact`: the export boundary from source content into The
+  Hedgerow. It records the content hash or snapshot, source team context,
   author/source-app policy, allowed relay scope, and any tombstone/revocation
   pointer. It is the place where "can this be carried?" is decided before a
   relay exists.
 - `path`: ordered relay entries, each signed by the relay actor and
   verifiable against the previous path hash.
-- `post` (optional, app-native): if Word of Mouth needs a content type of
-  its own — for posts authored directly inside a Word of Mouth berth — it
+- `post` (optional, app-native): if The Hedgerow needs a content type of
+  its own — for posts authored directly inside a Hedgerow berth — it
   is author-signed content with an origin team context. The relay graph
   should also work over any addressable Small Sea content.
 - `local_moderation`: team-local hide, pin, annotate, quarantine, or block
@@ -452,6 +452,6 @@ The app is worth pursuing only if at least one of these bets is true:
 - Small groups can be bridges without being consumed by the dynamics of
   public platforms.
 
-If those bets are false, Word of Mouth should stay a sketch rather than
+If those bets are false, The Hedgerow should stay a sketch rather than
 becoming another social feed with better cryptography and the same old
 problems.

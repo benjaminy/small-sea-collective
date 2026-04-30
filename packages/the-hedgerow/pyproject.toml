@@ -1,5 +1,5 @@
 [project]
-name = "word-of-mouth"
+name = "the-hedgerow"
 version = "0.1.0"
 requires-python = ">=3.12"
 description = "Concept-stage Small Sea app for team-mediated social propagation."
