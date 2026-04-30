@@ -126,12 +126,8 @@ Designing around the relay (not the post) is what keeps this from collapsing int
 
 1. Alice writes a post in Team A.
 2. Bob, also in Team A and a member of Team B, thinks Team B should see it.
-3. Bob relays the post into Team B with a carrier stance and, optionally,
-   a note explaining why.
-4. Team B sees the post with provenance: the original author's
-   Hedgerow-facing profile, origin team, Bob's relay act, and at least
-   enough signed path context to verify the membership-overlap bridge that
-   brought it here.
+3. Bob relays the post into Team B with a carrier stance and, optionally, a note explaining why.
+4. Team B sees the post with provenance: the original author's Hedgerow-facing profile, origin team, Bob's relay act, and at least enough signed path context to verify the membership-overlap bridge that brought it here.
 5. Someone in Team B may relay it onward, extending the path.
 
 The interesting object is not only the post.
@@ -180,8 +176,7 @@ That split needs design proof.
 
 "Easy to see who said this and where it came from" is a baseline for every post.
 The harder question is *how much path* to show.
-Floor: original author's Hedgerow-facing profile, origin team, last
-carrier's Hedgerow-facing profile, destination team.
+Floor: original author's Hedgerow-facing profile, origin team, last carrier's Hedgerow-facing profile, destination team.
 Open: whether to render the full upstream chain back to origin (richer "why me?" context but visual noise) or only the most recent hop (cleaner but loses upstream detail).
 Likely needs UI invention — neither a citation list nor a simple breadcrumb is quite right.
 
