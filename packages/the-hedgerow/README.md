@@ -128,7 +128,10 @@ Designing around the relay (not the post) is what keeps this from collapsing int
 2. Bob, also in Team A and a member of Team B, thinks Team B should see it.
 3. Bob relays the post into Team B with a carrier stance and, optionally,
    a note explaining why.
-4. Team B sees the post with provenance: original author, origin team, Bob's relay act, and at least enough signed path context to verify the membership-overlap bridge that brought it here.
+4. Team B sees the post with provenance: the original author's
+   Hedgerow-facing profile, origin team, Bob's relay act, and at least
+   enough signed path context to verify the membership-overlap bridge that
+   brought it here.
 5. Someone in Team B may relay it onward, extending the path.
 
 The interesting object is not only the post.
@@ -177,7 +180,8 @@ That split needs design proof.
 
 "Easy to see who said this and where it came from" is a baseline for every post.
 The harder question is *how much path* to show.
-Floor: original author, origin team, last carrier, destination team.
+Floor: original author's Hedgerow-facing profile, origin team, last
+carrier's Hedgerow-facing profile, destination team.
 Open: whether to render the full upstream chain back to origin (richer "why me?" context but visual noise) or only the most recent hop (cleaner but loses upstream detail).
 Likely needs UI invention — neither a citation list nor a simple breadcrumb is quite right.
 
@@ -389,8 +393,14 @@ That distinction gives three load-bearing principles.
 
 ### Three principles
 
-1. **People fully outside the system are fully invisible.**
-   If Alice does not use The Hedgerow at all, no Hedgerow-side artifact mentions her.
+1. **The Hedgerow's machinery says nothing about people outside the system.**
+   If Alice does not use The Hedgerow at all, the protocol data, proofs,
+   app-managed exports, and cryptographic machinery should not make claims
+   about her.
+   A user can still type Alice's name into a post; no protocol can prevent
+   ordinary human mention.
+   The point is that The Hedgerow itself must not authenticate, infer, or
+   leak non-participant identity as a side effect of relay verification.
    Content authored in other Small Sea apps cannot enter The Hedgerow as a relayable artifact without the source app and team's policy gate firing.
    The `relayable_artifact` boundary is doing this work, and it has to be an honest gate, not a rubber stamp.
    If the source app's policy says "this thread is team-internal, not exportable," that decision is binding even when a member tries to drag the content across.
@@ -428,6 +438,43 @@ The path-certification principle rules out several tempting data-model shapes:
   Per-second timestamps in any verifiable or exportable form double as fine-grained activity logs for teams that have done nothing wrong.
   The default signed granularity should be coarse (per-day) unless a specific use case requires otherwise.
 
+### Hedgerow-facing team names
+
+Source and destination team identity has to be visible enough for receivers
+to understand the bridge.
+But the canonical internal team name may itself reveal more than the bridge
+requires: "Cancer Support Group," "Union Organizing Committee," or "Lincoln
+Elementary IEP Dispute Group" carry more private context than "Caregivers
+Circle," "Local Tenant Organizers," or "Neighborhood Parents."
+
+The likely middle ground is an optional **Hedgerow-facing team name** or
+profile.
+It is not anonymity and not a secret relay route.
+The team still has to be a real certifying context, and carriers are still
+accountable for bridges.
+But the rendered name can be chosen for this semi-public medium instead of
+blindly exposing the internal Small Sea team label.
+The product norm should be contextual disclosure: discreet enough to avoid
+unnecessary leakage, honest enough that recipients can evaluate the bridge.
+
+### Hedgerow-facing person profiles
+
+The same contextual-disclosure idea probably applies to people.
+When Alice authors or Bob carries, the receiving team needs a stable,
+accountable identity for the act.
+It does not necessarily need every piece of identity the source team knows:
+legal name, family relationship, workplace role, email address, internal
+nickname, or the sensitive reason Alice belongs to a team.
+
+The likely shape is an optional **Hedgerow-facing person profile**: display
+name, avatar, short bio, and possibly per-team presentation choices.
+It is still tied to a real signer and membership proof; it is not an
+anonymous handle that lets a carrier dodge responsibility.
+But it lets participants choose what human-readable information crosses the
+hedgerow with them, within policy limits.
+Some teams or niches may require stronger disclosure before a post can be
+carried; others may accept a lighter profile if the certification is sound.
+
 ### Side channels worth naming
 
 Several side channels do not fall directly out of the relay record but will need explicit decisions:
@@ -457,7 +504,7 @@ It is not consent to be screenshotted into Twitter, Reddit, or a public mailing 
 Technical enforcement of "do not re-broadcast" is impossible, so the levers are cultural and UX:
 
 - **Provenance is part of the post.**
-  Source/destination team tags, carrier identity, and stance are visible by default.
+  Source/destination team tags, carrier profile, and stance are visible by default.
   A post stripped of that context and tweeted is visibly missing its skin and reads as decontextualized — the same way screenshotting a Slack DM reads as a violation independent of the content.
 - **No first-class share-to-social affordance.**
   The product never invites re-export.
@@ -517,7 +564,7 @@ The first one is the gate; nothing downstream can be answered generically.
 4. **How is the path shown?**
    The Hedgerow is not the privacy-focused app, but "make bridges visible" is the invariant, not "make every upstream detail visible in every context."
    Bridges *want* to be visible: being a known bridge between two communities is the social product.
-   Receivers should at minimum see the carrier identity, source team, destination team, carrier stance, optional note, and membership proof for the hop that brought the artifact to them.
+   Receivers should at minimum see the carrier's Hedgerow-facing profile, source team, destination team, carrier stance, optional note, and membership proof for the hop that brought the artifact to them.
    Whether they also see the complete upstream chain back to origin is a product/policy decision, not a law of the protocol.
 5. **What does deletion mean?**
    Once a post has crossed team boundaries, revocation cannot be magic.
@@ -584,6 +631,16 @@ The unique data type is the relay; the post can be any explicitly relayable Smal
 - `relayable_artifact`: the export boundary from source content into The Hedgerow.
   It records the content hash or snapshot, source team context, author/source-app policy, allowed relay scope, and any tombstone/revocation pointer.
   It is the place where "can this be carried?" is decided before a relay exists.
+- `hedgerow_team_profile`: optional team presentation metadata for this
+  semi-public medium: Hedgerow-facing name, short description, and maybe
+  display image.
+  This is not the canonical team identity; it is the name/profile rendered
+  in paths and feed cards when policy permits.
+- `hedgerow_person_profile`: optional participant presentation metadata for
+  this semi-public medium: display name, avatar, short bio, and maybe
+  per-team presentation preferences.
+  This is not a substitute for the signing key or membership proof; it is
+  the human-readable identity rendered for authors and carriers.
 - `path`: ordered relay entries, each signed by the relay actor and verifiable against the previous path hash.
 - `post` (optional, app-native): if The Hedgerow needs a content type of its own — for posts authored directly inside a Hedgerow berth — it is author-signed content with an origin team context.
   The relay graph should also work over any addressable Small Sea content.
