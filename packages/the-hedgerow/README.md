@@ -126,7 +126,8 @@ Designing around the relay (not the post) is what keeps this from collapsing int
 
 1. Alice writes a post in Team A.
 2. Bob, also in Team A and a member of Team B, thinks Team B should see it.
-3. Bob relays the post into Team B with a note explaining why.
+3. Bob relays the post into Team B with a carrier stance and, optionally,
+   a note explaining why.
 4. Team B sees the post with provenance: original author, origin team, Bob's relay act, and at least enough signed path context to verify the membership-overlap bridge that brought it here.
 5. Someone in Team B may relay it onward, extending the path.
 
@@ -181,7 +182,7 @@ Open: whether to render the full upstream chain back to origin (richer "why me?"
 Likely needs UI invention — neither a citation list nor a simple breadcrumb is quite right.
 
 The mixed-feed hypothesis makes provenance more important, not less.
-If teams are not the navigation tree, then every post needs to explain why it belongs in this user's view: source team, receiving team, carrier, relay note, and enough signed path context to make the membership-overlap bridge credible at a glance.
+If teams are not the navigation tree, then every post needs to explain why it belongs in this user's view: source team, receiving team, carrier, carrier stance, optional note, and enough signed path context to make the membership-overlap bridge credible at a glance.
 
 ### How teams stay visible without being navigation
 
@@ -201,6 +202,9 @@ Pure mute reshare is not allowed.
 
 The stance is the carrier's read of the relay act, not a reaction to the post itself.
 That framing keeps it from drifting into reaction-counter territory and keeps it useful as raw per-edge context (see Challenging Question 7): "Bob's last five carries into us were all 🤔" is honest, eyeballable, and not farmable into a global score.
+The UI may present stance through a very large emoji palette, potentially including one- or two-emoji combinations rather than a tiny reaction strip.
+At the same time, the default visible options should probably be carry-reason-shaped rather than knee-jerk-emotion-shaped: useful reference, worth discussing, question, concern, opportunity, local warning, delight, etc.
+The exact glyphs are UI; the underlying stance may need a stable semantic label so future clients can render the same carry intent differently without changing the signed meaning.
 
 Two tensions worth naming.
 First, the emoji palette is itself an editorial choice; whatever sits in the set is what the product is telling carriers their stance vocabulary should be, and an "infuriating"-shaped option invites relays the product may not want to encourage.
@@ -408,7 +412,7 @@ The first one is the gate; nothing downstream can be answered generically.
 4. **How is the path shown?**
    The Hedgerow is not the privacy-focused app, but "make bridges visible" is the invariant, not "make every upstream detail visible in every context."
    Bridges *want* to be visible: being a known bridge between two communities is the social product.
-   Receivers should at minimum see the carrier identity, source team, destination team, relay note, and membership proof for the hop that brought the artifact to them.
+   Receivers should at minimum see the carrier identity, source team, destination team, carrier stance, optional note, and membership proof for the hop that brought the artifact to them.
    Whether they also see the complete upstream chain back to origin is a product/policy decision, not a law of the protocol.
 5. **What does deletion mean?**
    Once a post has crossed team boundaries, revocation cannot be magic.
@@ -426,6 +430,8 @@ The first one is the gate; nothing downstream can be answered generically.
    - The carrier's history of relays into *this* team (last N, with timestamps and carrier stances).
    - The carrier's recent fan-out — did they carry this same artifact into other teams in the same session or day?
      Since each relay targets a single team (see Asymmetric friction), fan-out is a temporal pattern, not a per-act count: the question is "is this a considered carry or a sweep?"
+     This context is privacy-sensitive: naming the other destination teams may leak the carrier's memberships or other teams' existence.
+     The receiver may need only a coarse signal ("also carried elsewhere today") unless the other destinations are already visible through the path and policy.
    - The carrier's stance emoji and any optional note.
      A team that forwards everything will not write personalized notes; when a note is present, its substance is itself a scarcity signal, and unlike a counter it cannot be farmed.
      Even without a note, the stance pattern over time is honest local context.
@@ -469,7 +475,7 @@ This is intentionally provisional.
 The unique data type is the relay; the post can be any explicitly relayable Small Sea artifact.
 
 - `relay`: the central object.
-  Signer, signer's source-team membership at signing time, signer's destination-team membership at signing time, content reference (a relayable artifact hash, not necessarily a Hedgerow-native post), source path hash, destination team berth, relay note, fan-out (other destinations being relayed to in the same act), timestamp, and signature.
+  Signer, signer's source-team membership at signing time, signer's destination-team membership at signing time, content reference (a relayable artifact hash, not necessarily a Hedgerow-native post), source path hash, destination team berth, carrier stance, optional relay note, optional carry-session reference for local fan-out detection, timestamp, and signature.
 - `relayable_artifact`: the export boundary from source content into The Hedgerow.
   It records the content hash or snapshot, source team context, author/source-app policy, allowed relay scope, and any tombstone/revocation pointer.
   It is the place where "can this be carried?" is decided before a relay exists.
@@ -490,7 +496,7 @@ A useful first implementation slice, when the time comes, might be:
 2. Relay it into a second team where the same local sandbox has membership.
 3. Verify the relay path locally.
 4. Show both teams' local copies with different local moderation state.
-5. Render the receiver-side context surfacing from question 7 (carrier history into receiver, fan-out at relay time, note substance) using local fixture data.
+5. Render the receiver-side context surfacing from question 7 (carrier history into receiver, coarse same-artifact fan-out pattern, stance pattern, and optional note substance) using local fixture data.
 6. Keep all communication local or mocked in micro tests.
 
 That slice avoids public discovery, cross-device sync weirdness, global search, and full moderation policy while still testing the unique idea: signed team-to-team propagation with no aggregate score.
@@ -513,8 +519,8 @@ The app is worth pursuing only if at least one of these bets is true:
 
 - People want social discovery through accountable human relays, not opaque recommendation systems.
 - Being a known bridge between two communities is itself a positive social identity — bridges *want* to be visible.
-- The extra friction of substantive relay notes and team-scoped sharing improves quality more than it reduces participation.
-- Meaning can be surfaced without being scored: receivers will read raw context (carrier history, fan-out, note substance) more honestly than they would read a number.
+- The light friction of carrier stance, optional substantive notes, and team-scoped sharing improves quality more than it reduces participation.
+- Meaning can be surfaced without being scored: receivers will read raw context (carrier history, fan-out pattern, stance pattern, optional note substance) more honestly than they would read a number.
 - Small groups can be bridges without being consumed by the dynamics of public platforms.
 
 If those bets are false, The Hedgerow should stay a sketch rather than becoming another social feed with better cryptography and the same old problems.
