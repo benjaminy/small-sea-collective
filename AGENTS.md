@@ -8,14 +8,24 @@ As an AI agent working in this repository, you must follow these rules to mainta
 - **Pre-alpha: do not spend effort on backward compatibility.**
    Prefer the cleanest design over migration shims or compatibility layers unless the user explicitly asks for them.
    Keep schema/version markers in place so future compatibility work remains possible.
-- The typical workflow should be:
-   1. Make a branch for the current task
-   2. Iterate on the branch-plan.md document
-      - My boss thinks AIs are not reliable enough for serious work yet. The validation part of the plan needs to be even better than would be expected on a great software engineering team. How will the implementation convince a smart skeptic that:
+- The typical workflow for a nontrivial unit of work should be:
+   1. Make a git branch for the current task
+   2. Make a branch folder for working docs in .IN_PROGRESS/{name of branch}
+   3. In the branch folder make a PLAN.md file
+      - My boss thinks AIs are not reliable enough for serious work yet.
+         The validation part of the plan needs to be even better than would be expected on a great software engineering team.
+	 How will the implementation convince a smart skeptic that:
          1. The goals of the branch have been accomplished
 	 2. The general integrity of the repo (low coupling, maintainability, consistency, etc) has been maintained or improved
-   3. Implement, debug, optimize
-   4. To wrap up a branch, update branch-plan.md and move it to Archive/branch-plan-{BRANCH_NAME}.md
+   4. Discuss, implement, debug, optimize
+   5. After work is complete on the branch, wrap-up by creating the following documents (from PLAN.md, NOTES.md, anything else that came up during implementation):
+      - .IN_PROGRESS/{name of branch}/FOLLOW-UP.md
+         - This is a list of github changes that should be made:
+	    - issues to close, comment on, or create
+      - .IN_PROGRESS/{name of branch}/design-record-{name}.md
+         - This is a highly boiled down version of the plan with a focus on interesting choices a developer might want to revisit some years down the line.
+      - .IN_PROGRESS/{name of branch}/review-note.md
+         - A very brief note to put in the PR to orient a reviewer
 
 ## Architectural Mandates
 - **Hub as Gateway**: In production, all Small Sea internet traffic must go through the **Hub**.
