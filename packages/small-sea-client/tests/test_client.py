@@ -10,6 +10,7 @@ import pytest
 import respx
 
 from small_sea_client.client import (
+    SmallSeaAppBootstrapRequired,
     SmallSeaClient,
     SmallSeaConflict,
     SmallSeaError,
@@ -77,6 +78,140 @@ def test_request_session_can_override_mode(client):
     assert body["mode"] == "passthrough"
 
 
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "app_unknown",
+        "participant_berth_missing",
+        "team_berth_missing",
+        "app_friendly_name_ambiguous",
+    ],
+)
+@respx.mock
+def test_request_session_app_bootstrap_required_preserves_reason(client, reason):
+    respx.post(f"{BASE_URL}/sessions/request").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error": "app_bootstrap_required",
+                "reason": reason,
+                "app": "SharedFileVault",
+                "team": "ProjectX",
+            },
+        )
+    )
+    with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
+        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+
+    exc = exc_info.value
+    assert exc.reason == reason
+    assert exc.app == "SharedFileVault"
+    assert exc.team == "ProjectX"
+
+
+@respx.mock
+def test_request_session_app_bootstrap_required_is_not_conflict(client):
+    respx.post(f"{BASE_URL}/sessions/request").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error": "app_bootstrap_required",
+                "reason": "app_unknown",
+                "app": "SharedFileVault",
+                "team": "ProjectX",
+            },
+        )
+    )
+    with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
+        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+
+    assert isinstance(exc_info.value, SmallSeaError)
+    assert not isinstance(exc_info.value, SmallSeaConflict)
+
+
+@respx.mock
+def test_request_session_app_bootstrap_required_user_message(client):
+    respx.post(f"{BASE_URL}/sessions/request").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error": "app_bootstrap_required",
+                "reason": "app_unknown",
+                "app": "SharedFileVault",
+                "team": "ProjectX",
+            },
+        )
+    )
+    with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
+        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+
+    expected = (
+        "SharedFileVault isn't set up yet. "
+        "Open Manager to register it for team ProjectX."
+    )
+    assert exc_info.value.user_message == expected
+    assert str(exc_info.value) == expected
+
+
+@respx.mock
+def test_request_session_app_bootstrap_required_allows_no_team(client):
+    respx.post(f"{BASE_URL}/sessions/request").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error": "app_bootstrap_required",
+                "reason": "app_unknown",
+                "app": "SharedFileVault",
+                "team": None,
+            },
+        )
+    )
+    with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
+        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+
+    assert exc_info.value.team is None
+    assert (
+        exc_info.value.user_message
+        == "SharedFileVault isn't set up yet. Open Manager to register it."
+    )
+
+
+@respx.mock
+def test_request_session_app_bootstrap_required_preserves_unknown_reason(client):
+    respx.post(f"{BASE_URL}/sessions/request").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error": "app_bootstrap_required",
+                "reason": "future_more_specific_reason",
+                "app": "SharedFileVault",
+                "team": "ProjectX",
+            },
+        )
+    )
+    with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
+        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+
+    assert exc_info.value.reason == "future_more_specific_reason"
+
+
+@respx.mock
+def test_request_session_app_bootstrap_required_reads_top_level_body(client):
+    respx.post(f"{BASE_URL}/sessions/request").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error": "app_bootstrap_required",
+                "reason": "app_unknown",
+                "app": "SharedFileVault",
+                "team": "ProjectX",
+            },
+        )
+    )
+    with pytest.raises(SmallSeaAppBootstrapRequired):
+        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+
+
 @respx.mock
 def test_confirm_session_returns_session(client):
     respx.post(f"{BASE_URL}/sessions/confirm").mock(
@@ -103,6 +238,15 @@ def test_hub_unavailable(client):
         )
         with pytest.raises(SmallSeaHubUnavailable):
             client.request_session("alice", "MyApp", "MyTeam", "TestClient")
+
+
+@respx.mock
+def test_server_error_non_json_body_uses_response_text(client):
+    respx.post(f"{BASE_URL}/sessions/request").mock(
+        return_value=httpx.Response(500, text="server sad")
+    )
+    with pytest.raises(SmallSeaError, match="HTTP 500: server sad"):
+        client.request_session("alice", "MyApp", "MyTeam", "TestClient")
 
 
 # ---- Upload ----
@@ -155,6 +299,30 @@ def test_upload_if_match_conflict(session):
         )
     )
     with pytest.raises(SmallSeaConflict):
+        session.upload_if_match("file.txt", b"updated", "stale-etag")
+
+
+@respx.mock
+def test_upload_if_match_conflict_with_other_error_string(session):
+    respx.post(f"{BASE_URL}/cloud_file").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error": "cas_conflict",
+                "detail": "CAS conflict: file was modified concurrently",
+            },
+        )
+    )
+    with pytest.raises(SmallSeaConflict, match="CAS conflict"):
+        session.upload_if_match("file.txt", b"updated", "stale-etag")
+
+
+@respx.mock
+def test_upload_if_match_conflict_with_non_json_body(session):
+    respx.post(f"{BASE_URL}/cloud_file").mock(
+        return_value=httpx.Response(409, text="CAS conflict")
+    )
+    with pytest.raises(SmallSeaConflict, match="CAS conflict"):
         session.upload_if_match("file.txt", b"updated", "stale-etag")
 
 
