@@ -11,9 +11,13 @@ Issue: https://github.com/benjaminy/small-sea-collective/issues/119
 
 The Hub returns `409 Conflict` from `POST /sessions/request` when a session request is well-formed but the Manager must provision or repair app state before the app can open a berth session.
 The structured response contains `error: "app_bootstrap_required"`, `reason`, `app`, and `team`.
+This body is not wrapped in `detail`.
 
 The current `small_sea_client.client._check_response()` maps every `409` to `SmallSeaConflict`.
+It first computes `detail = resp.json().get("detail", resp.text)`, then branches on status code.
 That is appropriate for compare-and-swap cloud file conflicts, but it erases the structured app-bootstrap rejection from session callers.
+The implementation therefore needs a small structural refactor:
+parse the raw JSON response body once, inspect the top-level body for the app-bootstrap shape, and only then derive the generic `detail` fallback used by other errors.
 
 The Hub spec currently lists these reason values:
 
@@ -25,22 +29,43 @@ The Hub spec currently lists these reason values:
 ## Proposed Shape
 
 Introduce a narrow app-bootstrap representation in `packages/small-sea-client`.
-Likely pieces:
+The public API will be an exception, matching existing client error siblings and preserving the existing non-error return shape of `request_session()`, `start_session()`, and `open_session()`.
 
-- a `SmallSeaAppBootstrapRequired` exception or result helper carrying `reason`, `app`, and `team`
-- an exported predicate or formatter if the surrounding app code wants to handle the state without catching a broad conflict
-- a canonical user-facing instruction that tells the user to open Manager for the named app/team
+`SmallSeaAppBootstrapRequired` should subclass `SmallSeaError`, not `SmallSeaConflict`.
+App bootstrap is not a CAS conflict, and callers catching `SmallSeaConflict` for upload conflicts should not accidentally swallow Manager-provisioning failures.
+
+The exception should carry:
+
+- `reason: str`
+- `app: str`
+- `team: str | None`
+- `user_message`, a property with canonical app-facing copy that tells the user to open Manager for the named app/team
+
+Reason strings should be preserved raw rather than validated against a closed enum.
+This follows the parent invariant from issue 111:
+the response contract must stay stable enough that an app written today can keep using the same response codes after later branches add finer-grained reasons.
 
 Keep CAS conflict behavior unchanged for non-bootstrap `409` responses.
 Do not add compatibility shims beyond the clean API because the repo is pre-alpha.
+The four current reason strings will appear in the Hub spec/server path and client micro tests.
+Do not introduce a shared Hub/client constants module for this branch; that coupling would be heavier than the small deliberate duplication.
+
+The parser should key on response body shape, not endpoint path.
+Today only `/sessions/request` is expected to emit this rejection, but a body-shaped parser automatically covers any future endpoint that returns the same stable shape.
+
+Current app scope looks narrow.
+Shared File Vault uses `start_session()` in production code but does not have pre-existing app-bootstrap parsing, so the caller-search step is expected to be a no-op unless a later search turns up another caller.
 
 ## Implementation Steps
 
 1. Read the existing `small-sea-client` API and nearby app callers to choose the least surprising public surface.
-2. Update `_check_response()` so the app-bootstrap rejection is detected before generic `409` conflict handling.
-3. Export the new helper/exception from `small_sea_client.client` and, if the package starts exporting symbols later, from `small_sea_client.__init__`.
-4. Add focused micro tests in `packages/small-sea-client/tests/test_client.py` for recognition, field preservation, formatting, and non-bootstrap conflict behavior.
-5. Search app callers for hand-rolled app-bootstrap handling and update any direct duplication found in scope.
+2. Refactor `_check_response()` to parse the raw JSON body before deriving `detail`.
+   Detect top-level `{"error": "app_bootstrap_required", ...}` before generic `409` conflict handling.
+3. Add `SmallSeaAppBootstrapRequired(SmallSeaError)` with preserved `reason`, `app`, `team: str | None`, and a `user_message` property.
+4. Export the new exception from `small_sea_client.client`.
+   Leave `small_sea_client.__init__` alone unless the package adopts public re-exports in this branch.
+5. Add focused micro tests in `packages/small-sea-client/tests/test_client.py` for recognition, field preservation, formatting, raw reason preservation, and non-bootstrap conflict behavior.
+6. Search app callers for hand-rolled app-bootstrap handling and update any direct duplication found in scope.
 
 ## Validation Plan
 
@@ -50,11 +75,15 @@ the branch accomplishes issue 119, and the repo remains consistent and maintaina
 ### Goal Validation
 
 - Add a micro test where `/sessions/request` returns `409` with `error: "app_bootstrap_required"`.
-  Assert that the client raises or returns the new stable helper type with exact `reason`, `app`, and `team` values.
+  Assert that the client raises `SmallSeaAppBootstrapRequired` with exact `reason`, `app`, and `team` values.
 - Add a micro test for each supported reason value, or a parametrized test over the full current reason vocabulary.
   This guards against accidentally treating only `app_unknown` as special.
-- Add a micro test for missing optional fields or malformed bootstrap-shaped details if the chosen API supports a graceful fallback.
-  The expected behavior should be explicit rather than discovered later by app authors.
+- Add a micro test for `team: null`.
+  Assert that the exception preserves `team is None` and still produces useful Manager-oriented `user_message` copy.
+- Add a micro test with an unknown future `reason`.
+  Assert that the raw reason is preserved instead of rejected.
+- Add a micro test showing that a response with bootstrap fields under `detail` is not required for recognition.
+  The parser must inspect the raw top-level JSON body.
 - Add a micro test proving the user-facing instruction includes Manager, the app name, and the team name.
   This verifies the reusable copy is app-ready, not merely machine-detectable.
 
@@ -62,14 +91,11 @@ the branch accomplishes issue 119, and the repo remains consistent and maintaina
 
 - Keep the parser in `small-sea-client` only.
   Apps should consume the helper rather than learn Hub error internals.
+- Assert `SmallSeaAppBootstrapRequired` is a sibling of `SmallSeaConflict` under `SmallSeaError`.
+  This prevents CAS conflict handlers from catching bootstrap-required rejections by accident.
 - Preserve existing `SmallSeaConflict` behavior for CAS `409` responses with a dedicated regression micro test.
 - Run the targeted small-sea-client micro tests:
   `uv run pytest packages/small-sea-client/tests/test_client.py`
 - If app callers are updated, run their package-level relevant micro tests as well.
   Prefer local mocked HTTP tests and avoid internet communication.
-- Review `rg "app_bootstrap_required|SmallSeaConflict|409"` output after implementation to confirm no new duplicate parsing was introduced.
-
-## Open Questions
-
-- Should the stable API be an exception only, or should there also be a small formatting helper for apps that want to display the Manager instruction consistently?
-- Should unknown future reason strings be preserved as raw strings, or should the helper validate against the current vocabulary and raise a generic client error for unknown values?
+- Review `rg "app_bootstrap_required|SmallSeaAppBootstrapRequired" packages/` output after implementation to confirm no new duplicate parsing was introduced.
