@@ -26,7 +26,7 @@ The end result should be boring to reason about: Hub sightings remain local obse
 The initial policy for this branch is:
 
 1. Hub sightings are **active local observations**, not permanent audit history.
-2. Resolved sightings are cleared explicitly by Manager after Manager re-evaluates current NoteToSelf/team state and proves that no prompt remains, even if Manager-local disposition would hide the row from the UI.
+2. Resolved sightings are cleared automatically by Manager refresh after Manager re-evaluates current NoteToSelf/team state and proves that no prompt remains, even if Manager-local disposition would hide the row from the UI.
 3. Stale unresolved sightings age out from the Hub after a 30-day no-retry window.
 4. Dismissed prompts are still Manager-owned local disposition state.
 5. If a dismissed but unresolved app keeps retrying, the Hub row keeps getting bumped and Manager keeps suppressing it locally.
@@ -34,6 +34,8 @@ The initial policy for this branch is:
 
 The plan should revisit this policy before coding.
 If the final decision changes, update this section first and make the implementation match the written policy.
+The 30-day value is a v1 product heuristic, not an empirically proven constant.
+It should be easy to change later if real usage suggests 14, 90, or some other window.
 
 ## Non-Negotiable Invariants
 
@@ -88,12 +90,14 @@ Rationale:
 Working decision: the Hub prunes sightings whose `last_seen_at` is older than the configured stale window through a dedicated Manager-only `POST /sightings/prune-stale` endpoint.
 The default stale window is 30 days.
 Pruning is scoped to the participant derived from the Manager/Core session.
+Manager refresh lists and evaluates sightings before pruning stale rows, then returns prompts computed from that pre-prune snapshot.
 
 Rationale:
 
 - A sighting that has not been bumped for a long time probably represents an app that stopped trying.
 - Manager refresh is the canonical authenticated path and gives the cleanup one predictable trigger.
-- `GET /sightings` remains read-only; Manager calls prune before listing.
+- `GET /sightings` remains read-only.
+- Listing before pruning prevents the first refresh after a long absence from silently erasing old observations before the user sees them.
 - Pruning during app-driven record would couple an ordinary bootstrap failure to mass deletion work.
 - Explicit Manager-triggered pruning avoids a background worker without making a GET endpoint mutate state.
 - Participant-scoped pruning preserves the boundary that a Manager session for participant A only mutates participant A's sighting rows.
@@ -120,6 +124,8 @@ Rationale:
 ### D5. What is the cleanup endpoint shape?
 
 Working decision: use `POST /sightings/clear` with an exact tuple body plus a `last_seen_at` precondition from the list snapshot.
+The `team_name` wire field is nullable because raw sightings may have `team_name = null`.
+Manager must echo tuple values from `GET /sightings` without normalizing them.
 
 ```http
 POST /sightings/clear
@@ -130,7 +136,18 @@ Content-Type: application/json
   "app_name": "SharedFileVault",
   "team_name": "ProjectX",
   "client_name": "shared-file-vault:default",
-  "last_seen_at": "2026-05-01T12:00:00+00:00"
+  "last_seen_at": "2026-05-01T12:00:00.000000+00:00"
+}
+```
+
+The timestamp above is illustrative.
+The actual precondition is exact string equality against the `last_seen_at` value returned by `GET /sightings`.
+
+Response:
+
+```json
+{
+  "deleted_count": 1
 }
 ```
 
@@ -140,14 +157,40 @@ Rationale:
 - `DELETE` with a body is poorly supported by some HTTP stacks.
 - The tuple body matches the existing unique key and the `GET /sightings` row shape.
 - The Hub derives `participant_hex` from the session token and does not accept it from the caller.
-- `team_name`, `app_name`, `client_name`, and `last_seen_at` are all required.
-  There is no wildcard delete.
-- The endpoint deletes only if the row still has the same `last_seen_at` value Manager evaluated.
+- `team_name`, `app_name`, `client_name`, and `last_seen_at` keys are all required.
+  `team_name` may be JSON `null`; empty strings are literal values; there is no wildcard delete.
+- The backend must match `team_name IS NULL` for JSON `null` and `team_name = ?` otherwise.
+- The endpoint deletes only if the row still has the same `last_seen_at` string Manager evaluated.
 - The endpoint is idempotent: if no row matches, or if a retry bumped `last_seen_at`, it returns success with `deleted_count = 0`.
   Manager treats `deleted_count = 0` as non-fatal.
+- Manager and the client helper must never parse and reformat `last_seen_at` for the clear precondition.
 
 The implementation should use the same `_require_session` dependency as `GET /sightings`, including the same `ss_session.app_name == Settings().app_name` Manager/Core guard.
 That means the auth convention remains `Authorization: Bearer <token>`.
+
+### D6. What is the stale prune endpoint shape?
+
+Working decision: use `POST /sightings/prune-stale` with an empty JSON body.
+
+```http
+POST /sightings/prune-stale
+Authorization: Bearer <Core NoteToSelf session token>
+Content-Type: application/json
+
+{}
+```
+
+Response:
+
+```json
+{
+  "pruned_count": 3
+}
+```
+
+The endpoint returns `200` on success.
+Authorization failures use the same `401`/`403` behavior as `GET /sightings`.
+The Hub derives `participant_hex` from the Manager/Core session token, applies the 30-day default stale window, and prunes only that participant's rows.
 
 ## Branch Contract
 
@@ -166,7 +209,8 @@ The branch is successful if all of the following are true:
 ### Phase 0 - Freeze Policy
 
 - Treat this plan's decisions as the branch policy unless implementation finds a contradiction.
-- Record the final lifecycle in `packages/small-sea-hub/spec.md` and `packages/small-sea-manager/spec.md` before larger code edits.
+- Record the final lifecycle policy paragraph in `packages/small-sea-hub/spec.md` and `packages/small-sea-manager/spec.md` before larger code edits.
+  Endpoint request/response details can land in Phase 4 after the API shape is implemented.
 - Keep the branch plan under `.IN_PROGRESS/codex-issue-120-sightings-cleanup-policy/PLAN.md`, matching the current AGENTS.md workflow for nontrivial work.
 
 ### Phase 1 - Hub Cleanup Primitives
@@ -176,15 +220,17 @@ The branch is successful if all of the following are true:
 - Add a module-level default stale window constant of 30 days, with a `SmallSeaBackend(...)` constructor parameter for tests.
   Do not expose an environment variable or production config knob on this branch.
 - Introduce a `_now()` method or constructor-injected clock and route both `record_unknown_app_sighting(...)` and stale pruning through it.
+  Other `datetime.now(...)` call sites in `backend.py` are out of scope unless they directly participate in sighting cleanup.
 - Add a Manager-only `POST /sightings/prune-stale` endpoint that calls stale pruning scoped to the session participant.
   Do not prune from `record_unknown_app_sighting(...)`, `list_unknown_app_sightings(...)`, or the clear endpoint.
 - Keep `GET /sightings` read-only.
 - Compare stale timestamps as UTC ISO-8601 strings in SQL.
-  This relies on all writes using the same `_now().isoformat()` UTC format; micro tests should pin boundary behavior.
+  This relies on all sighting writes using the same `_now().isoformat()` UTC format, including the `+00:00` offset and whatever fractional precision the clock provides; micro tests should pin boundary behavior.
 - Add an authenticated HTTP endpoint for Manager-driven clear.
 - Keep authorization identical to `GET /sightings`: `_require_session`, then the Manager/Core `Settings().app_name` guard.
+  Prefer a shared `_require_manager_session` dependency/helper so `GET /sightings`, `POST /sightings/clear`, and `POST /sightings/prune-stale` cannot drift.
 - Require exact `app_name`, `team_name`, `client_name`, and `last_seen_at` fields in the clear payload.
-  Treat empty strings as literal values, not wildcards.
+  `team_name` is `Optional[str]`; treat empty strings as literal values, not wildcards.
 - Return success with `deleted_count = 0` when no row matches.
 
 Exit gate:
@@ -197,6 +243,7 @@ Hub micro tests cover successful clear, clear idempotency, guarded-clear mismatc
 - Keep it scoped to confirmed sessions, parallel to `Session.app_sightings()`.
 - Do not expose cleanup from ordinary app bootstrap clients.
 - Build the clear payload directly from the sighting tuple keys: `app_name`, `team_name`, `client_name`, and `last_seen_at`.
+  Preserve `team_name = None` and the `last_seen_at` string exactly as returned by the Hub.
 - Update client-side docs or README material that describes `Session.app_sightings()` so the new clear helper is discoverable to Manager-side code.
 
 Exit gate:
@@ -205,7 +252,8 @@ Client micro tests prove the clear request body shape, the prune helper path, an
 ### Phase 3 - Manager Integration
 
 - In `TeamManager.refresh_app_sightings()`, evaluate `current_app_sighting_prompt(...)` before applying Manager-local disposition.
-- At the start of refresh, call the client prune helper once, then call `Session.app_sightings()`.
+- During refresh, call `Session.app_sightings()` first, evaluate and clear resolved rows from that snapshot, then call the client prune helper once.
+  Return prompts computed from the pre-prune snapshot so a long-absent Manager shows stale observations once before pruning removes them from future refreshes.
 - When `current_app_sighting_prompt(...)` returns `None`, call cleanup with the loop-scope sighting tuple.
   No new tracking structure is needed.
 - Apply `app_sighting_dismissed(...)` only to rows that still have a current prompt.
@@ -215,11 +263,12 @@ Client micro tests prove the clear request body shape, the prune helper path, an
   If a future branch sees enough rows for this to matter, it can add a batch endpoint.
 - The new ordering intentionally does extra local DB work for dismissed-but-still-active rows.
   That cost is acceptable because it prevents dismissal from pinning resolved rows forever.
-- If prune or any per-row cleanup fails during refresh, continue evaluating remaining rows when possible, collect the failures, and raise one summarized error after the loop.
-  The web layer should surface that through the existing non-fatal refresh pattern: "Saved locally, but could not refresh sightings. Reconnect to Hub and Refresh. (...)" after action-triggered refreshes, and an inline error on explicit refresh.
+- If prune or any per-row cleanup fails during refresh, continue evaluating remaining rows when possible, collect the failures, and surface one summarized warning after the loop.
+  The implementation may use a small result object or an exception carrying partial prompts, but the behavior is fixed: prompts already computed from the list snapshot are rendered alongside the warning.
+  The existing web pattern can carry the warning as a non-fatal refresh message: "Saved locally, but could not refresh sightings. Reconnect to Hub and Refresh. (...)" after action-triggered refreshes, and an inline error on explicit refresh.
 
 Exit gate:
-Manager micro tests prove stale pruning is called before listing, resolved rows are cleared even when dismissed, guarded-clear mismatch is non-fatal, dismissed unresolved rows are not cleared, rows whose team is not locally cloned are not cleared, cleanup failures render the chosen non-fatal UI error, and refresh output remains current prompts rather than raw Hub rows.
+Manager micro tests prove stale pruning is called after listing/evaluation, resolved rows are cleared even when dismissed, guarded-clear mismatch is non-fatal, dismissed unresolved rows are not cleared, rows whose team is not locally cloned are not cleared, cleanup failures render the chosen non-fatal UI error alongside computed prompts, and refresh output remains current prompts rather than raw Hub rows.
 
 ### Phase 4 - Docs And Wrap-Up
 
@@ -228,7 +277,9 @@ Manager micro tests prove stale pruning is called before listing, resolved rows 
 - Update Hub spec to say sightings are not synced to peers and are not exposed to apps.
 - Update Manager spec with the explicit clear-after-resolution rule.
 - Preserve or add a Manager/Hub parity micro test for `current_app_sighting_prompt(...)` versus Hub `_resolve_berth` rejection predicates.
+  Contract: every case where Hub `_resolve_berth` would reject an app-bootstrap request must produce a non-`None` prompt from `current_app_sighting_prompt(...)`.
   Cleanup makes predicate drift more costly because a false "resolved" result can delete the observation that would have exposed the mismatch.
+- Document the resolved-app no-flap assumption: once participant registration and team activation exist, Hub `_resolve_berth` should open the session and must not call `record_unknown_app_sighting(...)` for that same tuple.
 - Update any OpenAPI/schema surface if the project has one for Hub endpoints.
 - Add `.IN_PROGRESS/codex-issue-120-sightings-cleanup-policy/FOLLOW-UP.md` only if the branch discovers real follow-up work.
 - Create the final design record and review note after implementation.
@@ -252,6 +303,7 @@ the issue goal was actually decided and implemented, and the app-bootstrap trust
 - A micro test shows `GET /sightings` does not prune or otherwise mutate rows.
 - A micro test shows the Hub does not need NoteToSelf/team DB reads for cleanup.
 - A code search verifies cleanup writes only `small_sea_collective_local.db`.
+  Concretely, grep cleanup paths for SQL writes or path references involving `core.db`, NoteToSelf, or team DBs; those must not appear.
 
 ### Manager Correctness Evidence
 
@@ -264,12 +316,17 @@ the issue goal was actually decided and implemented, and the app-bootstrap trust
 - A micro test starts with a row whose team is not locally cloned.
   After refresh, Manager keeps the conservative prompt and the Hub row remains.
 - A micro test verifies retry-after-clear records a new sighting with `seen_count = 1`.
+  This is mostly existing upsert behavior; this branch should preserve it rather than invent a second creation path.
 - A micro test verifies a clear request with stale `last_seen_at` returns `deleted_count = 0` and leaves the bumped row in place.
+- A micro test verifies `team_name = null` sightings can be cleared by echoing JSON `null` in the clear payload.
+- A parity micro test proves Hub-rejected bootstrap states stay non-`None` in Manager prompt evaluation.
+- A micro test proves resolved rows do not flap by being cleared and then immediately re-recorded on the next successful app request.
 
 ### Stale Policy Evidence
 
 - A micro test calls `POST /sightings/prune-stale` with one row just before and one row just after the stale cutoff.
   Only the older row is pruned.
+- A Manager refresh micro test proves stale rows are shown once from the pre-prune snapshot, then absent on the next refresh.
 - A micro test verifies `record_unknown_app_sighting(...)` does not prune unrelated stale rows.
 - A micro test verifies `POST /sightings/clear` does not prune unrelated stale rows.
 - A micro test verifies fresh retries update `last_seen_at` and avoid accidental pruning.
@@ -327,3 +384,6 @@ This branch needs a narrow clear operation and stale prune behavior, not a Hub-a
 8. Stale window and clock injection are in-process constructor seams for tests, not production config.
 9. V1 accepts one cleanup HTTP call per resolved row.
 10. Stale pruning happens through `POST /sightings/prune-stale`; `GET /sightings` remains read-only.
+11. Manager refresh lists and evaluates before pruning so stale rows are visible once after long absence.
+12. `team_name` is nullable on the clear wire shape and matched with `IS NULL`.
+13. `last_seen_at` preconditions use exact string equality from the Hub list response.
