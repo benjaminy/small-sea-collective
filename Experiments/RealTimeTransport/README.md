@@ -37,27 +37,61 @@ They should not be required for the first real-time transport design.
 
 Small Sea can use services.
 It should avoid services that become application-specific authorities.
+It should also avoid forcing regular users to operate infrastructure or to coordinate provider compatibility across teams in order to use the baseline path.
 
-Good candidate service shapes:
+### Two service shapes
 
-- generic cloud storage
-- generic notification delivery
-- generic NAT traversal or rendezvous
-- generic packet relay
-- generic mesh networking
-- user-controlled relay infrastructure
+Connectivity services split into two shapes with very different UX implications.
 
-Bad candidate service shapes:
+**Personal-egress services.**
+Each participant brings their own, or one participant brings one for the team.
+Heterogeneity is fine; one-sided provisioning is fine.
+Cloud storage is the canonical example: Alice writes to Alice's bucket, Bob reads from a URL — they don't need the same vendor.
+TURN relays have the same shape: only one side needs the credential, both peers connect to it.
+Notification gateways too.
+
+**Shared-network services.**
+Every participant must be a member of the same instance.
+The value comes from co-membership.
+Tailscale, ZeroTier, NetBird and similar mesh VPNs work this way.
+"Alice has Tailscale, Bob doesn't" is useless for that pair.
+"Team A uses Tailscale, Team B uses ZeroTier" is useless for cross-team work.
+
+Personal-egress services compose; shared-network services require coordination.
+The baseline transport path should be built entirely from personal-egress services.
+
+### Default tier
+
+Services regular users can adopt without operating infrastructure or matching provider tenancy with anyone:
+
+- generic cloud storage they already have (S3-compatible, Dropbox, iCloud, Google Drive, etc.)
+- generic notification delivery (push notifications, ntfy-shaped vendors)
+- vendor STUN (free, ambient — Google, Cloudflare)
+- vendor TURN (paid SaaS — Twilio Network Traversal, Cloudflare Calls, Xirsys, Metered, Vonage)
+- a personal Small Sea Relay deployed on a PaaS-shaped substrate (open question below)
+
+### Power-user tier
+
+Acceptable but never required for the baseline path:
+
+- mesh VPN systems (Tailscale, ZeroTier, NetBird) — useful only when every team member is on the same product, so the matched-membership cost must be documented
+- self-hosted relay on a VPS — operationally heavier than the PaaS option above, same shape
+- user-managed private networking between Hubs
+
+### Bad service shapes
+
+Regardless of tier:
 
 - a canonical Small Sea chat server
 - a server that understands app-specific chat semantics
 - a server that is the source of truth for membership or message history
 - a server that apps contact directly, bypassing the Hub
 
-The guiding line:
+The guiding lines:
 
 > Generic connectivity services are acceptable.
 > Bespoke application services are not.
+> No team member should have to operate infrastructure or negotiate provider compatibility with another team for the baseline path to work.
 
 ## Transport Modes
 
@@ -68,9 +102,10 @@ The external service helps peers discover each other, but the steady-state data 
 
 Candidate provider families:
 
-- WebRTC data channels with ICE/STUN
-- mesh VPN systems such as Tailscale or ZeroTier
-- future Hub-to-Hub transports over user-managed private networking
+- WebRTC data channels with ICE/STUN — STUN is ambient and free, signaling is the Hub's job, falls back to TURN on hard NATs. Personal-egress shape, fits the default tier.
+- libp2p hole-punching (DCUtR) and circuit relay v2 — the protocol unbundles rendezvous from the rest of a VPN cleanly, but has essentially no SaaS market, so production use means running infra. Demoted from default tier on that basis.
+- mesh VPN systems such as Tailscale or ZeroTier — power-user tier; matched-membership requirement makes them unfit for the baseline path.
+- future Hub-to-Hub transports over user-managed private networking — power-user tier.
 
 Questions:
 
@@ -87,10 +122,12 @@ The relay should move encrypted bytes or packets and should not understand app s
 
 Candidate provider families:
 
-- TURN-style relay
-- mesh VPN relay paths
-- a user-controlled VPS relay running a generic protocol
-- future Small Sea-compatible relay software that is deliberately app-opaque
+- vendor TURN (Twilio, Cloudflare Calls, Xirsys, Metered, Vonage) — personal-egress shape, no infrastructure to operate, fits the default tier.
+- a personal Small Sea Relay deployed on a PaaS-shaped substrate (Fly.io, Railway, Render, Cloudflare Workers / Durable Objects, Deno Deploy). Two distinct UX problems live here:
+  - *operator setup* (signup, billing, deploy click-through, custom domain, certificate, billing-card permanence) — the hard part. Needs a UX investigation against real non-technical users on each candidate platform.
+  - *member onboarding to that relay* — solved by distributing the relay address and shared secret over the existing sync layer (see Config Distribution below). No out-of-band cred sharing, automatic rotation, multi-relay redundancy lists.
+- mesh VPN relay paths — power-user tier; same matched-membership cost as above.
+- self-hosted VPS relay running a generic protocol — power-user tier; operationally heavier than the PaaS option, same shape.
 
 Questions:
 
@@ -127,6 +164,26 @@ Questions:
 - Can notification payloads stay opaque and minimal?
 - How should duplicates, delays, and missed notifications be modeled?
 - Which apps are acceptable on mailbox fallback, and which must report that live mode is unavailable?
+
+## Config Distribution
+
+Long-lived transport config — relay URLs, shared secrets, provider type, multi-relay lists — should ride over the existing Small Sea sync layer rather than be exchanged out-of-band.
+
+Bootstrap order, with no chicken-and-egg:
+
+1. Mailbox tier (vendor storage + vendor notifications) works without any relay.
+2. Sync layer comes online over mailbox.
+3. Sync distributes relay config as an optimization layer that the Hub picks up on next read.
+
+Properties this gives:
+
+- New devices joining the team get transport config as part of normal bootstrap.
+- Rotation: write a new value to the synced config, members pick it up.
+- Redundancy: synced config is a list; the Hub picks an available relay.
+- Failover: if all listed relays are unreachable, the Hub falls back to mailbox mode automatically.
+
+Constraint: only long-lived config goes through sync.
+Short-lived per-session credentials (e.g., 60-second TURN tokens) are minted at the relay on connect — sync's eventual-consistency latency is wrong for them.
 
 ## Candidate Abstraction
 
@@ -189,15 +246,17 @@ Create a capability matrix for candidate generic services.
 
 Scope:
 
-- WebRTC ICE/STUN/TURN
-- Tailscale-style mesh connectivity
-- ZeroTier-style mesh connectivity
-- generic VPS relay
+- WebRTC ICE/STUN/TURN with vendor TURN providers
+- libp2p (DCUtR + circuit relay v2)
+- mesh VPN connectivity (Tailscale, ZeroTier, NetBird) — surveyed as power-user tier only
+- personal Small Sea Relay deployed on PaaS-shaped substrates (Fly.io, Railway, Render, Cloudflare Workers / Durable Objects, Deno Deploy) — UX-focused, not just feature matrix
 - storage plus notification fallback
 
 Validation:
 
 - Confirm claims against current provider documentation.
+- Classify each candidate as personal-egress or shared-network.
+- Classify each candidate as default tier or power-user tier under the service philosophy.
 - Record what must be self-hosted, user-subscribed, or vendor-operated.
 - Record what metadata each provider can observe.
 - Record whether the provider can be hidden behind the Hub.
@@ -351,7 +410,8 @@ The current leaning is:
 - Is there one abstraction that cleanly covers direct, relayed, and mailbox modes?
 - Should mailbox fallback use the same API as live transport, or a related but visibly different API?
 - How much provider configuration belongs to the Manager versus the Hub?
-- How should teams advertise supported live transport providers to each other?
+- For cross-team interaction, prefer a small blessed menu of provider shapes (vendor STUN, vendor TURN, vendor cloud storage, vendor notifications, personal Small Sea Relay) over per-team provider negotiation. Open question: which exact menu, and how is it versioned?
+- Which PaaS-shaped substrates pass the "non-technical person deploys this and forgets about it for two years" bar? This is a UX investigation, not a software project — and gates whether the personal-relay tier is real.
 - Can relay choice be per-team, per-device, or both?
 - What is the minimum viable security envelope for opaque live payloads?
 - Should live payloads be durable by default, or should durability always be an app-level choice?
