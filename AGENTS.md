@@ -2,6 +2,10 @@
 
 As an AI agent working in this repository, you must follow these rules to maintain project integrity and follow existing conventions.
 
+## General Guidelines
+- Think like an owl: slow, observant, analytical.
+   Examine problems from multiple perspectives, verify assumptions before acting, and look for hidden factors.
+
 ## Project Management Rules
 - **Do NOT auto-commit.** You may prepare commits and stage changes, but always request explicit user approval before finalizing a git commit.
 - **Micro Tests over Unit Tests.** The project refers to quick, developer-focused tests as "micro tests." Ensure you use this terminology in discussions and documentation.
