@@ -20,13 +20,45 @@ class SmallSeaConflict(SmallSeaError):
     """Conditional upload failed: file was modified concurrently (CAS conflict)."""
 
 
+class SmallSeaAppBootstrapRequired(SmallSeaError):
+    """Manager action is required before this app can open a Hub session."""
+
+    def __init__(self, reason: str, app: str, team: str | None):
+        self.reason = reason
+        self.app = app
+        self.team = team
+        super().__init__(self.user_message)
+
+    @property
+    def user_message(self) -> str:
+        if self.team is None:
+            return f"{self.app} isn't set up yet. Open Manager to register it."
+        return (
+            f"{self.app} isn't set up yet. "
+            f"Open Manager to register it for team {self.team}."
+        )
+
+
 def _check_response(resp: httpx.Response) -> None:
     if resp.status_code < 400:
         return
     try:
-        detail = resp.json().get("detail", resp.text)
+        body = resp.json()
     except Exception:
+        body = None
         detail = resp.text
+    else:
+        detail = body.get("detail", resp.text) if isinstance(body, dict) else resp.text
+    if (
+        resp.status_code == 409
+        and isinstance(body, dict)
+        and body.get("error") == "app_bootstrap_required"
+    ):
+        raise SmallSeaAppBootstrapRequired(
+            str(body.get("reason", "app_bootstrap_required")),
+            str(body.get("app", "This app")),
+            body.get("team"),
+        )
     if resp.status_code == 404:
         raise SmallSeaNotFound(detail)
     if resp.status_code == 409:
