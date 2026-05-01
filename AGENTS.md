@@ -10,7 +10,7 @@ As an AI agent working in this repository, you must follow these rules to mainta
    Keep schema/version markers in place so future compatibility work remains possible.
 - The typical workflow for a nontrivial unit of work should be:
    1. Make a git branch for the current task
-   2. Make a branch folder for working docs in .IN_PROGRESS/{name of branch}
+   2. Make a branch folder for working docs in .IN_PROGRESS/{branch slug}
    3. In the branch folder make a PLAN.md file
       - My boss thinks AIs are not reliable enough for serious work yet.
          The validation part of the plan needs to be even better than would be expected on a great software engineering team.
@@ -18,14 +18,13 @@ As an AI agent working in this repository, you must follow these rules to mainta
          1. The goals of the branch have been accomplished
 	 2. The general integrity of the repo (low coupling, maintainability, consistency, etc) has been maintained or improved
    4. Discuss, implement, debug, optimize
+      - If any follow-up work to this branch is discovered (updates to existing GitHub issues or new issues to create), record them in .IN_PROGRESS/{branch slug}/FOLLOW-UP.md
    5. After work is complete on the branch, wrap-up by creating the following documents (from PLAN.md, NOTES.md, anything else that came up during implementation):
-      - .IN_PROGRESS/{name of branch}/FOLLOW-UP.md
-         - This is a list of github changes that should be made:
-	    - issues to close, comment on, or create
-      - .IN_PROGRESS/{name of branch}/design-record-{name}.md
+      - .IN_PROGRESS/{branch slug}/design-record-{branch slug}.md
          - This is a highly boiled down version of the plan with a focus on interesting choices a developer might want to revisit some years down the line.
-      - .IN_PROGRESS/{name of branch}/review-note.md
+      - .IN_PROGRESS/{branch slug}/review-note.md
          - A very brief note to put in the PR to orient a reviewer
+   6. A human will manually do the PR, move files as appropriate and delete .IN_PROGRESS/{branch slug}
 
 ## Architectural Mandates
 - **Hub as Gateway**: In production, all Small Sea internet traffic must go through the **Hub**.
