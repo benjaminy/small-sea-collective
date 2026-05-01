@@ -41,6 +41,16 @@ The exception should carry:
 - `team: str | None`
 - `user_message`, a property with canonical app-facing copy that tells the user to open Manager for the named app/team
 
+`SmallSeaAppBootstrapRequired.__init__` should pass the rendered user-facing message to `super().__init__(...)`.
+Anything logging `str(exc)` should see the same useful Manager instruction that an app would display, not an empty exception representation.
+
+Canonical message wording:
+
+- team present:
+  `{app} isn't set up yet. Open Manager to register it for team {team}.`
+- team absent:
+  `{app} isn't set up yet. Open Manager to register it.`
+
 Reason strings should be preserved raw rather than validated against a closed enum.
 This follows the parent invariant from issue 111:
 the response contract must stay stable enough that an app written today can keep using the same response codes after later branches add finer-grained reasons.
@@ -52,6 +62,8 @@ Do not introduce a shared Hub/client constants module for this branch; that coup
 
 The parser should key on response body shape, not endpoint path.
 Today only `/sessions/request` is expected to emit this rejection, but a body-shaped parser automatically covers any future endpoint that returns the same stable shape.
+JSON parse failures must still fall through to `detail = resp.text` exactly as today.
+Non-JSON error responses should continue to raise useful generic client errors rather than failing inside the parser refactor.
 
 Current app scope looks narrow.
 Shared File Vault uses `start_session()` in production code but does not have pre-existing app-bootstrap parsing, so the caller-search step is expected to be a no-op unless a later search turns up another caller.
@@ -65,7 +77,8 @@ Shared File Vault uses `start_session()` in production code but does not have pr
 4. Export the new exception from `small_sea_client.client`.
    Leave `small_sea_client.__init__` alone unless the package adopts public re-exports in this branch.
 5. Add focused micro tests in `packages/small-sea-client/tests/test_client.py` for recognition, field preservation, formatting, raw reason preservation, and non-bootstrap conflict behavior.
-6. Search app callers for hand-rolled app-bootstrap handling and update any direct duplication found in scope.
+6. Search app callers for hand-rolled app-bootstrap handling.
+   Expected no-op given the current scan; if hits appear, absorb only trivial updates and record larger app-side wiring as follow-up work.
 
 ## Validation Plan
 
@@ -85,7 +98,10 @@ the branch accomplishes issue 119, and the repo remains consistent and maintaina
 - Add a micro test showing that a response with bootstrap fields under `detail` is not required for recognition.
   The parser must inspect the raw top-level JSON body.
 - Add a micro test proving the user-facing instruction includes Manager, the app name, and the team name.
-  This verifies the reusable copy is app-ready, not merely machine-detectable.
+  Assert the exact canonical sentence so apps can display this property verbatim.
+- Add a micro test proving `str(exc)` uses the same Manager-oriented message as `exc.user_message`.
+- Add a micro test for a `500` with a non-JSON body.
+  Assert it still raises `SmallSeaError` with the response text, preserving the pre-refactor fallthrough behavior.
 
 ### Integrity Validation
 
@@ -93,7 +109,8 @@ the branch accomplishes issue 119, and the repo remains consistent and maintaina
   Apps should consume the helper rather than learn Hub error internals.
 - Assert `SmallSeaAppBootstrapRequired` is a sibling of `SmallSeaConflict` under `SmallSeaError`.
   This prevents CAS conflict handlers from catching bootstrap-required rejections by accident.
-- Preserve existing `SmallSeaConflict` behavior for CAS `409` responses with a dedicated regression micro test.
+- Preserve existing `SmallSeaConflict` behavior for CAS `409` responses with dedicated regression micro tests:
+  one `409` with JSON that has no top-level `error` key or a different `error` value, and one `409` with a non-JSON body.
 - Run the targeted small-sea-client micro tests:
   `uv run pytest packages/small-sea-client/tests/test_client.py`
 - If app callers are updated, run their package-level relevant micro tests as well.
