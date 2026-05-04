@@ -60,6 +60,38 @@ Tailscale, ZeroTier, NetBird and similar mesh VPNs work this way.
 Personal-egress services compose; shared-network services require coordination.
 The baseline transport path should be built entirely from personal-egress services.
 
+### Managed sync services
+
+The local-first ecosystem also has a growing managed sync-service category.
+This is worth tracking, but it is not the same thing as generic live transport.
+
+Examples to survey:
+
+- Jamsocket / Y-Sweet — hosted and self-hostable Yjs sync infrastructure.
+- Cloudant / CouchDB / PouchDB — mature hosted replication precedent.
+- Electric Cloud — hosted sync from Postgres-shaped durable state.
+- PowerSync Cloud — managed database-to-client sync.
+- Jazz Cloud — local-first app data, permissions, files, and sync.
+- Dexie Cloud — hosted sync for Dexie-based apps.
+- InstantDB — realtime app database with auth, permissions, presence, and storage.
+- Convex Sync — realtime sync platform, though not a full offline-first fit today.
+
+Why this matters:
+
+- It proves people are building and paying for managed sync infrastructure.
+- It gives useful design examples for persistence, fanout, conflict surfaces, and developer UX.
+- It may reveal provider shapes Small Sea can borrow without adopting their trust model.
+
+Why it is probably not the baseline answer:
+
+- Most offerings want to become the application's data substrate.
+- Most have their own auth, permission, query, or document model.
+- Many are app-semantic in ways that conflict with Hub-mediated opaque transport.
+- They do not naturally preserve Small Sea's existing git/Cod Sync model as the durable source of truth.
+
+The promising subset is not "host our app data for us."
+It is "can managed sync providers teach us how to package generic, app-opaque sync or relay infrastructure?"
+
 ### Default tier
 
 Services regular users can adopt without operating infrastructure or matching provider tenancy with anyone:
@@ -242,7 +274,7 @@ Names are provisional.
 ### `codex/real-time-transport-survey`
 
 Goal:
-Create a capability matrix for candidate generic services.
+Create a capability matrix for candidate generic services and adjacent managed-sync services.
 
 Scope:
 
@@ -251,12 +283,14 @@ Scope:
 - mesh VPN connectivity (Tailscale, ZeroTier, NetBird) — surveyed as power-user tier only
 - personal Small Sea Relay deployed on PaaS-shaped substrates (Fly.io, Railway, Render, Cloudflare Workers / Durable Objects, Deno Deploy) — UX-focused, not just feature matrix
 - storage plus notification fallback
+- managed sync services as adjacent landscape, not presumed transport candidates
 
 Validation:
 
 - Confirm claims against current provider documentation.
 - Classify each candidate as personal-egress or shared-network.
 - Classify each candidate as default tier or power-user tier under the service philosophy.
+- Classify managed sync services by whether they are generic infrastructure, app data platforms, or useful design references only.
 - Record what must be self-hosted, user-subscribed, or vendor-operated.
 - Record what metadata each provider can observe.
 - Record whether the provider can be hidden behind the Hub.
