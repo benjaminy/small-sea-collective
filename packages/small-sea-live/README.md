@@ -6,12 +6,17 @@ Something more evocative will eventually replace it.
 ## Purpose
 
 Small Sea apps already get two ambient services from the Hub: generic cloud storage for durable data, and notifications for waking peers up.
-Small Sea Live is the third such service.
+Small Sea Live is the third ambient capability.
 It is the Hub's abstraction for live-ish interaction between Small Sea devices — across teammates, and across one person's own devices.
 
 Unlike storage and notifications, there is no end-user-facing vendor that just provides this.
 Live transport between devices on uncooperative networks is a patchwork of partial options that compromise differently on latency, cost, operator burden, vendor entanglement, and privacy.
 This package exists to hide that patchwork from app developers without lying to them about the transport they actually have at runtime.
+If the best available path falls all the way back to storage plus notifications, users will experience something different.
+The abstraction should report that difference rather than papering it over.
+
+The Manager owns provider account configuration.
+The Hub is responsible for doing live communication through the providers the Manager has configured.
 
 ## Scope
 
@@ -24,6 +29,8 @@ The broader reading is that presence, multi-device awareness, and team-scoped br
 
 Current lean is broader.
 The argument for narrow is real and this section will keep saying so until the question is actually settled.
+
+See [architecture.md](architecture.md) for the currently unresolved design questions.
 
 ## App Interface
 
@@ -56,4 +63,6 @@ Perfect abstraction is probably impossible.
 
 This is a slippery slope that we need to be super careful about.
 One of the founding principles of Small Sea is no dependence on bespoke services.
-But as long as this category can be kept 100% E2EE and an optional optimization it might be ok.
+But risky service providers may still be welcome in the Small Sea ecosystem if they stay inside firm local-first boundaries.
+They must not become the durable source of truth, the identity authority, or the only way a team can continue existing.
+Within that boundary, bespoke live services might provide useful performance, simplicity, or reliability boosts.
