@@ -23,6 +23,7 @@ small-sea-hub = { workspace = true }
 small-sea-client = { workspace = true }
 small-sea-manager = { workspace = true }
 small-sea-note-to-self = { workspace = true }
+small-sea-live = { workspace = true }
 shared-file-vault = { workspace = true }
 cod-sync = { workspace = true }
 cuttlefish = { workspace = true }
