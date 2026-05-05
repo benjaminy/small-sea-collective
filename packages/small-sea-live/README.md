@@ -49,20 +49,66 @@ Perfect abstraction is probably impossible.
 
 ## Implementation Options
 
+No single implementation will work everywhere.
+This section gives the executive summary of each candidate so a developer can read just this README and have an honest sense of the landscape.
+Fuller treatment, including service-philosophy boundaries and risky-provider rules, is in [architecture.md](architecture.md).
+
 ### Cloud storage plus notifications
+
+Sender encrypts an event batch, writes it to generic cloud storage, asks the Hub to fire a notification; receiver wakes, fetches, applies.
+
+- **Shape:** personal-egress (each device brings its own storage and notification provider).
+- **Tier:** default — works with services regular users already have.
+- **Strengths:** universal floor; works when no other path is available; vendor-replaceable on both sides.
+- **Weaknesses:** not real streaming; latency from "feels live" down to "feels delayed" depending on notifications and polling; battery cost from polling.
+- **Status:** first-class degraded mode, not an afterthought.
 
 ### User operated relays
 
+A team member deploys a Small Sea relay binary on infrastructure they pay for and trust — a PaaS click-deploy, a VPS, or a home machine — and the team's Hubs route through it when direct connectivity fails.
+
+- **Shape:** personal-egress (one person provisions, the rest connect).
+- **Tier:** default if the PaaS path passes the "non-technical person can do it" UX bar; power-user otherwise.
+- **Strengths:** no vendor lock-in; team controls the relay; relay is app-opaque so it can be swapped or rotated.
+- **Weaknesses:** real operator burden — billing card, deploy click-through, certificate, long-term ownership; UX of candidate PaaS substrates is an open question.
+- **Status:** probably the most important thing to get right; whether it counts as default tier is a UX investigation, not a software project.
+
 ### Whole team subscribes to some VPN service
+
+Every team member joins the same mesh VPN product (Tailscale, ZeroTier, NetBird), and Hubs talk to each other as if on a flat private network.
+
+- **Shape:** shared-network — every participant must be a member of the same instance for it to be useful.
+- **Tier:** power-user only; never the baseline path.
+- **Strengths:** very high quality once configured — direct paths, low latency, generic transport; products are mature.
+- **Weaknesses:** every teammate must adopt the same vendor; useless across teams that picked different vendors; vendor failure blocks the entire team's live transport.
+- **Status:** acceptable as opt-in; the matched-membership cost must be documented so users know what they are signing up for.
 
 ### STUN when the routers are well behaved
 
+A WebRTC peer connection uses ICE with a STUN server to discover its public-facing address; if the NATs cooperate, the steady-state path is directly between devices.
+
+- **Shape:** personal-egress (free vendor STUN such as Google or Cloudflare; signaling is the Hub's job).
+- **Tier:** default — STUN is ambient and free.
+- **Strengths:** lowest latency of any option; minimal external dependency once connected; no per-team setup.
+- **Weaknesses:** only works when NATs cooperate — fails on symmetric NATs, carrier-grade NATs, many corporate networks; not a complete solution on its own.
+- **Status:** always tried first inside the WebRTC flow; pairs with TURN as the natural fallback.
+
 ### TURN when the routers are jerks
 
-### App developer offers relays service for only their app traffic
+When STUN cannot establish a direct path, both peers connect outbound to a TURN relay that forwards encrypted bytes between them.
 
-This is a slippery slope that we need to be super careful about.
-One of the founding principles of Small Sea is no dependence on bespoke services.
-But risky service providers may still be welcome in the Small Sea ecosystem if they stay inside firm local-first boundaries.
-They must not become the durable source of truth, the identity authority, or the only way a team can continue existing.
-Within that boundary, bespoke live services might provide useful performance, simplicity, or reliability boosts.
+- **Shape:** personal-egress (vendor TURN as SaaS — Twilio Network Traversal, Cloudflare Calls, Xirsys, Metered, Vonage; only one side needs the credential).
+- **Tier:** default — vendor TURN is a real market with no infrastructure to operate.
+- **Strengths:** works on hostile networks where direct paths fail; vendor-replaceable; the relay sees ciphertext, not app data.
+- **Weaknesses:** paid metered service; latency higher than direct; short-lived session credentials must be minted on demand, not synced.
+- **Status:** the natural fallback inside the WebRTC flow; default-tier fit.
+
+### App developer offers relay service for only their app traffic
+
+An app's developer runs a relay sized and tuned for that app's traffic, and Hubs route the app's live payloads through it as an optimization.
+
+- **Shape:** bespoke — app-specific by definition, even if app-opaque on the wire.
+- **Tier:** optimization-only; never the baseline path.
+- **Strengths:** can deliver performance, reliability, and simplicity that generic relays cannot match for that app's traffic shape.
+- **Weaknesses:** introduces a service whose disappearance must not break the app, and which the team must be able to walk away from at any time — not just survive the death of.
+- **Status:** open — admissible only if the local-first boundary in [architecture.md](architecture.md) holds, including replaceability on demand. There may be no way to make this work; we keep looking.

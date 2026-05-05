@@ -37,17 +37,26 @@ If every app builds those features separately, they will probably repeat the sam
 
 ## Prior Art To Study
 
-Yjs has an Awareness protocol that providers commonly implement alongside document sync.
-That suggests presence can reasonably live near the network provider boundary rather than inside every app.
+**Yjs Awareness.**
+Yjs ships an Awareness protocol that providers commonly implement alongside document sync.
+It demonstrates that presence can reasonably live near the network provider boundary rather than inside every app.
+Caveat: Awareness piggybacks on the same provider that already understands Yjs documents — it is coupled to a specific data model.
+For Small Sea Live, transport is app-opaque, so the analogue is presence as a separate channel, not presence riding the data path.
 
-Liveblocks exposes Presence and Broadcast as core realtime primitives.
-That is not Small Sea's trust model, but it is evidence that app developers benefit from higher-level live coordination primitives.
+**Liveblocks.**
+Liveblocks exposes Presence and Broadcast as core realtime primitives, and developers reach for them eagerly.
+That is evidence of demand for higher-level live coordination primitives.
+It is not a shape Small Sea can adopt — Liveblocks itself is exactly the kind of canonical app-server Small Sea avoids.
+Useful as market signal, not as a model.
 
-libp2p includes publish/subscribe as a network-layer primitive.
-That suggests team or topic broadcast can be treated as transport infrastructure rather than only app behavior.
+**libp2p pubsub.**
+libp2p includes publish/subscribe as a network-layer primitive, fully app-opaque and decoupled from any data model.
+This is the closest structural analogue to what Small Sea Live's broader scope would offer.
+Caveat: it lives inside a stack with significant adoption costs, and the experiments doc has already demoted libp2p from the default tier on the basis of operator burden.
+Borrow the shape, not necessarily the implementation.
 
 These examples do not decide the scope for Small Sea Live.
-They only make the broader scope less obviously excessive.
+They only make the broader scope less obviously excessive, and they hint at where the seams should be.
 
 ## Risky Providers
 
@@ -59,6 +68,7 @@ The local-first boundary is:
 - provider failure must not destroy durable team history
 - provider failure must not break team identity or membership
 - provider failure must not prevent degraded non-live collaboration
+- the provider must be replaceable on demand — a team that wants to stop using it must be able to, without losing data, identity, or the ability to keep collaborating; provider survival is not enough, optionality is
 - providers should not see app plaintext where end-to-end encryption is practical
 - apps should still go through the Hub
 
