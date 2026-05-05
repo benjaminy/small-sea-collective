@@ -73,3 +73,16 @@ The local-first boundary is:
 - apps should still go through the Hub
 
 The open design question is how much performance and simplicity Small Sea can accept from risky live providers without letting them become the project.
+
+## Claims To Validate
+
+Some claims in the README are working hypotheses, not settled facts.
+
+- Validate whether vendor TURN can work as one-sided personal-egress provisioning.
+  One participant may be able to bring the provider account, but both peers still need usable ICE credentials during connection setup.
+- Validate what a TURN provider observes for WebRTC data-channel traffic.
+  Payloads should remain encrypted between peers, but who-is-talking-to-whom metadata is probably visible and should be documented.
+- Validate the tier labels.
+  Cloud storage plus notifications are baseline default; vendor TURN may be the best default-live candidate rather than baseline infrastructure.
+- Validate whether anonymizing networks such as Tor are practical enough to deserve any place in the implementation landscape.
+  The experiment should consider latency, reliability, abuse controls, provider economics, mobile behavior, and compatibility with Hub-mediated traffic.

@@ -97,11 +97,21 @@ A WebRTC peer connection uses ICE with a STUN server to discover its public-faci
 
 When STUN cannot establish a direct path, both peers connect outbound to a TURN relay that forwards encrypted bytes between them.
 
-- **Shape:** personal-egress (vendor TURN as SaaS — Twilio Network Traversal, Cloudflare Calls, Xirsys, Metered, Vonage; only one side needs the credential).
-- **Tier:** default — vendor TURN is a real market with no infrastructure to operate.
-- **Strengths:** works on hostile networks where direct paths fail; vendor-replaceable; the relay sees ciphertext, not app data.
+- **Shape:** probably personal-egress (vendor TURN as SaaS — Twilio Network Traversal, Cloudflare Calls, Xirsys, Metered, Vonage). The "only one side needs the provider account" version needs validation.
+- **Tier:** default-live candidate — vendor TURN is a real market with no infrastructure to operate, but the billing and setup model is still developer-shaped.
+- **Strengths:** works on hostile networks where direct paths fail; vendor-replaceable; WebRTC data-channel payloads should remain encrypted between peers.
 - **Weaknesses:** paid metered service; latency higher than direct; short-lived session credentials must be minted on demand, not synced.
-- **Status:** the natural fallback inside the WebRTC flow; default-tier fit.
+- **Status:** the natural fallback inside the WebRTC flow; promising default-live candidate, pending validation.
+
+### Anonymizing networks
+
+Hubs communicate through a privacy-preserving overlay such as Tor instead of exposing direct peer addresses or ordinary relay metadata.
+
+- **Shape:** shared public anonymity infrastructure, with unclear fit for Small Sea's provider model.
+- **Tier:** exploratory only.
+- **Strengths:** may reduce provider-visible metadata about who is talking to whom; potentially useful for especially sensitive teams.
+- **Weaknesses:** latency and reliability may be poor for interactive use; economics, abuse constraints, mobile behavior, and compatibility with the Hub model are unclear.
+- **Status:** worth an experiment, not a candidate baseline.
 
 ### App developer offers relay service for only their app traffic
 
