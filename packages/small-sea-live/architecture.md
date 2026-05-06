@@ -22,11 +22,14 @@ In scope:
 - per-device reachability state and current transport mode
 - membership-aware addressing, derived from Small Sea's authorization model
 - app-opaque event delivery to a device, to a member's reachable devices, to all reachable devices in a team, or to a caller-supplied scope within that team
-- raw byte streams between authorized devices, when the active transport supports them
+- reliable byte streams between authorized devices, when the active transport supports them
+- possible future unreliable datagram flows between authorized devices, when the active transport supports them
 - explicit reporting of mode and degradation
 
 Above the line, deliberately not in scope:
 
+- durable transfer, resumable file movement, or bulk replication
+- media semantics such as codecs, tracks, mixing, or device capture
 - presence semantics — online vs. away vs. idle vs. typing, what counts as activity, when "online" expires
 - heartbeat policy and expiry
 - durable rooms, channel membership, or subscription state
@@ -81,8 +84,9 @@ Committee has not picked.
 - broadcast an app-opaque event to reachable devices in a team
 - broadcast an app-opaque event to reachable devices currently interested in an app-defined scope
 - register connection-bound interest in an app-defined scope
-- open a raw byte stream to an authorized device, when the active transport mode supports it
-- accept a raw byte stream from another authorized device
+- open a reliable byte stream to an authorized device, when the active transport mode supports it
+- accept a reliable byte stream from another authorized device
+- eventually, send and receive unreliable datagrams when the active transport mode supports them
 - report whether the current path is direct, relayed, mailbox-degraded, or unavailable
 
 ## Delivery Semantics
@@ -108,9 +112,14 @@ Whichever option lands, app-level dedup and ordering are the layer above's probl
 Apps that need ordering or deduplication attach app-level event IDs and reconcile on receive.
 The package promises only best-effort delivery.
 
-Byte streams sit on a higher mode floor than events.
-Events degrade into mailbox mode and continue to deliver, just slower; streams require a live transport (LAN, STUN, TURN, or relay) and become unavailable when the only available path is mailbox.
-The mode signal tells apps when streams are possible.
+Reliable byte streams sit on a higher mode floor than events.
+Events degrade into mailbox mode and continue to deliver, just slower; reliable streams require a live transport (LAN, STUN, TURN, or relay) and become unavailable when the only available path is mailbox.
+The mode signal tells apps when reliable streams are possible.
+
+Unreliable datagram flows may belong in the same capability family, but they are not the same as reliable streams.
+They are a plausible future primitive for media-like, game-like, or latency-sensitive traffic where loss is preferable to head-of-line blocking.
+Media-specific concepts — codecs, tracks, mixing, capture devices, echo cancellation, and similar concerns — stay above Small Sea Live.
+The package's job is to expose whether the lower-level live transport shape is available, not to become a media stack.
 
 ## Prior Art To Study
 

@@ -7,11 +7,12 @@ Something more evocative will eventually replace it.
 
 The Small Sea project itself provides no internet services.
 Apps run against a local Hub, and the Hub translates their needs onto generic services users can choose or operate.
-For Small Sea apps to offer real-time collaboration — live events and raw byte streams between authorized devices — Small Sea Live has to build that experience from the transports available in the wild: local networks, NAT traversal, relays, cloud storage, notifications, and other imperfect options.
+For Small Sea apps to offer real-time collaboration — live events and live transport capabilities between authorized devices — Small Sea Live has to build that experience from the transports available in the wild: local networks, NAT traversal, relays, cloud storage, notifications, and other imperfect options.
 
 Small Sea Live is the third major networking service the Hub provides to applications, after cloud storage and peer notification.
 It is the Hub's live coordination layer for Small Sea devices — across teammates and across one person's own devices — and it is explicit about the transport quality it is currently delivering rather than pretending all paths feel the same.
 It moves app-opaque events between authorized devices, plus the membership and reachability information apps need to address those events.
+It also exposes which live transport capabilities are currently available, such as best-effort events, reliable byte streams, or future unreliable datagram flows.
 
 Live transport between devices on uncooperative networks is a patchwork of partial options that compromise differently on latency, cost, operator burden, vendor entanglement, and privacy.
 This package centralizes that complexity inside Small Sea, so app developers get one interface while still seeing the capabilities and limits of the transport currently in use.
@@ -32,11 +33,14 @@ In scope:
 - per-device reachability and current transport mode
 - membership and device addressing, derived from Small Sea's authorization model
 - delivery of app-opaque events to a device, to all of a member's devices, to all reachable devices in a team, or to a caller-supplied scope within that team
-- raw byte streams between authorized devices, when the active transport supports them
+- reliable byte streams between authorized devices, when the active transport supports them
+- possible future unreliable datagram flows between authorized devices, when the active transport supports them
 - explicit reporting of the mode and degradation the available transport currently provides
 
 Deliberately not in scope:
 
+- durable transfer, resumable file movement, or bulk replication
+- media semantics such as codecs, tracks, mixing, or device capture
 - presence semantics — online vs. away vs. idle vs. typing, what counts as activity, when "online" expires
 - heartbeat policy and expiry
 - durable rooms, channel membership, or subscription state
@@ -65,16 +69,18 @@ The likely primitives are:
 - register connection-bound interest in an app-defined routing scope
 - broadcast to reachable devices interested in a routing scope
 - receive events delivered to any of the above
-- open a raw byte stream to an authorized device
-- accept a raw byte stream from another authorized device
+- open a reliable byte stream to an authorized device, when supported
+- accept a reliable byte stream from another authorized device, when supported
+- eventually, send and receive unreliable datagrams when the active transport supports them
 - observe the current transport mode and degradation
 
 Delivery is best-effort: apps should expect out-of-order arrival and possible duplicates, especially in degraded modes.
-Byte streams require a live transport mode and are unavailable when the package falls back to mailbox-degraded delivery.
+Reliable byte streams require a live transport mode and are unavailable when the package falls back to mailbox-degraded delivery.
+Unreliable datagrams would sit on an even more specific capability floor: useful for media-like or game-like traffic, but not available on every live transport.
 Routing scopes are namespaced per app, so two apps on the same Hub can pick the same scope name without colliding.
 
 Apps should not need to authenticate users, pair devices, discover relay providers, or decide which peer addresses are valid.
-They should not need to know whether the current path is LAN, STUN, TURN, relayed, or mailbox-degraded to send an event — but they do get mode information so they can adjust UX when "live" becomes delayed, expensive, partial, or unavailable.
+They should not need to know whether the current path is LAN, STUN, TURN, relayed, or mailbox-degraded to send an event — but they do get capability and mode information so they can adjust UX when "live" becomes delayed, expensive, partial, or unavailable.
 
 ## Implementation Options
 
