@@ -79,7 +79,7 @@ Reliable byte streams require a live transport mode and are unavailable when the
 Unreliable datagrams sit on a more specific capability floor; they are useful for high-rate connection-shaped traffic where loss is preferable to head-of-line blocking, and not every live transport supports them.
 Routing scopes are namespaced per app, so two apps on the same Hub can pick the same scope name without colliding.
 
-Common patterns compose on these primitives without becoming primitives themselves: request/response is events plus a correlation ID; file transfer with resumability is reliable streams plus an app-layer protocol; media is datagrams or reliable streams plus codecs above the line; delivery acknowledgment is a receiver-sent return event.
+Common patterns can be built above these primitives without becoming primitives themselves: request/response is events plus a correlation ID; file transfer with resumability is reliable streams plus an app-layer protocol; media is datagrams or reliable streams plus codecs above the line; delivery acknowledgment is a receiver-sent return event.
 
 Apps should not need to authenticate users, pair devices, discover relay providers, or decide which peer addresses are valid.
 They should not need to know whether the current path is LAN, STUN, TURN, relayed, or mailbox-degraded to send an event — but they do get capability and mode information so they can adjust UX when "live" becomes delayed, expensive, partial, or unavailable.

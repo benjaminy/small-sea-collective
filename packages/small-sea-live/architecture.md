@@ -113,7 +113,10 @@ Putting them inside the package would mean baking decisions about wire formats, 
 ## Delivery Semantics
 
 Small Sea Live is best-effort.
-On live transports (LAN, STUN, TURN, user-operated relays) per-connection ordering is preserved, duplicates are rare, subscription state is current, and scope routing is honored — events go only to currently interested devices.
+Reliable streams preserve per-connection ordering.
+Event delivery is best-effort and may arrive out of order or duplicated, even though duplicates should be rare on live transports.
+Datagram flows, when available, may drop or reorder messages by design.
+On live transports (LAN, STUN, TURN, user-operated relays), scope interest is current and scope routing is honored — events go only to currently interested devices.
 Mailbox mode has no live subscription state to consult, which forces a choice.
 
 Two options for how broadcast and scope routing degrade in mailbox mode:
