@@ -31,6 +31,11 @@ Record exact setup steps, confusing screens, terminology, and where the long-liv
 Record account-backed WebRTC/TURN results here.
 Include selected ICE candidate pairs and whether each tested path was direct or relayed.
 
+## Performance Measurements
+
+Record rough RTT samples and sustained-throughput measurements here.
+Include whether each measurement used a direct or relayed selected candidate pair.
+
 ## One-Sided Provisioning
 
 Record whether one peer can use Cloudflare TURN credentials while the other peer has no TURN credentials.

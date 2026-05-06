@@ -70,7 +70,7 @@ Small Sea fit questions:
 
 Cost scenarios to model:
 
-- low-rate cursor or presence-like updates for a 5-person team
+- low-rate cursor or activity-indicator updates for a 5-person team
 - text-collaboration control traffic for a 5-person team
 - a reliable-stream scenario with modest sustained throughput
 - a clear "not modeled here" note for media workloads
@@ -83,13 +83,21 @@ Minimum scenario:
 
 1. Generate short-lived TURN credentials locally from a Cloudflare TURN key.
 2. Start two local WebRTC peers.
-3. Exchange signaling locally, without a Cloudflare signaling service.
+3. Exchange signaling locally, without introducing any Cloudflare Realtime product beyond TURN.
 4. Force or verify use of a relayed TURN candidate.
 5. Open a reliable ordered data channel.
 6. Send payloads both directions.
 7. Try an unordered/unreliable WebRTC data channel if the test stack supports it.
 8. Record the selected ICE candidate pair and transport mode.
-9. Record failure behavior with missing, bad, expired, or revoked credentials.
+9. Record rough latency and throughput measurements.
+10. Record failure behavior with missing, bad, expired, or revoked credentials.
+
+Performance measurements:
+
+- Sample end-to-end RTT for small payloads on the reliable data channel.
+- Measure one modest sustained-throughput run through the reliable data channel.
+- Record whether each measurement used a direct or relayed selected candidate pair.
+- Treat the numbers as fit-check evidence, not as a benchmark suite.
 
 Credential scenarios:
 
@@ -148,7 +156,8 @@ Expected outputs:
 - short-lived credential minting flow
 - required WebRTC runtime capabilities
 - mode-reporting requirements
-- capability-reporting requirements for events, reliable streams, and datagrams
+- capability-reporting requirements for events and reliable streams
+- capability-reporting requirements for datagram-like behavior in the unordered/unreliable WebRTC data-channel sense
 - metadata and privacy caveats
 - UX notes for non-specialist account setup
 
@@ -178,10 +187,11 @@ This experiment should convince a skeptical reviewer that:
 - Cloudflare does not become a durable source of truth, identity authority, or app-specific service.
 - The relay path can be replaced or disabled without losing durable collaboration.
 - Payload visibility and metadata visibility are documented separately.
+- Rough latency and throughput numbers are recorded well enough to inform baseline-vs-power-user classification.
 - The setup UX is documented well enough to classify Cloudflare as baseline, default-live-candidate, or power-user.
 - The limits of the provider are documented clearly enough to guide future implementation.
 
-## Open Questions
+## Questions This Experiment Is Designed To Answer
 
 - Is Cloudflare TURN a baseline managed relay candidate or only a power-user/provider option?
 - Is one-sided Cloudflare provisioning real in practice, or do both participants need TURN credentials?
