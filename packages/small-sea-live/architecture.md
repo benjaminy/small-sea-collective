@@ -35,6 +35,19 @@ The current lean is broader, but not settled.
 The reason to consider the broader scope is that presence and broadcast depend on the same transport-quality information that raw streams do.
 If every app builds those features separately, they will probably repeat the same mistakes.
 
+The broader scope still has a hard boundary.
+Small Sea Live should not become a CRDT engine, document model, or durable sync layer.
+It should give apps and CRDT libraries a best-effort way to move app-opaque live events between authorized team devices.
+Durable truth remains in app state and Cod Sync.
+
+Possible app-facing primitives:
+
+- send an app-opaque event to a device
+- send an app-opaque event to a member's reachable devices
+- broadcast an app-opaque event to reachable devices in a team or topic
+- publish ephemeral presence or awareness state
+- report whether the current path is direct, relayed, mailbox-degraded, or unavailable
+
 ## Prior Art To Study
 
 **Yjs Awareness.**
@@ -42,6 +55,11 @@ Yjs ships an Awareness protocol that providers commonly implement alongside docu
 It demonstrates that presence can reasonably live near the network provider boundary rather than inside every app.
 Caveat: Awareness piggybacks on the same provider that already understands Yjs documents — it is coupled to a specific data model.
 For Small Sea Live, transport is app-opaque, so the analogue is presence as a separate channel, not presence riding the data path.
+
+**Automerge Repo.**
+Automerge Repo separates storage adapters from network adapters, and treats ephemeral messages and presence as non-durable collaboration support.
+That boundary is a useful analogue for Small Sea: Cod Sync remains the durable path, while Small Sea Live handles live coordination.
+Borrow the adapter split and the ephemeral/durable distinction, not Automerge's document model.
 
 **Liveblocks.**
 Liveblocks exposes Presence and Broadcast as core realtime primitives, and developers reach for them eagerly.

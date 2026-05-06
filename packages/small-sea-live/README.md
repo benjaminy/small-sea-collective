@@ -7,7 +7,8 @@ Something more evocative will eventually replace it.
 
 Small Sea apps already get two ambient services from the Hub: generic cloud storage for durable data, and notifications for waking peers up.
 Small Sea Live is the third ambient capability.
-It is the Hub's abstraction for live-ish interaction between Small Sea devices — across teammates, and across one person's own devices.
+It is the Hub's best-effort live coordination layer for Small Sea devices — across teammates, and across one person's own devices.
+It moves app-opaque events, presence, and fanout information between authorized devices with explicit degradation when only slower transports are available.
 
 Unlike storage and notifications, there is no end-user-facing vendor that just provides this.
 Live transport between devices on uncooperative networks is a patchwork of partial options that compromise differently on latency, cost, operator burden, vendor entanglement, and privacy.
@@ -30,6 +31,9 @@ The broader reading is that presence, multi-device awareness, and team-scoped br
 Current lean is broader.
 The argument for narrow is real and this section will keep saying so until the question is actually settled.
 
+This package is not a CRDT library and it is not durable sync.
+CRDT libraries and realtime apps are expected customers, but durable truth still belongs to app state and Cod Sync.
+
 See [architecture.md](architecture.md) for the currently unresolved design questions.
 
 ## App Interface
@@ -43,6 +47,8 @@ Probably a basic point to point byte stream should be part of it.
 But what about an individual's multiple devices?
 And teammates?
 What should broadcast/multicast look like?
+The likely app-facing level is not just "open a stream to device X."
+Apps will probably need APIs for sending app-opaque events to a member, to all of a member's devices, or to the currently reachable devices in a team/topic.
 I hope there is some good prior art to draw on here.
 The serious challenge here is that I want very different implementation options to poke through the abstraction boundary as little as possible.
 Perfect abstraction is probably impossible.
