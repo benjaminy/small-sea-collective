@@ -111,7 +111,10 @@ Sustained-session scenario:
 - Send periodic payloads during the session.
 - Revoke, expire, or rotate credentials mid-session if Cloudflare and the test stack make that practical.
 - Interrupt and restore the network path if practical.
-- Record whether failure surfaces cleanly enough for the Hub to switch to mailbox-degraded behavior.
+- Record what signals Cloudflare TURN and the WebRTC stack expose when the relay path fails.
+
+For this experiment, "cleanly enough for fallback" means failure is observable by the WebRTC stack, reported in a bounded time rather than hanging indefinitely, and distinguishable from successful but slow delivery.
+This experiment does not validate any actual mailbox handoff logic.
 
 Questions to answer:
 
@@ -121,7 +124,7 @@ Questions to answer:
 - Do reliable byte streams work through the relay in the shape Small Sea Live expects?
 - Do unordered/unreliable WebRTC data channels work through the relay?
 - Can credential refresh be tested without rebuilding the connection?
-- Does failure surface cleanly enough for the Hub to fall back to mailbox-degraded mode?
+- What observable failure signals could inform a future Hub fallback decision?
 
 Terminology note:
 In this experiment, "datagram-like" means WebRTC data channels configured as unordered and/or unreliable.
@@ -196,7 +199,7 @@ This experiment should convince a skeptical reviewer that:
 - Is Cloudflare TURN a baseline managed relay candidate or only a power-user/provider option?
 - Is one-sided Cloudflare provisioning real in practice, or do both participants need TURN credentials?
 - Does Cloudflare's credential model work cleanly for sibling devices and teammate devices?
-- How should a Hub decide between direct, relayed, and mailbox-degraded paths?
+- What signals does Cloudflare TURN expose to inform a Hub's choice between direct, relayed, and mailbox-degraded paths?
 - What additional local-only micro tests would a future adapter need?
 
 ## References To Collect
