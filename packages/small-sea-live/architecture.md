@@ -21,16 +21,21 @@ In scope:
 
 - per-device reachability state and current transport mode
 - membership-aware addressing, derived from Small Sea's authorization model
-- app-opaque event delivery to a device, to a member's reachable devices, or to all reachable devices in a team
+- app-opaque event delivery to a device, to a member's reachable devices, to all reachable devices in a team, or to a caller-supplied scope within that team
 - explicit reporting of mode and degradation
 
 Above the line, deliberately not in scope:
 
 - presence semantics — online vs. away vs. idle vs. typing, what counts as activity, when "online" expires
 - heartbeat policy and expiry
-- subscription or topic models
+- durable rooms, channel membership, or subscription state
 - reconciliation across multiple devices reporting different states for the same member
 - app-specific liveness inference
+
+The caller-supplied scope is a proposed compromise.
+It gives apps a generic fanout label for document sessions, chat channels, lobbies, or cursor streams without making Small Sea Live own those concepts.
+A scope is only a routing label.
+It is not durable, not a permission boundary, not a presence set, and not a room membership model.
 
 Two reasons to draw the line there.
 
@@ -63,9 +68,15 @@ Committee has not picked.
 - send an app-opaque event to a device
 - send an app-opaque event to a member's reachable devices
 - broadcast an app-opaque event to reachable devices in a team
+- broadcast an app-opaque event to reachable devices currently interested in an app-defined scope
 - report whether the current path is direct, relayed, mailbox-degraded, or unavailable
 
 ## Prior Art To Study
+
+**Realtime channels and subjects.**
+Ably channels, Pusher channels, Supabase Realtime channels, and NATS subjects all point to the same small reusable primitive: named scopes for publish/subscribe fanout.
+They are useful because app authors need more than whole-team broadcast, but they stay generic when the scope is just a routing label.
+Small Sea Live should consider borrowing that thin core without adopting durable rooms, channel-specific permissions, or provider-owned presence semantics.
 
 **Yjs Awareness.**
 Yjs ships an Awareness protocol that providers commonly implement alongside document sync.

@@ -29,16 +29,19 @@ In scope:
 
 - per-device reachability and current transport mode
 - membership and device addressing, derived from Small Sea's authorization model
-- delivery of app-opaque events to a device, to all of a member's devices, or to all reachable devices in a team
+- delivery of app-opaque events to a device, to all of a member's devices, to all reachable devices in a team, or to a caller-supplied scope within that team
 - explicit reporting of the mode and degradation the available transport currently provides
 
 Deliberately not in scope:
 
 - presence semantics — online vs. away vs. idle vs. typing, what counts as activity, when "online" expires
 - heartbeat policy and expiry
-- subscription or topic models
+- durable rooms, channel membership, or subscription state
 - reconciliation across multiple devices reporting different states for the same member
 - app-specific liveness inference
+
+Caller-supplied scopes are a proposed compromise.
+They are routing labels for best-effort live fanout, not rooms, durable subscriptions, permission boundaries, or presence models.
 
 The layer above is real and app authors will want it. The likely shape is a thin Hub-side library plus client-side helpers built on top of Small Sea Live's primitives. Whether that ships as a sibling Small Sea package, as a third-party library, or is left to each app is an open committee question. See [architecture.md](architecture.md) for the rationale behind drawing the line where it is.
 
@@ -57,7 +60,7 @@ But what about an individual's multiple devices?
 And teammates?
 What should broadcast/multicast look like?
 The likely app-facing level is not just "open a stream to device X."
-Apps will probably need APIs for sending app-opaque events to a member, to all of a member's devices, or to the currently reachable devices in a team.
+Apps will probably need APIs for sending app-opaque events to a member, to all of a member's devices, to the currently reachable devices in a team, or to the currently reachable devices interested in an app-defined scope such as a document session.
 I hope there is some good prior art to draw on here.
 The serious challenge here is that I want very different implementation options to poke through the abstraction boundary as little as possible.
 Perfect abstraction is probably impossible.
