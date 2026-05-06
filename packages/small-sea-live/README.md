@@ -52,7 +52,7 @@ CRDT libraries and realtime apps are expected customers, but durable truth still
 
 What does Small Sea Live look like to apps?
 
-One simple piece: Apps have to start Hub sessions before they get to play at all.
+One starting point: Apps have to start Hub sessions before they get to play at all.
 Just like storage and notifications.
 
 Probably a basic point to point byte stream should be part of it.
