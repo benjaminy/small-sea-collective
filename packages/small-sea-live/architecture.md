@@ -23,7 +23,7 @@ In scope:
 - membership-aware addressing, derived from Small Sea's authorization model
 - app-opaque event delivery to a device, to a member's reachable devices, to all reachable devices in a team, or to a caller-supplied scope within that team
 - reliable byte streams between authorized devices, when the active transport supports them
-- possible future unreliable datagram flows between authorized devices, when the active transport supports them
+- unreliable datagrams between authorized devices, when the active transport supports them
 - explicit reporting of mode and degradation
 
 Above the line, deliberately not in scope:
@@ -77,6 +77,27 @@ Open question. Three plausible homes:
 
 Committee has not picked.
 
+### Primitive Taxonomy
+
+The three primitives populate two axes — addressing shape (routed by identity or scope, vs. connection-shaped between two specific devices) and reliability (best-effort vs. reliable):
+
+|                                     | Best-effort  | Reliable               |
+|-------------------------------------|--------------|------------------------|
+| Routed (by identity or scope)       | Events       | (not provided)         |
+| Connection-shaped (peer-to-peer)    | Datagrams    | Reliable byte streams  |
+
+The empty cell — reliable routed delivery — is a deliberate non-primitive.
+Apps that need it build it from events plus an app-level acknowledgment protocol.
+The same is true of other common patterns:
+
+- request/response — events plus a correlation ID
+- file transfer with resumability and progress — reliable streams plus an app-layer protocol
+- media (voice, video) — datagrams or reliable streams plus codecs and jitter buffers, with media semantics living above the line
+- delivery acknowledgment — a receiver-sent return event
+
+Each of these is a thin layer over the package's primitives.
+Putting them inside the package would mean baking decisions about wire formats, retry policy, codecs, and progress reporting into the transport layer — and those decisions are exactly the kind of thing apps tend to want to control.
+
 ### App-facing Primitives (provisional)
 
 - send an app-opaque event to a device
@@ -86,8 +107,8 @@ Committee has not picked.
 - register connection-bound interest in an app-defined scope
 - open a reliable byte stream to an authorized device, when the active transport mode supports it
 - accept a reliable byte stream from another authorized device
-- eventually, send and receive unreliable datagrams when the active transport mode supports them
-- report whether the current path is direct, relayed, mailbox-degraded, or unavailable
+- send and receive unreliable datagrams to and from an authorized device, when the active transport mode supports them
+- report the current transport mode and per-primitive availability
 
 ## Delivery Semantics
 
@@ -116,10 +137,15 @@ Reliable byte streams sit on a higher mode floor than events.
 Events degrade into mailbox mode and continue to deliver, just slower; reliable streams require a live transport (LAN, STUN, TURN, or relay) and become unavailable when the only available path is mailbox.
 The mode signal tells apps when reliable streams are possible.
 
-Unreliable datagram flows may belong in the same capability family, but they are not the same as reliable streams.
-They are a plausible future primitive for media-like, game-like, or latency-sensitive traffic where loss is preferable to head-of-line blocking.
-Media-specific concepts — codecs, tracks, mixing, capture devices, echo cancellation, and similar concerns — stay above Small Sea Live.
-The package's job is to expose whether the lower-level live transport shape is available, not to become a media stack.
+Unreliable datagrams sit in the same capability family on a different floor.
+They serve high-rate connection-shaped traffic where loss is preferable to head-of-line blocking — cursor positions, game state, voice or video frames once a media stack is layered above.
+Media-specific concepts — codecs, tracks, mixing, capture devices, echo cancellation — stay above Small Sea Live.
+The package's job is to expose whether the lower-level transport shape is available, not to become a media stack.
+Datagram support is also more transport-specific than stream support: WebRTC, QUIC, and raw UDP all carry datagrams natively, while TCP-only transports (notably Tor) cannot. Some anonymizing networks (I2P, Lokinet) do expose datagrams, but mix-hop latency generally defeats the use cases that motivate picking datagrams in the first place.
+
+A side capability worth flagging for later: once low-latency datagrams exist between two devices, the round-trip measurements driving RTT estimates can give clock-skew estimates almost for free.
+Apps that want synchronized playback, distributed simulations, or consistent cross-device timestamps would benefit from the package exposing this.
+Whether to do so is open.
 
 ## Prior Art To Study
 

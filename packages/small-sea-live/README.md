@@ -12,7 +12,7 @@ For Small Sea apps to offer real-time collaboration — live events and live tra
 Small Sea Live is the third major networking service the Hub provides to applications, after cloud storage and peer notification.
 It is the Hub's live coordination layer for Small Sea devices — across teammates and across one person's own devices — and it is explicit about the transport quality it is currently delivering rather than pretending all paths feel the same.
 It moves app-opaque events between authorized devices, plus the membership and reachability information apps need to address those events.
-It also exposes which live transport capabilities are currently available, such as best-effort events, reliable byte streams, or future unreliable datagram flows.
+It also exposes which live transport capabilities are currently available — best-effort events, reliable byte streams, and unreliable datagrams when the underlying transport supports them.
 
 Live transport between devices on uncooperative networks is a patchwork of partial options that compromise differently on latency, cost, operator burden, vendor entanglement, and privacy.
 This package centralizes that complexity inside Small Sea, so app developers get one interface while still seeing the capabilities and limits of the transport currently in use.
@@ -34,7 +34,7 @@ In scope:
 - membership and device addressing, derived from Small Sea's authorization model
 - delivery of app-opaque events to a device, to all of a member's devices, to all reachable devices in a team, or to a caller-supplied scope within that team
 - reliable byte streams between authorized devices, when the active transport supports them
-- possible future unreliable datagram flows between authorized devices, when the active transport supports them
+- unreliable datagrams between authorized devices, when the active transport supports them
 - explicit reporting of the mode and degradation the available transport currently provides
 
 Deliberately not in scope:
@@ -71,13 +71,15 @@ The likely primitives are:
 - receive events delivered to any of the above
 - open a reliable byte stream to an authorized device, when supported
 - accept a reliable byte stream from another authorized device, when supported
-- eventually, send and receive unreliable datagrams when the active transport supports them
-- observe the current transport mode and degradation
+- send and receive unreliable datagrams to and from an authorized device, when supported
+- observe the current transport mode and per-primitive availability
 
 Delivery is best-effort: apps should expect out-of-order arrival and possible duplicates, especially in degraded modes.
 Reliable byte streams require a live transport mode and are unavailable when the package falls back to mailbox-degraded delivery.
-Unreliable datagrams would sit on an even more specific capability floor: useful for media-like or game-like traffic, but not available on every live transport.
+Unreliable datagrams sit on a more specific capability floor; they are useful for high-rate connection-shaped traffic where loss is preferable to head-of-line blocking, and not every live transport supports them.
 Routing scopes are namespaced per app, so two apps on the same Hub can pick the same scope name without colliding.
+
+Common patterns compose on these primitives without becoming primitives themselves: request/response is events plus a correlation ID; file transfer with resumability is reliable streams plus an app-layer protocol; media is datagrams or reliable streams plus codecs above the line; delivery acknowledgment is a receiver-sent return event.
 
 Apps should not need to authenticate users, pair devices, discover relay providers, or decide which peer addresses are valid.
 They should not need to know whether the current path is LAN, STUN, TURN, relayed, or mailbox-degraded to send an event — but they do get capability and mode information so they can adjust UX when "live" becomes delayed, expensive, partial, or unavailable.
@@ -178,11 +180,11 @@ A bundled stack — Iroh, libp2p (DCUtR + circuit relay), Hypercore/Holepunch, I
 
 ### Anonymizing networks
 
-Hubs communicate through a privacy-preserving overlay such as Tor instead of exposing direct peer addresses or ordinary relay metadata.
+Hubs communicate through a privacy-preserving overlay — Tor, I2P, Lokinet, or similar — instead of exposing direct peer addresses or ordinary relay metadata.
 
 - **Shape:** shared public anonymity infrastructure, with unclear fit for Small Sea's provider model.
 - **Strengths:** may reduce provider-visible metadata about who is talking to whom; potentially useful for especially sensitive teams.
-- **Weaknesses:** latency and reliability may be poor for interactive use; economics, abuse constraints, mobile behavior, and compatibility with the Hub model are unclear.
+- **Weaknesses:** latency and reliability are poor for interactive use; mix-hop overhead generally defeats datagrams even where the network supports them (Tor lacks them entirely; I2P and Lokinet provide them but slowly); economics, abuse constraints, mobile behavior, and Hub compatibility are unclear.
 - **Fit:** exploratory only; worth an experiment, not a candidate baseline.
 
 ### App developer offers relay service for only their app traffic
