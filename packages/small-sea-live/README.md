@@ -50,20 +50,25 @@ CRDT libraries and realtime apps are expected customers, but durable truth still
 
 ## App Interface
 
-What does Small Sea Live look like to apps?
+The app-facing API should feel like a Hub service, not like a networking toolkit.
+Apps start an authorized Hub session, then ask the Hub to move app-opaque live events to Small Sea identities and routing scopes.
 
-One starting point: Apps have to start Hub sessions before they get to play at all.
-Just like storage and notifications.
+The likely primitives are:
 
-Probably a basic point to point byte stream should be part of it.
-But what about an individual's multiple devices?
-And teammates?
-What should broadcast/multicast look like?
-The likely app-facing level is not just "open a stream to device X."
-Apps will probably need APIs for sending app-opaque events to a member, to all of a member's devices, to the currently reachable devices in a team, or to the currently reachable devices interested in an app-defined routing scope such as a document session.
-I hope there is some good prior art to draw on here.
-The serious challenge here is that I want very different implementation options to poke through the abstraction boundary as little as possible.
-Perfect abstraction is probably impossible.
+- send to a specific device
+- send to a member's reachable devices
+- broadcast to reachable devices in the team
+- register connection-bound interest in an app-defined routing scope
+- broadcast to reachable devices interested in a routing scope
+- observe the current transport mode and degradation
+
+Those targets are deliberately Small Sea-shaped.
+Apps should not need to authenticate users, pair devices, discover relay providers, or decide which peer addresses are valid.
+They should also not have to care whether the current path is LAN, STUN, TURN, a relay, or mailbox-degraded before they can ask to send an event.
+
+The abstraction is still honest.
+Apps get mode information so they can adjust UX when "live" becomes delayed, expensive, partial, or unavailable.
+Perfect abstraction is probably impossible; useful abstraction with explicit degradation is the goal.
 
 ## Implementation Options
 
