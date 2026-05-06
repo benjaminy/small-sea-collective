@@ -82,6 +82,29 @@ Committee has not picked.
 - register connection-bound interest in an app-defined scope
 - report whether the current path is direct, relayed, mailbox-degraded, or unavailable
 
+## Delivery Semantics
+
+Small Sea Live is best-effort.
+On live transports (LAN, STUN, TURN, user-operated relays) per-connection ordering is preserved, duplicates are rare, subscription state is current, and scope routing is honored — events go only to currently interested devices.
+Mailbox mode has no live subscription state to consult, which forces a choice.
+
+Two options for how broadcast and scope routing degrade in mailbox mode:
+
+A. **Deliver-then-filter.** Broadcast and scope-broadcast both write to every team mailbox in mailbox mode; receivers filter by scope locally.
+The package's contract stays simple — recipients always get the events meant for them — and degradation is visible only as latency and mode signals.
+The cost is bandwidth and storage for narrow scopes that few devices care about.
+
+B. **Degrade-to-team.** Scope routing collapses to team-broadcast in mailbox mode; apps see a different fanout shape between modes and filter the rest themselves.
+This shifts cost to apps and asks them to handle a mode-dependent contract.
+
+Current lean is (A).
+(B) doesn't actually save anyone work — apps end up filtering received events anyway — and it breaks the property that recipient correctness is invariant across modes.
+Committee has not formally picked.
+
+Whichever option lands, app-level dedup and ordering are the layer above's problem.
+Apps that need ordering or deduplication attach app-level event IDs and reconcile on receive.
+The package promises only best-effort delivery.
+
 ## Prior Art To Study
 
 **Realtime channels and subjects.**

@@ -60,15 +60,14 @@ The likely primitives are:
 - broadcast to reachable devices in the team
 - register connection-bound interest in an app-defined routing scope
 - broadcast to reachable devices interested in a routing scope
+- receive events delivered to any of the above
 - observe the current transport mode and degradation
 
-Those targets are deliberately Small Sea-shaped.
-Apps should not need to authenticate users, pair devices, discover relay providers, or decide which peer addresses are valid.
-They should also not have to care whether the current path is LAN, STUN, TURN, a relay, or mailbox-degraded before they can ask to send an event.
+Delivery is best-effort: apps should expect out-of-order arrival and possible duplicates, especially in degraded modes.
+Routing scopes are namespaced per app, so two apps on the same Hub can pick the same scope name without colliding.
 
-The abstraction is still honest.
-Apps get mode information so they can adjust UX when "live" becomes delayed, expensive, partial, or unavailable.
-Perfect abstraction is probably impossible; useful abstraction with explicit degradation is the goal.
+Apps should not need to authenticate users, pair devices, discover relay providers, or decide which peer addresses are valid.
+They should not need to know whether the current path is LAN, STUN, TURN, relayed, or mailbox-degraded to send an event — but they do get mode information so they can adjust UX when "live" becomes delayed, expensive, partial, or unavailable.
 
 ## Implementation Options
 
