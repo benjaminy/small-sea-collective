@@ -32,10 +32,20 @@ Above the line, deliberately not in scope:
 - reconciliation across multiple devices reporting different states for the same member
 - app-specific liveness inference
 
-The caller-supplied scope is a proposed compromise.
-It gives apps a generic fanout label for document sessions, chat channels, lobbies, or cursor streams without making Small Sea Live own those concepts.
+Routing scopes are named, app-defined labels for best-effort live fanout.
+They give apps a generic fanout target for document sessions, chat channels, lobbies, or cursor streams without making Small Sea Live own those concepts.
 A scope is only a routing label.
 It is not durable, not a permission boundary, not a presence set, and not a room membership model.
+
+Scope interest is ephemeral state owned by the live session.
+It is connection-bound: when an app's live session disconnects from its local Hub, its scope interest ends.
+Small Sea Live should not add wildcard matching or parse scope hierarchy.
+Apps may encode hierarchy in their own scope strings, but the package treats the scope as an opaque label.
+
+Mailbox-degraded transport is allowed to overdeliver physically.
+In mailbox mode, a scoped event may be written broadly enough that every reachable team mailbox can fetch it, and the receiving Hub filters by app and scope before delivery to connected app sessions.
+The mode signal tells apps that scope delivery is no longer a low-latency routing guarantee.
+Scopes are therefore convenience and fanout hints, not privacy or cost boundaries.
 
 Two reasons to draw the line there.
 
@@ -69,12 +79,13 @@ Committee has not picked.
 - send an app-opaque event to a member's reachable devices
 - broadcast an app-opaque event to reachable devices in a team
 - broadcast an app-opaque event to reachable devices currently interested in an app-defined scope
+- register connection-bound interest in an app-defined scope
 - report whether the current path is direct, relayed, mailbox-degraded, or unavailable
 
 ## Prior Art To Study
 
 **Realtime channels and subjects.**
-Ably channels, Pusher channels, Supabase Realtime channels, and NATS subjects all point to the same small reusable primitive: named scopes for publish/subscribe fanout.
+Ably channels, Pusher channels, Supabase Realtime channels, NATS subjects, MQTT topics, and libp2p pubsub topics all point to the same small reusable primitive: named scopes for publish/subscribe fanout.
 They are useful because app authors need more than whole-team broadcast, but they stay generic when the scope is just a routing label.
 Small Sea Live should consider borrowing that thin core without adopting durable rooms, channel-specific permissions, or provider-owned presence semantics.
 

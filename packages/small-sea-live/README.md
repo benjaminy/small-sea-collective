@@ -40,8 +40,9 @@ Deliberately not in scope:
 - reconciliation across multiple devices reporting different states for the same member
 - app-specific liveness inference
 
-Caller-supplied scopes are a proposed compromise.
-They are routing labels for best-effort live fanout, not rooms, durable subscriptions, permission boundaries, or presence models.
+Routing scopes are named, app-defined labels for best-effort live fanout.
+They are not rooms, durable subscriptions, permission boundaries, or presence models.
+Interest in a scope is connection-bound: when the app's live session ends, its interest ends.
 
 The layer above is real and app authors will want it. The likely shape is a thin Hub-side library plus client-side helpers built on top of Small Sea Live's primitives. Whether that ships as a sibling Small Sea package, as a third-party library, or is left to each app is an open committee question. See [architecture.md](architecture.md) for the rationale behind drawing the line where it is.
 
@@ -60,7 +61,7 @@ But what about an individual's multiple devices?
 And teammates?
 What should broadcast/multicast look like?
 The likely app-facing level is not just "open a stream to device X."
-Apps will probably need APIs for sending app-opaque events to a member, to all of a member's devices, to the currently reachable devices in a team, or to the currently reachable devices interested in an app-defined scope such as a document session.
+Apps will probably need APIs for sending app-opaque events to a member, to all of a member's devices, to the currently reachable devices in a team, or to the currently reachable devices interested in an app-defined routing scope such as a document session.
 I hope there is some good prior art to draw on here.
 The serious challenge here is that I want very different implementation options to poke through the abstraction boundary as little as possible.
 Perfect abstraction is probably impossible.
