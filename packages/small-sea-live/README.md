@@ -5,14 +5,13 @@ Something more evocative will eventually replace it.
 
 ## Purpose
 
-Small Sea apps already get two ambient services from the Hub: generic cloud storage for durable data, and notifications for waking peers up.
-Small Sea Live is the third ambient capability.
+Small Sea Live is the third major networking service the Hub provides to applications, after cloud storage and peer notification.
 It is the Hub's live coordination layer for Small Sea devices — across teammates and across one person's own devices — and it is explicit about the transport quality it is currently delivering rather than pretending all paths feel the same.
 It moves app-opaque events between authorized devices, plus the membership and reachability information apps need to address those events.
 
-Unlike storage and notifications, there is no end-user-facing vendor that just provides this.
+Unlike storage and notifications, there is no mature market of end-user-facing providers for this kind of live transport.
 Live transport between devices on uncooperative networks is a patchwork of partial options that compromise differently on latency, cost, operator burden, vendor entanglement, and privacy.
-This package exists to hide that patchwork from app developers without lying to them about the transport they actually have at runtime.
+This package centralizes that complexity inside Small Sea, so app developers get one interface while still seeing the capabilities and limits of the transport currently in use.
 If the best available path falls all the way back to storage plus notifications, users will experience something different.
 The abstraction should report that difference rather than papering it over.
 
