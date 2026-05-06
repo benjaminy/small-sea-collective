@@ -5,6 +5,10 @@ Something more evocative will eventually replace it.
 
 ## Purpose
 
+The Small Sea project itself provides no internet services.
+Apps run against a local Hub, and the Hub translates their needs onto generic services users can choose or operate.
+For Small Sea apps to offer real-time collaboration or data streaming, Small Sea Live has to build that experience from the transports available in the wild: local networks, NAT traversal, relays, cloud storage, notifications, and other imperfect options.
+
 Small Sea Live is the third major networking service the Hub provides to applications, after cloud storage and peer notification.
 It is the Hub's live coordination layer for Small Sea devices — across teammates and across one person's own devices — and it is explicit about the transport quality it is currently delivering rather than pretending all paths feel the same.
 It moves app-opaque events between authorized devices, plus the membership and reachability information apps need to address those events.
