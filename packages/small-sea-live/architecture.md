@@ -13,39 +13,56 @@ That includes opening paths, minting short-lived session credentials when needed
 
 This package should provide reusable mechanics for the Hub without taking over either role.
 
-## Scope Question
+## Layering Rationale
 
-The largest unresolved question is whether this package should stop at transport or also include higher-level live coordination.
+Small Sea Live owns transport and a thin information layer immediately above it; everything more semantic lives above the line.
 
-Narrow scope:
+In scope:
 
-- point-to-point byte transport
-- transport mode reporting
-- degradation reporting
-- local fake transports for micro tests
+- per-device reachability state and current transport mode
+- membership-aware addressing, derived from Small Sea's authorization model
+- app-opaque event delivery to a device, to a member's reachable devices, or to all reachable devices in a team
+- explicit reporting of mode and degradation
 
-Broader scope:
+Above the line, deliberately not in scope:
 
-- presence
-- multi-device awareness
-- team-scoped broadcast
-- app-opaque ephemeral events
+- presence semantics — online vs. away vs. idle vs. typing, what counts as activity, when "online" expires
+- heartbeat policy and expiry
+- subscription or topic models
+- reconciliation across multiple devices reporting different states for the same member
+- app-specific liveness inference
 
-The current lean is broader, but not settled.
-The reason to consider the broader scope is that presence and broadcast depend on the same transport-quality information that raw streams do.
-If every app builds those features separately, they will probably repeat the same mistakes.
+Two reasons to draw the line there.
 
-The broader scope still has a hard boundary.
-Small Sea Live should not become a CRDT engine, document model, or durable sync layer.
-It should give apps and CRDT libraries a best-effort way to move app-opaque live events between authorized team devices.
-Durable truth remains in app state and Cod Sync.
+Presence semantics are easy to design wrong and hard to change.
+Whichever model gets baked in — heartbeat vs. event-based, per-device vs. per-member, eventual vs. last-writer-wins, what "online" means when the only path is mailbox polling — apps will depend on it, and reversing later breaks them.
+A separate layer is reversible; a primitive baked into the Hub abstraction is not.
 
-Possible app-facing primitives:
+The wider the package's contract, the harder it is to honestly represent transport reality across modes.
+Pure transport hides STUN, TURN, relay, and mailbox behind one stream plus a mode signal.
+Add presence and the package has to define what presence *means* in each mode, including when it is a 30-second-old polling result.
+Keeping presence above the line keeps the awkwardness above the line.
+
+### Hard Boundary
+
+Even within the in-scope side, Small Sea Live is not a CRDT engine, document model, or durable sync layer.
+CRDT libraries and realtime apps are expected customers, but durable truth lives in app state and Cod Sync.
+
+### Where The Layer Above Lives
+
+Open question. Three plausible homes:
+
+- a sibling Small Sea package — strongest default for app authors, but pulls semantics back into the project this line is meant to keep out
+- a third-party local-first library — keeps the line meaningful, depends on someone building one
+- left to each app — maximum flexibility, but everyone reinvents it
+
+Committee has not picked.
+
+### App-facing Primitives (provisional)
 
 - send an app-opaque event to a device
 - send an app-opaque event to a member's reachable devices
-- broadcast an app-opaque event to reachable devices in a team or topic
-- publish ephemeral presence or awareness state
+- broadcast an app-opaque event to reachable devices in a team
 - report whether the current path is direct, relayed, mailbox-degraded, or unavailable
 
 ## Prior Art To Study

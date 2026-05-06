@@ -7,8 +7,8 @@ Something more evocative will eventually replace it.
 
 Small Sea apps already get two ambient services from the Hub: generic cloud storage for durable data, and notifications for waking peers up.
 Small Sea Live is the third ambient capability.
-It is the Hub's best-effort live coordination layer for Small Sea devices — across teammates, and across one person's own devices.
-It moves app-opaque events, presence, and fanout information between authorized devices with explicit degradation when only slower transports are available.
+It is the Hub's live coordination layer for Small Sea devices — across teammates and across one person's own devices — and it is explicit about the transport quality it is currently delivering rather than pretending all paths feel the same.
+It moves app-opaque events between authorized devices, plus the membership and reachability information apps need to address those events.
 
 Unlike storage and notifications, there is no end-user-facing vendor that just provides this.
 Live transport between devices on uncooperative networks is a patchwork of partial options that compromise differently on latency, cost, operator burden, vendor entanglement, and privacy.
@@ -16,25 +16,34 @@ This package exists to hide that patchwork from app developers without lying to 
 If the best available path falls all the way back to storage plus notifications, users will experience something different.
 The abstraction should report that difference rather than papering it over.
 
-The Manager owns provider account configuration.
-The Hub is responsible for doing live communication through the providers the Manager has configured.
+What makes Small Sea Live not just another generic networking layer is its integration with Small Sea's identity and authorization.
+The Manager owns provider account configuration and the team/device authorization model.
+The Hub is responsible for live communication through both.
+Apps don't authenticate users, don't pair devices, and don't decide who's allowed to talk to whom — the Hub answers all of that, the same way it does for storage and notifications.
 
 ## Scope
 
-Open question, not settled.
+Small Sea Live owns transport and the thin information layer immediately above it.
 
-The narrow reading is that this package owns byte-stream transport between two device endpoints and reports the mode it is running in (direct, relayed, mailbox-degraded, unavailable).
-Apps build presence, multi-device fan-out, and team broadcast on top.
+In scope:
 
-The broader reading is that presence, multi-device awareness, and team-scoped broadcast belong here too, because building those well on top of raw transport needs the same mode-aware information the package already has, and because pushing them into apps means every app reinvents them — probably badly.
+- per-device reachability and current transport mode
+- membership and device addressing, derived from Small Sea's authorization model
+- delivery of app-opaque events to a device, to all of a member's devices, or to all reachable devices in a team
+- explicit reporting of the mode and degradation the available transport currently provides
 
-Current lean is broader.
-The argument for narrow is real and this section will keep saying so until the question is actually settled.
+Deliberately not in scope:
+
+- presence semantics — online vs. away vs. idle vs. typing, what counts as activity, when "online" expires
+- heartbeat policy and expiry
+- subscription or topic models
+- reconciliation across multiple devices reporting different states for the same member
+- app-specific liveness inference
+
+The layer above is real and app authors will want it. The likely shape is a thin Hub-side library plus client-side helpers built on top of Small Sea Live's primitives. Whether that ships as a sibling Small Sea package, as a third-party library, or is left to each app is an open committee question. See [architecture.md](architecture.md) for the rationale behind drawing the line where it is.
 
 This package is not a CRDT library and it is not durable sync.
 CRDT libraries and realtime apps are expected customers, but durable truth still belongs to app state and Cod Sync.
-
-See [architecture.md](architecture.md) for the currently unresolved design questions.
 
 ## App Interface
 
@@ -48,7 +57,7 @@ But what about an individual's multiple devices?
 And teammates?
 What should broadcast/multicast look like?
 The likely app-facing level is not just "open a stream to device X."
-Apps will probably need APIs for sending app-opaque events to a member, to all of a member's devices, or to the currently reachable devices in a team/topic.
+Apps will probably need APIs for sending app-opaque events to a member, to all of a member's devices, or to the currently reachable devices in a team.
 I hope there is some good prior art to draw on here.
 The serious challenge here is that I want very different implementation options to poke through the abstraction boundary as little as possible.
 Perfect abstraction is probably impossible.
