@@ -43,9 +43,9 @@ Credential model:
 Small Sea translation:
 
 - The Manager should own provider account configuration.
-- The Hub should use that configuration to mint short-lived WebRTC `iceServers` material.
+- The Hub should use that configuration to mint short-lived TURN credentials.
 - Apps should not receive the long-lived Cloudflare TURN key or the Cloudflare API token.
-- Apps may receive provider-derived `iceServers` only as a Hub-mediated live transport capability.
+- Whether apps ever see provider-derived material like `iceServers` at all is an open Small Sea Live design question, not a Cloudflare question — promoting WebRTC-specific concepts into the app-facing surface would work against the goal of a generic live-transport layer. See Unresolved Questions. Cloudflare TURN fits either way; this experiment does not need to choose.
 
 Credential lifetime and refresh:
 
@@ -54,13 +54,16 @@ Credential lifetime and refresh:
 - Cloudflare says WebRTC credentials can be refreshed during a session with `RTCPeerConnection.setConfiguration()`.
 - Cloudflare says expired in-use credentials stop billing and analytics immediately, then disconnect after a short delay.
 
+The `setConfiguration()` refresh path is a meaningful fit-check positive: long-lived Small Sea Live sessions can rotate Cloudflare credentials transparently without rebuilding the WebRTC connection.
+That matches the pattern already in the experiments doc — long-lived provider config rides over the sync layer, while short-lived per-session credentials get minted on connect.
+
 Limits and caveats:
 
 - Cloudflare documents per-allocation packet-rate limits around `5-10 kpps`.
 - Cloudflare documents per-allocation data-rate limits around `50-100 Mbps`.
 - Cloudflare documents per-allocation new-destination behavior around `>5 new IP/sec`.
 - Hitting these limits may result in packet drops.
-- Cloudflare Realtime TURN does not implement RFC6062 TCP relaying.
+- Cloudflare Realtime TURN does not implement RFC6062 TCP relaying. This rules out using Cloudflare to relay arbitrary TCP connections between peers, but does not affect WebRTC-over-TURN-via-TCP-transport, which is the path Small Sea Live actually needs.
 - Cloudflare supports TURN-client-to-TURN-server communication over IPv4 and IPv6, but relayed addresses are IPv4 only.
 - Cloudflare recommends ICE restart support because allocations can be disrupted by maintenance or network topology changes.
 
@@ -97,6 +100,9 @@ Assumption: one relayed stream sends `1 Mbps` of payload to one receiver for 2 a
 That is about `450 MB/hour` and `27 GB/month`.
 Nominal cost after the free tier would be about `$1.35/month`.
 
+Across all three scenarios, traffic stays well inside Cloudflare's 1000 GB shared free tier — small teams using Cloudflare TURN at these levels are unlikely to ever pay for it.
+The nominal-cost numbers above are what teams *would* pay if no free tier existed; they should be read as worst-case ceilings, not expected bills.
+
 Media workloads are not modeled here.
 They could easily dominate traffic, and Small Sea Live is not trying to provide media semantics in this experiment.
 
@@ -104,7 +110,7 @@ They could easily dominate traffic, and Small Sea Live is not trying to provide 
 
 Payload visibility:
 
-- Cloudflare says that when Realtime TURN is used with WebRTC, Cloudflare cannot access relayed media contents because WebRTC encrypts traffic with DTLS between peers before it reaches the TURN server.
+- Cloudflare says that when Realtime TURN is used with WebRTC, Cloudflare cannot access relayed payloads because WebRTC encrypts them end-to-end (DTLS for data channels, SRTP keyed by DTLS for media) before they reach the TURN server.
 - Cloudflare's statement explicitly includes audio, video, and data-channel information.
 - This supports the Small Sea assumption that app payloads sent over WebRTC data channels are opaque to Cloudflare.
 
@@ -154,4 +160,4 @@ Record proposed Manager configuration fields, Hub credential-minting behavior, c
 
 ## Unresolved Questions
 
-- 
+- Open architectural question for small-sea-live, not for this experiment: does the app or the Hub act as the WebRTC peer? If the Hub does, apps see send/receive verbs and never touch ice-servers material. If the app does, the Hub passes ice-servers down for the app to configure its own peer connection. Cloudflare TURN works for either model; the choice belongs to the small-sea-live package, and notes here should be careful not to drift toward one option just because the provider docs are written for browser-side WebRTC.
