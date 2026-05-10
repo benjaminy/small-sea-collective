@@ -166,10 +166,12 @@ Syncthing's per-folder `.stignore` file supports:
 
 - `#include <other-file>` for shared pattern sets — directly relevant to Vault's "team profile + local profile" layering question.
 - `!pattern` for explicit overrides (same as Unison's `ignorenot`).
-- `(?d)pattern` — pattern marker that says "if a file matching this is deleted by a peer, *don't* propagate the delete locally." Useful for files that are individually managed but should not get clobbered by peer deletes (e.g., per-device editor config that lives in the folder).
+- `(?d)pattern` — marks files matching the pattern as *deletable when needed to satisfy a peer-originated directory delete*. Without `(?d)`, a directory containing ignored OS junk like `.DS_Store` will block the peer's delete from being applied locally; with `(?d)`, Syncthing may remove the ignored junk so the parent delete can succeed. This is essentially Syncthing's mitigation for Unison's rename-with-ignored-children footgun (rename surfaces as delete + create), framed at the file level instead of the rename level.
 - `(?i)pattern` — case-insensitive marker.
 
-The `(?d)` flag in particular is a refinement Unison doesn't have and that Vault should consider.
+The `(?d)` flag is the most interesting cross-reference here: it is a different shape of solution to the same family of "ignored files inside a directory whose existence on disk is being decided by sync" problem that Unison's caveats describe, and Vault needs a story for it one way or the other.
+
+(For the *separate* feature of "don't propagate peer deletes at all on this folder," Syncthing has a folder-level `ignoreDelete` advanced setting, distinct from the ignore-pattern flags. Probably not what Vault wants — silently swallowing peer deletes is a recipe for divergence — but worth knowing it exists.)
 
 **4. Receive-only and send-only folder types.**
 
@@ -332,6 +334,22 @@ Worth studying for the UX layer over the lower-level primitive — Vault will wa
 
 ---
 
+## Keybase Filesystem (KBFS) — research pile, not yet expanded
+
+Mostly frozen since the Zoom acquisition, but a handful of design ideas are worth keeping in the pile even though the project itself is below Syncthing and git-annex in priority.
+
+Things worth coming back to when there's reason:
+
+- **Server-honesty via published Merkle tree.** Every state change is signed, chained, and published into a global Merkle tree the client can audit. Even though Keybase ran the servers, clients could detect a lying server. The pattern is broader than that one architecture: "every state is signed and chained; replay verifies" is exactly the property Cod Sync wants from cloud-storage providers it doesn't trust. Worth comparing to git's existing chain-of-commits property and asking whether Vault needs anything additional.
+- **Conflict resolver as a distinct component.** KBFS had a rule-based automatic conflict resolver that handled common cases without prompting, with an explicit "go to a conflict branch" fallback when rules didn't apply. The architectural separation — resolver as a thing you can replace per workload — is interesting design language for Vault even if the specific rules aren't.
+- **Per-folder key with rotation on membership change.** Each TLF (Top-Level Folder) had its own key; membership changes triggered key rotation. Directly relevant to Wrasse Trust's key rotation patterns; worth confirming Vault's per-niche key story aligns or learns from KBFS's specifics.
+- **Conflict semantics on simultaneous writes.** KBFS handled the case where two devices write the same file while offline by creating a per-device conflict view at sync time. Different shape from Unison's per-path conflict marking and Syncthing's `.sync-conflict-` files; worth a closer read.
+
+Not yet expanded into a full template section because the project is dormant and the design docs are scattered.
+Promote when there is a specific Vault question (key rotation semantics, server-honesty audit story, conflict resolver architecture) that this pile would inform.
+
+---
+
 ## Cross-cutting takeaways
 
 The single most valuable cross-cutting ideas, with attribution:
@@ -346,7 +364,7 @@ The single most valuable cross-cutting ideas, with attribution:
 
 5. **Atomic-group predicate** (Unison). Pathspec for directories whose contents are treated as a unit during reconciliation (`.app`, `.docx`, package directories).
 
-6. **Layered ignore profiles with `#include` and per-pattern flags** (Syncthing). Team profile + local profile, with `(?d)` "don't propagate deletes" and `!` overrides.
+6. **Layered ignore profiles with `#include` and per-pattern flags** (Syncthing). Team profile + local profile, with `!` overrides and a `(?d)`-style "this ignored file may be deleted to satisfy a peer-originated directory delete" marker (which is how Syncthing closes the rename-with-ignored-children footgun at the file level).
 
 7. **Conflict-file naming with peer attribution** (Syncthing). If Vault ever offers "keep both" as a conflict-resolution action, the filename should include time and originating peer ID.
 
@@ -361,11 +379,16 @@ The single most valuable cross-cutting ideas, with attribution:
 Vault already has local peer sync state in `checkouts.db`.
 That feels like the right analogue to Unison's archive memory or Syncthing's per-peer state, but at commit/ref granularity rather than per-path replica snapshots.
 
-A point worth claiming: Vault's per-peer-per-niche memory is *strictly richer* than Unison's pairwise archive and at least as expressive as Syncthing's per-peer state.
-Unison's archive collapses to one truth per pair of roots.
-Syncthing tracks per-peer state but at file-version granularity.
-Vault's parked refs let it say "I see Alice and Bob disagreeing with each other," and replay either side's history independently.
-That is a feature, not just a non-fit with prior art.
+A point worth claiming, narrowed: Vault's per-peer-per-niche memory is *strictly richer* than Unison's pairwise archive at representing **divergent peer histories**.
+Unison's archive collapses to one truth per pair of roots; Vault's parked refs let it say "I see Alice and Bob disagreeing with each other," and replay either side's history independently.
+
+Compared to Syncthing, the comparison is by axis, not strict ordering:
+
+- Vault is richer at **branchy, replayable peer history** — the commit graph, the ability to merge / fork / examine an old peer state.
+- Syncthing is richer at **live per-file availability and block-level state** — per-path version vectors, block lists, a global model of which peer has which blocks of which file right now.
+
+These carry different information for different purposes.
+Vault's design choice favors the first axis because human-paced collaboration with merge moments cares more about replayable history than block-level availability.
 
 The useful product question is:
 
