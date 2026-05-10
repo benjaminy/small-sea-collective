@@ -45,7 +45,10 @@ Small Sea translation:
 - The Manager should own provider account configuration.
 - The Hub should use that configuration to mint short-lived TURN credentials.
 - Apps should not receive the long-lived Cloudflare TURN key or the Cloudflare API token.
-- Whether apps ever see provider-derived material like `iceServers` at all is an open Small Sea Live design question, not a Cloudflare question — promoting WebRTC-specific concepts into the app-facing surface would work against the goal of a generic live-transport layer. See Unresolved Questions. Cloudflare TURN fits either way; this experiment does not need to choose.
+- Whether apps ever see provider-derived material like `iceServers` at all is an open Small Sea Live design question, not a Cloudflare question.
+  Promoting WebRTC-specific concepts into the app-facing surface would work against the goal of a generic live-transport layer.
+  See Unresolved Questions.
+  Cloudflare TURN fits either way; this experiment does not need to choose.
 
 Credential lifetime and refresh:
 
@@ -54,8 +57,10 @@ Credential lifetime and refresh:
 - Cloudflare says WebRTC credentials can be refreshed during a session with `RTCPeerConnection.setConfiguration()`.
 - Cloudflare says expired in-use credentials stop billing and analytics immediately, then disconnect after a short delay.
 
-The `setConfiguration()` refresh path is a meaningful fit-check positive: long-lived Small Sea Live sessions can rotate Cloudflare credentials transparently without rebuilding the WebRTC connection.
-That matches the pattern already in the experiments doc — long-lived provider config rides over the sync layer, while short-lived per-session credentials get minted on connect.
+The `setConfiguration()` refresh path is a meaningful fit-check positive.
+Cloudflare's docs suggest long-lived Small Sea Live sessions may be able to rotate Cloudflare credentials without rebuilding the WebRTC connection.
+That still needs to be verified in the account-backed smoke test, especially around existing TURN allocations and credential expiry.
+The shape matches the pattern already in the experiments doc: long-lived provider config rides over the sync layer, while short-lived per-session credentials get minted on connect.
 
 Limits and caveats:
 
@@ -63,7 +68,9 @@ Limits and caveats:
 - Cloudflare documents per-allocation data-rate limits around `50-100 Mbps`.
 - Cloudflare documents per-allocation new-destination behavior around `>5 new IP/sec`.
 - Hitting these limits may result in packet drops.
-- Cloudflare Realtime TURN does not implement RFC6062 TCP relaying. This rules out using Cloudflare to relay arbitrary TCP connections between peers, but does not affect WebRTC-over-TURN-via-TCP-transport, which is the path Small Sea Live actually needs.
+- Cloudflare Realtime TURN does not implement RFC6062 TCP relaying.
+  This rules out using Cloudflare to relay arbitrary TCP connections between peers.
+  It does not affect WebRTC-over-TURN-via-TCP-transport, which is the path Small Sea Live actually needs.
 - Cloudflare supports TURN-client-to-TURN-server communication over IPv4 and IPv6, but relayed addresses are IPv4 only.
 - Cloudflare recommends ICE restart support because allocations can be disrupted by maintenance or network topology changes.
 
@@ -100,8 +107,10 @@ Assumption: one relayed stream sends `1 Mbps` of payload to one receiver for 2 a
 That is about `450 MB/hour` and `27 GB/month`.
 Nominal cost after the free tier would be about `$1.35/month`.
 
-Across all three scenarios, traffic stays well inside Cloudflare's 1000 GB shared free tier — small teams using Cloudflare TURN at these levels are unlikely to ever pay for it.
-The nominal-cost numbers above are what teams *would* pay if no free tier existed; they should be read as worst-case ceilings, not expected bills.
+Across all three scenarios, traffic stays well inside Cloudflare's currently documented 1000 GB shared free tier.
+The nominal-cost numbers above are what teams would pay if no free tier existed.
+They should be read as rough ceilings for these traffic assumptions, not expected bills.
+Account setup still needs to verify billing-card requirements, plan requirements, and whether other Realtime usage shares the same free-tier pool.
 
 Media workloads are not modeled here.
 They could easily dominate traffic, and Small Sea Live is not trying to provide media semantics in this experiment.
@@ -135,6 +144,18 @@ Docs-only note:
 Cloudflare says TURN keys can be created in the Dashboard or through the API.
 The FAQ refers to self-serve plans that can be paid by credit card and says self-serve and enterprise plans do not differ in TURN performance or features.
 The actual account setup flow, billing-card requirement, and confusing screens still need a human account walkthrough.
+
+Creating a TURN key seemed to require entering a credit card.
+It showed that it was charging $0 (until you use a lot, I guess), but you need the card.
+Navigating the dashboard menus was a little confusing.
+Ended up using the search feature and searched for TURN.
+
+things that might be secret in the following have been replaced by [NAME]:
+
+curl -H "Authorization: Bearer [API Token]" -H "Content-Type: application/json" -d '{"ttl": 86400}' https://rtc.live.cloudflare.com/v1/turn/keys/[Turn Token ID]/credentials/generate-ice-servers
+
+{"iceServers":[{"urls":["stun:stun.cloudflare.com:3478","stun:stun.cloudflare.com:53"]},{"urls":["turn:turn.cloudflare.com:3478?transport=udp","turn:turn.cloudflare.com:3478?transport=tcp","turns:turn.cloudflare.com:5349?transport=tcp","turn:turn.cloudflare.com:53?transport=udp","turn:turn.cloudflare.com:80?transport=tcp","turns:turn.cloudflare.com:443?transport=tcp"],"username":"[Big random number]","credential":"[Big random number]"}]}
+
 
 ## Smoke-Test Results
 
