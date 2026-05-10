@@ -92,6 +92,8 @@ Working decision: the Hub prunes sightings whose `last_seen_at` is older than th
 The default stale window is 30 days.
 Pruning is scoped to the participant derived from the Manager/Core session.
 Manager refresh lists and evaluates sightings before pruning stale rows, then returns prompts computed from that pre-prune snapshot.
+A row is stale only when `last_seen_at < cutoff`.
+Rows exactly at the cutoff survive until a later prune pass.
 
 Rationale:
 
@@ -106,6 +108,8 @@ Rationale:
 
 The 30-day window matches the active-observation framing.
 If the app has not retried in a month, the user has probably moved on.
+The "shown once before pruning" rule applies to any stale row from the pre-prune snapshot, regardless of whether current Manager re-evaluation returns a prompt.
+That includes conservative prompts such as a sighting for a team this Manager device has not cloned.
 Rows for abandoned participants whose Manager never refreshes again may remain.
 That is an accepted v1 gap rather than a reason to let one participant's session delete another participant's observations.
 The "shown once before pruning" behavior is participant-scoped, not Manager-installation-scoped.
@@ -153,6 +157,8 @@ Content-Type: application/json
 The timestamp above is illustrative.
 The actual precondition is exact string equality against the `last_seen_at` value returned by `GET /sightings`.
 That value is a canonical Hub-written timestamp string.
+The `GET /sightings` response must carry `last_seen_at` byte-identical to the stored SQLite column.
+It must not parse and re-render the timestamp through FastAPI, Pydantic, or a datetime JSON encoder.
 
 Response:
 
@@ -208,12 +214,13 @@ The Hub derives `participant_hex` from the Manager/Core session token, applies t
 The branch is successful if all of the following are true:
 
 1. The docs state a clear sighting lifecycle policy.
-2. Manager clears Hub sightings only after re-evaluation says they are resolved.
-3. Hub exposes only the minimum authenticated cleanup surface needed by Manager.
-4. Stale rows age out predictably on Manager refresh, without background polling or mutation-on-GET.
-5. Retrying an app after cleanup or age-out creates a fresh sighting.
-6. Dismissed unresolved rows remain suppressible by Manager and continue to bump if the app retries.
-7. Micro tests prove the policy at Hub, client, and Manager boundaries.
+2. Manager clears resolved Hub sightings only after re-evaluation says they are resolved.
+3. Stale rows age out per the configured window, independent of prompt re-evaluation.
+4. Hub exposes only the minimum authenticated cleanup surface needed by Manager.
+5. Stale rows age out predictably on Manager refresh, without background polling or mutation-on-GET.
+6. Retrying an app after cleanup or age-out creates a fresh sighting.
+7. Dismissed unresolved rows remain suppressible by Manager and continue to bump if the app retries.
+8. Micro tests prove the policy at Hub, client, and Manager boundaries.
 
 ## Implementation Sketch
 
@@ -224,6 +231,8 @@ The branch is successful if all of the following are true:
   This is the policy pass; endpoint request/response details can land in Phase 4 after the API shape is implemented.
 - Verify the no-flap property before Phase 1 coding.
   Once participant registration and team activation exist, Hub `_resolve_berth(...)` must open the session and `request_session(...)` must not call `record_unknown_app_sighting(...)` for that same tuple.
+  Verify this with a focused micro test that drives the post-registration-and-activation request path and spies on or otherwise proves `record_unknown_app_sighting(...)` was not called.
+  Keep that check as a permanent regression micro test when the cleanup implementation lands.
   If that property fails, stop and fix or re-plan before adding cleanup endpoints.
 - Keep the branch plan under `.IN_PROGRESS/codex-issue-120-sightings-cleanup-policy/PLAN.md`, matching the current AGENTS.md workflow for nontrivial work.
   The historical reference plan path `Archive/branch-plan-issue-111-app-bootstrap-sightings.md` has been confirmed to exist.
@@ -237,13 +246,14 @@ The branch is successful if all of the following are true:
 - Introduce a `_now()` method or constructor-injected clock and route both `record_unknown_app_sighting(...)` and stale pruning through it.
   Other `datetime.now(...)` call sites in `backend.py` are out of scope unless they directly participate in sighting cleanup.
 - Introduce one timestamp formatting helper for sighting timestamps.
-  It must normalize to UTC and use `isoformat(timespec="microseconds")`, preserving the `+00:00` offset.
+  Callers must pass aware datetimes; the helper must reject naive datetimes, normalize aware values to UTC, and use `isoformat(timespec="microseconds")`, preserving the `+00:00` offset.
   Both `record_unknown_app_sighting(...)` and prune cutoff construction must use this helper.
 - Add a Manager-only `POST /sightings/prune-stale` endpoint that calls stale pruning scoped to the session participant.
   Do not prune from `record_unknown_app_sighting(...)`, `list_unknown_app_sightings(...)`, or the clear endpoint.
 - Keep `GET /sightings` read-only.
 - Compare stale timestamps as UTC ISO-8601 strings in SQL.
   This relies on the canonical six-fractional-digit timestamp format above; micro tests must cover an instant whose microsecond value is zero.
+  The pruning predicate is strictly `last_seen_at < cutoff`; equality at the cutoff survives.
 - Add an authenticated HTTP endpoint for Manager-driven clear.
 - Keep authorization identical to `GET /sightings`: `_require_session`, then the Manager/Core `Settings().app_name` guard.
   Prefer a shared `_require_manager_session` dependency/helper so `GET /sightings`, `POST /sightings/clear`, and `POST /sightings/prune-stale` cannot drift.
@@ -265,6 +275,8 @@ Hub micro tests cover successful clear, clear idempotency, guarded-clear mismatc
 - The prune helper may send `{}` because `SmallSeaClient._post(...)` currently requires a JSON object.
   The Hub endpoint itself must not require callers to send a JSON body.
 - Update client-side docs or README material that describes `Session.app_sightings()` so the new clear helper is discoverable to Manager-side code.
+  There is no current `packages/small-sea-client/README.md`; updating the relevant session helper docstrings is acceptable unless a better client doc target appears during implementation.
+  This documentation target is useful reviewer orientation, not a load-bearing contract.
 
 Exit gate:
 Client micro tests prove the clear request body shape, the prune helper path, and that bootstrap exceptions are not involved in cleanup.
@@ -291,7 +303,7 @@ Client micro tests prove the clear request body shape, the prune helper path, an
   The existing web pattern can carry the warning as a non-fatal refresh message: "Saved locally, but could not refresh sightings. Reconnect to Hub and Refresh. (...)" after action-triggered refreshes, and an inline error on explicit refresh.
 
 Exit gate:
-Manager micro tests prove stale pruning is called after listing/evaluation, resolved rows are cleared even when dismissed, guarded-clear mismatch is non-fatal, dismissed unresolved rows are not cleared, rows whose team is not locally cloned are not cleared, cleanup failures render the chosen non-fatal UI error alongside computed prompts, and refresh output remains current prompts rather than raw Hub rows.
+Manager micro tests prove stale pruning is called after listing/evaluation, resolved rows are cleared even when dismissed, guarded-clear mismatch is non-fatal, fresh dismissed unresolved rows remain suppressed and are not cleared, rows whose team is not locally cloned are not cleared while fresh, cleanup failures render the chosen non-fatal UI error alongside computed prompts, and refresh output remains current prompts rather than raw Hub rows.
 
 ### Phase 4 - Docs And Wrap-Up
 
@@ -328,6 +340,7 @@ the issue goal was actually decided and implemented, and the app-bootstrap trust
 - A micro test shows the Hub does not need NoteToSelf/team DB reads for cleanup.
 - A code search verifies cleanup writes only `small_sea_collective_local.db`.
   Concretely, grep cleanup paths for SQL writes or path references involving `core.db`, NoteToSelf, or team DBs; those must not appear.
+  This is a reviewer validation instruction, not a CI-enforced step on this branch.
 
 ### Manager Correctness Evidence
 
@@ -339,6 +352,8 @@ the issue goal was actually decided and implemented, and the app-bootstrap trust
   After refresh, Manager returns no prompt and the Hub row remains.
 - A micro test starts with a row whose team is not locally cloned.
   After refresh, Manager keeps the conservative prompt and the Hub row remains.
+- A micro test starts with a fresh dismissed unresolved row.
+  After refresh, display behavior is unchanged from today: Manager returns no prompt and the Hub row remains.
 - A micro test verifies retry-after-clear records a new sighting with `seen_count = 1`.
   This is mostly existing upsert behavior; this branch should preserve it rather than invent a second creation path.
 - A micro test verifies a clear request with stale `last_seen_at` returns `deleted_count = 0` and leaves the bumped row in place.
@@ -349,8 +364,11 @@ the issue goal was actually decided and implemented, and the app-bootstrap trust
 ### Stale Policy Evidence
 
 - A micro test calls `POST /sightings/prune-stale` with one row just before and one row just after the stale cutoff.
-  Only the older row is pruned.
+  Add a row exactly at the cutoff.
+  Only rows with `last_seen_at < cutoff` are pruned; the equality row survives.
 - A Manager refresh micro test proves stale rows are shown once from the pre-prune snapshot, then absent on the next refresh.
+- A Manager refresh micro test proves a stale but still-actionable conservative prompt is shown from the pre-prune snapshot and then pruned.
+  A sighting for a team this Manager device has not cloned is a good fixture.
 - A Manager refresh micro test proves a dismissed unresolved row that has gone stale is shown zero times because dismissal suppresses display, but is still pruned and can be recreated by a future retry.
 - A micro test verifies `record_unknown_app_sighting(...)` does not prune unrelated stale rows.
 - A micro test verifies `POST /sightings/clear` does not prune unrelated stale rows.
@@ -425,3 +443,9 @@ This branch needs a narrow clear operation and stale prune behavior, not a Hub-a
 18. `POST /sightings/prune-stale` has no required body, though `{}` is accepted.
 19. Manager/Hub prompt parity is one-way: Hub rejection implies Manager prompt, but not necessarily the reverse.
 20. `git diff --check` is a deliberate whitespace check, separate from the micro test suite.
+21. Stale pruning uses strict `< cutoff`; a row exactly at the cutoff survives.
+22. Phase 0 no-flap verification must be test-backed and kept as a regression micro test.
+23. `GET /sightings` must return `last_seen_at` byte-identical to the stored column.
+24. The timestamp helper rejects naive datetimes and outputs canonical UTC strings.
+25. Fresh dismissed unresolved rows keep today's display behavior after the evaluation-order change.
+26. Reviewer code search for cleanup DB boundaries is an explicit validation instruction, not CI.
