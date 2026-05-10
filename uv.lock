@@ -13,6 +13,7 @@ members = [
     "shared-file-vault",
     "small-sea-client",
     "small-sea-hub",
+    "small-sea-live",
     "small-sea-manager",
     "small-sea-note-to-self",
     "small-sea-sandbox",
@@ -1149,6 +1150,11 @@ requires-dist = [
     { name = "wrasse-trust", editable = "packages/wrasse-trust" },
 ]
 provides-extras = ["test"]
+
+[[package]]
+name = "small-sea-live"
+version = "0.1.0"
+source = { editable = "packages/small-sea-live" }
 
 [[package]]
 name = "small-sea-manager"
