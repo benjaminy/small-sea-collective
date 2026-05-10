@@ -461,3 +461,119 @@ def test_vault_bootstrap_loop_rejects_then_registers_then_activates(playground_d
 
     assert resp.status_code == 200
     assert "pending_id" in resp.json()
+
+
+def test_hub_rejection_implies_manager_prompt_parity(playground_dir):
+    """Parity contract: every case where Hub `_resolve_berth` rejects an
+    app-bootstrap request must produce a non-None Manager prompt. Cleanup
+    makes predicate drift more costly because a false 'resolved' result can
+    delete the observation that would have exposed the mismatch.
+
+    The converse is intentionally not tested: Manager may conservatively
+    show a prompt for a tuple that a fresh Hub request would now accept.
+    """
+    backend, participant_hex, client = _fresh_env(playground_dir)
+    nts_db = _note_to_self_db(backend.root_dir, participant_hex)
+    team_db = _team_db(backend.root_dir, participant_hex, _TEAM)
+    team_id = _team_id(nts_db, _TEAM)
+
+    scenarios = []
+
+    # app_unknown: nothing inserted.
+    scenarios.append(("app_unknown", lambda: None))
+
+    # participant_berth_missing: app row in team DB but not in NoteToSelf.
+    def _participant_berth_missing():
+        _insert_app(team_db, b"\xa1" * 16, _VAULT_APP)
+        _insert_team_berth(team_db, b"\xa2" * 16, b"\xa1" * 16)
+    scenarios.append(("participant_berth_missing", _participant_berth_missing))
+
+    # team_berth_missing: app row in NoteToSelf but no team berth.
+    def _team_berth_missing():
+        _insert_app(nts_db, b"\xb1" * 16, _VAULT_APP)
+        _insert_note_to_self_berth(nts_db, b"\xb2" * 16, b"\xb1" * 16, team_id)
+    scenarios.append(("team_berth_missing", _team_berth_missing))
+
+    # app_friendly_name_ambiguous: two NoteToSelf apps with same name.
+    def _ambiguous():
+        for index in range(2):
+            app_id = bytes([0xc1 + index]) * 16
+            _insert_app(nts_db, app_id, _VAULT_APP)
+            _insert_note_to_self_berth(
+                nts_db,
+                bytes([0xd1 + index]) * 16,
+                app_id,
+                team_id,
+            )
+    scenarios.append(("app_friendly_name_ambiguous", _ambiguous))
+
+    for expected_reason, mutate in scenarios:
+        # Wipe app/berth state between scenarios so each starts clean.
+        with sqlite3.connect(nts_db) as conn:
+            conn.execute("DELETE FROM team_app_berth WHERE app_id != (SELECT id FROM app WHERE name = ?)", (_CORE_APP,))
+            conn.execute("DELETE FROM app WHERE name = ?", (_VAULT_APP,))
+            conn.commit()
+        with sqlite3.connect(team_db) as conn:
+            conn.execute("DELETE FROM team_app_berth WHERE app_id IN (SELECT id FROM app WHERE name = ?)", (_VAULT_APP,))
+            conn.execute("DELETE FROM app WHERE name = ?", (_VAULT_APP,))
+            conn.commit()
+
+        mutate()
+
+        resp = _request_vault_session(client)
+        assert resp.status_code == 409, f"{expected_reason}: {resp.text}"
+        assert resp.json()["reason"] == expected_reason
+
+        sighting = _sighting_rows(backend)[0]
+        prompt = Provisioning.current_app_sighting_prompt(
+            backend.root_dir,
+            participant_hex,
+            sighting,
+        )
+        assert prompt is not None, (
+            f"Manager prompt parity broken for Hub rejection {expected_reason}; "
+            "current_app_sighting_prompt returned None where Hub rejected."
+        )
+
+        # Reset for next iteration: drop the sighting row.
+        with sqlite3.connect(backend.path_local_db) as conn:
+            conn.execute("DELETE FROM unknown_app_sighting")
+            conn.commit()
+
+
+def test_resolved_request_does_not_record_sighting(playground_dir):
+    """No-flap invariant: once registration and activation exist, request_session
+    must not call record_unknown_app_sighting for the same tuple. Cleanup design
+    relies on this to avoid resolved rows oscillating between deleted and
+    re-created on each app retry.
+    """
+    backend, participant_hex, client = _fresh_env(playground_dir)
+    Provisioning.register_app_for_participant(
+        backend.root_dir,
+        participant_hex,
+        _VAULT_APP,
+    )
+    Provisioning.activate_app_for_team(
+        backend.root_dir,
+        participant_hex,
+        _TEAM,
+        _VAULT_APP,
+    )
+
+    calls = []
+    original_record = backend.record_unknown_app_sighting
+
+    def _spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return original_record(*args, **kwargs)
+
+    backend.record_unknown_app_sighting = _spy
+    try:
+        resp = _request_vault_session(client)
+        assert resp.status_code == 200, resp.text
+        assert "pending_id" in resp.json()
+    finally:
+        backend.record_unknown_app_sighting = original_record
+
+    assert calls == []
+    assert _sighting_rows(backend) == []

@@ -57,6 +57,25 @@ class SmallSeaAppBootstrapRequiredExn(SmallSeaBackendExn):
         super().__init__(reason)
 
 
+# Default stale window for Hub app-bootstrap sightings. Sightings whose
+# last_seen_at is strictly older than (now - SIGHTING_STALE_WINDOW) are
+# eligible for pruning by POST /sightings/prune-stale. The constructor
+# accepts an override for tests.
+SIGHTING_STALE_WINDOW = timedelta(days=30)
+
+
+def _format_sighting_timestamp(dt: datetime) -> str:
+    """Canonical UTC ISO-8601 string for sighting timestamps.
+
+    Always 6 fractional digits and a +00:00 offset so lexicographic SQL
+    comparison matches chronological order. Naive datetimes are rejected so
+    an injected test clock cannot silently bypass the canonical format.
+    """
+    if dt.tzinfo is None:
+        raise ValueError("naive datetime not allowed for sighting timestamp")
+    return dt.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
 # ---- SQLAlchemy models ----
 # Hub-local session table
 
@@ -175,10 +194,20 @@ class SmallSeaBackend:
     hub_schema_version: int = 51
 
     def __init__(self, root_dir, auto_approve_sessions: bool = False,
-                 sandbox_mode: bool = False, log_level: str = "INFO"):
+                 sandbox_mode: bool = False, log_level: str = "INFO",
+                 sighting_stale_window: Optional[timedelta] = None,
+                 now_fn=None):
         self.root_dir = pathlib.Path(root_dir)
         self.auto_approve_sessions = auto_approve_sessions
         self.sandbox_mode = sandbox_mode
+        self._sighting_stale_window = (
+            sighting_stale_window
+            if sighting_stale_window is not None
+            else SIGHTING_STALE_WINDOW
+        )
+        self._now_fn = now_fn if now_fn is not None else (
+            lambda: datetime.now(timezone.utc)
+        )
         os.makedirs(self.root_dir, exist_ok=True)
         self.path_local_db = self.root_dir / "small_sea_collective_local.db"
         os.makedirs(self.root_dir / "Logging", exist_ok=True)
@@ -186,6 +215,9 @@ class SmallSeaBackend:
         console_level = getattr(logging, log_level.upper(), logging.INFO)
         self.logger = setup_logging(log_file=log_path, console_level=console_level)
         self._initialize_small_sea_db()
+
+    def _now(self) -> datetime:
+        return self._now_fn()
 
     def _initialize_small_sea_db(self):
         try:
@@ -462,7 +494,7 @@ class SmallSeaBackend:
     def record_unknown_app_sighting(
         self, participant_hex, app_name, team_name, client_name, reason
     ):
-        now = datetime.now(timezone.utc).isoformat()
+        now = _format_sighting_timestamp(self._now())
         conn = sqlite3.connect(self.path_local_db)
         try:
             conn.execute(
@@ -527,6 +559,74 @@ class SmallSeaBackend:
         finally:
             conn.close()
         return [dict(row) for row in rows]
+
+    def delete_unknown_app_sighting(
+        self,
+        participant_hex,
+        app_name,
+        team_name,
+        client_name,
+        last_seen_at,
+    ) -> int:
+        """Delete a single sighting if its stored last_seen_at still matches.
+
+        Returns the number of rows deleted (0 or 1). Idempotent: a missing row
+        or a row whose last_seen_at has been bumped by a concurrent retry
+        returns 0 rather than raising. team_name=None matches the SQL NULL.
+        """
+        if team_name is None:
+            sql = (
+                "DELETE FROM unknown_app_sighting "
+                "WHERE participant_hex = ? AND app_name = ? "
+                "AND team_name IS NULL AND client_name = ? "
+                "AND last_seen_at = ?"
+            )
+            params = (participant_hex, app_name, client_name, last_seen_at)
+        else:
+            sql = (
+                "DELETE FROM unknown_app_sighting "
+                "WHERE participant_hex = ? AND app_name = ? "
+                "AND team_name = ? AND client_name = ? "
+                "AND last_seen_at = ?"
+            )
+            params = (
+                participant_hex,
+                app_name,
+                team_name,
+                client_name,
+                last_seen_at,
+            )
+        conn = sqlite3.connect(self.path_local_db)
+        try:
+            cursor = conn.execute(sql, params)
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
+
+    def prune_stale_unknown_app_sightings(self, participant_hex) -> int:
+        """Delete the participant's sightings whose last_seen_at is strictly
+        older than (now - sighting_stale_window).
+
+        Rows whose last_seen_at equals the cutoff survive until a later prune
+        pass. Returns the number of pruned rows.
+        """
+        cutoff = _format_sighting_timestamp(
+            self._now() - self._sighting_stale_window
+        )
+        conn = sqlite3.connect(self.path_local_db)
+        try:
+            cursor = conn.execute(
+                """
+                DELETE FROM unknown_app_sighting
+                WHERE participant_hex = ? AND last_seen_at < ?
+                """,
+                (participant_hex, cutoff),
+            )
+            conn.commit()
+            return cursor.rowcount
+        finally:
+            conn.close()
 
     @staticmethod
     def _normalize_mode(mode: Optional[str]) -> str:
