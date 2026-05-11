@@ -319,9 +319,87 @@ and unauthenticated callers receive `401`.
 
 Each row includes `participant_hex`, `app_name`, `team_name`, `client_name`,
 `first_seen_at`, `last_seen_at`, `seen_count`, and the latest `reason`.
+The `last_seen_at` value is returned byte-identical to the stored column so
+Manager can use it as a precondition on `POST /sightings/clear`.
 
 Repeated requests from the same participant/app/team/client tuple update the
 existing sighting atomically rather than appending unbounded rows.
+
+`GET /sightings` is read-only.
+It does not prune stale rows or otherwise mutate Hub state.
+
+---
+
+#### Sighting lifecycle
+
+Sightings are **active local observations**, not durable audit history.
+
+- A sighting is recorded when an app-bootstrap request fails on `_resolve_berth`.
+- Once participant registration and team activation exist for the same tuple,
+  Hub `_resolve_berth` opens the session and `request_session` does not record
+  a fresh sighting.
+- Resolved sightings are cleared by Manager refresh through
+  `POST /sightings/clear`, after Manager re-evaluates the row against current
+  local state and decides no prompt remains.
+- Sightings that have not been bumped within the configured stale window
+  (default 30 days) age out through `POST /sightings/prune-stale`.
+- A future retry recreates the row, so cleanup is not a durable rejection.
+
+Sightings remain local Hub state and are never synced to peers.
+Apps cannot list, clear, or otherwise mutate them — only Manager/Core sessions
+can.
+
+Hub-written timestamps (`first_seen_at`, `last_seen_at`, and the stale-window
+cutoff used for pruning) are canonical UTC ISO-8601 strings with exactly six
+fractional digits and a `+00:00` offset, e.g. `2026-05-01T12:00:00.000000+00:00`.
+That makes lexicographic SQL comparison match chronological order.
+
+---
+
+**`POST /sightings/clear`**
+
+Deletes a single sighting whose `(app_name, team_name, client_name)` matches
+the request body, scoped to the participant derived from the session token.
+The body must also include a `last_seen_at` precondition: the Hub deletes only
+when the row's stored `last_seen_at` is byte-identical to the supplied value.
+
+```json
+{
+  "app_name": "SharedFileVault",
+  "team_name": "ProjectX",
+  "client_name": "shared-file-vault:default",
+  "last_seen_at": "2026-05-01T12:00:00.000000+00:00"
+}
+```
+
+All four fields are required. Empty strings are literal values; there is no
+wildcard delete. Manager must echo `last_seen_at` from `GET /sightings`
+without parsing or reformatting.
+
+Response: `{ "deleted_count": 0 | 1 }`. The endpoint is idempotent: if no row
+matches (already cleared, or `last_seen_at` was bumped by a concurrent retry),
+the response is `200` with `deleted_count = 0`.
+
+Authorization is identical to `GET /sightings`: a Bearer token for a
+`SmallSeaCollectiveCore` session. Other app sessions receive `403`;
+unauthenticated callers receive `401`.
+
+---
+
+**`POST /sightings/prune-stale`**
+
+Deletes sightings for the session's participant whose `last_seen_at` is
+strictly older than the stale-window cutoff (default 30 days). Rows exactly
+at the cutoff survive until a later prune pass.
+
+The request body is empty. `{}` is also accepted because some clients post
+JSON bodies by default.
+
+Response: `{ "pruned_count": <int> }`.
+
+Authorization matches `GET /sightings` and `POST /sightings/clear`. Pruning
+is participant-scoped: a session for participant A cannot prune participant
+B's rows.
 
 ---
 
@@ -487,6 +565,9 @@ Manager), not the Hub's local DB. See §Notifications above.
 
 Unique key: `(participant_hex, app_name, team_name, client_name)`.
 Sightings are local to this Hub and are not synced.
+`first_seen_at` and `last_seen_at` are written through a single canonical
+helper that uses `isoformat(timespec="microseconds")` with `+00:00`, so that
+lexicographic comparison of the column matches chronological order.
 
 ## Open Questions
 

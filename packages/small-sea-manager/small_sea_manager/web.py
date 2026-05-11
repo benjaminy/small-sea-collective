@@ -160,7 +160,12 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                     f"Reconnect to Hub and Refresh. ({e})"
                 ),
             )
-        return _render_app_sightings(request, sightings=sightings, notice=notice)
+        return _render_app_sightings(
+            request,
+            sightings=sightings,
+            notice=notice,
+            error=getattr(sightings, "cleanup_warning", None),
+        )
 
     # ------------------------------------------------------------------ #
     # Full pages
@@ -258,7 +263,11 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             sightings = mgr.refresh_app_sightings()
         except Exception as e:
             return _render_app_sightings(request, error=str(e))
-        return _render_app_sightings(request, sightings=sightings)
+        return _render_app_sightings(
+            request,
+            sightings=sightings,
+            error=getattr(sightings, "cleanup_warning", None),
+        )
 
     @app.post("/app-sightings/register", response_class=HTMLResponse)
     async def app_sightings_register(request: Request, app_name: str = Form(...)):

@@ -476,3 +476,76 @@ def test_poll_notifications_no_messages_leaves_cursor_unchanged(session):
     session._last_notification_id = "m5"
     session.poll_notifications()
     assert session.last_notification_id == "m5"
+
+
+# ---- App-bootstrap sighting cleanup ----
+
+
+@respx.mock
+def test_clear_app_sighting_sends_tuple_body_verbatim(session):
+    """Manager echoes app/team/client/last_seen_at from app_sightings();
+    the helper must not normalize any of them — especially the timestamp,
+    which the Hub uses as a string-equality precondition."""
+    route = respx.post(f"{BASE_URL}/sightings/clear").mock(
+        return_value=httpx.Response(200, json={"deleted_count": 1})
+    )
+
+    deleted = session.clear_app_sighting(
+        app_name="SharedFileVault",
+        team_name="ProjectX",
+        client_name="shared-file-vault:default",
+        last_seen_at="2026-05-01T12:00:00.000000+00:00",
+    )
+
+    assert deleted == 1
+    sent = route.calls[0].request
+    import json
+    body = json.loads(sent.content)
+    assert body == {
+        "app_name": "SharedFileVault",
+        "team_name": "ProjectX",
+        "client_name": "shared-file-vault:default",
+        "last_seen_at": "2026-05-01T12:00:00.000000+00:00",
+    }
+    assert sent.headers["Authorization"] == f"Bearer {FAKE_TOKEN}"
+
+
+@respx.mock
+def test_clear_app_sighting_returns_zero_on_idempotent_response(session):
+    respx.post(f"{BASE_URL}/sightings/clear").mock(
+        return_value=httpx.Response(200, json={"deleted_count": 0})
+    )
+
+    deleted = session.clear_app_sighting(
+        app_name="SharedFileVault",
+        team_name="ProjectX",
+        client_name="cli",
+        last_seen_at="2026-05-01T12:00:00.000000+00:00",
+    )
+
+    assert deleted == 0
+
+
+@respx.mock
+def test_prune_stale_app_sightings_returns_count(session):
+    route = respx.post(f"{BASE_URL}/sightings/prune-stale").mock(
+        return_value=httpx.Response(200, json={"pruned_count": 3})
+    )
+
+    pruned = session.prune_stale_app_sightings()
+
+    assert pruned == 3
+    sent = route.calls[0].request
+    assert sent.headers["Authorization"] == f"Bearer {FAKE_TOKEN}"
+
+
+@respx.mock
+def test_prune_stale_app_sightings_does_not_raise_bootstrap_exn(session):
+    """Cleanup helpers run only on Manager/Core sessions and must not surface
+    the app-bootstrap exception path used by /sessions/request."""
+    respx.post(f"{BASE_URL}/sightings/prune-stale").mock(
+        return_value=httpx.Response(200, json={"pruned_count": 0})
+    )
+
+    # Should simply return; no exception.
+    assert session.prune_stale_app_sightings() == 0

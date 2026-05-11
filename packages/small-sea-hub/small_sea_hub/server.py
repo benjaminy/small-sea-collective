@@ -785,14 +785,67 @@ async def create_bootstrap_session(req: BootstrapSessionCreateReq):
     return {"token": token.hex()}
 
 
-@app.get("/sightings")
-async def list_unknown_app_sightings(session_hex: str = Depends(_require_session)):
+def _require_manager_session(session_hex: str = Depends(_require_session)):
+    """Resolve the session and require it to be a Manager/Core session.
+
+    Shared by GET /sightings, POST /sightings/clear, and POST /sightings/prune-stale
+    so the auth shape cannot drift between the read and the cleanup endpoints.
+    """
     ss_session = app.state.backend._lookup_session(session_hex)
     if ss_session.app_name != Settings().app_name:
         raise HTTPException(status_code=403, detail="Manager session required")
+    return ss_session
+
+
+@app.get("/sightings")
+async def list_unknown_app_sightings(
+    ss_session=Depends(_require_manager_session),
+):
     return app.state.backend.list_unknown_app_sightings(
         participant_hex=ss_session.participant_id.hex()
     )
+
+
+class ClearSightingReq(pydantic.BaseModel):
+    app_name: str
+    team_name: str
+    client_name: str
+    last_seen_at: str
+
+
+@app.post("/sightings/clear")
+async def clear_unknown_app_sighting(
+    req: ClearSightingReq,
+    ss_session=Depends(_require_manager_session),
+):
+    deleted = app.state.backend.delete_unknown_app_sighting(
+        participant_hex=ss_session.participant_id.hex(),
+        app_name=req.app_name,
+        team_name=req.team_name,
+        client_name=req.client_name,
+        last_seen_at=req.last_seen_at,
+    )
+    return {"deleted_count": deleted}
+
+
+@app.post("/sightings/prune-stale")
+async def prune_stale_unknown_app_sightings(
+    request: Request,
+    ss_session=Depends(_require_manager_session),
+):
+    # Accept either no body or `{}` — some clients always send JSON.
+    body = await request.body()
+    if body:
+        try:
+            parsed = await request.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="Body must be empty or {}")
+        if parsed not in ({}, None):
+            raise HTTPException(status_code=400, detail="Body must be empty or {}")
+    pruned = app.state.backend.prune_stale_unknown_app_sightings(
+        participant_hex=ss_session.participant_id.hex()
+    )
+    return {"pruned_count": pruned}
 
 
 @app.get("/sessions/pending")

@@ -656,13 +656,29 @@ for the participant, activate it for a team, or suppress repeated prompts using
 Manager-owned local disposition state.
 
 `TeamManager.refresh_app_sightings()` reads the endpoint through a confirmed
-Core NoteToSelf session and returns current prompts, not raw Hub rows. The Hub
-row is a durable observation; Manager re-evaluates each sighting against local
-NoteToSelf/team DB state so an old `app_unknown` row can become
-`team_berth_missing`, or disappear once participant registration and team
-activation both exist. If a sighting references a team this device does not know
-yet, Manager keeps the row visible with conservative actions rather than
-silently dropping it.
+Core NoteToSelf session and returns current prompts, not raw Hub rows. Hub
+rows are active local observations rather than durable audit history; Manager
+re-evaluates each sighting against local NoteToSelf/team DB state so an old
+`app_unknown` row can become `team_berth_missing`, or be cleared once
+participant registration and team activation both exist. If a sighting
+references a team this device does not know yet, Manager keeps the row visible
+with conservative actions rather than silently dropping it.
+
+During refresh Manager evaluates each row from the listed snapshot before
+applying local disposition. When `current_app_sighting_prompt(...)` returns
+`None`, Manager calls `POST /sightings/clear` to delete the resolved row, even
+if local disposition would have suppressed it from the UI. After all per-row
+evaluation is finished, Manager calls `POST /sightings/prune-stale` exactly
+once so rows whose apps have stopped retrying age out from the Hub. Prompts
+returned by `refresh_app_sightings()` are computed from the pre-prune
+snapshot, so a long-absent Manager sees stale observations once before they
+disappear from the next refresh.
+
+Cleanup failures (per-row clear or prune) are non-fatal: refresh still returns
+the prompts it computed and surfaces a single summarized warning to the web
+layer. Resolved rows whose clear call failed remain omitted from prompts
+because their current prompt is `None`; the warning tells the user cleanup
+did not complete.
 
 Dismissals are local Manager state only:
 

@@ -13,6 +13,20 @@ _CORE_APP = "SmallSeaCollectiveCore"
 _LOG = logging.getLogger(__name__)
 
 
+class AppSightingsRefresh(list):
+    """List of current app-bootstrap prompts, with an optional cleanup warning.
+
+    Behaves as a normal list so existing callers can iterate and index. The
+    ``cleanup_warning`` attribute is non-None when any per-row clear or the
+    stale prune call failed during the refresh. Web/UI layers should render
+    the prompts and surface the warning together.
+    """
+
+    def __init__(self, prompts, *, cleanup_warning=None):
+        super().__init__(prompts)
+        self.cleanup_warning = cleanup_warning
+
+
 def create_identity_join_request(root_dir):
     """Create a public join-request artifact for a blank installation."""
     return provisioning.create_identity_join_request(root_dir)
@@ -439,24 +453,80 @@ class TeamManager:
         )
 
     def refresh_app_sightings(self):
-        """Read Hub app-bootstrap sightings and apply Manager-local dispositions."""
+        """Read Hub app-bootstrap sightings, clear resolved rows, prune stale.
+
+        For each sighting in the listed snapshot:
+          - evaluate ``current_app_sighting_prompt`` first (before disposition)
+          - if the prompt is ``None``, ask the Hub to clear the row
+          - otherwise, drop the prompt iff Manager-local disposition dismissed it
+
+        After the per-row loop, ask the Hub to prune the participant's stale
+        rows once. Prompts are computed from the pre-prune snapshot, so a
+        long-absent Manager sees stale observations once before they age out.
+
+        Returns a :class:`AppSightingsRefresh` that behaves as a list of
+        prompts and also carries a ``cleanup_warning`` string when any
+        per-row clear or the prune call failed.
+        """
         session = self._open_note_to_self_session()
+        snapshot = session.app_sightings()
         prompts = []
-        for sighting in session.app_sightings():
+        cleanup_failures = 0
+        for sighting in snapshot:
+            prompt = provisioning.current_app_sighting_prompt(
+                self.root_dir,
+                self.participant_hex,
+                sighting,
+            )
+            if prompt is None:
+                try:
+                    session.clear_app_sighting(
+                        app_name=sighting["app_name"],
+                        team_name=sighting["team_name"],
+                        client_name=sighting["client_name"],
+                        last_seen_at=sighting["last_seen_at"],
+                    )
+                except Exception as exc:
+                    cleanup_failures += 1
+                    _LOG.warning(
+                        "clear_app_sighting failed for %s/%s/%s: %s",
+                        sighting["team_name"],
+                        sighting["app_name"],
+                        sighting["client_name"],
+                        exc,
+                    )
+                continue
             if provisioning.app_sighting_dismissed(
                 self.root_dir,
                 self.participant_hex,
                 sighting,
             ):
                 continue
-            prompt = provisioning.current_app_sighting_prompt(
-                self.root_dir,
-                self.participant_hex,
-                sighting,
+            prompts.append(prompt)
+
+        prune_failed = False
+        try:
+            session.prune_stale_app_sightings()
+        except Exception as exc:
+            prune_failed = True
+            _LOG.warning("prune_stale_app_sightings failed: %s", exc)
+
+        warning = None
+        if cleanup_failures or prune_failed:
+            parts = []
+            if cleanup_failures:
+                parts.append(
+                    f"could not clear {cleanup_failures} resolved sighting"
+                    + ("s" if cleanup_failures != 1 else "")
+                )
+            if prune_failed:
+                parts.append("could not prune stale sightings")
+            warning = (
+                "Hub cleanup did not finish: "
+                + " and ".join(parts)
+                + ". Reconnect to Hub and Refresh."
             )
-            if prompt is not None:
-                prompts.append(prompt)
-        return prompts
+        return AppSightingsRefresh(prompts, cleanup_warning=warning)
 
     def register_app_for_participant(self, app_name):
         """Register an app for this participant via NoteToSelf."""

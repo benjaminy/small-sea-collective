@@ -269,6 +269,51 @@ class SmallSeaSession:
         """Return app-bootstrap sightings visible to this Manager/Core session."""
         return self._client._get("/sightings", token=self._token)
 
+    def clear_app_sighting(
+        self,
+        *,
+        app_name: str,
+        team_name: str,
+        client_name: str,
+        last_seen_at: str,
+    ) -> int:
+        """Delete one Hub sighting whose tuple and last_seen_at still match.
+
+        Pass the values from app_sightings() unchanged. last_seen_at must be
+        byte-identical to the listed value; reformatting the timestamp will
+        silently miss the row because the Hub uses string equality for the
+        precondition.
+
+        Returns the number of rows deleted (0 or 1). The Hub returns 0 — not
+        an error — when the row has been bumped or already cleared.
+        """
+        result = self._client._post(
+            "/sightings/clear",
+            {
+                "app_name": app_name,
+                "team_name": team_name,
+                "client_name": client_name,
+                "last_seen_at": last_seen_at,
+            },
+            token=self._token,
+        )
+        return int(result["deleted_count"])
+
+    def prune_stale_app_sightings(self) -> int:
+        """Delete this participant's Hub sightings older than the stale window.
+
+        Returns the number of pruned rows. The Hub holds the stale window
+        and the cutoff clock; this call has no body parameters.
+        """
+        # _post requires a JSON object; the Hub accepts {} as equivalent to
+        # an empty body. Any other shape is rejected with 400.
+        result = self._client._post(
+            "/sightings/prune-stale",
+            {},
+            token=self._token,
+        )
+        return int(result["pruned_count"])
+
     # ---- Cloud storage ----
 
     def ensure_cloud_ready(self) -> None:
