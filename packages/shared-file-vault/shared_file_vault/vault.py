@@ -138,10 +138,10 @@ class StaleCheckoutError(RuntimeError):
 
 @dataclass(frozen=True)
 class VaultMaterializationContext:
-    """Vault-owned local materialization coordinates for one app berth."""
+    """Vault-owned local materialization coordinates for one team."""
 
     participant_hex: str
-    berth_id: str
+    team_id: str
     team_name: str
     app_name: str = "SharedFileVault"
 
@@ -161,7 +161,7 @@ class VaultMaterializationContext:
             )
         return cls(
             participant_hex=str(info["participant_hex"]),
-            berth_id=str(info["berth_id"]),
+            team_id=str(info["berth_id"]),
             team_name=str(info["team_name"]),
             app_name=str(info["app_name"]),
         )
@@ -171,7 +171,7 @@ class VaultMaterializationContext:
         """Build an explicit context for local-only callers that lack Hub metadata."""
         return cls(
             participant_hex=str(participant_hex),
-            berth_id=str(team_label),
+            team_id=str(team_label),
             team_name=str(team_label),
         )
 
@@ -185,7 +185,7 @@ def _coerce_context(participant_hex, context_or_team):
         if context_or_team.participant_hex != participant_hex:
             return VaultMaterializationContext(
                 participant_hex=str(participant_hex),
-                berth_id=context_or_team.berth_id,
+                team_id=context_or_team.team_id,
                 team_name=context_or_team.team_name,
                 app_name=context_or_team.app_name,
             )
@@ -223,28 +223,28 @@ def _canonical_name(name):
 # ---------------------------------------------------------------------------
 
 def _participant_dir(vault_root, participant_hex):
-    return pathlib.Path(vault_root) / participant_hex
+    return pathlib.Path(vault_root) / "participants" / participant_hex
 
 
 def _checkouts_db_path(vault_root, participant_hex):
     return _participant_dir(vault_root, participant_hex) / "checkouts.db"
 
 
-def _berth_dir(vault_root, context):
-    return _participant_dir(vault_root, context.participant_hex) / "berths" / context.berth_id
+def _team_dir(vault_root, context):
+    return _participant_dir(vault_root, context.participant_hex) / "teams" / context.team_id
 
 
-def _berth_metadata_path(vault_root, context):
-    return _berth_dir(vault_root, context) / "metadata.json"
+def _team_metadata_path(vault_root, context):
+    return _team_dir(vault_root, context) / "metadata.json"
 
 
-def _write_berth_metadata(vault_root, context):
-    path = _berth_metadata_path(vault_root, context)
+def _write_team_metadata(vault_root, context):
+    path = _team_metadata_path(vault_root, context)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(
             {
-                "berth_id": context.berth_id,
+                "team_id": context.team_id,
                 "team_name": context.team_name,
                 "app_name": context.app_name,
             },
@@ -256,15 +256,15 @@ def _write_berth_metadata(vault_root, context):
 
 
 def _registry_git_dir(vault_root, context):
-    return _berth_dir(vault_root, context) / "registry" / "git"
+    return _team_dir(vault_root, context) / "registry" / "git"
 
 
 def _registry_checkout_dir(vault_root, context):
-    return _berth_dir(vault_root, context) / "registry" / "checkout"
+    return _team_dir(vault_root, context) / "registry" / "checkout"
 
 
 def _niche_git_dir(vault_root, context, niche_name):
-    return _berth_dir(vault_root, context) / "niches" / niche_name / "git"
+    return _team_dir(vault_root, context) / "niches" / niche_name / "git"
 
 
 
@@ -277,7 +277,7 @@ def _bundle_tmp_dir(git_dir):
 # SQLite helpers
 # ---------------------------------------------------------------------------
 
-_CHECKOUTS_DB_VERSION = 2
+_CHECKOUTS_DB_VERSION = 3
 
 _CHECKOUTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -285,28 +285,28 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 CREATE TABLE IF NOT EXISTS checkout (
     id            BLOB PRIMARY KEY,
-    berth_id      TEXT NOT NULL,
+    team_id      TEXT NOT NULL,
     niche_name    TEXT NOT NULL,
     checkout_path TEXT NOT NULL,
     created_at    TEXT NOT NULL,
-    UNIQUE (berth_id, niche_name)
+    UNIQUE (team_id, niche_name)
 );
 CREATE TABLE IF NOT EXISTS peer_sync (
-    berth_id         TEXT NOT NULL,
+    team_id         TEXT NOT NULL,
     repo_kind        TEXT NOT NULL,
     niche_name       TEXT NOT NULL,
     member_id        TEXT NOT NULL,
     last_fetched_sha TEXT,
     last_merged_sha  TEXT,
     updated_at       TEXT NOT NULL,
-    PRIMARY KEY (berth_id, repo_kind, niche_name, member_id)
+    PRIMARY KEY (team_id, repo_kind, niche_name, member_id)
 );
 CREATE TABLE IF NOT EXISTS peer_signal_watermark (
-    berth_id   TEXT NOT NULL,
+    team_id   TEXT NOT NULL,
     member_id  TEXT NOT NULL,
     count      INTEGER NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (berth_id, member_id)
+    PRIMARY KEY (team_id, member_id)
 );
 """
 
@@ -361,16 +361,16 @@ def _record_peer_fetch(
     conn.execute(
         """
         INSERT INTO peer_sync (
-            berth_id, repo_kind, niche_name, member_id,
+            team_id, repo_kind, niche_name, member_id,
             last_fetched_sha, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(berth_id, repo_kind, niche_name, member_id)
+        ON CONFLICT(team_id, repo_kind, niche_name, member_id)
         DO UPDATE SET
             last_fetched_sha = excluded.last_fetched_sha,
             updated_at = excluded.updated_at
         """,
         (
-            context.berth_id,
+            context.team_id,
             repo_kind,
             _peer_sync_niche_key(repo_kind, niche_name),
             member_id,
@@ -396,17 +396,17 @@ def _record_peer_merge(
     conn.execute(
         """
         INSERT INTO peer_sync (
-            berth_id, repo_kind, niche_name, member_id,
+            team_id, repo_kind, niche_name, member_id,
             last_fetched_sha, last_merged_sha, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(berth_id, repo_kind, niche_name, member_id)
+        ON CONFLICT(team_id, repo_kind, niche_name, member_id)
         DO UPDATE SET
             last_fetched_sha = excluded.last_fetched_sha,
             last_merged_sha = excluded.last_merged_sha,
             updated_at = excluded.updated_at
         """,
         (
-            context.berth_id,
+            context.team_id,
             repo_kind,
             _peer_sync_niche_key(repo_kind, niche_name),
             member_id,
@@ -424,11 +424,11 @@ def _peer_sync_row(vault_root, participant_hex, context_or_team, repo_kind, nich
     conn = _connect_checkouts(vault_root, participant_hex)
     row = conn.execute(
         """
-        SELECT berth_id, repo_kind, niche_name, member_id, last_fetched_sha, last_merged_sha
+        SELECT team_id, repo_kind, niche_name, member_id, last_fetched_sha, last_merged_sha
         FROM peer_sync
-        WHERE berth_id = ? AND repo_kind = ? AND niche_name = ? AND member_id = ?
+        WHERE team_id = ? AND repo_kind = ? AND niche_name = ? AND member_id = ?
         """,
-        (context.berth_id, repo_kind, _peer_sync_niche_key(repo_kind, niche_name), member_id),
+        (context.team_id, repo_kind, _peer_sync_niche_key(repo_kind, niche_name), member_id),
     ).fetchone()
     conn.close()
     return row
@@ -438,8 +438,8 @@ def get_peer_signal_watermark(vault_root, participant_hex, context_or_team, memb
     context = _coerce_context(participant_hex, context_or_team)
     conn = _connect_checkouts(vault_root, participant_hex)
     row = conn.execute(
-        "SELECT count FROM peer_signal_watermark WHERE berth_id = ? AND member_id = ?",
-        (context.berth_id, member_id),
+        "SELECT count FROM peer_signal_watermark WHERE team_id = ? AND member_id = ?",
+        (context.team_id, member_id),
     ).fetchone()
     conn.close()
     return int(row["count"]) if row else 0
@@ -450,13 +450,13 @@ def set_peer_signal_watermark(vault_root, participant_hex, context_or_team, memb
     conn = _connect_checkouts(vault_root, participant_hex)
     conn.execute(
         """
-        INSERT INTO peer_signal_watermark (berth_id, member_id, count, updated_at)
+        INSERT INTO peer_signal_watermark (team_id, member_id, count, updated_at)
         VALUES (?, ?, ?, ?)
-        ON CONFLICT(berth_id, member_id)
+        ON CONFLICT(team_id, member_id)
         DO UPDATE SET count = excluded.count, updated_at = excluded.updated_at
         """,
         (
-            context.berth_id,
+            context.team_id,
             member_id,
             int(count),
             datetime.now(timezone.utc).isoformat(),
@@ -470,8 +470,8 @@ def clear_peer_signal_watermark(vault_root, participant_hex, context_or_team, me
     context = _coerce_context(participant_hex, context_or_team)
     conn = _connect_checkouts(vault_root, participant_hex)
     conn.execute(
-        "DELETE FROM peer_signal_watermark WHERE berth_id = ? AND member_id = ?",
-        (context.berth_id, member_id),
+        "DELETE FROM peer_signal_watermark WHERE team_id = ? AND member_id = ?",
+        (context.team_id, member_id),
     )
     conn.commit()
     conn.close()
@@ -598,7 +598,7 @@ def _init_git_dir(git_dir):
 def _ensure_registry(vault_root, participant_hex, context_or_team):
     """Lazily create the registry git repo and checkout for a team."""
     context = _coerce_context(participant_hex, context_or_team)
-    _write_berth_metadata(vault_root, context)
+    _write_team_metadata(vault_root, context)
     git_dir = _registry_git_dir(vault_root, context)
     checkout = _registry_checkout_dir(vault_root, context)
     if not git_dir.exists():
@@ -785,11 +785,11 @@ def add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path):
 
     conn = _connect_checkouts(vault_root, participant_hex)
     conn.execute(
-        "INSERT INTO checkout (id, berth_id, niche_name, checkout_path, created_at) "
+        "INSERT INTO checkout (id, team_id, niche_name, checkout_path, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (
             uuid7(),
-            context.berth_id,
+            context.team_id,
             niche_name,
             str(pathlib.Path(dest_path)),
             datetime.now(timezone.utc).isoformat(),
@@ -804,8 +804,8 @@ def remove_checkout(vault_root, participant_hex, team_name, niche_name, checkout
     context = _coerce_context(participant_hex, team_name)
     conn = _connect_checkouts(vault_root, participant_hex)
     conn.execute(
-        "DELETE FROM checkout WHERE berth_id = ? AND niche_name = ? AND checkout_path = ?",
-        (context.berth_id, niche_name, str(pathlib.Path(checkout_path))),
+        "DELETE FROM checkout WHERE team_id = ? AND niche_name = ? AND checkout_path = ?",
+        (context.team_id, niche_name, str(pathlib.Path(checkout_path))),
     )
     conn.commit()
     conn.close()
@@ -816,8 +816,8 @@ def get_checkout(vault_root, participant_hex, team_name, niche_name):
     context = _coerce_context(participant_hex, team_name)
     conn = _connect_checkouts(vault_root, participant_hex)
     row = conn.execute(
-        "SELECT checkout_path FROM checkout WHERE berth_id = ? AND niche_name = ?",
-        (context.berth_id, niche_name),
+        "SELECT checkout_path FROM checkout WHERE team_id = ? AND niche_name = ?",
+        (context.team_id, niche_name),
     ).fetchone()
     conn.close()
     return row["checkout_path"] if row else None
@@ -961,22 +961,22 @@ def push_niche(vault_root, participant_hex, team_name, niche_name, remote):
 
 def list_teams(vault_root, participant_hex):
     """List team names that have a local registry in this vault."""
-    berths_dir = _participant_dir(vault_root, participant_hex) / "berths"
-    if not berths_dir.exists():
+    teams_dir = _participant_dir(vault_root, participant_hex) / "teams"
+    if not teams_dir.exists():
         return []
     teams = []
-    for berth_dir in sorted(berths_dir.iterdir()):
-        if not berth_dir.is_dir() or not (berth_dir / "registry" / "git").exists():
+    for team_dir in sorted(teams_dir.iterdir()):
+        if not team_dir.is_dir() or not (team_dir / "registry" / "git").exists():
             continue
-        metadata_path = berth_dir / "metadata.json"
+        metadata_path = team_dir / "metadata.json"
         if metadata_path.exists():
             try:
                 metadata = json.loads(metadata_path.read_text())
-                teams.append(str(metadata.get("team_name") or berth_dir.name))
+                teams.append(str(metadata.get("team_name") or team_dir.name))
                 continue
             except json.JSONDecodeError:
                 pass
-        teams.append(berth_dir.name)
+        teams.append(team_dir.name)
     return teams
 
 

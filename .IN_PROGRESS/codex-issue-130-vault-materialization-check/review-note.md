@@ -1,16 +1,18 @@
 # Review Note
 
 This branch implements issue #130 by making Shared File Vault materialize
-session-backed app state under `participant_hex/berths/{berth_id}` instead of
-under the friendly `team_name`.
+session-backed app state under
+`participants/{participant_hex}/teams/{team_id}` instead of under the friendly
+`team_name`.
+Vault `team_id` is sourced from Hub `session_info["berth_id"]`.
 
 The main review path is:
 
 - `packages/shared-file-vault/shared_file_vault/vault.py` for
   `VaultMaterializationContext`, path helpers, SQLite key changes, and local
-  berth metadata.
+  team metadata.
 - `packages/shared-file-vault/shared_file_vault/sync.py` for Hub session
-  context construction and within-berth cloud prefixes.
+  context construction and within-session cloud prefixes.
 - `packages/shared-file-vault/shared_file_vault/web.py` for using the active
   session context when the web UI calls Vault.
 - `packages/shared-file-vault/tests/test_vault.py`,

@@ -26,12 +26,12 @@ from shared_file_vault.vault import (
 
 PARTICIPANT = "aa" * 16
 TEAM_NAME = "TestTeam"
-TEAM_BERTH_ID = "11" * 16
-TEAM = VaultMaterializationContext(PARTICIPANT, TEAM_BERTH_ID, TEAM_NAME)
+TEAM_ID = "11" * 16
+TEAM = VaultMaterializationContext(PARTICIPANT, TEAM_ID, TEAM_NAME)
 
 
 def _team_for(participant_hex):
-    return VaultMaterializationContext(participant_hex, TEAM_BERTH_ID, TEAM_NAME)
+    return VaultMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME)
 
 
 def _init(playground_dir):
@@ -47,9 +47,10 @@ def test_create_niche(playground_dir):
     # Git dir exists in the new layout
     git_dir = (
         pathlib.Path(playground_dir)
+        / "participants"
         / PARTICIPANT
-        / "berths"
-        / TEAM_BERTH_ID
+        / "teams"
+        / TEAM_ID
         / "niches"
         / "photos"
         / "git"
@@ -62,7 +63,7 @@ def test_create_niche(playground_dir):
     assert any(n["name"] == "photos" for n in niches)
 
 
-def test_same_friendly_name_different_berths_do_not_share_storage(playground_dir):
+def test_same_friendly_name_different_teams_do_not_share_storage(playground_dir):
     _init(playground_dir)
     alpha = VaultMaterializationContext(PARTICIPANT, "11" * 16, TEAM_NAME)
     beta = VaultMaterializationContext(PARTICIPANT, "22" * 16, TEAM_NAME)
@@ -70,13 +71,13 @@ def test_same_friendly_name_different_berths_do_not_share_storage(playground_dir
     create_niche(playground_dir, PARTICIPANT, alpha, "docs")
     create_niche(playground_dir, PARTICIPANT, beta, "docs")
 
-    root = pathlib.Path(playground_dir) / PARTICIPANT / "berths"
-    assert (root / alpha.berth_id / "registry" / "git").is_dir()
-    assert (root / beta.berth_id / "registry" / "git").is_dir()
-    assert (root / alpha.berth_id / "niches" / "docs" / "git").is_dir()
-    assert (root / beta.berth_id / "niches" / "docs" / "git").is_dir()
-    assert not (pathlib.Path(playground_dir) / PARTICIPANT / TEAM_NAME).exists()
-    metadata = json.loads((root / alpha.berth_id / "metadata.json").read_text())
+    root = pathlib.Path(playground_dir) / "participants" / PARTICIPANT / "teams"
+    assert (root / alpha.team_id / "registry" / "git").is_dir()
+    assert (root / beta.team_id / "registry" / "git").is_dir()
+    assert (root / alpha.team_id / "niches" / "docs" / "git").is_dir()
+    assert (root / beta.team_id / "niches" / "docs" / "git").is_dir()
+    assert not (pathlib.Path(playground_dir) / "participants" / PARTICIPANT / TEAM_NAME).exists()
+    metadata = json.loads((root / alpha.team_id / "metadata.json").read_text())
     assert metadata["team_name"] == TEAM_NAME
 
     checkout_a = pathlib.Path(playground_dir) / "checkout-a"
