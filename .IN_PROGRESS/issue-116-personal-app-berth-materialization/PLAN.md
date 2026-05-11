@@ -32,6 +32,8 @@ This branch's purpose is to decide what that directory **is for**, and to land t
 The Phase 0 conclusion is that the directory is a mistake of ownership, not an unfinished framework feature.
 `NoteToSelf x App` is a real berth, but in the context of a specific app the app coordinate is already fixed, so the berth projects to a team scope.
 The framework should expose stable participant/team/app/berth identity through Hub sessions and Manager-controlled registration state; it should not create app working trees inside Manager-owned NoteToSelf storage.
+Today the Hub's internal `SmallSeaSession` records `participant_id`, `team_id`, `app_id`, and `berth_id`.
+The public `/session/info` endpoint exposes `participant_hex` and `berth_id`, plus friendly names; this is enough to avoid friendly-name-only paths if an app keys by berth, but a fuller app-home helper may want `team_id` and `app_id` exposed explicitly.
 
 A typical app-owned layout may look like:
 
@@ -78,8 +80,9 @@ The branch is successful if all of the following are true:
    It records registration state only; app data trees live under app-owned homes.
 3. The team-side question is answered symmetrically: Manager does not create `{Team}/{AppName}/` either.
 4. At least one micro test proves participant registration writes the expected DB rows and creates no `NoteToSelf/{AppName}/` artifact.
-5. Hub/session metadata is audited so app-owned storage can key paths by stable IDs rather than friendly names; any missing helper is filed as follow-up unless it is tiny and directly needed here.
+5. Hub/session metadata is audited and documented: session rows already carry stable IDs, while `/session/info` currently exposes `participant_hex` and `berth_id` plus friendly names.
 6. Vault is the canary that nothing in-tree relies on the old stub.
+7. The AppHome layout guidance is explicitly documented as a normative convention, not as code exercised by an in-tree consumer on this branch.
 
 Everything else justifies itself by serving that loop.
 
@@ -116,11 +119,16 @@ Chosen answer:
 
 Phase 0 resolution: **D1.D**.
 
+This is an axis shift, not a fourth version of the old directory-placement question.
+D1.A/D1.B/D1.C asked where Manager should put an app directory.
+D1.D says Manager should not put an app directory anywhere; apps materialize their own local trees.
+
 Rationale:
 
 - `NoteToSelf x App` is an ordinary berth whose team happens to be the participant's personal team.
 - Teams remain prior to apps for authority and registration decisions, but local app storage is viewed from inside an app, where the app coordinate is fixed.
 - Manager is itself just an app with a privileged provisioning role. Its `NoteToSelf/Sync/core.db` tree is Manager/Core storage, not the universal place all apps must materialize their data.
+- The Hub is allowed to read Manager/Core's `NoteToSelf/Sync/core.db` and team `Sync/core.db` files as part of the framework contract. That does not generalize to arbitrary app homes; apps should not expect the Hub to discover app data by filesystem snooping.
 - Friendly app and team names are not stable durable identity; app-owned paths should use opaque participant/team IDs, with friendly names reserved for labels.
 - This deletes the undefined stub without giving up future per-participant cross-device app state. Apps can put that state under their own `Teams/{note_to_self_team_id}/Sync/` or equivalent.
 
@@ -153,7 +161,8 @@ The team-side storage surface is therefore not a separate Manager question.
 Phase 0 resolution: **D3.A as the architectural direction; no new transport implementation in this branch.**
 
 This branch should not invent a cross-device app-sync helper just to justify deleting the stub.
-It should verify that Hub session metadata is sufficient or file a focused follow-up for the missing app-owned materialization helper.
+The metadata audit is mostly complete: Hub sessions already carry stable participant/team/app/berth IDs internally, and `/session/info` already exposes `participant_hex` and `berth_id`.
+This branch should file a focused follow-up only if we decide apps need a convenience helper or explicit `team_id`/`app_id` fields in `/session/info`.
 
 ### D4. Framework-managed schema?
 
@@ -172,6 +181,8 @@ We should answer: does Vault have personal state that wants to sync across the u
 Working hypothesis: Vault's current personal state is mostly its CLI/web config plus the local vault root path.
 That state is *device-local*, not cross-device-personal.
 Future Vault features such as per-participant niche subscriptions, conflict-resolution preferences, or cross-device app UX state can live under Vault's own app home, keyed by participant and team IDs.
+Vault's current single-root model predates this convention and does not yet have multi-participant app-home ergonomics.
+When Vault grows that shape, it should adopt the AppHome layout instead of putting personal state under `NoteToSelf/SharedFileVault/`.
 
 Vault should not use `NoteToSelf/SharedFileVault/`.
 If this branch adds any Vault check, it should prove Vault continues to operate without that directory.
@@ -194,9 +205,12 @@ The implementation remains intentionally small: delete the stub creation, update
 **Must land on this branch**
 
 - A written decision (with rationale) for D1.D, D2 ownership symmetry, D3.A, and D4.A in `architecture.md` and `packages/small-sea-manager/spec.md`.
-- The code change that implements the decision in `register_app_for_participant`.
+- A deliberate architecture-doc reframe: globally a berth remains `Team x App`; inside a specific app it projects to participant/team-local materialization.
+- The AppHome layout guidance as normative documentation, with an explicit note that no in-tree consumer implements it yet.
+- The code change that implements the deletion side of the decision in `register_app_for_participant` and first-participant bootstrap.
 - One or two micro tests proving the new shape.
 - Removal of the empty-directory creation, and a regression test that the directory is *not* created.
+- A session-metadata note: internal sessions already have stable IDs; `/session/info` exposes `participant_hex` and `berth_id`; adding explicit `team_id`/`app_id` or an app-home helper is follow-up unless it proves tiny and necessary.
 - Spec/doc sweep that lands the decision in prose.
 
 **First things to cut**
@@ -219,18 +233,20 @@ Exit gate: the new tests fail on `main` and the plan references them by name.
 **Phase 1 — Implement the chosen direction.**
 - Remove `app_dir.mkdir(...)` from `register_app_for_participant`.
 - Remove the `SmallSeaCollectiveCore` directory creation from `create_new_participant`.
-- Audit callers/tests for incidental reliance on those directories.
+- Before removing the Core directory creation, run a grep audit and record the result in the branch wrap-up:
+  `SmallSeaCollectiveCore` appears as an app name in DB queries and tests, but no runtime code opens `NoteToSelf/SmallSeaCollectiveCore/` as a filesystem path.
+- Audit callers/tests for incidental reliance on `NoteToSelf/{AppName}/` directories.
 - Leave the participant DB write path and NoteToSelf `Sync/core.db` repo commits alone.
 Exit gate: implementation is a small mechanical change scoped to the creation sites and tests.
 
 **Phase 2 — Spec sweep.**
 - `architecture.md`: update the App/Berth and App Bootstrap sections to distinguish registration/authorization from app-owned materialization.
 - `packages/small-sea-manager/spec.md` §App Management: record that participant registration writes DB rows only and does not create app data directories.
-- `packages/small-sea-hub/spec.md`: update only if session metadata needs a clarification for stable IDs.
+- `packages/small-sea-hub/spec.md`: record the stable-ID metadata boundary if we add `/session/info` fields, or note in the plan wrap-up that the current public boundary is `participant_hex` + `berth_id`.
 Exit gate: a skeptical reader can read the spec and answer "where should an app put local participant/team data?" without reading code.
 
 **Phase 3 — Follow-ups filed.**
-- File a focused follow-up for an app-home/session helper if the audit shows apps need one to build stable-ID paths ergonomically.
+- File a focused follow-up for explicit `team_id`/`app_id` in `/session/info` or an app-home/session helper only if the spec sweep decides `participant_hex` + `berth_id` is too thin for app-owned materialization ergonomics.
 - File no team-side materialization issue unless the spec sweep reveals a real asymmetry.
 
 ## Validation Strategy (smart-skeptic test)
@@ -247,6 +263,8 @@ A skeptical reviewer should be able to convince themselves of all the following 
 - `architecture.md` says a berth is still `Team x App` globally, but from inside an app it projects to a participant/team scope.
 - Docs recommend stable opaque IDs for app-owned path components, not friendly names.
 - The Manager's own `NoteToSelf/Sync/core.db` is described as Core/Manager storage, not as the parent for every app's data.
+- No in-tree consumer exercises the AppHome layout in this branch. The layout is normative guidance; the first real consumer or helper branch should provide the executable proof.
+- Docs acknowledge that Hub reads of Manager/Core DB files are framework-specific and do not imply that arbitrary app homes are Hub-readable.
 
 **No app is silently relying on the old stub.**
 - Vault tests still pass without depending on `NoteToSelf/{App}/` existing.
@@ -277,9 +295,9 @@ A skeptical reviewer should be able to convince themselves of all the following 
 - **Hidden consumer of the empty directory.**
   If any test or app fixture relies on `NoteToSelf/{App}/` existing as a directory, deleting it will surface that reliance.
   Mitigation: Phase 1 audit step.
-- **Missing app-owned storage helper.**
-  Apps may need a convenience API to turn Hub session metadata into stable app-home paths.
-  Mitigation: audit current session info, file a follow-up unless the needed addition is tiny and clearly in scope.
+- **Thin public session metadata.**
+  Internal sessions have stable team/app/berth IDs, but `/session/info` currently exposes only `participant_hex` and `berth_id` as opaque stable IDs.
+  Mitigation: keep this branch to the ownership cleanup, and file a focused follow-up if explicit `team_id`/`app_id` or an app-home helper is needed.
 - **Spec drift between Manager spec and architecture.md.**
   Touching the Berth concept means two docs must agree.
   Mitigation: Phase 2 explicit step, reviewer can diff both sections.
@@ -291,5 +309,5 @@ A skeptical reviewer should be able to convince themselves of all the following 
 
 To be populated as Phase 0 resolves:
 
-1. App-home/session helper for stable-ID local materialization, if this branch does not land one.
+1. Explicit `team_id`/`app_id` in `/session/info` or an app-home/session helper, if `participant_hex` + `berth_id` proves too thin for app ergonomics.
 2. App-owned sync ergonomics for per-participant personal state, when Vault or another app has a concrete first use.
