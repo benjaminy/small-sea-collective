@@ -1698,12 +1698,6 @@ def _initialize_user_db(root_dir, ident, nickname, device):
         signing_private_key_bytes,
     )
 
-    app_dir = (
-        root_dir / "Participants" / ident.hex() / "NoteToSelf" / "SmallSeaCollectiveCore"
-    )
-    if not app_dir.exists():
-        app_dir.mkdir(parents=True)
-
     repo_dir = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
     nts_repo = _Repo.init(repo_dir / ".git").with_work_tree(repo_dir)
     nts_repo.stage(["core.db"])
@@ -4223,7 +4217,6 @@ def register_app_for_participant(root_dir, participant_hex, app_name):
     """Register an app for a participant's identity via NoteToSelf."""
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
-    app_dir = participant_dir / "NoteToSelf" / app_name
     changed = False
 
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
@@ -4239,10 +4232,6 @@ def register_app_for_participant(root_dir, participant_hex, app_name):
             conn, team_id, app_name
         )
         conn.commit()
-
-    if not app_dir.exists():
-        app_dir.mkdir(parents=True)
-        changed = True
 
     if changed:
         repo_dir = participant_dir / "NoteToSelf" / "Sync"

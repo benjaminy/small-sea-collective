@@ -10,6 +10,17 @@ Small Sea Collective is a framework for building collaborative team applications
 - **Client**: Any software (GUI, CLI, agent) that accesses resources through the Small Sea Hub.
 - **Hub**: A local service that mediates all access to general-purpose cloud services. It acts as a security gateway and protocol translator.
 
+A berth is globally `Team x App`; a participant is not a third berth
+coordinate. A participant is the local holder of access to berths through
+identity and team membership. From inside a specific app, the app coordinate is
+already fixed, so local materialization usually projects to a participant
+context containing team scopes. Apps own those local materialized trees and may
+use OS-standard app homes and app-chosen directory names. Small Sea provides
+registration, authorization, and stable IDs; it does not create arbitrary app
+data folders under Manager/Core's NoteToSelf tree. Apps consuming Hub session
+info should use exposed hex-string IDs, such as `participant_hex` and
+`berth_id`, for Small Sea-derived path components rather than friendly names.
+
 ## Technical Pillars
 
 ### 1. Fully Decentralized Team Management
@@ -96,6 +107,11 @@ Participant-level registration and team-level activation are separate decisions.
 The app's friendly name is a local claim and routing hint, not global identity.
 If a friendly-name collision cannot be resolved simply and safely, the Hub must
 surface ambiguity rather than choose a row implicitly.
+
+Registration and activation authorize a berth; they do not make the Manager the
+owner of an app's working tree. App data materialization is app-owned. The
+Manager writes Core registration state, and the Hub reads that Core state by
+framework contract, but arbitrary app homes are not Hub-readable databases.
 
 ### Security: PIN-Based Access
 Before a client can access a berth, it must request access from the Hub. The Hub generates a PIN and sends it to the user via OS notifications. The user must enter this PIN into the client to complete the handshake, ensuring that only authorized software can access team data.

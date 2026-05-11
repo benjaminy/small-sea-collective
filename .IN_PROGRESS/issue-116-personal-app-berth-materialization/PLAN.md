@@ -343,5 +343,5 @@ A skeptical reviewer should be able to convince themselves of all the following 
 To be populated as Phase 0 resolves:
 
 1. Explicit `team_id`/`app_id` in `/session/info` or an app-home/session helper, if `participant_hex` + `berth_id` proves too thin for app ergonomics.
-2. First app-owned materialization consumer integration: when an app first adopts participant/team local materialization, add an integration check that the convention round-trips against current `/session/info`.
+2. First app-owned materialization consumer integration: when an app first adopts participant/team local materialization, add an integration check that the convention round-trips against current `/session/info`. Spawned as #130.
 3. App-owned sync ergonomics for per-participant personal state, when Vault or another app has a concrete first use.
