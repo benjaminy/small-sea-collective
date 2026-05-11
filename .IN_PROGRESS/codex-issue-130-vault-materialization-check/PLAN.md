@@ -442,7 +442,7 @@ Run static checks:
 
 ```bash
 rg -n "SmallSeaCollectiveCore|core\\.db|NoteToSelf/Sync|NoteToSelf.*core\\.db" packages/shared-file-vault/shared_file_vault
-rg -n "def _.*team_name" packages/shared-file-vault/shared_file_vault/vault.py
+rg -n "def _[a-z][a-zA-Z0-9_]+\\([^)]*team_name" packages/shared-file-vault/shared_file_vault/vault.py
 rg -n "SharedFileVault" packages/small-sea-manager/small_sea_manager packages/small-sea-manager/tests
 git diff --check
 ```
@@ -459,24 +459,40 @@ Expected static-check interpretation:
 
 At wrap-up, fill in concrete file paths and test names showing:
 
-- [ ] Vault derives local storage coordinates from `participant_hex` and
+- [x] Vault derives local storage coordinates from `participant_hex` and
   `berth_id`.
-- [ ] Friendly team names are display/identity data, not Vault's durable local
+  See `VaultMaterializationContext` and `_berth_dir` in
+  `packages/shared-file-vault/shared_file_vault/vault.py`, plus
+  `test_create_niche`.
+- [x] Friendly team names are display/identity data, not Vault's durable local
   team directory or SQLite-key coordinate.
-- [ ] Berth contexts remain hard-separated.
-- [ ] Participant contexts remain hard-separated.
-- [ ] One participant with two distinct berth IDs and the same friendly team
+  See `checkout`, `peer_sync`, and `peer_signal_watermark` schema keys in
+  `vault.py`; `metadata.json` stores display metadata only.
+- [x] Berth contexts remain hard-separated.
+  See `test_same_friendly_name_different_berths_do_not_share_storage`.
+- [x] Participant contexts remain hard-separated.
+  The participant directory remains the first storage layer, and the full
+  shared-file-vault micro test suite exercises multi-participant sync.
+- [x] One participant with two distinct berth IDs and the same friendly team
   name gets distinct Vault storage.
-- [ ] Hub-backed Vault cloud prefixes either no longer include the friendly
-  team name because the Hub berth/session supplies the opaque cloud boundary,
-  or the Hub scoping gap is recorded as follow-up and cloud prefixes are left
-  unchanged on this branch.
-- [ ] Manager registration and activation create Core app/berth rows but no
+  See `test_same_friendly_name_different_berths_do_not_share_storage`.
+- [x] Hub-backed Vault cloud prefixes no longer include the friendly team name.
+  Hub S3/MinIO operations are scoped by session berth, and
+  `test_sync_config_roundtrip_and_remote_prefixes` now asserts `registry/`
+  and `niches/docs/`.
+- [x] Manager registration and activation create Core app/berth rows but no
   Vault working tree.
-- [ ] Vault does not read Manager/Core databases directly.
-- [ ] Either no public metadata gap was found, or it is recorded against #8
-  instead of solved by an ad hoc private workaround.
-- [ ] Existing Hub-backed Vault sync behavior still works.
+  This remains covered by the existing #116 Manager tests; the static Manager
+  check only found `SharedFileVault` in tests.
+- [x] Vault does not read Manager/Core databases directly.
+  Static check:
+  `rg -n "SmallSeaCollectiveCore|core\\.db|NoteToSelf/Sync|NoteToSelf.*core\\.db" packages/shared-file-vault/shared_file_vault`
+  returned no matches.
+- [x] No public metadata gap was found.
+  `/session/info` already supplies `participant_hex`, `berth_id`,
+  `team_name`, and `app_name`; no `FOLLOW-UP.md` was needed.
+- [x] Existing Hub-backed Vault sync behavior still works.
+  `uv run pytest packages/shared-file-vault/tests -q` passed.
 
 ## Follow-Up Policy
 

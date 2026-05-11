@@ -56,6 +56,17 @@ def create_app(
         except sync.LoginRequiredError:
             return "pending" if team_name in _pending(request) else "none"
 
+    def _team_context(request: Request, team_name: str):
+        try:
+            session = sync.get_team_session(
+                team_name,
+                hub_port=_hub_port(request),
+                _http_client=_http_client(request),
+            )
+        except sync.LoginRequiredError:
+            return team_name
+        return vault.materialization_context_from_session_info(session.session_info())
+
     def _session_fragment(request: Request, team_name: str, error: str | None = None):
         return templates.TemplateResponse(
             "fragments/team_session.html",
@@ -82,7 +93,7 @@ def create_app(
                 peer["update_status"] = sync.peer_update_status(
                     vr,
                     ph,
-                    team_name,
+                    _team_context(request, team_name),
                     niche_name,
                     peer["member_id"],
                     current_signal_count=int(peer.get("signal_count", 0)),
@@ -113,15 +124,16 @@ def create_app(
         from_member_id: str = "",
     ):
         vr, ph = _vr(request), _ph(request)
+        context = _team_context(request, team_name)
         team_session_status = _session_state(request, team_name)
         peers = _build_peers(request, team_name, niche_name)
-        checkout = vault.get_checkout(vr, ph, team_name, niche_name)
+        checkout = vault.get_checkout(vr, ph, context, niche_name)
         checkout_status = (
-            vault.status(vr, ph, team_name, niche_name, checkout)
+            vault.status(vr, ph, context, niche_name, checkout)
             if checkout is not None
             else []
         )
-        commits = vault.log(vr, ph, team_name, niche_name)
+        commits = vault.log(vr, ph, context, niche_name)
         return templates.TemplateResponse(
             "fragments/niche_detail.html",
             {
@@ -171,8 +183,9 @@ def create_app(
         request: Request, team_name: str, niche_name: str = Form(...)
     ):
         vr, ph = _vr(request), _ph(request)
+        context = _team_context(request, team_name)
         try:
-            vault.create_niche(vr, ph, team_name, niche_name)
+            vault.create_niche(vr, ph, context, niche_name)
             error = None
         except ValueError as e:
             error = str(e)
@@ -180,7 +193,7 @@ def create_app(
             "fragments/team_section.html",
             {
                 "request": request,
-                "team": {"name": team_name, "niches": _niches_with_info(vr, ph, team_name)},
+                "team": {"name": team_name, "niches": _niches_with_info(vr, ph, context)},
                 "error": error,
             },
         )
@@ -256,12 +269,13 @@ def create_app(
         dest_path: str = Form(...),
     ):
         vr, ph = _vr(request), _ph(request)
+        context = _team_context(request, team_name)
         try:
-            vault.add_checkout(vr, ph, team_name, niche_name, dest_path)
+            vault.add_checkout(vr, ph, context, niche_name, dest_path)
             error = None
         except (ValueError, vault.DuplicateCheckoutError) as e:
             error = str(e)
-        checkout = vault.get_checkout(vr, ph, team_name, niche_name)
+        checkout = vault.get_checkout(vr, ph, context, niche_name)
         return templates.TemplateResponse(
             "fragments/checkouts.html",
             {
@@ -284,8 +298,9 @@ def create_app(
         checkout_path: str = Form(...),
     ):
         vr, ph = _vr(request), _ph(request)
-        vault.remove_checkout(vr, ph, team_name, niche_name, checkout_path)
-        checkout = vault.get_checkout(vr, ph, team_name, niche_name)
+        context = _team_context(request, team_name)
+        vault.remove_checkout(vr, ph, context, niche_name, checkout_path)
+        checkout = vault.get_checkout(vr, ph, context, niche_name)
         return templates.TemplateResponse(
             "fragments/checkouts.html",
             {
@@ -308,17 +323,18 @@ def create_app(
         message: str = Form(None),
     ):
         vr, ph = _vr(request), _ph(request)
+        context = _team_context(request, team_name)
         try:
             commit_hash = vault.publish(
-                vr, ph, team_name, niche_name, checkout_path, message=message
+                vr, ph, context, niche_name, checkout_path, message=message
             )
             notice = f"Published {commit_hash[:8]}"
             error = None
         except Exception as e:
             notice = None
             error = str(e)
-        entries = vault.status(vr, ph, team_name, niche_name, checkout_path)
-        commits = vault.log(vr, ph, team_name, niche_name)
+        entries = vault.status(vr, ph, context, niche_name, checkout_path)
+        commits = vault.log(vr, ph, context, niche_name)
         return templates.TemplateResponse(
             "fragments/status_panel.html",
             {
@@ -386,7 +402,13 @@ def create_app(
                 hub_port=hub_port,
                 _http_client=http_client,
             )
-            status = sync.peer_update_status(vr, ph, team_name, niche_name, member_id)
+            status = sync.peer_update_status(
+                vr,
+                ph,
+                _team_context(request, team_name),
+                niche_name,
+                member_id,
+            )
             if status.ready_to_merge:
                 notice = f"Fetched changes from {member_id}. They are ready to merge."
             elif status.already_merged:

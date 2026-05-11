@@ -1,3 +1,4 @@
+import json
 import pathlib
 
 import pytest
@@ -7,6 +8,7 @@ from shared_file_vault.vault import (
     DuplicateCheckoutError,
     NicheResidency,
     NoCheckoutError,
+    VaultMaterializationContext,
     add_checkout,
     create_niche,
     fetch_niche,
@@ -23,7 +25,13 @@ from shared_file_vault.vault import (
 )
 
 PARTICIPANT = "aa" * 16
-TEAM = "TestTeam"
+TEAM_NAME = "TestTeam"
+TEAM_BERTH_ID = "11" * 16
+TEAM = VaultMaterializationContext(PARTICIPANT, TEAM_BERTH_ID, TEAM_NAME)
+
+
+def _team_for(participant_hex):
+    return VaultMaterializationContext(participant_hex, TEAM_BERTH_ID, TEAM_NAME)
 
 
 def _init(playground_dir):
@@ -40,7 +48,8 @@ def test_create_niche(playground_dir):
     git_dir = (
         pathlib.Path(playground_dir)
         / PARTICIPANT
-        / TEAM
+        / "berths"
+        / TEAM_BERTH_ID
         / "niches"
         / "photos"
         / "git"
@@ -51,6 +60,32 @@ def test_create_niche(playground_dir):
     # Niche appears in the registry
     niches = list_niches(playground_dir, PARTICIPANT, TEAM)
     assert any(n["name"] == "photos" for n in niches)
+
+
+def test_same_friendly_name_different_berths_do_not_share_storage(playground_dir):
+    _init(playground_dir)
+    alpha = VaultMaterializationContext(PARTICIPANT, "11" * 16, TEAM_NAME)
+    beta = VaultMaterializationContext(PARTICIPANT, "22" * 16, TEAM_NAME)
+
+    create_niche(playground_dir, PARTICIPANT, alpha, "docs")
+    create_niche(playground_dir, PARTICIPANT, beta, "docs")
+
+    root = pathlib.Path(playground_dir) / PARTICIPANT / "berths"
+    assert (root / alpha.berth_id / "registry" / "git").is_dir()
+    assert (root / beta.berth_id / "registry" / "git").is_dir()
+    assert (root / alpha.berth_id / "niches" / "docs" / "git").is_dir()
+    assert (root / beta.berth_id / "niches" / "docs" / "git").is_dir()
+    assert not (pathlib.Path(playground_dir) / PARTICIPANT / TEAM_NAME).exists()
+    metadata = json.loads((root / alpha.berth_id / "metadata.json").read_text())
+    assert metadata["team_name"] == TEAM_NAME
+
+    checkout_a = pathlib.Path(playground_dir) / "checkout-a"
+    checkout_b = pathlib.Path(playground_dir) / "checkout-b"
+    add_checkout(playground_dir, PARTICIPANT, alpha, "docs", str(checkout_a))
+    add_checkout(playground_dir, PARTICIPANT, beta, "docs", str(checkout_b))
+
+    assert get_checkout(playground_dir, PARTICIPANT, alpha, "docs") == str(checkout_a)
+    assert get_checkout(playground_dir, PARTICIPANT, beta, "docs") == str(checkout_b)
 
 
 def test_add_checkout(playground_dir):
@@ -309,7 +344,7 @@ def test_residency_remote_only(playground_dir):
     from shared_file_vault.vault import _registry_checkout_dir, _ensure_registry
     import json
     _ensure_registry(playground_dir, other, TEAM)
-    reg_co = _registry_checkout_dir(playground_dir, other, TEAM)
+    reg_co = _registry_checkout_dir(playground_dir, _team_for(other))
     (reg_co / "photos.json").write_text(json.dumps({"id": "x" * 32, "name": "photos"}))
 
     assert niche_residency(playground_dir, other, TEAM, "photos") is NicheResidency.REMOTE_ONLY
@@ -397,14 +432,14 @@ def test_cli_list_shows_residency_labels(playground_dir):
     from shared_file_vault.cli import cli
 
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "alpha")   # will be CHECKED_OUT
-    create_niche(playground_dir, PARTICIPANT, TEAM, "beta")    # stays CACHED
+    create_niche(playground_dir, PARTICIPANT, TEAM_NAME, "alpha")   # will be CHECKED_OUT
+    create_niche(playground_dir, PARTICIPANT, TEAM_NAME, "beta")    # stays CACHED
 
     dest = pathlib.Path(playground_dir) / "co-alpha"
-    add_checkout(playground_dir, PARTICIPANT, TEAM, "alpha", str(dest))
+    add_checkout(playground_dir, PARTICIPANT, TEAM_NAME, "alpha", str(dest))
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["list", playground_dir, PARTICIPANT, TEAM])
+    result = runner.invoke(cli, ["list", playground_dir, PARTICIPANT, TEAM_NAME])
     assert result.exit_code == 0, result.output
 
     assert "checked_out" in result.output
@@ -479,7 +514,7 @@ def test_fetch_without_checkout_pins_ref(playground_dir):
 
     # The parked ref resolves to the fetched SHA — validates _resolve_ref without a checkout
     from shared_file_vault.vault import _niche_git_dir, _peer_ref_name, _resolve_ref
-    git_dir = _niche_git_dir(str(bob_root), PARTICIPANT_B, TEAM, "sync")
+    git_dir = _niche_git_dir(str(bob_root), _team_for(PARTICIPANT_B), "sync")
     resolved = _resolve_ref(git_dir, _peer_ref_name(PARTICIPANT))
     assert resolved == fetched_sha
 
@@ -561,7 +596,7 @@ def test_initial_history_pull(playground_dir):
 
     # Bob: create a fresh niche git dir and attach a checkout — no prior commits
     from shared_file_vault.vault import _niche_git_dir, _init_git_dir
-    git_dir = _niche_git_dir(str(bob_root), PARTICIPANT_B, TEAM, "sync")
+    git_dir = _niche_git_dir(str(bob_root), _team_for(PARTICIPANT_B), "sync")
     git_dir.mkdir(parents=True)
     _init_git_dir(git_dir)
     bob_co = playground / "co-bob"
@@ -642,7 +677,7 @@ def test_stale_bundle_guard(playground_dir):
 
     # Bob: initial pull succeeds — seeds cloud-codsync-bundle-tmp/main in git config
     from shared_file_vault.vault import _niche_git_dir, _init_git_dir
-    git_dir = _niche_git_dir(str(bob_root), PARTICIPANT_B, TEAM, "sync")
+    git_dir = _niche_git_dir(str(bob_root), _team_for(PARTICIPANT_B), "sync")
     git_dir.mkdir(parents=True)
     _init_git_dir(git_dir)
     bob_co = playground / "co-bob"
@@ -677,7 +712,7 @@ def test_niche_conflict_paths_stale_and_cached(playground_dir):
     add_checkout(playground_dir, PARTICIPANT, TEAM, "cptest", str(co))
     (co / "f.txt").write_text("x\n")
     publish(playground_dir, PARTICIPANT, TEAM, "cptest", str(co), message="init")
-    git_dir = _niche_git_dir(playground_dir, PARTICIPANT, TEAM, "cptest")
+    git_dir = _niche_git_dir(playground_dir, TEAM, "cptest")
 
     # Grab a valid commit SHA to use as a synthetic MERGE_HEAD
     from cod_sync.protocol import gitCmd
@@ -753,7 +788,7 @@ def test_cwd_preserved_across_vault_operations(playground_dir):
     bob2_root = playground / "vault-bob2"
     init_vault(str(bob2_root), PARTICIPANT_C)
     from shared_file_vault.vault import _niche_git_dir, _init_git_dir
-    git_dir2 = _niche_git_dir(str(bob2_root), PARTICIPANT_C, TEAM, "cwdtest")
+    git_dir2 = _niche_git_dir(str(bob2_root), _team_for(PARTICIPANT_C), "cwdtest")
     git_dir2.mkdir(parents=True)
     _init_git_dir(git_dir2)
     bob2_co = playground / "co-bob2"

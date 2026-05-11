@@ -163,7 +163,6 @@ def load_config() -> dict:
     with open(path, "rb") as f:
         config = tomllib.load(f)
     config.setdefault("team_sessions", {})
-    config.setdefault("peer_signal_watermarks", {})
     return config
 
 
@@ -196,17 +195,6 @@ def _dump_toml(config: dict) -> str:
         lines.append(f"[team_sessions.{json.dumps(team_name)}]")
         lines.append(f"session_token = {json.dumps(str(token))}")
 
-    watermarks = config.get("peer_signal_watermarks") or {}
-    for wm_team in sorted(watermarks):
-        team_wm = watermarks[wm_team] or {}
-        if not team_wm:
-            continue
-        if lines:
-            lines.append("")
-        lines.append(f"[peer_signal_watermarks.{json.dumps(wm_team)}]")
-        for member_id in sorted(team_wm):
-            lines.append(f"{json.dumps(member_id)} = {int(team_wm[member_id])}")
-
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -228,40 +216,49 @@ def clear_session_token(team_name: str) -> None:
         save_config(config)
 
 
-def get_signal_watermark(team_name: str, member_id: str) -> int:
+def get_signal_watermark(
+    vault_root: str,
+    participant_hex: str,
+    context_or_team,
+    member_id: str,
+) -> int:
     """Return the last-seen signal count for a peer, defaulting to 0."""
-    config = load_config()
-    return (
-        (config.get("peer_signal_watermarks") or {})
-        .get(team_name, {})
-        .get(member_id, 0)
+    return vault.get_peer_signal_watermark(
+        vault_root, participant_hex, context_or_team, member_id
     )
 
 
-def set_signal_watermark(team_name: str, member_id: str, count: int) -> None:
+def set_signal_watermark(
+    vault_root: str,
+    participant_hex: str,
+    context_or_team,
+    member_id: str,
+    count: int,
+) -> None:
     """Persist a signal-count watermark for a peer."""
-    config = load_config()
-    watermarks = config.setdefault("peer_signal_watermarks", {})
-    watermarks.setdefault(team_name, {})
-    watermarks[team_name][member_id] = int(count)
-    save_config(config)
+    vault.set_peer_signal_watermark(
+        vault_root, participant_hex, context_or_team, member_id, count
+    )
 
 
-def clear_signal_watermark(team_name: str, member_id: str) -> None:
+def clear_signal_watermark(
+    vault_root: str,
+    participant_hex: str,
+    context_or_team,
+    member_id: str,
+) -> None:
     """Remove any persisted signal-count watermark for a peer."""
-    config = load_config()
-    watermarks = config.get("peer_signal_watermarks") or {}
-    if team_name in watermarks and member_id in watermarks[team_name]:
-        del watermarks[team_name][member_id]
-        save_config(config)
+    vault.clear_peer_signal_watermark(
+        vault_root, participant_hex, context_or_team, member_id
+    )
 
 
-def registry_path_prefix(team_name: str) -> str:
-    return f"vault/{team_name}/registry/"
+def registry_path_prefix() -> str:
+    return "registry/"
 
 
-def niche_path_prefix(team_name: str, niche_name: str) -> str:
-    return f"vault/{team_name}/niches/{niche_name}/"
+def niche_path_prefix(niche_name: str) -> str:
+    return f"niches/{niche_name}/"
 
 
 def login_team(
@@ -349,6 +346,14 @@ def list_team_peers(
     return session.session_peers()
 
 
+def _session_context(session: SmallSeaSession | None, participant_hex: str, team_name: str):
+    if session is None:
+        return vault.VaultMaterializationContext.legacy_for_local_use(
+            participant_hex, team_name
+        )
+    return vault.materialization_context_from_session_info(session.session_info())
+
+
 def _remote_kwargs(session: SmallSeaSession) -> dict:
     client = session._client
     return {
@@ -357,37 +362,37 @@ def _remote_kwargs(session: SmallSeaSession) -> dict:
     }
 
 
-def make_registry_remote(team_name: str, session: SmallSeaSession) -> SmallSeaRemote:
+def make_registry_remote(_context, session: SmallSeaSession) -> SmallSeaRemote:
     return SmallSeaRemote(
         session.token,
-        path_prefix=registry_path_prefix(team_name),
+        path_prefix=registry_path_prefix(),
         **_remote_kwargs(session),
     )
 
 
 def make_niche_remote(
-    team_name: str, niche_name: str, session: SmallSeaSession
+    _context, niche_name: str, session: SmallSeaSession
 ) -> SmallSeaRemote:
     return SmallSeaRemote(
         session.token,
-        path_prefix=niche_path_prefix(team_name, niche_name),
+        path_prefix=niche_path_prefix(niche_name),
         **_remote_kwargs(session),
     )
 
 
 def make_peer_registry_remote(
-    team_name: str, member_id: str, session: SmallSeaSession
+    _context, member_id: str, session: SmallSeaSession
 ) -> PeerSmallSeaRemote:
     return PeerSmallSeaRemote(
         session.token,
         member_id,
-        path_prefix=registry_path_prefix(team_name),
+        path_prefix=registry_path_prefix(),
         **_remote_kwargs(session),
     )
 
 
 def make_peer_niche_remote(
-    team_name: str,
+    _context,
     niche_name: str,
     member_id: str,
     session: SmallSeaSession,
@@ -395,7 +400,7 @@ def make_peer_niche_remote(
     return PeerSmallSeaRemote(
         session.token,
         member_id,
-        path_prefix=niche_path_prefix(team_name, niche_name),
+        path_prefix=niche_path_prefix(niche_name),
         **_remote_kwargs(session),
     )
 
@@ -411,14 +416,15 @@ def push_via_hub(
 ) -> None:
     """Push a niche and its registry through the Hub using a cached session."""
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+    context = _session_context(session, participant_hex, team_name)
     session.ensure_cloud_ready()
     try:
         vault.push_niche(
             vault_root,
             participant_hex,
-            team_name,
+            context,
             niche_name,
-            make_niche_remote(team_name, niche_name, session),
+            make_niche_remote(context, niche_name, session),
         )
     except CasConflictError as exc:
         raise PushConflictError(
@@ -435,8 +441,8 @@ def push_via_hub(
         vault.push_registry(
             vault_root,
             participant_hex,
-            team_name,
-            make_registry_remote(team_name, session),
+            context,
+            make_registry_remote(context, session),
         )
     except GitCmdFailed as exc:
         if "Refusing to create empty bundle" not in exc.err:
@@ -486,6 +492,7 @@ def fetch_via_hub(
 ) -> FetchResult:
     """Fetch a registry and niche from a peer through the Hub without merging."""
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+    context = _session_context(session, participant_hex, team_name)
 
     # Observe signal_count BEFORE fetching. If the peer pushes again during
     # the fetch, we intentionally record the pre-second-push count so the
@@ -503,21 +510,23 @@ def fetch_via_hub(
     registry_sha = vault.fetch_registry(
         vault_root,
         participant_hex,
-        team_name,
+        context,
         from_member_id,
-        make_peer_registry_remote(team_name, from_member_id, session),
+        make_peer_registry_remote(context, from_member_id, session),
     )
     niche_sha = vault.fetch_niche(
         vault_root,
         participant_hex,
-        team_name,
+        context,
         niche_name,
         from_member_id,
-        make_peer_niche_remote(team_name, niche_name, from_member_id, session),
+        make_peer_niche_remote(context, niche_name, from_member_id, session),
     )
 
     # Advance the watermark now that the fetch succeeded.
-    set_signal_watermark(team_name, from_member_id, observed_signal_count)
+    set_signal_watermark(
+        vault_root, participant_hex, context, from_member_id, observed_signal_count
+    )
 
     return FetchResult(
         member_id=from_member_id,
@@ -542,18 +551,19 @@ def merge_via_hub(
     dirty-checkout or no-checkout condition never leaves the registry
     merged while the niche merge is still pending.
     """
-    _session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+    session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+    context = _session_context(session, participant_hex, team_name)
 
     # Preflight: verify niche checkout exists and is clean before merging
     # anything. Without this, a failed niche merge would leave the registry
     # already integrated — a partially-merged state the user cannot easily undo.
-    checkout = vault.get_checkout(vault_root, participant_hex, team_name, niche_name)
+    checkout = vault.get_checkout(vault_root, participant_hex, context, niche_name)
     if checkout is None:
-        residency = vault.niche_residency(vault_root, participant_hex, team_name, niche_name)
+        residency = vault.niche_residency(vault_root, participant_hex, context, niche_name)
         raise NoCheckoutError(team_name, niche_name, residency)
     if not pathlib.Path(checkout).exists():
         raise StaleCheckoutError(team_name, niche_name, checkout)
-    dirty_entries = vault.status(vault_root, participant_hex, team_name, niche_name, checkout)
+    dirty_entries = vault.status(vault_root, participant_hex, context, niche_name, checkout)
     if dirty_entries:
         raise DirtyCheckoutError([e["path"] for e in dirty_entries])
 
@@ -561,7 +571,7 @@ def merge_via_hub(
         registry_sha = vault.merge_registry(
             vault_root,
             participant_hex,
-            team_name,
+            context,
             from_member_id,
         )
     except vault.MergeConflictError as exc:
@@ -571,7 +581,7 @@ def merge_via_hub(
         niche_sha = vault.merge_niche(
             vault_root,
             participant_hex,
-            team_name,
+            context,
             niche_name,
             from_member_id,
         )
@@ -627,7 +637,9 @@ def peer_update_status(
         last_fetched_sha=niche_status["last_fetched_sha"] or registry_status["last_fetched_sha"],
         last_merged_sha=niche_status["last_merged_sha"] or registry_status["last_merged_sha"],
         current_signal_count=current_signal_count,
-        last_seen_signal_count=get_signal_watermark(team_name, member_id),
+        last_seen_signal_count=get_signal_watermark(
+            vault_root, participant_hex, team_name, member_id
+        ),
     )
 
 
