@@ -114,9 +114,9 @@ The branch should make each current `team_name` use explicit:
 | `checkouts.db` peer sync rows | In scope: use `berth_id` in the primary key. | Peer watermarks and parked refs are berth-scoped local state. |
 | Config `team_sessions[...]` | Out of scope unless implementation proves it blocks the branch. | This cache is keyed before a session exists, and the public session request API currently selects teams by friendly name. Richer pre-session selection belongs with #8. After login, code must validate `session_info` and use the resulting context for materialization. |
 | Config `peer_signal_watermarks[...]` | In scope if the config entry remains separate from `checkouts.db`. | This is local sync state observed through a berth session, so it should follow the same `berth_id` coordinate as peer sync rows. |
-| Cloud object prefixes such as `vault/{team_name}/registry/` | Debate before implementation. | The remote is already scoped by the Hub session's berth/bucket, but friendly names in app object keys may still be unstable app materialization. See "Open Debate: Cloud Prefixes." |
+| Cloud object prefixes such as `vault/{team_name}/registry/` | In scope: remove the friendly team-name coordinate. | Cloud operations happen inside a Hub berth/session. The Hub should provide the opaque berth boundary; Vault object keys inside that boundary should be Vault-internal paths, not team coordinates. |
 
-## Open Debate: Cloud Prefixes
+## Cloud Prefix Decision
 
 The current cloud prefixes include the friendly team name:
 
@@ -125,18 +125,26 @@ vault/{team_name}/registry/
 vault/{team_name}/niches/{niche_name}/
 ```
 
-There are two reasonable readings:
+That should change on this branch.
+All Small Sea cloud operations should happen in the context of a berth/session.
+If a cloud backend needs a bucket, prefix, or other storage boundary to
+implement that context, that boundary belongs at the Hub/berth layer and should
+come from opaque berth/session metadata.
 
-1. Move them in this branch because they are app-owned materialization paths and
-   should use `berth_id` or no team component at all.
-2. Leave them out of scope because the Hub session already scopes the remote to
-   one berth bucket, so the prefix is an app-internal namespace rather than the
-   boundary that separates berths.
+Within a Vault berth, Vault does not need a team coordinate in object keys.
+Use Vault-internal paths only:
 
-The plan's default is to decide this before Phase 2 implementation.
-If we leave cloud prefixes unchanged, the final review note must say why that
-does not violate issue #130's stable-coordinate requirement, and should create
-or update a follow-up if the answer feels temporary.
+```text
+registry/
+niches/{niche_name}/
+```
+
+If an app-level namespace marker is still useful for readability or future
+internal subdivision, `vault/registry/` and `vault/niches/{niche_name}/` are
+acceptable.
+Do not use `team_name` in the cloud object prefix.
+Do not add `berth_id` to the Vault object prefix unless a Hub sanity check shows
+that the Hub is not already providing a berth-scoped storage boundary.
 
 If implementation shows that session-backed Vault operations cannot be
 converted without a missing metadata field, stop and record the gap against #8.
@@ -189,6 +197,8 @@ Assert:
 - the created path does not include the friendly `team_name`;
 - `app_name == "SharedFileVault"` is checked but not used as a local Small
   Sea-derived directory coordinate.
+- Hub-backed Vault remotes use within-berth object prefixes that do not include
+  `team_name`.
 
 ### 2. Same friendly name does not collapse berth contexts
 
@@ -246,6 +256,24 @@ The guard should be narrow enough not to reject Vault-owned SQLite use.
 The real evidence is the implementation shape plus integration tests that get
 metadata through Hub sessions.
 
+### 5. Hub berth storage scoping sanity check
+
+Add a small sanity check or explicit code-review checklist item for Hub cloud
+scoping.
+The goal is not to redesign Hub storage.
+It is to verify that Vault can safely remove the friendly team name from object
+prefixes because the Hub session already scopes cloud operations to one berth.
+
+Assert or document:
+
+- `GET /session/info` returns the same `berth_id` that Hub cloud operations use
+  for berth storage scoping;
+- S3/MinIO bucket derivation, or equivalent backend scoping, is based on
+  opaque berth/session metadata rather than `team_name`;
+- Vault's remote object keys are interpreted inside that session/berth scope.
+
+If this sanity check fails, record the gap before changing Vault prefixes.
+
 ## Implementation Phases
 
 ### Phase 0: Baseline Audit
@@ -256,6 +284,9 @@ metadata through Hub sessions.
   `SmallSeaAppBootstrapRequired` for structured app-bootstrap rejections.
 - Confirm `/session/info` currently returns the fields needed by #130:
   `participant_hex`, `berth_id`, `team_name`, and `app_name`.
+- Confirm Hub cloud operations are already scoped by the session berth, with
+  backend storage boundaries derived from opaque berth/session metadata rather
+  than Vault's friendly team-name object prefix.
 
 Exit gate:
 the branch plan names any missing field before code changes begin.
@@ -277,6 +308,10 @@ team names as local storage coordinates or lacks the new context helper.
 - Validate required fields with clear errors.
 - Keep `team_name` and `app_name` as display/routing fields.
 - Use `berth_id` for session-backed local team storage paths and SQLite keys.
+- Remove `team_name` from Vault cloud object prefixes.
+  Use within-berth object keys such as `registry/` and
+  `niches/{niche_name}/`, or keep only an app-internal namespace marker such as
+  `vault/`.
 
 Exit gate:
 the first coordinate derivation test passes without any Manager/Core DB read.
@@ -358,6 +393,8 @@ At wrap-up, fill in concrete file paths and test names showing:
 - [ ] Participant contexts remain hard-separated.
 - [ ] One participant with two distinct berth IDs and the same friendly team
   name gets distinct Vault storage.
+- [ ] Hub-backed Vault cloud prefixes do not include the friendly team name,
+  and the Hub berth/session supplies the opaque cloud boundary.
 - [ ] Manager registration and activation create Core app/berth rows but no
   Vault working tree.
 - [ ] Vault does not read Manager/Core databases directly.
