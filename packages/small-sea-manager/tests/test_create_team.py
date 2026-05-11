@@ -103,10 +103,22 @@ def test_create_new_participant_registers_core_like_an_app(playground_dir):
 
     alice_hex = create_new_participant(root, "Alice")
 
-    assert (
+    assert not (
         root / "Participants" / alice_hex / "NoteToSelf" / CORE_APP
-    ).is_dir()
+    ).exists()
     assert _app_and_berth_counts(_note_to_self_db(root, alice_hex), CORE_APP) == (1, 1)
+
+
+def test_register_app_for_participant_does_not_materialize_app_directory(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+
+    register_app_for_participant(root, alice_hex, VAULT_APP)
+
+    assert not (
+        root / "Participants" / alice_hex / "NoteToSelf" / VAULT_APP
+    ).exists()
+    assert _app_and_berth_counts(_note_to_self_db(root, alice_hex), VAULT_APP) == (1, 1)
 
 
 def test_core_participant_registration_is_idempotent(playground_dir):

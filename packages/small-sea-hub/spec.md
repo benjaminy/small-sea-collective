@@ -44,6 +44,14 @@ a 32-byte Bearer token (hex-encoded). All subsequent API calls use this token in
 Sessions do not expire. There is no revocation endpoint yet — killing the Hub process
 and clearing its local DB is the current escape hatch.
 
+`GET /session/info` exposes the public metadata boundary for an existing
+session. It currently returns stable hex-string IDs for `participant_hex` and
+`berth_id`, plus friendly `team_name` and `app_name`, client, and mode. Hub
+session rows also store stable opaque `team_id` and `app_id` internally. Those
+fields may be exposed in a future API or wrapped by an app-home helper, but apps
+should not infer identity from friendly names or read Manager/Core databases
+directly to recover IDs.
+
 ### Bootstrap-scoped transport
 
 Identity bootstrap now uses a second, narrower capability alongside normal
