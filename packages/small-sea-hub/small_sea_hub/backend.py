@@ -572,33 +572,26 @@ class SmallSeaBackend:
 
         Returns the number of rows deleted (0 or 1). Idempotent: a missing row
         or a row whose last_seen_at has been bumped by a concurrent retry
-        returns 0 rather than raising. team_name=None matches the SQL NULL.
+        returns 0 rather than raising. Empty strings are literal values; there
+        is no wildcard delete.
         """
-        if team_name is None:
-            sql = (
-                "DELETE FROM unknown_app_sighting "
-                "WHERE participant_hex = ? AND app_name = ? "
-                "AND team_name IS NULL AND client_name = ? "
-                "AND last_seen_at = ?"
-            )
-            params = (participant_hex, app_name, client_name, last_seen_at)
-        else:
-            sql = (
-                "DELETE FROM unknown_app_sighting "
-                "WHERE participant_hex = ? AND app_name = ? "
-                "AND team_name = ? AND client_name = ? "
-                "AND last_seen_at = ?"
-            )
-            params = (
-                participant_hex,
-                app_name,
-                team_name,
-                client_name,
-                last_seen_at,
-            )
         conn = sqlite3.connect(self.path_local_db)
         try:
-            cursor = conn.execute(sql, params)
+            cursor = conn.execute(
+                """
+                DELETE FROM unknown_app_sighting
+                WHERE participant_hex = ? AND app_name = ?
+                  AND team_name = ? AND client_name = ?
+                  AND last_seen_at = ?
+                """,
+                (
+                    participant_hex,
+                    app_name,
+                    team_name,
+                    client_name,
+                    last_seen_at,
+                ),
+            )
             conn.commit()
             return cursor.rowcount
         finally:

@@ -138,8 +138,13 @@ Rationale:
 ### D5. What is the cleanup endpoint shape?
 
 Working decision: use `POST /sightings/clear` with an exact tuple body plus a `last_seen_at` precondition from the list snapshot.
-The `team_name` wire field is nullable because raw sightings may have `team_name = null`.
+All four fields are required strings.
 Manager must echo tuple values from `GET /sightings` without normalizing them.
+
+Earlier revisions of this plan made `team_name` nullable on the wire as forward-compat for hypothetical "team-less" sightings.
+The Hub schema declares `team_name TEXT NOT NULL` and `request_session(...)` always supplies a team string, so no Hub row can ever have a null team.
+A future use case for participant-level discovery without a known team can use `NoteToSelf` as the team rather than carrying a null carve-out through the wire and storage.
+The narrower contract avoids dead `IS NULL` SQL branches and tests that prove only that the wire shape did not error.
 
 ```http
 POST /sightings/clear
@@ -174,9 +179,9 @@ Rationale:
 - `DELETE` with a body is poorly supported by some HTTP stacks.
 - The tuple body matches the existing unique key and the `GET /sightings` row shape.
 - The Hub derives `participant_hex` from the session token and does not accept it from the caller.
-- `team_name`, `app_name`, `client_name`, and `last_seen_at` keys are all required.
-  `team_name` may be JSON `null`; empty strings are literal values; there is no wildcard delete.
-- The backend must match `team_name IS NULL` for JSON `null` and `team_name = ?` otherwise.
+- `team_name`, `app_name`, `client_name`, and `last_seen_at` keys are all required strings.
+  Empty strings are literal values; there is no wildcard delete.
+  JSON `null` on `team_name` is rejected with `422` because no Hub row can have a null team.
 - The endpoint deletes only if the row still has the same `last_seen_at` string Manager evaluated.
 - The endpoint is idempotent: if no row matches, or if a retry bumped `last_seen_at`, it returns success with `deleted_count = 0`.
   Manager treats `deleted_count = 0` as non-fatal.
@@ -257,8 +262,8 @@ The branch is successful if all of the following are true:
 - Add an authenticated HTTP endpoint for Manager-driven clear.
 - Keep authorization identical to `GET /sightings`: `_require_session`, then the Manager/Core `Settings().app_name` guard.
   Prefer a shared `_require_manager_session` dependency/helper so `GET /sightings`, `POST /sightings/clear`, and `POST /sightings/prune-stale` cannot drift.
-- Require exact `app_name`, `team_name`, `client_name`, and `last_seen_at` fields in the clear payload.
-  `team_name` is `Optional[str]`; treat empty strings as literal values, not wildcards.
+- Require exact `app_name`, `team_name`, `client_name`, and `last_seen_at` string fields in the clear payload.
+  Treat empty strings as literal values, not wildcards.
 - Return success with `deleted_count = 0` when no row matches.
 
 Exit gate:
@@ -271,7 +276,7 @@ Hub micro tests cover successful clear, clear idempotency, guarded-clear mismatc
 - Keep it scoped to confirmed sessions, parallel to `Session.app_sightings()`.
 - Do not expose cleanup from ordinary app bootstrap clients.
 - Build the clear payload directly from the sighting tuple keys: `app_name`, `team_name`, `client_name`, and `last_seen_at`.
-  Preserve `team_name = None` and the `last_seen_at` string exactly as returned by the Hub.
+  Preserve every field exactly as returned by the Hub; in particular `last_seen_at` must not be parsed and re-rendered.
 - The prune helper may send `{}` because `SmallSeaClient._post(...)` currently requires a JSON object.
   The Hub endpoint itself must not require callers to send a JSON body.
 - Update client-side docs or README material that describes `Session.app_sightings()` so the new clear helper is discoverable to Manager-side code.
@@ -357,7 +362,7 @@ the issue goal was actually decided and implemented, and the app-bootstrap trust
 - A micro test verifies retry-after-clear records a new sighting with `seen_count = 1`.
   This is mostly existing upsert behavior; this branch should preserve it rather than invent a second creation path.
 - A micro test verifies a clear request with stale `last_seen_at` returns `deleted_count = 0` and leaves the bumped row in place.
-- A micro test verifies `team_name = null` sightings can be cleared by echoing JSON `null` in the clear payload.
+- A micro test verifies `team_name = null` is rejected with `422` because no Hub row can have a null team.
 - A parity micro test proves Hub-rejected bootstrap states stay non-`None` in Manager prompt evaluation.
 - A micro test proves resolved rows do not flap by being cleared and then immediately re-recorded on the next successful app request.
 
@@ -434,7 +439,8 @@ This branch needs a narrow clear operation and stale prune behavior, not a Hub-a
 9. V1 accepts one cleanup HTTP call per resolved row.
 10. Stale pruning happens through `POST /sightings/prune-stale`; `GET /sightings` remains read-only.
 11. Manager refresh lists and evaluates before pruning so stale rows are visible once after long absence.
-12. `team_name` is nullable on the clear wire shape and matched with `IS NULL`.
+12. `team_name` is a required string on the clear wire shape; JSON `null` is rejected with `422`.
+    Earlier revisions treated `team_name` as nullable for forward-compat; that was reverted because no Hub row can have a null team and a future participant-level use case can use `NoteToSelf`.
 13. `last_seen_at` preconditions use exact string equality from the Hub list response.
 14. Hub-written sighting timestamps use canonical UTC ISO-8601 strings with exactly six fractional digits and `+00:00`.
 15. The no-flap property is a Phase 0 prerequisite, not a Phase 4 assumption.

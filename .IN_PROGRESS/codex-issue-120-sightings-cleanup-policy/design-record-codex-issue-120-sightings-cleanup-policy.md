@@ -78,6 +78,17 @@ surrogate id to the schema would have been schema churn for no functional
 gain. `DELETE` with a body was rejected because some HTTP stacks handle it
 poorly.
 
+### 5b. `team_name` is required, not nullable
+
+An earlier revision of the plan made `team_name` nullable on the wire as
+forward-compat for hypothetical "team-less" sightings. The schema declares
+`team_name TEXT NOT NULL` and `request_session(...)` always supplies a team
+string, so no Hub row can ever match a null. The narrower contract removes
+a dead `IS NULL` SQL branch and a misleading test that only proved the wire
+shape didn't 4xx. If a future participant-level discovery use case needs a
+team-less request, it can use `NoteToSelf` rather than re-introducing a
+nullable carve-out.
+
 ### 6. No-flap as a Phase 0 gate
 
 The whole design relies on Hub `_resolve_berth(...)` and `request_session(...)`

@@ -511,25 +511,6 @@ def test_clear_app_sighting_sends_tuple_body_verbatim(session):
 
 
 @respx.mock
-def test_clear_app_sighting_preserves_team_name_none(session):
-    """team_name=None must reach the wire as JSON null (not omitted, not "")."""
-    import json
-    route = respx.post(f"{BASE_URL}/sightings/clear").mock(
-        return_value=httpx.Response(200, json={"deleted_count": 0})
-    )
-
-    session.clear_app_sighting(
-        app_name="SharedFileVault",
-        team_name=None,
-        client_name="cli",
-        last_seen_at="2026-05-01T12:00:00.000000+00:00",
-    )
-
-    body = json.loads(route.calls[0].request.content)
-    assert body["team_name"] is None
-
-
-@respx.mock
 def test_clear_app_sighting_returns_zero_on_idempotent_response(session):
     respx.post(f"{BASE_URL}/sightings/clear").mock(
         return_value=httpx.Response(200, json={"deleted_count": 0})

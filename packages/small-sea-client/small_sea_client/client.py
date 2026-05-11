@@ -273,16 +273,16 @@ class SmallSeaSession:
         self,
         *,
         app_name: str,
-        team_name: Optional[str],
+        team_name: str,
         client_name: str,
         last_seen_at: str,
     ) -> int:
         """Delete one Hub sighting whose tuple and last_seen_at still match.
 
-        Pass the values from app_sightings() unchanged: team_name=None for
-        rows with no team, and last_seen_at byte-identical to the listed
-        value. Reformatting the timestamp will silently miss the row because
-        the Hub uses string equality for the precondition.
+        Pass the values from app_sightings() unchanged. last_seen_at must be
+        byte-identical to the listed value; reformatting the timestamp will
+        silently miss the row because the Hub uses string equality for the
+        precondition.
 
         Returns the number of rows deleted (0 or 1). The Hub returns 0 — not
         an error — when the row has been bumped or already cleared.
@@ -306,7 +306,7 @@ class SmallSeaSession:
         and the cutoff clock; this call has no body parameters.
         """
         # _post requires a JSON object; the Hub accepts {} as equivalent to
-        # an empty body and ignores additional keys.
+        # an empty body. Any other shape is rejected with 400.
         result = self._client._post(
             "/sightings/prune-stale",
             {},

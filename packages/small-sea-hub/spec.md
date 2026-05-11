@@ -372,9 +372,9 @@ when the row's stored `last_seen_at` is byte-identical to the supplied value.
 }
 ```
 
-`team_name` may be JSON `null`; empty strings are literal values; there is no
-wildcard delete. Manager must echo `last_seen_at` from `GET /sightings` without
-parsing or reformatting.
+All four fields are required. Empty strings are literal values; there is no
+wildcard delete. Manager must echo `last_seen_at` from `GET /sightings`
+without parsing or reformatting.
 
 Response: `{ "deleted_count": 0 | 1 }`. The endpoint is idempotent: if no row
 matches (already cleared, or `last_seen_at` was bumped by a concurrent retry),

@@ -808,7 +808,7 @@ async def list_unknown_app_sightings(
 
 class ClearSightingReq(pydantic.BaseModel):
     app_name: str
-    team_name: Optional[str]
+    team_name: str
     client_name: str
     last_seen_at: str
 

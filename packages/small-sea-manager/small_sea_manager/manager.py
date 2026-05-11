@@ -482,7 +482,7 @@ class TeamManager:
                 try:
                     session.clear_app_sighting(
                         app_name=sighting["app_name"],
-                        team_name=sighting.get("team_name"),
+                        team_name=sighting["team_name"],
                         client_name=sighting["client_name"],
                         last_seen_at=sighting["last_seen_at"],
                     )
@@ -490,7 +490,7 @@ class TeamManager:
                     cleanup_failures += 1
                     _LOG.warning(
                         "clear_app_sighting failed for %s/%s/%s: %s",
-                        sighting.get("team_name"),
+                        sighting["team_name"],
                         sighting["app_name"],
                         sighting["client_name"],
                         exc,

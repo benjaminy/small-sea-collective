@@ -265,12 +265,11 @@ def test_clear_rejects_non_manager_session(playground_dir):
     assert resp.status_code == 403
 
 
-def test_clear_accepts_team_name_null(playground_dir):
-    """Wire shape supports null team_name even though current schema does not
-    store NULL — so a future raw sighting with no team can still be cleared
-    without Manager normalizing the value."""
+def test_clear_rejects_team_name_null(playground_dir):
+    """Every Hub-recorded sighting has a team string. The clear endpoint
+    rejects JSON null on team_name so callers cannot accidentally pass an
+    unmatchable value and get a misleading deleted_count = 0."""
     _, _, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
     token = _open_core_session(client)
 
     resp = _clear(client, token, {
@@ -280,8 +279,7 @@ def test_clear_accepts_team_name_null(playground_dir):
         "last_seen_at": "2026-05-01T12:00:00.000000+00:00",
     })
 
-    assert resp.status_code == 200
-    assert resp.json() == {"deleted_count": 0}
+    assert resp.status_code == 422
 
 
 def test_clear_does_not_register_or_activate_app(playground_dir):
