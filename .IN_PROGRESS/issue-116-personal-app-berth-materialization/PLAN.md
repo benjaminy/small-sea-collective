@@ -147,7 +147,9 @@ Draft architecture prose for Phase 2:
 > participant context containing team scopes. Apps own their local materialized
 > trees and may use OS-standard app homes and app-chosen directory names. Small
 > Sea provides registration, authorization, and stable IDs; it does not create
-> arbitrary app data folders under Manager/Core's NoteToSelf tree.
+> arbitrary app data folders under Manager/Core's NoteToSelf tree. Apps
+> consuming session info should use the exposed hex-string IDs, such as
+> `participant_hex` and `berth_id`, for Small Sea-derived path components.
 
 ### D2. Team-side symmetry
 
@@ -229,6 +231,7 @@ The implementation remains intentionally small: delete the stub creation, update
 - One or two micro tests proving the new shape.
 - Removal of the empty-directory creation, and a regression test that the directory is *not* created.
 - A session-metadata note: internal sessions already have stable IDs; `/session/info` exposes `participant_hex` and `berth_id`; adding explicit `team_id`/`app_id` or an app-home helper is follow-up unless it proves tiny and necessary.
+- A Hub spec note documenting the current public session metadata boundary even if `/session/info` is not changed.
 - Draft architecture prose or a concrete outline for the updated Berth section so the conceptual inversion is reviewable in the plan before implementation.
 - Spec/doc sweep that lands the decision in prose.
 
@@ -246,7 +249,7 @@ Exit gate: the plan names D1.D, D2 ownership symmetry, D3.A, and D4.A as the cho
 **Phase 0.5 — Deletion-regression micro test skeleton.**
 Add the test(s) the branch will turn green before writing implementation.
 The test asserts that `register_app_for_participant` leaves `NoteToSelf/{App}/` absent and the participant DB rows present.
-It should also update the existing Core registration test so first-participant bootstrap does not create `NoteToSelf/SmallSeaCollectiveCore/`.
+It should also update the existing Core registration test in `packages/small-sea-manager/tests/test_create_team.py` so first-participant bootstrap does not create `NoteToSelf/SmallSeaCollectiveCore/`.
 Exit gate: the new tests fail on `main` and the plan references them by name.
 
 **Phase 1 — Implement the chosen direction.**
@@ -255,6 +258,7 @@ Exit gate: the new tests fail on `main` and the plan references them by name.
 - Before removing the Core directory creation, run a grep audit and record the result in the branch wrap-up:
   `SmallSeaCollectiveCore` appears as an app name in DB queries and tests, but no runtime code opens `NoteToSelf/SmallSeaCollectiveCore/` as a filesystem path.
 - Audit callers/tests for incidental reliance on `NoteToSelf/{AppName}/` directories.
+  If any fixture or assertion depends on the directory, rewrite it to rely on DB registration state or app-owned storage; do not preserve the dependency with a shim.
 - Leave the participant DB write path and NoteToSelf `Sync/core.db` repo commits alone.
 Exit gate: implementation is a small mechanical change scoped to the creation sites and tests.
 
@@ -262,8 +266,10 @@ Exit gate: implementation is a small mechanical change scoped to the creation si
 - `architecture.md`: update the App/Berth and App Bootstrap sections to distinguish registration/authorization from app-owned materialization.
   Add the global-vs-local distinction: globally `Team x App`; locally inside an app, materialization is participant context plus team scopes.
   Remove or rewrite any implication that `NoteToSelf/{AppName}/` is a framework-managed app data location.
+  The App Bootstrap section should explicitly keep Manager as the registration/provisioning authority while saying app data materialization is app-owned.
 - `packages/small-sea-manager/spec.md` §App Management: record that participant registration writes DB rows only and does not create app data directories.
-- `packages/small-sea-hub/spec.md`: record the stable-ID metadata boundary if we add `/session/info` fields, or note in the plan wrap-up that the current public boundary is `participant_hex` + `berth_id`.
+- `packages/small-sea-hub/spec.md`: add a stable-ID metadata paragraph regardless of code changes.
+  It should state that public `/session/info` currently exposes `participant_hex` and `berth_id` plus friendly names; internal sessions also carry stable `team_id` and `app_id`; explicit public `team_id`/`app_id` exposure or an app-home helper may follow later.
 Exit gate: a skeptical reader can read the spec and answer "who owns local participant/team materialization?" without reading code.
 
 **Phase 3 — Follow-ups filed.**
@@ -283,13 +289,14 @@ A skeptical reviewer should be able to convince themselves of all the following 
 
 **App-owned materialization is explicit.**
 - `architecture.md` says a berth is still `Team x App` globally, but from inside an app it projects to a participant/team scope.
-- Docs recommend stable opaque IDs for app-owned path components, not friendly names.
+- Docs recommend stable opaque IDs for Small Sea-derived app-owned path components, not friendly names.
 - Docs make clear that the participant path component is local materialization context, not a third global berth coordinate.
 - Docs do not require exact names such as `SmallSeaParticipants`; those names are app-owned unless a future helper standardizes them.
 - The Manager's own `NoteToSelf/Sync/core.db` is described as Core/Manager storage, not as the parent for every app's data.
 - No in-tree consumer exercises the illustrative app-owned layout in this branch. The principle is normative guidance; the first real consumer or helper branch should provide the executable proof.
 - Docs acknowledge that Hub reads of Manager/Core DB files are framework-specific and do not imply that arbitrary app homes are Hub-readable.
-- After the spec sweep, `rg -n 'NoteToSelf/\{App\}|NoteToSelf/\{AppName\}|NoteToSelf/SharedFileVault|NoteToSelf/SmallSeaCollectiveCore' architecture.md packages/*/spec.md .IN_PROGRESS/issue-116-personal-app-berth-materialization/PLAN.md` returns only updated mentions that describe the old stub or its removal.
+- Docs check: after the spec sweep, `rg -n 'NoteToSelf/\{App\}|NoteToSelf/\{AppName\}|NoteToSelf/SharedFileVault|NoteToSelf/SmallSeaCollectiveCore' architecture.md packages/*/spec.md .IN_PROGRESS/issue-116-personal-app-berth-materialization/PLAN.md` returns only updated mentions that describe the old stub or its removal.
+  This complements, rather than replaces, the package code grep for runtime path creation.
 
 **No app is silently relying on the old stub.**
 - Vault tests still pass without depending on `NoteToSelf/{App}/` existing.
