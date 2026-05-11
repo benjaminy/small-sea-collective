@@ -156,13 +156,10 @@ There are only two outcomes:
 1. Hub cloud operations are already berth-scoped by opaque session metadata.
    Remove `team_name` from Vault object prefixes and do not add `berth_id`.
 2. Hub cloud operations are not berth-scoped yet.
-   Leave Vault cloud prefixes unchanged on this branch and record follow-up.
-
-If the sanity check shows that Hub cloud operations are not actually
-berth-scoped yet, do not remove the cloud `team_name` prefix on this branch.
-Ship the local directory and SQLite-key conversion, record the cloud-scoping
-gap in `FOLLOW-UP.md`, and route the broader fix to #8, #114, or #115 as
-appropriate.
+   Leave Vault cloud prefixes unchanged on this branch, ship the local
+   directory and SQLite-key conversion, record the cloud-scoping gap in
+   `FOLLOW-UP.md`, and route the broader fix to #8, #114, or #115 as
+   appropriate.
 
 Forecast:
 because berth storage indirection is explicitly out of scope for this branch,
@@ -232,7 +229,7 @@ Assert:
 
 Only add or enable this assertion if Phase 2b runs.
 It belongs with the Hub scoping sanity check rather than the local coordinate
-test.
+test and is not part of the Phase 1 red-test gate.
 
 Assert:
 
@@ -270,12 +267,15 @@ It is not the main proof for berth IDs, because today's
 ### 3. Manager provisions access but not Vault storage
 
 Use Manager provisioning for participant registration and team activation.
+This test should point to the existing #116 coverage for the already-proven
+negative assertions that Manager does not create `NoteToSelf/SharedFileVault`
+or `{team}/SharedFileVault`.
+Its net-new assertion is that Vault-owned local state appears only under the
+Vault root after Vault itself materializes it.
 
 Assert:
 
 - the relevant Core app and berth rows exist;
-- no `NoteToSelf/SharedFileVault` directory exists;
-- no `{team}/SharedFileVault` directory exists;
 - Vault-owned local state appears only under the Vault root after Vault itself
   materializes it.
 
@@ -330,9 +330,9 @@ and record the gap before implementation continues.
   `SmallSeaAppBootstrapRequired` for structured app-bootstrap rejections.
 - Confirm `/session/info` currently returns the fields needed by #130:
   `participant_hex`, `berth_id`, `team_name`, and `app_name`.
-- Confirm Hub cloud operations are already scoped by the session berth, with
-  backend storage boundaries derived from opaque berth/session metadata rather
-  than Vault's friendly team-name object prefix.
+- Audit whether Hub cloud operations are already scoped by the session berth,
+  with backend storage boundaries derived from opaque berth/session metadata
+  rather than Vault's friendly team-name object prefix.
 
 Exit gate:
 the branch plan names any missing session field and records whether Hub already
@@ -348,13 +348,14 @@ Exit gate:
 the new tests fail for the expected reason, namely Vault still uses friendly
 team names as local storage coordinates or lacks the new context helper.
 
-### Phase 2: Vault Materialization Context and Local Coordinates
+### Phase 2: Vault Materialization Context and Local Coordinate Shape
 
 - Add a Vault-owned context object needed to derive local coordinates from Hub
   session info.
 - Validate required fields with clear errors.
 - Keep `team_name` and `app_name` as display/identity labels.
-- Use `berth_id` for session-backed local team storage paths and SQLite keys.
+- Change Vault path-helper signatures and local SQLite schemas/keys so the
+  berth coordinate is `berth_id`, not `team_name`.
 - Move peer signal watermarks into Vault-local SQLite beside peer sync state by
   default, or keep them in config only with a concrete reason and a `berth_id`
   key.
@@ -385,7 +386,7 @@ If the sanity check failed, this phase is skipped and the follow-up is recorded.
 ### Phase 3: Wire Session-Backed Vault Paths
 
 - Update session-backed sync/login flows to carry the materialization context
-  into Vault local path helpers.
+  into the updated Vault local path helpers.
 - If Phase 2b ran, verify those same flows carry the context into cloud-prefix
   construction.
 - Keep user-facing CLI arguments and UI routes friendly-name based where the
@@ -394,7 +395,8 @@ If the sanity check failed, this phase is skipped and the follow-up is recorded.
   change.
 
 Exit gate:
-Vault's Hub-backed sync tests pass using the new local path coordinate.
+Vault's Hub-backed sync tests pass using the new local path coordinate and, if
+Phase 2b ran, the new cloud-prefix coordinate.
 
 ### Phase 4: Manager Boundary Check
 
