@@ -40,13 +40,17 @@ and micro tests:
 1. Vault has one small, explicit app-owned materialization helper or context
    boundary that derives local coordinates from `participant_hex` and
    `berth_id` returned by `GET /session/info`.
+   When Vault resumes a cached session from `team_sessions[team_name]`,
+   resumed `session_info` is the source of truth for `berth_id`; Vault must not
+   infer materialization coordinates from the cache key.
 2. Vault's session-backed local team storage uses a stable opaque berth ID for
    its Small Sea-derived team coordinate.
    The friendly team name is available for display and user-facing commands,
    but is not the durable directory or SQLite key that separates team berths.
-3. Participant contexts remain hard-separated.
+3. Berth contexts remain hard-separated.
    One participant with two distinct berth IDs cannot converge Vault state just
    because both contexts carry the same friendly team name.
+   Participant contexts also remain separated by `participant_hex`.
 4. Manager registration and activation still only write Core registration
    state.
    They do not create `NoteToSelf/SharedFileVault`, `Team/SharedFileVault`, or
@@ -144,10 +148,15 @@ niches/{niche_name}/
 If an app-level namespace marker is still useful for readability or future
 internal subdivision, `vault/registry/` and `vault/niches/{niche_name}/` are
 acceptable.
-When Vault cloud prefixes are changed, do not use `team_name` in the cloud
-object prefix.
-Do not add `berth_id` to the Vault object prefix unless a Hub sanity check shows
-that the Hub is not already providing a berth-scoped storage boundary.
+In that case, `vault/` is a Vault-owned literal namespace, not a value derived
+from `session_info["app_name"]`.
+
+There are only two outcomes:
+
+1. Hub cloud operations are already berth-scoped by opaque session metadata.
+   Remove `team_name` from Vault object prefixes and do not add `berth_id`.
+2. Hub cloud operations are not berth-scoped yet.
+   Leave Vault cloud prefixes unchanged on this branch and record follow-up.
 
 If the sanity check shows that Hub cloud operations are not actually
 berth-scoped yet, do not remove the cloud `team_name` prefix on this branch.
@@ -171,9 +180,11 @@ Do not add a Vault-only Hub endpoint or direct Core DB read.
 
 ## Likely Code Shape
 
-Add a small Vault-owned context type, probably in
-`packages/shared-file-vault/shared_file_vault/vault.py` or
-`packages/shared-file-vault/shared_file_vault/sync.py`.
+Define the small Vault-owned context type in
+`packages/shared-file-vault/shared_file_vault/vault.py`, where the path helpers
+live.
+Construct it in `packages/shared-file-vault/shared_file_vault/sync.py`, where
+Hub sessions are opened or resumed.
 
 The context should be constructible from Hub session info:
 
@@ -202,8 +213,8 @@ They should fail for the current code because Vault local paths currently use
 
 ### 1. Vault derives coordinates from session metadata
 
-Location: probably
-`packages/shared-file-vault/tests/test_hub_sync.py` or a new focused test file.
+Location: `packages/shared-file-vault/tests/test_hub_sync.py` or a new focused
+test file.
 
 Set up a participant, register and activate `SharedFileVault`, open a Hub
 session, and call the new Vault materialization entry point.
@@ -216,8 +227,19 @@ Assert:
 - the created path does not include the friendly `team_name`;
 - `app_name == "SharedFileVault"` is checked but not used as a local Small
   Sea-derived directory coordinate.
-- if the Hub sanity check passes, Hub-backed Vault remotes use within-berth
-  object prefixes that do not include `team_name`.
+
+### 1b. Vault cloud prefixes are within-berth paths
+
+Only add or enable this assertion if Phase 2b runs.
+It belongs with the Hub scoping sanity check rather than the local coordinate
+test.
+
+Assert:
+
+- Hub-backed Vault remotes use within-berth object prefixes that do not include
+  `team_name`;
+- any `vault/` object prefix is a literal Vault namespace, not derived from
+  `session_info["app_name"]`.
 
 ### 2. Same friendly name does not collapse berth contexts
 
@@ -338,7 +360,9 @@ team names as local storage coordinates or lacks the new context helper.
   key.
 
 Exit gate:
-the first coordinate derivation test passes without any Manager/Core DB read.
+Test #1's local-path and SQLite-key assertions pass, peer-sync rows key by
+`berth_id`, and watermark storage is decided, defaulting to Vault-local SQLite.
+The implementation still has no Manager/Core DB read.
 
 ### Phase 2b: Cloud Prefix Follow-Through
 
@@ -349,6 +373,9 @@ already berth-scoped by opaque session metadata.
 - Use within-berth object keys such as `registry/` and
   `niches/{niche_name}/`, or keep only an app-internal namespace marker such as
   `vault/`.
+- Thread the Vault materialization context through cloud-prefix construction
+  rather than deriving object keys from the friendly team-name cache key or CLI
+  argument.
 
 Exit gate:
 Hub-backed Vault sync tests pass with object keys that do not include
@@ -359,6 +386,8 @@ If the sanity check failed, this phase is skipped and the follow-up is recorded.
 
 - Update session-backed sync/login flows to carry the materialization context
   into Vault local path helpers.
+- If Phase 2b ran, verify those same flows carry the context into cloud-prefix
+  construction.
 - Keep user-facing CLI arguments and UI routes friendly-name based where the
   current Hub APIs require a friendly team name.
 - Avoid broad API churn unless the code becomes more confusing than the
@@ -432,6 +461,7 @@ At wrap-up, fill in concrete file paths and test names showing:
   `berth_id`.
 - [ ] Friendly team names are display/identity data, not Vault's durable local
   team directory or SQLite-key coordinate.
+- [ ] Berth contexts remain hard-separated.
 - [ ] Participant contexts remain hard-separated.
 - [ ] One participant with two distinct berth IDs and the same friendly team
   name gets distinct Vault storage.
