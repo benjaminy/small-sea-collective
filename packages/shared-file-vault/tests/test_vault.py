@@ -484,11 +484,13 @@ def test_cli_list_shows_residency_labels(playground_dir, monkeypatch):
         "SMALL_SEA_VAULT_CONFIG", str(pathlib.Path(playground_dir) / "vault.toml")
     )
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM_NAME, "alpha")   # will be CHECKED_OUT
-    create_niche(playground_dir, PARTICIPANT, TEAM_NAME, "beta")    # stays CACHED
+    from shared_file_vault.vault import materialize_team
+    materialize_team(playground_dir, TEAM)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "alpha")   # will be CHECKED_OUT
+    create_niche(playground_dir, PARTICIPANT, TEAM, "beta")    # stays CACHED
 
     dest = pathlib.Path(playground_dir) / "co-alpha"
-    add_checkout(playground_dir, PARTICIPANT, TEAM_NAME, "alpha", str(dest))
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "alpha", str(dest))
 
     runner = CliRunner()
     result = runner.invoke(cli, ["list", playground_dir, PARTICIPANT, TEAM_NAME])

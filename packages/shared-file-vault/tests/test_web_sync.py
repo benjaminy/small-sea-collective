@@ -134,7 +134,9 @@ def test_web_push_requires_cached_session(playground_dir, monkeypatch):
     vault_root = f"{runner_root}/vault"
     participant_hex = "aa" * 16
     vault.init_vault(vault_root, participant_hex)
-    vault.create_niche(vault_root, participant_hex, "ProjectX", "docs")
+    context = vault.VaultMaterializationContext(participant_hex, "11" * 16, "ProjectX")
+    vault.materialize_team(vault_root, context)
+    vault.create_niche(vault_root, participant_hex, context, "docs")
 
     vault_app = create_app(vault_root, participant_hex)
     client = TestClient(vault_app)
@@ -160,7 +162,6 @@ def test_web_session_request_auto_approve(playground_dir, monkeypatch):
 
     vault_root = str(root / "vault")
     vault.init_vault(vault_root, alice_hex)
-    vault.create_niche(vault_root, alice_hex, "ProjectX", "docs")
 
     vault_app = create_app(vault_root, alice_hex, _http_client=http)
     client = TestClient(vault_app)
@@ -197,7 +198,6 @@ def test_web_session_request_pin_flow(playground_dir, monkeypatch):
     try:
         vault_root = str(root / "vault")
         vault.init_vault(vault_root, alice_hex)
-        vault.create_niche(vault_root, alice_hex, "ProjectX", "docs")
 
         vault_app = create_app(vault_root, alice_hex, _http_client=http)
         client = TestClient(vault_app)
@@ -231,7 +231,7 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     bob_checkout = root / "bob-checkout"
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
-    alice_login = sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = sync.login_team(alice_vault_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     alice_context = vault.materialization_context_from_session_info(alice_login.session_info)
     vault.create_niche(alice_vault_root, env["alice_hex"], alice_context, "docs")
     vault.add_checkout(alice_vault_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
@@ -251,7 +251,7 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
 
     # Bob joins: fetch → attach checkout → merge (3-step join flow)
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
-    bob_login = sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_login = sync.login_team(bob_vault_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
     bob_context = vault.materialization_context_from_session_info(bob_login.session_info)
     sync.fetch_via_hub(
         bob_vault_root,
@@ -311,7 +311,9 @@ def test_peer_panel_fragment_no_session(playground_dir, monkeypatch):
     vault_root = f"{playground_dir}/vault"
     participant_hex = "aa" * 16
     vault.init_vault(vault_root, participant_hex)
-    vault.create_niche(vault_root, participant_hex, "ProjectX", "docs")
+    context = vault.VaultMaterializationContext(participant_hex, "11" * 16, "ProjectX")
+    vault.materialize_team(vault_root, context)
+    vault.create_niche(vault_root, participant_hex, context, "docs")
 
     vault_app = create_app(vault_root, participant_hex)
     client = TestClient(vault_app)
@@ -331,7 +333,7 @@ def test_peer_panel_fragment_active_session(playground_dir, minio_server_gen, mo
     vault.init_vault(vault_root, env["alice_hex"])
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
-    login = sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    login = sync.login_team(vault_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     context = vault.materialization_context_from_session_info(login.session_info)
     vault.create_niche(vault_root, env["alice_hex"], context, "docs")
 
@@ -363,7 +365,7 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     bob_checkout = root / "bob-checkout"
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
-    alice_login = sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = sync.login_team(alice_vault_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     alice_context = vault.materialization_context_from_session_info(alice_login.session_info)
     vault.create_niche(alice_vault_root, env["alice_hex"], alice_context, "docs")
     vault.add_checkout(alice_vault_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
@@ -374,7 +376,7 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
 
     # Bob logs in.
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
-    bob_login = sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_login = sync.login_team(bob_vault_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
 
     # Seed peer_counts so /session/peers reports Alice's signal_count = 3.
     # The background watcher is not running in TestClient; we set it directly.

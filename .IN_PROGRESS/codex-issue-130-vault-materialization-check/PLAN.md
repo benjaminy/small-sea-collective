@@ -514,3 +514,34 @@ Likely follow-up buckets:
 - #121 if same-device sighting assumptions break down.
 
 Do not broaden issue 130 to absorb those futures.
+
+## Implementation Note: Conceptual Shifts Since the Plan
+
+During implementation, two clarifications sharpened the model in ways the
+original plan only hinted at. The shipped code reflects these; the
+design-record and review-note describe them in full.
+
+1. **The Hub is needed for exactly two reasons, not for every operation.**
+   First-time team discovery (learn `team_id` from `session_info`) and
+   Hub-mediated actions (push/pull/fetch/peer-listing). Everything else —
+   listing niches, attaching a checkout, publishing a local commit, showing
+   git status — is a filesystem read or write. The earlier implementation
+   passes routed every Vault operation through a Hub session-validation
+   round-trip; the shipped code does not.
+
+2. **No legacy fallback.** The plan's "Out of scope unless implementation
+   proves it blocks the branch" row for `team_sessions[...]` is now better
+   read as: `team_sessions[team_name]` is purely a token cache, and the
+   token's presence/staleness has no bearing on offline operations. The
+   durable record of "this team is known locally" is the team's
+   `metadata.json` file, written once at login by `sync.login_team` via
+   `vault.materialize_team`. The string-accepting branch of `_coerce_context`
+   and `VaultMaterializationContext.legacy_for_local_use` were removed; the
+   public Vault API requires a real context. Friendly name → `team_id`
+   resolution is `sync.resolve_team_context`, a filesystem scan with no
+   Hub call.
+
+These shifts also dropped the web `POST /teams/create` endpoint (team
+creation is a Manager function, not a Vault function) and removed the
+offline-resolver follow-up note — the offline resolver is now the
+implementation, not a deferred item.

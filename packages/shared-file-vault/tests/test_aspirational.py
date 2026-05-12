@@ -24,12 +24,14 @@ import pytest
 from cod_sync.protocol import LocalFolderRemote
 
 from shared_file_vault.vault import (
+    VaultMaterializationContext,
     add_checkout,
     create_niche,
     fetch_niche,
     get_checkout,
     init_vault,
     list_niches,
+    materialize_team,
     merge_niche,
     publish,
     pull_niche,
@@ -41,7 +43,12 @@ from shared_file_vault.vault import (
 
 ALICE = "aa" * 16
 BOB = "bb" * 16
-TEAM = "Collab"
+TEAM_NAME = "Collab"
+TEAM_ID = "11" * 16
+
+
+def _team(participant_hex):
+    return VaultMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME)
 
 
 # --- Helpers ---
@@ -51,6 +58,7 @@ def setup_vault(playground, name, participant_hex):
     """Create an empty vault for a participant. Returns vault_root."""
     root = playground / f"vault-{name}"
     init_vault(str(root), participant_hex)
+    materialize_team(str(root), _team(participant_hex))
     return root
 
 
@@ -86,22 +94,22 @@ def test_registry_propagation(playground_dir):
 
     # Alice creates a vault, a niche, writes a file, and pushes everything
     alice_root = setup_vault(playground, "alice", ALICE)
-    create_niche(str(alice_root), ALICE, TEAM, "docs")
+    create_niche(str(alice_root), ALICE, _team(ALICE), "docs")
 
     alice_co = playground / "checkout-alice-docs"
-    add_checkout(str(alice_root), ALICE, TEAM, "docs", str(alice_co))
+    add_checkout(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co))
 
     write(alice_co, "readme.txt", "Hello from Alice.\n")
-    publish(str(alice_root), ALICE, TEAM, "docs", str(alice_co), message="initial commit")
+    publish(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co), message="initial commit")
 
-    push_registry(str(alice_root), ALICE, TEAM, LocalFolderRemote(str(alice_reg_cloud)))
-    push_niche(str(alice_root), ALICE, TEAM, "docs", LocalFolderRemote(str(alice_niche_cloud)))
+    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderRemote(str(alice_reg_cloud)))
+    push_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderRemote(str(alice_niche_cloud)))
 
     # Bob starts with an empty vault and pulls only the registry
     bob_root = setup_vault(playground, "bob", BOB)
-    pull_registry(str(bob_root), BOB, TEAM, LocalFolderRemote(str(alice_reg_cloud)))
+    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderRemote(str(alice_reg_cloud)))
 
-    niches = list_niches(str(bob_root), BOB, TEAM)
+    niches = list_niches(str(bob_root), BOB, _team(BOB))
     niche_names = [n["name"] for n in niches]
     assert "docs" in niche_names, "Bob should discover the 'docs' niche via the registry"
 
@@ -109,11 +117,11 @@ def test_registry_propagation(playground_dir):
     # Fetch parks Alice's content under a peer ref without advancing HEAD.
     # add_checkout then creates an empty checkout. merge_niche integrates the
     # parked ref and refreshes the checkout with Alice's files.
-    fetch_niche(str(bob_root), BOB, TEAM, "docs", ALICE, LocalFolderRemote(str(alice_niche_cloud)))
+    fetch_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE, LocalFolderRemote(str(alice_niche_cloud)))
 
     bob_co = playground / "checkout-bob-docs"
-    add_checkout(str(bob_root), BOB, TEAM, "docs", str(bob_co))
-    merge_niche(str(bob_root), BOB, TEAM, "docs", ALICE)
+    add_checkout(str(bob_root), BOB, _team(BOB), "docs", str(bob_co))
+    merge_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE)
 
     assert exists(bob_co, "readme.txt"), "Bob's checkout should contain Alice's file"
     assert read(bob_co, "readme.txt") == "Hello from Alice.\n"
@@ -139,26 +147,26 @@ def test_concurrent_registry_additions(playground_dir):
 
     # Alice seeds the registry with an initial niche, pushes to seed cloud
     alice_root = setup_vault(playground, "alice", ALICE)
-    create_niche(str(alice_root), ALICE, TEAM, "seed")
-    push_registry(str(alice_root), ALICE, TEAM, LocalFolderRemote(str(seed_cloud)))
+    create_niche(str(alice_root), ALICE, _team(ALICE), "seed")
+    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderRemote(str(seed_cloud)))
 
     # Bob pulls from seed cloud before adding anything — establishes common history
     bob_root = setup_vault(playground, "bob", BOB)
-    pull_registry(str(bob_root), BOB, TEAM, LocalFolderRemote(str(seed_cloud)))
+    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderRemote(str(seed_cloud)))
 
     # Now both add their own niches on top of the shared history
-    create_niche(str(alice_root), ALICE, TEAM, "photos")
-    create_niche(str(bob_root), BOB, TEAM, "receipts")
+    create_niche(str(alice_root), ALICE, _team(ALICE), "photos")
+    create_niche(str(bob_root), BOB, _team(BOB), "receipts")
 
-    push_registry(str(alice_root), ALICE, TEAM, LocalFolderRemote(str(alice_reg_cloud)))
-    push_registry(str(bob_root), BOB, TEAM, LocalFolderRemote(str(bob_reg_cloud)))
+    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderRemote(str(alice_reg_cloud)))
+    push_registry(str(bob_root), BOB, _team(BOB), LocalFolderRemote(str(bob_reg_cloud)))
 
     # Cross-pull registries — clean merge because of the common seed history
-    pull_registry(str(alice_root), ALICE, TEAM, LocalFolderRemote(str(bob_reg_cloud)))
-    pull_registry(str(bob_root), BOB, TEAM, LocalFolderRemote(str(alice_reg_cloud)))
+    pull_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderRemote(str(bob_reg_cloud)))
+    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderRemote(str(alice_reg_cloud)))
 
-    alice_niches = {n["name"] for n in list_niches(str(alice_root), ALICE, TEAM)}
-    bob_niches = {n["name"] for n in list_niches(str(bob_root), BOB, TEAM)}
+    alice_niches = {n["name"] for n in list_niches(str(alice_root), ALICE, _team(ALICE))}
+    bob_niches = {n["name"] for n in list_niches(str(bob_root), BOB, _team(BOB))}
 
     assert "photos" in alice_niches
     assert "receipts" in alice_niches, "Alice should see Bob's niche after registry merge"
@@ -177,27 +185,27 @@ def test_one_checkout_per_niche(playground_dir):
     playground = pathlib.Path(playground_dir)
 
     alice_root = setup_vault(playground, "alice", ALICE)
-    create_niche(str(alice_root), ALICE, TEAM, "notes")
+    create_niche(str(alice_root), ALICE, _team(ALICE), "notes")
 
     checkout_a = playground / "checkout-a"
     checkout_b = playground / "checkout-b"
 
-    add_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_a))
-    assert get_checkout(str(alice_root), ALICE, TEAM, "notes") == str(checkout_a)
+    add_checkout(str(alice_root), ALICE, _team(ALICE), "notes", str(checkout_a))
+    assert get_checkout(str(alice_root), ALICE, _team(ALICE), "notes") == str(checkout_a)
 
     write(checkout_a, "ideas.txt", "Build something useful.\n")
-    publish(str(alice_root), ALICE, TEAM, "notes", str(checkout_a), message="add ideas")
+    publish(str(alice_root), ALICE, _team(ALICE), "notes", str(checkout_a), message="add ideas")
 
     # Second attach is refused
     with pytest.raises(DuplicateCheckoutError):
-        add_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_b))
+        add_checkout(str(alice_root), ALICE, _team(ALICE), "notes", str(checkout_b))
 
     # Remove and re-attach at a new location
-    remove_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_a))
-    assert get_checkout(str(alice_root), ALICE, TEAM, "notes") is None
+    remove_checkout(str(alice_root), ALICE, _team(ALICE), "notes", str(checkout_a))
+    assert get_checkout(str(alice_root), ALICE, _team(ALICE), "notes") is None
 
-    add_checkout(str(alice_root), ALICE, TEAM, "notes", str(checkout_b))
-    assert get_checkout(str(alice_root), ALICE, TEAM, "notes") == str(checkout_b)
+    add_checkout(str(alice_root), ALICE, _team(ALICE), "notes", str(checkout_b))
+    assert get_checkout(str(alice_root), ALICE, _team(ALICE), "notes") == str(checkout_b)
     assert exists(checkout_b, "ideas.txt"), "new checkout should reflect committed content"
 
 
@@ -223,39 +231,39 @@ def test_full_join_flow(playground_dir):
 
     # Alice sets up the team
     alice_root = setup_vault(playground, "alice", ALICE)
-    create_niche(str(alice_root), ALICE, TEAM, "docs")
+    create_niche(str(alice_root), ALICE, _team(ALICE), "docs")
 
     alice_co = playground / "checkout-alice"
-    add_checkout(str(alice_root), ALICE, TEAM, "docs", str(alice_co))
+    add_checkout(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co))
 
     write(alice_co, "guide.txt", "Getting started.\n")
-    publish(str(alice_root), ALICE, TEAM, "docs", str(alice_co), message="add guide")
+    publish(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co), message="add guide")
 
-    push_registry(str(alice_root), ALICE, TEAM, LocalFolderRemote(str(alice_reg_cloud)))
-    push_niche(str(alice_root), ALICE, TEAM, "docs", LocalFolderRemote(str(alice_niche_cloud)))
+    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderRemote(str(alice_reg_cloud)))
+    push_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderRemote(str(alice_niche_cloud)))
 
     # Bob joins from scratch — empty vault, no prior knowledge of niche names
     bob_root = setup_vault(playground, "bob", BOB)
 
-    pull_registry(str(bob_root), BOB, TEAM, LocalFolderRemote(str(alice_reg_cloud)))
-    discovered = [n["name"] for n in list_niches(str(bob_root), BOB, TEAM)]
+    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderRemote(str(alice_reg_cloud)))
+    discovered = [n["name"] for n in list_niches(str(bob_root), BOB, _team(BOB))]
     assert "docs" in discovered
 
     # 3-step join flow: fetch → attach checkout → merge
-    fetch_niche(str(bob_root), BOB, TEAM, "docs", ALICE, LocalFolderRemote(str(alice_niche_cloud)))
+    fetch_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE, LocalFolderRemote(str(alice_niche_cloud)))
 
     bob_co = playground / "checkout-bob"
-    add_checkout(str(bob_root), BOB, TEAM, "docs", str(bob_co))
-    merge_niche(str(bob_root), BOB, TEAM, "docs", ALICE)
+    add_checkout(str(bob_root), BOB, _team(BOB), "docs", str(bob_co))
+    merge_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE)
 
     assert exists(bob_co, "guide.txt")
     assert read(bob_co, "guide.txt") == "Getting started.\n"
 
     # Bob contributes back
     write(bob_co, "bob_notes.txt", "My contribution.\n")
-    publish(str(bob_root), BOB, TEAM, "docs", str(bob_co), message="add bob_notes")
-    push_niche(str(bob_root), BOB, TEAM, "docs", LocalFolderRemote(str(bob_niche_cloud)))
+    publish(str(bob_root), BOB, _team(BOB), "docs", str(bob_co), message="add bob_notes")
+    push_niche(str(bob_root), BOB, _team(BOB), "docs", LocalFolderRemote(str(bob_niche_cloud)))
 
-    pull_niche(str(alice_root), ALICE, TEAM, "docs", LocalFolderRemote(str(bob_niche_cloud)))
+    pull_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderRemote(str(bob_niche_cloud)))
     assert exists(alice_co, "bob_notes.txt"), "Alice should see Bob's contribution after pull"
     assert read(alice_co, "bob_notes.txt") == "My contribution.\n"

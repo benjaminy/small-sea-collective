@@ -2,8 +2,8 @@
 
 import pathlib
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, Form, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from small_sea_client.client import SmallSeaClient
 
@@ -46,26 +46,27 @@ def create_app(
         return request.app.state.pending_sessions
 
     def _session_state(request: Request, team_name: str) -> str:
-        try:
-            sync.get_team_session(
-                team_name,
-                hub_port=_hub_port(request),
-                _http_client=_http_client(request),
-            )
+        """Return one of "active", "pending", "none" based on local state only.
+
+        Indicates whether we have a cached token (active), an in-flight PIN
+        approval (pending), or nothing (none). Does not contact the Hub:
+        token staleness is surfaced when an actual Hub call is made.
+        """
+        config = sync.load_config()
+        token = (
+            (config.get("team_sessions") or {})
+            .get(team_name, {})
+            .get("session_token")
+        )
+        if token:
             return "active"
-        except sync.LoginRequiredError:
-            return "pending" if team_name in _pending(request) else "none"
+        return "pending" if team_name in _pending(request) else "none"
 
     def _team_context(request: Request, team_name: str):
         try:
-            return sync.resolve_team_context(
-                team_name,
-                _ph(request),
-                hub_port=_hub_port(request),
-                _http_client=_http_client(request),
-            )
-        except sync.LoginRequiredError:
-            return team_name
+            return sync.resolve_team_context(_vr(request), _ph(request), team_name)
+        except sync.VaultSyncError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     def _session_fragment(request: Request, team_name: str, error: str | None = None):
         return templates.TemplateResponse(
@@ -154,29 +155,17 @@ def create_app(
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         vr, ph = _vr(request), _ph(request)
-        teams = vault.list_teams(vr, ph)
         team_data = [
             {
-                "name": t,
-                "niches": _niches_with_info(vr, ph, t),
+                "name": ctx.team_name,
+                "niches": _niches_with_info(vr, ph, ctx),
             }
-            for t in teams
+            for ctx in vault.iter_materialized_teams(vr, ph)
         ]
         return templates.TemplateResponse(
             "index.html",
             {"request": request, "teams": team_data, "participant_short": ph[:8]},
         )
-
-    @app.post("/teams/create")
-    async def create_team(
-        request: Request,
-        team_name: str = Form(...),
-        niche_name: str = Form(...),
-    ):
-        """Create the first niche in a new team, then redirect to /."""
-        vr, ph = _vr(request), _ph(request)
-        vault.create_niche(vr, ph, team_name, niche_name)
-        return RedirectResponse("/", status_code=303)
 
     @app.post("/teams/{team_name}/niches", response_class=HTMLResponse)
     async def create_niche(
@@ -503,11 +492,11 @@ def create_app(
     return app
 
 
-def _niches_with_info(vault_root, participant_hex, team_name):
+def _niches_with_info(vault_root, participant_hex, context):
     """Return niches annotated with whether a checkout is attached."""
-    niches = vault.list_niches(vault_root, participant_hex, team_name)
+    niches = vault.list_niches(vault_root, participant_hex, context)
     result = []
     for n in niches:
-        checkout = vault.get_checkout(vault_root, participant_hex, team_name, n["name"])
+        checkout = vault.get_checkout(vault_root, participant_hex, context, n["name"])
         result.append({**n, "has_checkout": checkout is not None})
     return result

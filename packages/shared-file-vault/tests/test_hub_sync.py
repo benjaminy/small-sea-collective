@@ -204,10 +204,11 @@ def test_peer_update_status_has_unfetched_hint(tmp_path, monkeypatch, playground
     root = playground_dir
     participant = "bb" * 16
     member_id = "cc" * 16
-    team = "HintTeam"
+    team = vault.VaultMaterializationContext(participant, "44" * 16, "HintTeam")
     niche = "files"
 
     vault.init_vault(root, participant)
+    vault.materialize_team(root, team)
     vault.create_niche(root, participant, team, niche)
 
     # No watermark set → current 3 > watermark 0 → hint True
@@ -240,7 +241,7 @@ def test_fetch_via_hub_advances_watermark(playground_dir, minio_server_gen, monk
     vault.init_vault(bob_vault_root, env["bob_hex"])
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
-    alice_login = sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = sync.login_team(alice_vault_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     alice_context = vault.materialization_context_from_session_info(alice_login.session_info)
 
     alice_checkout = root / "alice-checkout"
@@ -252,7 +253,7 @@ def test_fetch_via_hub_advances_watermark(playground_dir, minio_server_gen, monk
     sync.push_via_hub(alice_vault_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
-    bob_token = sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_token = sync.login_team(bob_vault_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
     bob_context = vault.materialization_context_from_session_info(bob_token.session_info)
 
     # Seed peer_counts so /session/peers reports Alice's signal as 5.
@@ -289,7 +290,7 @@ def test_fetch_via_hub_does_not_touch_other_peers_watermark(playground_dir, mini
     vault.init_vault(bob_vault_root, env["bob_hex"])
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
-    alice_login = sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = sync.login_team(alice_vault_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     alice_context = vault.materialization_context_from_session_info(alice_login.session_info)
 
     alice_checkout = root / "alice-checkout"
@@ -301,7 +302,7 @@ def test_fetch_via_hub_does_not_touch_other_peers_watermark(playground_dir, mini
     sync.push_via_hub(alice_vault_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
-    bob_login = sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_login = sync.login_team(bob_vault_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
     bob_context = vault.materialization_context_from_session_info(bob_login.session_info)
 
     # Plant a watermark for a different fake peer
@@ -367,8 +368,10 @@ def test_login_team_pin_flow_persists_token(playground_dir, monkeypatch):
         return pending_id, pin
 
     backend.request_session = _capturing
+    alice_vault_root = str(root / "vault-alice")
     try:
         result = sync.login_team(
+            alice_vault_root,
             "ProjectX",
             alice_hex,
             _http_client=http,
@@ -420,48 +423,40 @@ def test_cli_push_uses_config_defaults(monkeypatch, tmp_path):
     }
 
 
-def test_cli_local_create_uses_cached_session_context(monkeypatch, tmp_path):
+def test_cli_local_commands_resolve_offline_from_metadata(monkeypatch, tmp_path):
+    """Local CLI commands resolve friendly team_name to team_id from metadata.json.
+
+    No Hub call is required: once a team has been materialized (via login or
+    test-direct vault.materialize_team), subsequent local operations read the
+    team_id from metadata.json offline.
+    """
     config_file = tmp_path / "vault.toml"
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(config_file))
     participant = "aa" * 16
     team_id = "11" * 16
     vault_root = tmp_path / "vault"
     vault.init_vault(str(vault_root), participant)
-    sync.save_config(
-        {
-            "vault_root": str(vault_root),
-            "participant_hex": participant,
-            "hub_port": 23456,
-            "team_sessions": {"ProjectX": {"session_token": "tok"}},
-        }
+    vault.materialize_team(
+        str(vault_root),
+        vault.VaultMaterializationContext(participant, team_id, "ProjectX"),
     )
 
-    class FakeSession:
-        def session_info(self):
-            return {
-                "participant_hex": participant,
-                "berth_id": team_id,
-                "team_name": "ProjectX",
-                "app_name": sync.HUB_APP_NAME,
-            }
+    def _fail(*_a, **_kw):
+        raise AssertionError("local CLI commands must not contact the Hub")
 
-    def _fake_session(team_name, hub_port=11437, *, _http_client=None):
-        assert team_name == "ProjectX"
-        assert hub_port == 23456
-        return FakeSession()
+    monkeypatch.setattr(sync, "get_team_session", _fail)
 
-    monkeypatch.setattr(sync, "get_team_session", _fake_session)
     runner = CliRunner()
     result = runner.invoke(cli, ["create", str(vault_root), participant, "ProjectX", "docs"])
-
     assert result.exit_code == 0, result.output
+
     checkout = tmp_path / "checkout"
     result = runner.invoke(
         cli,
         ["checkout", str(vault_root), participant, "ProjectX", "docs", str(checkout)],
     )
-
     assert result.exit_code == 0, result.output
+
     assert (
         vault_root
         / "participants"
@@ -483,6 +478,21 @@ def test_cli_local_create_uses_cached_session_context(monkeypatch, tmp_path):
     assert vault.get_checkout(str(vault_root), participant, context, "docs") == str(checkout)
 
 
+def test_cli_local_command_without_materialization_fails(monkeypatch, tmp_path):
+    """Local commands error clearly when the team hasn't been logged into."""
+    config_file = tmp_path / "vault.toml"
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(config_file))
+    participant = "aa" * 16
+    vault_root = tmp_path / "vault"
+    vault.init_vault(str(vault_root), participant)
+
+    runner = CliRunner()
+    result = runner.invoke(cli, ["create", str(vault_root), participant, "ProjectX", "docs"])
+    assert result.exit_code == 1
+    assert "ProjectX" in result.output
+    assert "login" in result.output.lower()
+
+
 def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monkeypatch):
     env = _setup_two_member_team(playground_dir, minio_server_gen)
     root = env["root"]
@@ -494,7 +504,7 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
     vault.init_vault(bob_vault_root, env["bob_hex"])
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
-    alice_login = sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = sync.login_team(alice_vault_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     alice_context = vault.materialization_context_from_session_info(alice_login.session_info)
 
     alice_checkout = root / "alice-checkout"
@@ -519,7 +529,7 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
 
     # Bob joins: fetch → attach checkout → merge (3-step join flow)
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
-    bob_login = sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_login = sync.login_team(bob_vault_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
     bob_context = vault.materialization_context_from_session_info(bob_login.session_info)
     sync.fetch_via_hub(
         bob_vault_root,
@@ -569,7 +579,7 @@ def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monke
     vault.init_vault(bob_vault_root, env["bob_hex"])
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
-    alice_login = sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = sync.login_team(alice_vault_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     alice_context = vault.materialization_context_from_session_info(alice_login.session_info)
 
     alice_checkout = root / "alice-checkout"
@@ -584,7 +594,7 @@ def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monke
 
     # Bob joins: fetch → attach checkout → merge (3-step join flow)
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
-    bob_login = sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_login = sync.login_team(bob_vault_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
     bob_context = vault.materialization_context_from_session_info(bob_login.session_info)
     sync.fetch_via_hub(
         bob_vault_root,

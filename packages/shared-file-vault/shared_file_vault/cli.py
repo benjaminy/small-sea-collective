@@ -31,15 +31,10 @@ def _die(message: str) -> None:
     raise SystemExit(1)
 
 
-def _team_context(team_name: str, participant_hex: str):
-    cfg = _config()
+def _team_context(vault_root: str, participant_hex: str, team_name: str):
     try:
-        return sync.resolve_team_context(
-            team_name,
-            participant_hex,
-            hub_port=cfg.get("hub_port", 11437),
-        )
-    except (sync.VaultSyncError, ValueError) as exc:
+        return sync.resolve_team_context(vault_root, participant_hex, team_name)
+    except sync.VaultSyncError as exc:
         _die(str(exc))
 
 
@@ -97,10 +92,12 @@ def serve_cmd(vault_root, participant, host, port, open_browser):
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
 def login_cmd(team_name, participant, hub_port):
     """Open and cache a Hub session for a team."""
-    _vault_root, participant, hub_port = _resolve_sync(None, participant, hub_port)
+    vault_root, participant, hub_port = _resolve_sync(None, participant, hub_port)
     try:
+        vault_root = sync.require_value(vault_root, "vault_root")
         participant = sync.require_value(participant, "participant_hex")
         result = sync.login_team(
+            vault_root,
             team_name,
             participant,
             hub_port=hub_port,
@@ -296,7 +293,7 @@ def init_cmd(vault_root, participant_hex):
 @click.argument("niche_name")
 def create_cmd(vault_root, participant_hex, team_name, niche_name):
     """Create a new niche."""
-    context = _team_context(team_name, participant_hex)
+    context = _team_context(vault_root, participant_hex, team_name)
     niche_id = vault.create_niche(vault_root, participant_hex, context, niche_name)
     click.echo(f"Created niche '{niche_name}' ({niche_id})")
 
@@ -313,7 +310,7 @@ def checkout_cmd(vault_root, participant_hex, team_name, niche_name, dest_path):
     Each niche may have at most one checkout. Remove the existing checkout
     before attaching a new location.
     """
-    context = _team_context(team_name, participant_hex)
+    context = _team_context(vault_root, participant_hex, team_name)
     try:
         vault.add_checkout(vault_root, participant_hex, context, niche_name, dest_path)
     except vault.DuplicateCheckoutError as exc:
@@ -327,7 +324,7 @@ def checkout_cmd(vault_root, participant_hex, team_name, niche_name, dest_path):
 @click.argument("team_name")
 def list_cmd(vault_root, participant_hex, team_name):
     """List all niches for a team."""
-    context = _team_context(team_name, participant_hex)
+    context = _team_context(vault_root, participant_hex, team_name)
     niches = vault.list_niches(vault_root, participant_hex, context)
     if not niches:
         click.echo("No niches.")
@@ -350,7 +347,7 @@ def list_cmd(vault_root, participant_hex, team_name):
 @click.argument("checkout_path")
 def status_cmd(vault_root, participant_hex, team_name, niche_name, checkout_path):
     """Show working tree status for a niche checkout."""
-    context = _team_context(team_name, participant_hex)
+    context = _team_context(vault_root, participant_hex, team_name)
     entries = vault.status(vault_root, participant_hex, context, niche_name, checkout_path)
     if not entries:
         click.echo("Clean.")
@@ -369,7 +366,7 @@ def status_cmd(vault_root, participant_hex, team_name, niche_name, checkout_path
 @click.argument("files", nargs=-1)
 def publish_cmd(vault_root, participant_hex, team_name, niche_name, checkout_path, message, files):
     """Publish changes from a checkout (stage + commit)."""
-    context = _team_context(team_name, participant_hex)
+    context = _team_context(vault_root, participant_hex, team_name)
     commit_hash = vault.publish(
         vault_root,
         participant_hex,
@@ -389,7 +386,7 @@ def publish_cmd(vault_root, participant_hex, team_name, niche_name, checkout_pat
 @click.argument("niche_name")
 def log_cmd(vault_root, participant_hex, team_name, niche_name):
     """Show commit log for a niche."""
-    context = _team_context(team_name, participant_hex)
+    context = _team_context(vault_root, participant_hex, team_name)
     entries = vault.log(vault_root, participant_hex, context, niche_name)
     if not entries:
         click.echo("No commits.")
