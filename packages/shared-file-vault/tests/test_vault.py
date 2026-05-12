@@ -137,6 +137,62 @@ def test_session_info_rejects_non_vault_app_name():
         )
 
 
+def test_iter_materialized_teams_skips_invalid_metadata(playground_dir):
+    """Stale or tampered metadata.json must not yield a context that points elsewhere."""
+    from shared_file_vault.vault import iter_materialized_teams, materialize_team
+
+    _init(playground_dir)
+    good_id = "11" * 16
+    bad_app_id = "22" * 16
+    mismatched_id = "33" * 16
+    no_name_id = "44" * 16
+    malformed_id = "55" * 16
+
+    materialize_team(
+        playground_dir,
+        VaultMaterializationContext(PARTICIPANT, good_id, "GoodTeam"),
+    )
+
+    teams_dir = (
+        pathlib.Path(playground_dir) / "participants" / PARTICIPANT / "teams"
+    )
+
+    # app_name mismatch — must be skipped
+    (teams_dir / bad_app_id).mkdir(parents=True)
+    (teams_dir / bad_app_id / "metadata.json").write_text(
+        json.dumps(
+            {"team_id": bad_app_id, "team_name": "WrongApp", "app_name": "SomeOtherApp"}
+        )
+    )
+
+    # team_id mismatch — metadata says one id but lives in a different directory
+    (teams_dir / mismatched_id).mkdir(parents=True)
+    (teams_dir / mismatched_id / "metadata.json").write_text(
+        json.dumps(
+            {
+                "team_id": "ff" * 16,
+                "team_name": "Mismatched",
+                "app_name": "SharedFileVault",
+            }
+        )
+    )
+
+    # empty team_name
+    (teams_dir / no_name_id).mkdir(parents=True)
+    (teams_dir / no_name_id / "metadata.json").write_text(
+        json.dumps({"team_id": no_name_id, "team_name": "", "app_name": "SharedFileVault"})
+    )
+
+    # malformed JSON
+    (teams_dir / malformed_id).mkdir(parents=True)
+    (teams_dir / malformed_id / "metadata.json").write_text("{not json")
+
+    contexts = list(iter_materialized_teams(playground_dir, PARTICIPANT))
+    assert len(contexts) == 1
+    assert contexts[0].team_id == good_id
+    assert contexts[0].team_name == "GoodTeam"
+
+
 def test_add_checkout(playground_dir):
     _init(playground_dir)
     create_niche(playground_dir, PARTICIPANT, TEAM, "docs")

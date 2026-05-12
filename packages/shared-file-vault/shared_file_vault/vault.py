@@ -265,7 +265,12 @@ def materialize_team(vault_root, context):
 
 
 def iter_materialized_teams(vault_root, participant_hex):
-    """Yield VaultMaterializationContext for every team materialized for this participant."""
+    """Yield VaultMaterializationContext for every team materialized for this participant.
+
+    Entries whose metadata.json is missing, malformed, or fails Vault's
+    integrity rules (app_name must be SharedFileVault, team_id must match the
+    directory name, team_name must be non-empty) are skipped silently.
+    """
     teams_dir = _participant_dir(vault_root, participant_hex) / "teams"
     if not teams_dir.exists():
         return
@@ -275,13 +280,20 @@ def iter_materialized_teams(vault_root, participant_hex):
             continue
         try:
             data = json.loads(metadata_path.read_text())
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, OSError):
+            continue
+        if data.get("app_name") != "SharedFileVault":
+            continue
+        if data.get("team_id") != team_dir.name:
+            continue
+        team_name = data.get("team_name")
+        if not team_name:
             continue
         yield VaultMaterializationContext(
             participant_hex=participant_hex,
-            team_id=str(data.get("team_id") or team_dir.name),
-            team_name=str(data.get("team_name") or team_dir.name),
-            app_name=str(data.get("app_name") or "SharedFileVault"),
+            team_id=team_dir.name,
+            team_name=str(team_name),
+            app_name="SharedFileVault",
         )
 
 

@@ -171,6 +171,13 @@ def test_web_session_request_auto_approve(playground_dir, monkeypatch):
     assert "session active" in resp.text
     assert sync.load_config()["team_sessions"]["ProjectX"]["session_token"]
 
+    # Auto-approve must also materialize the team so subsequent offline
+    # operations can resolve the friendly name to team_id.
+    ctx = sync.resolve_team_context(vault_root, alice_hex, "ProjectX")
+    assert ctx.team_name == "ProjectX"
+    assert ctx.participant_hex == alice_hex
+    assert ctx.team_id
+
 
 def test_web_session_request_pin_flow(playground_dir, monkeypatch):
     root = pathlib.Path(playground_dir)
@@ -213,6 +220,13 @@ def test_web_session_request_pin_flow(playground_dir, monkeypatch):
         assert confirm.status_code == 200
         assert "session active" in confirm.text
         assert sync.load_config()["team_sessions"]["ProjectX"]["session_token"]
+
+        # PIN confirmation must also materialize the team so subsequent
+        # offline operations can resolve the friendly name to team_id.
+        ctx = sync.resolve_team_context(vault_root, alice_hex, "ProjectX")
+        assert ctx.team_name == "ProjectX"
+        assert ctx.participant_hex == alice_hex
+        assert ctx.team_id
     finally:
         backend.request_session = original
 

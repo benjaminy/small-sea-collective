@@ -277,6 +277,41 @@ def niche_path_prefix(niche_name: str) -> str:
     return f"niches/{niche_name}/"
 
 
+def finalize_login(
+    vault_root: str,
+    team_name: str,
+    participant_hex: str,
+    session: SmallSeaSession,
+) -> dict:
+    """Validate a freshly-obtained Hub session, materialize the team locally,
+    and persist the session token.
+
+    Shared between the CLI login flow (`login_team`) and the web session
+    request/confirm endpoints. Returns the session_info dict for the caller's
+    convenience.
+    """
+    info = session.session_info()
+    if info.get("team_name") != team_name:
+        raise VaultSyncError(
+            f"Hub returned session for team {info.get('team_name')!r}, expected {team_name!r}"
+        )
+    if info.get("app_name") != HUB_APP_NAME:
+        raise VaultSyncError(
+            f"Hub returned app {info.get('app_name')!r}, expected {HUB_APP_NAME!r}"
+        )
+
+    context = vault.materialization_context_from_session_info(info)
+    if context.participant_hex != participant_hex:
+        raise VaultSyncError(
+            f"Hub session for {team_name!r} belongs to participant "
+            f"{context.participant_hex!r}, not {participant_hex!r}."
+        )
+    vault.init_vault(vault_root, participant_hex)
+    vault.materialize_team(vault_root, context)
+    store_session_token(team_name, session.token)
+    return info
+
+
 def login_team(
     vault_root: str,
     team_name: str,
@@ -304,25 +339,7 @@ def login_team(
             raise LoginRequiredError("A PIN is required to complete Vault login.")
         session = client.confirm_session(pending_id, pin_reader(pending_id).strip())
 
-    info = session.session_info()
-    if info.get("team_name") != team_name:
-        raise VaultSyncError(
-            f"Hub returned session for team {info.get('team_name')!r}, expected {team_name!r}"
-        )
-    if info.get("app_name") != HUB_APP_NAME:
-        raise VaultSyncError(
-            f"Hub returned app {info.get('app_name')!r}, expected {HUB_APP_NAME!r}"
-        )
-
-    context = vault.materialization_context_from_session_info(info)
-    if context.participant_hex != participant_hex:
-        raise VaultSyncError(
-            f"Hub session for {team_name!r} belongs to participant "
-            f"{context.participant_hex!r}, not {participant_hex!r}."
-        )
-    vault.init_vault(vault_root, participant_hex)
-    vault.materialize_team(vault_root, context)
-    store_session_token(team_name, session.token)
+    info = finalize_login(vault_root, team_name, participant_hex, session)
     return LoginResult(
         session_token=session.token,
         session_info=info,

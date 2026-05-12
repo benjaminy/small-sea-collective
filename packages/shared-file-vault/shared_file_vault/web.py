@@ -205,7 +205,7 @@ def create_app(
                 _ph(request), sync.HUB_APP_NAME, team_name, "SharedFileVaultWeb"
             )
             if session is not None:
-                sync.store_session_token(team_name, session.token)
+                sync.finalize_login(_vr(request), team_name, _ph(request), session)
                 _pending(request).pop(team_name, None)
             else:
                 _pending(request)[team_name] = pending_id
@@ -224,7 +224,7 @@ def create_app(
             )
         try:
             session = _client(request).confirm_session(pending_id, pin.strip())
-            sync.store_session_token(team_name, session.token)
+            sync.finalize_login(_vr(request), team_name, _ph(request), session)
             _pending(request).pop(team_name, None)
         except Exception as exc:
             return _session_fragment(request, team_name, error=str(exc))
