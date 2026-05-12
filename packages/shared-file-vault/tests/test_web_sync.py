@@ -134,7 +134,9 @@ def test_web_push_requires_cached_session(playground_dir, monkeypatch):
     vault_root = f"{runner_root}/vault"
     participant_hex = "aa" * 16
     vault.init_vault(vault_root, participant_hex)
-    vault.create_niche(vault_root, participant_hex, "ProjectX", "docs")
+    context = vault.VaultMaterializationContext(participant_hex, "11" * 16, "ProjectX")
+    vault.materialize_team(vault_root, context)
+    vault.create_niche(vault_root, participant_hex, context, "docs")
 
     vault_app = create_app(vault_root, participant_hex)
     client = TestClient(vault_app)
@@ -160,7 +162,6 @@ def test_web_session_request_auto_approve(playground_dir, monkeypatch):
 
     vault_root = str(root / "vault")
     vault.init_vault(vault_root, alice_hex)
-    vault.create_niche(vault_root, alice_hex, "ProjectX", "docs")
 
     vault_app = create_app(vault_root, alice_hex, _http_client=http)
     client = TestClient(vault_app)
@@ -169,6 +170,13 @@ def test_web_session_request_auto_approve(playground_dir, monkeypatch):
     assert resp.status_code == 200
     assert "session active" in resp.text
     assert sync.load_config()["team_sessions"]["ProjectX"]["session_token"]
+
+    # Auto-approve must also materialize the team so subsequent offline
+    # operations can resolve the friendly name to team_id.
+    ctx = sync.resolve_team_context(vault_root, alice_hex, "ProjectX")
+    assert ctx.team_name == "ProjectX"
+    assert ctx.participant_hex == alice_hex
+    assert ctx.team_id
 
 
 def test_web_session_request_pin_flow(playground_dir, monkeypatch):
@@ -197,7 +205,6 @@ def test_web_session_request_pin_flow(playground_dir, monkeypatch):
     try:
         vault_root = str(root / "vault")
         vault.init_vault(vault_root, alice_hex)
-        vault.create_niche(vault_root, alice_hex, "ProjectX", "docs")
 
         vault_app = create_app(vault_root, alice_hex, _http_client=http)
         client = TestClient(vault_app)
@@ -213,6 +220,13 @@ def test_web_session_request_pin_flow(playground_dir, monkeypatch):
         assert confirm.status_code == 200
         assert "session active" in confirm.text
         assert sync.load_config()["team_sessions"]["ProjectX"]["session_token"]
+
+        # PIN confirmation must also materialize the team so subsequent
+        # offline operations can resolve the friendly name to team_id.
+        ctx = sync.resolve_team_context(vault_root, alice_hex, "ProjectX")
+        assert ctx.team_name == "ProjectX"
+        assert ctx.participant_hex == alice_hex
+        assert ctx.team_id
     finally:
         backend.request_session = original
 
@@ -230,13 +244,14 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     alice_checkout = root / "alice-checkout"
     bob_checkout = root / "bob-checkout"
 
-    vault.create_niche(alice_vault_root, env["alice_hex"], "ProjectX", "docs")
-    vault.add_checkout(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout))
-    (alice_checkout / "notes.txt").write_text("hello from web\n")
-    vault.publish(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout), message="init")
-
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
-    sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = sync.login_team(alice_vault_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_context = vault.materialization_context_from_session_info(alice_login.session_info)
+    vault.create_niche(alice_vault_root, env["alice_hex"], alice_context, "docs")
+    vault.add_checkout(alice_vault_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
+    (alice_checkout / "notes.txt").write_text("hello from web\n")
+    vault.publish(alice_vault_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init")
+
     alice_app = create_app(alice_vault_root, env["alice_hex"], _http_client=http)
     alice_client = TestClient(alice_app)
     detail_resp = alice_client.get("/teams/ProjectX/niches/docs")
@@ -250,7 +265,8 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
 
     # Bob joins: fetch → attach checkout → merge (3-step join flow)
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
-    sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_login = sync.login_team(bob_vault_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_context = vault.materialization_context_from_session_info(bob_login.session_info)
     sync.fetch_via_hub(
         bob_vault_root,
         env["bob_hex"],
@@ -259,7 +275,7 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
         env["alice_member_id_hex"],
         _http_client=http,
     )
-    vault.add_checkout(bob_vault_root, env["bob_hex"], "ProjectX", "docs", str(bob_checkout))
+    vault.add_checkout(bob_vault_root, env["bob_hex"], bob_context, "docs", str(bob_checkout))
     sync.merge_via_hub(
         bob_vault_root,
         env["bob_hex"],
@@ -270,7 +286,7 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     )
 
     (alice_checkout / "notes.txt").write_text("hello again\n")
-    vault.publish(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout), message="update")
+    vault.publish(alice_vault_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="update")
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
     push_resp = alice_client.post("/teams/ProjectX/niches/docs/push")
     assert push_resp.status_code == 200
@@ -309,7 +325,9 @@ def test_peer_panel_fragment_no_session(playground_dir, monkeypatch):
     vault_root = f"{playground_dir}/vault"
     participant_hex = "aa" * 16
     vault.init_vault(vault_root, participant_hex)
-    vault.create_niche(vault_root, participant_hex, "ProjectX", "docs")
+    context = vault.VaultMaterializationContext(participant_hex, "11" * 16, "ProjectX")
+    vault.materialize_team(vault_root, context)
+    vault.create_niche(vault_root, participant_hex, context, "docs")
 
     vault_app = create_app(vault_root, participant_hex)
     client = TestClient(vault_app)
@@ -327,10 +345,11 @@ def test_peer_panel_fragment_active_session(playground_dir, minio_server_gen, mo
 
     vault_root = str(root / "vault-alice")
     vault.init_vault(vault_root, env["alice_hex"])
-    vault.create_niche(vault_root, env["alice_hex"], "ProjectX", "docs")
 
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
-    sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    login = sync.login_team(vault_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    context = vault.materialization_context_from_session_info(login.session_info)
+    vault.create_niche(vault_root, env["alice_hex"], context, "docs")
 
     vault_app = create_app(vault_root, env["alice_hex"], _http_client=http)
     client = TestClient(vault_app)
@@ -359,18 +378,19 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     alice_checkout = root / "alice-checkout"
     bob_checkout = root / "bob-checkout"
 
-    vault.create_niche(alice_vault_root, env["alice_hex"], "ProjectX", "docs")
-    vault.add_checkout(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout))
-    (alice_checkout / "notes.txt").write_text("v1\n")
-    vault.publish(alice_vault_root, env["alice_hex"], "ProjectX", "docs", str(alice_checkout), message="init")
-
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "alice-vault.toml"))
-    sync.login_team("ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = sync.login_team(alice_vault_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_context = vault.materialization_context_from_session_info(alice_login.session_info)
+    vault.create_niche(alice_vault_root, env["alice_hex"], alice_context, "docs")
+    vault.add_checkout(alice_vault_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
+    (alice_checkout / "notes.txt").write_text("v1\n")
+    vault.publish(alice_vault_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init")
+
     sync.push_via_hub(alice_vault_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
     # Bob logs in.
     monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(root / "bob-vault.toml"))
-    bob_login = sync.login_team("ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_login = sync.login_team(bob_vault_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
 
     # Seed peer_counts so /session/peers reports Alice's signal_count = 3.
     # The background watcher is not running in TestClient; we set it directly.
@@ -380,7 +400,8 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
         hub_app.state.peer_counts = {}
     hub_app.state.peer_counts[(bob_berth_id_hex, env["alice_member_id_hex"])] = 3
 
-    vault.create_niche(bob_vault_root, env["bob_hex"], "ProjectX", "docs")
+    bob_context = vault.materialization_context_from_session_info(bob_login.session_info)
+    vault.create_niche(bob_vault_root, env["bob_hex"], bob_context, "docs")
 
     bob_app = create_app(bob_vault_root, env["bob_hex"], _http_client=http)
     bob_client = TestClient(bob_app)
@@ -391,7 +412,7 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     assert "Has changes since your last fetch" in panel_resp.text
 
     # Bob fetches — watermark advances to 3, hint clears.
-    vault.add_checkout(bob_vault_root, env["bob_hex"], "ProjectX", "docs", str(bob_checkout))
+    vault.add_checkout(bob_vault_root, env["bob_hex"], bob_context, "docs", str(bob_checkout))
     fetch_resp = bob_client.post(
         "/teams/ProjectX/niches/docs/fetch",
         data={"from_member_id": env["alice_member_id_hex"]},

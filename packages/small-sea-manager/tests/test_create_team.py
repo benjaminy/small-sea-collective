@@ -325,6 +325,13 @@ def test_core_team_activation_matches_generic_app_shape(playground_dir):
 
     activate_app_for_team(root, alice_hex, "CoolProject", VAULT_APP)
 
+    assert not (
+        root / "Participants" / alice_hex / "NoteToSelf" / VAULT_APP
+    ).exists()
+    assert not (
+        root / "Participants" / alice_hex / "CoolProject" / VAULT_APP
+    ).exists()
+
     with sqlite3.connect(str(team_db)) as conn:
         rows = conn.execute(
             """

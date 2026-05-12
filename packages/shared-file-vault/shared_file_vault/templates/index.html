@@ -13,18 +13,14 @@
     {% endfor %}
   {% else %}
     <p style="color:#78716c; margin-bottom:1rem">
-      No teams yet. Create a niche below to start one.
+      No teams materialized in this vault yet.
+    </p>
+    <p style="color:#78716c; margin-bottom:1rem; font-size:0.92rem">
+      Teams are created in Small Sea Manager. Once you are a member of a
+      team, run <code>shared-file-vault login &lt;team_name&gt;</code>
+      from a terminal to open a Hub session and materialize the team locally.
     </p>
   {% endif %}
-</div>
-
-<div class="add-team-section">
-  <h3>Start a new team</h3>
-  <form class="inline-form" method="post" action="/teams/create">
-    <input type="text" name="team_name" placeholder="Team name" required>
-    <input type="text" name="niche_name" placeholder="First niche name" required>
-    <button class="btn btn-primary" type="submit">Create</button>
-  </form>
 </div>
 
 {% endblock %}

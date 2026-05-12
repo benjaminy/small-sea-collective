@@ -92,11 +92,18 @@ device (or a user account on a device). It holds:
 - One git repo per niche (each shared via its own Cod Sync chain)
 - Local checkout registrations
 
-The vault is scoped to a **participant** — the Small Sea identity used on
-this device. One participant per local user account is the overwhelming
-common case, but the storage layout preserves a participant layer so that
-switching participants (or having multiple) remains possible without a
-re-architecture.
+The vault is scoped first to a **participant** — the Small Sea identity used
+on this device.
+One participant per local user account is the overwhelming common case, but
+the storage layout preserves a participant layer so that switching
+participants (or having multiple) remains possible without a re-architecture.
+
+Within a participant, session-backed Vault state is scoped by an opaque Vault
+`team_id`.
+That `team_id` is sourced from Hub `/session/info["berth_id"]`, where the Hub
+and Manager still use berth language because they model app/team bindings.
+Friendly names such as `team_name` remain display and selection labels.
+They are not local materialization coordinates once Vault has a Hub session.
 
 ---
 
@@ -125,17 +132,25 @@ macOS, `%APPDATA%\SmallSea\FileVault` on Windows).
 
 ```
 {vault_root}/
-  {participant_hex}/
-    checkouts.db              ← purely local: checkout path registrations
-    {team_name}/
-      registry/
-        git/                  ← niche registry bare git repo (shared)
-        codsync-bundle-tmp/
-      niches/
-        {niche_name}/
-          git/                ← niche bare git repo (shared)
-          codsync-bundle-tmp/
+  participants/
+    {participant_hex}/
+      checkouts.db            ← purely local: checkout path registrations
+      teams/
+        {team_id}/
+          metadata.json       ← local display metadata for this team
+          registry/
+            git/              ← niche registry bare git repo (shared)
+            checkout/         ← local registry working tree
+          niches/
+            {niche_name}/
+              git/            ← niche bare git repo (shared)
+                codsync-bundle-tmp/
 ```
+
+The absence of a `checkout/` directory under `niches/{niche_name}/` is
+intentional.
+Niche user files live in the user-selected checkout directory recorded in
+`checkouts.db`.
 
 ### checkouts.db schema
 
@@ -145,17 +160,41 @@ CREATE TABLE schema_version (
 );
 CREATE TABLE checkout (
     id            BLOB PRIMARY KEY,   -- UUIDv7
-    team_name     TEXT NOT NULL,
+    team_id       TEXT NOT NULL,
     niche_name    TEXT NOT NULL,
     checkout_path TEXT NOT NULL,
     created_at    TEXT NOT NULL,
-    UNIQUE (team_name, niche_name)    -- at most one checkout per niche
+    UNIQUE (team_id, niche_name)      -- at most one checkout per niche
+);
+CREATE TABLE peer_sync (
+    team_id          TEXT NOT NULL,
+    repo_kind        TEXT NOT NULL,
+    niche_name       TEXT NOT NULL,
+    member_id        TEXT NOT NULL,
+    last_fetched_sha TEXT,
+    last_merged_sha  TEXT,
+    updated_at       TEXT NOT NULL,
+    PRIMARY KEY (team_id, repo_kind, niche_name, member_id)
+);
+CREATE TABLE peer_signal_watermark (
+    team_id    TEXT NOT NULL,
+    member_id  TEXT NOT NULL,
+    count      INTEGER NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (team_id, member_id)
 );
 ```
 
 The `schema_version` table holds a single row. On version mismatch the
 entire database is recreated from scratch (it is device-local and
 reconstructable). No migration SQL is written.
+
+Hub-backed cloud object keys are paths within the Hub-provided storage boundary
+for the current session.
+Vault currently uses `registry/` for the registry chain and
+`niches/{niche_name}/` for each niche chain.
+Those keys intentionally omit both friendly `team_name` and opaque Vault
+`team_id`; the Hub session supplies the storage boundary.
 
 ---
 

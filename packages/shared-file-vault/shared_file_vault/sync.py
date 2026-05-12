@@ -21,7 +21,6 @@ from shared_file_vault import vault
 
 _CONFIG_PATH = pathlib.Path.home() / ".config" / "small-sea" / "vault.toml"
 HUB_APP_NAME = "SharedFileVault"
-_HUB_APP_NAME = HUB_APP_NAME
 _CLI_CLIENT_NAME = "SharedFileVaultCLI"
 
 
@@ -35,6 +34,23 @@ class MissingConfigError(VaultSyncError):
 
 class LoginRequiredError(VaultSyncError):
     """A valid cached team session is not available."""
+
+
+class TeamNotMaterializedError(VaultSyncError):
+    """Vault has no local materialization for the named team yet.
+
+    Run `shared-file-vault login <team_name>` once to establish the team's
+    local materialization. After that, offline operations can resolve the
+    friendly name without contacting the Hub.
+    """
+
+
+class AmbiguousTeamNameError(VaultSyncError):
+    """Multiple materialized teams share the same friendly name.
+
+    Disambiguation by friendly name is no longer sufficient; the caller must
+    select among the candidate team_ids. (#113/#115 territory.)
+    """
 
 
 class PushConflictError(VaultSyncError):
@@ -163,7 +179,6 @@ def load_config() -> dict:
     with open(path, "rb") as f:
         config = tomllib.load(f)
     config.setdefault("team_sessions", {})
-    config.setdefault("peer_signal_watermarks", {})
     return config
 
 
@@ -196,17 +211,6 @@ def _dump_toml(config: dict) -> str:
         lines.append(f"[team_sessions.{json.dumps(team_name)}]")
         lines.append(f"session_token = {json.dumps(str(token))}")
 
-    watermarks = config.get("peer_signal_watermarks") or {}
-    for wm_team in sorted(watermarks):
-        team_wm = watermarks[wm_team] or {}
-        if not team_wm:
-            continue
-        if lines:
-            lines.append("")
-        lines.append(f"[peer_signal_watermarks.{json.dumps(wm_team)}]")
-        for member_id in sorted(team_wm):
-            lines.append(f"{json.dumps(member_id)} = {int(team_wm[member_id])}")
-
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -228,43 +232,88 @@ def clear_session_token(team_name: str) -> None:
         save_config(config)
 
 
-def get_signal_watermark(team_name: str, member_id: str) -> int:
+def get_signal_watermark(
+    vault_root: str,
+    participant_hex: str,
+    context,
+    member_id: str,
+) -> int:
     """Return the last-seen signal count for a peer, defaulting to 0."""
-    config = load_config()
-    return (
-        (config.get("peer_signal_watermarks") or {})
-        .get(team_name, {})
-        .get(member_id, 0)
+    return vault.get_peer_signal_watermark(
+        vault_root, participant_hex, context, member_id
     )
 
 
-def set_signal_watermark(team_name: str, member_id: str, count: int) -> None:
+def set_signal_watermark(
+    vault_root: str,
+    participant_hex: str,
+    context,
+    member_id: str,
+    count: int,
+) -> None:
     """Persist a signal-count watermark for a peer."""
-    config = load_config()
-    watermarks = config.setdefault("peer_signal_watermarks", {})
-    watermarks.setdefault(team_name, {})
-    watermarks[team_name][member_id] = int(count)
-    save_config(config)
+    vault.set_peer_signal_watermark(
+        vault_root, participant_hex, context, member_id, count
+    )
 
 
-def clear_signal_watermark(team_name: str, member_id: str) -> None:
+def clear_signal_watermark(
+    vault_root: str,
+    participant_hex: str,
+    context,
+    member_id: str,
+) -> None:
     """Remove any persisted signal-count watermark for a peer."""
-    config = load_config()
-    watermarks = config.get("peer_signal_watermarks") or {}
-    if team_name in watermarks and member_id in watermarks[team_name]:
-        del watermarks[team_name][member_id]
-        save_config(config)
+    vault.clear_peer_signal_watermark(
+        vault_root, participant_hex, context, member_id
+    )
 
 
-def registry_path_prefix(team_name: str) -> str:
-    return f"vault/{team_name}/registry/"
+def registry_path_prefix() -> str:
+    return "registry/"
 
 
-def niche_path_prefix(team_name: str, niche_name: str) -> str:
-    return f"vault/{team_name}/niches/{niche_name}/"
+def niche_path_prefix(niche_name: str) -> str:
+    return f"niches/{niche_name}/"
+
+
+def finalize_login(
+    vault_root: str,
+    team_name: str,
+    participant_hex: str,
+    session: SmallSeaSession,
+) -> dict:
+    """Validate a freshly-obtained Hub session, materialize the team locally,
+    and persist the session token.
+
+    Shared between the CLI login flow (`login_team`) and the web session
+    request/confirm endpoints. Returns the session_info dict for the caller's
+    convenience.
+    """
+    info = session.session_info()
+    if info.get("team_name") != team_name:
+        raise VaultSyncError(
+            f"Hub returned session for team {info.get('team_name')!r}, expected {team_name!r}"
+        )
+    if info.get("app_name") != HUB_APP_NAME:
+        raise VaultSyncError(
+            f"Hub returned app {info.get('app_name')!r}, expected {HUB_APP_NAME!r}"
+        )
+
+    context = vault.materialization_context_from_session_info(info)
+    if context.participant_hex != participant_hex:
+        raise VaultSyncError(
+            f"Hub session for {team_name!r} belongs to participant "
+            f"{context.participant_hex!r}, not {participant_hex!r}."
+        )
+    vault.init_vault(vault_root, participant_hex)
+    vault.materialize_team(vault_root, context)
+    store_session_token(team_name, session.token)
+    return info
 
 
 def login_team(
+    vault_root: str,
     team_name: str,
     participant_hex: str,
     hub_port: int = SmallSeaClient.DEFAULT_PORT,
@@ -272,10 +321,16 @@ def login_team(
     pin_reader: Optional[Callable[[str], str]] = None,
     _http_client=None,
 ) -> LoginResult:
-    """Open or request a team-scoped Hub session and persist the token."""
+    """Open or request a team-scoped Hub session, materialize the team locally,
+    and persist the session token.
+
+    This is the single Vault entry point that legitimately needs the Hub to
+    discover team_id for a friendly team_name. After login, the team's
+    metadata.json holds team_id; offline operations resolve from there.
+    """
     client = SmallSeaClient(port=hub_port, _http_client=_http_client)
     session, pending_id = client.start_session(
-        participant_hex, _HUB_APP_NAME, team_name, _CLI_CLIENT_NAME
+        participant_hex, HUB_APP_NAME, team_name, _CLI_CLIENT_NAME
     )
 
     auto_approved = session is not None
@@ -284,17 +339,7 @@ def login_team(
             raise LoginRequiredError("A PIN is required to complete Vault login.")
         session = client.confirm_session(pending_id, pin_reader(pending_id).strip())
 
-    info = session.session_info()
-    if info.get("team_name") != team_name:
-        raise VaultSyncError(
-            f"Hub returned session for team {info.get('team_name')!r}, expected {team_name!r}"
-        )
-    if info.get("app_name") != _HUB_APP_NAME:
-        raise VaultSyncError(
-            f"Hub returned app {info.get('app_name')!r}, expected {_HUB_APP_NAME!r}"
-        )
-
-    store_session_token(team_name, session.token)
+    info = finalize_login(vault_root, team_name, participant_hex, session)
     return LoginResult(
         session_token=session.token,
         session_info=info,
@@ -308,7 +353,12 @@ def get_team_session(
     *,
     _http_client=None,
 ) -> SmallSeaSession:
-    """Resume and validate a cached Hub session for a team."""
+    """Construct a SmallSeaSession from the cached token for this team.
+
+    Does NOT contact the Hub. Token staleness or revocation surfaces at the
+    moment of actual use, when the Hub rejects the request. The caller should
+    suggest re-running `shared-file-vault login <team_name>` in that case.
+    """
     config = load_config()
     token = (
         (config.get("team_sessions") or {})
@@ -321,21 +371,7 @@ def get_team_session(
         )
 
     client = SmallSeaClient(port=hub_port, _http_client=_http_client)
-    session = SmallSeaSession(client, token)
-    try:
-        info = session.session_info()
-    except SmallSeaError as exc:
-        raise LoginRequiredError(
-            f"Cached Hub session for {team_name!r} is no longer valid. "
-            f"Run `shared-file-vault login {team_name}` again."
-        ) from exc
-
-    if info.get("team_name") != team_name:
-        raise LoginRequiredError(
-            f"Cached Hub session is for {info.get('team_name')!r}, expected {team_name!r}. "
-            f"Run `shared-file-vault login {team_name}` again."
-        )
-    return session
+    return SmallSeaSession(client, token)
 
 
 def list_team_peers(
@@ -349,6 +385,32 @@ def list_team_peers(
     return session.session_peers()
 
 
+def resolve_team_context(vault_root: str, participant_hex: str, team_name: str):
+    """Resolve a Vault team context for a friendly team_name from local state only.
+
+    Scans the participant's materialized teams (metadata.json files) and
+    returns the unique matching VaultMaterializationContext. Never contacts
+    the Hub: once a team has been logged into, its team_id is durable on
+    disk. Raises TeamNotMaterializedError if no match, AmbiguousTeamNameError
+    if two materialized teams share the same friendly name.
+    """
+    matches = [
+        ctx for ctx in vault.iter_materialized_teams(vault_root, participant_hex)
+        if ctx.team_name == team_name
+    ]
+    if not matches:
+        raise TeamNotMaterializedError(
+            f"No materialized team named {team_name!r} for this participant. "
+            f"Run `shared-file-vault login {team_name}` first."
+        )
+    if len(matches) > 1:
+        raise AmbiguousTeamNameError(
+            f"Multiple materialized teams named {team_name!r}: "
+            + ", ".join(ctx.team_id for ctx in matches)
+        )
+    return matches[0]
+
+
 def _remote_kwargs(session: SmallSeaSession) -> dict:
     client = session._client
     return {
@@ -357,37 +419,32 @@ def _remote_kwargs(session: SmallSeaSession) -> dict:
     }
 
 
-def make_registry_remote(team_name: str, session: SmallSeaSession) -> SmallSeaRemote:
+def make_registry_remote(session: SmallSeaSession) -> SmallSeaRemote:
     return SmallSeaRemote(
         session.token,
-        path_prefix=registry_path_prefix(team_name),
+        path_prefix=registry_path_prefix(),
         **_remote_kwargs(session),
     )
 
 
-def make_niche_remote(
-    team_name: str, niche_name: str, session: SmallSeaSession
-) -> SmallSeaRemote:
+def make_niche_remote(niche_name: str, session: SmallSeaSession) -> SmallSeaRemote:
     return SmallSeaRemote(
         session.token,
-        path_prefix=niche_path_prefix(team_name, niche_name),
+        path_prefix=niche_path_prefix(niche_name),
         **_remote_kwargs(session),
     )
 
 
-def make_peer_registry_remote(
-    team_name: str, member_id: str, session: SmallSeaSession
-) -> PeerSmallSeaRemote:
+def make_peer_registry_remote(member_id: str, session: SmallSeaSession) -> PeerSmallSeaRemote:
     return PeerSmallSeaRemote(
         session.token,
         member_id,
-        path_prefix=registry_path_prefix(team_name),
+        path_prefix=registry_path_prefix(),
         **_remote_kwargs(session),
     )
 
 
 def make_peer_niche_remote(
-    team_name: str,
     niche_name: str,
     member_id: str,
     session: SmallSeaSession,
@@ -395,7 +452,7 @@ def make_peer_niche_remote(
     return PeerSmallSeaRemote(
         session.token,
         member_id,
-        path_prefix=niche_path_prefix(team_name, niche_name),
+        path_prefix=niche_path_prefix(niche_name),
         **_remote_kwargs(session),
     )
 
@@ -410,15 +467,16 @@ def push_via_hub(
     _http_client=None,
 ) -> None:
     """Push a niche and its registry through the Hub using a cached session."""
+    context = resolve_team_context(vault_root, participant_hex, team_name)
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
     session.ensure_cloud_ready()
     try:
         vault.push_niche(
             vault_root,
             participant_hex,
-            team_name,
+            context,
             niche_name,
-            make_niche_remote(team_name, niche_name, session),
+            make_niche_remote(niche_name, session),
         )
     except CasConflictError as exc:
         raise PushConflictError(
@@ -435,8 +493,8 @@ def push_via_hub(
         vault.push_registry(
             vault_root,
             participant_hex,
-            team_name,
-            make_registry_remote(team_name, session),
+            context,
+            make_registry_remote(session),
         )
     except GitCmdFailed as exc:
         if "Refusing to create empty bundle" not in exc.err:
@@ -485,6 +543,7 @@ def fetch_via_hub(
     _http_client=None,
 ) -> FetchResult:
     """Fetch a registry and niche from a peer through the Hub without merging."""
+    context = resolve_team_context(vault_root, participant_hex, team_name)
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
 
     # Observe signal_count BEFORE fetching. If the peer pushes again during
@@ -503,21 +562,23 @@ def fetch_via_hub(
     registry_sha = vault.fetch_registry(
         vault_root,
         participant_hex,
-        team_name,
+        context,
         from_member_id,
-        make_peer_registry_remote(team_name, from_member_id, session),
+        make_peer_registry_remote(from_member_id, session),
     )
     niche_sha = vault.fetch_niche(
         vault_root,
         participant_hex,
-        team_name,
+        context,
         niche_name,
         from_member_id,
-        make_peer_niche_remote(team_name, niche_name, from_member_id, session),
+        make_peer_niche_remote(niche_name, from_member_id, session),
     )
 
     # Advance the watermark now that the fetch succeeded.
-    set_signal_watermark(team_name, from_member_id, observed_signal_count)
+    set_signal_watermark(
+        vault_root, participant_hex, context, from_member_id, observed_signal_count
+    )
 
     return FetchResult(
         member_id=from_member_id,
@@ -542,18 +603,18 @@ def merge_via_hub(
     dirty-checkout or no-checkout condition never leaves the registry
     merged while the niche merge is still pending.
     """
-    _session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+    context = resolve_team_context(vault_root, participant_hex, team_name)
 
     # Preflight: verify niche checkout exists and is clean before merging
     # anything. Without this, a failed niche merge would leave the registry
     # already integrated — a partially-merged state the user cannot easily undo.
-    checkout = vault.get_checkout(vault_root, participant_hex, team_name, niche_name)
+    checkout = vault.get_checkout(vault_root, participant_hex, context, niche_name)
     if checkout is None:
-        residency = vault.niche_residency(vault_root, participant_hex, team_name, niche_name)
-        raise NoCheckoutError(team_name, niche_name, residency)
+        residency = vault.niche_residency(vault_root, participant_hex, context, niche_name)
+        raise NoCheckoutError(context.team_name, niche_name, residency)
     if not pathlib.Path(checkout).exists():
-        raise StaleCheckoutError(team_name, niche_name, checkout)
-    dirty_entries = vault.status(vault_root, participant_hex, team_name, niche_name, checkout)
+        raise StaleCheckoutError(context.team_name, niche_name, checkout)
+    dirty_entries = vault.status(vault_root, participant_hex, context, niche_name, checkout)
     if dirty_entries:
         raise DirtyCheckoutError([e["path"] for e in dirty_entries])
 
@@ -561,7 +622,7 @@ def merge_via_hub(
         registry_sha = vault.merge_registry(
             vault_root,
             participant_hex,
-            team_name,
+            context,
             from_member_id,
         )
     except vault.MergeConflictError as exc:
@@ -571,7 +632,7 @@ def merge_via_hub(
         niche_sha = vault.merge_niche(
             vault_root,
             participant_hex,
-            team_name,
+            context,
             niche_name,
             from_member_id,
         )
@@ -594,7 +655,7 @@ def merge_via_hub(
 def peer_update_status(
     vault_root: str,
     participant_hex: str,
-    team_name: str,
+    context,
     niche_name: str,
     member_id: str,
     *,
@@ -607,10 +668,10 @@ def peer_update_status(
     it against the locally persisted watermark.
     """
     registry_status = vault.peer_update_status(
-        vault_root, participant_hex, team_name, "registry", None, member_id
+        vault_root, participant_hex, context, "registry", None, member_id
     )
     niche_status = vault.peer_update_status(
-        vault_root, participant_hex, team_name, "niche", niche_name, member_id
+        vault_root, participant_hex, context, "niche", niche_name, member_id
     )
     parked_sha = niche_status["parked_sha"] or registry_status["parked_sha"]
     ready_to_merge = (
@@ -627,7 +688,9 @@ def peer_update_status(
         last_fetched_sha=niche_status["last_fetched_sha"] or registry_status["last_fetched_sha"],
         last_merged_sha=niche_status["last_merged_sha"] or registry_status["last_merged_sha"],
         current_signal_count=current_signal_count,
-        last_seen_signal_count=get_signal_watermark(team_name, member_id),
+        last_seen_signal_count=get_signal_watermark(
+            vault_root, participant_hex, context, member_id
+        ),
     )
 
 

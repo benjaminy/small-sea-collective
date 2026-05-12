@@ -5,17 +5,20 @@ from cod_sync.protocol import LocalFolderRemote
 from shared_file_vault import sync
 from shared_file_vault.vault import (
     NicheResidency,
+    VaultMaterializationContext,
     add_checkout,
     create_niche,
     fetch_niche,
     init_vault,
+    materialize_team,
     merge_niche,
     publish,
     push_niche,
 )
 
 PARTICIPANT = "bb" * 16
-TEAM = "SyncTeam"
+TEAM_ID = "33" * 16
+TEAM = VaultMaterializationContext(PARTICIPANT, TEAM_ID, "SyncTeam")
 
 
 def test_sync_niche_between_devices(playground_dir):
@@ -26,6 +29,7 @@ def test_sync_niche_between_devices(playground_dir):
     # --- Device A: create and populate a niche ---
     root_a = str(playground / "device-a")
     init_vault(root_a, PARTICIPANT)
+    materialize_team(root_a, TEAM)
     create_niche(root_a, PARTICIPANT, TEAM, "photos")
     checkout_a = str(playground / "checkout-a" / "photos")
     add_checkout(root_a, PARTICIPANT, TEAM, "photos", checkout_a)
@@ -39,6 +43,7 @@ def test_sync_niche_between_devices(playground_dir):
     # --- Device B: join flow: fetch → attach checkout → merge ---
     root_b = str(playground / "device-b")
     init_vault(root_b, PARTICIPANT)
+    materialize_team(root_b, TEAM)
     checkout_b = str(playground / "checkout-b" / "photos")
 
     fetch_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, LocalFolderRemote(str(cloud_dir)))
@@ -70,14 +75,12 @@ def test_merge_via_hub_no_checkout_cached_preserves_residency(playground_dir, mo
     """
     root = str(pathlib.Path(playground_dir) / "vault")
     init_vault(root, PARTICIPANT)
+    materialize_team(root, TEAM)
     create_niche(root, PARTICIPANT, TEAM, "files")
     # No add_checkout: niche git dir exists but no checkout row → CACHED.
 
-    # Bypass hub auth; the preflight fires before any network call.
-    monkeypatch.setattr(sync, "get_team_session", lambda *a, **kw: None)
-
     with pytest.raises(sync.NoCheckoutError) as exc_info:
-        sync.merge_via_hub(root, PARTICIPANT, TEAM, "files", "some-peer-id")
+        sync.merge_via_hub(root, PARTICIPANT, TEAM.team_name, "files", "some-peer-id")
 
     err = exc_info.value
     assert err.residency is NicheResidency.CACHED
@@ -90,12 +93,11 @@ def test_merge_via_hub_no_checkout_remote_only_preserves_residency(playground_di
     """
     root = str(pathlib.Path(playground_dir) / "vault")
     init_vault(root, PARTICIPANT)
+    materialize_team(root, TEAM)
     # No create_niche: no git dir → REMOTE_ONLY.
 
-    monkeypatch.setattr(sync, "get_team_session", lambda *a, **kw: None)
-
     with pytest.raises(sync.NoCheckoutError) as exc_info:
-        sync.merge_via_hub(root, PARTICIPANT, TEAM, "files", "some-peer-id")
+        sync.merge_via_hub(root, PARTICIPANT, TEAM.team_name, "files", "some-peer-id")
 
     err = exc_info.value
     assert err.residency is NicheResidency.REMOTE_ONLY
