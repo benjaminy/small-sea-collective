@@ -21,15 +21,23 @@ The main review path is:
   the `_validate_context` validator (no string fallback), path helpers, and
   SQLite key changes.
 - `packages/shared-file-vault/shared_file_vault/sync.py` for `login_team`
-  (which writes `metadata.json`), the offline `resolve_team_context`,
-  `get_team_session` (no preemptive Hub validation), and the
-  `TeamNotMaterializedError`/`AmbiguousTeamNameError` exceptions.
+  and the shared `finalize_login` helper that validates `session_info`,
+  calls `vault.materialize_team`, and stores the session token; the
+  offline `resolve_team_context`; `get_team_session` (no preemptive Hub
+  validation); and the `TeamNotMaterializedError` /
+  `AmbiguousTeamNameError` exceptions.
 - `packages/shared-file-vault/shared_file_vault/cli.py` for the offline
   `_team_context` helper used by local commands, and the `login_cmd` that
   threads `vault_root` into `sync.login_team`.
 - `packages/shared-file-vault/shared_file_vault/web.py` for the same
-  offline resolver, the removal of `POST /teams/create`, and the index page
-  that lists materialized teams directly from `iter_materialized_teams`.
+  offline resolver, the two session endpoints now routed through
+  `sync.finalize_login`, the removal of `POST /teams/create`, and the
+  index page that lists materialized teams directly from
+  `iter_materialized_teams`.
+- `packages/shared-file-vault/shared_file_vault/templates/index.html`
+  for the empty-state copy directing users to
+  `shared-file-vault login <team_name>` (team creation is a Manager
+  function and is no longer surfaced in the Vault web UI).
 - `packages/shared-file-vault/tests/test_vault.py`,
   `packages/shared-file-vault/tests/test_hub_sync.py`,
   `packages/shared-file-vault/tests/test_web_sync.py`,

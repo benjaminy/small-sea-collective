@@ -66,9 +66,23 @@ sessions derive the peer bucket from the current session berth.
   friendly-name UI inputs and the strict context API.
 - `sync.get_team_session` returns a `SmallSeaSession` built from the cached
   token without contacting the Hub. The Hub call happens at point of use.
-- `sync.login_team(vault_root, ...)` is the single entry point that
-  legitimately needs the Hub to discover `team_id`. After a successful
-  handshake it calls `vault.materialize_team(vault_root, context)` to write
-  `metadata.json`, then caches the session token.
-- Team creation is a Manager function and does not go through Vault. The
-  former `POST /teams/create` web endpoint has been removed.
+- `sync.login_team(vault_root, ...)` is the CLI entry point that
+  legitimately needs the Hub to discover `team_id`.
+  It delegates to `sync.finalize_login(vault_root, team_name, participant_hex, session)`,
+  the shared helper that validates `session_info`,
+  calls `vault.materialize_team`,
+  and caches the session token.
+- The two web session endpoints (`POST /teams/{team}/session/request` and
+  `POST /teams/{team}/session/confirm`) also go through `finalize_login`,
+  so a web login materializes the team identically to a CLI login.
+- `vault.iter_materialized_teams` validates each `metadata.json` against
+  Vault's integrity rules: `app_name` must equal `"SharedFileVault"`,
+  `team_id` must equal the directory name, and `team_name` must be
+  non-empty.
+  Entries failing those checks are skipped silently.
+  This keeps a tampered or stale metadata file from yielding a context
+  that points to the wrong team or wrong app.
+- Team creation is a Manager function and does not go through Vault.
+  The former `POST /teams/create` web endpoint and its index-page form
+  have been removed; the empty-state index page points users to
+  `shared-file-vault login <team_name>` on the CLI.
