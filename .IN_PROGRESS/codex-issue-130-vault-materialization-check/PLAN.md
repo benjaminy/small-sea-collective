@@ -495,7 +495,8 @@ At wrap-up, fill in concrete file paths and test names showing:
   returned no matches.
 - [x] No public metadata gap was found.
   `/session/info` already supplies `participant_hex`, `berth_id`,
-  `team_name`, and `app_name`; no `FOLLOW-UP.md` was needed.
+  `team_name`, and `app_name`.
+  `FOLLOW-UP.md` records only the offline local resolver improvement.
 - [x] Existing Hub-backed Vault sync behavior still works.
   `uv run pytest packages/shared-file-vault/tests -q` passed.
 

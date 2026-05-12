@@ -33,31 +33,14 @@ def _die(message: str) -> None:
 
 def _team_context(team_name: str, participant_hex: str):
     cfg = _config()
-    token = (
-        (cfg.get("team_sessions") or {})
-        .get(team_name, {})
-        .get("session_token")
-    )
-    if not token:
-        return vault.VaultMaterializationContext.legacy_for_local_use(
-            participant_hex, team_name
-        )
-
     try:
-        session = sync.get_team_session(
+        return sync.resolve_team_context(
             team_name,
+            participant_hex,
             hub_port=cfg.get("hub_port", 11437),
         )
-        context = vault.materialization_context_from_session_info(session.session_info())
     except (sync.VaultSyncError, ValueError) as exc:
         _die(str(exc))
-
-    if context.participant_hex != participant_hex:
-        _die(
-            f"Cached Hub session for {team_name!r} belongs to participant "
-            f"{context.participant_hex!r}, not {participant_hex!r}."
-        )
-    return context
 
 
 @click.group()

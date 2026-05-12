@@ -34,7 +34,7 @@ derive the peer bucket from the current session berth.
 
 The web layer now resolves an active cached session into the same materialization
 context before calling Vault.
-The CLI now uses the same pattern for local commands when a cached session
-exists.
+The CLI now uses the same `sync.resolve_team_context` helper for local commands
+when a cached session exists.
 No-session local web and CLI flows still use an explicit local fallback context,
 where the friendly label is also the local team ID.

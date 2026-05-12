@@ -700,7 +700,7 @@ def init_vault(vault_root, participant_hex):
     conn.close()
 
 
-def create_niche(vault_root, participant_hex, team_name, niche_name):
+def create_niche(vault_root, participant_hex, context_or_team, niche_name):
     """Create a niche and record it in the team's shared registry.
 
     Creates the niche git repo locally. The registry entry propagates to
@@ -708,7 +708,7 @@ def create_niche(vault_root, participant_hex, team_name, niche_name):
 
     niche_name is canonicalized (NFC + casefold + slug) before use.
     """
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     niche_name = _canonical_name(niche_name)
     _ensure_registry(vault_root, participant_hex, context)
 
@@ -744,7 +744,7 @@ def create_niche(vault_root, participant_hex, team_name, niche_name):
     return niche_id
 
 
-def list_niches(vault_root, participant_hex, team_name):
+def list_niches(vault_root, participant_hex, context_or_team):
     """List all niches known to this participant for a team.
 
     Reads from the local registry checkout, which reflects whatever has
@@ -753,7 +753,7 @@ def list_niches(vault_root, participant_hex, team_name):
     Each returned dict includes a ``"residency"`` key with the string value
     of the niche's NicheResidency on this device, computed on read.
     """
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     _ensure_registry(vault_root, participant_hex, context)
     registry_co = _registry_checkout_dir(vault_root, context)
     niches = []
@@ -767,7 +767,7 @@ def list_niches(vault_root, participant_hex, team_name):
     return niches
 
 
-def add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path):
+def add_checkout(vault_root, participant_hex, context_or_team, niche_name, dest_path):
     """Register a local directory as the checkout of a niche.
 
     Each niche may have at most one checkout on a device. Raises
@@ -776,7 +776,7 @@ def add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path):
 
     If the niche already has commits, dest_path is populated immediately.
     """
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     if not git_dir.exists():
         raise ValueError(f"Niche '{niche_name}' does not exist in team '{context.team_name}'")
@@ -803,9 +803,9 @@ def add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path):
     conn.close()
 
 
-def remove_checkout(vault_root, participant_hex, team_name, niche_name, checkout_path):
+def remove_checkout(vault_root, participant_hex, context_or_team, niche_name, checkout_path):
     """Unregister a checkout. Does not delete files in the directory."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     conn = _connect_checkouts(vault_root, participant_hex)
     conn.execute(
         "DELETE FROM checkout WHERE team_id = ? AND niche_name = ? AND checkout_path = ?",
@@ -815,9 +815,9 @@ def remove_checkout(vault_root, participant_hex, team_name, niche_name, checkout
     conn.close()
 
 
-def get_checkout(vault_root, participant_hex, team_name, niche_name):
+def get_checkout(vault_root, participant_hex, context_or_team, niche_name):
     """Return the single registered checkout path for a niche, or None."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     conn = _connect_checkouts(vault_root, participant_hex)
     row = conn.execute(
         "SELECT checkout_path FROM checkout WHERE team_id = ? AND niche_name = ?",
@@ -827,20 +827,20 @@ def get_checkout(vault_root, participant_hex, team_name, niche_name):
     return row["checkout_path"] if row else None
 
 
-def list_checkouts(vault_root, participant_hex, team_name, niche_name):
+def list_checkouts(vault_root, participant_hex, context_or_team, niche_name):
     """Return list of checkout paths for a niche (at most one element)."""
-    checkout = get_checkout(vault_root, participant_hex, team_name, niche_name)
+    checkout = get_checkout(vault_root, participant_hex, context_or_team, niche_name)
     return [checkout] if checkout is not None else []
 
 
-def niche_residency(vault_root, participant_hex, team_name, niche_name):
+def niche_residency(vault_root, participant_hex, context_or_team, niche_name):
     """Return the NicheResidency for a niche on this device.
 
     REMOTE_ONLY  — no local git dir exists (niche known only from registry).
     CACHED       — local git dir exists but no checkout is registered.
     CHECKED_OUT  — local git dir exists and a checkout is registered.
     """
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     if not git_dir.exists():
         return NicheResidency.REMOTE_ONLY
@@ -850,10 +850,10 @@ def niche_residency(vault_root, participant_hex, team_name, niche_name):
     return NicheResidency.CHECKED_OUT
 
 
-def publish(vault_root, participant_hex, team_name, niche_name, checkout_path,
+def publish(vault_root, participant_hex, context_or_team, niche_name, checkout_path,
             files=None, message=None):
     """Stage changes in a checkout and commit. Returns commit hash."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     checkout = pathlib.Path(checkout_path).resolve()
     git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
@@ -870,9 +870,9 @@ def publish(vault_root, participant_hex, team_name, niche_name, checkout_path,
     return result.stdout.strip()
 
 
-def status(vault_root, participant_hex, team_name, niche_name, checkout_path):
+def status(vault_root, participant_hex, context_or_team, niche_name, checkout_path):
     """Get git status for a checkout. Returns list of {status, path} dicts."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     checkout = pathlib.Path(checkout_path)
     result = gitCmd(
@@ -887,9 +887,9 @@ def status(vault_root, participant_hex, team_name, niche_name, checkout_path):
     return entries
 
 
-def log(vault_root, participant_hex, team_name, niche_name, limit=20):
+def log(vault_root, participant_hex, context_or_team, niche_name, limit=20):
     """Get commit log for a niche. Returns list of {hash, message} dicts."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     result = gitCmd(
         ["--git-dir", str(git_dir), "log", "--oneline", "-n", str(limit)],
@@ -903,40 +903,40 @@ def log(vault_root, participant_hex, team_name, niche_name, limit=20):
     return entries
 
 
-def push_registry(vault_root, participant_hex, team_name, remote):
+def push_registry(vault_root, participant_hex, context_or_team, remote):
     """Push the niche registry to cloud storage via Cod Sync."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     _ensure_registry(vault_root, participant_hex, context)
     git_dir = _registry_git_dir(vault_root, context)
     _cod_push(git_dir, remote)
 
 
-def pull_registry(vault_root, participant_hex, team_name, remote):
+def pull_registry(vault_root, participant_hex, context_or_team, remote):
     """Pull the niche registry from cloud storage and merge."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     _ensure_registry(vault_root, participant_hex, context)
     git_dir = _registry_git_dir(vault_root, context)
     checkout = _registry_checkout_dir(vault_root, context)
     _cod_pull(git_dir, checkout, remote)
 
 
-def fetch_registry(vault_root, participant_hex, team_name, member_id, remote):
+def fetch_registry(vault_root, participant_hex, context_or_team, member_id, remote):
     """Fetch the registry from a peer and pin it to a durable local ref."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     _ensure_registry(vault_root, participant_hex, context)
     git_dir = _registry_git_dir(vault_root, context)
     ref_name = _peer_ref_name(member_id)
     fetched_sha = _cod_fetch(git_dir, remote, ref_name)
     if fetched_sha is not None:
         _record_peer_fetch(
-            vault_root, participant_hex, team_name, "registry", None, member_id, fetched_sha
+            vault_root, participant_hex, context, "registry", None, member_id, fetched_sha
         )
     return fetched_sha
 
 
-def merge_registry(vault_root, participant_hex, team_name, member_id):
+def merge_registry(vault_root, participant_hex, context_or_team, member_id):
     """Merge a previously parked registry ref from a peer."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     _ensure_registry(vault_root, participant_hex, context)
     git_dir = _registry_git_dir(vault_root, context)
     checkout = _registry_checkout_dir(vault_root, context)
@@ -946,19 +946,19 @@ def merge_registry(vault_root, participant_hex, team_name, member_id):
         return None
     if _has_commits(git_dir) and _is_ancestor(git_dir, parked_sha, "HEAD"):
         _record_peer_merge(
-            vault_root, participant_hex, team_name, "registry", None, member_id, parked_sha
+            vault_root, participant_hex, context, "registry", None, member_id, parked_sha
         )
         return parked_sha
     _cod_merge_ref(git_dir, checkout, ref_name)
     _record_peer_merge(
-        vault_root, participant_hex, team_name, "registry", None, member_id, parked_sha
+        vault_root, participant_hex, context, "registry", None, member_id, parked_sha
     )
     return parked_sha
 
 
-def push_niche(vault_root, participant_hex, team_name, niche_name, remote):
+def push_niche(vault_root, participant_hex, context_or_team, niche_name, remote):
     """Push a niche to cloud storage via Cod Sync."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     _cod_push(git_dir, remote)
 
@@ -1005,7 +1005,7 @@ def _require_clean_checkout(vault_root, participant_hex, context_or_team, niche_
     return checkout
 
 
-def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
+def pull_niche(vault_root, participant_hex, context_or_team, niche_name, remote):
     """Pull a niche from cloud storage and merge into the user checkout.
 
     Requires a checkout to be attached and clean. This keeps pull semantics
@@ -1015,7 +1015,7 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
     For the initial join flow (no checkout yet), use fetch_niche to park the
     remote content, then add_checkout, then merge_niche.
     """
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     if not git_dir.exists():
         git_dir.mkdir(parents=True)
@@ -1026,14 +1026,14 @@ def pull_niche(vault_root, participant_hex, team_name, niche_name, remote):
     _cod_pull(git_dir, checkout, remote)
 
 
-def fetch_niche(vault_root, participant_hex, team_name, niche_name, member_id, remote):
+def fetch_niche(vault_root, participant_hex, context_or_team, niche_name, member_id, remote):
     """Fetch a niche from a peer and pin it to a durable local ref.
 
     Fetch does not modify the user's checkout, so no clean-checkout guard
     is needed here. The guard fires at merge time.  Works from CACHED state
     (no checkout registered).
     """
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     if not git_dir.exists():
         git_dir.mkdir(parents=True)
@@ -1043,12 +1043,12 @@ def fetch_niche(vault_root, participant_hex, team_name, niche_name, member_id, r
     fetched_sha = _cod_fetch(git_dir, remote, ref_name)
     if fetched_sha is not None:
         _record_peer_fetch(
-            vault_root, participant_hex, team_name, "niche", niche_name, member_id, fetched_sha
+            vault_root, participant_hex, context, "niche", niche_name, member_id, fetched_sha
         )
     return fetched_sha
 
 
-def merge_niche(vault_root, participant_hex, team_name, niche_name, member_id):
+def merge_niche(vault_root, participant_hex, context_or_team, niche_name, member_id):
     """Merge a previously parked niche ref from a peer.
 
     Requires a checkout to be attached (raises NoCheckoutError if none).
@@ -1056,7 +1056,7 @@ def merge_niche(vault_root, participant_hex, team_name, niche_name, member_id):
     The clean-checkout guard fires before any merge step that writes into
     the user checkout.
     """
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     checkout = _require_clean_checkout(vault_root, participant_hex, context, niche_name)
 
@@ -1066,25 +1066,25 @@ def merge_niche(vault_root, participant_hex, team_name, niche_name, member_id):
         return None
     if _has_commits(git_dir) and _is_ancestor(git_dir, parked_sha, "HEAD"):
         _record_peer_merge(
-            vault_root, participant_hex, team_name, "niche", niche_name, member_id, parked_sha
+            vault_root, participant_hex, context, "niche", niche_name, member_id, parked_sha
         )
         return parked_sha
     _cod_merge_ref(git_dir, checkout, ref_name)
     _record_peer_merge(
-        vault_root, participant_hex, team_name, "niche", niche_name, member_id, parked_sha
+        vault_root, participant_hex, context, "niche", niche_name, member_id, parked_sha
     )
     return parked_sha
 
 
-def registry_conflict_paths(vault_root, participant_hex, team_name):
+def registry_conflict_paths(vault_root, participant_hex, context_or_team):
     """Return unresolved conflict paths for the team's registry repo."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _registry_git_dir(vault_root, context)
     checkout = _registry_checkout_dir(vault_root, context)
     return _conflict_paths(git_dir, checkout)
 
 
-def niche_conflict_paths(vault_root, participant_hex, team_name, niche_name):
+def niche_conflict_paths(vault_root, participant_hex, context_or_team, niche_name):
     """Return unresolved conflict paths for a niche's user checkout.
 
     Decision tree:
@@ -1099,7 +1099,7 @@ def niche_conflict_paths(vault_root, participant_hex, team_name, niche_name):
     StaleCheckoutError when MERGE_HEAD is present but no checkout is available.
     Audit every caller to confirm they handle or never reach these states.
     """
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     if not git_dir.exists():
         return []
@@ -1117,10 +1117,10 @@ def niche_conflict_paths(vault_root, participant_hex, team_name, niche_name):
 
 
 def peer_update_status(
-    vault_root, participant_hex, team_name, repo_kind, niche_name, member_id
+    vault_root, participant_hex, context_or_team, repo_kind, niche_name, member_id
 ):
     """Return parked-ref status for one peer/repo pair."""
-    context = _coerce_context(participant_hex, team_name)
+    context = _coerce_context(participant_hex, context_or_team)
     if repo_kind == "registry":
         _ensure_registry(vault_root, participant_hex, context)
         git_dir = _registry_git_dir(vault_root, context)

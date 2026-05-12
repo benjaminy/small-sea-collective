@@ -58,14 +58,14 @@ def create_app(
 
     def _team_context(request: Request, team_name: str):
         try:
-            session = sync.get_team_session(
+            return sync.resolve_team_context(
                 team_name,
+                _ph(request),
                 hub_port=_hub_port(request),
                 _http_client=_http_client(request),
             )
         except sync.LoginRequiredError:
             return team_name
-        return vault.materialization_context_from_session_info(session.session_info())
 
     def _session_fragment(request: Request, team_name: str, error: str | None = None):
         return templates.TemplateResponse(

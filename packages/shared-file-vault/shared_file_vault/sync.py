@@ -21,7 +21,6 @@ from shared_file_vault import vault
 
 _CONFIG_PATH = pathlib.Path.home() / ".config" / "small-sea" / "vault.toml"
 HUB_APP_NAME = "SharedFileVault"
-_HUB_APP_NAME = HUB_APP_NAME
 _CLI_CLIENT_NAME = "SharedFileVaultCLI"
 
 
@@ -272,7 +271,7 @@ def login_team(
     """Open or request a team-scoped Hub session and persist the token."""
     client = SmallSeaClient(port=hub_port, _http_client=_http_client)
     session, pending_id = client.start_session(
-        participant_hex, _HUB_APP_NAME, team_name, _CLI_CLIENT_NAME
+        participant_hex, HUB_APP_NAME, team_name, _CLI_CLIENT_NAME
     )
 
     auto_approved = session is not None
@@ -286,9 +285,9 @@ def login_team(
         raise VaultSyncError(
             f"Hub returned session for team {info.get('team_name')!r}, expected {team_name!r}"
         )
-    if info.get("app_name") != _HUB_APP_NAME:
+    if info.get("app_name") != HUB_APP_NAME:
         raise VaultSyncError(
-            f"Hub returned app {info.get('app_name')!r}, expected {_HUB_APP_NAME!r}"
+            f"Hub returned app {info.get('app_name')!r}, expected {HUB_APP_NAME!r}"
         )
 
     store_session_token(team_name, session.token)
@@ -352,6 +351,35 @@ def _session_context(session: SmallSeaSession | None, participant_hex: str, team
             participant_hex, team_name
         )
     return vault.materialization_context_from_session_info(session.session_info())
+
+
+def resolve_team_context(
+    team_name: str,
+    participant_hex: str,
+    hub_port: int = SmallSeaClient.DEFAULT_PORT,
+    *,
+    _http_client=None,
+):
+    """Resolve a Vault team context from a cached session, or local fallback."""
+    config = load_config()
+    token = (
+        (config.get("team_sessions") or {})
+        .get(team_name, {})
+        .get("session_token")
+    )
+    if not token:
+        return vault.VaultMaterializationContext.legacy_for_local_use(
+            participant_hex, team_name
+        )
+
+    session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+    context = vault.materialization_context_from_session_info(session.session_info())
+    if context.participant_hex != participant_hex:
+        raise VaultSyncError(
+            f"Cached Hub session for {team_name!r} belongs to participant "
+            f"{context.participant_hex!r}, not {participant_hex!r}."
+        )
+    return context
 
 
 def _remote_kwargs(session: SmallSeaSession) -> dict:
