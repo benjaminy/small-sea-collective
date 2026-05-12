@@ -337,8 +337,8 @@ def test_sync_config_roundtrip_and_remote_prefixes(tmp_path, monkeypatch):
     assert loaded["team_sessions"]["Project X"]["session_token"] == "tok-123"
 
     session = SmallSeaSession(SmallSeaClient(port=7777), "session-token")
-    registry_remote = sync.make_registry_remote("ProjectX", session)
-    niche_remote = sync.make_niche_remote("ProjectX", "docs", session)
+    registry_remote = sync.make_registry_remote(session)
+    niche_remote = sync.make_niche_remote("docs", session)
 
     assert registry_remote._path_prefix == "registry/"
     assert niche_remote._path_prefix == "niches/docs/"
@@ -418,6 +418,69 @@ def test_cli_push_uses_config_defaults(monkeypatch, tmp_path):
         "niche_name": "docs",
         "hub_port": 23456,
     }
+
+
+def test_cli_local_create_uses_cached_session_context(monkeypatch, tmp_path):
+    config_file = tmp_path / "vault.toml"
+    monkeypatch.setenv("SMALL_SEA_VAULT_CONFIG", str(config_file))
+    participant = "aa" * 16
+    team_id = "11" * 16
+    vault_root = tmp_path / "vault"
+    vault.init_vault(str(vault_root), participant)
+    sync.save_config(
+        {
+            "vault_root": str(vault_root),
+            "participant_hex": participant,
+            "hub_port": 23456,
+            "team_sessions": {"ProjectX": {"session_token": "tok"}},
+        }
+    )
+
+    class FakeSession:
+        def session_info(self):
+            return {
+                "participant_hex": participant,
+                "berth_id": team_id,
+                "team_name": "ProjectX",
+                "app_name": sync.HUB_APP_NAME,
+            }
+
+    def _fake_session(team_name, hub_port=11437, *, _http_client=None):
+        assert team_name == "ProjectX"
+        assert hub_port == 23456
+        return FakeSession()
+
+    monkeypatch.setattr(sync, "get_team_session", _fake_session)
+    runner = CliRunner()
+    result = runner.invoke(cli, ["create", str(vault_root), participant, "ProjectX", "docs"])
+
+    assert result.exit_code == 0, result.output
+    checkout = tmp_path / "checkout"
+    result = runner.invoke(
+        cli,
+        ["checkout", str(vault_root), participant, "ProjectX", "docs", str(checkout)],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (
+        vault_root
+        / "participants"
+        / participant
+        / "teams"
+        / team_id
+        / "niches"
+        / "docs"
+        / "git"
+    ).is_dir()
+    assert not (
+        vault_root
+        / "participants"
+        / participant
+        / "teams"
+        / "ProjectX"
+    ).exists()
+    context = vault.VaultMaterializationContext(participant, team_id, "ProjectX")
+    assert vault.get_checkout(str(vault_root), participant, context, "docs") == str(checkout)
 
 
 def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monkeypatch):

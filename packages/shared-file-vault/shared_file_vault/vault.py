@@ -159,6 +159,11 @@ class VaultMaterializationContext:
                 "Hub session_info missing required Vault materialization field(s): "
                 + ", ".join(missing)
             )
+        if info.get("app_name") != "SharedFileVault":
+            raise ValueError(
+                "Hub session_info app_name must be 'SharedFileVault' for Vault "
+                f"materialization, got {info.get('app_name')!r}"
+            )
         return cls(
             participant_hex=str(info["participant_hex"]),
             team_id=str(info["berth_id"]),
@@ -183,11 +188,10 @@ def materialization_context_from_session_info(info):
 def _coerce_context(participant_hex, context_or_team):
     if isinstance(context_or_team, VaultMaterializationContext):
         if context_or_team.participant_hex != participant_hex:
-            return VaultMaterializationContext(
-                participant_hex=str(participant_hex),
-                team_id=context_or_team.team_id,
-                team_name=context_or_team.team_name,
-                app_name=context_or_team.app_name,
+            raise ValueError(
+                "Vault materialization context participant "
+                f"{context_or_team.participant_hex!r} does not match requested "
+                f"participant {participant_hex!r}"
             )
         return context_or_team
     return VaultMaterializationContext.legacy_for_local_use(participant_hex, context_or_team)

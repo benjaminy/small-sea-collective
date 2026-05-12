@@ -57,6 +57,7 @@ def test_create_niche(playground_dir):
     )
     assert git_dir.is_dir()
     assert (git_dir / "HEAD").exists()
+    assert "SharedFileVault" not in str(git_dir)
 
     # Niche appears in the registry
     niches = list_niches(playground_dir, PARTICIPANT, TEAM)
@@ -87,6 +88,53 @@ def test_same_friendly_name_different_teams_do_not_share_storage(playground_dir)
 
     assert get_checkout(playground_dir, PARTICIPANT, alpha, "docs") == str(checkout_a)
     assert get_checkout(playground_dir, PARTICIPANT, beta, "docs") == str(checkout_b)
+
+    from shared_file_vault import vault as vault_module
+
+    member_id = "ff" * 16
+    vault_module._record_peer_fetch(
+        playground_dir, PARTICIPANT, alpha, "niche", "docs", member_id, "alpha-sha"
+    )
+    vault_module._record_peer_fetch(
+        playground_dir, PARTICIPANT, beta, "niche", "docs", member_id, "beta-sha"
+    )
+    alpha_status = vault_module.peer_update_status(
+        playground_dir, PARTICIPANT, alpha, "niche", "docs", member_id
+    )
+    beta_status = vault_module.peer_update_status(
+        playground_dir, PARTICIPANT, beta, "niche", "docs", member_id
+    )
+    assert alpha_status["last_fetched_sha"] == "alpha-sha"
+    assert beta_status["last_fetched_sha"] == "beta-sha"
+
+    vault_module.set_peer_signal_watermark(playground_dir, PARTICIPANT, alpha, member_id, 7)
+    vault_module.set_peer_signal_watermark(playground_dir, PARTICIPANT, beta, member_id, 9)
+    assert vault_module.get_peer_signal_watermark(
+        playground_dir, PARTICIPANT, alpha, member_id
+    ) == 7
+    assert vault_module.get_peer_signal_watermark(
+        playground_dir, PARTICIPANT, beta, member_id
+    ) == 9
+
+
+def test_context_participant_mismatch_raises(playground_dir):
+    _init(playground_dir)
+    wrong_participant = VaultMaterializationContext("bb" * 16, TEAM_ID, TEAM_NAME)
+
+    with pytest.raises(ValueError, match="participant"):
+        create_niche(playground_dir, PARTICIPANT, wrong_participant, "docs")
+
+
+def test_session_info_rejects_non_vault_app_name():
+    with pytest.raises(ValueError, match="app_name"):
+        VaultMaterializationContext.from_session_info(
+            {
+                "participant_hex": PARTICIPANT,
+                "berth_id": TEAM_ID,
+                "team_name": TEAM_NAME,
+                "app_name": "OtherApp",
+            }
+        )
 
 
 def test_add_checkout(playground_dir):
@@ -249,10 +297,10 @@ def _two_vault_setup(playground_dir):
     # Bob gets an empty vault and fetches from alice
     bob_root = playground / "vault-bob"
     init_vault(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, TEAM, "shared", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, LocalFolderRemote(str(cloud)))
 
     bob_co = playground / "checkout-bob"
-    add_checkout(str(bob_root), PARTICIPANT_B, TEAM, "shared", str(bob_co))
+    add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", str(bob_co))
 
     return playground, bob_root, bob_co
 
@@ -276,11 +324,11 @@ def test_merge_without_checkout_raises(playground_dir):
 
     bob_root = playground / "vault-bob"
     init_vault(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, TEAM, "stuff", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT, LocalFolderRemote(str(cloud)))
 
     # Bob has a fetched ref but no checkout — merge must fail clearly
     with pytest.raises(NoCheckoutError):
-        merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "stuff", PARTICIPANT)
+        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT)
 
 
 def test_merge_dirty_tracked_file_raises(playground_dir):
@@ -292,7 +340,7 @@ def test_merge_dirty_tracked_file_raises(playground_dir):
     (bob_co / "hello.txt").write_text("modified\n")
 
     with pytest.raises(DirtyCheckoutError) as exc_info:
-        merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "shared", PARTICIPANT)
+        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT)
 
     assert "hello.txt" in exc_info.value.paths
 
@@ -309,7 +357,7 @@ def test_merge_dirty_untracked_file_raises(playground_dir):
     (bob_co / "untracked.txt").write_text("surprise\n")
 
     with pytest.raises(DirtyCheckoutError) as exc_info:
-        merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "shared", PARTICIPANT)
+        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT)
 
     assert "untracked.txt" in exc_info.value.paths
 
@@ -319,7 +367,7 @@ def test_merge_clean_checkout_succeeds(playground_dir):
     playground, bob_root, bob_co = _two_vault_setup(playground_dir)
 
     # Bob's checkout is clean; merge should succeed and deliver alice's file
-    result_sha = merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "shared", PARTICIPANT)
+    result_sha = merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT)
 
     assert result_sha is not None
     assert (bob_co / "hello.txt").exists()
@@ -344,11 +392,11 @@ def test_residency_remote_only(playground_dir):
     import pathlib as _pl
     from shared_file_vault.vault import _registry_checkout_dir, _ensure_registry
     import json
-    _ensure_registry(playground_dir, other, TEAM)
+    _ensure_registry(playground_dir, other, _team_for(other))
     reg_co = _registry_checkout_dir(playground_dir, _team_for(other))
     (reg_co / "photos.json").write_text(json.dumps({"id": "x" * 32, "name": "photos"}))
 
-    assert niche_residency(playground_dir, other, TEAM, "photos") is NicheResidency.REMOTE_ONLY
+    assert niche_residency(playground_dir, other, _team_for(other), "photos") is NicheResidency.REMOTE_ONLY
 
 
 def test_residency_cached(playground_dir):
@@ -427,11 +475,14 @@ def test_no_checkout_error_remote_only_message(playground_dir):
     assert "attach" in str(err).lower()
 
 
-def test_cli_list_shows_residency_labels(playground_dir):
+def test_cli_list_shows_residency_labels(playground_dir, monkeypatch):
     """sfv list reports the correct residency label for all three states."""
     from click.testing import CliRunner
     from shared_file_vault.cli import cli
 
+    monkeypatch.setenv(
+        "SMALL_SEA_VAULT_CONFIG", str(pathlib.Path(playground_dir) / "vault.toml")
+    )
     _init(playground_dir)
     create_niche(playground_dir, PARTICIPANT, TEAM_NAME, "alpha")   # will be CHECKED_OUT
     create_niche(playground_dir, PARTICIPANT, TEAM_NAME, "beta")    # stays CACHED
@@ -487,10 +538,10 @@ def test_no_transit_dir_ever_created(playground_dir):
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     # Bob: fetch → add_checkout → merge
-    fetch_niche(str(bob_root), PARTICIPANT_B, TEAM, "sync", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderRemote(str(cloud)))
     bob_co = playground / "co-bob"
-    add_checkout(str(bob_root), PARTICIPANT_B, TEAM, "sync", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "sync", PARTICIPANT)
+    add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT)
 
     # Walk every vault directory and assert no transit/ dir exists
     for vault_root in [pathlib.Path(playground_dir), bob_root]:
@@ -506,12 +557,12 @@ def test_fetch_without_checkout_pins_ref(playground_dir):
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     fetched_sha = fetch_niche(
-        str(bob_root), PARTICIPANT_B, TEAM, "sync", PARTICIPANT, LocalFolderRemote(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderRemote(str(cloud))
     )
 
     assert fetched_sha is not None
     # The niche is CACHED (no checkout registered)
-    assert niche_residency(str(bob_root), PARTICIPANT_B, TEAM, "sync") is NicheResidency.CACHED
+    assert niche_residency(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync") is NicheResidency.CACHED
 
     # The parked ref resolves to the fetched SHA — validates _resolve_ref without a checkout
     from shared_file_vault.vault import _niche_git_dir, _peer_ref_name, _resolve_ref
@@ -527,10 +578,10 @@ def test_peer_update_status_cached_resolve_ref_path(playground_dir):
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
     fetch_niche(
-        str(bob_root), PARTICIPANT_B, TEAM, "sync", PARTICIPANT, LocalFolderRemote(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderRemote(str(cloud))
     )
 
-    status_info = peer_update_status(str(bob_root), PARTICIPANT_B, TEAM, "niche", "sync", PARTICIPANT)
+    status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "sync", PARTICIPANT)
     assert status_info["parked_sha"] is not None
     assert status_info["ready_to_merge"] is True
     assert status_info["already_merged"] is False
@@ -557,11 +608,11 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
     # Bob: fetch A, add checkout, merge A (creates local HEAD at A), then unregister checkout
     bob_root = playground / "vault-bob"
     init_vault(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, TEAM, "history", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderRemote(str(cloud)))
     bob_co = playground / "co-bob"
-    add_checkout(str(bob_root), PARTICIPANT_B, TEAM, "history", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "history", PARTICIPANT)
-    remove_checkout(str(bob_root), PARTICIPANT_B, TEAM, "history", str(bob_co))
+    add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT)
+    remove_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
     # Bob's niche is now CACHED with HEAD at A
 
     # Alice: commit B, push
@@ -571,19 +622,19 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
 
     # Bob: fetch B — parked_sha is B, HEAD is A, so _is_ancestor is exercised
     sha_B = fetch_niche(
-        str(bob_root), PARTICIPANT_B, TEAM, "history", PARTICIPANT, LocalFolderRemote(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderRemote(str(cloud))
     )
-    status_info = peer_update_status(str(bob_root), PARTICIPANT_B, TEAM, "niche", "history", PARTICIPANT)
+    status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "history", PARTICIPANT)
     assert status_info["parked_sha"] == sha_B
     assert status_info["already_merged"] is False
     assert status_info["ready_to_merge"] is True
 
     # Bob re-registers, merges B, removes checkout again → already_merged=True
-    add_checkout(str(bob_root), PARTICIPANT_B, TEAM, "history", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "history", PARTICIPANT)
-    remove_checkout(str(bob_root), PARTICIPANT_B, TEAM, "history", str(bob_co))
+    add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT)
+    remove_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
 
-    status_info = peer_update_status(str(bob_root), PARTICIPANT_B, TEAM, "niche", "history", PARTICIPANT)
+    status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "history", PARTICIPANT)
     assert status_info["already_merged"] is True
     assert status_info["ready_to_merge"] is False
 
@@ -601,9 +652,9 @@ def test_initial_history_pull(playground_dir):
     git_dir.mkdir(parents=True)
     _init_git_dir(git_dir)
     bob_co = playground / "co-bob"
-    add_checkout(str(bob_root), PARTICIPANT_B, TEAM, "sync", str(bob_co))
+    add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
 
-    pull_niche(str(bob_root), PARTICIPANT_B, TEAM, "sync", LocalFolderRemote(str(cloud)))
+    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderRemote(str(cloud)))
 
     assert (bob_co / "file.txt").exists()
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -616,11 +667,11 @@ def test_initial_history_merge(playground_dir):
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     fetch_niche(
-        str(bob_root), PARTICIPANT_B, TEAM, "sync", PARTICIPANT, LocalFolderRemote(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderRemote(str(cloud))
     )
     bob_co = playground / "co-bob"
-    add_checkout(str(bob_root), PARTICIPANT_B, TEAM, "sync", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "sync", PARTICIPANT)
+    add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT)
 
     assert (bob_co / "file.txt").exists()
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -647,10 +698,10 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
 
     bob_root = playground / "vault-bob"
     init_vault(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, TEAM, "conflict", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderRemote(str(cloud)))
     bob_co = playground / "co-bob"
-    add_checkout(str(bob_root), PARTICIPANT_B, TEAM, "conflict", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "conflict", PARTICIPANT)
+    add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co))
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT)
 
     # Both Alice and Bob modify the same file divergently and push/re-fetch
     (alice_co / "shared.txt").write_text("alice edit\n")
@@ -658,14 +709,14 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
     push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderRemote(str(cloud)))
 
     (bob_co / "shared.txt").write_text("bob edit\n")
-    publish(str(bob_root), PARTICIPANT_B, TEAM, "conflict", str(bob_co), message="bob")
+    publish(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co), message="bob")
 
-    fetch_niche(str(bob_root), PARTICIPANT_B, TEAM, "conflict", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderRemote(str(cloud)))
 
     with pytest.raises(MergeConflictError):
-        merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "conflict", PARTICIPANT)
+        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT)
 
-    conflict_files = niche_conflict_paths(str(bob_root), PARTICIPANT_B, TEAM, "conflict")
+    conflict_files = niche_conflict_paths(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict")
     assert "shared.txt" in conflict_files
 
 
@@ -682,15 +733,15 @@ def test_stale_bundle_guard(playground_dir):
     git_dir.mkdir(parents=True)
     _init_git_dir(git_dir)
     bob_co = playground / "co-bob"
-    add_checkout(str(bob_root), PARTICIPANT_B, TEAM, "sync", str(bob_co))
-    pull_niche(str(bob_root), PARTICIPANT_B, TEAM, "sync", LocalFolderRemote(str(cloud)))
+    add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
+    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderRemote(str(cloud)))
     assert (bob_co / "file.txt").read_text() == "v1\n"
 
     # Now point pull at an empty remote — fetch_from_remote returns None
     empty_cloud = playground / "cloud-empty"
     empty_cloud.mkdir()
     with pytest.raises(RuntimeError, match="could not fetch from remote"):
-        pull_niche(str(bob_root), PARTICIPANT_B, TEAM, "sync", LocalFolderRemote(str(empty_cloud)))
+        pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderRemote(str(empty_cloud)))
 
     # Checkout is unchanged
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -777,12 +828,12 @@ def test_cwd_preserved_across_vault_operations(playground_dir):
     bob_root = playground / "vault-bob"
     init_vault(str(bob_root), PARTICIPANT_B)
 
-    fetch_niche(str(bob_root), PARTICIPANT_B, TEAM, "cwdtest", PARTICIPANT, LocalFolderRemote(str(cloud_niche)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT, LocalFolderRemote(str(cloud_niche)))
     assert os.getcwd() == cwd_before
 
     bob_co = playground / "co-bob"
-    add_checkout(str(bob_root), PARTICIPANT_B, TEAM, "cwdtest", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, TEAM, "cwdtest", PARTICIPANT)
+    add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", str(bob_co))
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT)
     assert os.getcwd() == cwd_before
 
     # pull_niche (initial pull path)
@@ -793,20 +844,20 @@ def test_cwd_preserved_across_vault_operations(playground_dir):
     git_dir2.mkdir(parents=True)
     _init_git_dir(git_dir2)
     bob2_co = playground / "co-bob2"
-    add_checkout(str(bob2_root), PARTICIPANT_C, TEAM, "cwdtest", str(bob2_co))
-    pull_niche(str(bob2_root), PARTICIPANT_C, TEAM, "cwdtest", LocalFolderRemote(str(cloud_niche)))
+    add_checkout(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", str(bob2_co))
+    pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderRemote(str(cloud_niche)))
     assert os.getcwd() == cwd_before
 
     # merge_registry (covers _cod_merge_ref via registry path)
     from shared_file_vault.vault import fetch_registry
-    fetch_registry(str(bob_root), PARTICIPANT_B, TEAM, PARTICIPANT, LocalFolderRemote(str(cloud_reg)))
+    fetch_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, LocalFolderRemote(str(cloud_reg)))
     assert os.getcwd() == cwd_before
-    merge_registry(str(bob_root), PARTICIPANT_B, TEAM, PARTICIPANT)
+    merge_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT)
     assert os.getcwd() == cwd_before
 
     # Failure path: pull_niche on empty remote raises but leaves CWD unchanged
     empty_cloud = playground / "cloud-empty"
     empty_cloud.mkdir()
     with pytest.raises(RuntimeError, match="could not fetch from remote"):
-        pull_niche(str(bob2_root), PARTICIPANT_C, TEAM, "cwdtest", LocalFolderRemote(str(empty_cloud)))
+        pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderRemote(str(empty_cloud)))
     assert os.getcwd() == cwd_before

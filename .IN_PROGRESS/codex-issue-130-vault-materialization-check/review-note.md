@@ -15,6 +15,8 @@ The main review path is:
   context construction and within-session cloud prefixes.
 - `packages/shared-file-vault/shared_file_vault/web.py` for using the active
   session context when the web UI calls Vault.
+- `packages/shared-file-vault/shared_file_vault/cli.py` for using that same
+  cached-session context in local CLI commands.
 - `packages/shared-file-vault/tests/test_vault.py`,
   `packages/shared-file-vault/tests/test_hub_sync.py`, and
   `packages/shared-file-vault/tests/test_web_sync.py` for the new micro tests.

@@ -362,7 +362,7 @@ def _remote_kwargs(session: SmallSeaSession) -> dict:
     }
 
 
-def make_registry_remote(_context, session: SmallSeaSession) -> SmallSeaRemote:
+def make_registry_remote(session: SmallSeaSession) -> SmallSeaRemote:
     return SmallSeaRemote(
         session.token,
         path_prefix=registry_path_prefix(),
@@ -370,9 +370,7 @@ def make_registry_remote(_context, session: SmallSeaSession) -> SmallSeaRemote:
     )
 
 
-def make_niche_remote(
-    _context, niche_name: str, session: SmallSeaSession
-) -> SmallSeaRemote:
+def make_niche_remote(niche_name: str, session: SmallSeaSession) -> SmallSeaRemote:
     return SmallSeaRemote(
         session.token,
         path_prefix=niche_path_prefix(niche_name),
@@ -380,9 +378,7 @@ def make_niche_remote(
     )
 
 
-def make_peer_registry_remote(
-    _context, member_id: str, session: SmallSeaSession
-) -> PeerSmallSeaRemote:
+def make_peer_registry_remote(member_id: str, session: SmallSeaSession) -> PeerSmallSeaRemote:
     return PeerSmallSeaRemote(
         session.token,
         member_id,
@@ -392,7 +388,6 @@ def make_peer_registry_remote(
 
 
 def make_peer_niche_remote(
-    _context,
     niche_name: str,
     member_id: str,
     session: SmallSeaSession,
@@ -424,7 +419,7 @@ def push_via_hub(
             participant_hex,
             context,
             niche_name,
-            make_niche_remote(context, niche_name, session),
+            make_niche_remote(niche_name, session),
         )
     except CasConflictError as exc:
         raise PushConflictError(
@@ -442,7 +437,7 @@ def push_via_hub(
             vault_root,
             participant_hex,
             context,
-            make_registry_remote(context, session),
+            make_registry_remote(session),
         )
     except GitCmdFailed as exc:
         if "Refusing to create empty bundle" not in exc.err:
@@ -512,7 +507,7 @@ def fetch_via_hub(
         participant_hex,
         context,
         from_member_id,
-        make_peer_registry_remote(context, from_member_id, session),
+        make_peer_registry_remote(from_member_id, session),
     )
     niche_sha = vault.fetch_niche(
         vault_root,
@@ -520,7 +515,7 @@ def fetch_via_hub(
         context,
         niche_name,
         from_member_id,
-        make_peer_niche_remote(context, niche_name, from_member_id, session),
+        make_peer_niche_remote(niche_name, from_member_id, session),
     )
 
     # Advance the watermark now that the fetch succeeded.
@@ -560,9 +555,9 @@ def merge_via_hub(
     checkout = vault.get_checkout(vault_root, participant_hex, context, niche_name)
     if checkout is None:
         residency = vault.niche_residency(vault_root, participant_hex, context, niche_name)
-        raise NoCheckoutError(team_name, niche_name, residency)
+        raise NoCheckoutError(context.team_name, niche_name, residency)
     if not pathlib.Path(checkout).exists():
-        raise StaleCheckoutError(team_name, niche_name, checkout)
+        raise StaleCheckoutError(context.team_name, niche_name, checkout)
     dirty_entries = vault.status(vault_root, participant_hex, context, niche_name, checkout)
     if dirty_entries:
         raise DirtyCheckoutError([e["path"] for e in dirty_entries])
@@ -604,7 +599,7 @@ def merge_via_hub(
 def peer_update_status(
     vault_root: str,
     participant_hex: str,
-    team_name: str,
+    context_or_team,
     niche_name: str,
     member_id: str,
     *,
@@ -617,10 +612,10 @@ def peer_update_status(
     it against the locally persisted watermark.
     """
     registry_status = vault.peer_update_status(
-        vault_root, participant_hex, team_name, "registry", None, member_id
+        vault_root, participant_hex, context_or_team, "registry", None, member_id
     )
     niche_status = vault.peer_update_status(
-        vault_root, participant_hex, team_name, "niche", niche_name, member_id
+        vault_root, participant_hex, context_or_team, "niche", niche_name, member_id
     )
     parked_sha = niche_status["parked_sha"] or registry_status["parked_sha"]
     ready_to_merge = (
@@ -638,7 +633,7 @@ def peer_update_status(
         last_merged_sha=niche_status["last_merged_sha"] or registry_status["last_merged_sha"],
         current_signal_count=current_signal_count,
         last_seen_signal_count=get_signal_watermark(
-            vault_root, participant_hex, team_name, member_id
+            vault_root, participant_hex, context_or_team, member_id
         ),
     )
 

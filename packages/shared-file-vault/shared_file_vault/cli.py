@@ -31,6 +31,35 @@ def _die(message: str) -> None:
     raise SystemExit(1)
 
 
+def _team_context(team_name: str, participant_hex: str):
+    cfg = _config()
+    token = (
+        (cfg.get("team_sessions") or {})
+        .get(team_name, {})
+        .get("session_token")
+    )
+    if not token:
+        return vault.VaultMaterializationContext.legacy_for_local_use(
+            participant_hex, team_name
+        )
+
+    try:
+        session = sync.get_team_session(
+            team_name,
+            hub_port=cfg.get("hub_port", 11437),
+        )
+        context = vault.materialization_context_from_session_info(session.session_info())
+    except (sync.VaultSyncError, ValueError) as exc:
+        _die(str(exc))
+
+    if context.participant_hex != participant_hex:
+        _die(
+            f"Cached Hub session for {team_name!r} belongs to participant "
+            f"{context.participant_hex!r}, not {participant_hex!r}."
+        )
+    return context
+
+
 @click.group()
 def cli():
     """Small Sea Shared File Vault"""
@@ -284,7 +313,8 @@ def init_cmd(vault_root, participant_hex):
 @click.argument("niche_name")
 def create_cmd(vault_root, participant_hex, team_name, niche_name):
     """Create a new niche."""
-    niche_id = vault.create_niche(vault_root, participant_hex, team_name, niche_name)
+    context = _team_context(team_name, participant_hex)
+    niche_id = vault.create_niche(vault_root, participant_hex, context, niche_name)
     click.echo(f"Created niche '{niche_name}' ({niche_id})")
 
 
@@ -300,8 +330,9 @@ def checkout_cmd(vault_root, participant_hex, team_name, niche_name, dest_path):
     Each niche may have at most one checkout. Remove the existing checkout
     before attaching a new location.
     """
+    context = _team_context(team_name, participant_hex)
     try:
-        vault.add_checkout(vault_root, participant_hex, team_name, niche_name, dest_path)
+        vault.add_checkout(vault_root, participant_hex, context, niche_name, dest_path)
     except vault.DuplicateCheckoutError as exc:
         _die(str(exc))
     click.echo(f"Checkout attached at {dest_path}")
@@ -313,13 +344,14 @@ def checkout_cmd(vault_root, participant_hex, team_name, niche_name, dest_path):
 @click.argument("team_name")
 def list_cmd(vault_root, participant_hex, team_name):
     """List all niches for a team."""
-    niches = vault.list_niches(vault_root, participant_hex, team_name)
+    context = _team_context(team_name, participant_hex)
+    niches = vault.list_niches(vault_root, participant_hex, context)
     if not niches:
         click.echo("No niches.")
         return
     for niche in niches:
         residency = niche.get("residency", "")
-        checkout = vault.get_checkout(vault_root, participant_hex, team_name, niche["name"])
+        checkout = vault.get_checkout(vault_root, participant_hex, context, niche["name"])
         if checkout:
             state_str = f"{checkout}  ({residency})"
         else:
@@ -335,7 +367,8 @@ def list_cmd(vault_root, participant_hex, team_name):
 @click.argument("checkout_path")
 def status_cmd(vault_root, participant_hex, team_name, niche_name, checkout_path):
     """Show working tree status for a niche checkout."""
-    entries = vault.status(vault_root, participant_hex, team_name, niche_name, checkout_path)
+    context = _team_context(team_name, participant_hex)
+    entries = vault.status(vault_root, participant_hex, context, niche_name, checkout_path)
     if not entries:
         click.echo("Clean.")
         return
@@ -353,10 +386,11 @@ def status_cmd(vault_root, participant_hex, team_name, niche_name, checkout_path
 @click.argument("files", nargs=-1)
 def publish_cmd(vault_root, participant_hex, team_name, niche_name, checkout_path, message, files):
     """Publish changes from a checkout (stage + commit)."""
+    context = _team_context(team_name, participant_hex)
     commit_hash = vault.publish(
         vault_root,
         participant_hex,
-        team_name,
+        context,
         niche_name,
         checkout_path,
         files=list(files) if files else None,
@@ -372,7 +406,8 @@ def publish_cmd(vault_root, participant_hex, team_name, niche_name, checkout_pat
 @click.argument("niche_name")
 def log_cmd(vault_root, participant_hex, team_name, niche_name):
     """Show commit log for a niche."""
-    entries = vault.log(vault_root, participant_hex, team_name, niche_name)
+    context = _team_context(team_name, participant_hex)
+    entries = vault.log(vault_root, participant_hex, context, niche_name)
     if not entries:
         click.echo("No commits.")
         return
