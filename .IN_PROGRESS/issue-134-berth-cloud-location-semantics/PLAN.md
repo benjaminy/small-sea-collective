@@ -40,13 +40,16 @@ That makes narrow fixes unsafe because each local correction risks preserving a 
    The Hub owns cloud I/O and materializes those choices against providers.
    The Manager may still link users to provider account-management or OAuth pages,
    but Small Sea cloud operations go through the Hub.
+   When provider reality differs from Manager's requested state,
+   the Hub reports structured reconciliation results back to Manager for persistence and UX.
 
 4. **Team-scoped state belongs in the team Core DB when possible.**
    Do not dump team routing semantics into NoteToSelf just because it is convenient.
    NoteToSelf remains the home for participant-scoped state such as cloud account locators and local allocation records that reference those accounts.
 
-5. **Provider-facing location names are Manager allocations, not identity formulas.**
+5. **Provider-facing location names are explicit allocation state, not identity formulas.**
    A bucket or folder prefix may be a Manager-generated per-berth, per-cloud UUID or a later human-friendly generated name.
+   Some providers may instead finalize the location during Hub materialization and report the provider-issued locator back to Manager.
    It is not just `ss-{berth_id[:16]}`.
 
 6. **Each device may lack credentials.**
@@ -121,9 +124,14 @@ V1 should allow at most one allocation per berth.
 The exact enforcement can be a unique index if SQLite support is acceptable,
 or a Manager invariant checked in provisioning code.
 Do not add provider-migration history columns until provider migration exists.
+The `id` column remains useful as an operation/audit handle and as a future announcement back-reference even while `berth_id` is unique in v1.
 
 The Manager-facing helper should prefer `(team_name, app_name, cloud_storage_id)` over a raw `berth_id`.
 Raw `berth_id` helpers are acceptable for micro tests, but normal provisioning should resolve the same berth a Hub session would resolve.
+
+For S3, the Manager should generate a bucket-safe value such as `ss-{uuid7_hex}`.
+The exact format must obey S3 bucket naming rules: lowercase, 3-63 characters, and no underscores.
+For providers that do not allow caller-chosen stable names, `location` may start as a requested locator and be finalized during Hub materialization.
 
 ### Member Berth Storage Announcement
 
@@ -171,6 +179,8 @@ Selection should mirror the current transport-announcement rule:
 sort by `announcement_id` descending and choose the first valid row for `(member_id, berth_id)`.
 Because `announcement_id` is UUIDv7, this is equivalent to newest valid announcement.
 `announced_at` is display/audit data and is not the ordering authority.
+This dependence on UUIDv7 ordering is intentional.
+If announcement IDs ever stop being time-ordered, the selection rule must change in the same branch.
 The signer must resolve to a currently trusted device key for `member_id`.
 The trust-chain rule is unchanged from `select_effective_member_transport`.
 Invalid or no-longer-trusted rows remain inert data.
@@ -186,8 +196,10 @@ When an app calls a cloud-file endpoint with a valid session:
 3. If no allocation exists, the Hub returns a structured missing-location error.
 4. If an allocation exists, the Hub joins to `cloud_storage` and `local.cloud_storage_credential`.
 5. If the device has no usable credential for the selected account, the Hub returns a structured missing-credentials error.
-6. The Hub builds the storage adapter using the stored `location`.
-7. The Hub never synthesizes a provider-facing name from `berth_id`.
+6. If the provider-facing location is not materialized yet, the Hub materializes it before the operation.
+   Materialization is idempotent.
+7. The Hub builds the storage adapter using the finalized `location`.
+8. The Hub never synthesizes a provider-facing name from `berth_id`.
 
 The Hub does not need to re-read the team Core DB on every file operation.
 The session was opened only after resolving the berth from the appropriate DB,
@@ -202,7 +214,7 @@ For this design, orphaned NoteToSelf allocation rows are inert unless a valid se
 
 ### Provider Materialization
 
-The Manager allocates and records provider-facing names.
+The Manager records desired or finalized provider-facing locations.
 The Hub materializes them.
 
 For example, for S3 the Manager may allocate a bucket name and record it in `berth_cloud_allocation`.
@@ -221,6 +233,33 @@ This keeps "Manager has not provisioned this berth" distinct from "the remote pr
 
 The current `/cloud/setup` endpoint should be re-specified or replaced so it materializes the provisioned location.
 It should not imply that the Hub can invent a default bucket.
+
+### Provider Reconciliation Feedback
+
+The common pattern is:
+
+1. Manager records desired service state.
+2. Hub reconciles that state with the provider.
+3. Hub reports the provider result back to Manager.
+4. Manager persists any durable outcome and decides the user-facing repair path.
+
+Some providers accept a Manager-chosen locator.
+For S3, the requested bucket name can be the final location if bucket creation succeeds.
+For Dropbox, the requested folder prefix may simply become usable on first write.
+Other providers may return a provider-issued locator during materialization.
+For example, a future GDrive allocation may need Hub to create a folder and return the provider's folder ID.
+
+The Hub should therefore return structured materialization outcomes such as:
+
+- `materialized`: requested location is ready
+- `materialized_with_locator`: provider returned a final locator that Manager must persist
+- `needs_user_action`: provider requires OAuth, quota repair, account settings, or another human step
+- `failed`: provider rejected setup or was unavailable
+
+If materialization returns a final locator different from the requested one,
+Manager must persist that final locator before publishing any peer-visible announcement.
+An announcement should be published only after the Hub has successfully materialized the corresponding location.
+A peer-visible announcement pointing at an unmaterialized location is a defect.
 
 ### Team Creation And Bootstrap
 
@@ -358,13 +397,15 @@ Any retained fallback must be named and tested as legacy behavior.
 - Return structured errors for missing allocation and missing credentials.
 - Update `/cloud/setup` and first-use storage paths so they lazily materialize the recorded location.
 - Return structured provider/materialization errors distinct from missing allocation.
+- Return provider-issued final locators to Manager when a protocol cannot use the requested locator directly.
 
 ### Slice B: Member-Berth Storage Announcements
 
 - Add signed `member_berth_storage_announcement` types and canonical bytes.
-- Publish an announcement from the local allocation.
+- Publish an announcement from the local allocation only after the Hub has successfully materialized that allocation.
 - Select newest valid announcement for `(member_id, berth_id)`.
 - Change peer reads to use the selected announcement for all protocols.
+- Use valid announcements before legacy fallback; legacy fallback is allowed only when no valid announcement exists.
 
 ### Slice C: Legacy Removal
 
@@ -393,6 +434,7 @@ A skeptical reviewer should be able to trace these stories without guessing:
 9. NoteToSelf is used only for participant-scoped account and local allocation state.
 10. The Hub performs provider I/O but does not invent provider-facing storage names.
 11. GDrive path metadata is not mistaken for a berth storage location.
+12. Peer-visible announcements are published only after materialization succeeds.
 
 ## Later Micro Tests
 
@@ -402,6 +444,7 @@ but they should drive the first implementation slices:
 - A valid session with no allocation returns `cloud_location_missing`.
 - An allocation whose cloud account lacks local credentials returns `cloud_credentials_missing`.
 - An allocation whose provider setup fails returns `cloud_materialization_failed`.
+- A provider-issued final locator is persisted before any announcement is published.
 - S3 own writes use the stored allocation location, not `ss-{berth_id[:16]}`.
 - Dropbox own writes use the stored allocation location, not a member-derived prefix.
 - Two members announce different locations for the same berth and peer reads select by `(member_id, berth_id)`.
@@ -419,6 +462,8 @@ but they should drive the first implementation slices:
 6. Missing location and missing credentials are distinct failures.
 7. Materialization failure is distinct from missing location.
 8. Team creation and app activation do not require cross-product storage preallocation.
-9. The Hub performs cloud I/O.
-10. Tests use local services such as MinIO and do not call real cloud providers.
-11. Use "micro tests" terminology throughout.
+9. Peer-visible announcements must point only at successfully materialized locations.
+10. Valid announcements take precedence over legacy fallback.
+11. The Hub performs cloud I/O.
+12. Tests use local services such as MinIO and do not call real cloud providers.
+13. Use "micro tests" terminology throughout.
