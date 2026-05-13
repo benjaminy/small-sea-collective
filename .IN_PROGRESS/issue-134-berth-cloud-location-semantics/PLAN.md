@@ -54,6 +54,12 @@ That makes narrow fixes unsafe because each local correction risks preserving a 
    Device-local credentials may not.
    The Hub must distinguish "no berth location exists" from "this device has no usable credentials for the selected account."
 
+7. **Allocation should be lazy, not cross-product eager.**
+   A participant may belong to many teams and use many apps.
+   Most teams will not use most apps.
+   Creating every possible team/app/provider location up front would waste cloud objects and UI attention.
+   Team creation and app activation may leave a berth without cloud storage until the human or app workflow asks Manager to provision it.
+
 ## Current State Summary
 
 **Hub `_get_cloud_link`** reads `cloud_storage LIMIT 1`.
@@ -106,16 +112,15 @@ CREATE TABLE berth_cloud_allocation (
     berth_id         BLOB NOT NULL,
     cloud_storage_id BLOB NOT NULL,
     location         TEXT NOT NULL,
-    status           TEXT NOT NULL DEFAULT 'active',
     created_at       TEXT NOT NULL,
-    replaced_at      TEXT,
     FOREIGN KEY (cloud_storage_id) REFERENCES cloud_storage(id)
 );
 ```
 
-V1 should allow at most one active allocation per berth.
-The exact enforcement can be a partial unique index if SQLite support is acceptable,
+V1 should allow at most one allocation per berth.
+The exact enforcement can be a unique index if SQLite support is acceptable,
 or a Manager invariant checked in provisioning code.
+Do not add provider-migration history columns until provider migration exists.
 
 The Manager-facing helper should prefer `(team_name, app_name, cloud_storage_id)` over a raw `berth_id`.
 Raw `berth_id` helpers are acceptable for micro tests, but normal provisioning should resolve the same berth a Hub session would resolve.
@@ -124,7 +129,7 @@ Raw `berth_id` helpers are acceptable for micro tests, but normal provisioning s
 
 The team-visible signed statement that tells peers where one member stores readable data for one berth.
 This belongs in the relevant team Core DB for team berths.
-For NoteToSelf berths, the same concept may live in the NoteToSelf Core schema.
+For NoteToSelf berths, the same concept may live in `NoteToSelf/Sync/core.db`.
 
 This replaces `member_transport_announcement` for berth storage routing.
 The key semantic correction is that the announcement is scoped to `(member_id, berth_id)`,
@@ -159,9 +164,15 @@ Canonical signed fields should include every routing field:
 - `announced_at`
 - `signer_key_id`
 
+Canonical bytes should follow the existing transport-announcement convention:
+JSON object encoding with `sort_keys=True` and `separators=(",", ":")`.
+
 Selection should mirror the current transport-announcement rule:
-choose the newest valid UUIDv7 announcement for `(member_id, berth_id)`.
+sort by `announcement_id` descending and choose the first valid row for `(member_id, berth_id)`.
+Because `announcement_id` is UUIDv7, this is equivalent to newest valid announcement.
+`announced_at` is display/audit data and is not the ordering authority.
 The signer must resolve to a currently trusted device key for `member_id`.
+The trust-chain rule is unchanged from `select_effective_member_transport`.
 Invalid or no-longer-trusted rows remain inert data.
 
 ## Storage Flow
@@ -171,12 +182,23 @@ Invalid or no-longer-trusted rows remain inert data.
 When an app calls a cloud-file endpoint with a valid session:
 
 1. The Hub resolves the session to `participant_id`, `team_id`, `app_id`, and `berth_id`.
-2. The Hub looks up the active `berth_cloud_allocation` for `session.berth_id`.
+2. The Hub looks up the `berth_cloud_allocation` for `session.berth_id`.
 3. If no allocation exists, the Hub returns a structured missing-location error.
 4. If an allocation exists, the Hub joins to `cloud_storage` and `local.cloud_storage_credential`.
 5. If the device has no usable credential for the selected account, the Hub returns a structured missing-credentials error.
 6. The Hub builds the storage adapter using the stored `location`.
 7. The Hub never synthesizes a provider-facing name from `berth_id`.
+
+The Hub does not need to re-read the team Core DB on every file operation.
+The session was opened only after resolving the berth from the appropriate DB,
+and the session row carries the resolved `berth_id`.
+The file path uses that session `berth_id` to look up the local allocation in NoteToSelf shared storage,
+then joins to NoteToSelf local credentials.
+
+If a team Core berth is later removed while an old session still exists,
+that is a general stale-session problem rather than a cloud-location join problem.
+Future session revocation or revalidation can address it.
+For this design, orphaned NoteToSelf allocation rows are inert unless a valid session resolves to the same `berth_id`.
 
 ### Provider Materialization
 
@@ -187,8 +209,29 @@ For example, for S3 the Manager may allocate a bucket name and record it in `ber
 Then a Manager-authorized Hub operation creates the bucket and applies the public-read policy needed by the current peer-read model.
 The Manager should not perform S3 or Dropbox writes directly.
 
+Tentative policy: materialization is lazy but explicit.
+The Manager writes the allocation when the human or workflow decides the berth should use cloud storage.
+The Hub materializes that recorded allocation on `/cloud/setup` or on the first storage operation that needs it.
+The Manager UI may call `/cloud/setup` immediately after allocation as a validation step.
+Team creation, app activation, and session open do not pre-materialize storage.
+
+Materialization failures are not `cloud_location_missing`.
+If an allocation row exists but provider setup fails, the Hub should return a separate provider/materialization failure.
+This keeps "Manager has not provisioned this berth" distinct from "the remote provider is unavailable or rejected setup."
+
 The current `/cloud/setup` endpoint should be re-specified or replaced so it materializes the provisioned location.
 It should not imply that the Hub can invent a default bucket.
+
+### Team Creation And Bootstrap
+
+Team creation should not pre-allocate cloud storage for every berth.
+Creating a team creates the Core berth and whatever app berths the user explicitly activates.
+Those berths may be valid but storage-missing until Manager provisions allocations for them.
+
+This means a newly created team can be locally valid but not yet syncable.
+That is acceptable and should be surfaced as repairable provisioning state.
+The first implementation slice should decide which Manager workflows immediately allocate storage for the Core berth,
+but the architecture should not require eager allocation for every possible app berth.
 
 ### Peer Reads
 
@@ -203,6 +246,22 @@ Provider-specific auth remains adapter-specific.
 S3 currently models peer reads as anonymous reads from public buckets.
 Dropbox currently uses this device's own Dropbox credentials for a shared account.
 The design should state the provider rule instead of hiding it in `_download_peer_file`.
+
+Open question: should S3 peer reads continue to require public-readable buckets in the medium term?
+The current model uses public-read buckets because confidentiality is expected to come from encryption rather than bucket ACLs.
+This branch should document the current rule but does not need to solve private-bucket delegation.
+
+### Same-Member Sibling Reads
+
+Remote reads from another device of the same member should use the announcement path,
+not this device's local allocation.
+Device A's local allocation describes where device A writes.
+Device B may have written the same berth to a different account or location.
+
+Therefore any read of remote/synced berth data should select `member_berth_storage_announcement`
+for `(target_member_id, session.berth_id)`, even when `target_member_id` is the local member.
+Local own reads from this device's selected storage location are still own-storage reads.
+Sync/pull reads from a sibling device are announcement reads.
 
 ## Error Shape
 
@@ -230,6 +289,18 @@ and:
 HTTP 409 is the initial recommendation because it already represents a repairable Small Sea state conflict in session bootstrap.
 The final design may choose another status code, but it must be consistent across upload, download, setup, runtime artifact, signal, and peer paths.
 Do not return a generic 500 or an ambiguous 404 for missing provisioning.
+
+Provider setup failure should use the same response family with a distinct reason, for example:
+
+```json
+{
+  "error": "cloud_storage_required",
+  "reason": "cloud_materialization_failed"
+}
+```
+
+The exact `detail` fields may carry provider diagnostics,
+but callers must be able to branch on the stable `reason`.
 
 ## GDrive Note
 
@@ -285,7 +356,8 @@ Any retained fallback must be named and tested as legacy behavior.
 - Add Manager provisioning helpers.
 - Change Hub own cloud-file paths to resolve allocation plus credentials.
 - Return structured errors for missing allocation and missing credentials.
-- Update `/cloud/setup` so it materializes the recorded location.
+- Update `/cloud/setup` and first-use storage paths so they lazily materialize the recorded location.
+- Return structured provider/materialization errors distinct from missing allocation.
 
 ### Slice B: Member-Berth Storage Announcements
 
@@ -313,12 +385,14 @@ A skeptical reviewer should be able to trace these stories without guessing:
 1. A valid session can exist before cloud storage is provisioned.
 2. A missing own-location is reported as intentional repairable state.
 3. A missing device credential is distinct from a missing location.
-4. Alice and Bob can store the same berth in different clouds.
-5. A peer read is scoped to `(peer_member_id, session.berth_id)`.
-6. Team-visible storage routing for team berths lives in `{Team}/SmallSeaCollectiveCore`.
-7. NoteToSelf is used only for participant-scoped account and local allocation state.
-8. The Hub performs provider I/O but does not invent provider-facing storage names.
-9. GDrive path metadata is not mistaken for a berth storage location.
+4. A provider/materialization failure is distinct from both missing states.
+5. Alice and Bob can store the same berth in different clouds.
+6. A peer read is scoped to `(peer_member_id, session.berth_id)`.
+7. A same-member sibling read uses the announcement path.
+8. Team-visible storage routing for team berths lives in `{Team}/SmallSeaCollectiveCore`.
+9. NoteToSelf is used only for participant-scoped account and local allocation state.
+10. The Hub performs provider I/O but does not invent provider-facing storage names.
+11. GDrive path metadata is not mistaken for a berth storage location.
 
 ## Later Micro Tests
 
@@ -327,9 +401,11 @@ but they should drive the first implementation slices:
 
 - A valid session with no allocation returns `cloud_location_missing`.
 - An allocation whose cloud account lacks local credentials returns `cloud_credentials_missing`.
+- An allocation whose provider setup fails returns `cloud_materialization_failed`.
 - S3 own writes use the stored allocation location, not `ss-{berth_id[:16]}`.
 - Dropbox own writes use the stored allocation location, not a member-derived prefix.
 - Two members announce different locations for the same berth and peer reads select by `(member_id, berth_id)`.
+- A same-member sibling read selects by `(local_member_id, berth_id)` instead of using this device's local allocation.
 - An invalid storage announcement never routes to its announced location.
 - A no-announcement peer read either fails cleanly or uses an explicitly named legacy fallback until that fallback is removed.
 
@@ -341,6 +417,8 @@ but they should drive the first implementation slices:
 4. Peer storage announcements are member plus berth scoped.
 5. A valid session and a provisioned cloud location remain separate conditions.
 6. Missing location and missing credentials are distinct failures.
-7. The Hub performs cloud I/O.
-8. Tests use local services such as MinIO and do not call real cloud providers.
-9. Use "micro tests" terminology throughout.
+7. Materialization failure is distinct from missing location.
+8. Team creation and app activation do not require cross-product storage preallocation.
+9. The Hub performs cloud I/O.
+10. Tests use local services such as MinIO and do not call real cloud providers.
+11. Use "micro tests" terminology throughout.
