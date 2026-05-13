@@ -3,220 +3,344 @@
 **Branch:** `issue-134-berth-cloud-location-semantics`
 **Base:** `main`
 **Primary issue:** #134 "Define Manager-owned berth cloud location provisioning semantics"
-**Blocked issues:** #123, #114, #102, #10, #9, #16
-**Kind:** Design pass — written design, schema sketches, spec updates,
-and a narrow code change to make the Hub fail cleanly on missing cloud location.
-Not a full implementation of all provisioning flows.
-**Reference docs:** `packages/small-sea-hub/spec.md`, `packages/small-sea-manager/spec.md`,
-`architecture.md`
+**Related and blocked issues:** #123, #114, #102, #10, #9, #16
+**Kind:** Design branch with spec updates, schema sketches, and only small proof code if it clarifies the design.
+Do not write broad production code until the design decisions below are settled.
+**Reference docs:** `packages/small-sea-hub/spec.md`, `packages/small-sea-manager/spec.md`, `architecture.md`
 
 ## Why This Branch Exists
 
-Issue #123 exposed that fixing S3 bucket semantics requires settling a larger question first.
-The codebase currently conflates several distinct concepts:
+Issue #123 exposed that S3 bucket semantics are not an isolated question.
+The current implementation partially collapses several distinct ideas:
 
-- **Cloud account**: a cloud provider endpoint plus credentials (S3 key pair, OAuth tokens).
-  Currently participant-scoped. `cloud_storage` + `cloud_storage_credential` in NoteToSelf.
-- **Storage location**: where a specific berth's data actually lives on a provider.
-  Currently synthesized at runtime by the Hub from `berth_id` as `ss-{berth_id[:16]}`.
-  Never explicitly provisioned or stored.
-- **Peer storage announcement**: how teammates know where to read a member's berth data.
-  Currently `member_transport_announcement` (member-scoped, carries `bucket` field).
-  Bucket is authoritative for Dropbox but ignored for S3 (Hub overrides with own derivation).
-- **Legacy transport metadata**: `team_device(protocol, url, bucket)` — admission-time fallback.
-  Marked temporary; still in use.
+- a participant's cloud service accounts
+- device-local credentials for those accounts
+- the storage location this participant chose for one berth
+- how teammates learn that member's storage location for the same berth
+- Hub session authorization for a berth
+- legacy `team_device(protocol, url, bucket)` admission-time routing metadata
 
-The core problem: the Hub invents storage names from `berth_id` rather than resolving
-a location that Manager explicitly provisioned.
-This makes narrower changes (like #123) unsafe — fixing one override risks cementing another.
+The result is that the Hub synthesizes provider-facing names from `berth_id`
+and peer routing has different behavior for S3 and Dropbox.
+That makes narrow fixes unsafe because each local correction risks preserving a larger accidental model.
+
+## Design Principles
+
+1. **Session authorization and storage provisioning are separate.**
+   A valid Hub session means an app may act in a berth.
+   It does not mean cloud storage exists for that berth.
+   A later file operation may fail cleanly because no location has been provisioned.
+
+2. **Different teammates make separate storage choices for the same berth.**
+   Alice and Bob may store their clones of `{Team}/SharedFileVault` in different providers, accounts, buckets, or folders.
+   Peer storage routing must therefore be keyed by both `member_id` and `berth_id`.
+
+3. **Manager decides; Hub performs internet I/O.**
+   The Manager owns the UI, policy, and durable provisioning choices.
+   The Hub owns cloud I/O and materializes those choices against providers.
+   The Manager may still link users to provider account-management or OAuth pages,
+   but Small Sea cloud operations go through the Hub.
+
+4. **Team-scoped state belongs in the team Core DB when possible.**
+   Do not dump team routing semantics into NoteToSelf just because it is convenient.
+   NoteToSelf remains the home for participant-scoped state such as cloud account locators and local allocation records that reference those accounts.
+
+5. **Provider-facing location names are Manager allocations, not identity formulas.**
+   A bucket or folder prefix may be a Manager-generated per-berth, per-cloud UUID or a later human-friendly generated name.
+   It is not just `ss-{berth_id[:16]}`.
+
+6. **Each device may lack credentials.**
+   Shared account locator state can sync across sibling devices.
+   Device-local credentials may not.
+   The Hub must distinguish "no berth location exists" from "this device has no usable credentials for the selected account."
 
 ## Current State Summary
 
-**Hub `_get_cloud_link`**: reads `cloud_storage LIMIT 1` — takes any first account,
-no berth filtering.
+**Hub `_get_cloud_link`** reads `cloud_storage LIMIT 1`.
+It chooses the first account and does not filter by berth.
 
-**Hub `_make_s3_adapter`**: derives bucket as `ss-{session.berth_id[:16]}`.
-The berth_id appears only in the session; the derived name is never stored anywhere.
+**Hub `_make_s3_adapter`** derives `ss-{session.berth_id[:16]}` as the bucket name.
+The derived name is never stored as Manager-owned state.
 
-**Hub `_make_dropbox_adapter`**: derives folder prefix as `ss-{member_id[:16]}`.
-Also synthesized, never stored.
+**Hub `_make_dropbox_adapter`** derives a member-like folder prefix.
+That is also synthesized rather than provisioned.
 
-**Hub `_download_peer_file` (S3)**: ignores `transport.bucket` from announcement;
-overrides with `ss-{caller_session.berth_id[:16]}`.
-Bug in multi-device scenario: uses caller's berth, not peer's.
+**Hub `_download_peer_file` for S3** ignores `transport.bucket` from the effective peer transport selection.
+It overrides with `ss-{caller_session.berth_id[:16]}`.
 
-**Hub `_download_peer_file` (Dropbox)**: uses `transport.bucket` correctly.
+**Hub `_download_peer_file` for Dropbox** uses `transport.bucket`.
 
-**`member_transport_announcement.bucket`**: signed but semantically ambiguous for S3.
+**`member_transport_announcement`** is member-scoped and has a signed `bucket` field.
+That was a reasonable B7 step, but it is not precise enough for berth storage routing.
 
-## Design Working Proposal
+## Proposed Vocabulary
 
-This section presents the model to validate and refine during the branch.
-If the design changes during work, update here before touching code.
+### Cloud Account Locator
 
-### Three-layer model
+Participant-scoped shared metadata saying "this participant has an account or endpoint at provider P."
+This is the existing shared `cloud_storage` row in NoteToSelf.
+It contains provider locator fields such as `protocol`, `url`, and OAuth client metadata.
+It does not contain device-local secrets.
 
-**Layer 1 — Cloud account** (participant-scoped, unchanged shape)
+### Device Cloud Credential
 
-`cloud_storage` + `cloud_storage_credential` in NoteToSelf.
-Represents "I have an account at provider P with these credentials."
-One participant may have multiple accounts.
-No berth specificity here.
-The Manager UI manages these (existing `add_cloud_storage` / `list_cloud_storage`).
+Device-local auth material for a cloud account locator.
+This is the existing `local.cloud_storage_credential` row in NoteToSelf local storage.
+Sibling devices may know the account exists but still lack credentials for it.
 
-**Layer 2 — Berth cloud location** (berth-scoped, new)
+### Local Berth Cloud Allocation
 
-A provisioned allocation that links a specific berth to a specific cloud account and
-names a provider-facing location within that account.
-Stored in NoteToSelf shared DB.
+The Manager's local decision that this participant stores one berth at one provider-facing location.
+This record ties a `berth_id` to a local `cloud_storage_id` and a provider-facing `location`.
 
-Proposed schema:
+This record is for the local participant's own writes.
+It may live in NoteToSelf because it references NoteToSelf cloud account rows.
+For non-NoteToSelf team berths, the `berth_id` is still the team DB berth ID resolved by the Hub session.
+NoteToSelf cannot enforce a foreign key to that team DB row, so the design must treat `berth_id` as an opaque stable ID.
+
+Schema sketch:
 
 ```sql
-CREATE TABLE berth_cloud_location (
-    id               BLOB PRIMARY KEY,  -- allocation UUID (uuid7)
+CREATE TABLE berth_cloud_allocation (
+    id               BLOB PRIMARY KEY,
     berth_id         BLOB NOT NULL,
     cloud_storage_id BLOB NOT NULL,
-    location         TEXT NOT NULL,     -- opaque provider-facing name:
-                                        -- S3 bucket, Dropbox folder prefix, GDrive folder ID
+    location         TEXT NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'active',
     created_at       TEXT NOT NULL,
+    replaced_at      TEXT,
     FOREIGN KEY (cloud_storage_id) REFERENCES cloud_storage(id)
 );
 ```
 
-`location` is chosen by the Manager at provisioning time — a UUID, not derived from `berth_id`.
-This is the key change: storage names become Manager-allocated, not Hub-synthesized.
+V1 should allow at most one active allocation per berth.
+The exact enforcement can be a partial unique index if SQLite support is acceptable,
+or a Manager invariant checked in provisioning code.
 
-For S3: `location` is the bucket name (e.g. a random UUID, or a human-readable slug
-the Manager generates and records).
-For Dropbox: `location` is the folder prefix.
-For GDrive: `location` absorbs the current `path_metadata` field (removes a special case).
+The Manager-facing helper should prefer `(team_name, app_name, cloud_storage_id)` over a raw `berth_id`.
+Raw `berth_id` helpers are acceptable for micro tests, but normal provisioning should resolve the same berth a Hub session would resolve.
 
-One berth may have at most one active location per provider in v1.
-The `id` field allows future multiple-location rows without schema changes.
+### Member Berth Storage Announcement
 
-**Layer 3 — Berth storage announcement** (berth-scoped, synced, new or evolved)
+The team-visible signed statement that tells peers where one member stores readable data for one berth.
+This belongs in the relevant team Core DB for team berths.
+For NoteToSelf berths, the same concept may live in the NoteToSelf Core schema.
 
-How teammates learn where to read a member's berth data.
-This replaces `member_transport_announcement` for storage-routing purposes,
-or the `bucket` field becomes explicitly berth-scoped and authoritative.
+This replaces `member_transport_announcement` for berth storage routing.
+The key semantic correction is that the announcement is scoped to `(member_id, berth_id)`,
+not just `member_id` and not just `berth_id`.
 
-Two options to evaluate:
+Schema sketch:
 
-**Option A — Evolve `member_transport_announcement`:**
-Rename to `berth_transport_announcement` and key it by `berth_id` instead of `member_id`.
-The `bucket`/`location` field becomes authoritative for all protocols.
-`member_id` is retained for trust verification (the signer must be that member's device key).
+```sql
+CREATE TABLE member_berth_storage_announcement (
+    announcement_id BLOB PRIMARY KEY,
+    member_id       BLOB NOT NULL,
+    berth_id        BLOB NOT NULL,
+    protocol        TEXT NOT NULL,
+    url             TEXT NOT NULL,
+    location        TEXT NOT NULL,
+    announced_at    TEXT NOT NULL,
+    signer_key_id   BLOB NOT NULL,
+    signature       BLOB NOT NULL,
+    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE,
+    FOREIGN KEY (berth_id) REFERENCES team_app_berth(id) ON DELETE CASCADE
+);
+```
 
-**Option B — Split the concepts:**
-Keep `member_transport_announcement` for transport-layer metadata (how to reach a peer's Hub).
-Add a separate `berth_storage_announcement` for storage location (where to read data).
+Canonical signed fields should include every routing field:
 
-The distinction matters if transport endpoint (Hub address) and storage location
-can diverge — e.g., a member changes cloud provider but keeps the same Hub.
-Both announcements would be signed by a device key of the announcing member.
+- `announcement_id`
+- `member_id`
+- `berth_id`
+- `protocol`
+- `url`
+- `location`
+- `announced_at`
+- `signer_key_id`
 
-The branch should settle this question and record the reasoning.
+Selection should mirror the current transport-announcement rule:
+choose the newest valid UUIDv7 announcement for `(member_id, berth_id)`.
+The signer must resolve to a currently trusted device key for `member_id`.
+Invalid or no-longer-trusted rows remain inert data.
 
-### Hub resolution (after this branch)
+## Storage Flow
 
-When a file operation arrives for a session:
-1. Hub looks up `berth_cloud_location` for `session.berth_id`.
-2. If no row exists: return a clean, explicit error (see below). No fallback synthesis.
-3. If found: resolve credentials from `cloud_storage` + `cloud_storage_credential`,
-   use the stored `location` to address the provider.
-4. Hub never calls `f"ss-{berth_id[:16]}"` as a default bucket name.
+### Own Writes
 
-For peer reads:
-1. Hub resolves the peer's berth storage announcement for the target `berth_id`.
-2. Uses the announced `location` — authoritative for all protocols.
-3. No session-berth override.
+When an app calls a cloud-file endpoint with a valid session:
 
-### Error shape for missing cloud location
+1. The Hub resolves the session to `participant_id`, `team_id`, `app_id`, and `berth_id`.
+2. The Hub looks up the active `berth_cloud_allocation` for `session.berth_id`.
+3. If no allocation exists, the Hub returns a structured missing-location error.
+4. If an allocation exists, the Hub joins to `cloud_storage` and `local.cloud_storage_credential`.
+5. If the device has no usable credential for the selected account, the Hub returns a structured missing-credentials error.
+6. The Hub builds the storage adapter using the stored `location`.
+7. The Hub never synthesizes a provider-facing name from `berth_id`.
 
-When a session is valid but no cloud location is provisioned for the berth,
-the Hub should return a structured, distinguishable error — not a generic 500 or 404.
+### Provider Materialization
 
-Proposed: HTTP 422 with `detail: "cloud_location_missing"` (or similar machine-readable key),
-mirroring the pattern used for `participant_berth_missing` / `team_berth_missing`
-in session bootstrap.
+The Manager allocates and records provider-facing names.
+The Hub materializes them.
 
-### Legacy cleanup
+For example, for S3 the Manager may allocate a bucket name and record it in `berth_cloud_allocation`.
+Then a Manager-authorized Hub operation creates the bucket and applies the public-read policy needed by the current peer-read model.
+The Manager should not perform S3 or Dropbox writes directly.
 
-`team_device(protocol, url, bucket)` legacy fallback:
-Once berth storage announcements cover the routing use case, this fallback can be removed.
-That removal is a follow-up, not in scope here — but the design should identify
-what specifically triggers the removal.
+The current `/cloud/setup` endpoint should be re-specified or replaced so it materializes the provisioned location.
+It should not imply that the Hub can invent a default bucket.
 
-`cloud_storage.path_metadata`:
-Absorbed into `berth_cloud_location.location` for GDrive.
-The existing field stays until GDrive provisioning is updated in a follow-up.
+### Peer Reads
+
+When a Hub reads from a peer for the current session berth:
+
+1. The Hub uses `session.berth_id` as the target berth.
+2. The Hub selects the peer's newest valid `member_berth_storage_announcement` for `(peer_member_id, session.berth_id)`.
+3. The Hub builds a peer-read adapter from the announcement's `protocol`, `url`, and `location`.
+4. The Hub never overrides the peer location with caller-session state.
+
+Provider-specific auth remains adapter-specific.
+S3 currently models peer reads as anonymous reads from public buckets.
+Dropbox currently uses this device's own Dropbox credentials for a shared account.
+The design should state the provider rule instead of hiding it in `_download_peer_file`.
+
+## Error Shape
+
+Use one machine-readable response family for "valid session, but Manager provisioning is incomplete."
+This is close to app-bootstrap behavior, which currently uses HTTP 409 and a JSON body with `error` and `reason`.
+
+Proposed for cloud-file endpoints:
+
+```json
+{
+  "error": "cloud_storage_required",
+  "reason": "cloud_location_missing"
+}
+```
+
+and:
+
+```json
+{
+  "error": "cloud_storage_required",
+  "reason": "cloud_credentials_missing"
+}
+```
+
+HTTP 409 is the initial recommendation because it already represents a repairable Small Sea state conflict in session bootstrap.
+The final design may choose another status code, but it must be consistent across upload, download, setup, runtime artifact, signal, and peer paths.
+Do not return a generic 500 or an ambiguous 404 for missing provisioning.
+
+## GDrive Note
+
+Do not treat current `cloud_storage.path_metadata` as the berth location.
+In the current GDrive adapter, `path_metadata` is a mutable path-to-file-id cache.
+It is adapter state, not the root provider-facing location.
+
+A future GDrive berth location might be a folder ID, `appDataFolder`, or some other provider-specific root descriptor.
+The path cache should remain separate unless a later GDrive design deliberately replaces it.
+
+## Legacy Cleanup
+
+`team_device(protocol, url, bucket)` remains legacy admission-time routing metadata.
+It should not gain new semantics.
+
+The removal trigger is:
+
+1. own writes resolve through `berth_cloud_allocation`,
+2. peer reads resolve through `member_berth_storage_announcement`,
+3. admission and bootstrap flows publish or prompt for the new storage announcement,
+4. micro tests cover no-announcement and invalid-announcement behavior without relying on `team_device` fallback.
+
+Until those are true, legacy fallback may remain as a compatibility bridge.
+Any retained fallback must be named and tested as legacy behavior.
 
 ## Scope
 
-**In scope (design pass):**
+### In Scope For This Branch
 
-- Written answers to all questions posed in issue #134
-- Schema definition for `berth_cloud_location` in NoteToSelf shared DB
-- Decision on Option A vs Option B for peer storage announcement
-- Updated `spec.md` for Hub and Manager reflecting the new three-layer model
-- Hub change: replace bucket synthesis with `berth_cloud_location` lookup;
-  return a clean error when no location is provisioned
-- A Manager provisioning function `add_berth_cloud_location(root, participant_hex, berth_id, cloud_storage_id, location)` — enough to make the Hub resolution testable
-- Micro tests for:
-  - Hub fails cleanly with `cloud_location_missing` when no berth cloud location row exists
-  - Hub routes to the stored location when a row exists
-  - Peer read uses the announced location, not a synthesized name
+- Settle the terminology and authority boundaries in this plan.
+- Update Hub and Manager specs to describe the vocabulary above.
+- Sketch exact schema for `berth_cloud_allocation` and `member_berth_storage_announcement`.
+- Decide the error response shape for missing location and missing credentials.
+- Identify which existing code paths synthesize provider-facing names.
+- Write small proof code only if it clarifies a disputed design point.
 
-**Out of scope:**
+### Not In Scope For This Branch
 
-- Manager web UI for berth cloud location provisioning (#10)
-- Multi-location failover or backup
-- New cloud providers
-- Migrating existing data (pre-alpha, no shims)
-- Removing `team_device` legacy fallback (follow-up)
-- Full berth storage announcement implementation if Option B is chosen
-  (design + schema + one happy-path test is enough for this branch)
+- Broadly rewriting Hub storage adapter construction.
+- Fully replacing `member_transport_announcement`.
+- Removing `team_device` fallback.
+- Building Manager web UI for berth cloud allocation.
+- Implementing multi-location failover or backup.
+- Adding new cloud providers.
+- Migrating existing data.
+- Making real internet calls in tests.
 
-## Key Files
+## Follow-Up Implementation Slices
 
-- `packages/small-sea-hub/small_sea_hub/backend.py` — `_get_cloud_link`, `_make_s3_adapter`,
-  `_make_dropbox_adapter`, `_download_peer_file`
-- `packages/small-sea-hub/spec.md` — Cloud Storage section (~line 157)
-- `packages/small-sea-manager/small_sea_manager/provisioning.py` — `add_cloud_storage`,
-  `_bucket_name_for_protocol`, `announce_member_transport`
-- `packages/small-sea-manager/spec.md` — NoteToSelf schema section (~line 979)
-- `packages/wrasse-trust/wrasse_trust/transport.py` — `MemberTransportAnnouncement`
-- `packages/small-sea-hub/tests/test_peer_transport.py` — existing S3 peer tests
-- `packages/small-sea-manager/tests/` — provisioning micro tests
+### Slice A: Own-Storage Allocation
 
-## Validation
+- Add `berth_cloud_allocation` schema and migrations.
+- Add Manager provisioning helpers.
+- Change Hub own cloud-file paths to resolve allocation plus credentials.
+- Return structured errors for missing allocation and missing credentials.
+- Update `/cloud/setup` so it materializes the recorded location.
 
-The design is complete when a skeptical reviewer can trace this story end-to-end
-in code and micro tests — no prose required:
+### Slice B: Member-Berth Storage Announcements
 
-1. Manager provisions a cloud account (`add_cloud_storage`).
-2. Manager provisions a cloud location for a berth (`add_berth_cloud_location`),
-   recording a Manager-generated location name (not `ss-{berth_id[:16]}`).
-3. An app obtains a Hub session for that berth.
-4. The app stores a file through the Hub; the Hub routes to the provisioned location.
-5. A peer retrieves the berth storage announcement; the announced location matches step 2.
-6. The Hub reads the peer's file using that announced location.
-7. A micro test shows that if step 2 is skipped, the Hub returns `cloud_location_missing`,
-   not a generic error and not a silently wrong synthesized bucket.
+- Add signed `member_berth_storage_announcement` types and canonical bytes.
+- Publish an announcement from the local allocation.
+- Select newest valid announcement for `(member_id, berth_id)`.
+- Change peer reads to use the selected announcement for all protocols.
 
-Additional integrity checks:
-- `grep -r "ss-{.*berth_id" packages/` returns no results in Hub core code
-  (only in tests that explicitly exercise the removal).
-- All existing passing micro tests continue to pass.
-- Full suite: `uv run pytest packages/small-sea-hub/tests packages/small-sea-manager/tests packages/shared-file-vault/tests`.
+### Slice C: Legacy Removal
+
+- Stop writing transport fields onto `team_device`.
+- Remove `team_device` transport fallback.
+- Revisit or close #123 and #102 under the new model.
+
+### Slice D: Manager UX
+
+- Let humans choose which cloud account backs a berth.
+- Generate provider-facing locations.
+- Surface missing-location and missing-credential repair actions.
+
+## Validation For The Design
+
+A skeptical reviewer should be able to trace these stories without guessing:
+
+1. A valid session can exist before cloud storage is provisioned.
+2. A missing own-location is reported as intentional repairable state.
+3. A missing device credential is distinct from a missing location.
+4. Alice and Bob can store the same berth in different clouds.
+5. A peer read is scoped to `(peer_member_id, session.berth_id)`.
+6. Team-visible storage routing for team berths lives in `{Team}/SmallSeaCollectiveCore`.
+7. NoteToSelf is used only for participant-scoped account and local allocation state.
+8. The Hub performs provider I/O but does not invent provider-facing storage names.
+9. GDrive path metadata is not mistaken for a berth storage location.
+
+## Later Micro Tests
+
+These are not all required in this design branch,
+but they should drive the first implementation slices:
+
+- A valid session with no allocation returns `cloud_location_missing`.
+- An allocation whose cloud account lacks local credentials returns `cloud_credentials_missing`.
+- S3 own writes use the stored allocation location, not `ss-{berth_id[:16]}`.
+- Dropbox own writes use the stored allocation location, not a member-derived prefix.
+- Two members announce different locations for the same berth and peer reads select by `(member_id, berth_id)`.
+- An invalid storage announcement never routes to its announced location.
+- A no-announcement peer read either fails cleanly or uses an explicitly named legacy fallback until that fallback is removed.
 
 ## Non-Negotiable Invariants
 
-1. The Hub must not synthesize a storage name from `berth_id` at runtime after this branch.
-2. A valid session with no provisioned cloud location must produce a clean, intentional error.
-3. The Manager is the sole authority for allocating provider-facing location names.
-4. Peer routing uses the announced location; no session-berth override.
-5. Existing signature verification for transport announcements is unchanged or strengthened.
-6. Tests use MinIO and local MinIO only; no real cloud calls.
-7. Use "micro tests" terminology throughout.
+1. The Hub must not synthesize provider-facing storage names from `berth_id`.
+2. Manager-owned provisioning choices must be explicit durable state.
+3. Team berth peer-routing state belongs in the team Core DB.
+4. Peer storage announcements are member plus berth scoped.
+5. A valid session and a provisioned cloud location remain separate conditions.
+6. Missing location and missing credentials are distinct failures.
+7. The Hub performs cloud I/O.
+8. Tests use local services such as MinIO and do not call real cloud providers.
+9. Use "micro tests" terminology throughout.
