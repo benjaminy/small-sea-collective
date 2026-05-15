@@ -67,6 +67,7 @@ That makes narrow fixes unsafe because each local correction risks preserving a 
    V1 assumes at most one Hub process per device, per participant root.
    Running multiple Hubs against the same participant root is outside the supported model unless a later branch adds process locking.
    Multiple Manager-like local clients may exist, but they must coordinate through database transactions and conditional updates.
+   Examples include the Manager web UI, Manager CLI commands, scripts, and test harnesses that modify Manager-owned state.
 
 ## Current State Summary
 
@@ -188,6 +189,8 @@ This dependence on UUIDv7 ordering is intentional.
 If announcement IDs ever stop being time-ordered, the selection rule must change in the same branch.
 The signer must resolve to a currently trusted device key for `member_id`.
 The trust-chain rule is unchanged from `select_effective_member_transport`.
+Validity is structural: the signature verifies and the signer key is currently trusted.
+There is no max-age policy in v1.
 Invalid or no-longer-trusted rows remain inert data.
 
 ## Storage Flow
@@ -226,6 +229,10 @@ For example, for S3 the Manager may allocate a bucket name and record it in `ber
 Then a Manager-authorized Hub operation creates the bucket and applies the public-read policy needed by the current peer-read model.
 The Manager should not perform S3 or Dropbox writes directly.
 
+The exact authorization shape for Manager-triggered Hub operations is still open.
+It may be a Manager-scoped session, an endpoint family restricted to Core sessions, or another local capability.
+This branch should name the requirement, but the implementation slice can choose the exact mechanism.
+
 Tentative policy: materialization is lazy but explicit.
 The Manager writes the allocation when the human or workflow decides the berth should use cloud storage.
 The Hub materializes that recorded allocation on `/cloud/setup` or on the first storage operation that needs it.
@@ -260,6 +267,21 @@ The Hub should therefore return structured materialization outcomes such as:
 - `materialized_with_locator`: provider returned a final locator that Manager must persist
 - `needs_user_action`: provider requires OAuth, quota repair, account settings, or another human step
 - `failed`: provider rejected setup or was unavailable
+
+`POST /cloud/setup` should use the current session's berth.
+For success outcomes, return HTTP 200 with:
+
+```json
+{ "status": "materialized", "location": "..." }
+```
+
+or:
+
+```json
+{ "status": "materialized_with_locator", "location": "..." }
+```
+
+For repairable failures, return HTTP 409 using the cloud-storage error family described below.
 
 If materialization returns a final locator different from the requested one,
 Manager must persist that final locator before publishing any peer-visible announcement.
@@ -296,8 +318,12 @@ For Manager-chosen S3 bucket names, this may be idempotent if both devices reque
 For provider-issued locators, this may create extra folders or objects.
 
 V1 treats those extra provider objects as recoverable clutter, not a correctness failure.
-The safety requirement is that only the durable winning allocation is announced to peers.
-If a device materializes a location but loses the durable writeback race, it must not publish an announcement for the losing location.
+Local CAS is not the whole cross-device contention story because sibling devices sync via Cod Sync rather than shared SQLite locks.
+Two sibling devices may each win their local conditional write before sync convergence.
+If both publish announcements, peers select by `(member_id, berth_id)` and `announcement_id` descending,
+so UUIDv7 supersession chooses one newest valid announcement.
+After Cod Sync convergence, the losing materialized location becomes orphaned provider clutter.
+The safety requirement is no silent peer-visible misrouting, not perfect prevention of temporary duplicate materialization.
 Cleanup of orphaned provider locations is follow-up work.
 
 ### Team Creation And Bootstrap
@@ -377,8 +403,36 @@ Provider setup failure should use the same response family with a distinct reaso
 }
 ```
 
+Provider user-action requirements and allocation races use the same response family:
+
+```json
+{
+  "error": "cloud_storage_required",
+  "reason": "cloud_user_action_required"
+}
+```
+
+and:
+
+```json
+{
+  "error": "cloud_storage_required",
+  "reason": "cloud_allocation_conflict"
+}
+```
+
 The exact `detail` fields may carry provider diagnostics,
 but callers must be able to branch on the stable `reason`.
+
+Materialization outcome mapping:
+
+| Outcome | Storage operation response | `/cloud/setup` response |
+|---|---|---|
+| `materialized` | Proceed with the operation. | HTTP 200 with `{ "status": "materialized", "location": "..." }` |
+| `materialized_with_locator` | Persist final locator, then proceed. | HTTP 200 with `{ "status": "materialized_with_locator", "location": "..." }` |
+| `needs_user_action` | HTTP 409 with `reason: "cloud_user_action_required"` | HTTP 409 with `reason: "cloud_user_action_required"` |
+| `failed` | HTTP 409 with `reason: "cloud_materialization_failed"` | HTTP 409 with `reason: "cloud_materialization_failed"` |
+| conditional writeback conflict | Re-read and proceed if possible, otherwise HTTP 409 with `reason: "cloud_allocation_conflict"` | Same as storage operation |
 
 ## GDrive Note
 
@@ -475,6 +529,7 @@ A skeptical reviewer should be able to trace these stories without guessing:
 11. GDrive path metadata is not mistaken for a berth storage location.
 12. Peer-visible announcements are published only after materialization succeeds.
 13. Provider-issued locator writeback is conditional and race-safe.
+14. Materialization outcomes map to stable HTTP responses and machine-readable reasons.
 
 ## Later Micro Tests
 
@@ -484,6 +539,8 @@ but they should drive the first implementation slices:
 - A valid session with no allocation returns `cloud_location_missing`.
 - An allocation whose cloud account lacks local credentials returns `cloud_credentials_missing`.
 - An allocation whose provider setup fails returns `cloud_materialization_failed`.
+- A provider repair action returns `cloud_user_action_required`.
+- A local allocation race that cannot be resolved by re-read returns `cloud_allocation_conflict`.
 - A provider-issued final locator is persisted before any announcement is published.
 - A provider-issued final locator writeback that loses a conditional-update race does not publish an announcement.
 - S3 own writes use the stored allocation location, not `ss-{berth_id[:16]}`.
@@ -505,7 +562,8 @@ but they should drive the first implementation slices:
 8. Team creation and app activation do not require cross-product storage preallocation.
 9. Peer-visible announcements must point only at successfully materialized locations.
 10. Provider-issued locator writeback must be conditional on the allocation still matching the materialization request.
-11. Valid announcements take precedence over legacy fallback.
-12. The Hub performs cloud I/O.
-13. Tests use local services such as MinIO and do not call real cloud providers.
-14. Use "micro tests" terminology throughout.
+11. Materialization outcomes must map to stable machine-readable response reasons.
+12. Valid announcements take precedence over legacy fallback.
+13. The Hub performs cloud I/O.
+14. Tests use local services such as MinIO and do not call real cloud providers.
+15. Use "micro tests" terminology throughout.
