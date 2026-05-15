@@ -57,10 +57,7 @@ teams later.
 The baseline synchronization method is snapshot-based 3-way merge, utilizing `git`. While slower than CRDTs, it provides strong consistency for full-environment snapshots and allows for easier adaptation of existing software. 
 
 ### 3. Cod Sync
-"Cod Sync" is the specific protocol used to sync git repositories over cloud
-storage. It encodes changes as a chain of git bundles uploaded to each user's
-cloud storage location. Teammates poll or receive notifications to pull and
-merge these bundles.
+"Cod Sync" is the specific protocol used to sync git repositories over cloud storage. It encodes changes as a chain of git bundles uploaded to each user's cloud storage location. Teammates poll or receive notifications to pull and merge these bundles.
 
 Cloud storage placement is explicitly provisioned rather than derived from
 identity values. A Hub session authorizes an app to act in a berth; it does

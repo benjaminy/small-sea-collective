@@ -88,7 +88,7 @@ Stores this participant's personal Small Sea metadata. The Hub reads it to know 
 | `team` | Lightweight pointer to each team the participant belongs to; `self_in_team` is the member ID in that team's DB |
 | `app` | Apps registered for the NoteToSelf team |
 | `team_app_berth` | Berths for the NoteToSelf team (one per app; carries `team_id` since NoteToSelf DB may host multiple teams' personal berths) |
-| `cloud_storage` | Shared cloud locator metadata (`protocol`, `url`, `client_id`, `path_metadata`) |
+| `cloud_storage` | Shared cloud account locator metadata (`protocol`, `url`, `client_id`); `path_metadata` is provider adapter cache, not a berth location |
 | `berth_cloud_allocation` | Local participant's selected storage location for a berth |
 | `notification_service` | Shared notification-service metadata (`protocol`, `url`) |
 | `team_device_key` | Shared public metadata for this identity's team-device keys |
@@ -117,7 +117,7 @@ Stores the shared state for one team. All members maintain their own copy; chang
 | `team_app_berth` | Berths for this team (one per app; `team_id` omitted — implicit from which DB this is) |
 | `berth_role` | Per-member, per-berth role assignments: `read-only` or `read-write` |
 | `invitation` | Invitation records (pending, accepted, revoked) |
-| `team_device` | One row per team device; legacy transport fields remain temporary fallback only |
+| `team_device` | One row per team device; carries device identity. Transport fields are temporary fallback only |
 | `member_berth_storage_announcement` | Signed peer-readable storage locations scoped to `(member_id, berth_id)` |
 
 Manager-local admission prompt dismissals are stored in a per-team sidecar DB outside `Sync/`, keyed by `(event_type, artifact_id)`, so ignored prompts persist across restarts without becoming synced team state.
@@ -598,10 +598,10 @@ issuance path.
 
 Current runtime status exposed by Manager reads is:
 
-- `announced` - a valid member-berth storage announcement is selected
-- `legacy-fallback` - routing still relies on legacy `team_device` transport
+- `announced` — a valid member-berth storage announcement is selected
+- `legacy-fallback` — routing still relies on legacy `team_device` transport
   fields
-- `missing` - no usable current transport exists
+- `missing` — no usable current transport exists
 
 The `legacy-fallback` path is **temporary** compatibility infrastructure while
 current admission flows still populate `team_device(protocol, url, bucket)`.
@@ -836,12 +836,12 @@ repair path.
 
 Hub materialization outcomes are:
 
-- `materialized` - requested location is ready
-- `materialized_with_locator` - provider returned a final locator that Manager
+- `materialized` — requested location is ready
+- `materialized_with_locator` — provider returned a final locator that Manager
   must persist
-- `needs_user_action` - provider requires OAuth, quota repair, account settings,
+- `needs_user_action` — provider requires OAuth, quota repair, account settings,
   or another human step
-- `failed` - provider rejected setup or was unavailable
+- `failed` — provider rejected setup or was unavailable
 
 The `location` column is overwritten in place when materialization returns a
 provider-issued final locator. There is no separate requested/final location

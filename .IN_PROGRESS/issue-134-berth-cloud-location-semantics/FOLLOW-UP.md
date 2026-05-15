@@ -2,20 +2,20 @@
 
 ## Implementation Slices
 
-1. Own-storage allocation.
-   Add `berth_cloud_allocation` schema and migrations, Manager provisioning helpers, Hub own-storage allocation lookup, structured missing-location and missing-credential errors, and idempotent materialization for `/cloud/setup` and first-use storage operations.
+- Slice A: Own-storage allocation.
+  Add `berth_cloud_allocation` schema and migrations, Manager provisioning helpers, Hub own-storage allocation lookup, structured missing-location and missing-credential errors, and idempotent materialization for `/cloud/setup` and first-use storage operations.
 
-2. Member-berth storage announcements.
-   Add signed `member_berth_storage_announcement` types, canonical bytes, newest-valid selection for `(member_id, berth_id)`, and peer reads that use valid announcements before legacy fallback.
+- Slice B: Member-berth storage announcements.
+  Add signed `member_berth_storage_announcement` types, canonical bytes, newest-valid selection for `(member_id, berth_id)`, and peer reads that use valid announcements before legacy fallback.
 
-3. Legacy cleanup.
-   Stop writing transport fields onto `team_device`, remove legacy transport fallback, and revisit #123 and #102 under the new member-berth storage model.
+- Slice C: Legacy cleanup.
+  Stop writing transport fields onto `team_device`, remove legacy transport fallback, and revisit #123 and #102 under the new member-berth storage model.
 
-4. Manager UX.
-   Let humans choose which cloud account backs a berth, generate provider-facing locations, surface missing-location and missing-credential repair actions, and call materialization as a validation step where useful.
+- Slice D: Manager UX.
+  Let humans choose which cloud account backs a berth, generate provider-facing locations, surface missing-location and missing-credential repair actions, and call materialization as a validation step where useful.
 
-5. Provider cleanup.
-   Design cleanup for orphaned provider locations created by cross-device first-use races.
+- Slice E: Provider cleanup.
+  Design cleanup for orphaned provider locations created by cross-device first-use races.
 
 ## Related Issues
 

@@ -529,7 +529,7 @@ B's rows.
 
 ### Cloud storage endpoints
 
-**`POST /cloud/setup`** - Materialize the provisioned cloud location for the current session's berth.
+**`POST /cloud/setup`** — Materialize the provisioned cloud location for the current session's berth.
 Safe to call multiple times.
 
 Success response:
@@ -542,8 +542,13 @@ or:
 { "status": "materialized_with_locator", "location": "<provider-issued locator>" }
 ```
 
-Repairable failures use the `cloud_storage_required` error family with status
-`409`.
+Errors:
+
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_location_missing" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_credentials_missing" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_user_action_required" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_materialization_failed" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_allocation_conflict" }`
 
 ---
 
@@ -591,10 +596,11 @@ Errors: `404` if not found.
 ---
 
 **`GET /peer_cloud_file?member_id=<hex>&path=<remote path>`** — Download a file from a peer's
-cloud location via the Hub proxy. The Hub resolves the target member's readable
-location through the newest valid `member_berth_storage_announcement` for
-`(member_id, session.berth_id)`. Legacy `team_device` transport data may be
-used only as an explicitly named fallback when no valid announcement exists.
+cloud location via the Hub proxy. Target behavior: the Hub resolves the target
+member's readable location through the newest valid
+`member_berth_storage_announcement` for `(member_id, session.berth_id)`.
+Legacy `team_device` transport data may be used only as an explicitly named
+fallback when no valid announcement exists.
 
 Response: same as `GET /cloud_file`.
 
