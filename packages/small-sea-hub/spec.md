@@ -82,9 +82,10 @@ Everything important is persisted to durable storage:
 | Data | Where stored |
 |---|---|
 | Session tokens and all session metadata | Hub SQLite DB (`small_sea_collective_local.db`) |
-| Peer cloud locations | Team DB (`team_device` plus `member`), synced via Cod Sync |
+| Peer cloud locations | Team DB (`member_berth_storage_announcement`), synced via Cod Sync |
 | Signal file contents (push counts) | Cloud storage (`signals.yaml`) |
 | Cloud locator metadata | NoteToSelf shared DB (`cloud_storage` table) |
+| Berth cloud allocations | NoteToSelf shared DB (`berth_cloud_allocation` table) |
 | Cloud credentials | NoteToSelf device-local DB (`cloud_storage_credential` table) |
 
 The Hub's in-process state (`watched_sessions`, `watched_peers`, `peer_counts`) is
@@ -137,7 +138,8 @@ The shared databases are the contract between them.
 | `nickname` | Resolving a participant by human name during session request |
 | `team` | Looking up team ID for any session (including non-NoteToSelf teams) |
 | `app`, `team_app_berth` | Participant-level app registration and NoteToSelf berth lookup |
-| `cloud_storage` | Shared cloud locator metadata for routing uploads/downloads |
+| `cloud_storage` | Shared cloud account locator metadata |
+| `berth_cloud_allocation` | Local participant's selected storage location for a berth |
 | `notification_service` | Shared notification-service metadata |
 
 **Tables the Hub reads from device-local NoteToSelf** (`NoteToSelf/Local/device_local.db`):
@@ -153,32 +155,56 @@ The shared databases are the contract between them.
 | Table | Used for |
 |---|---|
 | `app`, `team_app_berth` | Team-level app activation and berth lookup |
+| `member_berth_storage_announcement` | Peer-readable storage location for `(member_id, berth_id)` |
 
 ## Cloud Storage
 
 The Hub's primary implemented service today is cloud storage.
-Apps upload and download opaque files; the Hub routes them to the correct bucket/folder based on the session's berth.
+Apps upload and download opaque files through the Hub.
+A valid Hub session authorizes an app to act in a berth, but it does not imply
+that cloud storage exists for that berth.
+Cloud storage availability is Manager-provisioned state.
+
+The target model separates four concepts:
+
+- **Cloud account locator:** participant-scoped shared metadata in
+  `cloud_storage`, such as provider protocol and endpoint.
+- **Device cloud credential:** device-local auth material in
+  `local.cloud_storage_credential`.
+- **Berth cloud allocation:** the local participant's chosen provider-facing
+  location for one berth, stored as explicit Manager-owned allocation state.
+- **Member berth storage announcement:** a signed team-visible announcement
+  for `(member_id, berth_id)` telling peers where that member stores readable
+  data for that berth.
+
+The Hub must not synthesize provider-facing locations from `berth_id` as a
+hidden default. If a session is valid but no berth cloud allocation exists,
+cloud-file operations return a structured repairable error.
 
 ### Supported Protocols
 
 **S3-compatible** (`protocol = "s3"`): Any S3-compatible endpoint (AWS, MinIO, etc.).
-Requires `url` in shared `cloud_storage`, plus `access_key` and `secret_key`
-in local `cloud_storage_credential`.
-Bucket name is derived as `ss-{berth_id_hex[:16]}`.
+Requires `url` in shared `cloud_storage`, a berth allocation whose `location`
+is the bucket name, plus `access_key` and `secret_key` in local
+`cloud_storage_credential`.
 Uses AWS Signature Version 4.
-
-For peer S3 reads, member transport announcements select the peer endpoint
-(`protocol` + `url`), but the bucket for berth data is still derived from the
-current session's berth ID. In v1, `member_transport_announcement.bucket` is not
-authoritative for S3 berth routing.
+For S3, Manager-generated requested bucket names should obey provider naming
+rules, for example `ss-{uuid7_hex}`.
+Current peer S3 reads use anonymous reads from public-readable buckets. Whether
+public-readable buckets remain the medium-term model is an open question.
 
 **Google Drive** (`protocol = "gdrive"`): OAuth2.
-Requires shared `client_id` plus local `client_secret` and `refresh_token`.
+Requires shared `client_id`, a berth allocation whose provider-facing location
+may be finalized during materialization, plus local `client_secret` and
+`refresh_token`.
 The Hub refreshes the access token transparently before each operation and
 persists the new token back to local `cloud_storage_credential`.
+The current `cloud_storage.path_metadata` field is adapter cache state, not a
+berth storage location.
 
 **Dropbox** (`protocol = "dropbox"`): OAuth2.
-Same token refresh pattern as Google Drive.
+Same token refresh pattern as Google Drive. The berth allocation `location`
+is the folder prefix.
 
 ### Credential Management
 
@@ -188,6 +214,96 @@ For OAuth-based providers (Google Drive, Dropbox), the Hub handles token refresh
 
 Credential storage is likely to evolve — options include OS keyring integration, a local vault,
 or delegation to the encryption layer once that is implemented.
+
+### Berth Allocation Resolution
+
+For own cloud-file operations, the Hub uses the confirmed session's resolved
+`berth_id` to look up `berth_cloud_allocation` in shared NoteToSelf.
+It then joins the allocation's `cloud_storage_id` to shared `cloud_storage`
+and device-local `cloud_storage_credential`.
+
+The Hub does not re-read the team Core DB on every file operation. The session
+was opened only after the berth was resolved from the appropriate DB, and the
+session carries that `berth_id`. If a team berth is later removed while an old
+session still exists, that is a general stale-session problem; orphaned
+allocation rows are inert unless a valid session resolves to the same
+`berth_id`.
+
+If the allocation is missing, the Hub returns `cloud_location_missing`. If the
+allocation exists but this device lacks credentials for the selected cloud
+account, the Hub returns `cloud_credentials_missing`.
+
+### Provider Materialization
+
+The Manager records desired or finalized provider-facing locations. The Hub
+materializes them against the provider. Materialization is lazy but explicit:
+the Hub may materialize the recorded allocation on `POST /cloud/setup` or on
+the first storage operation that needs it. Team creation, app activation, and
+session open do not pre-materialize storage.
+
+Materialization is idempotent. The Hub persists no separate per-allocation
+materialization status; the allocation row is the durable record. Implementations
+may cache or short-circuit provider checks later, but correctness must not
+depend on hidden Hub-only state.
+
+Some providers accept a Manager-chosen locator. Others may return a
+provider-issued final locator during materialization. When a provider returns a
+different final locator, the Hub may write that locator back to
+`berth_cloud_allocation` as a narrow exception to "Manager decides": the Hub is
+recording provider reality, not choosing policy. The writeback must be
+conditional on the allocation still matching the materialization request. If a
+conditional update loses a local race, the Hub re-reads and proceeds if
+possible, or returns `cloud_allocation_conflict`.
+
+Peer-visible storage announcements must be published only after the
+corresponding location is successfully materialized and any provider-issued
+final locator has been durably recorded.
+
+Materialization outcomes:
+
+| Outcome | Storage operation response | `POST /cloud/setup` response |
+|---|---|---|
+| `materialized` | Proceed with the operation. | `200` with `{ "status": "materialized", "location": "..." }` |
+| `materialized_with_locator` | Persist final locator, then proceed. | `200` with `{ "status": "materialized_with_locator", "location": "..." }` |
+| `needs_user_action` | `409` with `reason: "cloud_user_action_required"` | `409` with `reason: "cloud_user_action_required"` |
+| `failed` | `409` with `reason: "cloud_materialization_failed"` | `409` with `reason: "cloud_materialization_failed"` |
+| conditional writeback conflict | Re-read and proceed if possible, otherwise `409` with `reason: "cloud_allocation_conflict"` | Same as storage operation |
+
+### Peer Storage Routing
+
+Peer reads are scoped by `(member_id, berth_id)`, not just by member and not
+just by berth. For the current session's berth, the Hub selects the target
+member's newest valid `member_berth_storage_announcement` by sorting
+`announcement_id` descending. `announcement_id` is UUIDv7, so that ordering is
+the "newest valid" rule. `announced_at` is display/audit data and is not the
+ordering authority.
+
+An announcement is valid when its signature verifies and the signer key is
+currently trusted for the announcing member. There is no max-age policy in v1.
+Valid announcements take precedence over legacy `team_device(protocol, url,
+bucket)` fallback. Legacy fallback is allowed only when no valid announcement
+exists and must be named as legacy behavior.
+
+Remote reads from another device of the same member use the announcement path,
+not this device's local allocation. This device's local allocation describes
+where this device writes. A sibling device may have written the same berth to a
+different location.
+
+### Concurrency
+
+V1 assumes at most one Hub process per device, per participant root. Multiple
+Manager-like local clients, such as the Manager web UI, Manager CLI commands,
+scripts, or test harnesses, coordinate through SQLite transactions and
+conditional updates.
+
+Cross-device first-use races are possible because sibling devices sync through
+Cod Sync rather than shared SQLite locks. Two sibling devices may both
+materialize locations before sync convergence. For provider-issued locators,
+that can create orphaned provider objects. This is recoverable clutter, not a
+correctness failure, as long as peers do not silently route to the wrong
+location. If multiple same-member announcements briefly coexist, peers select
+the newest valid announcement by UUIDv7 `announcement_id`; after sync
+convergence, losing provider locations can be cleaned up by follow-up tooling.
 
 ### CAS Uploads
 
@@ -413,9 +529,21 @@ B's rows.
 
 ### Cloud storage endpoints
 
-**`POST /cloud/setup`** — Create and publish the session's cloud bucket (S3 only). Safe to call multiple times.
+**`POST /cloud/setup`** - Materialize the provisioned cloud location for the current session's berth.
+Safe to call multiple times.
 
-Response: `{ "ok": true }`
+Success response:
+```json
+{ "status": "materialized", "location": "<provider-facing locator>" }
+```
+
+or:
+```json
+{ "status": "materialized_with_locator", "location": "<provider-issued locator>" }
+```
+
+Repairable failures use the `cloud_storage_required` error family with status
+`409`.
 
 ---
 
@@ -440,7 +568,14 @@ Response:
 { "ok": true, "etag": "<etag>", "message": "" }
 ```
 
-Errors: `409` on CAS conflict; `500` on storage error.
+Errors:
+
+- `409` on CAS conflict
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_location_missing" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_credentials_missing" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_user_action_required" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_materialization_failed" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_allocation_conflict" }`
 
 ---
 
@@ -456,9 +591,10 @@ Errors: `404` if not found.
 ---
 
 **`GET /peer_cloud_file?member_id=<hex>&path=<remote path>`** — Download a file from a peer's
-public cloud bucket via the Hub proxy. The Hub resolves the member's readable
-endpoint through `team_device` in the team DB and fetches the file without
-credentials (public-read bucket).
+cloud location via the Hub proxy. The Hub resolves the target member's readable
+location through the newest valid `member_berth_storage_announcement` for
+`(member_id, session.berth_id)`. Legacy `team_device` transport data may be
+used only as an explicitly named fallback when no valid announcement exists.
 
 Response: same as `GET /cloud_file`.
 
@@ -543,7 +679,7 @@ migrations.
 | `participant_id` | BLOB | Matches `Participants/{hex}` directory name |
 | `team_id`, `team_name` | BLOB / TEXT | From Manager's `team` table |
 | `app_id`, `app_name` | BLOB / TEXT | From Manager's `app` table |
-| `berth_id` | BLOB | Drives bucket naming for S3 |
+| `berth_id` | BLOB | Resolves Manager-provisioned berth cloud allocation |
 | `client` | TEXT | Human name of the requesting client |
 
 The `notification_service` table lives in the participant's NoteToSelf DB (managed by Small Sea
