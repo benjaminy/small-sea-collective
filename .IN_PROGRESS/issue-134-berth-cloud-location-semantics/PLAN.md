@@ -63,6 +63,11 @@ That makes narrow fixes unsafe because each local correction risks preserving a 
    Creating every possible team/app/provider location up front would waste cloud objects and UI attention.
    Team creation and app activation may leave a berth without cloud storage until the human or app workflow asks Manager to provision it.
 
+8. **Local single-Hub ownership is assumed.**
+   V1 assumes at most one Hub process per device, per participant root.
+   Running multiple Hubs against the same participant root is outside the supported model unless a later branch adds process locking.
+   Multiple Manager-like local clients may exist, but they must coordinate through database transactions and conditional updates.
+
 ## Current State Summary
 
 **Hub `_get_cloud_link`** reads `cloud_storage LIMIT 1`.
@@ -261,6 +266,40 @@ Manager must persist that final locator before publishing any peer-visible annou
 An announcement should be published only after the Hub has successfully materialized the corresponding location.
 A peer-visible announcement pointing at an unmaterialized location is a defect.
 
+The Hub may write provider-issued locators back to `berth_cloud_allocation` during materialization.
+This is a narrow exception to "Manager decides" because the Hub is recording provider reality, not choosing policy.
+The writeback must be conditional on the allocation still matching the materialization request.
+For example, update the row only if `id` and the previous `location` still match what the Hub materialized from.
+If the conditional update affects no rows, another local actor changed the allocation.
+The Hub should re-read and either use the new durable location or return a repairable conflict.
+
+The same `location` column is overwritten in place when materialization returns a final locator different from the requested one.
+There is no separate requested/final location column in v1.
+
+The Hub persists no separate per-allocation materialization status.
+The allocation row is the durable record.
+The materialization step is idempotent and may be called before each storage operation.
+Implementations may later cache or short-circuit provider checks, but correctness must not depend on hidden Hub-only materialization state.
+
+### Concurrency And Recovery
+
+Local concurrency rules:
+
+- at most one Hub per device/participant root is supported
+- multiple Manager-like local clients coordinate through SQLite transactions
+- provider-issued locator writeback uses compare-and-swap style conditional updates
+- peer announcements are published only after the final locator is durably persisted
+
+Cross-device first-use races are possible.
+Two sibling devices might concurrently materialize the same berth allocation before sync converges.
+For Manager-chosen S3 bucket names, this may be idempotent if both devices request the same bucket and have compatible provider authority.
+For provider-issued locators, this may create extra folders or objects.
+
+V1 treats those extra provider objects as recoverable clutter, not a correctness failure.
+The safety requirement is that only the durable winning allocation is announced to peers.
+If a device materializes a location but loses the durable writeback race, it must not publish an announcement for the losing location.
+Cleanup of orphaned provider locations is follow-up work.
+
 ### Team Creation And Bootstrap
 
 Team creation should not pre-allocate cloud storage for every berth.
@@ -435,6 +474,7 @@ A skeptical reviewer should be able to trace these stories without guessing:
 10. The Hub performs provider I/O but does not invent provider-facing storage names.
 11. GDrive path metadata is not mistaken for a berth storage location.
 12. Peer-visible announcements are published only after materialization succeeds.
+13. Provider-issued locator writeback is conditional and race-safe.
 
 ## Later Micro Tests
 
@@ -445,6 +485,7 @@ but they should drive the first implementation slices:
 - An allocation whose cloud account lacks local credentials returns `cloud_credentials_missing`.
 - An allocation whose provider setup fails returns `cloud_materialization_failed`.
 - A provider-issued final locator is persisted before any announcement is published.
+- A provider-issued final locator writeback that loses a conditional-update race does not publish an announcement.
 - S3 own writes use the stored allocation location, not `ss-{berth_id[:16]}`.
 - Dropbox own writes use the stored allocation location, not a member-derived prefix.
 - Two members announce different locations for the same berth and peer reads select by `(member_id, berth_id)`.
@@ -463,7 +504,8 @@ but they should drive the first implementation slices:
 7. Materialization failure is distinct from missing location.
 8. Team creation and app activation do not require cross-product storage preallocation.
 9. Peer-visible announcements must point only at successfully materialized locations.
-10. Valid announcements take precedence over legacy fallback.
-11. The Hub performs cloud I/O.
-12. Tests use local services such as MinIO and do not call real cloud providers.
-13. Use "micro tests" terminology throughout.
+10. Provider-issued locator writeback must be conditional on the allocation still matching the materialization request.
+11. Valid announcements take precedence over legacy fallback.
+12. The Hub performs cloud I/O.
+13. Tests use local services such as MinIO and do not call real cloud providers.
+14. Use "micro tests" terminology throughout.
