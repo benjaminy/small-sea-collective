@@ -529,7 +529,7 @@ B's rows.
 
 ### Cloud storage endpoints
 
-**`POST /cloud/setup`** — Materialize the provisioned cloud location for the current session's berth.
+**`POST /cloud/setup`** — Target behavior: materialize the provisioned cloud location for the current session's berth.
 Safe to call multiple times.
 
 Success response:
