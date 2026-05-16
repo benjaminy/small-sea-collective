@@ -247,7 +247,7 @@ A skeptical reviewer should be able to confirm:
 4. The conditional writeback is race-tested.
 5. `materialized_with_locator` is exercised even though no real provider in this slice produces it (FakeStorageAdapter).
 6. No production code path depends on the legacy `_bucket_name_for_protocol` for own-storage routing **or for the Core-bootstrap `team_device` write**. The function remains in use at one non-bootstrap site (`finalize_linked_device_bootstrap`, formerly near line 2835) that feeds `team_device` for the legacy fallback; that is acceptable Slice C remainder. Grep target: `_bucket_name_for_protocol` no longer appears at `provisioning.py:4132` or in the `create_invitation` flow.
-7. `uv run pytest packages/small-sea-hub/tests packages/small-sea-manager/tests packages/shared-file-vault/tests packages/small-sea-note-to-self/tests` is green.
+7. `uv run pytest packages/small-sea-hub/tests packages/small-sea-manager/tests packages/shared-file-vault/tests` is green. (The `small-sea-note-to-self` package has no `tests/` directory of its own; its schema is exercised through the other three packages.)
 
 ## Non-Negotiable Invariants
 
