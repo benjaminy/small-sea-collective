@@ -15,6 +15,7 @@ from small_sea_hub.cloud_errors import MaterializationOutcome
 from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
+from small_sea_note_to_self.db import note_to_self_sync_db_path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -261,6 +262,8 @@ def test_no_allocation_session_returns_cloud_location_missing(test_env):
     client = test_env["client"]
     minio = test_env["minio"]
 
+    # The test fixture creates the participant's NoteToSelf team; this session
+    # intentionally has cloud storage configured but no berth allocation.
     session_hex = _open_session(client)
     _register_cloud(test_env["backend"], session_hex, minio)
 
@@ -321,6 +324,8 @@ def test_gdrive_pending_location_returns_cloud_user_action_required(test_env):
         ss_session.participant_id.hex(),
         ss_session.berth_id,
         storage_id,
+        # GDrive treats any pending-* location as a not-yet-provider-issued
+        # locator that requires user action before materialization can proceed.
         location="pending-gdrive-folder",
     )
 
@@ -431,6 +436,9 @@ def test_locator_writeback_race_returns_cloud_allocation_conflict(
                 "provider-final-locator",
             )
 
+        def upload_overwrite(self, path, data):
+            raise AssertionError("race test should stop at /cloud/setup")
+
     client = test_env["client"]
     backend = test_env["backend"]
     playground_dir = test_env["playground_dir"]
@@ -447,14 +455,20 @@ def test_locator_writeback_race_returns_cloud_allocation_conflict(
     )
 
     def write_conflicting_location(participant_hex, allocation_id, expected, new):
-        with sqlite3.connect(
-            f"{playground_dir}/Participants/{participant_hex}/NoteToSelf/Sync/core.db"
-        ) as conn:
-            conn.execute(
+        db_path = note_to_self_sync_db_path(playground_dir, participant_hex)
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.execute(
                 "UPDATE berth_cloud_allocation SET location = ? WHERE id = ?",
                 ("different-provider-locator", allocation_id),
             )
+            assert cur.rowcount == 1
             conn.commit()
+            row = conn.execute(
+                "SELECT location FROM berth_cloud_allocation WHERE id = ?",
+                (allocation_id,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "different-provider-locator"
         return False
 
     monkeypatch.setattr(
