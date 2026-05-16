@@ -51,10 +51,11 @@ Rationale:
 
 **Invitee Core allocation:** admission allocates the invitee's own Core berth on the invitee's own cloud account, with a *fresh* `ss-{uuid7_hex}` location. The invitee does **not** inherit the inviter's naming convention or formula — that would collide on globally-namespaced S3 (AWS), and it would re-introduce the identity-formula pattern Slice A is removing. If the invitee has no `cloud_storage` row, admission proceeds without an allocation, same repairable state as team creation.
 
-**Invitation/bootstrap descriptor:** the inviter's Core bucket *as advertised to the invitee* must come from the inviter's auto-allocated Core `berth_cloud_allocation.location`, not from `_bucket_name_for_protocol`. Otherwise the inviter writes to `ss-{uuid7_hex}` while the invitee tries to fetch from `ss-{berth_id[:16]}` and bootstrap fails silently. Concrete sites:
+**Invitation/bootstrap descriptor:** the inviter's bootstrap transport *as advertised to the invitee* must be sourced as a single coherent record — `protocol`, `url`, and `location` all from the Core allocation joined to its `cloud_storage` row. Reading just the `bucket` half from the allocation while keeping `protocol`/`url` from caller-supplied `inviter_cloud` admits a descriptor with endpoint A and bucket B if the caller's `cloud_storage` row differs from the one referenced by the Core allocation. Concrete sites:
 
 - `provisioning.py:4132` (`creator_bucket = _bucket_name_for_protocol(...)`) — replace with the auto-allocated Core location for the writeback into `team_device`. This keeps `team_device.bucket` consistent with the allocation during the legacy-fallback period (Slice C will remove the column).
-- `provisioning.py:4371` (`inviter_bucket = _bucket_name_for_protocol(...)`) — replace with the auto-allocated Core location of the inviter for the invitation descriptor.
+- `provisioning.py:4330` (`create_invitation(root_dir, participant_hex, team_name, inviter_cloud, ...)`) — drop the caller-supplied `inviter_cloud` as the source of truth for descriptor transport. Instead, look up the Core berth allocation, JOIN to `cloud_storage`, and read all three (`protocol`, `url`, `location`) from that join. If no Core allocation exists, raise the structured `cloud_location_missing` error rather than emitting a half-valid descriptor. `inviter_cloud` may stay as a parameter for one release (ignored, or asserted to match the allocation's account) — pre-alpha, the cleanest move is to remove it; whatever the choice, the descriptor source must be the allocation.
+- `provisioning.py:4371` (`inviter_bucket = _bucket_name_for_protocol(...)`) — removed by the same change as `create_invitation`.
 
 General peer-read routing (`_download_peer_file`) is **not** touched in this slice — that's Slice B.
 
@@ -89,8 +90,9 @@ App berth allocation (Vault, etc.) remains explicit and is a documented test set
   - 0-row update is the CAS conflict signal: Hub re-reads once and retries; persistent mismatch surfaces `cloud_allocation_conflict`.
 - Endpoint integration in `server.py`:
   - `POST /cloud/setup` returns the outcome JSON.
-  - `POST /cloud_file`, `GET /cloud_file`, and other own-storage endpoints map structured exceptions to `409` with the `cloud_storage_required` family.
+  - `POST /cloud_file` and `GET /cloud_file` (own-storage endpoints) map structured exceptions to `409` with the `cloud_storage_required` family.
   - The full reason list: `cloud_location_missing`, `cloud_credentials_missing`, `cloud_user_action_required`, `cloud_materialization_failed`, `cloud_allocation_conflict`.
+  - **`GET /cloud_proxy` is intentionally excluded.** It is descriptor-scoped bootstrap transport — callers pass `protocol`/`url`/`bucket` query params and the Hub proxies a read using credentials it picks from its participant cloud accounts. It does not resolve through `_resolve_berth_cloud_or_raise` and does not emit `cloud_storage_required` errors. Routing this through the allocation path would break invitation bootstrap, since the invitee has no allocation yet when they fetch the team repo. `/cloud_proxy`'s credential-acquisition rule stays unchanged in this slice.
 - Micro tests (see below).
 
 ### Out of scope
@@ -152,8 +154,8 @@ Exit criteria: Hub still works for the auto-allocated Core berth across all curr
   - S3: wrap the existing `ensure_bucket_public` body; `BucketAlreadyOwnedByYou` is success; generic `ClientError` returns `failed`.
   - Dropbox: no-op, returns `materialized`.
   - GDrive: returns `needs_user_action` if no folder ID is present.
-- Backend orchestration: own-storage flow becomes `resolve → build adapter → adapter.materialize() → adapter.upload/download`.
-- If `materialize()` returns `materialized_with_locator`, the backend calls `_writeback_locator(participant_hex, allocation_id, expected_location, new_location)` (conditional UPDATE). On 0-row update the backend re-reads once and retries; persistent mismatch raises `CloudAllocationConflictExn`.
+- Backend orchestration: own-storage flow becomes `resolve → build adapter → adapter.materialize() → [if materialized_with_locator: writeback + re-resolve + rebuild adapter] → adapter.upload/download`.
+- If `materialize()` returns `materialized_with_locator`, the backend calls `_writeback_locator(participant_hex, allocation_id, expected_location, new_location)` (conditional UPDATE). On successful writeback the backend re-resolves the allocation (now carrying `new_location`) and **rebuilds the adapter** before any upload/download. The original adapter was constructed against the requested locator and would otherwise route to a stale name. On 0-row writeback the backend re-reads once and retries; persistent mismatch raises `CloudAllocationConflictExn`.
 - `ensure_cloud_ready` is renamed to `materialize_for_session` and returns the outcome. Pre-alpha — no compatibility alias.
 
 Exit criteria: `/cloud/setup` returns outcome JSON; storage ops still work end-to-end.
@@ -162,7 +164,8 @@ Exit criteria: `/cloud/setup` returns outcome JSON; storage ops still work end-t
 
 - Update `POST /cloud/setup` to return outcome JSON.
 - Add FastAPI exception handlers (or per-endpoint try/except) that translate the structured exceptions into 409 + `{"error": "cloud_storage_required", "reason": "..."}`.
-- Update `POST /cloud_file`, `GET /cloud_file`, `GET /cloud_proxy` to honor the new error family.
+- Update `POST /cloud_file` and `GET /cloud_file` to honor the new error family.
+- Leave `GET /cloud_proxy` alone — it is descriptor-scoped bootstrap transport, not own-storage. See the Scope section for the rationale.
 
 Exit criteria: every reason in the spec table is reachable from at least one endpoint and produces the documented response.
 
@@ -209,6 +212,7 @@ Per the issue's validation list, plus tests for the auto-allocation behavior.
 - `/cloud/setup` happy path returns 200 with `{ "status": "materialized", "location": "ss-..." }`.
 - `/cloud/setup` second call on the same berth is idempotent (still 200, `materialized`).
 - A `FakeStorageAdapter` configured to return a different final locator drives `materialized_with_locator`; the allocation row is updated via conditional UPDATE, and `/cloud/setup` returns the final location.
+- **First-use storage** (not just `/cloud/setup`) exercises `materialized_with_locator`: an upload via `POST /cloud_file` triggers materialization, writeback, adapter rebuild, and the actual `put` against the *new* locator. Verify the upload lands at `new_location`, not `requested_location`. Regression test for the "adapter built from stale name" trap.
 - A `FakeStorageAdapter` configured to require OAuth drives `needs_user_action` → 409 with `reason: "cloud_user_action_required"`.
 - A `FakeStorageAdapter` configured to fail drives `failed` → 409 with `reason: "cloud_materialization_failed"`.
 - `cloud_allocation_conflict`: race test where another local connection updates `berth_cloud_allocation` between the Hub's read and its writeback. The Hub re-reads, retries once, and on persistent mismatch surfaces `cloud_allocation_conflict`.
@@ -223,8 +227,10 @@ Per the issue's validation list, plus tests for the auto-allocation behavior.
 **Bootstrap descriptor consistency:**
 
 - After `create_team`, the inviter's `team_device.bucket` equals the auto-allocated Core location, not `ss-{berth_id[:16]}`.
-- After invitation creation, the invitation descriptor's bucket field equals the inviter's auto-allocated Core location.
+- After invitation creation, the invitation descriptor's `protocol`, `url`, **and** `bucket` (`location`) all match the inviter's auto-allocated Core allocation joined to its `cloud_storage` row — not the caller-supplied `inviter_cloud` if that diverges.
+- `create_invitation` with no Core allocation returns the structured `cloud_location_missing` error rather than emitting a half-valid descriptor.
 - End-to-end: inviter creates team and invites, invitee accepts and bootstraps — the invitee successfully reads the team repo from the inviter's allocation bucket. (Regression test for the bug this review caught.)
+- `GET /cloud_proxy` continues to work for an invitee NoteToSelf session with no `berth_cloud_allocation` rows (regression test: it must not route through allocation resolution).
 
 **Integration:**
 
