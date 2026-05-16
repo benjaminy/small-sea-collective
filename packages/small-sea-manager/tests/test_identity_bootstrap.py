@@ -13,6 +13,7 @@ from small_sea_manager.manager import TeamManager, bootstrap_existing_identity, 
 from small_sea_manager.provisioning import (
     _push_note_to_self_to_local_remote,
     _single_note_to_self_remote_descriptor,
+    add_berth_cloud_allocation_by_berth_id,
     add_cloud_storage,
     create_new_participant,
 )
@@ -286,12 +287,19 @@ def test_identity_bootstrap_via_hub_bootstrap_transport(playground_dir, minio_se
     http_a = TestClient(app)
 
     alice_nts_token = _open_session(http_a, "Alice", "NoteToSelf")
-    backend_a.add_cloud_location(
+    cloud_storage_id = backend_a.add_cloud_location(
         alice_nts_token,
         "s3",
         minio["endpoint"],
         access_key=minio["access_key"],
         secret_key=minio["secret_key"],
+    )
+    nts_session = backend_a._lookup_session(alice_nts_token)
+    add_berth_cloud_allocation_by_berth_id(
+        root1,
+        alice_hex,
+        nts_session.berth_id,
+        cloud_storage_id,
     )
 
     join_request = create_identity_join_request(root2)

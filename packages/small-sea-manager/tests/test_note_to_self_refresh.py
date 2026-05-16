@@ -182,9 +182,16 @@ def test_refresh_note_to_self_two_device_team_discovery(playground_dir, minio_se
 
     # Open NoteToSelf session on device A so the Hub knows the berth
     nts_token_a = _open_session(http_a, "Alice", "NoteToSelf", mode="passthrough")
-    backend_a.add_cloud_location(
+    cloud_storage_id = backend_a.add_cloud_location(
         nts_token_a, "s3", minio["endpoint"],
         access_key=minio["access_key"], secret_key=minio["secret_key"],
+    )
+    nts_session_a = backend_a._lookup_session(nts_token_a)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        root_a,
+        alice_hex,
+        nts_session_a.berth_id,
+        cloud_storage_id,
     )
 
     manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
@@ -268,9 +275,16 @@ def test_refresh_does_not_sync_device_local_state(playground_dir, minio_server_g
     http_a = TestClient(app)
 
     nts_token_a = _open_session(http_a, "Alice", "NoteToSelf", mode="passthrough")
-    backend_a.add_cloud_location(
+    cloud_storage_id = backend_a.add_cloud_location(
         nts_token_a, "s3", minio["endpoint"],
         access_key=minio["access_key"], secret_key=minio["secret_key"],
+    )
+    nts_session_a = backend_a._lookup_session(nts_token_a)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        root_a,
+        alice_hex,
+        nts_session_a.berth_id,
+        cloud_storage_id,
     )
     manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
     manager_a.create_team("MyTeam")

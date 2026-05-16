@@ -19,6 +19,7 @@ from small_sea_hub.backend import (
     SmallSeaBackend,
     SmallSeaNotFoundExn,
 )
+from small_sea_hub.cloud_errors import CloudStorageRequiredExn
 from small_sea_hub.config import Settings
 
 _templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "templates"))
@@ -904,6 +905,13 @@ async def session_peers(session_hex: str = Depends(_require_session)):
 # ---- Cloud storage ----
 
 
+def _cloud_storage_required_response(exn: CloudStorageRequiredExn):
+    return JSONResponse(
+        status_code=409,
+        content={"error": "cloud_storage_required", "reason": exn.reason},
+    )
+
+
 class CloudUploadReq(pydantic.BaseModel):
     path: str
     data: str  # base64-encoded
@@ -919,9 +927,12 @@ async def upload_to_cloud(
 
     small_sea = app.state.backend
     decoded_data = base64.b64decode(req.data)
-    ok, etag, msg = small_sea.upload_to_cloud(
-        session_hex, req.path, decoded_data, expected_etag=req.expected_etag
-    )
+    try:
+        ok, etag, msg = small_sea.upload_to_cloud(
+            session_hex, req.path, decoded_data, expected_etag=req.expected_etag
+        )
+    except CloudStorageRequiredExn as exn:
+        return _cloud_storage_required_response(exn)
     if not ok:
         if msg == "CAS_CONFLICT":
             raise HTTPException(
@@ -958,7 +969,10 @@ async def download_from_cloud(path: str, session_hex: str = Depends(_require_ses
     import base64
 
     small_sea = app.state.backend
-    ok, data, etag = small_sea.download_from_cloud(session_hex, path)
+    try:
+        ok, data, etag = small_sea.download_from_cloud(session_hex, path)
+    except CloudStorageRequiredExn as exn:
+        return _cloud_storage_required_response(exn)
     if not ok:
         raise HTTPException(status_code=404, detail=etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
@@ -966,8 +980,14 @@ async def download_from_cloud(path: str, session_hex: str = Depends(_require_ses
 
 @app.post("/cloud/setup")
 async def cloud_setup(session_hex: str = Depends(_require_session)):
-    app.state.backend.ensure_cloud_ready(session_hex)
-    return {"ok": True}
+    try:
+        outcome = app.state.backend.materialize_for_session(session_hex)
+    except CloudStorageRequiredExn as exn:
+        return _cloud_storage_required_response(exn)
+    return {
+        "status": outcome.status,
+        "location": outcome.final_location,
+    }
 
 
 @app.get("/peer_cloud_file")

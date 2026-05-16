@@ -142,6 +142,17 @@ from wrasse_trust.transport import (
 )
 
 
+class CloudStorageRequiredError(ValueError):
+    reason = "cloud_storage_required"
+
+    def __init__(self, message: str | None = None):
+        super().__init__(message or self.reason)
+
+
+class CloudLocationMissingError(CloudStorageRequiredError):
+    reason = "cloud_location_missing"
+
+
 def _serialize_cert(cert: KeyCertificate) -> dict:
     return {
         "cert_id": cert.cert_id.hex(),
@@ -1456,6 +1467,9 @@ def _deserialize_ratchet_state(raw_value: str | None) -> RatchetState | None:
 
 def _single_note_to_self_remote_descriptor(root_dir, participant_hex: str) -> dict:
     root_dir = pathlib.Path(root_dir)
+    berth_id = _resolve_berth_id_for_allocation(
+        root_dir, participant_hex, "NoteToSelf", "SmallSeaCollectiveCore"
+    )
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         rows = conn.execute(
             """
@@ -1469,13 +1483,28 @@ def _single_note_to_self_remote_descriptor(root_dir, participant_hex: str) -> di
     if len(rows) != 1:
         raise ValueError("Expected exactly one NoteToSelf remote configuration")
     row = rows[0]
-    return {
+    descriptor = {
         "storage_id_hex": row[0].hex(),
         "protocol": row[1],
         "url": row[2],
         "client_id": row[3],
         "path_metadata": row[4],
     }
+    if descriptor["protocol"] != "localfolder":
+        allocation = get_berth_cloud_allocation_for_berth(
+            root_dir,
+            participant_hex,
+            berth_id,
+        )
+        if allocation is None:
+            allocation = add_berth_cloud_allocation_by_berth_id(
+                root_dir,
+                participant_hex,
+                berth_id,
+                descriptor["storage_id_hex"],
+            )
+        descriptor["bucket"] = allocation["location"]
+    return descriptor
 
 
 def _push_note_to_self_to_local_remote(root_dir, participant_hex: str, remote_descriptor: dict) -> None:
@@ -4125,17 +4154,17 @@ def create_team(root_dir, participant_hex, team_name):
             "SmallSeaCollectiveCore",
             lambda _member_id: "read-write",
         )
-        try:
-            creator_cloud = get_cloud_storage(root_dir, participant_hex)
-            creator_protocol = creator_cloud["protocol"]
-            creator_url = creator_cloud["url"]
-            creator_bucket = _bucket_name_for_protocol(
-                creator_protocol, member_id, berth_id
-            )
-        except ValueError:
+        creator_allocation = _auto_allocate_berth_cloud_if_available(
+            root_dir, participant_hex, berth_id
+        )
+        if creator_allocation is None:
             creator_protocol = None
             creator_url = None
             creator_bucket = None
+        else:
+            creator_protocol = creator_allocation["protocol"]
+            creator_url = creator_allocation["url"]
+            creator_bucket = creator_allocation["location"]
         _upsert_team_device_row(
             conn,
             member_id,
@@ -4328,7 +4357,7 @@ def activate_app_for_team(root_dir, participant_hex, team_name, app_name):
 
 
 def create_invitation(
-    root_dir, participant_hex, team_name, inviter_cloud, invitee_label=None, role="admin"
+    root_dir, participant_hex, team_name, inviter_cloud=None, invitee_label=None, role="admin"
 ):
     """Create a transcript-bound admission proposal token for a team."""
     _role_to_core_berth_role(role)
@@ -4360,15 +4389,15 @@ def create_invitation(
         root_dir, participant_hex, team_name
     )
 
-    # Look up the berth ID from the team DB (to derive the bucket name).
-    # Berth structural data lives in the team DB, not NoteToSelf.
-    with team_engine.begin() as conn:
-        berth_row = conn.execute(
-            text("SELECT id FROM team_app_berth LIMIT 1")
-        ).fetchone()
-    if berth_row is None:
-        raise ValueError(f"No berth found in team DB for '{team_name}'")
-    inviter_bucket = _bucket_name_for_protocol(inviter_cloud["protocol"], inviter_member_id, berth_row[0])
+    inviter_core_cloud = _core_cloud_allocation_or_raise(
+        root_dir, participant_hex, team_name
+    )
+    if inviter_cloud is not None:
+        if (
+            inviter_cloud.get("protocol") != inviter_core_cloud["protocol"]
+            or inviter_cloud.get("url") != inviter_core_cloud["url"]
+        ):
+            raise ValueError("inviter_cloud does not match the Core cloud allocation")
 
     proposal_id = uuid7()
     invitee_member_id = uuid7()
@@ -4422,8 +4451,11 @@ def create_invitation(
         "inviter_display_name": inviter_display_name,
         "invitee_label": invitee_label,
         "role": role,
-        "inviter_cloud": {"protocol": inviter_cloud["protocol"], "url": inviter_cloud["url"]},
-        "inviter_bucket": inviter_bucket,
+        "inviter_cloud": {
+            "protocol": inviter_core_cloud["protocol"],
+            "url": inviter_core_cloud["url"],
+        },
+        "inviter_bucket": inviter_core_cloud["location"],
         "inviter_sender_key": serialize_sender_key_record(inviter_sender_key),
     }
     token_b64 = _tokenize(token_data)
@@ -4525,6 +4557,20 @@ def accept_invitation(
 
     team_db_path = team_sync_dir / "core.db"
     ensure_team_db_schema(team_db_path)
+    with sqlite3.connect(str(team_db_path)) as conn:
+        core_berth_row = conn.execute(
+            """
+            SELECT tab.id
+            FROM team_app_berth tab
+            JOIN app a ON a.id = tab.app_id
+            WHERE a.name = ?
+            """,
+            ("SmallSeaCollectiveCore",),
+        ).fetchone()
+    if core_berth_row is not None:
+        _auto_allocate_berth_cloud_if_available(
+            root_dir, acceptor_participant_hex, core_berth_row[0]
+        )
     # Team sender state is local-only and does not publish admission.
     save_peer_sender_key(
         device_local_db_path(root_dir, acceptor_participant_hex),
@@ -5008,6 +5054,246 @@ def set_notification_service(
     return ns_id.hex()
 
 
+def _bucket_safe_generated_location(protocol: str) -> str:
+    if protocol == "gdrive":
+        return f"pending-{uuid7().hex()}"
+    return f"ss-{uuid7().hex()}"
+
+
+def _validate_s3_location(location: str) -> None:
+    if not (3 <= len(location) <= 63):
+        raise ValueError("S3 bucket name must be 3-63 characters")
+    allowed = set("abcdefghijklmnopqrstuvwxyz0123456789-")
+    if any(ch not in allowed for ch in location):
+        raise ValueError("S3 bucket name must use lowercase letters, digits, and hyphens")
+    if not (location[0].isalnum() and location[-1].isalnum()):
+        raise ValueError("S3 bucket name must start and end with a letter or digit")
+
+
+def _cloud_storage_row(conn, cloud_storage_id: bytes):
+    row = conn.execute(
+        """
+        SELECT id, protocol, url, client_id, path_metadata
+        FROM cloud_storage
+        WHERE id = ?
+        """,
+        (cloud_storage_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"Cloud storage row '{cloud_storage_id.hex()}' not found")
+    return row
+
+
+def _first_cloud_storage_row(conn):
+    return conn.execute(
+        """
+        SELECT id, protocol, url, client_id, path_metadata
+        FROM cloud_storage
+        ORDER BY rowid
+        LIMIT 1
+        """
+    ).fetchone()
+
+
+def _resolve_berth_id_for_allocation(root_dir, participant_hex, team_name, app_name):
+    root_dir = pathlib.Path(root_dir)
+    participant_dir = root_dir / "Participants" / participant_hex
+    note_to_self_db = note_to_self_sync_db_path(root_dir, participant_hex)
+
+    with sqlite3.connect(str(note_to_self_db)) as conn:
+        team_row = conn.execute(
+            "SELECT id FROM team WHERE name = ?",
+            (team_name,),
+        ).fetchone()
+        if team_row is None:
+            raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
+        team_id = team_row[0]
+
+        if team_name == "NoteToSelf":
+            row = conn.execute(
+                """
+                SELECT tab.id
+                FROM team_app_berth tab
+                JOIN app a ON a.id = tab.app_id
+                WHERE a.name = ? AND tab.team_id = ?
+                """,
+                (app_name, team_id),
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"No berth for app '{app_name}' in team '{team_name}'")
+            return row[0]
+
+    team_db_path = participant_dir / team_name / "Sync" / "core.db"
+    with sqlite3.connect(str(team_db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT tab.id
+            FROM team_app_berth tab
+            JOIN app a ON a.id = tab.app_id
+            WHERE a.name = ?
+            """,
+            (app_name,),
+        ).fetchone()
+    if row is None:
+        raise ValueError(f"No berth for app '{app_name}' in team '{team_name}'")
+    return row[0]
+
+
+def add_berth_cloud_allocation(
+    root_dir,
+    participant_hex,
+    team_name,
+    app_name,
+    cloud_storage_id_hex,
+    *,
+    location=None,
+):
+    berth_id = _resolve_berth_id_for_allocation(
+        root_dir, participant_hex, team_name, app_name
+    )
+    return add_berth_cloud_allocation_by_berth_id(
+        root_dir,
+        participant_hex,
+        berth_id,
+        cloud_storage_id_hex,
+        location=location,
+    )
+
+
+def add_berth_cloud_allocation_by_berth_id(
+    root_dir,
+    participant_hex,
+    berth_id,
+    cloud_storage_id_hex,
+    *,
+    location=None,
+):
+    root_dir = pathlib.Path(root_dir)
+    if isinstance(berth_id, str):
+        berth_id = bytes.fromhex(berth_id)
+    cloud_storage_id = bytes.fromhex(cloud_storage_id_hex)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        existing = conn.execute(
+            "SELECT id FROM berth_cloud_allocation WHERE berth_id = ?",
+            (berth_id,),
+        ).fetchone()
+        if existing is not None:
+            raise ValueError("A cloud allocation already exists for this berth")
+
+        cloud_row = _cloud_storage_row(conn, cloud_storage_id)
+        protocol = cloud_row[1]
+        final_location = location or _bucket_safe_generated_location(protocol)
+        if protocol == "s3":
+            _validate_s3_location(final_location)
+        allocation_id = uuid7()
+        conn.execute(
+            """
+            INSERT INTO berth_cloud_allocation (
+                id, berth_id, cloud_storage_id, location, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (allocation_id, berth_id, cloud_storage_id, final_location, _now_iso()),
+        )
+        conn.commit()
+    return {
+        "id": allocation_id.hex(),
+        "berth_id": berth_id.hex(),
+        "cloud_storage_id": cloud_storage_id.hex(),
+        "location": final_location,
+        "protocol": protocol,
+        "url": cloud_row[2],
+    }
+
+
+def get_berth_cloud_allocation_for_berth(root_dir, participant_hex, berth_id):
+    root_dir = pathlib.Path(root_dir)
+    if isinstance(berth_id, str):
+        berth_id = bytes.fromhex(berth_id)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute(
+            """
+            SELECT
+                bca.id,
+                bca.berth_id,
+                bca.cloud_storage_id,
+                bca.location,
+                cs.protocol,
+                cs.url,
+                cs.client_id,
+                cs.path_metadata
+            FROM berth_cloud_allocation bca
+            JOIN cloud_storage cs ON cs.id = bca.cloud_storage_id
+            WHERE bca.berth_id = ?
+            """,
+            (berth_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row[0].hex(),
+        "berth_id": row[1].hex(),
+        "cloud_storage_id": row[2].hex(),
+        "location": row[3],
+        "protocol": row[4],
+        "url": row[5],
+        "client_id": row[6],
+        "path_metadata": row[7],
+    }
+
+
+def _auto_allocate_berth_cloud_if_available(root_dir, participant_hex, berth_id):
+    root_dir = pathlib.Path(root_dir)
+    if isinstance(berth_id, str):
+        berth_id = bytes.fromhex(berth_id)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        existing = conn.execute(
+            "SELECT id FROM berth_cloud_allocation WHERE berth_id = ?",
+            (berth_id,),
+        ).fetchone()
+        if existing is not None:
+            return get_berth_cloud_allocation_for_berth(root_dir, participant_hex, berth_id)
+
+        cloud_row = _first_cloud_storage_row(conn)
+        if cloud_row is None:
+            return None
+        protocol = cloud_row[1]
+        location = _bucket_safe_generated_location(protocol)
+        if protocol == "s3":
+            _validate_s3_location(location)
+        allocation_id = uuid7()
+        conn.execute(
+            """
+            INSERT INTO berth_cloud_allocation (
+                id, berth_id, cloud_storage_id, location, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (allocation_id, berth_id, cloud_row[0], location, _now_iso()),
+        )
+        conn.commit()
+    return {
+        "id": allocation_id.hex(),
+        "berth_id": berth_id.hex(),
+        "cloud_storage_id": cloud_row[0].hex(),
+        "location": location,
+        "protocol": protocol,
+        "url": cloud_row[2],
+    }
+
+
+def _core_cloud_allocation_or_raise(root_dir, participant_hex, team_name):
+    berth_id = _resolve_berth_id_for_allocation(
+        root_dir, participant_hex, team_name, "SmallSeaCollectiveCore"
+    )
+    allocation = get_berth_cloud_allocation_for_berth(
+        root_dir, participant_hex, berth_id
+    )
+    if allocation is None:
+        raise CloudLocationMissingError(
+            f"No cloud allocation for Core berth in team '{team_name}'"
+        )
+    return allocation
+
+
 def get_cloud_storage(root_dir, participant_hex):
     """Return the first cloud storage config from NoteToSelf DB as a dict.
 
@@ -5017,7 +5303,7 @@ def get_cloud_storage(root_dir, participant_hex):
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         row = conn.execute(
             """
-            SELECT cs.protocol, cs.url, csc.access_key, csc.secret_key
+            SELECT cs.id, cs.protocol, cs.url, csc.access_key, csc.secret_key
             FROM cloud_storage cs
             LEFT JOIN local.cloud_storage_credential csc
               ON csc.cloud_storage_id = cs.id
@@ -5026,7 +5312,13 @@ def get_cloud_storage(root_dir, participant_hex):
         ).fetchone()
     if row is None:
         raise ValueError("No cloud storage configured for this participant")
-    return {"protocol": row[0], "url": row[1], "access_key": row[2], "secret_key": row[3]}
+    return {
+        "id": row[0].hex(),
+        "protocol": row[1],
+        "url": row[2],
+        "access_key": row[3],
+        "secret_key": row[4],
+    }
 
 
 def add_cloud_storage(
@@ -5071,6 +5363,7 @@ def add_cloud_storage(
             ),
         )
         conn.commit()
+    return storage_id.hex()
 
 
 def list_cloud_storage(root_dir, participant_hex):

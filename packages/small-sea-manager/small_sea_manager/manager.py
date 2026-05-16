@@ -158,10 +158,22 @@ class TeamManager:
         nts_session = self._open_note_to_self_session(mode="passthrough")
         session_info = nts_session.session_info()
         berth_id = session_info["berth_id"]
+        allocation = provisioning.get_berth_cloud_allocation_for_berth(
+            self.root_dir,
+            self.participant_hex,
+            berth_id,
+        )
+        if allocation is None:
+            allocation = provisioning.add_berth_cloud_allocation_by_berth_id(
+                self.root_dir,
+                self.participant_hex,
+                berth_id,
+                cloud["id"],
+            )
         return {
             "protocol": cloud["protocol"],
             "url": cloud["url"],
-            "bucket": f"ss-{berth_id[:16]}",
+            "bucket": allocation["location"],
         }
 
     def _ensure_note_to_self_adopted_count(self, session) -> tuple[bytes, int]:

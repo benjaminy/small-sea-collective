@@ -7,6 +7,7 @@ import cod_sync.protocol as CS
 from cod_sync.protocol import canonical_link_bytes, verify_link_signature
 from small_sea_manager.provisioning import (
     _install_sqlite_merge_driver,
+    add_cloud_storage,
     create_invitation,
     create_new_participant,
     create_team,
@@ -81,6 +82,12 @@ def test_device_link_honored_after_fetch_merge_without_extra_shared_state(playgr
     cloud_dir.mkdir()
 
     alice_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(
+        root1,
+        alice_hex,
+        protocol=ALICE_CLOUD["protocol"],
+        url=ALICE_CLOUD["url"],
+    )
     team_result = create_team(root1, alice_hex, "ProjectX")
     team_id = bytes.fromhex(team_result["team_id_hex"])
     alice_member_id_hex = team_result["member_id_hex"]

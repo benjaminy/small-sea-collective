@@ -71,6 +71,16 @@ def _make_bucket_public(minio, bucket_name: str):
     return s3
 
 
+def _core_allocation_bucket(root, participant_hex, team_result):
+    allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        root,
+        participant_hex,
+        team_result["berth_id_hex"],
+    )
+    assert allocation is not None
+    return allocation["location"]
+
+
 def _signed_announcement(*, member_id: bytes, signer_private_key: bytes, signer_key_id: bytes, url: str, bucket: str):
     unsigned = MemberTransportAnnouncement(
         announcement_id=Provisioning.uuid7(),
@@ -118,7 +128,7 @@ def test_peer_download_uses_announced_endpoint_and_session_berth_bucket(
     client = TestClient(app)
     session_hex = _request_and_confirm(client)
 
-    fallback_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
+    fallback_bucket = _core_allocation_bucket(root, alice_hex, team_result)
     announced_bucket = "peer-transport-announced"
     s3 = _make_bucket_public(minio, fallback_bucket)
     _make_bucket_public(minio, announced_bucket)
@@ -165,7 +175,7 @@ def test_peer_download_falls_back_when_announcement_signature_is_invalid(
     client = TestClient(app)
     session_hex = _request_and_confirm(client)
 
-    fallback_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
+    fallback_bucket = _core_allocation_bucket(root, alice_hex, team_result)
     announced_bucket = "peer-transport-invalid"
     s3 = _make_bucket_public(minio, fallback_bucket)
     _make_bucket_public(minio, announced_bucket)
@@ -219,7 +229,7 @@ def test_peer_download_falls_back_when_announcement_signer_loses_trust(
     client = TestClient(app)
     session_hex = _request_and_confirm(client)
 
-    fallback_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
+    fallback_bucket = _core_allocation_bucket(root, alice_hex, team_result)
     announced_bucket = "peer-transport-untrusted"
     s3 = _make_bucket_public(minio, fallback_bucket)
     _make_bucket_public(minio, announced_bucket)

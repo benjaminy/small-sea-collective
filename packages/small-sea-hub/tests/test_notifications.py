@@ -87,7 +87,7 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
 
     # -- Register cloud storage via Hub --
     alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
-    backend.add_cloud_location(
+    alice_cloud_id = backend.add_cloud_location(
         alice_nts, "s3", alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
@@ -101,7 +101,14 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
 
     # -- Alice: create team, push, invite Bob --
     team_info = Provisioning.create_team(root, alice_hex, "ProjectX")
-    team_bucket = f"ss-{team_info['berth_id_hex'][:16]}"
+    team_allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        root,
+        alice_hex,
+        team_info["berth_id_hex"],
+    )
+    assert team_allocation is not None
+    assert team_allocation["cloud_storage_id"] == alice_cloud_id
+    team_bucket = team_allocation["location"]
 
     alice_team_token = _open_session(http, "Alice", "ProjectX", mode="passthrough")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"

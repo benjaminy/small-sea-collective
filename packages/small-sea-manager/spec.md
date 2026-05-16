@@ -396,6 +396,15 @@ Team pointer to NoteToSelf DB. The creator is added as the first member with
 `admin` role on all berths, meaning their local starting view is that they have
 `read-write` access everywhere, including Core.
 
+If a `cloud_storage` row exists for the participant, team creation auto-allocates
+the Core berth against that account with a fresh Manager-generated location, so
+the new team is syncable from first use.
+If no `cloud_storage` row exists, no allocation is created.
+The team remains locally valid but storage-missing until cloud is configured;
+Hub storage operations against the Core berth surface `cloud_location_missing`
+in that state.
+App berths are never pre-allocated by team creation.
+
 #### List teams
 
 Reads the `team` table from NoteToSelf DB. Does not query the Hub.
@@ -494,6 +503,16 @@ Takes an out-of-band proposal token. All cloud I/O goes through the Hub:
 Returns the signed acceptance blob for out-of-band delivery back to the
 inviter. The invitee does **not** write any rows to the shared team DB at this
 stage. The invitee never publishes their own admission.
+
+If the invitee has a `cloud_storage` row configured, admission also allocates
+the invitee's own Core berth against the invitee's own cloud account, with a
+fresh Manager-generated location.
+The invitee does not inherit the inviter's naming or location — that would
+collide on globally-namespaced providers and would re-introduce identity-
+formula coupling.
+If the invitee has no `cloud_storage` row, admission proceeds without an
+allocation, leaving the team in the same repairable storage-missing state as
+no-cloud team creation.
 
 #### Finalize invitation (inviter side)
 
@@ -785,10 +804,15 @@ the `berth_id` is the team DB berth ID resolved by the same logic the Hub uses
 for sessions. NoteToSelf cannot enforce a foreign key to that team DB row, so
 the allocation treats `berth_id` as an opaque stable ID.
 
-Provisioning should be lazy. Team creation and app activation do not
-pre-allocate cloud locations for every possible app/team cross-product. A team
-or app berth can be locally valid but not yet syncable; missing storage is a
-repairable provisioning state.
+Provisioning is lazy for app berths and eager for Core.
+App activation does not pre-allocate cloud locations, and an app berth can be
+locally valid but not yet syncable.
+The Core berth is auto-allocated at team creation and at invitation acceptance
+when a `cloud_storage` row exists, so a freshly-created or freshly-joined team
+is syncable from first use.
+If no `cloud_storage` row exists at those points, no allocation is created and
+the team is locally valid but storage-missing.
+Missing storage is a repairable provisioning state.
 
 For providers that accept caller-chosen names, Manager records the requested
 location. For S3, Manager should generate a bucket-safe value such as

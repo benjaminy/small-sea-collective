@@ -4,14 +4,18 @@
 # using FastAPI's TestClient (in-process, no subprocess needed for the hub).
 
 import base64
+import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import boto3
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
+from small_sea_hub.cloud_errors import MaterializationOutcome
 from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
+from small_sea_note_to_self.db import note_to_self_sync_db_path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -40,13 +44,13 @@ def test_env(playground_dir, minio):
     }
 
 
-def _open_session(client, mode="passthrough"):
+def _open_session(client, mode="passthrough", team="NoteToSelf"):
     resp = client.post(
         "/sessions/request",
         json={
             "participant": "alice",
             "app": "SmallSeaCollectiveCore",
-            "team": "NoteToSelf",
+            "team": team,
             "client": "Smoke Tests",
             "mode": mode,
         },
@@ -63,8 +67,12 @@ def _open_session(client, mode="passthrough"):
     return session_hex
 
 
+def _participant_hex(backend):
+    return backend._find_participant("alice")[0][0].name
+
+
 def _register_cloud(backend, session_hex, minio):
-    backend.add_cloud_location(
+    return backend.add_cloud_location(
         session_hex,
         "s3",
         minio["endpoint"],
@@ -77,7 +85,13 @@ def _derive_bucket_name(playground_dir, session_hex):
     """Derive the bucket name using the same logic as the backend."""
     ss = SmallSea.SmallSeaBackend(root_dir=playground_dir)
     ss_session = ss._lookup_session(session_hex)
-    return f"ss-{ss_session.berth_id.hex()[:16]}"
+    allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+    )
+    assert allocation is not None
+    return allocation["location"]
 
 
 def _create_bucket(minio, bucket_name):
@@ -104,6 +118,12 @@ def _read_bucket_object(minio, bucket_name, key):
     return s3.get_object(Bucket=bucket_name, Key=key)["Body"].read()
 
 
+def _assert_cloud_storage_required(resp, reason):
+    assert resp.status_code == 409
+    payload = resp.json()
+    assert payload == {"error": "cloud_storage_required", "reason": reason}
+
+
 def test_upload_and_download(test_env):
     client = test_env["client"]
     minio = test_env["minio"]
@@ -113,11 +133,15 @@ def test_upload_and_download(test_env):
     session_hex = _open_session(client)
 
     # 2. Register MinIO cloud location with credentials
-    _register_cloud(test_env["backend"], session_hex, minio)
-
-    # 3. Pre-create the bucket
-    bucket_name = _derive_bucket_name(playground_dir, session_hex)
-    _create_bucket(minio, bucket_name)
+    storage_id = _register_cloud(test_env["backend"], session_hex, minio)
+    ss_session = test_env["backend"]._lookup_session(session_hex)
+    allocation = Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+    )
+    bucket_name = allocation["location"]
 
     auth = {"Authorization": f"Bearer {session_hex}"}
 
@@ -191,7 +215,7 @@ def test_non_vault_team_path_uses_encryption(test_env):
     Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
 
     nts_session = _open_session(client, mode="passthrough")
-    _register_cloud(backend, nts_session, minio)
+    storage_id = _register_cloud(backend, nts_session, minio)
 
     team_resp = client.post(
         "/sessions/request",
@@ -209,8 +233,14 @@ def test_non_vault_team_path_uses_encryption(test_env):
         json={"pending_id": team_pending["pending_id"], "pin": team_pending["pin"]},
     )
     team_session_hex = team_confirm.json()
+    team_session = backend._lookup_session(team_session_hex)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        team_session.participant_id.hex(),
+        team_session.berth_id,
+        storage_id,
+    )
     bucket_name = _derive_bucket_name(playground_dir, team_session_hex)
-    _create_bucket(minio, bucket_name)
 
     auth = {"Authorization": f"Bearer {team_session_hex}"}
     plaintext = b"team data that should be encrypted"
@@ -226,3 +256,257 @@ def test_non_vault_team_path_uses_encryption(test_env):
     payload = raw.decode("utf-8")
     assert "\"ciphertext\"" in payload
     assert "\"signature\"" in payload
+
+
+def test_no_allocation_session_returns_cloud_location_missing(test_env):
+    client = test_env["client"]
+    minio = test_env["minio"]
+
+    # The test fixture creates the participant's NoteToSelf team; this session
+    # intentionally has cloud storage configured but no berth allocation.
+    session_hex = _open_session(client)
+    _register_cloud(test_env["backend"], session_hex, minio)
+
+    resp = client.get(
+        "/cloud_file",
+        params={"path": "missing.txt"},
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+
+    _assert_cloud_storage_required(resp, "cloud_location_missing")
+
+
+def test_missing_credentials_return_cloud_credentials_missing(test_env):
+    client = test_env["client"]
+    backend = test_env["backend"]
+    playground_dir = test_env["playground_dir"]
+
+    session_hex = _open_session(client)
+    ss_session = backend._lookup_session(session_hex)
+    storage_id = Provisioning.add_cloud_storage(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        protocol="s3",
+        url="http://example.invalid",
+    )
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+    )
+
+    resp = client.post(
+        "/cloud/setup",
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+
+    _assert_cloud_storage_required(resp, "cloud_credentials_missing")
+
+
+def test_gdrive_pending_location_returns_cloud_user_action_required(test_env):
+    client = test_env["client"]
+    backend = test_env["backend"]
+    playground_dir = test_env["playground_dir"]
+
+    session_hex = _open_session(client)
+    ss_session = backend._lookup_session(session_hex)
+    storage_id = Provisioning.add_cloud_storage(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        protocol="gdrive",
+        url="appDataFolder",
+        access_token="already-fresh",
+        token_expiry=(datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+    )
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+        # GDrive treats any pending-* location as a not-yet-provider-issued
+        # locator that requires user action before materialization can proceed.
+        location="pending-gdrive-folder",
+    )
+
+    resp = client.post(
+        "/cloud/setup",
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+
+    _assert_cloud_storage_required(resp, "cloud_user_action_required")
+
+
+def test_materialization_failure_returns_cloud_materialization_failed(
+    test_env, monkeypatch
+):
+    class FailedMaterializationAdapter:
+        def materialize(self):
+            return MaterializationOutcome("failed")
+
+    client = test_env["client"]
+    backend = test_env["backend"]
+    playground_dir = test_env["playground_dir"]
+
+    session_hex = _open_session(client)
+    storage_id = _register_cloud(backend, session_hex, test_env["minio"])
+    ss_session = backend._lookup_session(session_hex)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+    )
+    monkeypatch.setattr(
+        backend,
+        "_make_storage_adapter_from_record",
+        lambda _session, _cloud: FailedMaterializationAdapter(),
+    )
+
+    resp = client.post(
+        "/cloud/setup",
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+
+    _assert_cloud_storage_required(resp, "cloud_materialization_failed")
+
+
+def test_materialized_with_locator_rebuilds_before_storage_op(test_env, monkeypatch):
+    uploads = []
+
+    class LocatorAdapter:
+        def __init__(self, location):
+            self.location = location
+
+        def materialize(self):
+            if self.location == "pending-provider-locator":
+                return MaterializationOutcome(
+                    "materialized_with_locator",
+                    "provider-final-locator",
+                )
+            return MaterializationOutcome("materialized")
+
+        def upload_overwrite(self, path, data):
+            uploads.append((self.location, path, data))
+            return True, "fake-etag", "Object updated successfully"
+
+    client = test_env["client"]
+    backend = test_env["backend"]
+    playground_dir = test_env["playground_dir"]
+
+    session_hex = _open_session(client)
+    storage_id = _register_cloud(backend, session_hex, test_env["minio"])
+    ss_session = backend._lookup_session(session_hex)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+        location="pending-provider-locator",
+    )
+    monkeypatch.setattr(
+        backend,
+        "_make_storage_adapter_from_record",
+        lambda _session, cloud: LocatorAdapter(cloud.location),
+    )
+
+    resp = client.post(
+        "/cloud_file",
+        json={"path": "locator.txt", "data": base64.b64encode(b"hello").decode()},
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+
+    assert resp.status_code == 200
+    assert uploads == [("provider-final-locator", "locator.txt", b"hello")]
+    allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+    )
+    assert allocation["location"] == "provider-final-locator"
+
+
+def test_locator_writeback_race_returns_cloud_allocation_conflict(
+    test_env, monkeypatch
+):
+    class RacingLocatorAdapter:
+        def materialize(self):
+            return MaterializationOutcome(
+                "materialized_with_locator",
+                "provider-final-locator",
+            )
+
+        def upload_overwrite(self, path, data):
+            raise AssertionError("race test should stop at /cloud/setup")
+
+    client = test_env["client"]
+    backend = test_env["backend"]
+    playground_dir = test_env["playground_dir"]
+
+    session_hex = _open_session(client)
+    storage_id = _register_cloud(backend, session_hex, test_env["minio"])
+    ss_session = backend._lookup_session(session_hex)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+        location="pending-provider-locator",
+    )
+
+    def write_conflicting_location(participant_hex, allocation_id, expected, new):
+        db_path = note_to_self_sync_db_path(playground_dir, participant_hex)
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.execute(
+                "UPDATE berth_cloud_allocation SET location = ? WHERE id = ?",
+                ("different-provider-locator", allocation_id),
+            )
+            assert cur.rowcount == 1
+            conn.commit()
+            row = conn.execute(
+                "SELECT location FROM berth_cloud_allocation WHERE id = ?",
+                (allocation_id,),
+            ).fetchone()
+        assert row is not None
+        assert row[0] == "different-provider-locator"
+        return False
+
+    monkeypatch.setattr(
+        backend,
+        "_make_storage_adapter_from_record",
+        lambda _session, _cloud: RacingLocatorAdapter(),
+    )
+    monkeypatch.setattr(backend, "_writeback_locator", write_conflicting_location)
+
+    resp = client.post(
+        "/cloud/setup",
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+
+    _assert_cloud_storage_required(resp, "cloud_allocation_conflict")
+
+
+def test_no_cloud_team_creation_leaves_storage_missing(test_env):
+    client = test_env["client"]
+    backend = test_env["backend"]
+    playground_dir = test_env["playground_dir"]
+    alice_hex = _participant_hex(backend)
+
+    team_result = Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    assert (
+        Provisioning.get_berth_cloud_allocation_for_berth(
+            playground_dir,
+            alice_hex,
+            team_result["berth_id_hex"],
+        )
+        is None
+    )
+
+    session_hex = _open_session(client, team="ProjectX")
+    resp = client.post(
+        "/cloud_file",
+        json={"path": "team.txt", "data": base64.b64encode(b"hello").decode()},
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+
+    _assert_cloud_storage_required(resp, "cloud_location_missing")
