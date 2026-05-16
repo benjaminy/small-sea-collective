@@ -1,5 +1,7 @@
 from typing import Optional
 
+from small_sea_hub.cloud_errors import MaterializationOutcome
+
 
 class SmallSeaStorageAdapter:
     def __init__(self, bucket_name: str):
@@ -23,3 +25,6 @@ class SmallSeaStorageAdapter:
         content_type: str = "application/octet-stream",
     ):
         return self._upload(path, data, expected_etag, content_type)
+
+    def materialize(self) -> MaterializationOutcome:
+        return MaterializationOutcome("materialized")

@@ -71,6 +71,13 @@ def _free_port():
         return sock.getsockname()[1]
 
 
+def _session_berth_info(http, session_hex):
+    return http.get(
+        "/session/info",
+        headers={"Authorization": f"Bearer {session_hex}"},
+    ).json()
+
+
 def _setup_two_member_team(playground_dir, minio_server_gen):
     alice_minio = minio_server_gen(port=_free_port())
     bob_minio = minio_server_gen(port=_free_port())
@@ -86,7 +93,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     Provisioning.register_app_for_participant(root, bob_hex, sync.HUB_APP_NAME)
 
     alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
-    backend.add_cloud_location(
+    alice_cloud_id = backend.add_cloud_location(
         alice_nts,
         "s3",
         alice_minio["endpoint"],
@@ -94,7 +101,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         secret_key=alice_minio["secret_key"],
     )
     bob_nts = _open_session(http, "Bob", "NoteToSelf", mode="passthrough")
-    backend.add_cloud_location(
+    bob_cloud_id = backend.add_cloud_location(
         bob_nts,
         "s3",
         bob_minio["endpoint"],
@@ -107,11 +114,15 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     alice_member_id_hex = team_result["member_id_hex"]
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
-    team_info = http.get(
-        "/session/info",
-        headers={"Authorization": f"Bearer {alice_team_token}"},
-    ).json()
-    team_bucket = f"ss-{team_info['berth_id'][:16]}"
+    alice_vault_berth = _session_berth_info(http, alice_team_token)["berth_id"]
+    team_bucket = f"ss-{alice_vault_berth[:16]}"
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        root,
+        alice_hex,
+        alice_vault_berth,
+        alice_cloud_id,
+        location=team_bucket,
+    )
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     resp = http.post(
         "/cloud/setup",
@@ -135,6 +146,15 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     acceptance_b64 = bob_manager.accept_invitation(token_b64)
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
     bob_member_id_hex = acceptance["acceptor_member_id"]
+    bob_team_token = _open_session(http, "Bob", "ProjectX")
+    bob_vault_berth = _session_berth_info(http, bob_team_token)["berth_id"]
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        root,
+        bob_hex,
+        bob_vault_berth,
+        bob_cloud_id,
+        location=f"ss-{bob_vault_berth[:16]}",
+    )
     Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
 
     return {

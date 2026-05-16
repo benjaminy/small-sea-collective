@@ -40,8 +40,13 @@ def _open_session(client):
 
 def _bucket_name(backend, session_hex):
     ss_session = backend._lookup_session(session_hex)
-    adapter = backend._make_storage_adapter(ss_session)
-    return adapter.bucket_name
+    allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        backend.root_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+    )
+    assert allocation is not None
+    return allocation["location"]
 
 
 def test_local_provision_then_hub_roundtrip(playground_dir, minio_server_gen):
@@ -64,12 +69,19 @@ def test_local_provision_then_hub_roundtrip(playground_dir, minio_server_gen):
     session_hex = _open_session(client)
 
     # ---- 4. Register cloud location and pre-create the bucket ----
-    backend.add_cloud_location(
+    cloud_storage_id = backend.add_cloud_location(
         session_hex,
         "s3",
         minio["endpoint"],
         access_key=minio["access_key"],
         secret_key=minio["secret_key"],
+    )
+    ss_session = backend._lookup_session(session_hex)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        participant_hex,
+        ss_session.berth_id,
+        cloud_storage_id,
     )
     s3 = boto3.client(
         "s3",

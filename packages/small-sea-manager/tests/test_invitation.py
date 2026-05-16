@@ -83,18 +83,26 @@ def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
     )
 
 
+def _core_allocation(root, participant_hex, team_result):
+    allocation = provisioning.get_berth_cloud_allocation_for_berth(
+        root, participant_hex, team_result["berth_id_hex"]
+    )
+    assert allocation is not None
+    return allocation
+
+
 def test_create_invitation(playground_dir):
     root = pathlib.Path(playground_dir)
 
     alice_hex = create_new_participant(root, "Alice")
-    create_team(root, alice_hex, "ProjectX")
-
     alice_cloud = {
         "protocol": "s3",
         "url": "http://localhost:9000",
         "access_key": "alice-key",
         "secret_key": "alice-secret",
     }
+    provisioning.add_cloud_storage(root, alice_hex, **alice_cloud)
+    create_team(root, alice_hex, "ProjectX")
     token = create_invitation(
         root, alice_hex, "ProjectX", alice_cloud, invitee_label="Bob"
     )
@@ -112,21 +120,21 @@ def test_create_invitation_includes_bucket(playground_dir):
     root = pathlib.Path(playground_dir)
 
     alice_hex = create_new_participant(root, "Alice")
-    create_team(root, alice_hex, "ProjectX")
-
     alice_cloud = {
         "protocol": "s3",
         "url": "http://localhost:9000",
         "access_key": "alice-key",
         "secret_key": "alice-secret",
     }
+    provisioning.add_cloud_storage(root, alice_hex, **alice_cloud)
+    create_team(root, alice_hex, "ProjectX")
     token_b64 = create_invitation(root, alice_hex, "ProjectX", alice_cloud)
     token_json = base64.b64decode(token_b64).decode()
     token = json.loads(token_json)
 
     assert "inviter_bucket" in token
     assert token["inviter_bucket"].startswith("ss-")
-    assert len(token["inviter_bucket"]) == 3 + 16  # "ss-" + 16 hex chars
+    assert len(token["inviter_bucket"]) == 3 + 32  # "ss-" + UUIDv7 hex
     assert len(token["team_id"]) == 32
     assert token["inviter_sender_key"]["group_id"] == token["team_id"]
     _alice_team_private_key, alice_team_public_key = get_current_team_device_key(
@@ -170,7 +178,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     # -- Alice: create team and push via Hub --
     team_result = create_team(root, alice_hex, "ProjectX")
     alice_member_id_hex = team_result["member_id_hex"]
-    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
+    team_bucket = _core_allocation(root, alice_hex, team_result)["location"]
 
     alice_team_token = _open_session(http, "Alice", "ProjectX", mode="passthrough")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
@@ -436,7 +444,7 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
 
     # -- Alice: create team, push, create invitation --
     team_result = create_team(root, alice_hex, "ProjectX")
-    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
+    team_bucket = _core_allocation(root, alice_hex, team_result)["location"]
 
     alice_team_token = _open_session(http, "Alice", "ProjectX", mode="passthrough")
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"

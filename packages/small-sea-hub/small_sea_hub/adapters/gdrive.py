@@ -4,6 +4,7 @@ from typing import Optional
 import httpx
 
 from .base import SmallSeaStorageAdapter
+from small_sea_hub.cloud_errors import MaterializationOutcome
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3"
@@ -17,10 +18,20 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
     as JSON in CloudStorage.path_metadata.
     """
 
-    def __init__(self, access_token: str, path_metadata: dict[str, str] | None = None):
-        super().__init__("appDataFolder")
+    def __init__(
+        self,
+        access_token: str,
+        location: str = "appDataFolder",
+        path_metadata: dict[str, str] | None = None,
+    ):
+        super().__init__(location)
         self.access_token = access_token
         self.path_ids: dict[str, str] = path_metadata or {}
+
+    def materialize(self) -> MaterializationOutcome:
+        if not self.bucket_name or self.bucket_name.startswith("pending-"):
+            return MaterializationOutcome("needs_user_action", self.bucket_name)
+        return MaterializationOutcome("materialized", self.bucket_name)
 
     def _headers(self, extra: dict | None = None) -> dict:
         h = {"Authorization": f"Bearer {self.access_token}"}

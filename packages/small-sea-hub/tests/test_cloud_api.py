@@ -64,7 +64,7 @@ def _open_session(client, mode="passthrough"):
 
 
 def _register_cloud(backend, session_hex, minio):
-    backend.add_cloud_location(
+    return backend.add_cloud_location(
         session_hex,
         "s3",
         minio["endpoint"],
@@ -77,7 +77,13 @@ def _derive_bucket_name(playground_dir, session_hex):
     """Derive the bucket name using the same logic as the backend."""
     ss = SmallSea.SmallSeaBackend(root_dir=playground_dir)
     ss_session = ss._lookup_session(session_hex)
-    return f"ss-{ss_session.berth_id.hex()[:16]}"
+    allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+    )
+    assert allocation is not None
+    return allocation["location"]
 
 
 def _create_bucket(minio, bucket_name):
@@ -113,11 +119,15 @@ def test_upload_and_download(test_env):
     session_hex = _open_session(client)
 
     # 2. Register MinIO cloud location with credentials
-    _register_cloud(test_env["backend"], session_hex, minio)
-
-    # 3. Pre-create the bucket
-    bucket_name = _derive_bucket_name(playground_dir, session_hex)
-    _create_bucket(minio, bucket_name)
+    storage_id = _register_cloud(test_env["backend"], session_hex, minio)
+    ss_session = test_env["backend"]._lookup_session(session_hex)
+    allocation = Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+    )
+    bucket_name = allocation["location"]
 
     auth = {"Authorization": f"Bearer {session_hex}"}
 
@@ -191,7 +201,7 @@ def test_non_vault_team_path_uses_encryption(test_env):
     Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
 
     nts_session = _open_session(client, mode="passthrough")
-    _register_cloud(backend, nts_session, minio)
+    storage_id = _register_cloud(backend, nts_session, minio)
 
     team_resp = client.post(
         "/sessions/request",
@@ -209,8 +219,14 @@ def test_non_vault_team_path_uses_encryption(test_env):
         json={"pending_id": team_pending["pending_id"], "pin": team_pending["pin"]},
     )
     team_session_hex = team_confirm.json()
+    team_session = backend._lookup_session(team_session_hex)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        team_session.participant_id.hex(),
+        team_session.berth_id,
+        storage_id,
+    )
     bucket_name = _derive_bucket_name(playground_dir, team_session_hex)
-    _create_bucket(minio, bucket_name)
 
     auth = {"Authorization": f"Bearer {team_session_hex}"}
     plaintext = b"team data that should be encrypted"

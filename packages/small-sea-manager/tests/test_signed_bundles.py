@@ -14,7 +14,7 @@ from small_sea_manager.manager import TeamManager
 from small_sea_manager.provisioning import (
     complete_invitation_acceptance,
     create_invitation, create_new_participant, create_team,
-    get_current_team_device_key)
+    get_berth_cloud_allocation_for_berth, get_current_team_device_key)
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -94,7 +94,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
 
     # -- Register cloud storage via Hub --
     alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
-    backend.add_cloud_location(
+    alice_cloud_id = backend.add_cloud_location(
         alice_nts, "s3", alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
@@ -109,7 +109,14 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     # -- Alice: create team --
     team_result = create_team(root, alice_hex, "ProjectX")
     alice_member_id_hex = team_result["member_id_hex"]
-    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
+    team_allocation = get_berth_cloud_allocation_for_berth(
+        root,
+        alice_hex,
+        team_result["berth_id_hex"],
+    )
+    assert team_allocation is not None
+    assert team_allocation["cloud_storage_id"] == alice_cloud_id
+    team_bucket = team_allocation["location"]
 
     # -- Read Alice's signing key --
     alice_priv, alice_pub = get_current_team_device_key(root, alice_hex, "ProjectX")

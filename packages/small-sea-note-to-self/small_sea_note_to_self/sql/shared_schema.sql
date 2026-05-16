@@ -38,6 +38,18 @@ CREATE TABLE IF NOT EXISTS cloud_storage (
     path_metadata TEXT
 );
 
+CREATE TABLE IF NOT EXISTS berth_cloud_allocation (
+    id BLOB PRIMARY KEY,
+    berth_id BLOB NOT NULL,
+    cloud_storage_id BLOB NOT NULL,
+    location TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (cloud_storage_id) REFERENCES cloud_storage(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_berth_cloud_allocation_berth
+    ON berth_cloud_allocation(berth_id);
+
 CREATE TABLE IF NOT EXISTS notification_service (
     id BLOB PRIMARY KEY,
     protocol TEXT NOT NULL,

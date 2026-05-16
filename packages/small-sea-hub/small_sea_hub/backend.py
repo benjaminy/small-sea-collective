@@ -28,6 +28,15 @@ from small_sea_hub.adapters import (SmallSeaDropboxAdapter,
 from small_sea_hub.adapters.oauth import (is_token_expired,
                                           refresh_dropbox_token,
                                           refresh_google_token)
+from small_sea_hub.cloud_errors import (
+    CloudAllocationConflictExn,
+    CloudCredentialsMissingExn,
+    CloudLocationMissingExn,
+    CloudMaterializationFailedExn,
+    CloudStorageRequiredExn,
+    CloudUserActionRequiredExn,
+    MaterializationOutcome,
+)
 from small_sea_hub.crypto import (commit_encrypted_upload,
                                   decrypt_group_payload,
                                   prepare_encrypted_upload)
@@ -162,6 +171,24 @@ class TeamAppBerth(Base):
 @dataclass
 class CloudStorageRecord:
     id: bytes
+    protocol: str
+    url: str
+    access_key: str | None
+    secret_key: str | None
+    client_id: str | None
+    client_secret: str | None
+    refresh_token: str | None
+    access_token: str | None
+    token_expiry: str | None
+    path_metadata: str | None
+
+
+@dataclass
+class BerthCloudRecord:
+    allocation_id: bytes
+    berth_id: bytes
+    location: str
+    cloud_storage_id: bytes
     protocol: str
     url: str
     access_key: str | None
@@ -1034,6 +1061,7 @@ class SmallSeaBackend:
                 ),
             )
             conn.commit()
+        return cloud_id.hex()
 
     def _get_cloud_link(self, ss_session: SmallSeaSession):
         # TODO: Should we check permissions? Probably.
@@ -1067,9 +1095,58 @@ class SmallSeaBackend:
             )
         return CloudStorageRecord(*row)
 
-    def _make_storage_adapter(self, ss_session: SmallSeaSession):
-        cloud = self._get_cloud_link(ss_session)
+    def _resolve_berth_cloud_or_raise(self, ss_session: SmallSeaSession):
+        with attached_note_to_self_connection(
+            self.root_dir, ss_session.participant_id.hex()
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    bca.id,
+                    bca.berth_id,
+                    bca.location,
+                    cs.id,
+                    cs.protocol,
+                    cs.url,
+                    csc.access_key,
+                    csc.secret_key,
+                    cs.client_id,
+                    csc.client_secret,
+                    csc.refresh_token,
+                    csc.access_token,
+                    csc.token_expiry,
+                    cs.path_metadata
+                FROM berth_cloud_allocation bca
+                JOIN cloud_storage cs ON cs.id = bca.cloud_storage_id
+                LEFT JOIN local.cloud_storage_credential csc
+                  ON csc.cloud_storage_id = cs.id
+                WHERE bca.berth_id = ?
+                """,
+                (ss_session.berth_id,),
+            ).fetchone()
+        if row is None:
+            raise CloudLocationMissingExn()
+        cloud = BerthCloudRecord(*row)
+        if self._cloud_credentials_missing(cloud):
+            raise CloudCredentialsMissingExn()
+        return cloud
 
+    def _cloud_credentials_missing(self, cloud) -> bool:
+        if cloud.protocol == "s3":
+            return not cloud.access_key or not cloud.secret_key
+        if cloud.protocol in ("dropbox", "gdrive"):
+            if cloud.access_token and not is_token_expired(cloud.token_expiry):
+                return False
+            return not (cloud.client_id and cloud.client_secret and cloud.refresh_token)
+        return False
+
+    def _make_storage_adapter(self, ss_session: SmallSeaSession):
+        cloud = self._resolve_berth_cloud_or_raise(ss_session)
+        adapter = self._make_storage_adapter_from_record(ss_session, cloud)
+        outcome = adapter.materialize()
+        return self._handle_materialization_outcome(ss_session, cloud, adapter, outcome)
+
+    def _make_storage_adapter_from_record(self, ss_session, cloud):
         if cloud.protocol == "s3":
             return self._make_s3_adapter(ss_session, cloud)
         elif cloud.protocol == "gdrive":
@@ -1078,6 +1155,59 @@ class SmallSeaBackend:
             return self._make_dropbox_adapter(ss_session, cloud)
         else:
             raise SmallSeaBackendExn(f"Unsupported protocol: {cloud.protocol}")
+
+    def _handle_materialization_outcome(self, ss_session, cloud, adapter, outcome):
+        if outcome.status == "materialized":
+            return adapter
+        if outcome.status == "needs_user_action":
+            raise CloudUserActionRequiredExn()
+        if outcome.status == "failed":
+            raise CloudMaterializationFailedExn()
+        if outcome.status != "materialized_with_locator":
+            raise CloudMaterializationFailedExn()
+
+        final_location = outcome.final_location
+        if not final_location:
+            raise CloudMaterializationFailedExn()
+        if not self._writeback_locator(
+            ss_session.participant_id.hex(),
+            cloud.allocation_id,
+            cloud.location,
+            final_location,
+        ):
+            latest = self._resolve_berth_cloud_or_raise(ss_session)
+            if latest.location == final_location:
+                return self._make_storage_adapter_from_record(ss_session, latest)
+            raise CloudAllocationConflictExn()
+        latest = self._resolve_berth_cloud_or_raise(ss_session)
+        return self._make_storage_adapter_from_record(ss_session, latest)
+
+    def materialize_for_session(self, session_hex):
+        ss_session = self._lookup_session(session_hex)
+        cloud = self._resolve_berth_cloud_or_raise(ss_session)
+        adapter = self._make_storage_adapter_from_record(ss_session, cloud)
+        outcome = adapter.materialize()
+        self._handle_materialization_outcome(ss_session, cloud, adapter, outcome)
+        return MaterializationOutcome(outcome.status, outcome.final_location or cloud.location)
+
+    def _writeback_locator(
+        self,
+        participant_hex: str,
+        allocation_id: bytes,
+        expected_location: str,
+        new_location: str,
+    ) -> bool:
+        with attached_note_to_self_connection(self.root_dir, participant_hex) as conn:
+            cur = conn.execute(
+                """
+                UPDATE berth_cloud_allocation
+                SET location = ?
+                WHERE id = ? AND location = ?
+                """,
+                (new_location, allocation_id, expected_location),
+            )
+            conn.commit()
+        return cur.rowcount == 1
 
     def _refresh_token_if_needed(self, ss_session, cloud):
         """Refresh OAuth token if expired, persisting the new token to the DB."""
@@ -1098,13 +1228,14 @@ class SmallSeaBackend:
         with attached_note_to_self_connection(
             self.root_dir, ss_session.participant_id.hex()
         ) as conn:
+            cloud_storage_id = getattr(cloud, "id", None) or cloud.cloud_storage_id
             conn.execute(
                 """
                 UPDATE local.cloud_storage_credential
                 SET access_token = ?, token_expiry = ?
                 WHERE cloud_storage_id = ?
                 """,
-                (access_token, expiry, cloud.id),
+                (access_token, expiry, cloud_storage_id),
             )
             conn.commit()
 
@@ -1113,8 +1244,6 @@ class SmallSeaBackend:
     def _make_s3_adapter(self, ss_session, cloud):
         import boto3
         from botocore.config import Config as BotoConfig
-
-        bucket_name = f"ss-{ss_session.berth_id.hex()[:16]}"
 
         s3_client = boto3.client(
             "s3",
@@ -1125,7 +1254,7 @@ class SmallSeaBackend:
             region_name="us-east-1",
         )
 
-        return SmallSeaS3Adapter(s3_client, bucket_name)
+        return SmallSeaS3Adapter(s3_client, cloud.location)
 
     def _make_gdrive_adapter(self, ss_session, cloud):
         import json as _json
@@ -1134,31 +1263,16 @@ class SmallSeaBackend:
         path_metadata = None
         if cloud.path_metadata:
             path_metadata = _json.loads(cloud.path_metadata)
-        return SmallSeaGDriveAdapter(access_token, path_metadata=path_metadata)
+        return SmallSeaGDriveAdapter(
+            access_token, location=cloud.location, path_metadata=path_metadata
+        )
 
     def _make_dropbox_adapter(self, ss_session, cloud):
         access_token = self._refresh_token_if_needed(ss_session, cloud)
-        # Use member_id as folder prefix to avoid collisions in a shared Dropbox account.
-        with attached_note_to_self_connection(
-            self.root_dir, ss_session.participant_id.hex()
-        ) as conn:
-            row = conn.execute(
-                "SELECT self_in_team FROM team WHERE name = ?",
-                (ss_session.team_name,),
-            ).fetchone()
-        # self_in_team is a valid 16-byte UUID for real teams; placeholder b"0" for NoteToSelf
-        if row and len(row[0]) == 16:
-            folder_prefix = f"ss-{row[0].hex()[:16]}"
-        else:
-            folder_prefix = f"ss-{ss_session.participant_id.hex()[:16]}"
-        return SmallSeaDropboxAdapter(access_token, folder_prefix=folder_prefix)
+        return SmallSeaDropboxAdapter(access_token, folder_prefix=cloud.location)
 
     def ensure_cloud_ready(self, session_hex):
-        """Create and publish the session's cloud bucket (S3 only)."""
-        ss_session = self._lookup_session(session_hex)
-        adapter = self._make_storage_adapter(ss_session)
-        if hasattr(adapter, "ensure_bucket_public"):
-            adapter.ensure_bucket_public()
+        return self.materialize_for_session(session_hex)
 
     def download_from_peer(self, session_hex, member_id_hex, path):
         """Download a file from a peer's public cloud bucket via the Hub proxy."""
@@ -1440,10 +1554,17 @@ class SmallSeaBackend:
         member_id = bytes.fromhex(member_id_hex)
         conn = sqlite3.connect(team_db_path)
         try:
-            transport = self._effective_peer_transport(conn, ss_session.team_id, member_id)
+            legacy_transport = self._legacy_transport_for_member(conn, member_id)
+            selection = self._effective_peer_transport_selection(
+                conn,
+                ss_session.team_id,
+                member_id,
+                legacy_fallback=legacy_transport,
+            )
         finally:
             conn.close()
 
+        transport = selection.transport
         if transport is None:
             raise SmallSeaNotFoundExn(f"No peer found for member {member_id_hex}")
 
@@ -1456,10 +1577,17 @@ class SmallSeaBackend:
             from botocore import UNSIGNED
             from botocore.config import Config as BotoConfig
 
-            # S3 storage is berth-scoped. Legacy peer transport metadata may
-            # still point at the Core berth bucket, so peer reads for ordinary
-            # app sessions derive the bucket from the current session berth.
-            bucket_name = f"ss-{ss_session.berth_id.hex()[:16]}"
+            # Slice A updates Core bootstrap rows to carry the allocated Core
+            # location. Ordinary app peer reads still use the legacy formula
+            # until member-berth storage announcements replace this path.
+            if (
+                ss_session.app_name == "SmallSeaCollectiveCore"
+                and legacy_transport is not None
+                and legacy_transport.bucket
+            ):
+                bucket_name = legacy_transport.bucket
+            else:
+                bucket_name = f"ss-{ss_session.berth_id.hex()[:16]}"
             s3_client = boto3.client(
                 "s3",
                 endpoint_url=url,
@@ -1571,15 +1699,26 @@ class SmallSeaBackend:
             return None
         return TransportEndpoint(protocol=row[0], url=row[1], bucket=row[2] or "")
 
-    def _effective_peer_transport(self, conn, team_id: bytes, member_id: bytes) -> TransportEndpoint | None:
-        selection = select_effective_member_transport(
+    def _effective_peer_transport_selection(
+        self,
+        conn,
+        team_id: bytes,
+        member_id: bytes,
+        legacy_fallback: TransportEndpoint | None = None,
+    ):
+        if legacy_fallback is None:
+            legacy_fallback = self._legacy_transport_for_member(conn, member_id)
+        return select_effective_member_transport(
             member_id=member_id,
             announcements=self._load_member_transport_announcements(conn),
             certs=self._load_team_certificates(conn, team_id),
             team_id=team_id,
             device_public_keys_by_key_id=self._device_public_keys_by_key_id(conn),
-            legacy_fallback=self._legacy_transport_for_member(conn, member_id),
+            legacy_fallback=legacy_fallback,
         )
+
+    def _effective_peer_transport(self, conn, team_id: bytes, member_id: bytes) -> TransportEndpoint | None:
+        selection = self._effective_peer_transport_selection(conn, team_id, member_id)
         return selection.transport
 
     # ---- Notifications ----

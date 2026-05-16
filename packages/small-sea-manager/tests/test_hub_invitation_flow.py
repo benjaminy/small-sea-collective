@@ -98,7 +98,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
 
     # ---- Register cloud storage for Alice (NoteToSelf Hub session) ----
     alice_nts_token = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
-    backend.add_cloud_location(
+    alice_cloud_id = backend.add_cloud_location(
         alice_nts_token, "s3", alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
@@ -106,7 +106,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
 
     # ---- Register cloud storage for Bob (NoteToSelf Hub session) ----
     bob_nts_token = _open_session(http, "Bob", "NoteToSelf", mode="passthrough")
-    backend.add_cloud_location(
+    bob_cloud_id = backend.add_cloud_location(
         bob_nts_token, "s3", bob_minio["endpoint"],
         access_key=bob_minio["access_key"],
         secret_key=bob_minio["secret_key"],
@@ -115,7 +115,14 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     # ---- Alice: create team (local) ----
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
     alice_member_id_hex = team_result["member_id_hex"]
-    team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
+    team_allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        root,
+        alice_hex,
+        team_result["berth_id_hex"],
+    )
+    assert team_allocation is not None
+    assert team_allocation["cloud_storage_id"] == alice_cloud_id
+    team_bucket = team_allocation["location"]
 
     # ---- Alice: push team repo via Hub ----
     alice_team_token = _open_session(http, "Alice", "ProjectX", mode="passthrough")
@@ -153,6 +160,19 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     # ---- Bob: push accepted team repo via Hub ----
     bob_team_token = _open_session(http, "Bob", "ProjectX")
     bob_team_sync = root / "Participants" / bob_hex / "ProjectX" / "Sync"
+    bob_session = backend._lookup_session(bob_team_token)
+    bob_allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        root,
+        bob_hex,
+        bob_session.berth_id,
+    )
+    if bob_allocation is None:
+        bob_allocation = Provisioning.add_berth_cloud_allocation_by_berth_id(
+            root,
+            bob_hex,
+            bob_session.berth_id,
+            bob_cloud_id,
+        )
     _push_via_hub(http, bob_team_token, bob_team_sync)
 
     # ---- Alice: complete the acceptance (local) ----
@@ -201,7 +221,6 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
         config=BotoConfig(signature_version="s3v4"),
         region_name="us-east-1",
     )
-    bob_team_bucket = f"ss-{team_result['berth_id_hex'][:16]}"
-    objects = bob_s3.list_objects_v2(Bucket=bob_team_bucket)
+    objects = bob_s3.list_objects_v2(Bucket=bob_allocation["location"])
     keys = {obj["Key"] for obj in objects.get("Contents", [])}
     assert "latest-link.yaml" in keys

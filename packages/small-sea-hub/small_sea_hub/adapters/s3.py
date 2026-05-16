@@ -4,6 +4,7 @@ from typing import Optional
 from botocore.exceptions import ClientError
 
 from .base import SmallSeaStorageAdapter
+from small_sea_hub.cloud_errors import MaterializationOutcome
 
 
 class SmallSeaS3Adapter(SmallSeaStorageAdapter):
@@ -31,6 +32,13 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
             }]
         })
         self.s3.put_bucket_policy(Bucket=self.bucket_name, Policy=policy)
+
+    def materialize(self) -> MaterializationOutcome:
+        try:
+            self.ensure_bucket_public()
+        except ClientError:
+            return MaterializationOutcome("failed", self.bucket_name)
+        return MaterializationOutcome("materialized", self.bucket_name)
 
     def download(self, path: str):
         try:

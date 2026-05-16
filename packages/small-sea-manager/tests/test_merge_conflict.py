@@ -14,6 +14,7 @@ import cod_sync.protocol as CS
 import small_sea_manager.provisioning as provisioning
 from small_sea_manager.provisioning import (
     _install_sqlite_merge_driver,
+    add_cloud_storage,
     create_invitation,
     create_new_participant,
     create_team,
@@ -44,6 +45,12 @@ def test_concurrent_invitations_merge(playground_dir):
 
     # 1. Create participant Alice on device 1
     alice_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(
+        root1,
+        alice_hex,
+        protocol=ALICE_CLOUD["protocol"],
+        url=ALICE_CLOUD["url"],
+    )
 
     # 2. Create team on device 1
     team_result = create_team(root1, alice_hex, "ProjectX")
