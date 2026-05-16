@@ -88,7 +88,8 @@ Stores this participant's personal Small Sea metadata. The Hub reads it to know 
 | `team` | Lightweight pointer to each team the participant belongs to; `self_in_team` is the member ID in that team's DB |
 | `app` | Apps registered for the NoteToSelf team |
 | `team_app_berth` | Berths for the NoteToSelf team (one per app; carries `team_id` since NoteToSelf DB may host multiple teams' personal berths) |
-| `cloud_storage` | Shared cloud locator metadata (`protocol`, `url`, `client_id`, `path_metadata`) |
+| `cloud_storage` | Shared cloud account locator metadata (`protocol`, `url`, `client_id`); `path_metadata` is provider adapter cache, not a berth location |
+| `berth_cloud_allocation` | Local participant's selected storage location for a berth |
 | `notification_service` | Shared notification-service metadata (`protocol`, `url`) |
 | `team_device_key` | Shared public metadata for this identity's team-device keys |
 
@@ -116,7 +117,8 @@ Stores the shared state for one team. All members maintain their own copy; chang
 | `team_app_berth` | Berths for this team (one per app; `team_id` omitted — implicit from which DB this is) |
 | `berth_role` | Per-member, per-berth role assignments: `read-only` or `read-write` |
 | `invitation` | Invitation records (pending, accepted, revoked) |
-| `team_device` | One row per team device; device identity and cloud endpoint metadata used for Cod Sync pull live here |
+| `team_device` | One row per team device; carries device identity. Transport fields are temporary fallback only |
+| `member_berth_storage_announcement` | Signed peer-readable storage locations scoped to `(member_id, berth_id)` |
 
 Manager-local admission prompt dismissals are stored in a per-team sidecar DB outside `Sync/`, keyed by `(event_type, artifact_id)`, so ignored prompts persist across restarts without becoming synced team state.
 
@@ -524,20 +526,26 @@ DB schema for proposals, acceptance transcripts, and approval signatures: see
 [SQL Schemas → Team schema](#sql-schemas) below — the current `invitation`
 table is a placeholder pending the B5 schema definition.
 
-#### Member transport configuration (B7)
+#### Member berth storage announcements
 
-Mutable incoming transport is member-scoped state published after admission,
-not part of the immutable admission transcript.
+Mutable storage routing is published after admission.
+It is not part of the immutable admission transcript.
+
+Storage routing is scoped to `(member_id, berth_id)`.
+Different teammates may store their clones of the same berth in different
+providers or accounts, so member-only transport is not precise enough for berth
+storage.
 
 The team DB therefore carries a separate append-only signed table:
 
 | Column | Meaning |
 |-------|---------|
 | `announcement_id` | UUIDv7 primary key; also the ordering key for "newest wins" |
-| `member_id` | Team-local identity whose incoming transport is being published |
-| `protocol` | Transport protocol (`s3`, `dropbox`, `localfolder`, etc.) |
-| `url` | Endpoint base URL |
-| `bucket` | Bucket or folder prefix peers must use for this member's incoming path |
+| `member_id` | Team-local identity whose storage location is being published |
+| `berth_id` | Berth whose readable storage location is being published |
+| `protocol` | Storage protocol (`s3`, `dropbox`, `gdrive`, etc.) |
+| `url` | Provider endpoint or account locator URL |
+| `location` | Provider-facing bucket, folder prefix, folder ID, or equivalent locator |
 | `announced_at` | Display/audit timestamp only; not the ordering authority |
 | `signer_key_id` | Device key that signed the announcement |
 | `signature` | Signature over the canonical payload |
@@ -546,21 +554,30 @@ Canonical signed payload fields are:
 
 - `announcement_id`
 - `member_id`
+- `berth_id`
 - `protocol`
 - `url`
-- `bucket`
+- `location`
 - `announced_at`
 - `signer_key_id`
+
+Canonical bytes follow the existing convention:
+JSON object encoding with `sort_keys=True` and `separators=(",", ":")`.
 
 Verification and selection rules:
 
 1. Team DB sync may bring in any syntactically valid row.
-2. Effective transport for a member is selected by descending UUIDv7
-   `announcement_id`, not by `announced_at`.
-3. A row is usable iff its signature verifies under `signer_key_id` and that
+2. Effective storage for `(member_id, berth_id)` is selected by descending
+   UUIDv7 `announcement_id`, not by `announced_at`.
+3. This dependence on UUIDv7 ordering is intentional.
+   If announcement IDs ever stop being time-ordered, the selection rule must
+   change in the same branch.
+4. A row is usable iff its signature verifies under `signer_key_id` and that
    signer resolves, at derivation time, to one of the member's currently
    trusted device keys via the team DB's `key_certificate` history.
-4. Invalid or no-longer-trusted rows remain inert data; they do not become
+5. Validity is structural.
+   There is no max-age policy in v1.
+6. Invalid or no-longer-trusted rows remain inert data; they do not become
    effective routing state.
 
 Important implementation bridge:
@@ -581,15 +598,16 @@ issuance path.
 
 Current runtime status exposed by Manager reads is:
 
-- `announced` — a valid transport announcement is selected
+- `announced` — a valid member-berth storage announcement is selected
 - `legacy-fallback` — routing still relies on legacy `team_device` transport
   fields
 - `missing` — no usable current transport exists
 
 The `legacy-fallback` path is **temporary** compatibility infrastructure while
 current admission flows still populate `team_device(protocol, url, bucket)`.
-Once B5 removes admission-time transport coupling, this fallback should be
-deleted and peer routing should rely only on the B7 announcement flow.
+Valid member-berth storage announcements take precedence over legacy fallback.
+Once admission and bootstrap flows publish or prompt for member-berth storage
+announcements, the fallback should be deleted.
 
 ---
 
@@ -740,6 +758,8 @@ The Manager provides the UI for configuring the general-purpose services that
 the Hub uses. The Hub reads shared locator metadata from
 `NoteToSelf/Sync/core.db` and matching device-local credentials from
 `NoteToSelf/Local/device_local.db`. The Hub never configures services itself.
+The Manager owns the user's provisioning decisions; the Hub performs provider
+I/O and reports provider reconciliation results back to Manager.
 
 Small Sea can operate without cloud storage (sync simply won't work), but this is an unusual configuration.
 
@@ -749,6 +769,83 @@ Add, update, or remove entries in the shared `cloud_storage` table plus the
 matching local `cloud_storage_credential` row. Shared fields are `protocol`,
 `url`, `client_id`, and `path_metadata`; device-local fields include S3
 credentials and OAuth refresh/access material.
+
+These rows describe cloud accounts or endpoints, not where a particular berth
+stores data. One participant may have multiple cloud accounts.
+
+#### Berth cloud allocations
+
+A berth cloud allocation is the Manager's local decision that this participant
+stores one berth at one provider-facing location. It links a `berth_id` to a
+`cloud_storage_id` and a `location`.
+
+The allocation is for the local participant's own writes. It may live in shared
+NoteToSelf because it references NoteToSelf cloud account rows. For team berths,
+the `berth_id` is the team DB berth ID resolved by the same logic the Hub uses
+for sessions. NoteToSelf cannot enforce a foreign key to that team DB row, so
+the allocation treats `berth_id` as an opaque stable ID.
+
+Provisioning should be lazy. Team creation and app activation do not
+pre-allocate cloud locations for every possible app/team cross-product. A team
+or app berth can be locally valid but not yet syncable; missing storage is a
+repairable provisioning state.
+
+For providers that accept caller-chosen names, Manager records the requested
+location. For S3, Manager should generate a bucket-safe value such as
+`ss-{uuid7_hex}`. For providers that return final locators during setup, the
+Hub may write the provider-issued locator back into the allocation row as a
+narrow "record provider reality" exception. The writeback must be conditional
+on the allocation still matching the materialization request.
+
+V1 allows at most one allocation per berth. It does not add provider-migration
+history columns; those can be added with migration tooling later.
+
+#### Member berth storage announcements
+
+A member berth storage announcement is the team-visible signed statement that
+tells peers where one member stores readable data for one berth. It is scoped
+to `(member_id, berth_id)`.
+
+This replaces member-scoped transport announcements for berth storage routing.
+Different teammates may store their clones of the same berth in different
+providers or accounts, so neither `member_id` alone nor `berth_id` alone is
+sufficient.
+
+The announcement belongs in the relevant team Core DB for team berths. For
+NoteToSelf berths, the same concept may live in `NoteToSelf/Sync/core.db`.
+An announcement is published only after the Hub has successfully materialized
+the corresponding location and any provider-issued final locator has been
+durably recorded.
+
+Selection mirrors the current transport-announcement rule: sort
+`announcement_id` descending and choose the first valid row for
+`(member_id, berth_id)`. The ID is UUIDv7, so this is the time-ordering rule;
+`announced_at` is display/audit data. Validity is structural: the signature
+verifies and the signer key is currently trusted for `member_id`. There is no
+max-age policy in v1.
+
+Valid member-berth storage announcements take precedence over legacy
+`team_device(protocol, url, bucket)` fallback. Legacy fallback is temporary and
+must be named as such until removed.
+
+#### Materialization feedback
+
+Manager records desired service state. Hub reconciles that state with the
+provider. Manager persists any durable outcome and decides the user-facing
+repair path.
+
+Hub materialization outcomes are:
+
+- `materialized` — requested location is ready
+- `materialized_with_locator` — provider returned a final locator that Manager
+  must persist
+- `needs_user_action` — provider requires OAuth, quota repair, account settings,
+  or another human step
+- `failed` — provider rejected setup or was unavailable
+
+The `location` column is overwritten in place when materialization returns a
+provider-issued final locator. There is no separate requested/final location
+column in v1.
 
 #### Notification services
 
@@ -984,6 +1081,18 @@ CREATE TABLE IF NOT EXISTS cloud_storage (
     path_metadata TEXT
 );
 
+CREATE TABLE IF NOT EXISTS berth_cloud_allocation (
+    id               BLOB PRIMARY KEY,
+    berth_id         BLOB NOT NULL,
+    cloud_storage_id BLOB NOT NULL,
+    location         TEXT NOT NULL,
+    created_at       TEXT NOT NULL,
+    FOREIGN KEY (cloud_storage_id) REFERENCES cloud_storage(id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_berth_cloud_allocation_berth
+    ON berth_cloud_allocation(berth_id);
+
 CREATE TABLE IF NOT EXISTS notification_service (
     id       BLOB PRIMARY KEY,
     protocol TEXT NOT NULL,
@@ -1090,6 +1199,20 @@ CREATE TABLE IF NOT EXISTS team_device (
     created_at TEXT NOT NULL,
     -- no credential columns: credentials stay in the local Hub, never shared
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS member_berth_storage_announcement (
+    announcement_id BLOB PRIMARY KEY,
+    member_id       BLOB NOT NULL,
+    berth_id        BLOB NOT NULL,
+    protocol        TEXT NOT NULL,
+    url             TEXT NOT NULL,
+    location        TEXT NOT NULL,
+    announced_at    TEXT NOT NULL,
+    signer_key_id   BLOB NOT NULL,
+    signature       BLOB NOT NULL,
+    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE,
+    FOREIGN KEY (berth_id) REFERENCES team_app_berth(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS device_prekey_bundle (

@@ -59,6 +59,16 @@ The baseline synchronization method is snapshot-based 3-way merge, utilizing `gi
 ### 3. Cod Sync
 "Cod Sync" is the specific protocol used to sync git repositories over cloud storage. It encodes changes as a chain of git bundles uploaded to each user's cloud storage location. Teammates poll or receive notifications to pull and merge these bundles.
 
+Cloud storage placement is explicitly provisioned rather than derived from
+identity values. A Hub session authorizes an app to act in a berth; it does
+not guarantee that cloud storage has been provisioned for that berth. The
+Manager records the participant's cloud accounts and per-berth allocation
+choices. The Hub performs provider I/O and reconciles those choices with the
+provider, including recording provider-issued locators when materialization
+returns one. Team-visible peer routing is member-plus-berth scoped, because
+different teammates may store their clones of the same berth in different
+providers or accounts.
+
 ## Design Principles & Constraints
 
 ### Human-Scale Coordination
