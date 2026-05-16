@@ -2,19 +2,19 @@
 
 ## Implementation Slices
 
-- Slice A: Own-storage allocation.
+- Slice A: Own-storage allocation (#136).
   Add `berth_cloud_allocation` schema and migrations, Manager provisioning helpers, Hub own-storage allocation lookup, structured missing-location and missing-credential errors, and idempotent materialization for `/cloud/setup` and first-use storage operations.
 
-- Slice B: Member-berth storage announcements.
+- Slice B: Member-berth storage announcements (#137).
   Add signed `member_berth_storage_announcement` types, canonical bytes, newest-valid selection for `(member_id, berth_id)`, and peer reads that use valid announcements before legacy fallback.
 
-- Slice C: Legacy cleanup.
+- Slice C: Legacy cleanup (#138).
   Stop writing transport fields onto `team_device`, remove legacy transport fallback, and revisit #123 and #102 under the new member-berth storage model.
 
-- Slice D: Manager UX.
+- Slice D: Manager UX (#139).
   Let humans choose which cloud account backs a berth, generate provider-facing locations, surface missing-location and missing-credential repair actions, and call materialization as a validation step where useful.
 
-- Slice E: Provider cleanup.
+- Slice E: Provider cleanup (#140).
   Design cleanup for orphaned provider locations created by cross-device first-use races.
 
 ## Related Issues
