@@ -115,6 +115,8 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
     alice_vault_berth = _session_berth_info(http, alice_team_token)["berth_id"]
+    # Until Slice B routes app peer reads through storage announcements, Vault
+    # fixtures keep app-berth allocations on the legacy formula location.
     team_bucket = f"ss-{alice_vault_berth[:16]}"
     Provisioning.add_berth_cloud_allocation_by_berth_id(
         root,
@@ -148,6 +150,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     bob_member_id_hex = acceptance["acceptor_member_id"]
     bob_team_token = _open_session(http, "Bob", "ProjectX")
     bob_vault_berth = _session_berth_info(http, bob_team_token)["berth_id"]
+    # Match the temporary app peer-read formula used by _download_peer_file.
     Provisioning.add_berth_cloud_allocation_by_berth_id(
         root,
         bob_hex,
