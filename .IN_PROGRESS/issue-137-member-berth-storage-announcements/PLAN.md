@@ -267,14 +267,20 @@ end-to-end with no announcement and never returns
 ### Pass 4 — Reroute Hub peer reads through announcements
 
 - `_effective_peer_transport_selection` takes the announcement table as
-  primary input, falls back to legacy `team_device` only when no valid
-  announcement exists.
+  primary input. When no valid announcement exists, fallback is allowed
+  **only** for the team's Core berth and uses `team_device.bucket`. For
+  any other berth, "no valid announcement" surfaces as a structured "no
+  peer transport" result that `_download_peer_file` returns to the
+  caller as `404`. No formula synthesis.
 - Remove the `SmallSeaCollectiveCore + legacy_transport.bucket` branch
-  in `_download_peer_file`.
+  in `_download_peer_file` and replace it with the announcement-first
+  flow plus the Core-only legacy fallback described above.
 - Sibling-device same-member peer reads use the same announcement path.
 
-Exit: peer-read tests pass against announcement-driven routing; legacy
-fallback path is exercised by an explicit fixture that omits announcements.
+Exit: peer-read tests pass against announcement-driven routing; Core
+legacy fallback is exercised by an explicit fixture that omits the Core
+announcement; an app-berth fixture that omits the announcement asserts
+`404` (regression guard against silent wrong-bucket routing).
 
 ### Pass 5 — Fixture sweep
 
@@ -304,8 +310,8 @@ Exit: full suite green.
 - **Modified:** `packages/wrasse-trust/wrasse_trust/transport.py` — dataclass + canonical-bytes function.
 - **Modified:** `packages/small-sea-manager/small_sea_manager/provisioning.py` — publish/load/select helpers with dedupe guard. `member_transport_announcement` helpers stay in place (Slice C removes them).
 - **Modified:** `packages/small-sea-hub/small_sea_hub/cloud_errors.py` — add `CloudAnnouncementMissingExn` to the family.
-- **Modified:** `packages/small-sea-hub/small_sea_hub/backend.py` — announcement-presence check on the own-storage path; `_download_peer_file`, `_effective_peer_transport_selection`, sibling-device read path; remove the Slice A peer-read exception.
-- **Modified:** `packages/small-sea-hub/small_sea_hub/server.py` — map `CloudAnnouncementMissingExn` to `409` on the three own-storage endpoints.
+- **Modified:** `packages/small-sea-hub/small_sea_hub/backend.py` — announcement-presence check on the own-storage **file** path (not `/cloud/setup`, not NoteToSelf sessions); `_download_peer_file`, `_effective_peer_transport_selection`, sibling-device read path; remove the Slice A peer-read exception; narrow legacy fallback to Core berths.
+- **Modified:** `packages/small-sea-hub/small_sea_hub/server.py` — map `CloudAnnouncementMissingExn` to `409` on `POST /cloud_file` and `GET /cloud_file` only. `POST /cloud/setup` is exempt (see Settled Decisions → Gate scope) and must not route this exception.
 - **Modified test fixtures:**
   - `packages/shared-file-vault/tests/test_hub_sync.py`
   - `packages/shared-file-vault/tests/test_web_sync.py`
@@ -400,16 +406,21 @@ A skeptical reviewer should be able to confirm:
 4. Sibling-device same-member peer reads provably route through
    announcements (write to two different buckets from two devices; reading
    each from the other goes through that peer's announcement).
-5. Legacy fallback is observable: a fixture that omits announcements
-   continues to read through `team_device` and the path is logged or
-   tagged "legacy-fallback".
-6. The own-storage gate is observable: with no announcement, an own-storage
-   op returns `409 / announcement_missing`; with an announcement, it
-   proceeds. The 409 round-trip-after-publish path is covered by a micro
-   test.
-7. Publication is idempotent: a test exercises two `/cloud/setup` calls and
-   asserts exactly one announcement row; a third call after a locator
-   writeback asserts two rows, with the newer one selected.
+5. Legacy fallback is observable for Core only: a Core fixture that omits
+   the announcement continues to read through `team_device` and the path
+   is logged or tagged "legacy-fallback". An app-berth fixture that omits
+   the announcement asserts `404`, not legacy routing.
+6. The own-storage gate is observable: with no announcement, a
+   `/cloud_file` op returns `409 / announcement_missing`; with an
+   announcement, it proceeds. The 409 round-trip-after-publish path is
+   covered by a micro test. A separate test asserts that `/cloud/setup`
+   on a never-set-up berth succeeds (regression guard for the
+   first-use deadlock).
+7. Publication is idempotent: a test exercises two Manager setup composites
+   (each = `/cloud/setup` then publish) and asserts exactly one
+   announcement row. A third composite run after a locator writeback
+   asserts two rows, with the newer one selected. The Hub itself never
+   writes announcement rows; only the Manager's publish helper does.
 8. `uv run pytest packages/small-sea-hub/tests packages/small-sea-manager/tests packages/shared-file-vault/tests` is green.
 
 ## Non-Negotiable Invariants
