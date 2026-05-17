@@ -281,8 +281,18 @@ ordering authority.
 An announcement is valid when its signature verifies and the signer key is
 currently trusted for the announcing member. There is no max-age policy in v1.
 Valid announcements take precedence over legacy `team_device(protocol, url,
-bucket)` fallback. Legacy fallback is allowed only when no valid announcement
-exists and must be named as legacy behavior.
+bucket)` fallback. Legacy fallback is allowed only for the team's Core berth
+when no valid announcement exists and must be named as legacy behavior. App
+berth peer reads with no valid announcement return `404`; the Hub must not
+synthesize a formula bucket.
+
+Own-storage file operations normally require a matching trusted announcement
+before proceeding. There is one local-writer bootstrap allowance: if the
+trusted selection is missing but a matching announcement verifies under this
+device's current team-device key, the Hub may proceed with the own write/read.
+This lets an invitee push an accepted-but-not-finalized team repo before the
+trust-chain update has been adopted locally. Peer reads never use this
+allowance.
 
 Remote reads from another device of the same member use the announcement path,
 not this device's local allocation. This device's local allocation describes
@@ -529,7 +539,7 @@ B's rows.
 
 ### Cloud storage endpoints
 
-**`POST /cloud/setup`** — Target behavior: materialize the provisioned cloud location for the current session's berth.
+**`POST /cloud/setup`** — Materialize the provisioned cloud location for the current session's berth.
 Safe to call multiple times.
 
 Success response:
@@ -581,6 +591,7 @@ Errors:
 - `409` with `{ "error": "cloud_storage_required", "reason": "cloud_user_action_required" }`
 - `409` with `{ "error": "cloud_storage_required", "reason": "cloud_materialization_failed" }`
 - `409` with `{ "error": "cloud_storage_required", "reason": "cloud_allocation_conflict" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "announcement_missing" }`
 
 ---
 
@@ -591,16 +602,24 @@ Response:
 { "ok": true, "data": "<base64>", "etag": "<etag>" }
 ```
 
-Errors: `404` if not found.
+Errors:
+
+- `404` if not found
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_location_missing" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_credentials_missing" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_user_action_required" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_materialization_failed" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "cloud_allocation_conflict" }`
+- `409` with `{ "error": "cloud_storage_required", "reason": "announcement_missing" }`
 
 ---
 
 **`GET /peer_cloud_file?member_id=<hex>&path=<remote path>`** — Download a file from a peer's
-cloud location via the Hub proxy. Target behavior: the Hub resolves the target
+cloud location via the Hub proxy. The Hub resolves the target
 member's readable location through the newest valid
 `member_berth_storage_announcement` for `(member_id, session.berth_id)`.
 Legacy `team_device` transport data may be used only as an explicitly named
-fallback when no valid announcement exists.
+Core-berth fallback when no valid announcement exists.
 
 Response: same as `GET /cloud_file`.
 

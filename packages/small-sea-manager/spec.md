@@ -848,6 +848,12 @@ Selection mirrors the current transport-announcement rule: sort
 verifies and the signer key is currently trusted for `member_id`. There is no
 max-age policy in v1.
 
+The table intentionally does not enforce SQLite foreign keys on `member_id` or
+`berth_id`. Invitation and linked-device bootstrap flows can temporarily know
+the signed statement before every clone has adopted the corresponding member,
+berth, or trust rows. Selection treats structurally invalid or untrusted rows
+as inert.
+
 Valid member-berth storage announcements take precedence over legacy
 `team_device(protocol, url, bucket)` fallback. Legacy fallback is temporary and
 must be named as such until removed.
@@ -1234,9 +1240,7 @@ CREATE TABLE IF NOT EXISTS member_berth_storage_announcement (
     location        TEXT NOT NULL,
     announced_at    TEXT NOT NULL,
     signer_key_id   BLOB NOT NULL,
-    signature       BLOB NOT NULL,
-    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE,
-    FOREIGN KEY (berth_id) REFERENCES team_app_berth(id) ON DELETE CASCADE
+    signature       BLOB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS device_prekey_bundle (

@@ -22,6 +22,19 @@ class MemberTransportAnnouncement:
 
 
 @dataclass(frozen=True)
+class MemberBerthStorageAnnouncement:
+    announcement_id: bytes
+    member_id: bytes
+    berth_id: bytes
+    protocol: str
+    url: str
+    location: str
+    announced_at: str
+    signer_key_id: bytes
+    signature: bytes
+
+
+@dataclass(frozen=True)
 class TransportEndpoint:
     protocol: str
     url: str
@@ -85,6 +98,24 @@ def canonical_member_transport_announcement_bytes(
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+def canonical_member_berth_storage_announcement_bytes(
+    announcement: MemberBerthStorageAnnouncement,
+) -> bytes:
+    # `signature` is intentionally excluded: callers sign these canonical bytes
+    # and store the resulting signature alongside the row.
+    obj = {
+        "announcement_id": announcement.announcement_id.hex(),
+        "announced_at": announcement.announced_at,
+        "berth_id": announcement.berth_id.hex(),
+        "location": announcement.location,
+        "member_id": announcement.member_id.hex(),
+        "protocol": announcement.protocol,
+        "signer_key_id": announcement.signer_key_id.hex(),
+        "url": announcement.url,
+    }
+    return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
 def verify_member_transport_announcement_signature(
     announcement: MemberTransportAnnouncement,
     signer_public_key: bytes,
@@ -93,6 +124,20 @@ def verify_member_transport_announcement_signature(
         Ed25519PublicKey.from_public_bytes(signer_public_key).verify(
             announcement.signature,
             canonical_member_transport_announcement_bytes(announcement),
+        )
+        return True
+    except InvalidSignature:
+        return False
+
+
+def verify_member_berth_storage_announcement_signature(
+    announcement: MemberBerthStorageAnnouncement,
+    signer_public_key: bytes,
+) -> bool:
+    try:
+        Ed25519PublicKey.from_public_bytes(signer_public_key).verify(
+            announcement.signature,
+            canonical_member_berth_storage_announcement_bytes(announcement),
         )
         return True
     except InvalidSignature:
@@ -135,6 +180,59 @@ def select_effective_member_transport(
                 protocol=announcement.protocol,
                 url=announcement.url,
                 bucket=announcement.bucket,
+            ),
+            announcement_id=announcement.announcement_id,
+            signer_key_id=announcement.signer_key_id,
+        )
+
+    if legacy_fallback is not None:
+        return EffectiveTransportSelection(
+            status="legacy-fallback",
+            transport=legacy_fallback,
+        )
+
+    return EffectiveTransportSelection(status="missing", transport=None)
+
+
+def select_effective_member_berth_storage(
+    *,
+    member_id: bytes,
+    berth_id: bytes,
+    announcements: list[MemberBerthStorageAnnouncement],
+    certs: list[KeyCertificate] | None = None,
+    team_id: bytes,
+    device_public_keys_by_key_id: dict[bytes, bytes],
+    legacy_fallback: TransportEndpoint | None = None,
+    trusted_public_keys: set[bytes] | None = None,
+) -> EffectiveTransportSelection:
+    if trusted_public_keys is None:
+        if certs is None:
+            raise ValueError("certs are required when trusted_public_keys is not provided")
+        trusted_public_keys = trusted_device_keys_for_member(certs, team_id, member_id)
+    relevant = [
+        announcement
+        for announcement in announcements
+        if announcement.member_id == member_id and announcement.berth_id == berth_id
+    ]
+    relevant.sort(key=lambda announcement: announcement.announcement_id, reverse=True)
+
+    for announcement in relevant:
+        signer_public_key = device_public_keys_by_key_id.get(announcement.signer_key_id)
+        if signer_public_key is None:
+            continue
+        if signer_public_key not in trusted_public_keys:
+            continue
+        if not verify_member_berth_storage_announcement_signature(
+            announcement,
+            signer_public_key,
+        ):
+            continue
+        return EffectiveTransportSelection(
+            status="announced",
+            transport=TransportEndpoint(
+                protocol=announcement.protocol,
+                url=announcement.url,
+                bucket=announcement.location,
             ),
             announcement_id=announcement.announcement_id,
             signer_key_id=announcement.signer_key_id,

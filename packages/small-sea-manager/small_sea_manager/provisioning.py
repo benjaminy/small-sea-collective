@@ -134,10 +134,13 @@ from wrasse_trust.keys import (
 )
 from wrasse_trust.transport import (
     EffectiveTransportSelection,
+    MemberBerthStorageAnnouncement,
     MemberTransportAnnouncement,
     TransportEndpoint,
+    canonical_member_berth_storage_announcement_bytes,
     canonical_member_transport_announcement_bytes,
     key_certificate_from_team_db_record,
+    select_effective_member_berth_storage,
     select_effective_member_transport,
 )
 
@@ -1642,7 +1645,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 58
+USER_SCHEMA_VERSION = 59
 
 
 # ---- Provisioning functions ----
@@ -2221,6 +2224,27 @@ def _migrate_team_db(conn, from_version):
                 "UNIQUE (proposal_id, approver_device_key_id), "
                 "FOREIGN KEY (proposal_id) REFERENCES admission_proposal(proposal_id) "
                 "ON DELETE CASCADE)"
+            )
+        )
+    if from_version < 59:
+        conn.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS member_berth_storage_announcement ("
+                "announcement_id BLOB PRIMARY KEY, "
+                "member_id BLOB NOT NULL, "
+                "berth_id BLOB NOT NULL, "
+                "protocol TEXT NOT NULL, "
+                "url TEXT NOT NULL, "
+                "location TEXT NOT NULL, "
+                "announced_at TEXT NOT NULL, "
+                "signer_key_id BLOB NOT NULL, "
+                "signature BLOB NOT NULL)"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS idx_member_berth_storage_announcement_scan "
+                "ON member_berth_storage_announcement(member_id, berth_id, announcement_id)"
             )
         )
 
@@ -3070,6 +3094,72 @@ def _load_member_transport_announcements(conn) -> list[MemberTransportAnnounceme
     ]
 
 
+def load_member_berth_storage_announcements(
+    conn,
+    member_id,
+    berth_id,
+) -> list[MemberBerthStorageAnnouncement]:
+    if isinstance(member_id, str):
+        member_id = bytes.fromhex(member_id)
+    if isinstance(berth_id, str):
+        berth_id = bytes.fromhex(berth_id)
+    rows = conn.execute(
+        text(
+            "SELECT announcement_id, member_id, berth_id, protocol, url, location, "
+            "announced_at, signer_key_id, signature "
+            "FROM member_berth_storage_announcement "
+            "WHERE member_id = :member_id AND berth_id = :berth_id "
+            "ORDER BY announcement_id DESC"
+        ),
+        {"member_id": member_id, "berth_id": berth_id},
+    ).fetchall()
+    return [
+        MemberBerthStorageAnnouncement(
+            announcement_id=row[0],
+            member_id=row[1],
+            berth_id=row[2],
+            protocol=row[3],
+            url=row[4],
+            location=row[5],
+            announced_at=row[6],
+            signer_key_id=row[7],
+            signature=row[8],
+        )
+        for row in rows
+    ]
+
+
+def selected_member_berth_storage_announcement(
+    conn,
+    member_id,
+    berth_id,
+    key_certificate_view=None,
+    *,
+    team_id: bytes | None = None,
+) -> EffectiveTransportSelection:
+    if isinstance(member_id, str):
+        member_id = bytes.fromhex(member_id)
+    if isinstance(berth_id, str):
+        berth_id = bytes.fromhex(berth_id)
+    if team_id is None:
+        team_id = conn.execute(text("SELECT value FROM team_setting WHERE key = 'team_id'")).scalar()
+    if team_id is None:
+        raise ValueError("team_id is required for berth storage announcement selection")
+    certs = (
+        key_certificate_view
+        if key_certificate_view is not None
+        else _load_team_certificates(conn, team_id)
+    )
+    return select_effective_member_berth_storage(
+        member_id=member_id,
+        berth_id=berth_id,
+        announcements=load_member_berth_storage_announcements(conn, member_id, berth_id),
+        certs=certs,
+        team_id=team_id,
+        device_public_keys_by_key_id=_device_public_keys_by_key_id(conn),
+    )
+
+
 def _device_public_keys_by_key_id(conn) -> dict[bytes, bytes]:
     rows = conn.execute(
         text("SELECT device_key_id, public_key FROM team_device")
@@ -3254,6 +3344,125 @@ def announce_member_transport(
         "protocol": signed_announcement.protocol,
         "url": signed_announcement.url,
         "bucket": signed_announcement.bucket,
+        "announced_at": signed_announcement.announced_at,
+        "team_id_hex": team_id.hex(),
+    }
+
+
+def publish_member_berth_storage_announcement(
+    root_dir,
+    participant_hex,
+    team_name,
+    member_id,
+    berth_id,
+    allocation_record,
+    signer_key=None,
+) -> dict:
+    root_dir = pathlib.Path(root_dir)
+    if isinstance(member_id, str):
+        member_id = bytes.fromhex(member_id)
+    if isinstance(berth_id, str):
+        berth_id = bytes.fromhex(berth_id)
+
+    team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
+    if signer_key is None:
+        private_key, public_key = get_current_team_device_key(
+            root_dir, participant_hex, team_name
+        )
+    else:
+        private_key, public_key = signer_key
+
+    team_db_path = _team_sync_dir(root_dir, participant_hex, team_name) / "core.db"
+    ensure_team_db_schema(team_db_path)
+    engine = _sqlite_engine(team_db_path)
+    signer_key_id = key_id_from_public(public_key)
+    protocol = allocation_record["protocol"]
+    url = allocation_record["url"]
+    location = allocation_record["location"]
+
+    try:
+        with engine.begin() as conn:
+            selected = selected_member_berth_storage_announcement(
+                conn,
+                member_id,
+                berth_id,
+                team_id=team_id,
+            )
+            if (
+                selected.status == "announced"
+                and selected.transport is not None
+                and selected.transport.protocol == protocol
+                and selected.transport.url == url
+                and selected.transport.bucket == location
+            ):
+                return {
+                    "wrote": False,
+                    "announcement_id_hex": (
+                        selected.announcement_id.hex()
+                        if selected.announcement_id is not None
+                        else None
+                    ),
+                    "member_id_hex": member_id.hex(),
+                    "berth_id_hex": berth_id.hex(),
+                    "signer_key_id_hex": (
+                        selected.signer_key_id.hex()
+                        if selected.signer_key_id is not None
+                        else signer_key_id.hex()
+                    ),
+                    "protocol": protocol,
+                    "url": url,
+                    "location": location,
+                    "team_id_hex": team_id.hex(),
+                }
+
+            announcement = MemberBerthStorageAnnouncement(
+                announcement_id=uuid7(),
+                member_id=member_id,
+                berth_id=berth_id,
+                protocol=protocol,
+                url=url,
+                location=location,
+                announced_at=_now_iso(),
+                signer_key_id=signer_key_id,
+                signature=b"",
+            )
+            signature = _sign_bytes(
+                private_key,
+                canonical_member_berth_storage_announcement_bytes(announcement),
+            )
+            signed_announcement = replace(announcement, signature=signature)
+            conn.execute(
+                text(
+                    "INSERT INTO member_berth_storage_announcement "
+                    "(announcement_id, member_id, berth_id, protocol, url, location, "
+                    "announced_at, signer_key_id, signature) "
+                    "VALUES (:announcement_id, :member_id, :berth_id, :protocol, "
+                    ":url, :location, :announced_at, :signer_key_id, :signature)"
+                ),
+                {
+                    "announcement_id": signed_announcement.announcement_id,
+                    "member_id": signed_announcement.member_id,
+                    "berth_id": signed_announcement.berth_id,
+                    "protocol": signed_announcement.protocol,
+                    "url": signed_announcement.url,
+                    "location": signed_announcement.location,
+                    "announced_at": signed_announcement.announced_at,
+                    "signer_key_id": signed_announcement.signer_key_id,
+                    "signature": signed_announcement.signature,
+                },
+            )
+    finally:
+        engine.dispose()
+
+    return {
+        "wrote": True,
+        "announcement_id_hex": signed_announcement.announcement_id.hex(),
+        "member_id_hex": signed_announcement.member_id.hex(),
+        "berth_id_hex": signed_announcement.berth_id.hex(),
+        "signer_key_id_hex": signed_announcement.signer_key_id.hex(),
+        "protocol": signed_announcement.protocol,
+        "url": signed_announcement.url,
+        "location": signed_announcement.location,
         "announced_at": signed_announcement.announced_at,
         "team_id_hex": team_id.hex(),
     }

@@ -119,6 +119,21 @@ CREATE TABLE IF NOT EXISTS member_transport_announcement (
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS member_berth_storage_announcement (
+    announcement_id BLOB PRIMARY KEY,
+    member_id BLOB NOT NULL,
+    berth_id BLOB NOT NULL,
+    protocol TEXT NOT NULL,
+    url TEXT NOT NULL,
+    location TEXT NOT NULL,
+    announced_at TEXT NOT NULL,
+    signer_key_id BLOB NOT NULL,
+    signature BLOB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_member_berth_storage_announcement_scan
+    ON member_berth_storage_announcement(member_id, berth_id, announcement_id);
+
 CREATE TABLE IF NOT EXISTS device_prekey_bundle (
     device_key_id BLOB PRIMARY KEY,
     prekey_bundle_json TEXT NOT NULL,

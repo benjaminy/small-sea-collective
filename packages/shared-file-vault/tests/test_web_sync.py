@@ -46,6 +46,7 @@ def _push_team_repo_via_hub(http, session_hex, repo_dir):
     auth = {"Authorization": f"Bearer {session_hex}"}
     resp = http.post("/cloud/setup", headers=auth)
     assert resp.status_code == 200, resp.text
+    _publish_storage_announcement_for_session(app.state.backend, session_hex)
 
     from cod_sync.protocol import CodSync, SmallSeaRemote
 
@@ -53,6 +54,31 @@ def _push_team_repo_via_hub(http, session_hex, repo_dir):
     cs = CodSync("origin", repo_dir=pathlib.Path(repo_dir))
     cs.remote = remote
     cs.push_to_remote(["main"])
+
+
+def _publish_storage_announcement_for_session(backend, session_hex):
+    ss_session = backend._lookup_session(session_hex)
+    if ss_session.team_name == "NoteToSelf":
+        return
+    allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        backend.root_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+    )
+    assert allocation is not None
+    _team_id, self_member_id = Provisioning._team_row(
+        backend.root_dir,
+        ss_session.participant_id.hex(),
+        ss_session.team_name,
+    )
+    Provisioning.publish_member_berth_storage_announcement(
+        backend.root_dir,
+        ss_session.participant_id.hex(),
+        ss_session.team_name,
+        self_member_id,
+        ss_session.berth_id,
+        allocation,
+    )
 
 
 def _session_berth_info(http, session_hex):
@@ -99,8 +125,8 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
     alice_vault_berth = _session_berth_info(http, alice_team_token)["berth_id"]
-    # Until Slice B routes app peer reads through storage announcements, Vault
-    # fixtures keep app-berth allocations on the legacy formula location.
+    # Keep this fixture's public bucket stable so peer-sync assertions can
+    # inspect exactly where Alice's app berth writes.
     Provisioning.add_berth_cloud_allocation_by_berth_id(
         root,
         alice_hex,
@@ -114,6 +140,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         headers={"Authorization": f"Bearer {alice_team_token}"},
     )
     assert resp.status_code == 200, resp.text
+    _publish_storage_announcement_for_session(backend, alice_team_token)
 
     alice_core_team_token = _open_session(http, "Alice", "ProjectX", app_name=_CORE_APP)
     _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync)
@@ -133,7 +160,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     bob_member_id_hex = acceptance["acceptor_member_id"]
     bob_team_token = _open_session(http, "Bob", "ProjectX")
     bob_vault_berth = _session_berth_info(http, bob_team_token)["berth_id"]
-    # Match the temporary app peer-read formula used by _download_peer_file.
+    # Match Alice's stable fixture shape for Bob's own app berth.
     Provisioning.add_berth_cloud_allocation_by_berth_id(
         root,
         bob_hex,
@@ -141,6 +168,12 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         bob_cloud_id,
         location=f"ss-{bob_vault_berth[:16]}",
     )
+    resp = http.post(
+        "/cloud/setup",
+        headers={"Authorization": f"Bearer {bob_team_token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    _publish_storage_announcement_for_session(backend, bob_team_token)
     Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
 
     return {

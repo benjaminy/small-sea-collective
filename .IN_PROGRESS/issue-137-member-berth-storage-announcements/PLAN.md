@@ -47,6 +47,12 @@ When this branch is done, all of the following are true:
    joining the Slice A `cloud_storage_required` family. This is the trigger
    that causes Manager-mediated publication to run; once the Manager
    publishes, the app retries and the storage op proceeds.
+   Narrow bootstrap exception: for the local writer only, the own-storage
+   gate may also accept a matching announcement signed by this device's
+   current team-device key before the team DB trust chain has caught up
+   (e.g. an invitee pushing an accepted-but-not-finalized team repo).
+   Peer reads do not get this exception; they still require the normal
+   newest-valid trusted announcement.
    `POST /cloud/setup` is **not** gated — it is the materialization
    entrypoint and must run *before* the first announcement can be valid;
    gating it would deadlock first-time setup. NoteToSelf sessions are also
@@ -115,6 +121,12 @@ These were open at draft time and have been resolved:
   own-storage continues to work as in Slice A. Device-scoped NoteToSelf
   announcements are deferred to a future slice (bundled with the
   multi-device NoteToSelf sync story).
+  For own-storage only, the gate has one bootstrap allowance: when the
+  newest trusted selection is missing but a matching announcement exists
+  and verifies under this device's current team-device key, the Hub may
+  proceed. This lets an invitee push its accepted local team repo before
+  the finalization commit that makes the invitee's key trusted has been
+  adopted locally. This allowance is not used for peer reads.
 
 - **Legacy fallback scope:** Core berths only.
   `team_device(protocol, url, bucket)` has only ever been Core-scoped, so
@@ -180,6 +192,10 @@ plan:
     matches the resolved allocation. If not, raise
     `CloudAnnouncementMissingExn`. The check is skipped when
     `ss_session.team_name == "NoteToSelf"`.
+    Bootstrap allowance: if the trusted selection is missing but a matching
+    row verifies under this device's current team-device key, the own
+    storage operation may proceed. Do not apply this shortcut to peer
+    reads.
   - `POST /cloud/setup` is **not** gated. It must materialize without an
     announcement so Manager can publish based on the resolved (possibly
     locator-rewritten) allocation afterward.
@@ -416,6 +432,9 @@ A skeptical reviewer should be able to confirm:
    covered by a micro test. A separate test asserts that `/cloud/setup`
    on a never-set-up berth succeeds (regression guard for the
    first-use deadlock).
+   A bootstrap micro test covers the current-device allowance by pushing an
+   invitee's accepted local team repo before finalization trust has reached
+   that clone.
 7. Publication is idempotent: a test exercises two Manager setup composites
    (each = `/cloud/setup` then publish) and asserts exactly one
    announcement row. A third composite run after a locator writeback
@@ -437,6 +456,10 @@ A skeptical reviewer should be able to confirm:
 5. Own-storage **file** operations refuse to proceed without a matching
    valid announcement; the Hub raises `CloudAnnouncementMissingExn`
    mapped to `409 / cloud_storage_required / announcement_missing`.
+   The sole exception is the local writer bootstrap allowance described in
+   Gate scope: a matching announcement signed by this device's current
+   team-device key may satisfy the own-storage gate before trust-chain
+   convergence. Peer reads must not use this allowance.
    `POST /cloud/setup` is ungated and is the materialization entrypoint.
    NoteToSelf sessions are exempt this slice. The Hub never signs or
    writes team-DB announcement rows itself.

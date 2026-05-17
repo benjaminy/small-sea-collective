@@ -369,6 +369,18 @@ class TeamManager:
             bucket=bucket,
         )
 
+    def publish_member_berth_storage_announcement(self, team_name, berth_id, allocation):
+        """Publish this member's storage location for one berth."""
+        team = provisioning._team_row(self.root_dir, self.participant_hex, team_name)
+        return provisioning.publish_member_berth_storage_announcement(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            team[1],
+            berth_id,
+            allocation,
+        )
+
     def reconcile_runtime_state(self, team_name):
         """Reconcile local runtime state against the adopted team view."""
         return provisioning.reconcile_runtime_state(

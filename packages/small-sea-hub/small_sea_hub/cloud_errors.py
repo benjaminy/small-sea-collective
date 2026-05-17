@@ -18,6 +18,10 @@ class CloudLocationMissingExn(CloudStorageRequiredExn):
     reason = "cloud_location_missing"
 
 
+class CloudAnnouncementMissingExn(CloudStorageRequiredExn):
+    reason = "announcement_missing"
+
+
 class CloudCredentialsMissingExn(CloudStorageRequiredExn):
     reason = "cloud_credentials_missing"
 

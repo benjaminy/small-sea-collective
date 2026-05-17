@@ -30,6 +30,7 @@ from small_sea_hub.adapters.oauth import (is_token_expired,
                                           refresh_google_token)
 from small_sea_hub.cloud_errors import (
     CloudAllocationConflictExn,
+    CloudAnnouncementMissingExn,
     CloudCredentialsMissingExn,
     CloudLocationMissingExn,
     CloudMaterializationFailedExn,
@@ -42,11 +43,15 @@ from small_sea_hub.crypto import (commit_encrypted_upload,
                                   prepare_encrypted_upload)
 from small_sea_note_to_self.db import attached_note_to_self_connection
 from small_sea_note_to_self.ids import uuid7
+from wrasse_trust.keys import key_id_from_public
 from wrasse_trust.transport import (
+    MemberBerthStorageAnnouncement,
     MemberTransportAnnouncement,
     TransportEndpoint,
     key_certificate_from_team_db_record,
+    select_effective_member_berth_storage,
     select_effective_member_transport,
+    verify_member_berth_storage_announcement_signature,
 )
 
 
@@ -1142,6 +1147,9 @@ class SmallSeaBackend:
 
     def _make_storage_adapter(self, ss_session: SmallSeaSession):
         cloud = self._resolve_berth_cloud_or_raise(ss_session)
+        return self._make_materialized_storage_adapter(ss_session, cloud)
+
+    def _make_materialized_storage_adapter(self, ss_session: SmallSeaSession, cloud):
         adapter = self._make_storage_adapter_from_record(ss_session, cloud)
         outcome = adapter.materialize()
         return self._handle_materialization_outcome(ss_session, cloud, adapter, outcome)
@@ -1337,7 +1345,9 @@ class SmallSeaBackend:
 
     def upload_to_cloud(self, session_hex, path, data, expected_etag=None):
         ss_session = self._lookup_session(session_hex)
-        adapter = self._make_storage_adapter(ss_session)
+        cloud = self._resolve_berth_cloud_or_raise(ss_session)
+        self._require_own_storage_announcement(ss_session, cloud)
+        adapter = self._make_materialized_storage_adapter(ss_session, cloud)
         if ss_session.mode == "encrypted":
             next_sender_key, data = prepare_encrypted_upload(ss_session, data)
         else:
@@ -1352,7 +1362,9 @@ class SmallSeaBackend:
 
     def download_from_cloud(self, session_hex, path):
         ss_session = self._lookup_session(session_hex)
-        adapter = self._make_storage_adapter(ss_session)
+        cloud = self._resolve_berth_cloud_or_raise(ss_session)
+        self._require_own_storage_announcement(ss_session, cloud)
+        adapter = self._make_materialized_storage_adapter(ss_session, cloud)
         ok, data, etag = adapter.download(path)
         if ok and ss_session.mode == "encrypted":
             data = decrypt_group_payload(ss_session, data)
@@ -1546,19 +1558,19 @@ class SmallSeaBackend:
         """Core of download_from_peer, factored out for reuse."""
         ss_session = self._lookup_session(session_hex)
 
-        if ss_session.team_name == "NoteToSelf":
-            team_db_path = str(ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db")
-        else:
-            team_db_path = str(ss_session.participant_path / ss_session.team_name / "Sync" / "core.db")
-
         member_id = bytes.fromhex(member_id_hex)
-        conn = sqlite3.connect(team_db_path)
+        conn = sqlite3.connect(self._team_db_path_for_session(ss_session))
         try:
-            legacy_transport = self._legacy_transport_for_member(conn, member_id)
+            legacy_transport = (
+                self._legacy_transport_for_member(conn, member_id)
+                if ss_session.app_name == "SmallSeaCollectiveCore"
+                else None
+            )
             selection = self._effective_peer_transport_selection(
                 conn,
                 ss_session.team_id,
                 member_id,
+                berth_id=ss_session.berth_id,
                 legacy_fallback=legacy_transport,
             )
         finally:
@@ -1577,17 +1589,7 @@ class SmallSeaBackend:
             from botocore import UNSIGNED
             from botocore.config import Config as BotoConfig
 
-            # Slice A updates Core bootstrap rows to carry the allocated Core
-            # location. Ordinary app peer reads still use the legacy formula
-            # until member-berth storage announcements replace this path.
-            if (
-                ss_session.app_name == "SmallSeaCollectiveCore"
-                and legacy_transport is not None
-                and legacy_transport.bucket
-            ):
-                bucket_name = legacy_transport.bucket
-            else:
-                bucket_name = f"ss-{ss_session.berth_id.hex()[:16]}"
+            bucket_name = bucket
             s3_client = boto3.client(
                 "s3",
                 endpoint_url=url,
@@ -1673,6 +1675,39 @@ class SmallSeaBackend:
             for row in rows
         ]
 
+    def _load_member_berth_storage_announcements(
+        self,
+        conn,
+        member_id: bytes,
+        berth_id: bytes,
+    ):
+        if not self._table_exists(conn, "member_berth_storage_announcement"):
+            return []
+        rows = conn.execute(
+            """
+            SELECT announcement_id, member_id, berth_id, protocol, url, location,
+                   announced_at, signer_key_id, signature
+            FROM member_berth_storage_announcement
+            WHERE member_id = ? AND berth_id = ?
+            ORDER BY announcement_id DESC
+            """,
+            (member_id, berth_id),
+        ).fetchall()
+        return [
+            MemberBerthStorageAnnouncement(
+                announcement_id=row[0],
+                member_id=row[1],
+                berth_id=row[2],
+                protocol=row[3],
+                url=row[4],
+                location=row[5],
+                announced_at=row[6],
+                signer_key_id=row[7],
+                signature=row[8],
+            )
+            for row in rows
+        ]
+
     def _device_public_keys_by_key_id(self, conn) -> dict[bytes, bytes]:
         if not self._table_exists(conn, "team_device"):
             return {}
@@ -1699,13 +1734,154 @@ class SmallSeaBackend:
             return None
         return TransportEndpoint(protocol=row[0], url=row[1], bucket=row[2] or "")
 
+    def _team_db_path_for_session(self, ss_session: SmallSeaSession) -> str:
+        if ss_session.team_name == "NoteToSelf":
+            return str(ss_session.participant_path / "NoteToSelf" / "Sync" / "core.db")
+        return str(
+            ss_session.participant_path / ss_session.team_name / "Sync" / "core.db"
+        )
+
+    def _self_member_id_for_session(self, ss_session: SmallSeaSession) -> bytes | None:
+        with attached_note_to_self_connection(
+            self.root_dir,
+            ss_session.participant_id.hex(),
+        ) as conn:
+            row = conn.execute(
+                "SELECT self_in_team FROM team WHERE name = ?",
+                (ss_session.team_name,),
+            ).fetchone()
+        return row[0] if row is not None else None
+
+    def _current_team_device_public_key(
+        self,
+        ss_session: SmallSeaSession,
+    ) -> bytes | None:
+        with attached_note_to_self_connection(
+            self.root_dir,
+            ss_session.participant_id.hex(),
+        ) as conn:
+            row = conn.execute(
+                """
+                SELECT public_key
+                FROM team_device_key
+                WHERE team_id = ?
+                ORDER BY created_at DESC, device_id DESC
+                LIMIT 1
+                """,
+                (ss_session.team_id,),
+            ).fetchone()
+        return row[0] if row is not None else None
+
+    def _select_member_berth_storage(
+        self,
+        conn,
+        team_id: bytes,
+        member_id: bytes,
+        berth_id: bytes,
+        *,
+        legacy_fallback: TransportEndpoint | None = None,
+    ):
+        return select_effective_member_berth_storage(
+            member_id=member_id,
+            berth_id=berth_id,
+            announcements=self._load_member_berth_storage_announcements(
+                conn,
+                member_id,
+                berth_id,
+            ),
+            certs=self._load_team_certificates(conn, team_id),
+            team_id=team_id,
+            device_public_keys_by_key_id=self._device_public_keys_by_key_id(conn),
+            legacy_fallback=legacy_fallback,
+        )
+
+    def _require_own_storage_announcement(
+        self,
+        ss_session: SmallSeaSession,
+        cloud: BerthCloudRecord,
+    ) -> None:
+        if ss_session.team_name == "NoteToSelf":
+            return
+        member_id = self._self_member_id_for_session(ss_session)
+        if member_id is None:
+            raise CloudAnnouncementMissingExn()
+        conn = sqlite3.connect(self._team_db_path_for_session(ss_session))
+        try:
+            selection = self._select_member_berth_storage(
+                conn,
+                ss_session.team_id,
+                member_id,
+                ss_session.berth_id,
+            )
+        finally:
+            conn.close()
+        transport = selection.transport
+        if (
+            selection.status == "announced"
+            and transport is not None
+            and transport.protocol == cloud.protocol
+            and transport.url == cloud.url
+            and transport.bucket == cloud.location
+        ):
+            return
+        if self._has_current_device_storage_announcement(
+            ss_session,
+            member_id,
+            cloud,
+        ):
+            return
+        raise CloudAnnouncementMissingExn()
+
+    def _has_current_device_storage_announcement(
+        self,
+        ss_session: SmallSeaSession,
+        member_id: bytes,
+        cloud: BerthCloudRecord,
+    ) -> bool:
+        signer_public_key = self._current_team_device_public_key(ss_session)
+        if signer_public_key is None:
+            return False
+        signer_key_id = key_id_from_public(signer_public_key)
+        conn = sqlite3.connect(self._team_db_path_for_session(ss_session))
+        try:
+            announcements = self._load_member_berth_storage_announcements(
+                conn,
+                member_id,
+                ss_session.berth_id,
+            )
+        finally:
+            conn.close()
+        for announcement in announcements:
+            if (
+                announcement.protocol != cloud.protocol
+                or announcement.url != cloud.url
+                or announcement.location != cloud.location
+                or announcement.signer_key_id != signer_key_id
+            ):
+                continue
+            if verify_member_berth_storage_announcement_signature(
+                announcement,
+                signer_public_key,
+            ):
+                return True
+        return False
+
     def _effective_peer_transport_selection(
         self,
         conn,
         team_id: bytes,
         member_id: bytes,
+        berth_id: bytes | None = None,
         legacy_fallback: TransportEndpoint | None = None,
     ):
+        if berth_id is not None:
+            return self._select_member_berth_storage(
+                conn,
+                team_id,
+                member_id,
+                berth_id,
+                legacy_fallback=legacy_fallback,
+            )
         if legacy_fallback is None:
             legacy_fallback = self._legacy_transport_for_member(conn, member_id)
         return select_effective_member_transport(
