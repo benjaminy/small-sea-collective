@@ -40,12 +40,19 @@ When this branch is done, all of the following are true:
    `(self_member_id, berth_id)` does not already match the durable
    allocation's `(protocol, url, location)`. Republication happens only when
    the locator changes.
-4. Hub own-storage operations refuse to proceed when no valid announcement
-   exists for `(self_member_id, session.berth_id)`. The Hub returns a `409`
-   with `{ "error": "cloud_storage_required", "reason": "announcement_missing" }`,
+4. Hub own-storage **file** operations (`POST /cloud_file`,
+   `GET /cloud_file`) refuse to proceed when no valid announcement exists
+   for `(self_member_id, session.berth_id)`. The Hub returns a `409` with
+   `{ "error": "cloud_storage_required", "reason": "announcement_missing" }`,
    joining the Slice A `cloud_storage_required` family. This is the trigger
    that causes Manager-mediated publication to run; once the Manager
    publishes, the app retries and the storage op proceeds.
+   `POST /cloud/setup` is **not** gated — it is the materialization
+   entrypoint and must run *before* the first announcement can be valid;
+   gating it would deadlock first-time setup. NoteToSelf sessions are also
+   exempt from the gate (NoteToSelf own-storage continues to work as in
+   Slice A); device-scoped NoteToSelf announcements are out of scope this
+   slice.
 5. Peer reads in `_download_peer_file` select the newest valid announcement
    for `(member_id, session.berth_id)`, descending by `announcement_id`
    (UUIDv7), before falling back to legacy `team_device` transport.
@@ -59,9 +66,14 @@ When this branch is done, all of the following are true:
 8. The Slice A peer-read exception in `_download_peer_file`
    (`SmallSeaCollectiveCore` + `legacy_transport.bucket`) is removed in
    favor of the announcement path.
-9. Legacy `team_device(protocol, url, bucket)` fallback remains for any
-   `(member_id, berth_id)` with no valid announcement. Removing the columns
-   themselves stays in Slice C.
+9. Legacy `team_device(protocol, url, bucket)` fallback applies only when
+   the requested berth is the team's Core berth, since `team_device.bucket`
+   has only ever been a Core-scoped value. App-berth peer reads with no
+   valid announcement get a clean `404` ("peer file not found") rather
+   than synthesizing a formula bucket. Test fixtures for app berths must
+   publish announcements; "no announcement" app-berth fixtures must assert
+   the 404, not silently route through a formula. Removing the
+   `team_device` columns themselves stays in Slice C.
 10. `member_transport_announcement` (member-only) is no longer consulted by
     peer-storage routing in this slice. The table, dataclass, and helpers
     stay in place; actual removal moves to Slice C alongside the
@@ -95,6 +107,21 @@ These were open at draft time and have been resolved:
   allocation's `(protocol, url, location)`. Republish only when the
   locator changes. This makes `/cloud/setup` and the announcement_missing
   retry path safe to call repeatedly without spamming rows.
+
+- **Gate scope:** `POST /cloud_file` and `GET /cloud_file` only.
+  `POST /cloud/setup` is exempt — it is the materialization entrypoint
+  and must run before any announcement can be valid; gating it would
+  deadlock first-time setup. NoteToSelf sessions are also exempt; their
+  own-storage continues to work as in Slice A. Device-scoped NoteToSelf
+  announcements are deferred to a future slice (bundled with the
+  multi-device NoteToSelf sync story).
+
+- **Legacy fallback scope:** Core berths only.
+  `team_device(protocol, url, bucket)` has only ever been Core-scoped, so
+  using it as a fallback for app-berth peer reads silently routes to the
+  wrong bucket. App-berth peer reads with no valid announcement get a
+  clean `404` instead. The `_download_peer_file` legacy branch is
+  narrowed to "berth_id is the team's Core berth".
 
 ## Open Questions
 
@@ -145,21 +172,28 @@ plan:
   - `cloud_errors.py`: add `CloudAnnouncementMissingExn` to the
     `cloud_storage_required` family.
     Reason string: `"announcement_missing"`.
-  - Own-storage `_resolve_berth_cloud_or_raise` (or its caller) gains a
-    final check: after the allocation/credential resolution and before
-    handing off to the adapter, verify that a valid
+  - The own-storage **file** path (`POST /cloud_file`, `GET /cloud_file`)
+    gains an announcement-presence check after allocation/credential
+    resolution and before handing off to the adapter: verify that a valid
     `member_berth_storage_announcement` row exists for
-    `(self_member_id, berth_id)` whose `(protocol, url, location)` matches
-    the resolved allocation. If not, raise
-    `CloudAnnouncementMissingExn`.
-  - `POST /cloud/setup`, `POST /cloud_file`, and `GET /cloud_file` map
+    `(self_member_id, berth_id)` whose `(protocol, url, location)`
+    matches the resolved allocation. If not, raise
+    `CloudAnnouncementMissingExn`. The check is skipped when
+    `ss_session.team_name == "NoteToSelf"`.
+  - `POST /cloud/setup` is **not** gated. It must materialize without an
+    announcement so Manager can publish based on the resolved (possibly
+    locator-rewritten) allocation afterward.
+  - `POST /cloud_file` and `GET /cloud_file` map
     `CloudAnnouncementMissingExn` to `409` + `{ "error":
     "cloud_storage_required", "reason": "announcement_missing" }`.
   - Rework `_download_peer_file` and `_effective_peer_transport_selection`
     so the announcement table is the primary source for
     `(member_id, session.berth_id)` routing.
   - Remove the Slice A SmallSeaCollectiveCore peer-read exception
-    (`backend.py:1582-1590`).
+    (`backend.py:1582-1590`); replace with announcement-first routing
+    plus a Core-only legacy fallback. App-berth peer reads with no valid
+    announcement return `404` (peer file not found) — no formula
+    synthesis.
   - Same-member sibling-device path: route through announcements instead of
     reading the local `berth_cloud_allocation` for peer reads.
 - **Tests:** see Micro Tests section below.
@@ -205,23 +239,30 @@ Exit: helpers exist with their own micro tests; nothing else changed.
 ### Pass 3 — Hub gate + Manager publish wiring
 
 - Add `CloudAnnouncementMissingExn` to `cloud_errors.py`.
-- Add the announcement-presence check to the own-storage resolution path,
-  raising the new exception when the newest valid announcement for
-  `(self_member_id, berth_id)` does not match the resolved allocation.
-- Map the exception to `409` + `"announcement_missing"` on
-  `/cloud/setup`, `POST /cloud_file`, and `GET /cloud_file`.
-- Wire `publish_member_berth_storage_announcement` into whatever
-  component drives `/cloud/setup` today (Manager CLI/UI), so the natural
-  user flow is: app gets 409 → user sees Manager prompt → Manager
-  publishes → app retries → storage op succeeds.
-- Publication is dedupe-guarded: repeated `/cloud/setup` calls or repeated
-  retries on the same unchanged locator are no-ops at the row level.
+- Add the announcement-presence check to the own-storage **file** path
+  (`POST /cloud_file`, `GET /cloud_file`), raising the new exception when
+  the newest valid announcement for `(self_member_id, berth_id)` does not
+  match the resolved allocation. Skip the check for NoteToSelf sessions.
+- Leave `POST /cloud/setup` ungated: it materializes without an
+  announcement, returns the outcome, and that outcome is what Manager
+  publishes against.
+- Map `CloudAnnouncementMissingExn` to `409 / "announcement_missing"` on
+  `/cloud_file` only.
+- Wire the Manager setup flow as a two-step composite: call
+  `/cloud/setup` (Hub materializes; outcome carries the final locator if
+  writeback happened); then call
+  `publish_member_berth_storage_announcement` with the resolved
+  allocation. The dedupe guard means repeated runs are no-ops.
+- The natural user flow is: app gets 409 from `/cloud_file` → user sees
+  Manager prompt → Manager runs the two-step setup → app retries
+  `/cloud_file` → storage op succeeds.
 
-Exit: a fresh team creation + cloud setup produces exactly one
-announcement row; repeated calls produce no additional rows; an
-own-storage op on a berth with no announcement returns the new 409 and
-succeeds after the Manager publishes. Existing Slice A micro tests still
-pass.
+Exit: a fresh team creation + Manager setup produces exactly one
+announcement row; repeated setup runs produce no additional rows;
+`/cloud_file` on a berth with no announcement returns the new 409 and
+succeeds after Manager setup runs; `/cloud/setup` itself is callable
+end-to-end with no announcement and never returns
+`announcement_missing`. Existing Slice A micro tests still pass.
 
 ### Pass 4 — Reroute Hub peer reads through announcements
 
@@ -298,8 +339,11 @@ Exit: full suite green.
 
 - With a valid announcement, peer read uses the announcement's location;
   legacy `team_device.bucket` is ignored.
-- Without any announcement, legacy fallback is used and the
-  legacy-fallback path is named/observable.
+- **Core berth, no announcement:** legacy `team_device.bucket` fallback
+  is used and the path is named/observable as "legacy-fallback".
+- **App berth, no announcement:** peer read returns `404` (no formula
+  fallback). The test asserts the 404 plus a structured "no peer
+  transport" reason; no provider request is made.
 - Same-member sibling read: device A wrote at `loc-A`, device B at
   `loc-B`. Reading from device A through device B's Hub uses A's
   announcement, not B's local allocation.
@@ -319,10 +363,14 @@ Exit: full suite green.
 
 - Session whose berth has a valid allocation but no announcement →
   `POST /cloud_file` returns `409` with `reason: "announcement_missing"`.
-- Manager publishes; the same `POST /cloud_file` retried succeeds.
-- `POST /cloud/setup` returns the same `409` reason if called when no
-  announcement has been published yet (allocation alone is not enough to
-  signal readiness to peers).
+- Manager runs the two-step setup (`/cloud/setup` then publish); the same
+  `POST /cloud_file` retried succeeds.
+- **No-deadlock test:** `POST /cloud/setup` against a never-set-up berth
+  succeeds (returns the materialization outcome) — it does *not* return
+  `announcement_missing`. This is the regression guard for the
+  reviewer-caught deadlock.
+- **NoteToSelf exemption:** a NoteToSelf session with no announcement can
+  call `POST /cloud_file` successfully; the gate is skipped.
 
 **Integration (split per reviewer feedback):**
 
@@ -375,13 +423,17 @@ A skeptical reviewer should be able to confirm:
 4. Publication is dedupe-guarded: a new row is written only when the newest
    valid announcement for `(self_member_id, berth_id)` does not already
    match the durable allocation's `(protocol, url, location)`.
-5. Own-storage operations refuse to proceed without a matching valid
-   announcement; the Hub raises `CloudAnnouncementMissingExn` mapped to
-   `409 / cloud_storage_required / announcement_missing`. The Hub never
-   signs or writes team-DB announcement rows itself.
+5. Own-storage **file** operations refuse to proceed without a matching
+   valid announcement; the Hub raises `CloudAnnouncementMissingExn`
+   mapped to `409 / cloud_storage_required / announcement_missing`.
+   `POST /cloud/setup` is ungated and is the materialization entrypoint.
+   NoteToSelf sessions are exempt this slice. The Hub never signs or
+   writes team-DB announcement rows itself.
 6. Validity is structural — signature plus current signer-key trust.
    No max-age policy in v1.
-7. Legacy `team_device(protocol, url, bucket)` is fallback only; valid
-   announcements always win.
+7. Legacy `team_device(protocol, url, bucket)` fallback applies to Core
+   peer reads only. App-berth peer reads with no valid announcement
+   return `404`; no formula synthesis. Valid announcements always win
+   over the Core legacy fallback.
 8. No real cloud calls in tests. MinIO for S3; mocks elsewhere.
 9. Use "micro tests" terminology in code comments and docstrings.
