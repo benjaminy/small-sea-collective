@@ -336,6 +336,24 @@ def test_team_cloud_file_requires_storage_announcement(test_env):
     )
     assert retry.status_code == 200
 
+    team_db_path = (
+        pathlib.Path(playground_dir)
+        / "Participants"
+        / team_session.participant_id.hex()
+        / "ProjectX"
+        / "Sync"
+        / "core.db"
+    )
+    with sqlite3.connect(str(team_db_path)) as conn:
+        conn.execute("DELETE FROM member_berth_storage_announcement")
+        conn.commit()
+    blocked_download = client.get(
+        "/cloud_file",
+        params={"path": "team.txt"},
+        headers=auth,
+    )
+    _assert_cloud_storage_required(blocked_download, "announcement_missing")
+
 
 def test_team_cloud_file_allows_current_device_bootstrap_announcement(test_env):
     client = test_env["client"]
