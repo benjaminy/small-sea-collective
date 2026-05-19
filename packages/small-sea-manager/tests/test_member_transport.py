@@ -159,3 +159,71 @@ def test_transport_announcement_route_updates_team_detail(playground_dir):
     assert "Transport announcement published." in response.text
     assert "announced" in response.text
     assert "ui-bucket" in response.text
+
+
+def test_member_berth_storage_publish_is_deduped_by_current_location(playground_dir):
+    root = pathlib.Path(playground_dir)
+    cloud_dir = root / "cloud"
+    cloud_dir.mkdir()
+
+    alice_hex = Provisioning.create_new_participant(root, "Alice")
+    Provisioning.add_cloud_storage(
+        root,
+        alice_hex,
+        protocol="localfolder",
+        url=str(cloud_dir),
+    )
+    team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
+    allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        root,
+        alice_hex,
+        team_result["berth_id_hex"],
+    )
+    assert allocation is not None
+
+    first = Provisioning.publish_member_berth_storage_announcement(
+        root,
+        alice_hex,
+        "ProjectX",
+        team_result["member_id_hex"],
+        team_result["berth_id_hex"],
+        allocation,
+    )
+    second = Provisioning.publish_member_berth_storage_announcement(
+        root,
+        alice_hex,
+        "ProjectX",
+        team_result["member_id_hex"],
+        team_result["berth_id_hex"],
+        allocation,
+    )
+
+    changed_allocation = dict(allocation)
+    changed_allocation["location"] = "provider-final-location"
+    third = Provisioning.publish_member_berth_storage_announcement(
+        root,
+        alice_hex,
+        "ProjectX",
+        team_result["member_id_hex"],
+        team_result["berth_id_hex"],
+        changed_allocation,
+    )
+
+    team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
+    with sqlite3.connect(str(team_db)) as conn:
+        rows = conn.execute(
+            """
+            SELECT location
+            FROM member_berth_storage_announcement
+            ORDER BY announcement_id ASC
+            """
+        ).fetchall()
+
+    assert first["wrote"] is True
+    assert second["wrote"] is False
+    assert second["announcement_id_hex"] == first["announcement_id_hex"]
+    assert third["wrote"] is True
+    assert [row[0] for row in rows] == [
+        allocation["location"],
+        "provider-final-location",
+    ]
