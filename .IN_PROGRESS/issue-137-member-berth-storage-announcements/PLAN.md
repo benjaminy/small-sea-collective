@@ -162,7 +162,9 @@ plan:
 
 - **Schema:** `member_berth_storage_announcement` table + index in
   `packages/small-sea-manager/small_sea_manager/sql/core_other_team.sql`.
-  Pre-alpha: no migration shim; test fixtures get fresh DBs.
+  Pre-alpha: fresh test fixtures are the validation target, but the
+  implementation may still add the normal incremental schema hook so
+  developer roots created during Slice A can be opened during this branch.
 - **wrasse-trust:**
   - `MemberBerthStorageAnnouncement` dataclass in
     `packages/wrasse-trust/wrasse_trust/transport.py` (or sibling module).
@@ -219,6 +221,9 @@ plan:
 - Removing legacy `team_device(protocol, url, bucket)` columns — Slice C.
 - Removing the now-unused `member_transport_announcement` table — Slice C
   (settled above).
+- Removing member-only transport selection from runtime peer enumeration —
+  Slice C. This branch removes it from peer-storage routing; display/status
+  paths may still consult the old table until the legacy cleanup pass.
 - Manager web UI for inspecting announcements — Slice D.
 - Provider cleanup of orphaned objects from cross-device first-use races —
   Slice E.

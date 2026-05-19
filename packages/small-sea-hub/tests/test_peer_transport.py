@@ -407,3 +407,57 @@ def test_app_berth_peer_read_uses_announcement_location(
 
     assert ok is True
     assert data == b"app-announced"
+
+
+def test_peer_read_does_not_use_current_device_bootstrap_allowance(
+    playground_dir, minio_server_gen
+):
+    root = pathlib.Path(playground_dir)
+    minio = minio_server_gen(port=19970)
+    backend = SmallSea.SmallSeaBackend(root_dir=root)
+    alice_hex = Provisioning.create_new_participant(root, "alice")
+    Provisioning.add_cloud_storage(
+        root,
+        alice_hex,
+        protocol="s3",
+        url=minio["endpoint"],
+        access_key=minio["access_key"],
+        secret_key=minio["secret_key"],
+    )
+    team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
+    Provisioning.register_app_for_participant(root, alice_hex, "SharedFileVault")
+    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", "SharedFileVault")
+    app_berth_id = Provisioning._resolve_berth_id_for_allocation(
+        root,
+        alice_hex,
+        "ProjectX",
+        "SharedFileVault",
+    )
+
+    app.state.backend = backend
+    client = TestClient(app)
+    session_hex = _request_and_confirm_app(client, app_name="SharedFileVault")
+
+    Provisioning.publish_member_berth_storage_announcement(
+        root,
+        alice_hex,
+        "ProjectX",
+        bytes.fromhex(team_result["member_id_hex"]),
+        app_berth_id,
+        {
+            "protocol": "s3",
+            "url": minio["endpoint"],
+            "location": "current-device-only",
+        },
+    )
+    team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
+    with sqlite3.connect(str(team_db)) as conn:
+        conn.execute("DELETE FROM key_certificate")
+        conn.commit()
+
+    with pytest.raises(SmallSea.SmallSeaNotFoundExn):
+        backend._download_peer_file(
+            session_hex,
+            team_result["member_id_hex"],
+            "peer.txt",
+        )

@@ -4,6 +4,7 @@
 # using FastAPI's TestClient (in-process, no subprocess needed for the hub).
 
 import base64
+import pathlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -334,6 +335,57 @@ def test_team_cloud_file_requires_storage_announcement(test_env):
         headers=auth,
     )
     assert retry.status_code == 200
+
+
+def test_team_cloud_file_allows_current_device_bootstrap_announcement(test_env):
+    client = test_env["client"]
+    backend = test_env["backend"]
+    minio = test_env["minio"]
+    playground_dir = test_env["playground_dir"]
+
+    alice_hex = backend._find_participant("alice")[0][0].name
+    Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    nts_session = _open_session(client, mode="passthrough")
+    storage_id = _register_cloud(backend, nts_session, minio)
+    team_session_hex = _open_session(client, team="ProjectX")
+    team_session = backend._lookup_session(team_session_hex)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        team_session.participant_id.hex(),
+        team_session.berth_id,
+        storage_id,
+    )
+    auth = {"Authorization": f"Bearer {team_session_hex}"}
+    setup = client.post("/cloud/setup", headers=auth)
+    assert setup.status_code == 200
+    _publish_storage_announcement_for_session(
+        playground_dir,
+        backend,
+        team_session_hex,
+    )
+
+    team_db = (
+        pathlib.Path(playground_dir)
+        / "Participants"
+        / team_session.participant_id.hex()
+        / "ProjectX"
+        / "Sync"
+        / "core.db"
+    )
+    with sqlite3.connect(str(team_db)) as conn:
+        conn.execute("DELETE FROM key_certificate")
+        conn.commit()
+
+    resp = client.post(
+        "/cloud_file",
+        json={
+            "path": "bootstrap.txt",
+            "data": base64.b64encode(b"accepted-before-trust").decode(),
+        },
+        headers=auth,
+    )
+
+    assert resp.status_code == 200
 
 
 def test_cloud_setup_is_not_blocked_by_missing_announcement(test_env):
