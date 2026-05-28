@@ -17,6 +17,7 @@ from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
 from small_sea_note_to_self.db import note_to_self_sync_db_path
+from small_sea_note_to_self.ids import uuid7
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -404,6 +405,117 @@ def test_team_cloud_file_allows_current_device_bootstrap_announcement(test_env):
     )
 
     assert resp.status_code == 200
+
+
+def _insert_synthetic_rotated_team_device_key(
+    playground_dir, participant_hex, team_id
+):
+    # Synthetic stand-in for a real device-key rotation: insert a second
+    # team_device_key row whose created_at is strictly later than every
+    # existing row's, so _current_team_device_public_key picks it as the
+    # "current" key. No real Manager rotation primitive exists yet
+    # (see PLAN.md follow-up); a direct connection is used so foreign
+    # keys stay off and the synthetic device_id does not need a
+    # matching user_device row.
+    db_path = note_to_self_sync_db_path(playground_dir, participant_hex)
+    with sqlite3.connect(str(db_path)) as conn:
+        row = conn.execute(
+            """
+            SELECT created_at FROM team_device_key
+            WHERE team_id = ?
+            ORDER BY created_at DESC, device_id DESC
+            LIMIT 1
+            """,
+            (team_id,),
+        ).fetchone()
+        assert row is not None, "expected an initial team_device_key row (K1)"
+        previous_created_at = datetime.fromisoformat(row[0])
+        rotated_created_at = (
+            previous_created_at + timedelta(seconds=1)
+        ).isoformat()
+        conn.execute(
+            """
+            INSERT INTO team_device_key (
+                team_id, device_id, public_key, created_at
+            ) VALUES (?, ?, ?, ?)
+            """,
+            (team_id, uuid7(), b"rotated-public-key-stub", rotated_created_at),
+        )
+        conn.commit()
+
+
+def test_team_cloud_file_bootstrap_allowance_rejects_rotated_signer(test_env):
+    # Micro test pinning the rotation discriminant of the own-storage
+    # bootstrap allowance: an announcement signed by a no-longer-current
+    # team-device key must NOT satisfy _has_current_device_storage_announcement,
+    # even when the trusted selection is "missing".
+    #
+    # Sanity-check expectation (per PLAN.md): removing the synthetic K2
+    # insert below should make this test fail with 200 instead of 409,
+    # confirming the rotation step is what discriminates this case from
+    # the positive-allowance test above.
+    client = test_env["client"]
+    backend = test_env["backend"]
+    minio = test_env["minio"]
+    playground_dir = test_env["playground_dir"]
+
+    alice_hex = backend._find_participant("alice")[0][0].name
+    Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    nts_session = _open_session(client, mode="passthrough")
+    storage_id = _register_cloud(backend, nts_session, minio)
+    team_session_hex = _open_session(client, team="ProjectX")
+    team_session = backend._lookup_session(team_session_hex)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        team_session.participant_id.hex(),
+        team_session.berth_id,
+        storage_id,
+    )
+    auth = {"Authorization": f"Bearer {team_session_hex}"}
+    setup = client.post("/cloud/setup", headers=auth)
+    assert setup.status_code == 200
+
+    # Publish the announcement first — it is signed by K1, the initial
+    # team_device_key generated for this team.
+    _publish_storage_announcement_for_session(
+        playground_dir,
+        backend,
+        team_session_hex,
+    )
+
+    # Synthetic rotation: insert K2 with a strictly later created_at, so
+    # the existing K1-signed announcement no longer matches the current
+    # key returned by _current_team_device_public_key.
+    _insert_synthetic_rotated_team_device_key(
+        playground_dir,
+        team_session.participant_id.hex(),
+        team_session.team_id,
+    )
+
+    # Drop trusted selection so the bootstrap allowance is the only
+    # remaining path that could accept the K1-signed announcement.
+    team_db = (
+        pathlib.Path(playground_dir)
+        / "Participants"
+        / team_session.participant_id.hex()
+        / "ProjectX"
+        / "Sync"
+        / "core.db"
+    )
+    with sqlite3.connect(str(team_db)) as conn:
+        conn.execute("DELETE FROM key_certificate")
+        conn.commit()
+
+    resp = client.post(
+        "/cloud_file",
+        json={
+            "path": "bootstrap.txt",
+            "data": base64.b64encode(b"should-be-rejected-after-rotation").decode(),
+        },
+        headers=auth,
+    )
+
+    _assert_cloud_storage_required(resp, "announcement_missing")
 
 
 def test_cloud_setup_is_not_blocked_by_missing_announcement(test_env):
