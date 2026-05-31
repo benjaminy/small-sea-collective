@@ -29,7 +29,8 @@ Roughly ordered by how badly they could break the project if they turn out wrong
    The provisioning story (signed configuration profiles, deep links, QR pairing, manual entry as a floor) may need as much engineering attention as the sync engine.
 3. **Local authentication is harder than localhost-only suggests.**
    Localhost binding does not prevent unrelated processes on the same machine from reading team calendars.
-   We need a per-client token model that fits into how calendar apps actually store credentials (system keychain, account dialogs, etc.) and that can be revoked when a client is uninstalled.
+   We need a per-client credential model that fits into how calendar apps actually store credentials (system keychain, account dialogs, etc.) and that can be revoked when a client is uninstalled.
+   Internally, Tide Table should probably issue one kind of scoped local secret; externally, the CalDAV adapter may need to present that secret through multiple client-compatible auth shapes.
 4. **Concurrent edits to recurring events are where calendar prototypes die.**
    `RRULE` + `EXDATE` + `RECURRENCE-ID` produces edge cases that lose data under naive merge, and multi-device concurrent edits sharpen this further.
    We will not know our merge model is adequate until we run it under real concurrent editing patterns.
@@ -61,9 +62,10 @@ Prove the end-to-end pipeline before introducing writes or sync.
 
 - A real Tide Table process serving CalDAV on localhost, backed by a hand-curated `.ics`-shaped store inside a Small Sea berth.
 - One team, one calendar, read-only.
-- Per-client bearer tokens for authentication; the simplest provisioning flow we can build, even if it is rough.
+- Per-client credentials for authentication, exposed through the simplest client-compatible auth shape we can prove against real calendar apps.
+  Username/password-style setup is probably the practical baseline; bearer-token support may still be useful for developer tools and micro tests if it is cheap.
 
-This phase retires unknown 1 (basic CalDAV compatibility against real clients), unknown 2 in a first form (the user can actually finish account setup), and unknown 3 (per-client token model exists).
+This phase retires unknown 1 (basic CalDAV compatibility against real clients), unknown 2 in a first form (the user can actually finish account setup), and unknown 3 (per-client credential model exists).
 
 Deliberately out of scope for this phase: writes, recurrence editing, conflict handling, multiple calendars, time-zone correctness beyond passing through what is already in the store.
 
