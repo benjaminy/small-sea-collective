@@ -74,3 +74,29 @@ Its promise is "our shared schedule belongs to us, and it still works with the c
 
 The phased plan — and the unknowns that drive its sequence — lives in `ROADMAP.md`.
 The roadmap is organized to confront the calendar ecosystem's scar tissue (client quirks, setup UX, recurrence merge semantics) as early and cheaply as possible, with throwaway spikes ahead of any real architectural commitments.
+
+## Backlog Notes
+
+When Tide Table comes back off the shelf, start with a throwaway CalDAV and account-setup spike rather than storage architecture.
+Real calendar clients will decide what product shape is possible.
+Apple Calendar, Thunderbird, GNOME Calendar, Outlook, DAVx5, and similar clients may all disagree about the parts of CalDAV that matter most.
+
+Account setup is part of the product, not an afterthought.
+Configuration profiles, QR pairing, username/password-shaped credentials, local credential revocation, and manual setup as a floor all need early pressure-testing.
+
+Conflict handling is where Tide Table should stay most Small Sea-shaped.
+When concurrent edits cannot be safely merged, preserve the competing states and make the ambiguity visible.
+A likely UX is a read-only "Tide Table Conflicts" calendar with synthetic `CONFLICT: ...` events that link to a small local resolver.
+
+Time zones and recurrence cannot remain vague for long.
+Even read-only display can break around `VTIMEZONE`, daylight-saving transitions, all-day events, floating times, and recurring events.
+
+Mobile probably splits the roadmap.
+Desktop can start with localhost CalDAV.
+iOS may need a Home Hub or other remote CalDAV shape to preserve the Hub security model, while Android may eventually support something closer to a local Hub after serious experimentation.
+
+External invitations should stay humble at first.
+Exporting `.ics` for ordinary email sharing is a much safer first bridge than full RSVP or iTIP workflows.
+
+Above all, Tide Table should remain an adapter, not a calendar empire.
+Focused setup, status, and conflict-resolution screens are useful, but ordinary calendar apps should remain the main calendar UI.
