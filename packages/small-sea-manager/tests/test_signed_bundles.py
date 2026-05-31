@@ -16,6 +16,7 @@ from small_sea_manager.provisioning import (
     complete_invitation_acceptance,
     create_invitation, create_new_participant, create_team,
     get_berth_cloud_allocation_for_berth, get_current_team_device_key)
+from test_support import publish_storage_announcement_for_session
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -46,36 +47,11 @@ def _push_via_hub(http, session_hex, repo_dir, **push_kwargs):
     auth = {"Authorization": f"Bearer {session_hex}"}
     resp = http.post("/cloud/setup", headers=auth)
     assert resp.status_code == 200, resp.text
-    _publish_storage_announcement_for_session(app.state.backend, session_hex)
+    publish_storage_announcement_for_session(app.state.backend, session_hex)
     remote = SmallSeaRemote(session_hex, base_url="http://testserver", client=http)
     cs = CodSync("origin", repo_dir=pathlib.Path(repo_dir))
     cs.remote = remote
     cs.push_to_remote(["main"], **push_kwargs)
-
-
-def _publish_storage_announcement_for_session(backend, session_hex):
-    ss_session = backend._lookup_session(session_hex)
-    if ss_session.team_name == "NoteToSelf":
-        return
-    allocation = get_berth_cloud_allocation_for_berth(
-        backend.root_dir,
-        ss_session.participant_id.hex(),
-        ss_session.berth_id,
-    )
-    assert allocation is not None
-    _team_id, self_member_id = Provisioning._team_row(
-        backend.root_dir,
-        ss_session.participant_id.hex(),
-        ss_session.team_name,
-    )
-    Provisioning.publish_member_berth_storage_announcement(
-        backend.root_dir,
-        ss_session.participant_id.hex(),
-        ss_session.team_name,
-        self_member_id,
-        ss_session.berth_id,
-        allocation,
-    )
 
 
 def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):

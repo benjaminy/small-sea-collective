@@ -15,6 +15,7 @@ from shared_file_vault.cli import cli
 from small_sea_client.client import SmallSeaClient, SmallSeaSession
 from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager, _CORE_APP
+from test_support import publish_storage_announcement_for_session
 
 
 def _open_session(http, nickname, team, mode="encrypted", app_name=sync.HUB_APP_NAME):
@@ -56,7 +57,7 @@ def _push_team_repo_via_hub(http, session_hex, repo_dir):
     auth = {"Authorization": f"Bearer {session_hex}"}
     resp = http.post("/cloud/setup", headers=auth)
     assert resp.status_code == 200, resp.text
-    _publish_storage_announcement_for_session(app.state.backend, session_hex)
+    publish_storage_announcement_for_session(app.state.backend, session_hex)
 
     from cod_sync.protocol import CodSync, SmallSeaRemote
 
@@ -64,31 +65,6 @@ def _push_team_repo_via_hub(http, session_hex, repo_dir):
     cs = CodSync("origin", repo_dir=pathlib.Path(repo_dir))
     cs.remote = remote
     cs.push_to_remote(["main"])
-
-
-def _publish_storage_announcement_for_session(backend, session_hex):
-    ss_session = backend._lookup_session(session_hex)
-    if ss_session.team_name == "NoteToSelf":
-        return
-    allocation = Provisioning.get_berth_cloud_allocation_for_berth(
-        backend.root_dir,
-        ss_session.participant_id.hex(),
-        ss_session.berth_id,
-    )
-    assert allocation is not None
-    _team_id, self_member_id = Provisioning._team_row(
-        backend.root_dir,
-        ss_session.participant_id.hex(),
-        ss_session.team_name,
-    )
-    Provisioning.publish_member_berth_storage_announcement(
-        backend.root_dir,
-        ss_session.participant_id.hex(),
-        ss_session.team_name,
-        self_member_id,
-        ss_session.berth_id,
-        allocation,
-    )
 
 
 def _free_port():
@@ -157,7 +133,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         headers={"Authorization": f"Bearer {alice_team_token}"},
     )
     assert resp.status_code == 200, resp.text
-    _publish_storage_announcement_for_session(backend, alice_team_token)
+    publish_storage_announcement_for_session(backend, alice_team_token)
 
     alice_core_team_token = _open_session(http, "Alice", "ProjectX", app_name=_CORE_APP)
     _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync)
@@ -190,7 +166,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         headers={"Authorization": f"Bearer {bob_team_token}"},
     )
     assert resp.status_code == 200, resp.text
-    _publish_storage_announcement_for_session(backend, bob_team_token)
+    publish_storage_announcement_for_session(backend, bob_team_token)
     Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
 
     return {
