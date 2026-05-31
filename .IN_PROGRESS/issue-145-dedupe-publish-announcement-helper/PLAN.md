@@ -32,16 +32,17 @@ Inventoried across the seven files:
 |------|-----------|------------|---------|--------------|------------------|
 | `small-sea-hub/tests/test_cloud_api.py` | `(playground_dir, backend, session_hex)` | no early-return | yes | `Provisioning` | yes |
 | `small-sea-hub/tests/test_notifications.py` | `(backend, session_hex)` | skip | no | `Provisioning` | no |
-| `small-sea-manager/tests/test_hub_invitation_flow.py` | `(backend, session_hex)` | skip | no | mixed | no |
+| `small-sea-manager/tests/test_hub_invitation_flow.py` | `(backend, session_hex)` | skip | no | `Provisioning` + direct imports | no |
 | `small-sea-manager/tests/test_invitation.py` | `(backend, session_hex)` | skip | no | `provisioning` | no |
-| `small-sea-manager/tests/test_signed_bundles.py` | `(backend, session_hex)` | skip | no | mixed | no |
+| `small-sea-manager/tests/test_signed_bundles.py` | `(backend, session_hex)` | skip | no | `Provisioning` + direct imports | no |
 | `shared-file-vault/tests/test_hub_sync.py` | `(backend, session_hex)` | skip | no | `Provisioning` | no |
 | `shared-file-vault/tests/test_web_sync.py` | `(backend, session_hex)` | skip | no | `Provisioning` | no |
 
 The differences are minor and reconcilable:
 
 - `playground_dir` in `test_cloud_api.py` is the same value the
-  backend was constructed with (`SmallSeaBackend(root_dir=playground_dir)`),
+  backend was constructed with (`SmallSeaBackend(root_dir=playground_dir)` in
+  the `test_env` fixture in `packages/small-sea-hub/tests/test_cloud_api.py`),
   so `backend.root_dir` is interchangeable.
 - The NoteToSelf skip is harmless to add to `test_cloud_api.py`'s
   callers — none of them pass a NoteToSelf session today.
@@ -150,8 +151,7 @@ When this branch is done, all of the following are true:
    packages/` returns no matches.
 5. `git diff main..HEAD -- packages/` touches only files under
    `packages/*/tests/`.
-   No `packages/*/<pkg>/` runtime tree is modified; the only new
-   non-test file is the repo-root `test_support.py`.
+   No file under any `packages/*/<pkg>/` runtime tree is modified.
 6. `uv run pytest packages/small-sea-hub/tests
    packages/small-sea-manager/tests packages/shared-file-vault/tests`
    is green (modulo pre-existing Docker-daemon flake in
@@ -250,8 +250,9 @@ running the code:
    The only other change in the tree is the new repo-root
    `test_support.py`.
 3. **`test_support.py` imports only `small_sea_manager`.**
-   `grep -E "small_sea_hub|shared_file_vault" test_support.py`
-   returns nothing.
+   `grep -E "^from |^import |small_sea_hub|shared_file_vault" test_support.py`
+   shows the helper's import lines and no `small_sea_hub` or
+   `shared_file_vault` dependency.
    The shared helper does not pull cross-package runtime deps.
 4. **Behavior preserved for the one caller that reads the return
    value.**
@@ -274,8 +275,7 @@ running the code:
    `test_support.py` must not import from `small_sea_hub` or
    `shared_file_vault`; only `small_sea_manager.provisioning` is
    needed.
-3. Use "micro tests" terminology in any new docstrings/comments.
-4. NoteToSelf early-return semantics preserved: callers that pass a
+3. NoteToSelf early-return semantics preserved: callers that pass a
    NoteToSelf session must observe a no-op return (`None`), not an
    assertion or exception.
 
