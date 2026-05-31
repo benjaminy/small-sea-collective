@@ -20,6 +20,7 @@ from small_sea_note_to_self.db import note_to_self_sync_db_path
 from small_sea_note_to_self.ids import uuid7
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
+from test_support import publish_storage_announcement_for_session
 
 MINIO_PORT = 9200
 
@@ -124,30 +125,6 @@ def _assert_cloud_storage_required(resp, reason):
     assert resp.status_code == 409
     payload = resp.json()
     assert payload == {"error": "cloud_storage_required", "reason": reason}
-
-
-def _publish_storage_announcement_for_session(playground_dir, backend, session_hex):
-    ss_session = backend._lookup_session(session_hex)
-    allocation = Provisioning.get_berth_cloud_allocation_for_berth(
-        playground_dir,
-        ss_session.participant_id.hex(),
-        ss_session.berth_id,
-    )
-    assert allocation is not None
-    team_id, self_member_id = Provisioning._team_row(
-        playground_dir,
-        ss_session.participant_id.hex(),
-        ss_session.team_name,
-    )
-    assert team_id == ss_session.team_id
-    return Provisioning.publish_member_berth_storage_announcement(
-        playground_dir,
-        ss_session.participant_id.hex(),
-        ss_session.team_name,
-        self_member_id,
-        ss_session.berth_id,
-        allocation,
-    )
 
 
 def test_upload_and_download(test_env):
@@ -272,11 +249,7 @@ def test_non_vault_team_path_uses_encryption(test_env):
         headers={"Authorization": f"Bearer {team_session_hex}"},
     )
     assert setup_resp.status_code == 200
-    _publish_storage_announcement_for_session(
-        playground_dir,
-        backend,
-        team_session_hex,
-    )
+    publish_storage_announcement_for_session(backend, team_session_hex)
 
     auth = {"Authorization": f"Bearer {team_session_hex}"}
     plaintext = b"team data that should be encrypted"
@@ -323,11 +296,7 @@ def test_team_cloud_file_requires_storage_announcement(test_env):
 
     setup = client.post("/cloud/setup", headers=auth)
     assert setup.status_code == 200
-    published = _publish_storage_announcement_for_session(
-        playground_dir,
-        backend,
-        team_session_hex,
-    )
+    published = publish_storage_announcement_for_session(backend, team_session_hex)
     assert published["wrote"] is True
 
     retry = client.post(
@@ -377,11 +346,7 @@ def test_team_cloud_file_allows_current_device_bootstrap_announcement(test_env):
     auth = {"Authorization": f"Bearer {team_session_hex}"}
     setup = client.post("/cloud/setup", headers=auth)
     assert setup.status_code == 200
-    _publish_storage_announcement_for_session(
-        playground_dir,
-        backend,
-        team_session_hex,
-    )
+    publish_storage_announcement_for_session(backend, team_session_hex)
 
     team_db = (
         pathlib.Path(playground_dir)
@@ -477,11 +442,7 @@ def test_team_cloud_file_bootstrap_allowance_rejects_rotated_signer(test_env):
 
     # Publish the announcement first — it is signed by K1, the initial
     # team_device_key generated for this team.
-    _publish_storage_announcement_for_session(
-        playground_dir,
-        backend,
-        team_session_hex,
-    )
+    publish_storage_announcement_for_session(backend, team_session_hex)
 
     # Synthetic rotation: insert K2 with a strictly later created_at, so
     # the existing K1-signed announcement no longer matches the current
