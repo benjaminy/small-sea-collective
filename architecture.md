@@ -124,6 +124,16 @@ platforms that force that shape, but they are not equivalent to the general
 Hub boundary.
 Seed apps are useful, production-intended applications that help prove and grow
 the ecosystem; they have no special protocol status.
+The Hedgerow, Tide Table, and Shared File Vault are examples: each gives people
+a reason to join the network without holding any architectural privilege.
+The Manager is not a seed app.
+It is the one currently special app — it writes to `SmallSeaCollectiveCore`
+and so holds team membership state, device registration, and service
+credentials.
+Apps with write access to `SmallSeaCollectiveCore` are the special category;
+seed apps are explicitly outside it.
+Another Manager-class app could exist in principle, but introducing one is a
+significant architectural move, not a routine addition.
 
 **Android is a plausible first mobile experiment.**
 A Hub on Android may be able to run as a foreground service with a persistent
