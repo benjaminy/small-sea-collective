@@ -42,37 +42,35 @@ Tide Table must not talk directly to cloud storage, notification services, peer 
 It also must not read or write Manager-owned Core databases directly.
 Team identity, session, and berth information should come from Hub session APIs.
 
-## Early Scope
+## What Tide Table Is Not
 
-The first useful version should be small and boring in the best way:
+These are enduring positions, not first-version omissions.
+The version-scoped sequencing and the open design questions about storage, merge semantics, recurring events, and external invitations live in `ROADMAP.md`.
 
-- expose one or more team calendars through a local CalDAV account
-- create, edit, and delete events from ordinary calendar clients
-- preserve recurring events and time zone data
-- sync calendar changes through the Hub using the team berth
-- surface conflicts conservatively instead of silently choosing a winner
-
-Deliberately out of scope for the first version:
-
-- external email invitations
-- global free/busy lookup across unrelated teams
-- public calendar publishing
-- replacing native calendar applications
-- real-time scheduling guarantees
-
-## Open Design Questions
-
-The main technical question is the storage and merge model.
-Plain `.ics` files are attractive because they match the ecosystem, but event-level merge behavior probably needs more structure than line-based text merging can provide.
-
-Recurring events are the second sharp edge.
-Tide Table should preserve standards-compliant recurrence data from clients, but edits to one occurrence, all future occurrences, or an entire series need careful conflict semantics.
-
-Scheduling invitations are the third sharp edge.
-CalDAV clients may expect iTIP-style attendee workflows, but Small Sea teams may initially get more value from shared team calendars than from full email-shaped invitation machinery.
+- **Not a new native calendar UI.**
+  Tide Table never replaces Apple Calendar, Outlook, Thunderbird, or the like.
+  Day views, week views, drag-and-drop scheduling, and platform-native reminders are the calendar app ecosystem's job, not ours.
+  The whole architecture is built around inheriting those decades of polish rather than reinventing them.
+- **Not a public calendar publishing service.**
+  Calendars live inside Small Sea teams.
+  There is no "publish this team's calendar to the open internet" surface.
+- **Not a free/busy or directory service across unrelated teams.**
+  A query like "when is anyone in any of my teams free next Tuesday" is out of scope.
+  Each team's calendar is its own world.
+- **Not a generic CalDAV server for arbitrary clients on arbitrary networks.**
+  The CalDAV surface is a localhost adapter for the device's own calendar apps.
+  It is not a network-reachable CalDAV server, an iCloud replacement, or a multi-tenant hosted service.
+- **Not a real-time scheduling guarantee.**
+  Events sync through the same Small Sea transport every other app uses.
+  Eventual consistency, not real-time co-editing.
 
 ## Product Feel
 
 Tide Table should feel practical, calm, and quietly dependable.
 Its promise is not "a smarter calendar."
 Its promise is "our shared schedule belongs to us, and it still works with the calendar tools we already know."
+
+## Roadmap
+
+The phased plan — and the unknowns that drive its sequence — lives in `ROADMAP.md`.
+The roadmap is organized to confront the calendar ecosystem's scar tissue (client quirks, setup UX, recurrence merge semantics) as early and cheaply as possible, with throwaway spikes ahead of any real architectural commitments.
