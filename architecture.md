@@ -119,31 +119,36 @@ The rest of this section records the current stance rather than a commitment.
 It would force each app to reimplement berth isolation, authorization, provider
 I/O rules, and sync validation correctly, eroding the model by a thousand small
 cuts.
-Embedded Hub-like runtimes may be acceptable for narrowly scoped first-party
-apps, but they are not equivalent to the general Hub boundary.
+Embedded Hub-like runtimes may be acceptable for narrowly scoped seed apps on
+platforms that force that shape, but they are not equivalent to the general
+Hub boundary.
+Seed apps are useful, production-intended applications that help prove and grow
+the ecosystem; they have no special protocol status.
 
-**Android is the planned first mobile step.**
-A Hub on Android can run as a foreground service with a persistent
+**Android is a plausible first mobile experiment.**
+A Hub on Android may be able to run as a foreground service with a persistent
 notification, exposing a bound service or content provider that other apps
 connect to.
-This is the shape Tailscale, Syncthing, KDE Connect, and Briar use.
-The model is feasible, with two known costs: the persistent notification is
-user-visible, and manufacturer-level battery optimization on Samsung, Xiaomi,
-Huawei, OnePlus, and similar devices may require the user to whitelist the Hub
-in Settings.
-That is a one-setting hurdle, not a redesign.
+This is close to the shape Tailscale, Syncthing, KDE Connect, and Briar use.
+The model needs serious experimentation before Small Sea should promise Android
+support: the persistent notification is user-visible, manufacturer-level
+battery optimization may require Settings whitelisting, and the cross-app
+authorization UX has to preserve berth isolation rather than becoming a loose
+collection of app-specific permissions.
 
-**iOS is not on the near-term mobile plan.**
-iOS does not provide a reliable background local daemon that arbitrary other
-apps can call.
-The honest options on iOS are a Network Extension hosting a first-party app
-suite, or a remote Hub the iOS app connects to over HTTPS.
-The current stance is to not commit to a full first-party iOS suite.
-A future iOS Manager app may be worth doing on its own merits — it would let
-an iOS-using participant approve sessions and manage team state — but
-extending that pattern to files, calendars, and other apps is not on the
-roadmap.
-iOS-only users without a Home Hub do not currently have a supported path.
+**iOS needs a model-preserving answer.**
+iOS does not appear to provide the same straightforward background local daemon
+shape that a desktop Hub uses.
+That is not a complaint about the iOS ecosystem; it is an architectural
+constraint Small Sea has to respect.
+The ambition is for people to participate in many teams and use many apps, with
+clear control over which software has access to which berths.
+That authorization boundary is critical and cannot be left for each app to
+reimplement.
+Possible iOS shapes include a Network Extension hosting a tightly bundled app
+set, a remote Hub the iOS app connects to over HTTPS, or some future pattern not
+yet identified.
+None is currently a committed roadmap item.
 
 **The Home Hub is a Small Sea helper for technically capable users.**
 It is its own value proposition for households or individuals with the comfort
@@ -164,11 +169,15 @@ trusted infrastructure and must be hardened accordingly: TLS, strong device and
 app pairing, narrow per-app/per-berth sessions, revocation for lost devices,
 rate limiting, update hygiene, and visible access logs become part of the
 minimum credible shape.
+A detailed Home Hub threat model is important future work, not a prerequisite
+for the desktop-first architecture.
 
-### Lessons from Other End-to-End Encrypted Products
+### Research Notes from Other End-to-End Encrypted Products
 
-These projects shape how Small Sea thinks about deployment shape and mobile.
-Each made a different set of compromises; none is a model to copy wholesale.
+These projects provide a little useful research context for deployment shape
+and mobile.
+Each made a different set of compromises; none is a model to copy wholesale,
+and these notes should be revisited rather than treated as permanent claims.
 
 - **Signal.**
   Beautiful E2EE on mobile achieved by accepting APNs/FCM push-metadata
@@ -195,13 +204,12 @@ Each made a different set of compromises; none is a model to copy wholesale.
   Lesson: "local-first" branding often hides a real operator role on mobile;
   Small Sea has not chosen this trade and should be explicit about that.
 
-One concern these products share but the architecture has not yet engaged with
-is push-notification metadata visibility: even when payloads are opaque, the
-fact that team X notified you at time Y is visible to whoever operates the push
-service.
-This is not a problem to solve now.
-It is one the architecture should not quietly inherit when it does engage with
-mobile.
+Future mobile work also needs a social-graph and notification-metadata threat
+model.
+Even when payloads are opaque, the fact that team X notified you at time Y may
+be visible to whoever operates the push service or remote gateway.
+This is not a problem to solve now, but it belongs on the architecture TODO
+list rather than being quietly inherited.
 
 ### Database Access
 **Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
