@@ -56,25 +56,40 @@ The differences are minor and reconcilable:
 
 ### Where the helper lives
 
-New module: `packages/small-sea-manager/small_sea_manager/test_support.py`.
+New file at the **repo root**: `test_support.py`.
+
+Imported as `from test_support import publish_storage_announcement_for_session`.
 
 Reasoning:
 
-1. All seven affected test files already import
-   `small_sea_manager.provisioning`, so importing
-   `small_sea_manager.test_support` adds no new package edge.
-2. The helper is a thin orchestration over manager-owned provisioning
-   functions; manager is the natural home.
-3. A dedicated `test_support` module name signals "intended for tests,
-   not production" without resorting to leading-underscore conventions
-   (which are awkward when the symbol crosses package boundaries).
-4. No new package needed.
-   `packages/_test_support/` is overkill for a single helper.
+1. **Keep test scaffolding out of every runtime distribution.**
+   Putting the helper under any `packages/*/<pkg>/` tree means it
+   ships in that package's wheel/sdist, making it possible for
+   production code (in this repo or downstream) to accidentally
+   import test-only scaffolding.
+   A repo-root location ships with nothing.
+2. **Already importable** without new sys.path setup.
+   The root `pyproject.toml` has `pythonpath = ["."]`, so a module
+   at the repo root resolves from every package's tests via
+   `from test_support import …`.
+3. **Cross-cuts three packages** (hub, manager, vault).
+   No single package owns the helper, so placing it inside one of
+   them is arbitrary and creates a directional dependency the layout
+   doesn't otherwise require.
+4. **Lighter than a new workspace package.**
+   A standalone `packages/test-support/` with its own `pyproject.toml`
+   would also keep the helper out of runtime wheels, but is more
+   ceremony than a single function warrants.
+   If shared test scaffolding grows (see Follow-up), promote
+   `test_support.py` to a `test_support/` directory or a workspace
+   package then; not yet.
 
 The helper does NOT type-annotate the `backend` parameter as
-`SmallSeaBackend` — that would create a manager → hub package edge.
-Instead it duck-types on the two attributes it needs (`root_dir` and
-`_lookup_session`).
+`SmallSeaBackend` — that would require importing from
+`small_sea_hub`, which we don't want a repo-root test helper to
+depend on.
+Instead it duck-types on the two attributes it needs (`root_dir`
+and `_lookup_session`).
 The docstring documents the contract.
 
 ### Helper signature
@@ -108,8 +123,9 @@ Callers that ignore the return value continue to work.
 #144 (`issue-144-allowance-rotation-hardening`) added one more call
 site to `test_cloud_api.py`:
 `test_team_cloud_file_bootstrap_allowance_rejects_rotated_signer`.
-This plan assumes #144 has merged into `main` before #145 begins, so
-the call-site count in `test_cloud_api.py` is 6, not 5.
+On `main` today the file has three call sites; once #144 lands the
+file has four.
+This plan assumes #144 has merged before #145 begins.
 If #145 is started before #144 merges, rebase after #144 lands and
 update the new call site to the shared helper too.
 
@@ -117,13 +133,12 @@ update the new call site to the shared helper too.
 
 When this branch is done, all of the following are true:
 
-1. A new module `packages/small-sea-manager/small_sea_manager/test_support.py`
-   exists, exporting `publish_storage_announcement_for_session`.
+1. A new repo-root module `test_support.py` exists, exporting
+   `publish_storage_announcement_for_session`.
 2. The seven listed test files no longer define their own
    `_publish_storage_announcement_for_session`.
    Each imports `publish_storage_announcement_for_session` from
-   `small_sea_manager.test_support` and uses it at every former
-   call site.
+   `test_support` and uses it at every former call site.
 3. The shared helper:
    a. duck-types `backend` (no `SmallSeaBackend` import);
    b. early-returns `None` for `team_name == "NoteToSelf"`;
@@ -133,12 +148,10 @@ When this branch is done, all of the following are true:
    sessions.
 4. `grep -rn "def _publish_storage_announcement_for_session\b"
    packages/` returns no matches.
-5. `git diff main..HEAD -- packages/ ':(exclude)packages/*/tests'
-   ':(exclude)packages/small-sea-manager/small_sea_manager/test_support.py'`
-   is empty.
-   The only production-tree addition is the new `test_support.py`
-   file, which is itself a test-support module (no runtime
-   imports from production code reach it).
+5. `git diff main..HEAD -- packages/` touches only files under
+   `packages/*/tests/`.
+   No `packages/*/<pkg>/` runtime tree is modified; the only new
+   non-test file is the repo-root `test_support.py`.
 6. `uv run pytest packages/small-sea-hub/tests
    packages/small-sea-manager/tests packages/shared-file-vault/tests`
    is green (modulo pre-existing Docker-daemon flake in
@@ -148,7 +161,7 @@ When this branch is done, all of the following are true:
 
 ### In scope
 
-- Adding `small_sea_manager/test_support.py` with one function.
+- Adding repo-root `test_support.py` with one function.
 - Updating all seven test files to import and call the shared helper.
 - Removing each file's local `_publish_storage_announcement_for_session`
   definition.
@@ -160,18 +173,26 @@ When this branch is done, all of the following are true:
   If a smell appears during the import edits, capture it in
   `FOLLOW-UP.md` rather than expanding scope.
 - Adding type annotations to the helper beyond `-> dict | None`.
-  The `backend` parameter stays untyped to avoid a manager → hub edge.
+  The `backend` parameter stays untyped to avoid pulling
+  `small_sea_hub` into a repo-root test helper.
 - Moving the helper into production `provisioning` as a public API.
   It's specifically a test-only orchestration over real provisioning
   functions.
+- Promoting `test_support.py` to a `test_support/` package or a
+  workspace package.
+  Deferred until more shared helpers consolidate (see Follow-up).
 
 ## Implementation Pass
 
 One pass, executed in this order to keep each step independently
 verifiable:
 
-1. Add `packages/small-sea-manager/small_sea_manager/test_support.py`
-   with `publish_storage_announcement_for_session`.
+1. Add repo-root `test_support.py` with
+   `publish_storage_announcement_for_session`.
+   Sanity-check that `from test_support import
+   publish_storage_announcement_for_session` resolves from a
+   per-package test by running one existing test file before
+   touching its call sites.
 2. Update `packages/small-sea-hub/tests/test_cloud_api.py`:
    - Replace `_publish_storage_announcement_for_session(playground_dir,
      backend, session_hex)` with
@@ -197,8 +218,9 @@ rather than splattered across all seven.
 
 **Added:**
 
-- `packages/small-sea-manager/small_sea_manager/test_support.py` — new
-  module, one function.
+- `test_support.py` (repo root) — new module, one function.
+  Resolves via the existing `pythonpath = ["."]` in the root
+  `pyproject.toml`; no new sys.path or workspace configuration.
 
 **Modified (each: one import added, one local helper deleted,
 call-site argument list updated):**
@@ -222,18 +244,15 @@ running the code:
 1. **The helper truly replaces every copy.**
    `grep -rn "def _publish_storage_announcement_for_session\b"
    packages/` is empty.
-2. **No production code changed.**
-   `git diff main..HEAD --
-   ':(exclude)packages/*/tests'
-   ':(exclude)packages/small-sea-manager/small_sea_manager/test_support.py'`
-   is empty.
-3. **`test_support.py` does not import from `small_sea_hub` or
-   `shared_file_vault`.**
-   `grep -E "small_sea_hub|shared_file_vault"
-   packages/small-sea-manager/small_sea_manager/test_support.py`
+2. **No runtime-package code changed.**
+   `git diff main..HEAD -- packages/` touches only files under
+   `packages/*/tests/`.
+   The only other change in the tree is the new repo-root
+   `test_support.py`.
+3. **`test_support.py` imports only `small_sea_manager`.**
+   `grep -E "small_sea_hub|shared_file_vault" test_support.py`
    returns nothing.
-   This preserves the existing package layering — manager does not
-   depend on hub.
+   The shared helper does not pull cross-package runtime deps.
 4. **Behavior preserved for the one caller that reads the return
    value.**
    `test_team_cloud_file_requires_storage_announcement` still asserts
@@ -247,12 +266,14 @@ running the code:
 ## Non-Negotiable Invariants
 
 1. Test-only refactor.
-   No production-code modifications outside the new `test_support.py`
-   module, which is itself a test-support file (not imported by any
-   production code path).
+   The repo-root `test_support.py` is the only non-test file added;
+   it lives outside every `packages/*/<pkg>/` runtime tree and so
+   ships in zero runtime distributions.
+   No file under any `packages/*/<pkg>/` is modified.
 2. No new inter-package dependencies.
    `test_support.py` must not import from `small_sea_hub` or
-   `shared_file_vault`.
+   `shared_file_vault`; only `small_sea_manager.provisioning` is
+   needed.
 3. Use "micro tests" terminology in any new docstrings/comments.
 4. NoteToSelf early-return semantics preserved: callers that pass a
    NoteToSelf session must observe a no-op return (`None`), not an
