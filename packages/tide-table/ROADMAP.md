@@ -34,7 +34,11 @@ Roughly ordered by how badly they could break the project if they turn out wrong
 4. **Concurrent edits to recurring events are where calendar prototypes die.**
    `RRULE` + `EXDATE` + `RECURRENCE-ID` produces edge cases that lose data under naive merge, and multi-device concurrent edits sharpen this further.
    We will not know our merge model is adequate until we run it under real concurrent editing patterns.
-5. **External invitations have an ambiguous v1 answer.**
+5. **Conflict UX has to fit through ordinary calendar apps.**
+   Small Sea's usual answer to ambiguous sync is to preserve competing states rather than silently pick a winner.
+   Tide Table should keep that posture, but the user's first contact with a conflict may be Apple Calendar, Thunderbird, or another CalDAV client that knows nothing about Small Sea.
+   We need a calendar-native way to make parked conflict state visible and lead users into a small Tide Table resolver without pretending CalDAV itself has solved the ambiguity.
+6. **External invitations have an ambiguous v1 answer.**
    Teams will eventually want to invite people outside Small Sea — to a birthday party, a parent-teacher conference, a neighborhood meeting.
    A minimum credible answer ("export `.ics`, email it yourself") needs to exist somewhere on the roadmap; a maximum answer (full iTIP RSVP/attendee workflow) is probably permanently out of scope.
    The middle is unclear.
@@ -85,10 +89,14 @@ Out of scope: multi-device sync, concurrent edits, occurrence-level recurrence e
 The first version that looks like the actual product: two teammates editing the same calendar from their own devices.
 
 - Sync through the Hub using the team berth.
-- Conflict surfacing at the event (UID) level: a conservative policy (likely last-writer-wins with a visible record of what was overwritten) rather than a silent merge.
-- Tooling to inspect the conflict log from inside a calendar app — perhaps a dedicated "conflicts" calendar overlay so users see overwritten edits in the same surface where they live.
+- Conflict detection at the event (UID) level.
+  When two edits cannot be safely merged, Tide Table should park the competing states rather than resolving them immediately.
+- A read-only conflict presentation through CalDAV, likely as a dedicated "Tide Table Conflicts" calendar.
+  Synthetic events can say `CONFLICT: Team dinner`, summarize what changed, and include a localhost Tide Table resolver link.
+- A small local conflict-resolution UI that lets a human choose one version, preserve both, merge selected fields, or defer.
+  The resolver should be local and focused; ordinary calendar clients provide the breadcrumb, not the whole repair surface.
 
-This phase retires the second, harder half of unknown 4 for non-recurring events.
+This phase retires the second, harder half of unknown 4 for non-recurring events and gives unknown 5 its first real user-facing answer.
 It is deliberately separated from Phase 4 because the merge model for plain events and the merge model for recurring series need different evidence and should not be tangled in the same iteration.
 
 ## Phase 4 — Recurring event hardening
@@ -98,6 +106,7 @@ The dragon, attacked only after multi-device merge for simple events has settled
 - Concurrent edits to "this occurrence," "this and future occurrences," and "the entire series" from different devices.
 - A documented loss policy for edge cases the standard does not resolve cleanly; the goal is honest semantics, not perfect ones.
 - Conflict surfacing that distinguishes "the series moved" from "one occurrence was edited" so the user can reason about what just changed.
+  The Phase 3 conflict calendar and resolver should be extended rather than replaced.
 
 This phase retires the remaining half of unknown 4.
 
@@ -107,7 +116,7 @@ Once the core is honest about its semantics, the surrounding pieces matter.
 
 - Multiple calendars per team (work events, social events, deadlines, etc.) exposed as separate CalDAV collections under one Small Sea team.
 - The provisioning flow upgraded from "rough" to "easy enough to demo to a non-technical friend without preparing them."
-- Export-to-`.ics` as a partial answer to unknown 5: a team member can hand a single event or a curated subset to someone outside Small Sea over ordinary email.
+- Export-to-`.ics` as a partial answer to unknown 6: a team member can hand a single event or a curated subset to someone outside Small Sea over ordinary email.
 - Notifications and reminders posture clarified (current leaning: let the calendar client handle reminders; Tide Table does not push, because Small Sea has its own notification rails and double-notifying users is worse than no notifications).
 
 ## Indefinitely Deferred

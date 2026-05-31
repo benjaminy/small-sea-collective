@@ -8,7 +8,9 @@ Small Sea Collective is a framework for building collaborative team applications
 - **Application (App)**: A way to organize resources like storage, notifications, and identity. Apps are not specific client software but logical groupings of resources.
 - **Berth**: The intersection of a specific **Team** and a specific **App**. It is the fundamental unit of resource allocation and access control.
 - **Client**: Any software (GUI, CLI, agent) that accesses resources through the Small Sea Hub.
-- **Hub**: A local service that mediates all access to general-purpose cloud services. It acts as a security gateway and protocol translator.
+- **Hub**: By default, a local service that mediates all access to general-purpose cloud services.
+  It acts as a security gateway and protocol translator.
+  Experimental deployment shapes are discussed under "Hub Deployment Shapes."
 
 A berth is globally `Team x App`; a participant is not a third berth
 coordinate. A participant is the local holder of access to berths through
@@ -101,6 +103,37 @@ fits the rule. What is forbidden is bypassing the local Hub.
 
 This chokepoint enables transparent end-to-end encryption and consistent access
 control.
+
+#### Hub Deployment Shapes
+
+The default Hub is a local device service.
+That default is load-bearing: apps can be relatively simple and permissive
+because the Hub is the security and privacy gateway that holds provider access,
+enforces berth-scoped authorization, and mediates Small Sea internet traffic.
+
+Mobile platforms may not support the same shape.
+In particular, iOS should not be assumed to provide a reliable background local
+daemon that arbitrary other apps can call.
+Letting every app become its own Hub would weaken the model by forcing each app
+to reimplement berth isolation, authorization, provider I/O rules, and sync
+validation correctly.
+Embedded Hub-like runtimes may be acceptable for first-party or tightly audited
+apps, but they are not equivalent to the general Hub boundary.
+
+An experimental **Home Hub** deployment may be a better mobile compromise.
+In that shape, a user runs a Hub on a desktop, home server, NAS, or VPS, and
+mobile apps connect to it over HTTPS.
+This preserves the Hub as the policy gateway and avoids federation: there is no
+global namespace, inter-Hub discovery fabric, or server-to-server social
+protocol.
+It is simply user-operated infrastructure for that participant or household.
+
+A Home Hub is not just a relay.
+If it holds Hub authority, cloud-provider access, or decrypted app state, it is
+trusted infrastructure and must be hardened accordingly: TLS, strong device and
+app pairing, narrow per-app/per-berth sessions, revocation for lost devices,
+rate limiting, update hygiene, and visible access logs become part of the
+minimum credible shape.
 
 ### Database Access
 **Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
