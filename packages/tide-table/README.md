@@ -98,5 +98,9 @@ iOS may need a Home Hub or other remote CalDAV shape to preserve the Hub securit
 External invitations should stay humble at first.
 Exporting `.ics` for ordinary email sharing is a much safer first bridge than full RSVP or iTIP workflows.
 
+The Tide Table name has not been collision-checked the way The Hedgerow's was.
+Before serious branding or external mentions, a brief sweep is worth doing: GitHub orgs, npm/PyPI/crates package names, `.org` domains, USPTO marks, and the major app stores.
+"Tide table" as a phrase is mostly nautical territory, but "Tide Table" as software may overlap with something not yet noticed.
+
 Above all, Tide Table should remain an adapter, not a calendar empire.
 Focused setup, status, and conflict-resolution screens are useful, but ordinary calendar apps should remain the main calendar UI.
