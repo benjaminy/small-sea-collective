@@ -8,7 +8,9 @@ Small Sea Collective is a framework for building collaborative team applications
 - **Application (App)**: A way to organize resources like storage, notifications, and identity. Apps are not specific client software but logical groupings of resources.
 - **Berth**: The intersection of a specific **Team** and a specific **App**. It is the fundamental unit of resource allocation and access control.
 - **Client**: Any software (GUI, CLI, agent) that accesses resources through the Small Sea Hub.
-- **Hub**: A local service that mediates all access to general-purpose cloud services. It acts as a security gateway and protocol translator.
+- **Hub**: By default, a local service that mediates all access to general-purpose cloud services.
+  It acts as a security gateway and protocol translator.
+  Experimental deployment shapes are discussed under "Hub Deployment Shapes."
 
 A berth is globally `Team x App`; a participant is not a third berth
 coordinate. A participant is the local holder of access to berths through
@@ -101,6 +103,123 @@ fits the rule. What is forbidden is bypassing the local Hub.
 
 This chokepoint enables transparent end-to-end encryption and consistent access
 control.
+
+#### Hub Deployment Shapes
+
+The default Hub is a local device service.
+That default is load-bearing: apps can be relatively simple and permissive
+because the Hub is the security and privacy gateway that holds provider access,
+enforces berth-scoped authorization, and mediates Small Sea internet traffic.
+
+Near-term, Small Sea is built and shipped desktop-only.
+The mobile question is real but not urgent.
+The rest of this section records the current stance rather than a commitment.
+
+**Letting every app become its own Hub is not the answer.**
+It would force each app to reimplement berth isolation, authorization, provider
+I/O rules, and sync validation correctly, eroding the model by a thousand small
+cuts.
+Embedded Hub-like runtimes may be acceptable for narrowly scoped seed apps on
+platforms that force that shape, but they are not equivalent to the general
+Hub boundary.
+Seed apps are useful, production-intended applications that help prove and grow
+the ecosystem; they have no special protocol status.
+The Hedgerow, Tide Table, and Shared File Vault are examples: each gives people
+a reason to join the network without holding any architectural privilege.
+The Manager is not a seed app.
+It is the one currently special app — it writes to `SmallSeaCollectiveCore`
+and so holds team membership state, device registration, and service
+credentials.
+Apps with write access to `SmallSeaCollectiveCore` are the special category;
+seed apps are explicitly outside it.
+Another Manager-class app could exist in principle, but introducing one is a
+significant architectural move, not a routine addition.
+
+**Android is a plausible first mobile experiment.**
+A Hub on Android may be able to run as a foreground service with a persistent
+notification, exposing a bound service or content provider that other apps
+connect to.
+This is close to the shape Tailscale, Syncthing, KDE Connect, and Briar use.
+The model needs serious experimentation before Small Sea should promise Android
+support: the persistent notification is user-visible, manufacturer-level
+battery optimization may require Settings whitelisting, and the cross-app
+authorization UX has to preserve berth isolation rather than becoming a loose
+collection of app-specific permissions.
+
+**iOS needs a model-preserving answer.**
+iOS does not appear to provide the same straightforward background local daemon
+shape that a desktop Hub uses.
+That is not a complaint about the iOS ecosystem; it is an architectural
+constraint Small Sea has to respect.
+The ambition is for people to participate in many teams and use many apps, with
+clear control over which software has access to which berths.
+That authorization boundary is critical and cannot be left for each app to
+reimplement.
+Possible iOS shapes include a Network Extension hosting a tightly bundled app
+set, a remote Hub the iOS app connects to over HTTPS, or some future pattern not
+yet identified.
+None is currently a committed roadmap item.
+
+**The Home Hub is a Small Sea helper for technically capable users.**
+It is its own value proposition for households or individuals with the comfort
+to run a small server: a desktop that stays on, a NAS, a Pi-class home box, or
+a small VPS.
+It is not framed as the iOS workaround, though iOS users with such a setup can
+use it.
+The user runs a Hub on their own infrastructure and mobile or remote clients
+connect to it over HTTPS.
+This preserves the Hub as the policy gateway and avoids federation: there is
+no global namespace, inter-Hub discovery fabric, or server-to-server social
+protocol.
+It is simply user-operated infrastructure for that participant or household.
+
+A Home Hub is not just a relay.
+If it holds Hub authority, cloud-provider access, or decrypted app state, it is
+trusted infrastructure and must be hardened accordingly: TLS, strong device and
+app pairing, narrow per-app/per-berth sessions, revocation for lost devices,
+rate limiting, update hygiene, and visible access logs become part of the
+minimum credible shape.
+A detailed Home Hub threat model is important future work, not a prerequisite
+for the desktop-first architecture.
+
+### Research Notes from Other End-to-End Encrypted Products
+
+These projects provide a little useful research context for deployment shape
+and mobile.
+Each made a different set of compromises; none is a model to copy wholesale,
+and these notes should be revisited rather than treated as permanent claims.
+
+- **Signal.**
+  Beautiful E2EE on mobile achieved by accepting APNs/FCM push-metadata
+  visibility and a primary-device coupling model for multi-device.
+  Lesson: even the gold standard ships with named compromises; pretending
+  otherwise is more dangerous than naming them.
+- **Matrix / Element.**
+  Real multi-device E2EE with cross-signing and key backup, and chronic
+  "Unable to decrypt" mobile bugs as users hit edge cases in device management.
+  Lesson: device-management UX bites harder than the cryptography.
+- **Briar.**
+  Excellent threat model, effectively no iOS presence, persistent
+  manufacturer-battery-killer issues on Android.
+  Lesson: strict infrastructure purity has real user-base costs.
+- **Syncthing.**
+  The closest direct analog to Small Sea on Android: foreground service, no
+  Google Push by default, requires the user to whitelist the app on aggressive
+  vendor OSes.
+  Lesson: this works in production; the rough edges are user-facing setup, not
+  protocol design.
+- **Standard Notes, Notesnook, Obsidian Sync.**
+  E2EE-claimed products that quietly accepted operator trust to make mobile
+  signup and sync work.
+  Lesson: "local-first" branding often hides a real operator role on mobile;
+  Small Sea has not chosen this trade and should be explicit about that.
+
+Future mobile work also needs a social-graph and notification-metadata threat
+model.
+Even when payloads are opaque, the fact that team X notified you at time Y may
+be visible to whoever operates the push service or remote gateway.
+This is not a problem to solve now, but it belongs on the architecture TODO
+list rather than being quietly inherited.
 
 ### Database Access
 **Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
