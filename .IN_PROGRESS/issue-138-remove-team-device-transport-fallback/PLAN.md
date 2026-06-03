@@ -13,10 +13,10 @@ After this branch, peer-readable storage for a berth should be discovered throug
 ## Current Understanding
 
 Issue #134 settled the Manager-owned berth cloud-location model.
-Issues #136 and #137 implemented berth allocation/materialization and member-berth storage announcements.
+Issues #136 and #137 implemented berth cloud allocation and the `member_berth_storage_announcement` read/publish primitives.
 Issues #144 and #145 hardened and cleaned up test support around that announcement path.
 
-The remaining transitional path appears to live in three places:
+The remaining transitional path lives in three places:
 
 - `small_sea_hub.backend` can load `team_device(protocol, url, bucket)` through `_legacy_transport_for_member`.
 - `wrasse_trust.transport` lets both member transport and member-berth storage selection return status `legacy-fallback`.
@@ -25,10 +25,33 @@ The remaining transitional path appears to live in three places:
 Specs also still describe legacy fallback as temporary.
 Those docs need to be brought back into agreement with the code.
 
+### Key finding from code inspection (read before implementing)
+
+The replacement path is only half-live, which changes the shape of this branch:
+
+- **Production never publishes berth storage announcements.**
+  `publish_member_berth_storage_announcement` (`provisioning.py:3352`, exposed at `manager.py:372`) is called **only from tests**.
+  There is no web route and no automatic provisioning call.
+  The real flows that allocate cloud storage instead write it into the **legacy `team_device` fields** via `_upsert_team_device_row(protocol=…, url=…, bucket=…)`: `create_team` at `provisioning.py:4377` and the device-link/bootstrap path at `provisioning.py:2867`.
+  So today the legacy `team_device` fallback is the **only functioning peer-storage discovery channel in production**; the Hub read side (`member_berth_storage_announcement`) is live, but nothing populates it outside tests.
+  Removing the fallback without wiring production publishing will break real peer discovery.
+  This is why Step 4 is a build step, not a verification step.
+
+- **The Hub-side member-level (non-berth) transport path is dead code.**
+  `_effective_peer_transport` (`backend.py:1896`) has zero callers; its non-berth branch in `_effective_peer_transport_selection` is unreachable because `_download_peer_file` always passes `berth_id` (`backend.py:1573`).
+  This can be deleted wholesale rather than reasoned about.
+
+- **`member_transport_announcement` is NOT dead — it backs a live Manager web feature.**
+  The `announce_transport` endpoint (`web.py:594` → `manager.py:361` → `provisioning.py:3285`) and the members listing (`_effective_transports_by_member` at `provisioning.py:5694` → `members.html`) use it.
+  Issue #138 is about the `team_device` legacy fallback, not about retiring signed member-transport announcements.
+  Do not delete that feature in this branch.
+
 ## Non-Goals
 
-- Do not redesign Manager cloud-location provisioning.
+- Do not redesign Manager cloud-location provisioning (multi-provider selection, location policy).
   That belongs to #139 and nearby follow-up work.
+  In scope, however, is the minimal "publish a `member_berth_storage_announcement` for the berth that was just allocated" wiring at the two sites that currently write `team_device` cloud fields.
+  That wiring **is** the "replacement publishing" the issue names ("stop writing transport fields onto `team_device` … once replacement publishing exists"), and without it the fallback cannot be removed safely.
 - Do not add compatibility shims for old pre-alpha databases unless a specific local test fixture requires a narrow cleanup.
 - Do not remove team-device identity rows, team-device keys, or certificate trust checks.
   Only remove storage-routing semantics from `team_device`.
@@ -51,25 +74,35 @@ Those docs need to be brought back into agreement with the code.
 2. Remove fallback from Hub peer cloud-file resolution.
 
    Update berth-scoped peer resolution so `member_berth_storage_announcement` is the only accepted peer storage source.
-   Delete or retire `_legacy_transport_for_member` if no non-berth call path still requires it.
+   Delete `_legacy_transport_for_member` and stop passing `legacy_fallback` into `_select_member_berth_storage` / `_effective_peer_transport_selection`.
+   Because the Hub member-level (non-berth) path is dead (see Key finding), also delete `_effective_peer_transport` (`backend.py:1896`), the non-berth branch of `_effective_peer_transport_selection`, the Hub's `_load_member_transport_announcements`, and the now-unused `MemberTransportAnnouncement` import.
+   This reduces Hub peer resolution to berth-storage-only.
    Make missing or invalid announcements produce the existing missing-storage behavior rather than silently routing through `team_device`.
 
 3. Remove fallback from shared transport selection helpers.
 
-   Remove the `legacy_fallback` parameter and `legacy-fallback` status from `select_effective_member_berth_storage`.
-   Decide whether `select_effective_member_transport` and `MemberTransportAnnouncement` still serve a real non-berth transport role.
-   If no current production path uses member-level transport announcements for valid non-storage behavior, remove that fallback there too.
+   Remove the `legacy_fallback` parameter and the `legacy-fallback` status branch from **both** `select_effective_member_berth_storage` and `select_effective_member_transport` in `wrasse_trust.transport`.
+   Do **not** remove `select_effective_member_transport`, `MemberTransportAnnouncement`, or the `member_transport_announcement` table itself — they back a live Manager web feature (`announce_transport` + members listing) and are out of scope for #138.
+   The only behavioral change here is that a member with no valid signed announcement now resolves to `missing` instead of `legacy-fallback`.
+   On the Manager side, drop `_legacy_transport_by_member` (`provisioning.py:3170`) and stop passing `legacy_fallback` from `_effective_transports_by_member` (`provisioning.py:3204`); members with no signed announcement will simply display `transport_status: missing`.
+   Whether member-level transport announcements should remain a concept at all is a separate question — fold it into the #123 grooming in Step 7, not into a deletion here.
 
-4. Stop writing transport fields onto `team_device`.
+4. Wire production publishing, then stop writing transport fields onto `team_device`.
 
-   Simplify `_upsert_team_device_row` so callers cannot accidentally store `protocol`, `url`, or `bucket`.
-   Remove cloud-storage lookups in device-link or bootstrap flows whose only purpose is to populate those fields.
-   Verify admission and bootstrap flows publish or preserve member-berth storage announcements through the replacement path.
+   This is a build step, not a verification step (see Key finding): production currently has no path that publishes `member_berth_storage_announcement`, so the order matters.
+
+   1. At the two sites that today feed allocation results into `team_device` cloud fields — `create_team` (`provisioning.py:4377`) and the device-link/bootstrap path (`provisioning.py:2867`) — publish a signed `member_berth_storage_announcement` for the just-allocated berth (reuse `publish_member_berth_storage_announcement`) instead of writing `protocol`/`url`/`bucket`.
+      Keep this minimal: publish the announcement for the berth that was just allocated. Larger provisioning redesign stays in #139.
+   2. Then simplify `_upsert_team_device_row` so callers cannot store `protocol`, `url`, or `bucket` (drop those keyword parameters and the columns from its INSERT/UPDATE — see Step 5 for the schema coupling).
+   3. Remove cloud-storage lookups in device-link or bootstrap flows whose only remaining purpose was to populate those fields.
+   4. Only after (1) is in place, prove (not assume) that admission and bootstrap leave peers able to discover storage — see the end-to-end micro test in the Validation Plan.
 
 5. Reconcile schema and migrations.
 
    Because the project is pre-alpha, prefer the clean schema if tests and current DB initialization allow it.
-   Remove `protocol`, `url`, and `bucket` from new `team_device` table definitions if they are no longer used.
+   Remove `protocol`, `url`, and `bucket` from the `team_device` table definition (`sql/core_other_team.sql:86-92`) if they are no longer used.
+   This is coupled to Step 4: dropping the columns requires updating `_upsert_team_device_row`'s INSERT/UPDATE column lists (`provisioning.py:1114-1135`) in the same commit, or inserts break.
+   It will also break raw-SQL tests that read/write those columns directly — update them in Step 6: `test_session_flow.py:381` (INSERT), `test_create_team.py:252` (SELECT), `test_sender_key_rotation.py:196` (INSERT), plus the `_upsert_team_device_row` callers in `test_manager.py:145`, `test_runtime_watch.py:136`, `test_admission_proposals.py:58`, and `test_linked_device_bootstrap.py:165`.
    If migration cleanup would create noisy or risky churn, leave old columns tolerated but prove no code reads or writes them for routing.
    Record the final choice in the design record.
 
@@ -77,7 +110,9 @@ Those docs need to be brought back into agreement with the code.
 
    Rewrite tests that expected `team_device` fallback routing so they expect missing storage unless a valid member-berth storage announcement exists.
    Update admission/bootstrap tests to prove peers can still discover storage after the replacement announcement flow.
-   Update `packages/small-sea-hub/spec.md`, `packages/small-sea-manager/spec.md`, and any related prose so there is no documented storage-routing authority on `team_device`.
+   Rewrite `test_member_transport.py` assertions that expect `transport_status == "legacy-fallback"` (lines 54, 133) to expect `announced` or `missing`.
+   Remove the now-dead `legacy-fallback` branch in `templates/fragments/members.html` (lines 45-48).
+   Update `packages/small-sea-hub/spec.md`, `packages/small-sea-manager/spec.md` (legacy-fallback prose at manager spec 621-626, 858; hub spec 283), and any related prose so there is no documented storage-routing authority on `team_device`.
 
 7. Revisit #123.
 
@@ -97,6 +132,8 @@ The skeptical-reviewer standard for this branch is that tests fail if legacy `te
   The test should prove the announcement wins because it is the only routing source, not merely because it has precedence.
 - Add or update a Manager provisioning micro test proving admission/bootstrap no longer writes `protocol`, `url`, or `bucket` to new `team_device` rows.
 - Add or update an admission/bootstrap integration micro test proving a newly accepted peer can still discover readable berth storage when the proper member-berth storage announcement is present.
+- **(Decisive test for this branch.)** Add an end-to-end micro test that runs the **real** `create_team` + invite/accept flow with **no manual `publish_member_berth_storage_announcement` call**, and proves both: (a) a peer can resolve/download the member's berth storage, and (b) no `protocol`/`url`/`bucket` was written to any `team_device` row.
+  This is the actual proof that Step 4's production publishing wiring works; the existing `test_peer_transport.py` cases publish announcements manually and therefore only exercise the read side.
 - Add or update a `wrasse_trust` micro test proving `select_effective_member_berth_storage` returns `missing` when no valid berth-scoped announcement exists, even if a caller tries to supply old fallback-shaped data.
 
 ### Regression Test Runs
@@ -123,11 +160,13 @@ uv run pytest packages/shared-file-vault/tests
 
 ### Static Checks
 
-- `rg -n "legacy-fallback|_legacy_transport|team_device\\(protocol|protocol, url, bucket|SELECT .*protocol.*url.*bucket.*FROM team_device" packages`
-  should show no production storage-routing dependency.
+- `rg -n "legacy-fallback|legacy_fallback|_legacy_transport" packages`
+  should show no remaining references in production code.
+- The reliable signals that storage routing no longer rides on `team_device`: the `_upsert_team_device_row` signature no longer accepts `protocol`/`url`/`bucket`, and there are no `SELECT … protocol … url … bucket … FROM team_device` reads for routing.
+  Note: `rg "protocol, url, bucket"` will also match legitimate **caller-supplied** coordinates that are not `team_device` routing — `proxy_cloud_file`/`bootstrap_cloud_file` (`backend.py:1487`, `1530`), `server.py:1026`, and `cod_sync/protocol.py:800-807`. Treat those as expected, not as violations.
 - `rg -n "team_device" packages/small-sea-manager/spec.md packages/small-sea-hub/spec.md`
   should show identity-focused language only, with no storage-routing fallback claim.
-- Any remaining `member_transport_announcement` references should be justified as a current non-berth transport concept or removed.
+- Any remaining `member_transport_announcement` references are expected — they belong to the live member-transport feature, which this branch keeps (see Step 3 / #123 in Step 7).
 
 ### Integrity Argument
 
@@ -140,8 +179,11 @@ Other packages consume berth-scoped announcements rather than reaching into Mana
 
 - Some tests may still be using `team_device` fields as convenient setup.
   Prefer rewriting them through allocation plus `publish_member_berth_storage_announcement`, not preserving the fallback.
-- `member_transport_announcement` may have become a mostly obsolete transitional table.
-  Remove only what the branch can prove is dead; record any remaining uncertainty in `FOLLOW-UP.md`.
+- `member_transport_announcement` is **not** obsolete: it backs a live Manager web feature (`announce_transport` + members listing). Do not remove it as part of this branch.
+  The Hub-side member-level path, by contrast, is dead and should be removed (Step 2).
+  Record any remaining uncertainty about the long-term role of member-level transport announcements in `FOLLOW-UP.md` and tie it to #123.
+- The biggest correctness risk is removing the fallback before production publishing is wired (Step 4).
+  Sequence Step 4.1 (wire publishing) before Step 2/Step 4.2 (remove fallback / stop writing), and gate on the decisive end-to-end test, or real peer discovery silently regresses to `missing`.
 - Schema cleanup can snowball.
   Keep the branch focused on behavior first, then schema/docs once behavior is proven.
 - Peer routing errors should stay legible.
