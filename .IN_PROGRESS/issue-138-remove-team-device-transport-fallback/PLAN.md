@@ -2,7 +2,7 @@
 
 GitHub issue: https://github.com/benjaminy/small-sea-collective/issues/138
 
-Branch: `codex-issue-138-remove-team-device-transport-fallback`
+Branch: `issue-138-remove-team-device-transport-fallback`
 
 ## Goal
 
@@ -32,9 +32,12 @@ The replacement path is only half-live, which changes the shape of this branch:
 - **Production never publishes berth storage announcements.**
   `publish_member_berth_storage_announcement` (`provisioning.py:3352`, exposed at `manager.py:372`) is called **only from tests**.
   There is no web route and no automatic provisioning call.
-  The real flows that allocate cloud storage instead write it into the **legacy `team_device` fields** via `_upsert_team_device_row(protocol=…, url=…, bucket=…)`: `create_team` at `provisioning.py:4377` and the device-link/bootstrap path at `provisioning.py:2867`.
-  So today the legacy `team_device` fallback is the **only functioning peer-storage discovery channel in production**; the Hub read side (`member_berth_storage_announcement`) is live, but nothing populates it outside tests.
-  Removing the fallback without wiring production publishing will break real peer discovery.
+  Three production flows allocate Core berth cloud storage, and they handle it three different (all wrong) ways:
+  - `create_team` (`provisioning.py:4377`) writes the allocation into the **legacy `team_device` fields** via `_upsert_team_device_row(protocol=…, url=…, bucket=…)`.
+  - the device-link/bootstrap path (`provisioning.py:2867`) does the same.
+  - `accept_invitation` (`provisioning.py:4780`) calls `_auto_allocate_berth_cloud_if_available` but discards the result — it writes **neither** `team_device` fields **nor** an announcement, so the invitee's self storage is not discoverable through *any* channel today, not even the legacy fallback.
+  So today the legacy `team_device` fallback is the only peer-storage discovery channel that works at all, and it only covers the creator/device-link cases; the Hub read side (`member_berth_storage_announcement`) is live, but nothing populates it outside tests.
+  Removing the fallback without wiring production publishing into all three flows will break real peer discovery — the invitee path is already the weakest.
   This is why Step 4 is a build step, not a verification step.
 
 - **The Hub-side member-level (non-berth) transport path is dead code.**
@@ -50,7 +53,7 @@ The replacement path is only half-live, which changes the shape of this branch:
 
 - Do not redesign Manager cloud-location provisioning (multi-provider selection, location policy).
   That belongs to #139 and nearby follow-up work.
-  In scope, however, is the minimal "publish a `member_berth_storage_announcement` for the berth that was just allocated" wiring at the two sites that currently write `team_device` cloud fields.
+  In scope, however, is the minimal "publish a `member_berth_storage_announcement` for the berth that was just allocated" wiring at every flow that produces a Core berth allocation (create_team, device-link/bootstrap, and accept_invitation).
   That wiring **is** the "replacement publishing" the issue names ("stop writing transport fields onto `team_device` … once replacement publishing exists"), and without it the fallback cannot be removed safely.
 - Do not add compatibility shims for old pre-alpha databases unless a specific local test fixture requires a narrow cleanup.
 - Do not remove team-device identity rows, team-device keys, or certificate trust checks.
@@ -91,8 +94,14 @@ The replacement path is only half-live, which changes the shape of this branch:
 
    This is a build step, not a verification step (see Key finding): production currently has no path that publishes `member_berth_storage_announcement`, so the order matters.
 
-   1. At the two sites that today feed allocation results into `team_device` cloud fields — `create_team` (`provisioning.py:4377`) and the device-link/bootstrap path (`provisioning.py:2867`) — publish a signed `member_berth_storage_announcement` for the just-allocated berth (reuse `publish_member_berth_storage_announcement`) instead of writing `protocol`/`url`/`bucket`.
+   1. Publish a signed `member_berth_storage_announcement` for the just-allocated Core berth in **all three** allocation-producing flows, instead of writing `protocol`/`url`/`bucket`:
+      - `create_team` (`provisioning.py:4377`),
+      - the device-link/bootstrap path (`provisioning.py:2867`),
+      - `accept_invitation` (`provisioning.py:4780`, which today discards the allocation and publishes nothing — capture the allocation record and publish from it).
       Keep this minimal: publish the announcement for the berth that was just allocated. Larger provisioning redesign stays in #139.
+   1a. **Transaction-safe mechanics (do not just reuse `publish_member_berth_storage_announcement` as-is).**
+      That helper opens its own `_sqlite_engine` + `engine.begin()` (`provisioning.py:3375-3377`), but all three call sites are already inside an open write transaction on the same `core.db` (e.g. `create_team`'s `with team_engine.begin() as conn` at `provisioning.py:4357`), so nesting it risks `database is locked` and may also miss the git stage/commit of the row.
+      Factor out an in-transaction core that takes the live `conn` (sign + INSERT only), have the public helper wrap it with its own engine, and call the in-transaction core from the provisioning flows before they stage/commit `core.db`.
    2. Then simplify `_upsert_team_device_row` so callers cannot store `protocol`, `url`, or `bucket` (drop those keyword parameters and the columns from its INSERT/UPDATE — see Step 5 for the schema coupling).
    3. Remove cloud-storage lookups in device-link or bootstrap flows whose only remaining purpose was to populate those fields.
    4. Only after (1) is in place, prove (not assume) that admission and bootstrap leave peers able to discover storage — see the end-to-end micro test in the Validation Plan.
@@ -100,8 +109,10 @@ The replacement path is only half-live, which changes the shape of this branch:
 5. Reconcile schema and migrations.
 
    Because the project is pre-alpha, prefer the clean schema if tests and current DB initialization allow it.
-   Remove `protocol`, `url`, and `bucket` from the `team_device` table definition (`sql/core_other_team.sql:86-92`) if they are no longer used.
-   This is coupled to Step 4: dropping the columns requires updating `_upsert_team_device_row`'s INSERT/UPDATE column lists (`provisioning.py:1114-1135`) in the same commit, or inserts break.
+   Remove `protocol`, `url`, and `bucket` from the `team_device` table definition if they are no longer used. The active schema surface is **two** places, not just the packaged SQL file — clean both:
+   - `sql/core_other_team.sql:86-92`, and
+   - the inline `CREATE TABLE IF NOT EXISTS team_device (…)` in `provisioning.py:2297`, plus the raw `INSERT OR REPLACE INTO team_device (… protocol, url, bucket …)` migration/import path at `provisioning.py:2362`.
+   This is coupled to Step 4: dropping the columns requires updating `_upsert_team_device_row`'s INSERT/UPDATE column lists (`provisioning.py:1114-1135`) and the raw INSERT at `2362` in the same commit, or inserts break.
    It will also break raw-SQL tests that read/write those columns directly — update them in Step 6: `test_session_flow.py:381` (INSERT), `test_create_team.py:252` (SELECT), `test_sender_key_rotation.py:196` (INSERT), plus the `_upsert_team_device_row` callers in `test_manager.py:145`, `test_runtime_watch.py:136`, `test_admission_proposals.py:58`, and `test_linked_device_bootstrap.py:165`.
    If migration cleanup would create noisy or risky churn, leave old columns tolerated but prove no code reads or writes them for routing.
    Record the final choice in the design record.
@@ -132,7 +143,8 @@ The skeptical-reviewer standard for this branch is that tests fail if legacy `te
   The test should prove the announcement wins because it is the only routing source, not merely because it has precedence.
 - Add or update a Manager provisioning micro test proving admission/bootstrap no longer writes `protocol`, `url`, or `bucket` to new `team_device` rows.
 - Add or update an admission/bootstrap integration micro test proving a newly accepted peer can still discover readable berth storage when the proper member-berth storage announcement is present.
-- **(Decisive test for this branch.)** Add an end-to-end micro test that runs the **real** `create_team` + invite/accept flow with **no manual `publish_member_berth_storage_announcement` call**, and proves both: (a) a peer can resolve/download the member's berth storage, and (b) no `protocol`/`url`/`bucket` was written to any `team_device` row.
+- **(Decisive test for this branch.)** Add an end-to-end micro test that runs the **real** `create_team` + invite/accept flow with **no manual `publish_member_berth_storage_announcement` call**, and proves for **both roles** — the creator (Alice) and the invitee/acceptor (Bob) — that: (a) a peer can resolve/download that member's berth storage, and (b) no `protocol`/`url`/`bucket` was written to any `team_device` row.
+  Both roles are required: a test that only checks Alice's creator announcement can pass while Bob's accept/push path (the path that publishes nothing today, `provisioning.py:4780`) stays broken.
   This is the actual proof that Step 4's production publishing wiring works; the existing `test_peer_transport.py` cases publish announcements manually and therefore only exercise the read side.
 - Add or update a `wrasse_trust` micro test proving `select_effective_member_berth_storage` returns `missing` when no valid berth-scoped announcement exists, even if a caller tries to supply old fallback-shaped data.
 
