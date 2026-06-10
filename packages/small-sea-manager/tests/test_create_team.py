@@ -249,7 +249,7 @@ def test_create_team(playground_dir):
     assert members[0][0] == bytes.fromhex(member_id_hex)
     assert members[0][1] == "Alice"
     team_devices = tconn.execute(
-        "SELECT member_id, device_key_id, public_key, protocol, url, bucket "
+        "SELECT member_id, device_key_id, public_key "
         "FROM team_device"
     ).fetchall()
     assert len(team_devices) == 1

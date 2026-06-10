@@ -87,9 +87,6 @@ CREATE TABLE IF NOT EXISTS team_device (
     device_key_id BLOB PRIMARY KEY,
     member_id BLOB NOT NULL,
     public_key BLOB NOT NULL,
-    protocol TEXT,
-    url TEXT,
-    bucket TEXT,
     created_at TEXT NOT NULL,
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 );

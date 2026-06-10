@@ -461,3 +461,53 @@ def test_peer_read_does_not_use_current_device_bootstrap_allowance(
             team_result["member_id_hex"],
             "peer.txt",
         )
+
+
+def test_create_team_publishes_creator_storage_for_peer_download(
+    playground_dir, minio_server_gen
+):
+    """create_team alone makes the creator's berth storage discoverable.
+
+    No manual publish_member_berth_storage_announcement call: this proves the
+    production publishing wired into create_team (issue #138) is what enables
+    peer discovery now that the legacy team_device transport fallback is gone.
+    """
+    root = pathlib.Path(playground_dir)
+    minio = minio_server_gen(port=19980)
+    backend = SmallSea.SmallSeaBackend(root_dir=root)
+    alice_hex = Provisioning.create_new_participant(root, "alice")
+    Provisioning.add_cloud_storage(
+        root,
+        alice_hex,
+        protocol="s3",
+        url=minio["endpoint"],
+        access_key=minio["access_key"],
+        secret_key=minio["secret_key"],
+    )
+    team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
+
+    app.state.backend = backend
+    client = TestClient(app)
+    session_hex = _request_and_confirm(client)
+
+    # create_team published the creator's announcement for the allocated bucket.
+    announced_bucket = _core_allocation_bucket(root, alice_hex, team_result)
+    s3 = _make_bucket_public(minio, announced_bucket)
+    s3.put_object(Bucket=announced_bucket, Key="peer.txt", Body=b"creator-data")
+
+    ok, data, _etag = backend._download_peer_file(
+        session_hex,
+        team_result["member_id_hex"],
+        "peer.txt",
+    )
+    assert ok is True
+    assert data == b"creator-data"
+
+    # team_device no longer carries any storage-routing columns at all, so the
+    # legacy fallback cannot resurface even by accident.
+    team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
+    with sqlite3.connect(str(team_db)) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(team_device)")}
+    assert "protocol" not in columns
+    assert "url" not in columns
+    assert "bucket" not in columns

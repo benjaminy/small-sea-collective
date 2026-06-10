@@ -23,6 +23,10 @@ from small_sea_manager.provisioning import (
 from test_support import publish_storage_announcement_for_session
 from wrasse_trust.identity import verify_membership_cert
 from wrasse_trust.keys import key_id_from_public
+from wrasse_trust.transport import (
+    MemberBerthStorageAnnouncement,
+    verify_member_berth_storage_announcement_signature,
+)
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -227,7 +231,34 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
             "SELECT id FROM member WHERE id = ?",
             (bytes.fromhex(bob_member_id_hex),),
         ).fetchall()
+        bob_ann_rows = conn.execute(
+            "SELECT announcement_id, member_id, berth_id, protocol, url, location, "
+            "announced_at, signer_key_id, signature "
+            "FROM member_berth_storage_announcement WHERE member_id = ?",
+            (bytes.fromhex(bob_member_id_hex),),
+        ).fetchall()
     assert bob_member_rows == []
+
+    # accept_invitation auto-published Bob's own berth storage announcement,
+    # signed with Bob's freshly generated team device key. This is the invitee
+    # production publishing wired for issue #138: previously accept_invitation
+    # discarded the allocation and published nothing, so the invitee's storage
+    # was discoverable through no channel at all. No manual publish call and no
+    # _push_via_hub helper ran for Bob here.
+    assert len(bob_ann_rows) == 1
+    bob_ann = MemberBerthStorageAnnouncement(*bob_ann_rows[0])
+    bob_device_public_key = bytes.fromhex(acceptance["acceptor_device_public_key"])
+    assert bob_ann.signer_key_id == key_id_from_public(bob_device_public_key)
+    assert verify_member_berth_storage_announcement_signature(
+        bob_ann, bob_device_public_key
+    )
+    bob_allocation = provisioning.get_berth_cloud_allocation_for_berth(
+        root, bob_hex, bob_ann.berth_id.hex()
+    )
+    assert bob_allocation is not None
+    assert bob_ann.protocol == bob_allocation["protocol"]
+    assert bob_ann.url == bob_allocation["url"]
+    assert bob_ann.location == bob_allocation["location"]
 
     # -- Alice: complete the acceptance --
     complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
@@ -250,7 +281,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     bob_member_row = next(row for row in members if row[0] == bytes.fromhex(bob_member_id_hex))
     assert bob_member_row[1] == "Bob"
     team_devices = aconn.execute(
-        "SELECT member_id, device_key_id, public_key, protocol, url "
+        "SELECT member_id, device_key_id, public_key "
         "FROM team_device ORDER BY member_id, device_key_id"
     ).fetchall()
     assert len(team_devices) == 2
@@ -259,8 +290,6 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     )
     assert bob_team_device_row[1] == bytes.fromhex(acceptance["acceptor_device_key_id"])
     assert bob_team_device_row[2] == bytes.fromhex(acceptance["acceptor_device_public_key"])
-    assert bob_team_device_row[3] is None
-    assert bob_team_device_row[4] is None
 
     bob_cert_row = aconn.execute(
         "SELECT cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, "
@@ -316,14 +345,20 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
     team_devices = bconn.execute(
-        "SELECT member_id, public_key, protocol, url FROM team_device ORDER BY member_id, device_key_id"
+        "SELECT member_id, public_key FROM team_device ORDER BY member_id, device_key_id"
     ).fetchall()
     assert len(team_devices) == 1
-    alice_team_device = next(
-        row for row in team_devices if row[0] == bytes.fromhex(alice_member_id_hex)
-    )
-    assert alice_team_device[2] == "s3"
-    assert alice_team_device[3] == alice_minio["endpoint"]
+    # team_device no longer carries transport. Alice's storage is discoverable
+    # through her signed berth storage announcement (published by create_team),
+    # which Bob received when he cloned the team repo.
+    alice_storage = bconn.execute(
+        "SELECT protocol, url FROM member_berth_storage_announcement "
+        "WHERE member_id = ? ORDER BY announcement_id DESC LIMIT 1",
+        (bytes.fromhex(alice_member_id_hex),),
+    ).fetchone()
+    assert alice_storage is not None
+    assert alice_storage[0] == "s3"
+    assert alice_storage[1] == alice_minio["endpoint"]
     bconn.close()
 
     # --- Verify Bob's NoteToSelf has the team pointer but NOT a TeamAppBerth for ProjectX ---

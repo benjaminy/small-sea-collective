@@ -12,7 +12,6 @@ from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_pu
 from wrasse_trust.transport import (
     MemberBerthStorageAnnouncement,
     MemberTransportAnnouncement,
-    TransportEndpoint,
     canonical_member_berth_storage_announcement_bytes,
     canonical_member_transport_announcement_bytes,
     key_certificate_from_team_db_record,
@@ -282,17 +281,13 @@ def test_select_effective_member_transport_binds_signer_key_id_in_signature():
             founder_key_id: founder_key.public_key,
             linked_key_id: linked_key.public_key,
         },
-        legacy_fallback=TransportEndpoint(
-            protocol="s3",
-            url="http://fallback.example",
-            bucket="fallback-bucket",
-        ),
     )
 
+    # A tampered signer_key_id breaks the signature, so the only announcement is
+    # rejected. With the team_device fallback removed, that resolves to missing.
     assert linked_private_key is not None
-    assert selection.status == "legacy-fallback"
-    assert selection.transport is not None
-    assert selection.transport.bucket == "fallback-bucket"
+    assert selection.status == "missing"
+    assert selection.transport is None
 
 
 def test_select_effective_member_transport_rejects_other_members_signer():
@@ -336,13 +331,9 @@ def test_select_effective_member_transport_rejects_other_members_signer():
             key_id_from_public(alice_key.public_key): alice_key.public_key,
             key_id_from_public(bob_key.public_key): bob_key.public_key,
         },
-        legacy_fallback=TransportEndpoint(
-            protocol="s3",
-            url="http://fallback.example",
-            bucket="fallback-bucket",
-        ),
     )
 
-    assert selection.status == "legacy-fallback"
-    assert selection.transport is not None
-    assert selection.transport.bucket == "fallback-bucket"
+    # The announcement is signed by Bob for Alice's member_id, so it is rejected.
+    # With the team_device fallback removed, that resolves to missing.
+    assert selection.status == "missing"
+    assert selection.transport is None

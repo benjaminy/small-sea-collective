@@ -19,6 +19,7 @@ members = [
     "small-sea-sandbox",
     "splice-merge",
     "the-hedgerow",
+    "tide-table",
     "wrasse-trust",
 ]
 
@@ -1287,6 +1288,11 @@ wheels = [
 name = "the-hedgerow"
 version = "0.1.0"
 source = { editable = "packages/the-hedgerow" }
+
+[[package]]
+name = "tide-table"
+version = "0.1.0"
+source = { editable = "packages/tide-table" }
 
 [[package]]
 name = "tomli"

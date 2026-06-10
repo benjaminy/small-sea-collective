@@ -166,9 +166,6 @@ def _bootstrap_remote_member_installation(
                     conn,
                     bob_member_id,
                     bob_team_keys["device_key"].public_key,
-                    protocol="localfolder",
-                    url=str(root / "bob-cloud"),
-                    bucket="bob-bucket",
                 )
         finally:
             engine.dispose()
