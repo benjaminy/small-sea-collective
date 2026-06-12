@@ -68,6 +68,30 @@ A pleasant consequence: the plan's proposed negative test ("insert only
 *impossible to write* — the columns don't exist. The decisive creator test asserts
 the columns are absent via `PRAGMA table_info` instead.
 
+#### Schema version bump + migration of existing DBs (committee feedback)
+
+Initial revision changed the DDL but left `USER_SCHEMA_VERSION = 59` unchanged.
+`ensure_team_db_schema` short-circuits when a DB is already at the current version,
+and the prior `main` commit was *also* version 59 (with the columns present). So a
+DB written by old code would stay at 59 and silently keep `protocol/url/bucket`
+forever — contradicting the "columns are gone everywhere" claim. The DDL drop only
+helps *freshly created* DBs.
+
+**Decision (answers the committee's open question):** the support boundary is **all
+DBs**, not "fresh DBs only." Bumped `USER_SCHEMA_VERSION` to **60** and added an
+incremental `if from_version < 60` step in `_migrate_team_db` that drops the three
+columns via `ALTER TABLE team_device DROP COLUMN` (SQLite 3.35+; runtime is 3.47.1).
+The drop is guarded by `_table_columns(...)` so it is a no-op for `team_device`
+tables already created without the columns (fresh in-branch DBs, or DBs migrated up
+from `< 56` whose inline `CREATE` now omits the columns). The shared version bump is
+safe for the user/NoteToSelf DB path too: `_migrate_user_db` already only has steps
+through `< 55` and has been relying on a no-op restamp for 55→59, so 59→60 is one
+more no-op restamp there.
+
+Covered by `test_migration_drops_legacy_team_device_transport_columns` (reconstructs
+the legacy v59 shape, then proves `ensure_team_db_schema` drops the columns and
+stamps version 60) and `test_create_team_produces_team_device_without_transport_columns`.
+
 ### `member_transport_announcement` kept
 
 `member_transport_announcement` and `select_effective_member_transport` back a live

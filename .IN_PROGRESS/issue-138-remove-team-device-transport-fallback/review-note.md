@@ -28,6 +28,9 @@ them. The decisive creator test asserts their absence via `PRAGMA table_info`.
   - `_upsert_team_device_row`: `protocol`/`url`/`bucket` params + columns dropped.
   - `_migrate_team_db_to_member_and_team_device`: inline CREATE + INSERT updated to
     match the column drop.
+  - `USER_SCHEMA_VERSION` bumped 59 → 60 with a guarded `DROP COLUMN` migration step
+    in `_migrate_team_db` (addresses committee finding: existing v59 DBs would
+    otherwise keep the columns forever; see design record).
   - `_legacy_transport_by_member`: deleted; `_effective_transports_by_member` no
     longer passes `legacy_fallback`.
 - `backend.py` (Hub): `_download_peer_file` → `_select_member_berth_storage` directly;

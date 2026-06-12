@@ -8,9 +8,11 @@ from small_sea_note_to_self.db import device_local_db_path
 
 from small_sea_manager.provisioning import _deserialize_cert, _serialize_cert
 from small_sea_manager.provisioning import (
+    USER_SCHEMA_VERSION,
     activate_app_for_team,
     create_new_participant,
     create_team,
+    ensure_team_db_schema,
     register_app_for_participant,
 )
 from wrasse_trust.identity import CertType, issue_cert, verify_membership_cert
@@ -347,3 +349,54 @@ def test_core_team_activation_matches_generic_app_shape(playground_dir):
     assert set(by_app) == {CORE_APP, VAULT_APP}
     assert by_app[CORE_APP][0] == bytes.fromhex(result["berth_id_hex"])
     assert by_app[CORE_APP][1] == by_app[VAULT_APP][1] == "read-write"
+
+
+def _team_device_columns(team_db):
+    with sqlite3.connect(str(team_db)) as conn:
+        return {row[1] for row in conn.execute("PRAGMA table_info(team_device)")}
+
+
+def test_create_team_produces_team_device_without_transport_columns(playground_dir):
+    """Freshly created team DBs never carry team_device storage-routing columns."""
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    create_team(root, alice_hex, "ProjectX")
+
+    columns = _team_device_columns(_team_db(root, alice_hex, "ProjectX"))
+    assert "protocol" not in columns
+    assert "url" not in columns
+    assert "bucket" not in columns
+
+
+def test_migration_drops_legacy_team_device_transport_columns(playground_dir):
+    """An existing (pre-#138) team DB has protocol/url/bucket dropped on open.
+
+    Simulates a DB written by the prior current-version code: re-add the legacy
+    columns and stamp it back to the pre-#138 schema version, then prove
+    ensure_team_db_schema migrates it forward and removes them. Without the
+    version bump + DROP COLUMN migration, such DBs would silently keep the
+    columns forever.
+    """
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    create_team(root, alice_hex, "ProjectX")
+    team_db = _team_db(root, alice_hex, "ProjectX")
+
+    # Reconstruct the legacy shape: add the columns back and stamp the old version.
+    with sqlite3.connect(str(team_db)) as conn:
+        conn.execute("ALTER TABLE team_device ADD COLUMN protocol TEXT")
+        conn.execute("ALTER TABLE team_device ADD COLUMN url TEXT")
+        conn.execute("ALTER TABLE team_device ADD COLUMN bucket TEXT")
+        conn.execute(f"PRAGMA user_version = {USER_SCHEMA_VERSION - 1}")
+        conn.commit()
+    assert {"protocol", "url", "bucket"} <= _team_device_columns(team_db)
+
+    ensure_team_db_schema(team_db)
+
+    columns = _team_device_columns(team_db)
+    assert "protocol" not in columns
+    assert "url" not in columns
+    assert "bucket" not in columns
+    with sqlite3.connect(str(team_db)) as conn:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert version == USER_SCHEMA_VERSION

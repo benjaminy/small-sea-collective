@@ -1629,7 +1629,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 59
+USER_SCHEMA_VERSION = 60
 
 
 # ---- Provisioning functions ----
@@ -2231,6 +2231,16 @@ def _migrate_team_db(conn, from_version):
                 "ON member_berth_storage_announcement(member_id, berth_id, announcement_id)"
             )
         )
+    if from_version < 60:
+        # team_device dropped its storage-routing columns (issue #138). Peer
+        # storage routing now lives only in member_berth_storage_announcement.
+        # Existing current-version DBs still carry protocol/url/bucket, so drop
+        # them here; the guard makes this a no-op for DBs whose team_device was
+        # already created without those columns.
+        team_device_columns = set(_table_columns(conn, "team_device"))
+        for column in ("protocol", "url", "bucket"):
+            if column in team_device_columns:
+                conn.execute(text(f"ALTER TABLE team_device DROP COLUMN {column}"))
 
 
 def _table_columns(conn, table_name: str) -> list[str]:
