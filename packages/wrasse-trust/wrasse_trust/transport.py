@@ -151,7 +151,6 @@ def select_effective_member_transport(
     certs: list[KeyCertificate] | None = None,
     team_id: bytes,
     device_public_keys_by_key_id: dict[bytes, bytes],
-    legacy_fallback: TransportEndpoint | None = None,
     trusted_public_keys: set[bytes] | None = None,
 ) -> EffectiveTransportSelection:
     if trusted_public_keys is None:
@@ -185,12 +184,6 @@ def select_effective_member_transport(
             signer_key_id=announcement.signer_key_id,
         )
 
-    if legacy_fallback is not None:
-        return EffectiveTransportSelection(
-            status="legacy-fallback",
-            transport=legacy_fallback,
-        )
-
     return EffectiveTransportSelection(status="missing", transport=None)
 
 
@@ -202,7 +195,6 @@ def select_effective_member_berth_storage(
     certs: list[KeyCertificate] | None = None,
     team_id: bytes,
     device_public_keys_by_key_id: dict[bytes, bytes],
-    legacy_fallback: TransportEndpoint | None = None,
     trusted_public_keys: set[bytes] | None = None,
 ) -> EffectiveTransportSelection:
     if trusted_public_keys is None:
@@ -236,12 +228,6 @@ def select_effective_member_berth_storage(
             ),
             announcement_id=announcement.announcement_id,
             signer_key_id=announcement.signer_key_id,
-        )
-
-    if legacy_fallback is not None:
-        return EffectiveTransportSelection(
-            status="legacy-fallback",
-            transport=legacy_fallback,
         )
 
     return EffectiveTransportSelection(status="missing", transport=None)

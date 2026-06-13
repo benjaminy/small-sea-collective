@@ -280,11 +280,11 @@ ordering authority.
 
 An announcement is valid when its signature verifies and the signer key is
 currently trusted for the announcing member. There is no max-age policy in v1.
-Valid announcements take precedence over legacy `team_device(protocol, url,
-bucket)` fallback. Legacy fallback is allowed only for the team's Core berth
-when no valid announcement exists and must be named as legacy behavior. App
-berth peer reads with no valid announcement return `404`; the Hub must not
-synthesize a formula bucket.
+A valid `member_berth_storage_announcement` is the only source of peer storage
+routing; `team_device` carries device identity only and has no transport
+columns, so there is no legacy fallback. Peer reads with no valid announcement
+return `404` for every berth, including the Core berth; the Hub must not
+synthesize a formula bucket or recover routing from identity rows.
 
 Own-storage file operations normally require a matching trusted announcement
 before proceeding. There is one local-writer bootstrap allowance: if the
@@ -616,10 +616,9 @@ Errors:
 
 **`GET /peer_cloud_file?member_id=<hex>&path=<remote path>`** — Download a file from a peer's
 cloud location via the Hub proxy. The Hub resolves the target
-member's readable location through the newest valid
+member's readable location solely through the newest valid
 `member_berth_storage_announcement` for `(member_id, session.berth_id)`.
-Legacy `team_device` transport data may be used only as an explicitly named
-Core-berth fallback when no valid announcement exists.
+There is no `team_device` transport fallback.
 
 Response: same as `GET /cloud_file`.
 

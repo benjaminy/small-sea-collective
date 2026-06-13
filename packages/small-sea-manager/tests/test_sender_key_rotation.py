@@ -193,16 +193,13 @@ def _bootstrap_remote_member_installation(workspace: pathlib.Path):
                 conn.execute(
                     text(
                         "INSERT OR IGNORE INTO team_device "
-                        "(device_key_id, member_id, public_key, protocol, url, bucket, created_at) "
-                        "VALUES (:device_key_id, :member_id, :public_key, :protocol, :url, :bucket, :created_at)"
+                        "(device_key_id, member_id, public_key, created_at) "
+                        "VALUES (:device_key_id, :member_id, :public_key, :created_at)"
                     ),
                     {
                         "device_key_id": key_id_from_public(bob_team_keys["device_key"].public_key),
                         "member_id": bob_member_id,
                         "public_key": bob_team_keys["device_key"].public_key,
-                        "protocol": "localfolder",
-                        "url": str(workspace / "bob-cloud"),
-                        "bucket": "bucket-bob",
                         "created_at": provisioning._now_iso(),
                     },
                 )

@@ -136,7 +136,6 @@ from wrasse_trust.transport import (
     EffectiveTransportSelection,
     MemberBerthStorageAnnouncement,
     MemberTransportAnnouncement,
-    TransportEndpoint,
     canonical_member_berth_storage_announcement_bytes,
     canonical_member_transport_announcement_bytes,
     key_certificate_from_team_db_record,
@@ -783,12 +782,6 @@ def _load_device_prekey_bundle(conn, device_key_id: bytes) -> PrekeyBundle | Non
     return _deserialize_prekey_bundle(json.loads(row[0]))
 
 
-def _bucket_name_for_protocol(protocol: str, member_id: bytes, berth_id: bytes) -> str:
-    if protocol == "dropbox":
-        return f"ss-{member_id.hex()[:16]}"
-    return f"ss-{berth_id.hex()[:16]}"
-
-
 _DEFAULT_ADMISSION_QUORUM = 1
 _DEFAULT_PROPOSAL_EXPIRY_SECONDS = 7 * 24 * 60 * 60
 
@@ -1101,46 +1094,37 @@ def _upsert_team_device_row(
     member_id: bytes,
     public_key: bytes,
     *,
-    protocol: str | None = None,
-    url: str | None = None,
-    bucket: str | None = None,
     created_at: str | None = None,
 ) -> bytes:
+    # team_device carries device identity only. Storage routing now lives in
+    # signed member_berth_storage_announcement rows, so this row has no
+    # protocol/url/bucket columns to write (see issue #138).
     device_key_id = key_id_from_public(public_key)
     if created_at is None:
         created_at = _now_iso()
     conn.execute(
         text(
             "INSERT OR IGNORE INTO team_device "
-            "(device_key_id, member_id, public_key, protocol, url, bucket, created_at) "
-            "VALUES (:device_key_id, :member_id, :public_key, :protocol, :url, :bucket, :created_at)"
+            "(device_key_id, member_id, public_key, created_at) "
+            "VALUES (:device_key_id, :member_id, :public_key, :created_at)"
         ),
         {
             "device_key_id": device_key_id,
             "member_id": member_id,
             "public_key": public_key,
-            "protocol": protocol,
-            "url": url,
-            "bucket": bucket,
             "created_at": created_at,
         },
     )
     conn.execute(
         text(
             "UPDATE team_device "
-            "SET member_id = :member_id, public_key = :public_key, "
-            "protocol = COALESCE(:protocol, protocol), "
-            "url = COALESCE(:url, url), "
-            "bucket = COALESCE(:bucket, bucket) "
+            "SET member_id = :member_id, public_key = :public_key "
             "WHERE device_key_id = :device_key_id"
         ),
         {
             "device_key_id": device_key_id,
             "member_id": member_id,
             "public_key": public_key,
-            "protocol": protocol,
-            "url": url,
-            "bucket": bucket,
         },
     )
     return device_key_id
@@ -1645,7 +1629,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 59
+USER_SCHEMA_VERSION = 60
 
 
 # ---- Provisioning functions ----
@@ -2247,6 +2231,16 @@ def _migrate_team_db(conn, from_version):
                 "ON member_berth_storage_announcement(member_id, berth_id, announcement_id)"
             )
         )
+    if from_version < 60:
+        # team_device dropped its storage-routing columns (issue #138). Peer
+        # storage routing now lives only in member_berth_storage_announcement.
+        # Existing current-version DBs still carry protocol/url/bucket, so drop
+        # them here; the guard makes this a no-op for DBs whose team_device was
+        # already created without those columns.
+        team_device_columns = set(_table_columns(conn, "team_device"))
+        for column in ("protocol", "url", "bucket"):
+            if column in team_device_columns:
+                conn.execute(text(f"ALTER TABLE team_device DROP COLUMN {column}"))
 
 
 def _table_columns(conn, table_name: str) -> list[str]:
@@ -2272,7 +2266,7 @@ def _migrate_team_db_to_member_and_team_device(conn) -> None:
     if _table_exists(conn, "peer"):
         peer_rows = conn.execute(
             text(
-                "SELECT member_id, display_name, protocol, url, bucket "
+                "SELECT member_id, display_name "
                 "FROM peer ORDER BY member_id, id"
             )
         ).fetchall()
@@ -2298,15 +2292,11 @@ def _migrate_team_db_to_member_and_team_device(conn) -> None:
             "device_key_id BLOB PRIMARY KEY, "
             "member_id BLOB NOT NULL, "
             "public_key BLOB NOT NULL, "
-            "protocol TEXT, "
-            "url TEXT, "
-            "bucket TEXT, "
             "created_at TEXT NOT NULL, "
             "FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE)"
         )
     )
 
-    peer_by_member = {row[0]: row for row in peer_rows}
     cert_rows = conn.execute(
         text(
             "SELECT cert_type, subject_public_key, issued_at, claims "
@@ -2327,13 +2317,9 @@ def _migrate_team_db_to_member_and_team_device(conn) -> None:
             continue
         device_key_id = key_id_from_public(subject_public_key)
         if device_key_id not in devices_by_key:
-            peer_row = peer_by_member.get(member_id)
             devices_by_key[device_key_id] = {
                 "member_id": member_id,
                 "public_key": subject_public_key,
-                "protocol": peer_row[2] if peer_row else None,
-                "url": peer_row[3] if peer_row else None,
-                "bucket": peer_row[4] if peer_row else None,
                 "created_at": issued_at or _now_iso(),
             }
 
@@ -2348,9 +2334,6 @@ def _migrate_team_db_to_member_and_team_device(conn) -> None:
                 {
                     "member_id": member_id,
                     "public_key": public_key,
-                    "protocol": peer_by_member.get(member_id)[2] if member_id in peer_by_member else None,
-                    "url": peer_by_member.get(member_id)[3] if member_id in peer_by_member else None,
-                    "bucket": peer_by_member.get(member_id)[4] if member_id in peer_by_member else None,
                     "created_at": _now_iso(),
                 },
             )
@@ -2359,16 +2342,13 @@ def _migrate_team_db_to_member_and_team_device(conn) -> None:
         conn.execute(
             text(
                 "INSERT OR REPLACE INTO team_device "
-                "(device_key_id, member_id, public_key, protocol, url, bucket, created_at) "
-                "VALUES (:device_key_id, :member_id, :public_key, :protocol, :url, :bucket, :created_at)"
+                "(device_key_id, member_id, public_key, created_at) "
+                "VALUES (:device_key_id, :member_id, :public_key, :created_at)"
             ),
             {
                 "device_key_id": key_id_from_public(row["public_key"]),
                 "member_id": row["member_id"],
                 "public_key": row["public_key"],
-                "protocol": row["protocol"],
-                "url": row["url"],
-                "bucket": row["bucket"],
                 "created_at": row["created_at"],
             },
         )
@@ -2848,29 +2828,14 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
                 cert,
                 issuer_member_id=member_id,
             )
-            berth_row = conn.execute(
-                text("SELECT id FROM team_app_berth LIMIT 1")
-            ).fetchone()
-            try:
-                local_cloud = get_cloud_storage(root_dir, participant_hex)
-                local_protocol = local_cloud["protocol"]
-                local_url = local_cloud["url"]
-                local_bucket = (
-                    _bucket_name_for_protocol(local_protocol, member_id, berth_row[0])
-                    if berth_row is not None
-                    else None
-                )
-            except ValueError:
-                local_protocol = None
-                local_url = None
-                local_bucket = None
+            # team_device no longer carries storage routing. A linked device
+            # shares its member's already-announced berth storage, so this
+            # bootstrap path records device identity only. Per-linked-device
+            # storage announcements are deferred (see FOLLOW-UP.md / #138).
             _upsert_team_device_row(
                 conn,
                 member_id,
                 session_row["team_device_public_key"],
-                protocol=local_protocol,
-                url=local_url,
-                bucket=local_bucket,
             )
             _publish_local_device_prekey_bundle(
                 root_dir,
@@ -3167,31 +3132,6 @@ def _device_public_keys_by_key_id(conn) -> dict[bytes, bytes]:
     return {row[0]: row[1] for row in rows}
 
 
-def _legacy_transport_by_member(conn) -> dict[bytes, TransportEndpoint]:
-    # TEMPORARY: remove when B5 stops relying on admission-time team_device
-    # transport fields as a compatibility fallback.
-    rows = conn.execute(
-        text(
-            "SELECT member_id, protocol, url, bucket "
-            "FROM team_device "
-            "WHERE url IS NOT NULL "
-            "ORDER BY member_id ASC, created_at ASC, device_key_id ASC"
-        )
-    ).fetchall()
-    fallback: dict[bytes, TransportEndpoint] = {}
-    for member_id, protocol, url, bucket in rows:
-        if member_id in fallback:
-            continue
-        if protocol is None or url is None:
-            continue
-        fallback[member_id] = TransportEndpoint(
-            protocol=protocol,
-            url=url,
-            bucket=bucket or "",
-        )
-    return fallback
-
-
 def _effective_transports_by_member(
     conn,
     *,
@@ -3201,7 +3141,6 @@ def _effective_transports_by_member(
     certs = _load_team_certificates(conn, team_id)
     announcements = _load_member_transport_announcements(conn)
     device_public_keys = _device_public_keys_by_key_id(conn)
-    fallback_by_member = _legacy_transport_by_member(conn)
     trusted_by_member = resolve_trusted_device_keys_by_member(certs, team_id)
     return {
         member_id: select_effective_member_transport(
@@ -3210,7 +3149,6 @@ def _effective_transports_by_member(
             certs=certs,
             team_id=team_id,
             device_public_keys_by_key_id=device_public_keys,
-            legacy_fallback=fallback_by_member.get(member_id),
             trusted_public_keys=trusted_by_member.get(member_id, set()),
         )
         for member_id in member_ids
@@ -3349,6 +3287,112 @@ def announce_member_transport(
     }
 
 
+def _insert_member_berth_storage_announcement(
+    conn,
+    *,
+    team_id: bytes,
+    member_id: bytes,
+    berth_id: bytes,
+    allocation_record,
+    private_key,
+    public_key: bytes,
+) -> dict:
+    """Sign and insert a member-berth storage announcement using an open conn.
+
+    Transaction-safe core of `publish_member_berth_storage_announcement`.
+    Provisioning flows that already hold a write transaction on the team
+    `core.db` (e.g. `create_team`) must call this with their live `conn`
+    rather than the public helper, which opens its own engine and would
+    deadlock (`database is locked`) against the caller's open transaction.
+    """
+    signer_key_id = key_id_from_public(public_key)
+    protocol = allocation_record["protocol"]
+    url = allocation_record["url"]
+    location = allocation_record["location"]
+
+    selected = selected_member_berth_storage_announcement(
+        conn,
+        member_id,
+        berth_id,
+        team_id=team_id,
+    )
+    if (
+        selected.status == "announced"
+        and selected.transport is not None
+        and selected.transport.protocol == protocol
+        and selected.transport.url == url
+        and selected.transport.bucket == location
+    ):
+        return {
+            "wrote": False,
+            "announcement_id_hex": (
+                selected.announcement_id.hex()
+                if selected.announcement_id is not None
+                else None
+            ),
+            "member_id_hex": member_id.hex(),
+            "berth_id_hex": berth_id.hex(),
+            "signer_key_id_hex": (
+                selected.signer_key_id.hex()
+                if selected.signer_key_id is not None
+                else signer_key_id.hex()
+            ),
+            "protocol": protocol,
+            "url": url,
+            "location": location,
+            "team_id_hex": team_id.hex(),
+        }
+
+    announcement = MemberBerthStorageAnnouncement(
+        announcement_id=uuid7(),
+        member_id=member_id,
+        berth_id=berth_id,
+        protocol=protocol,
+        url=url,
+        location=location,
+        announced_at=_now_iso(),
+        signer_key_id=signer_key_id,
+        signature=b"",
+    )
+    signature = _sign_bytes(
+        private_key,
+        canonical_member_berth_storage_announcement_bytes(announcement),
+    )
+    signed_announcement = replace(announcement, signature=signature)
+    conn.execute(
+        text(
+            "INSERT INTO member_berth_storage_announcement "
+            "(announcement_id, member_id, berth_id, protocol, url, location, "
+            "announced_at, signer_key_id, signature) "
+            "VALUES (:announcement_id, :member_id, :berth_id, :protocol, "
+            ":url, :location, :announced_at, :signer_key_id, :signature)"
+        ),
+        {
+            "announcement_id": signed_announcement.announcement_id,
+            "member_id": signed_announcement.member_id,
+            "berth_id": signed_announcement.berth_id,
+            "protocol": signed_announcement.protocol,
+            "url": signed_announcement.url,
+            "location": signed_announcement.location,
+            "announced_at": signed_announcement.announced_at,
+            "signer_key_id": signed_announcement.signer_key_id,
+            "signature": signed_announcement.signature,
+        },
+    )
+    return {
+        "wrote": True,
+        "announcement_id_hex": signed_announcement.announcement_id.hex(),
+        "member_id_hex": signed_announcement.member_id.hex(),
+        "berth_id_hex": signed_announcement.berth_id.hex(),
+        "signer_key_id_hex": signed_announcement.signer_key_id.hex(),
+        "protocol": signed_announcement.protocol,
+        "url": signed_announcement.url,
+        "location": signed_announcement.location,
+        "announced_at": signed_announcement.announced_at,
+        "team_id_hex": team_id.hex(),
+    }
+
+
 def publish_member_berth_storage_announcement(
     root_dir,
     participant_hex,
@@ -3375,97 +3419,19 @@ def publish_member_berth_storage_announcement(
     team_db_path = _team_sync_dir(root_dir, participant_hex, team_name) / "core.db"
     ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
-    signer_key_id = key_id_from_public(public_key)
-    protocol = allocation_record["protocol"]
-    url = allocation_record["url"]
-    location = allocation_record["location"]
-
     try:
         with engine.begin() as conn:
-            selected = selected_member_berth_storage_announcement(
+            return _insert_member_berth_storage_announcement(
                 conn,
-                member_id,
-                berth_id,
                 team_id=team_id,
-            )
-            if (
-                selected.status == "announced"
-                and selected.transport is not None
-                and selected.transport.protocol == protocol
-                and selected.transport.url == url
-                and selected.transport.bucket == location
-            ):
-                return {
-                    "wrote": False,
-                    "announcement_id_hex": (
-                        selected.announcement_id.hex()
-                        if selected.announcement_id is not None
-                        else None
-                    ),
-                    "member_id_hex": member_id.hex(),
-                    "berth_id_hex": berth_id.hex(),
-                    "signer_key_id_hex": (
-                        selected.signer_key_id.hex()
-                        if selected.signer_key_id is not None
-                        else signer_key_id.hex()
-                    ),
-                    "protocol": protocol,
-                    "url": url,
-                    "location": location,
-                    "team_id_hex": team_id.hex(),
-                }
-
-            announcement = MemberBerthStorageAnnouncement(
-                announcement_id=uuid7(),
                 member_id=member_id,
                 berth_id=berth_id,
-                protocol=protocol,
-                url=url,
-                location=location,
-                announced_at=_now_iso(),
-                signer_key_id=signer_key_id,
-                signature=b"",
-            )
-            signature = _sign_bytes(
-                private_key,
-                canonical_member_berth_storage_announcement_bytes(announcement),
-            )
-            signed_announcement = replace(announcement, signature=signature)
-            conn.execute(
-                text(
-                    "INSERT INTO member_berth_storage_announcement "
-                    "(announcement_id, member_id, berth_id, protocol, url, location, "
-                    "announced_at, signer_key_id, signature) "
-                    "VALUES (:announcement_id, :member_id, :berth_id, :protocol, "
-                    ":url, :location, :announced_at, :signer_key_id, :signature)"
-                ),
-                {
-                    "announcement_id": signed_announcement.announcement_id,
-                    "member_id": signed_announcement.member_id,
-                    "berth_id": signed_announcement.berth_id,
-                    "protocol": signed_announcement.protocol,
-                    "url": signed_announcement.url,
-                    "location": signed_announcement.location,
-                    "announced_at": signed_announcement.announced_at,
-                    "signer_key_id": signed_announcement.signer_key_id,
-                    "signature": signed_announcement.signature,
-                },
+                allocation_record=allocation_record,
+                private_key=private_key,
+                public_key=public_key,
             )
     finally:
         engine.dispose()
-
-    return {
-        "wrote": True,
-        "announcement_id_hex": signed_announcement.announcement_id.hex(),
-        "member_id_hex": signed_announcement.member_id.hex(),
-        "berth_id_hex": signed_announcement.berth_id.hex(),
-        "signer_key_id_hex": signed_announcement.signer_key_id.hex(),
-        "protocol": signed_announcement.protocol,
-        "url": signed_announcement.url,
-        "location": signed_announcement.location,
-        "announced_at": signed_announcement.announced_at,
-        "team_id_hex": team_id.hex(),
-    }
 
 
 def _team_db_path(root_dir, participant_hex, team_name) -> pathlib.Path:
@@ -4366,21 +4332,10 @@ def create_team(root_dir, participant_hex, team_name):
         creator_allocation = _auto_allocate_berth_cloud_if_available(
             root_dir, participant_hex, berth_id
         )
-        if creator_allocation is None:
-            creator_protocol = None
-            creator_url = None
-            creator_bucket = None
-        else:
-            creator_protocol = creator_allocation["protocol"]
-            creator_url = creator_allocation["url"]
-            creator_bucket = creator_allocation["location"]
         _upsert_team_device_row(
             conn,
             member_id,
             team_keys["device_key"].public_key,
-            protocol=creator_protocol,
-            url=creator_url,
-            bucket=creator_bucket,
         )
         _store_team_certificate(conn, membership_cert, issuer_member_id=member_id)
         _publish_local_device_prekey_bundle(
@@ -4391,6 +4346,22 @@ def create_team(root_dir, participant_hex, team_name):
             team_id=team_id,
             team_device_public_key=team_keys["device_key"].public_key,
         )
+        # Announce the creator's berth storage so peers discover it through the
+        # signed member_berth_storage_announcement channel rather than legacy
+        # team_device transport fields. Done in-transaction (the public helper
+        # would deadlock against this open write transaction) and signed with
+        # the creator's own team device key, the only key trusted for this
+        # member.
+        if creator_allocation is not None:
+            _insert_member_berth_storage_announcement(
+                conn,
+                team_id=team_id,
+                member_id=member_id,
+                berth_id=berth_id,
+                allocation_record=creator_allocation,
+                private_key=team_keys["device_private_key"],
+                public_key=team_keys["device_key"].public_key,
+            )
 
     # --- Git init ---
     repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
@@ -4766,8 +4737,9 @@ def accept_invitation(
 
     team_db_path = team_sync_dir / "core.db"
     ensure_team_db_schema(team_db_path)
-    with sqlite3.connect(str(team_db_path)) as conn:
-        core_berth_row = conn.execute(
+    core_conn = sqlite3.connect(str(team_db_path))
+    try:
+        core_berth_row = core_conn.execute(
             """
             SELECT tab.id
             FROM team_app_berth tab
@@ -4776,10 +4748,31 @@ def accept_invitation(
             """,
             ("SmallSeaCollectiveCore",),
         ).fetchone()
+    finally:
+        core_conn.close()
     if core_berth_row is not None:
-        _auto_allocate_berth_cloud_if_available(
+        acceptor_allocation = _auto_allocate_berth_cloud_if_available(
             root_dir, acceptor_participant_hex, core_berth_row[0]
         )
+        if acceptor_allocation is not None:
+            # Publish the acceptor's own berth storage announcement, signed with
+            # the acceptor's freshly generated team device key, so peers can
+            # discover the acceptor's storage without any team_device transport
+            # fallback. Committed below so the acceptor's next push carries it.
+            publish_member_berth_storage_announcement(
+                root_dir,
+                acceptor_participant_hex,
+                team_name,
+                acceptor_member_id,
+                core_berth_row[0],
+                acceptor_allocation,
+                signer_key=(
+                    team_keys["device_private_key"],
+                    team_keys["device_key"].public_key,
+                ),
+            )
+            repo.stage(["core.db"])
+            repo.commit("Announce acceptor berth storage")
     # Team sender state is local-only and does not publish admission.
     save_peer_sender_key(
         device_local_db_path(root_dir, acceptor_participant_hex),

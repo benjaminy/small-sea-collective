@@ -51,8 +51,11 @@ def test_announce_member_transport_updates_manager_member_status(playground_dir)
     manager = TeamManager(root, alice_hex)
     team_before = manager.get_team("ProjectX")
     alice_before = next(member for member in team_before["members"] if member["id"] == team_before["self_in_team"])
-    assert alice_before["transport_status"] == "legacy-fallback"
-    assert alice_before["needs_transport_announcement"] is False
+    # team_device no longer supplies a legacy-fallback transport, so a member
+    # who has not published a signed member_transport_announcement reports
+    # missing and is flagged as needing to announce.
+    assert alice_before["transport_status"] == "missing"
+    assert alice_before["needs_transport_announcement"] is True
 
     announced = manager.announce_member_transport(
         "ProjectX",
@@ -130,8 +133,10 @@ def test_transport_announcement_becomes_inert_after_device_link_removal(playgrou
 
     team_after = manager.get_team("ProjectX")
     alice_after = next(member for member in team_after["members"] if member["id"] == team_after["self_in_team"])
-    assert alice_after["transport_status"] == "legacy-fallback"
-    assert alice_after["needs_transport_announcement"] is False
+    # Once the linked device's cert is gone the announcement is untrusted and,
+    # with no team_device fallback, the member reports missing.
+    assert alice_after["transport_status"] == "missing"
+    assert alice_after["needs_transport_announcement"] is True
 
 
 def test_transport_announcement_route_updates_team_detail(playground_dir):
@@ -219,7 +224,9 @@ def test_member_berth_storage_publish_is_deduped_by_current_location(playground_
             """
         ).fetchall()
 
-    assert first["wrote"] is True
+    # create_team already published the initial announcement for this berth's
+    # allocation, so re-publishing the same allocation is deduped against it.
+    assert first["wrote"] is False
     assert second["wrote"] is False
     assert second["announcement_id_hex"] == first["announcement_id_hex"]
     assert third["wrote"] is True

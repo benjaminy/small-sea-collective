@@ -378,15 +378,12 @@ def test_session_peers(playground_dir):
     try:
         conn.execute("INSERT INTO member (id, display_name) VALUES (?, ?)", (bob_member_id, "Bob"))
         conn.execute(
-            "INSERT INTO team_device (device_key_id, member_id, public_key, protocol, url, bucket, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO team_device (device_key_id, member_id, public_key, created_at) "
+            "VALUES (?, ?, ?, ?)",
             (
                 bob_member_id,
                 bob_member_id,
                 bob_member_id,
-                "s3",
-                "http://localhost:9001",
-                "ss-test",
                 "2026-01-01T00:00:00+00:00",
             ),
         )

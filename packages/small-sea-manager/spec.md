@@ -117,7 +117,7 @@ Stores the shared state for one team. All members maintain their own copy; chang
 | `team_app_berth` | Berths for this team (one per app; `team_id` omitted — implicit from which DB this is) |
 | `berth_role` | Per-member, per-berth role assignments: `read-only` or `read-write` |
 | `invitation` | Invitation records (pending, accepted, revoked) |
-| `team_device` | One row per team device; carries device identity. Transport fields are temporary fallback only |
+| `team_device` | One row per team device; carries device identity only (no storage-routing fields) |
 | `member_berth_storage_announcement` | Signed peer-readable storage locations scoped to `(member_id, berth_id)` |
 
 Manager-local admission prompt dismissals are stored in a per-team sidecar DB outside `Sync/`, keyed by `(event_type, artifact_id)`, so ignored prompts persist across restarts without becoming synced team state.
@@ -618,15 +618,13 @@ issuance path.
 Current runtime status exposed by Manager reads is:
 
 - `announced` — a valid member-berth storage announcement is selected
-- `legacy-fallback` — routing still relies on legacy `team_device` transport
-  fields
-- `missing` — no usable current transport exists
+- `missing` — no usable current announcement exists
 
-The `legacy-fallback` path is **temporary** compatibility infrastructure while
-current admission flows still populate `team_device(protocol, url, bucket)`.
-Valid member-berth storage announcements take precedence over legacy fallback.
-Once admission and bootstrap flows publish or prompt for member-berth storage
-announcements, the fallback should be deleted.
+A signed `member_berth_storage_announcement` is the only source of peer storage
+routing. `team_device` carries device identity only and has no transport
+columns; there is no legacy fallback. Admission, bootstrap, and team creation
+publish a member-berth storage announcement for the berth they allocate, so a
+member with no valid signed announcement simply reports `missing`.
 
 ---
 
@@ -854,9 +852,9 @@ the signed statement before every clone has adopted the corresponding member,
 berth, or trust rows. Selection treats structurally invalid or untrusted rows
 as inert.
 
-Valid member-berth storage announcements take precedence over legacy
-`team_device(protocol, url, bucket)` fallback. Legacy fallback is temporary and
-must be named as such until removed.
+A valid member-berth storage announcement is the sole source of peer storage
+routing. `team_device` carries no transport columns, so there is no legacy
+fallback to take precedence over.
 
 #### Materialization feedback
 
@@ -1223,11 +1221,9 @@ CREATE TABLE IF NOT EXISTS team_device (
     device_key_id BLOB PRIMARY KEY,
     member_id BLOB NOT NULL,
     public_key BLOB NOT NULL,
-    protocol TEXT,
-    url TEXT,
-    bucket TEXT,
     created_at TEXT NOT NULL,
-    -- no credential columns: credentials stay in the local Hub, never shared
+    -- device identity only: no protocol/url/bucket storage-routing columns.
+    -- Peer storage routing lives in member_berth_storage_announcement.
     FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
 );
 
