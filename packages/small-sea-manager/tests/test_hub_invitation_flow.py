@@ -190,13 +190,14 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     assert bob_member_id_hex in member_ids
 
     team_devices = aconn.execute(
-        "SELECT member_id, public_key, protocol, url FROM team_device ORDER BY member_id, device_key_id"
+        "SELECT member_id, public_key FROM team_device ORDER BY member_id, device_key_id"
     ).fetchall()
     assert len(team_devices) == 2
-    bob_device = next(row for row in team_devices if row[0].hex() == bob_member_id_hex)
-    # Transport is now a post-admission B7 step rather than part of invitee acceptance.
-    assert bob_device[2] is None
-    assert bob_device[3] is None
+    # team_device carries identity only; storage routing is published separately
+    # through signed member_berth_storage_announcement rows (issue #138).
+    device_member_ids = {row[0].hex() for row in team_devices}
+    assert alice_member_id_hex in device_member_ids
+    assert bob_member_id_hex in device_member_ids
     aconn.close()
 
     # ---- Bob's local clone remains pre-finalization until he syncs again ----
@@ -207,11 +208,19 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     member_ids = {row[0].hex() for row in members}
     assert alice_member_id_hex in member_ids
     team_devices = bconn.execute(
-        "SELECT member_id, protocol, url FROM team_device ORDER BY member_id, device_key_id"
+        "SELECT member_id FROM team_device ORDER BY member_id, device_key_id"
     ).fetchall()
     assert len(team_devices) == 1
-    alice_device = next(row for row in team_devices if row[0].hex() == alice_member_id_hex)
-    assert alice_device[1] == "s3"
+    assert team_devices[0][0].hex() == alice_member_id_hex
+    # Alice's storage is discoverable through her synced berth storage
+    # announcement rather than team_device transport columns.
+    alice_storage = bconn.execute(
+        "SELECT protocol FROM member_berth_storage_announcement "
+        "WHERE member_id = ? ORDER BY announcement_id DESC LIMIT 1",
+        (bytes.fromhex(alice_member_id_hex),),
+    ).fetchone()
+    assert alice_storage is not None
+    assert alice_storage[0] == "s3"
     bconn.close()
 
     # ---- Verify Bob's repo was pushed to his MinIO ----

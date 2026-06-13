@@ -42,10 +42,6 @@
           <div><span class="badge badge-green">announced</span></div>
           <div class="muted" style="margin-top:0.2rem">{{ m.effective_transport.protocol }} {{ m.effective_transport.url }}</div>
           <div class="muted">{{ m.effective_transport.bucket }}</div>
-          {% elif m.transport_status == "legacy-fallback" and m.effective_transport %}
-          <div><span class="badge badge-amber">legacy-fallback</span></div>
-          <div class="muted" style="margin-top:0.2rem">{{ m.effective_transport.protocol }} {{ m.effective_transport.url }}</div>
-          <div class="muted">{{ m.effective_transport.bucket }}</div>
           {% else %}
           <span class="badge badge-grey">missing</span>
           {% endif %}

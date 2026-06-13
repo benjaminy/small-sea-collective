@@ -46,11 +46,8 @@ from small_sea_note_to_self.ids import uuid7
 from wrasse_trust.keys import key_id_from_public
 from wrasse_trust.transport import (
     MemberBerthStorageAnnouncement,
-    MemberTransportAnnouncement,
-    TransportEndpoint,
     key_certificate_from_team_db_record,
     select_effective_member_berth_storage,
-    select_effective_member_transport,
     verify_member_berth_storage_announcement_signature,
 )
 
@@ -1561,17 +1558,11 @@ class SmallSeaBackend:
         member_id = bytes.fromhex(member_id_hex)
         conn = sqlite3.connect(self._team_db_path_for_session(ss_session))
         try:
-            legacy_transport = (
-                self._legacy_transport_for_member(conn, member_id)
-                if ss_session.app_name == "SmallSeaCollectiveCore"
-                else None
-            )
-            selection = self._effective_peer_transport_selection(
+            selection = self._select_member_berth_storage(
                 conn,
                 ss_session.team_id,
                 member_id,
-                berth_id=ss_session.berth_id,
-                legacy_fallback=legacy_transport,
+                ss_session.berth_id,
             )
         finally:
             conn.close()
@@ -1650,31 +1641,6 @@ class SmallSeaBackend:
             for row in rows
         ]
 
-    def _load_member_transport_announcements(self, conn):
-        if not self._table_exists(conn, "member_transport_announcement"):
-            return []
-        rows = conn.execute(
-            """
-            SELECT announcement_id, member_id, protocol, url, bucket, announced_at,
-                   signer_key_id, signature
-            FROM member_transport_announcement
-            ORDER BY announcement_id DESC
-            """
-        ).fetchall()
-        return [
-            MemberTransportAnnouncement(
-                announcement_id=row[0],
-                member_id=row[1],
-                protocol=row[2],
-                url=row[3],
-                bucket=row[4],
-                announced_at=row[5],
-                signer_key_id=row[6],
-                signature=row[7],
-            )
-            for row in rows
-        ]
-
     def _load_member_berth_storage_announcements(
         self,
         conn,
@@ -1713,26 +1679,6 @@ class SmallSeaBackend:
             return {}
         rows = conn.execute("SELECT device_key_id, public_key FROM team_device").fetchall()
         return {row[0]: row[1] for row in rows}
-
-    def _legacy_transport_for_member(self, conn, member_id: bytes) -> TransportEndpoint | None:
-        # TEMPORARY: remove when B5 stops relying on admission-time team_device
-        # transport fields as a compatibility fallback.
-        if not self._table_exists(conn, "team_device"):
-            return None
-        row = conn.execute(
-            """
-            SELECT protocol, url, bucket
-            FROM team_device
-            WHERE member_id = ?
-              AND url IS NOT NULL
-            ORDER BY created_at ASC, device_key_id ASC
-            LIMIT 1
-            """,
-            (member_id,),
-        ).fetchone()
-        if row is None or row[0] is None or row[1] is None:
-            return None
-        return TransportEndpoint(protocol=row[0], url=row[1], bucket=row[2] or "")
 
     def _team_db_path_for_session(self, ss_session: SmallSeaSession) -> str:
         if ss_session.team_name == "NoteToSelf":
@@ -1778,8 +1724,6 @@ class SmallSeaBackend:
         team_id: bytes,
         member_id: bytes,
         berth_id: bytes,
-        *,
-        legacy_fallback: TransportEndpoint | None = None,
     ):
         return select_effective_member_berth_storage(
             member_id=member_id,
@@ -1792,7 +1736,6 @@ class SmallSeaBackend:
             certs=self._load_team_certificates(conn, team_id),
             team_id=team_id,
             device_public_keys_by_key_id=self._device_public_keys_by_key_id(conn),
-            legacy_fallback=legacy_fallback,
         )
 
     def _require_own_storage_announcement(
@@ -1865,37 +1808,6 @@ class SmallSeaBackend:
             ):
                 return True
         return False
-
-    def _effective_peer_transport_selection(
-        self,
-        conn,
-        team_id: bytes,
-        member_id: bytes,
-        berth_id: bytes | None = None,
-        legacy_fallback: TransportEndpoint | None = None,
-    ):
-        if berth_id is not None:
-            return self._select_member_berth_storage(
-                conn,
-                team_id,
-                member_id,
-                berth_id,
-                legacy_fallback=legacy_fallback,
-            )
-        if legacy_fallback is None:
-            legacy_fallback = self._legacy_transport_for_member(conn, member_id)
-        return select_effective_member_transport(
-            member_id=member_id,
-            announcements=self._load_member_transport_announcements(conn),
-            certs=self._load_team_certificates(conn, team_id),
-            team_id=team_id,
-            device_public_keys_by_key_id=self._device_public_keys_by_key_id(conn),
-            legacy_fallback=legacy_fallback,
-        )
-
-    def _effective_peer_transport(self, conn, team_id: bytes, member_id: bytes) -> TransportEndpoint | None:
-        selection = self._effective_peer_transport_selection(conn, team_id, member_id)
-        return selection.transport
 
     # ---- Notifications ----
 
