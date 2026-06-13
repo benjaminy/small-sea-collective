@@ -24,7 +24,8 @@ them. The decisive creator test asserts their absence via `PRAGMA table_info`.
   - `accept_invitation`: captures the allocation (previously discarded at the old
     `provisioning.py:4780`), publishes the acceptor's signed announcement, commits it.
   - `finalize_linked_device_bootstrap`: transport write removed; publishing deferred
-    (FOLLOW-UP §2 — this path derives a bucket name, it is not allocation-producing).
+    (see design record; this path derives a bucket name, it is not allocation-producing;
+    tracked in #139).
   - `_upsert_team_device_row`: `protocol`/`url`/`bucket` params + columns dropped.
   - `_migrate_team_db_to_member_and_team_device`: inline CREATE + INSERT updated to
     match the column drop.
@@ -56,7 +57,7 @@ the same `_download_peer_file`/selection code serves both, and the wrasse-trust 
 tests cover selection (tampered / wrong-signer / untrusted → `missing`). The one
 thing **not** asserted end-to-end is "Alice downloads Bob's file in one process" —
 that additionally needs cross-member announcement merge, which is existing sync-layer
-plumbing out of scope for #138 (FOLLOW-UP §3).
+plumbing out of scope for #138 and tracked in #150.
 
 ## Behavior changes a reviewer might flag (all intended)
 
@@ -65,7 +66,7 @@ plumbing out of scope for #138 (FOLLOW-UP §3).
   (was `"legacy-fallback"` / `False`). Updated `test_member_transport.py` + `members.html`.
 - `member_transport_announcement` and `select_effective_member_transport` are KEPT —
   they back the live `announce_transport` web feature; #138 removed the fallback, not
-  that feature. (#123 grooming: see FOLLOW-UP §1.)
+  that feature. The remaining design question is tracked in the rewritten #123.
 - `test_peer_transport.py`'s two "falls_back" tests still pass and still assert the
   same buckets, but the thing they now fall back *to* is `create_team`'s valid
   announcement, not `team_device`. They remain valid precedence tests (newer-but-invalid

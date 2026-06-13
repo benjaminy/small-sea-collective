@@ -109,7 +109,7 @@ self, `needs_transport_announcement: True`) instead of `"legacy-fallback"`.
    A linked device joins an **existing** member who already announced their berth
    storage (when they created/joined the team); that announcement already covers
    the member. So this branch only **stops the transport-field write** here and
-   defers per-linked-device storage announcements to FOLLOW-UP. This avoids guessing
+   defers per-linked-device storage announcements to #139. This avoids guessing
    at a signer identity and a bucket-name scheme that may not match real allocations.
 
 2. **`member_berth_storage_announcement` has no `member_id` FK** (confirmed in the
@@ -121,7 +121,7 @@ self, `needs_transport_announcement: True`) instead of `"legacy-fallback"`.
 3. **Cross-member sync delivery is out of scope.** Each member publishes and commits
    their own announcement to their own `core.db`/bucket. A reader resolving a *peer's*
    storage needs that peer's announcement merged into the reader's clone, which is the
-   existing sync layer's job (#139/#140 territory), not #138.
+   existing sync layer's job (tracked by #150), not #138.
 
 ## Validation
 
