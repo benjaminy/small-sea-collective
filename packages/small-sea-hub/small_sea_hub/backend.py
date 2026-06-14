@@ -56,6 +56,19 @@ class SmallSeaBackendExn(Exception):
     pass
 
 
+class FutureHubDatabaseVersionError(SmallSeaBackendExn):
+    def __init__(self, db_path, actual_version: int, supported_version: int):
+        self.db_path = pathlib.Path(db_path)
+        self.actual_version = actual_version
+        self.supported_version = supported_version
+        super().__init__(
+            "Hub database "
+            f"{self.db_path} has schema version {actual_version}, "
+            f"but this Hub supports up to {supported_version}. "
+            "Upgrade Small Sea before opening this database."
+        )
+
+
 class SmallSeaNotFoundExn(SmallSeaBackendExn):
     pass
 
@@ -344,8 +357,11 @@ class SmallSeaBackend:
             return
 
         if user_version > SmallSeaBackend.hub_schema_version:
-            print("TODO: DB FROM THE FUTURE!")
-            raise NotImplementedError()
+            raise FutureHubDatabaseVersionError(
+                self.path_local_db,
+                user_version,
+                SmallSeaBackend.hub_schema_version,
+            )
 
         schema_path = pathlib.Path(__file__).parent
         schema_path = schema_path / "sql" / "hub_local_schema.sql"
