@@ -151,6 +151,19 @@ class CloudStorageRequiredError(ValueError):
         super().__init__(message or self.reason)
 
 
+class FutureTeamDatabaseVersionError(Exception):
+    def __init__(self, db_path, actual_version: int, supported_version: int):
+        self.db_path = pathlib.Path(db_path)
+        self.actual_version = actual_version
+        self.supported_version = supported_version
+        super().__init__(
+            "Team database "
+            f"{self.db_path} has schema version {actual_version}, "
+            f"but this Manager supports up to {supported_version}. "
+            "Upgrade Small Sea before opening this database."
+        )
+
+
 class CloudLocationMissingError(CloudStorageRequiredError):
     reason = "cloud_location_missing"
 
@@ -2397,7 +2410,11 @@ def ensure_team_db_schema(db_path):
                 conn.execute(text(f"PRAGMA user_version = {USER_SCHEMA_VERSION}"))
                 return
             if user_version > USER_SCHEMA_VERSION:
-                raise NotImplementedError("TODO: DB FROM THE FUTURE!")
+                raise FutureTeamDatabaseVersionError(
+                    db_path,
+                    user_version,
+                    USER_SCHEMA_VERSION,
+                )
     finally:
         engine.dispose()
 

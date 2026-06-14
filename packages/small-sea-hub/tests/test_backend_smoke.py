@@ -3,12 +3,46 @@
 # Participant provisioning now lives in small_sea_manager.provisioning,
 # so we call that to set up test participants before exercising hub operations.
 
+import pathlib
+import sqlite3
+
+import pytest
+
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 
 
 def test_just_make_backend(playground_dir):
     small_sea = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+
+
+def test_future_hub_db_version_fails_fast(playground_dir, capsys):
+    root = pathlib.Path(playground_dir)
+    db_path = root / "small_sea_collective_local.db"
+    future_version = SmallSea.SmallSeaBackend.hub_schema_version + 1
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute(f"PRAGMA user_version = {future_version}")
+        conn.commit()
+
+    with pytest.raises(SmallSea.FutureHubDatabaseVersionError) as exc_info:
+        SmallSea.SmallSeaBackend(root_dir=playground_dir)
+
+    message = str(exc_info.value)
+    assert str(db_path) in message
+    assert str(future_version) in message
+    assert str(SmallSea.SmallSeaBackend.hub_schema_version) in message
+    assert "TODO: DB FROM THE FUTURE!" not in capsys.readouterr().out
+
+    with sqlite3.connect(str(db_path)) as conn:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert version == future_version
+    assert "session" not in tables
 
 
 def test_create_user(playground_dir):

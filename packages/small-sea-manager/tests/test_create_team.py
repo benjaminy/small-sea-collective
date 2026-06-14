@@ -8,6 +8,7 @@ from small_sea_note_to_self.db import device_local_db_path
 
 from small_sea_manager.provisioning import _deserialize_cert, _serialize_cert
 from small_sea_manager.provisioning import (
+    FutureTeamDatabaseVersionError,
     USER_SCHEMA_VERSION,
     activate_app_for_team,
     create_new_participant,
@@ -400,3 +401,27 @@ def test_migration_drops_legacy_team_device_transport_columns(playground_dir):
     with sqlite3.connect(str(team_db)) as conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     assert version == USER_SCHEMA_VERSION
+
+
+def test_future_team_db_version_fails_fast(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    create_team(root, alice_hex, "ProjectX")
+    team_db = _team_db(root, alice_hex, "ProjectX")
+    future_version = USER_SCHEMA_VERSION + 1
+
+    with sqlite3.connect(str(team_db)) as conn:
+        conn.execute(f"PRAGMA user_version = {future_version}")
+        conn.commit()
+
+    with pytest.raises(FutureTeamDatabaseVersionError) as exc_info:
+        ensure_team_db_schema(team_db)
+
+    message = str(exc_info.value)
+    assert str(team_db) in message
+    assert str(future_version) in message
+    assert str(USER_SCHEMA_VERSION) in message
+
+    with sqlite3.connect(str(team_db)) as conn:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert version == future_version

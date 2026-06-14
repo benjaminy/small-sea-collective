@@ -15,6 +15,7 @@ from .bootstrap import (
     welcome_bundle_aad,
 )
 from .db import (
+    FutureNoteToSelfDatabaseVersionError,
     LOCAL_DB_FILENAME,
     LOCAL_SCHEMA_VERSION,
     SHARED_DB_FILENAME,
@@ -32,6 +33,7 @@ from .ids import uuid7
 __all__ = [
     "LOCAL_DB_FILENAME",
     "LOCAL_SCHEMA_VERSION",
+    "FutureNoteToSelfDatabaseVersionError",
     "JoinRequestArtifact",
     "SignedWelcomeBundle",
     "SHARED_DB_FILENAME",

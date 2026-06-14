@@ -9,6 +9,27 @@ SHARED_SCHEMA_VERSION = 57
 LOCAL_SCHEMA_VERSION = 9
 
 
+class FutureNoteToSelfDatabaseVersionError(Exception):
+    def __init__(
+        self,
+        db_path: str | Path,
+        database_label: str,
+        actual_version: int,
+        supported_version: int,
+    ):
+        self.db_path = Path(db_path)
+        self.database_label = database_label
+        self.actual_version = actual_version
+        self.supported_version = supported_version
+        super().__init__(
+            "NoteToSelf "
+            f"{database_label} database {self.db_path} "
+            f"has schema version {actual_version}, "
+            f"but this NoteToSelf package supports up to {supported_version}. "
+            "Upgrade Small Sea before opening this database."
+        )
+
+
 def note_to_self_sync_db_path(root_dir: str | Path, participant_hex: str) -> Path:
     root_dir = Path(root_dir)
     return root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync" / SHARED_DB_FILENAME
@@ -33,7 +54,12 @@ def initialize_shared_db(shared_db_path: str | Path) -> None:
         if current_version == SHARED_SCHEMA_VERSION:
             return
         if current_version > SHARED_SCHEMA_VERSION:
-            raise NotImplementedError("TODO: SHARED NOTE_TO_SELF DB FROM THE FUTURE!")
+            raise FutureNoteToSelfDatabaseVersionError(
+                shared_db_path,
+                "shared",
+                current_version,
+                SHARED_SCHEMA_VERSION,
+            )
         if current_version != 0:
             raise NotImplementedError("TODO: shared NoteToSelf DB migrations")
 
@@ -55,7 +81,12 @@ def initialize_device_local_db(local_db_path: str | Path) -> None:
         if current_version == LOCAL_SCHEMA_VERSION:
             return
         if current_version > LOCAL_SCHEMA_VERSION:
-            raise NotImplementedError("TODO: LOCAL NOTE_TO_SELF DB FROM THE FUTURE!")
+            raise FutureNoteToSelfDatabaseVersionError(
+                local_db_path,
+                "device-local",
+                current_version,
+                LOCAL_SCHEMA_VERSION,
+            )
         if current_version != 0:
             _migrate_device_local_db(conn, current_version)
             conn.execute(f"PRAGMA user_version = {LOCAL_SCHEMA_VERSION}")
