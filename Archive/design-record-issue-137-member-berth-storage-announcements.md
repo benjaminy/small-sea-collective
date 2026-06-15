@@ -199,7 +199,7 @@ explicitly exclude the signature field.
 ## Validation summary
 
 - `uv run pytest packages/small-sea-hub/tests packages/small-sea-manager/tests
-  packages/shared-file-vault/tests` is green.
+  packages/ssc-files/tests` is green.
 - `grep -rn 'ss-{.*berth_id' packages/small-sea-hub/small_sea_hub/`
   returns only an unrelated notification topic in `server.py`. No
   own-storage or peer-read formula synthesis remains.

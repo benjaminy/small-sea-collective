@@ -95,17 +95,17 @@ def test_request_session_app_bootstrap_required_preserves_reason(client, reason)
             json={
                 "error": "app_bootstrap_required",
                 "reason": reason,
-                "app": "SharedFileVault",
+                "app": "SmallSeaCollectiveFiles",
                 "team": "ProjectX",
             },
         )
     )
     with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
-        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+        client.request_session("alice", "SmallSeaCollectiveFiles", "ProjectX", "TestClient")
 
     exc = exc_info.value
     assert exc.reason == reason
-    assert exc.app == "SharedFileVault"
+    assert exc.app == "SmallSeaCollectiveFiles"
     assert exc.team == "ProjectX"
 
 
@@ -117,13 +117,13 @@ def test_request_session_app_bootstrap_required_is_not_conflict(client):
             json={
                 "error": "app_bootstrap_required",
                 "reason": "app_unknown",
-                "app": "SharedFileVault",
+                "app": "SmallSeaCollectiveFiles",
                 "team": "ProjectX",
             },
         )
     )
     with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
-        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+        client.request_session("alice", "SmallSeaCollectiveFiles", "ProjectX", "TestClient")
 
     assert isinstance(exc_info.value, SmallSeaError)
     assert not isinstance(exc_info.value, SmallSeaConflict)
@@ -137,16 +137,16 @@ def test_request_session_app_bootstrap_required_user_message(client):
             json={
                 "error": "app_bootstrap_required",
                 "reason": "app_unknown",
-                "app": "SharedFileVault",
+                "app": "SmallSeaCollectiveFiles",
                 "team": "ProjectX",
             },
         )
     )
     with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
-        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+        client.request_session("alice", "SmallSeaCollectiveFiles", "ProjectX", "TestClient")
 
     expected = (
-        "SharedFileVault isn't set up yet. "
+        "SmallSeaCollectiveFiles isn't set up yet. "
         "Open Manager to register it for team ProjectX."
     )
     assert exc_info.value.user_message == expected
@@ -161,18 +161,18 @@ def test_request_session_app_bootstrap_required_allows_no_team(client):
             json={
                 "error": "app_bootstrap_required",
                 "reason": "app_unknown",
-                "app": "SharedFileVault",
+                "app": "SmallSeaCollectiveFiles",
                 "team": None,
             },
         )
     )
     with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
-        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+        client.request_session("alice", "SmallSeaCollectiveFiles", "ProjectX", "TestClient")
 
     assert exc_info.value.team is None
     assert (
         exc_info.value.user_message
-        == "SharedFileVault isn't set up yet. Open Manager to register it."
+        == "SmallSeaCollectiveFiles isn't set up yet. Open Manager to register it."
     )
 
 
@@ -184,13 +184,13 @@ def test_request_session_app_bootstrap_required_preserves_unknown_reason(client)
             json={
                 "error": "app_bootstrap_required",
                 "reason": "future_more_specific_reason",
-                "app": "SharedFileVault",
+                "app": "SmallSeaCollectiveFiles",
                 "team": "ProjectX",
             },
         )
     )
     with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
-        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+        client.request_session("alice", "SmallSeaCollectiveFiles", "ProjectX", "TestClient")
 
     assert exc_info.value.reason == "future_more_specific_reason"
 
@@ -203,13 +203,13 @@ def test_request_session_app_bootstrap_required_reads_top_level_body(client):
             json={
                 "error": "app_bootstrap_required",
                 "reason": "app_unknown",
-                "app": "SharedFileVault",
+                "app": "SmallSeaCollectiveFiles",
                 "team": "ProjectX",
             },
         )
     )
     with pytest.raises(SmallSeaAppBootstrapRequired):
-        client.request_session("alice", "SharedFileVault", "ProjectX", "TestClient")
+        client.request_session("alice", "SmallSeaCollectiveFiles", "ProjectX", "TestClient")
 
 
 @respx.mock
@@ -491,9 +491,9 @@ def test_clear_app_sighting_sends_tuple_body_verbatim(session):
     )
 
     deleted = session.clear_app_sighting(
-        app_name="SharedFileVault",
+        app_name="SmallSeaCollectiveFiles",
         team_name="ProjectX",
-        client_name="shared-file-vault:default",
+        client_name="ssc-files:default",
         last_seen_at="2026-05-01T12:00:00.000000+00:00",
     )
 
@@ -502,9 +502,9 @@ def test_clear_app_sighting_sends_tuple_body_verbatim(session):
     import json
     body = json.loads(sent.content)
     assert body == {
-        "app_name": "SharedFileVault",
+        "app_name": "SmallSeaCollectiveFiles",
         "team_name": "ProjectX",
-        "client_name": "shared-file-vault:default",
+        "client_name": "ssc-files:default",
         "last_seen_at": "2026-05-01T12:00:00.000000+00:00",
     }
     assert sent.headers["Authorization"] == f"Bearer {FAKE_TOKEN}"
@@ -517,7 +517,7 @@ def test_clear_app_sighting_returns_zero_on_idempotent_response(session):
     )
 
     deleted = session.clear_app_sighting(
-        app_name="SharedFileVault",
+        app_name="SmallSeaCollectiveFiles",
         team_name="ProjectX",
         client_name="cli",
         last_seen_at="2026-05-01T12:00:00.000000+00:00",

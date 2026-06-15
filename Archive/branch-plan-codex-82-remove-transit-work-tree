@@ -2,7 +2,7 @@
 
 ## Background
 
-The vault keeps an internal `transit` work tree (a linked checkout at
+The files keeps an internal `transit` work tree (a linked checkout at
 `niches/<name>/transit/`) that `_cod_push`, `_cod_pull`, `_cod_fetch`, and
 `_cod_merge_ref` use as a stable, always-clean staging area for git bundle and
 merge operations.
@@ -22,7 +22,7 @@ tree) and the single user checkout (for merge operations that do).
 
 Issue 78 is related follow-up work: it catalogs `gitCmd` leakage outside
 `cod_sync`. Issue 82 is a good opportunity to tighten the boundary in
-`shared_file_vault/vault.py` but leaves the broader refactor to issue 78.
+`ssc_files/files.py` but leaves the broader refactor to issue 78.
 
 ---
 
@@ -57,7 +57,7 @@ the preceding fetch step.
 
 ## Changes
 
-### `shared_file_vault/vault.py`
+### `ssc_files/files.py`
 
 **Remove:**
 - `_niche_transit_dir(...)` — path helper, no longer needed.
@@ -137,7 +137,7 @@ the preceding fetch step.
   work_tree arg); `_cod_merge_ref` call already uses the registry checkout, so
   no argument change needed there beyond the signature update.
 
-**Pre-existing transit dirs on disk**: vaults that were created before this
+**Pre-existing transit dirs on disk**: filess that were created before this
 branch will have orphaned `transit/` directories.  No code reads or writes them
 after this change, so they are harmless.  Cleanup of existing transit dirs is
 out of scope for this branch.
@@ -186,7 +186,7 @@ Update the docstring to document the new raising conditions.
   UI reads `ready_to_merge` from this function to tell the user there is new
   peer content to merge, even before they have a checkout.
 
-### Tests: `tests/test_vault.py`
+### Tests: `tests/test_files.py`
 
 - Update docstrings that reference "transit work tree" to describe the actual
   invariant: the clean-checkout guard fires on the user checkout before any
@@ -206,12 +206,12 @@ No public API signature changes are expected.  However, verify that:
 ## Micro tests
 
 These are in addition to the existing suite, not a replacement.  Add them to
-`tests/test_vault.py`.
+`tests/test_files.py`.
 
 1. **No transit dir ever created**: run the full sync lifecycle —
    `create_niche` → `add_checkout` → `publish` → `push_niche` →
-   `fetch_niche` (second vault) → `add_checkout` → `merge_niche` — then
-   walk the entire vault tree and assert that no `transit/` directory
+   `fetch_niche` (second files) → `add_checkout` → `merge_niche` — then
+   walk the entire files tree and assert that no `transit/` directory
    appears anywhere.  This catches lazy creation that `create_niche` alone
    would miss.
 
@@ -296,7 +296,7 @@ These are in addition to the existing suite, not a replacement.  Add them to
 
 ## Out of scope (issue 78 follow-up)
 
-- `gitCmd` is imported directly from `cod_sync.protocol` into `vault.py`.  This
+- `gitCmd` is imported directly from `cod_sync.protocol` into `files.py`.  This
   is the leakage that issue 78 will address.  Do not attempt to hide that import
   in this branch.
 - No new abstraction layer over git operations — issue 78 covers that.

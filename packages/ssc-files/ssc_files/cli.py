@@ -1,26 +1,27 @@
-"""Click CLI for the Small Sea Shared File Vault."""
+"""Click CLI for Small Sea Files."""
 
 import click
 
-from shared_file_vault import sync, vault
+from ssc_files import files as files_core
+from ssc_files import sync
 
 
 def _config() -> dict:
     return sync.load_config()
 
 
-def _resolve_common(vault_root=None, participant=None):
+def _resolve_common(files_root=None, participant=None):
     cfg = _config()
     return (
-        vault_root or cfg.get("vault_root"),
+        files_root or cfg.get("files_root"),
         participant or cfg.get("participant_hex"),
     )
 
 
-def _resolve_sync(vault_root=None, participant=None, hub_port=None):
+def _resolve_sync(files_root=None, participant=None, hub_port=None):
     cfg = _config()
     return (
-        vault_root or cfg.get("vault_root"),
+        files_root or cfg.get("files_root"),
         participant or cfg.get("participant_hex"),
         hub_port if hub_port is not None else cfg.get("hub_port", 11437),
     )
@@ -31,16 +32,16 @@ def _die(message: str) -> None:
     raise SystemExit(1)
 
 
-def _team_context(vault_root: str, participant_hex: str, team_name: str):
+def _team_context(files_root: str, participant_hex: str, team_name: str):
     try:
-        return sync.resolve_team_context(vault_root, participant_hex, team_name)
-    except sync.VaultSyncError as exc:
+        return sync.resolve_team_context(files_root, participant_hex, team_name)
+    except sync.FilesSyncError as exc:
         _die(str(exc))
 
 
 @click.group()
 def cli():
-    """Small Sea Shared File Vault"""
+    """Small Sea Files"""
 
 
 # ---------------------------------------------------------------------------
@@ -49,35 +50,35 @@ def cli():
 
 
 @cli.command("serve")
-@click.option("--vault-root", default=None, help="Override vault root from config")
+@click.option("--files-root", default=None, help="Override files root from config")
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--host", default="127.0.0.1", show_default=True)
 @click.option("--port", default=8000, show_default=True)
 @click.option("--open/--no-open", "open_browser", default=True, help="Open browser on start")
-def serve_cmd(vault_root, participant, host, port, open_browser):
+def serve_cmd(files_root, participant, host, port, open_browser):
     """Start the web UI."""
     import threading
     import webbrowser
 
     import uvicorn
-    from shared_file_vault.web import create_app
+    from ssc_files.web import create_app
 
-    vault_root, participant = _resolve_common(vault_root, participant)
+    files_root, participant = _resolve_common(files_root, participant)
 
-    if not vault_root or not participant:
+    if not files_root or not participant:
         _die(
-            "vault_root and participant_hex are required.\n"
-            f"Set them in {sync.config_path()} or pass --vault-root / --participant."
+            "files_root and participant_hex are required.\n"
+            f"Set them in {sync.config_path()} or pass --files-root / --participant."
         )
 
     hub_port = _config().get("hub_port", 11437)
-    app = create_app(vault_root, participant, hub_port=hub_port)
+    app = create_app(files_root, participant, hub_port=hub_port)
     url = f"http://{host}:{port}"
 
     if open_browser:
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()
 
-    click.echo(f"Vault UI -> {url}")
+    click.echo(f"Files UI -> {url}")
     uvicorn.run(app, host=host, port=port)
 
 
@@ -92,18 +93,18 @@ def serve_cmd(vault_root, participant, host, port, open_browser):
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
 def login_cmd(team_name, participant, hub_port):
     """Open and cache a Hub session for a team."""
-    vault_root, participant, hub_port = _resolve_sync(None, participant, hub_port)
+    files_root, participant, hub_port = _resolve_sync(None, participant, hub_port)
     try:
-        vault_root = sync.require_value(vault_root, "vault_root")
+        files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
         result = sync.login_team(
-            vault_root,
+            files_root,
             team_name,
             participant,
             hub_port=hub_port,
             pin_reader=lambda _: click.prompt("PIN", prompt_suffix=": "),
         )
-    except sync.VaultSyncError as exc:
+    except sync.FilesSyncError as exc:
         _die(str(exc))
 
     mode = "auto-approved" if result.auto_approved else "confirmed with PIN"
@@ -113,23 +114,23 @@ def login_cmd(team_name, participant, hub_port):
 @cli.command("push")
 @click.argument("team_name")
 @click.argument("niche_name")
-@click.option("--vault-root", default=None, help="Override vault root from config")
+@click.option("--files-root", default=None, help="Override files root from config")
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
-def push_cmd(team_name, niche_name, vault_root, participant, hub_port):
+def push_cmd(team_name, niche_name, files_root, participant, hub_port):
     """Push a niche and its registry through the Hub."""
-    vault_root, participant, hub_port = _resolve_sync(vault_root, participant, hub_port)
+    files_root, participant, hub_port = _resolve_sync(files_root, participant, hub_port)
     try:
-        vault_root = sync.require_value(vault_root, "vault_root")
+        files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
         sync.push_via_hub(
-            vault_root,
+            files_root,
             participant,
             team_name,
             niche_name,
             hub_port=hub_port,
         )
-    except (sync.VaultSyncError, OSError) as exc:
+    except (sync.FilesSyncError, OSError) as exc:
         _die(str(exc))
 
     click.echo(f"Pushed niche '{niche_name}' for team '{team_name}'.")
@@ -139,10 +140,10 @@ def push_cmd(team_name, niche_name, vault_root, participant, hub_port):
 @click.argument("team_name")
 @click.argument("niche_name")
 @click.option("--from-teammate", "from_teammate", required=True, help="Peer teammate ID hex")
-@click.option("--vault-root", default=None, help="Override vault root from config")
+@click.option("--files-root", default=None, help="Override files root from config")
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
-def fetch_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub_port):
+def fetch_cmd(team_name, niche_name, from_teammate, files_root, participant, hub_port):
     """Fetch updates from a peer without merging.
 
     Parks fetched content locally. No checkout is required. Use this as the
@@ -152,19 +153,19 @@ def fetch_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub
       2. checkout ... PATH             (attach a local directory)
       3. merge --from-teammate PEER_ID   (integrate fetched content)
     """
-    vault_root, participant, hub_port = _resolve_sync(vault_root, participant, hub_port)
+    files_root, participant, hub_port = _resolve_sync(files_root, participant, hub_port)
     try:
-        vault_root = sync.require_value(vault_root, "vault_root")
+        files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
         result = sync.fetch_via_hub(
-            vault_root,
+            files_root,
             participant,
             team_name,
             niche_name,
             from_teammate,
             hub_port=hub_port,
         )
-    except (sync.VaultSyncError, OSError) as exc:
+    except (sync.FilesSyncError, OSError) as exc:
         _die(str(exc))
 
     if result.niche_sha:
@@ -177,21 +178,21 @@ def fetch_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub
 @click.argument("team_name")
 @click.argument("niche_name")
 @click.option("--from-teammate", "from_teammate", required=True, help="Peer teammate ID hex")
-@click.option("--vault-root", default=None, help="Override vault root from config")
+@click.option("--files-root", default=None, help="Override files root from config")
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
-def merge_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub_port):
+def merge_cmd(team_name, niche_name, from_teammate, files_root, participant, hub_port):
     """Merge previously fetched peer updates into the attached checkout.
 
     Requires a clean checkout. If the niche has no checkout yet, run
     'checkout' first to attach one.
     """
-    vault_root, participant, hub_port = _resolve_sync(vault_root, participant, hub_port)
+    files_root, participant, hub_port = _resolve_sync(files_root, participant, hub_port)
     try:
-        vault_root = sync.require_value(vault_root, "vault_root")
+        files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
         sync.merge_via_hub(
-            vault_root,
+            files_root,
             participant,
             team_name,
             niche_name,
@@ -216,7 +217,7 @@ def merge_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub
             for path in exc.paths:
                 click.echo(f"  {path}", err=True)
         raise SystemExit(1)
-    except (sync.VaultSyncError, OSError) as exc:
+    except (sync.FilesSyncError, OSError) as exc:
         _die(str(exc))
 
     click.echo(f"Merged updates from {from_teammate} into '{niche_name}'.")
@@ -226,20 +227,20 @@ def merge_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub
 @click.argument("team_name")
 @click.argument("niche_name")
 @click.option("--from-teammate", "from_teammate", required=True, help="Peer teammate ID hex")
-@click.option("--vault-root", default=None, help="Override vault root from config")
+@click.option("--files-root", default=None, help="Override files root from config")
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
-def pull_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub_port):
+def pull_cmd(team_name, niche_name, from_teammate, files_root, participant, hub_port):
     """Convenience wrapper for fetch + merge (requires an attached checkout).
 
     For initial join (no checkout yet), use fetch → checkout → merge instead.
     """
-    vault_root, participant, hub_port = _resolve_sync(vault_root, participant, hub_port)
+    files_root, participant, hub_port = _resolve_sync(files_root, participant, hub_port)
     try:
-        vault_root = sync.require_value(vault_root, "vault_root")
+        files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
         sync.pull_via_hub(
-            vault_root,
+            files_root,
             participant,
             team_name,
             niche_name,
@@ -264,7 +265,7 @@ def pull_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub_
             for path in exc.paths:
                 click.echo(f"  {path}", err=True)
         raise SystemExit(1)
-    except (sync.VaultSyncError, OSError) as exc:
+    except (sync.FilesSyncError, OSError) as exc:
         _die(str(exc))
 
     click.echo(
@@ -273,65 +274,65 @@ def pull_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub_
 
 
 # ---------------------------------------------------------------------------
-# vault operations
+# files operations
 # ---------------------------------------------------------------------------
 
 
 @cli.command("init")
-@click.argument("vault_root")
+@click.argument("files_root")
 @click.argument("participant_hex")
-def init_cmd(vault_root, participant_hex):
-    """Initialize a vault for a participant."""
-    vault.init_vault(vault_root, participant_hex)
-    click.echo(f"Vault initialized at {vault_root}")
+def init_cmd(files_root, participant_hex):
+    """Initialize Files storage for a participant."""
+    files_core.init_files(files_root, participant_hex)
+    click.echo(f"Files initialized at {files_root}")
 
 
 @cli.command("create")
-@click.argument("vault_root")
+@click.argument("files_root")
 @click.argument("participant_hex")
 @click.argument("team_name")
 @click.argument("niche_name")
-def create_cmd(vault_root, participant_hex, team_name, niche_name):
+def create_cmd(files_root, participant_hex, team_name, niche_name):
     """Create a new niche."""
-    context = _team_context(vault_root, participant_hex, team_name)
-    niche_id = vault.create_niche(vault_root, participant_hex, context, niche_name)
+    context = _team_context(files_root, participant_hex, team_name)
+    niche_id = files_core.create_niche(files_root, participant_hex, context, niche_name)
     click.echo(f"Created niche '{niche_name}' ({niche_id})")
 
 
 @cli.command("checkout")
-@click.argument("vault_root")
+@click.argument("files_root")
 @click.argument("participant_hex")
 @click.argument("team_name")
 @click.argument("niche_name")
 @click.argument("dest_path")
-def checkout_cmd(vault_root, participant_hex, team_name, niche_name, dest_path):
+def checkout_cmd(files_root, participant_hex, team_name, niche_name, dest_path):
     """Attach a checkout of a niche at a filesystem path.
 
     Each niche may have at most one checkout. Remove the existing checkout
     before attaching a new location.
     """
-    context = _team_context(vault_root, participant_hex, team_name)
+    context = _team_context(files_root, participant_hex, team_name)
     try:
-        vault.add_checkout(vault_root, participant_hex, context, niche_name, dest_path)
-    except vault.DuplicateCheckoutError as exc:
+        files_core.add_checkout(files_root, participant_hex, context, niche_name, dest_path)
+    except files_core.DuplicateCheckoutError as exc:
         _die(str(exc))
     click.echo(f"Checkout attached at {dest_path}")
 
 
 @cli.command("list")
-@click.argument("vault_root")
+@click.argument("files_root")
 @click.argument("participant_hex")
 @click.argument("team_name")
-def list_cmd(vault_root, participant_hex, team_name):
+def list_cmd(files_root, participant_hex, team_name):
     """List all niches for a team."""
-    context = _team_context(vault_root, participant_hex, team_name)
-    niches = vault.list_niches(vault_root, participant_hex, context)
+    context = _team_context(files_root, participant_hex, team_name)
+    niches = files_core.list_niches(files_root, participant_hex, context)
     if not niches:
         click.echo("No niches.")
         return
     for niche in niches:
         residency = niche.get("residency", "")
-        checkout = vault.get_checkout(vault_root, participant_hex, context, niche["name"])
+        checkout = files_core.get_checkout(files_root, participant_hex, context, niche["name"])
         if checkout:
             state_str = f"{checkout}  ({residency})"
         else:
@@ -340,15 +341,15 @@ def list_cmd(vault_root, participant_hex, team_name):
 
 
 @cli.command("status")
-@click.argument("vault_root")
+@click.argument("files_root")
 @click.argument("participant_hex")
 @click.argument("team_name")
 @click.argument("niche_name")
 @click.argument("checkout_path")
-def status_cmd(vault_root, participant_hex, team_name, niche_name, checkout_path):
+def status_cmd(files_root, participant_hex, team_name, niche_name, checkout_path):
     """Show working tree status for a niche checkout."""
-    context = _team_context(vault_root, participant_hex, team_name)
-    entries = vault.status(vault_root, participant_hex, context, niche_name, checkout_path)
+    context = _team_context(files_root, participant_hex, team_name)
+    entries = files_core.status(files_root, participant_hex, context, niche_name, checkout_path)
     if not entries:
         click.echo("Clean.")
         return
@@ -357,18 +358,18 @@ def status_cmd(vault_root, participant_hex, team_name, niche_name, checkout_path
 
 
 @cli.command("publish")
-@click.argument("vault_root")
+@click.argument("files_root")
 @click.argument("participant_hex")
 @click.argument("team_name")
 @click.argument("niche_name")
 @click.argument("checkout_path")
 @click.option("-m", "--message", default=None, help="Commit message")
 @click.argument("files", nargs=-1)
-def publish_cmd(vault_root, participant_hex, team_name, niche_name, checkout_path, message, files):
+def publish_cmd(files_root, participant_hex, team_name, niche_name, checkout_path, message, files):
     """Publish changes from a checkout (stage + commit)."""
-    context = _team_context(vault_root, participant_hex, team_name)
-    commit_hash = vault.publish(
-        vault_root,
+    context = _team_context(files_root, participant_hex, team_name)
+    commit_hash = files_core.publish(
+        files_root,
         participant_hex,
         context,
         niche_name,
@@ -380,14 +381,14 @@ def publish_cmd(vault_root, participant_hex, team_name, niche_name, checkout_pat
 
 
 @cli.command("log")
-@click.argument("vault_root")
+@click.argument("files_root")
 @click.argument("participant_hex")
 @click.argument("team_name")
 @click.argument("niche_name")
-def log_cmd(vault_root, participant_hex, team_name, niche_name):
+def log_cmd(files_root, participant_hex, team_name, niche_name):
     """Show commit log for a niche."""
-    context = _team_context(vault_root, participant_hex, team_name)
-    entries = vault.log(vault_root, participant_hex, context, niche_name)
+    context = _team_context(files_root, participant_hex, team_name)
+    entries = files_core.log(files_root, participant_hex, context, niche_name)
     if not entries:
         click.echo("No commits.")
         return

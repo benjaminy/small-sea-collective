@@ -2,39 +2,39 @@
 
 ---
 id: 0026
-title: SharedFileVault — wire push/pull sync through the Hub
+title: SmallSeaCollectiveFiles — wire push/pull sync through the Hub
 type: task
 priority: high
 ---
 
 ## Context
 
-SharedFileVault's web UI and CLI have no sync capability.
-The vault library (`vault.py`) provides `push_niche`, `pull_niche`, `push_registry`, `pull_registry` but they require caller-supplied `SmallSeaRemote` / `PeerSmallSeaRemote` objects.
+SmallSeaCollectiveFiles' web UI and CLI have no sync capability.
+The files library (`files.py`) provides `push_niche`, `pull_niche`, `push_registry`, `pull_registry` but they require caller-supplied `SmallSeaRemote` / `PeerSmallSeaRemote` objects.
 Neither the web UI nor the CLI construct those remotes or hold Hub sessions.
 Sync is only exercised in the latency tests, which build remotes manually.
 
 ## What needs to happen
 
-### 1. Hub session management in SharedFileVault
+### 1. Hub session management in SmallSeaCollectiveFiles
 
-The vault needs a Hub session (token) per team berth. Options:
+The files needs a Hub session (token) per team berth. Options:
 
 - **Config file** — store `hub_port` and `session_token` in a per-participant
-  config alongside the vault root. Simple; session tokens are already
+  config alongside the files root. Simple; session tokens are already
   persisted in the Hub's DB so they survive Hub restarts.
 - **Session discovery via `/session/info`** — once issue 0020 lands, the app
   can call `/info` to find itself and open a session without the user
   supplying a hex ID. For now, config file is simpler.
 
 Session tokens should be cached after the first successful open so the user
-doesn't re-approve on every vault restart.
+doesn't re-approve on every files restart.
 
 ### 2. Remote construction
 
 `push_niche` / `pull_niche` need `SmallSeaRemote` and `PeerSmallSeaRemote`
 instances with the correct `path_prefix` (e.g.
-`vault/{team}/niches/{niche}/`). These can be built from the session token
+`files/{team}/niches/{niche}/`). These can be built from the session token
 and the team/niche names. The peer member IDs come from the team DB (already
 accessible via provisioning helpers).
 
@@ -49,7 +49,7 @@ Add push and pull actions to the niche detail view:
 
 ### 4. CLI push/pull commands
 
-Add `push` and `pull` subcommands to the SharedFileVault CLI, mirroring the
+Add `push` and `pull` subcommands to the SmallSeaCollectiveFiles CLI, mirroring the
 web UI actions. Useful for scripting and for the test harness.
 
 ### 5. Conflict handling (surface only)
@@ -67,8 +67,8 @@ conflict resolution design in issue 0015 §3.
 
 ## References
 
-- `packages/shared-file-vault/shared_file_vault/vault.py` — push/pull ops
-- `packages/shared-file-vault/shared_file_vault/web.py` — web UI (no sync yet)
+- `packages/ssc-files/ssc_files/files.py` — push/pull ops
+- `packages/ssc-files/ssc_files/web.py` — web UI (no sync yet)
 - `packages/cod-sync/cod_sync/protocol.py` — `SmallSeaRemote`, `PeerSmallSeaRemote`
 - `packages/small-sea-client/small_sea_client/client.py` — `SmallSeaSession`
 - Issue 0015 §3 — conflict resolution design

@@ -1,5 +1,5 @@
 """
-Multi-participant sync and merge scenarios for Shared File Vault.
+Multi-participant sync and merge scenarios for Small Sea Collective Files.
 
 These tests demonstrate progressively more interesting collaborative situations:
 
@@ -19,11 +19,11 @@ import pathlib
 import pytest
 from cod_sync.protocol import LocalFolderRemote
 
-from shared_file_vault.vault import (
-    VaultMaterializationContext,
+from ssc_files.files import (
+    FilesMaterializationContext,
     add_checkout,
     create_niche,
-    init_vault,
+    init_files,
     materialize_team,
     publish,
     pull_niche,
@@ -39,18 +39,18 @@ NICHE = "docs"
 
 
 def _team(participant_hex):
-    return VaultMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME)
+    return FilesMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME)
 
 
 # --- Helpers ---
 
 
 def setup_participant(playground, name, participant_hex):
-    """Create vault + checkout for a participant. Returns (root, checkout)."""
-    root = playground / f"vault-{name}"
+    """Create files + checkout for a participant. Returns (root, checkout)."""
+    root = playground / f"files-{name}"
     checkout = playground / f"checkout-{name}" / NICHE
     ctx = _team(participant_hex)
-    init_vault(str(root), participant_hex)
+    init_files(str(root), participant_hex)
     materialize_team(str(root), ctx)
     create_niche(str(root), participant_hex, ctx, NICHE)
     add_checkout(str(root), participant_hex, ctx, NICHE, str(checkout))
@@ -312,7 +312,7 @@ def test_three_participant_gossip(playground_dir):
 
 def test_concurrent_edit_same_line_raises(playground_dir):
     """Both participants edit the same line — merge conflict raises MergeConflictError."""
-    from shared_file_vault.vault import MergeConflictError
+    from ssc_files.files import MergeConflictError
 
     playground = pathlib.Path(playground_dir)
     alice_cloud = playground / "cloud-alice"

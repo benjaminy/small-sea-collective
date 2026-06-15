@@ -10,7 +10,7 @@ resolution-markers = [
 members = [
     "cod-sync",
     "cuttlefish",
-    "shared-file-vault",
+    "ssc-files",
     "small-sea-client",
     "small-sea-hub",
     "small-sea-live",
@@ -29,7 +29,7 @@ dev = [
     { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "respx", specifier = ">=0.22.0" },
-    { name = "shared-file-vault", editable = "packages/shared-file-vault" },
+    { name = "ssc-files", editable = "packages/ssc-files" },
     { name = "small-sea-client", editable = "packages/small-sea-client" },
     { name = "small-sea-hub", editable = "packages/small-sea-hub" },
     { name = "small-sea-manager", editable = "packages/small-sea-manager" },
@@ -1063,9 +1063,9 @@ wheels = [
 ]
 
 [[package]]
-name = "shared-file-vault"
+name = "ssc-files"
 version = "0.1.0"
-source = { editable = "packages/shared-file-vault" }
+source = { editable = "packages/ssc-files" }
 dependencies = [
     { name = "click" },
     { name = "cod-sync" },

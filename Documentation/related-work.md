@@ -91,7 +91,7 @@ groups since before this conversation started."
   defaults to per-team-scoped identity, so the same person presents
   separately in different teams unless they deliberately link.
 - Earthstar is intentionally small-scope. Small Sea is also small-scope but
-  expects to host meaningful applications (file vaults, structured data, the
+  expects to host meaningful applications (file stores, structured data, the
   social bridging app) rather than primarily journals and chats.
 
 **Risk.** Real but limited. Earthstar's stance is sufficiently minimalist

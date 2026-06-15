@@ -9,10 +9,10 @@ from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager
 
 
-_VAULT_APP = "SharedFileVault"
+_FILES_APP = "SmallSeaCollectiveFiles"
 _CORE_APP = "SmallSeaCollectiveCore"
 _TEAM = "ProjectX"
-_CLIENT = "SharedFileVaultTest"
+_CLIENT = "SmallSeaCollectiveFilesTest"
 
 
 def _fresh_env(playground_dir):
@@ -53,12 +53,12 @@ def _team_db(root_dir, participant_hex, team_name):
     )
 
 
-def _request_vault_session(client):
+def _request_files_session(client):
     return client.post(
         "/sessions/request",
         json={
             "participant": "alice",
-            "app": _VAULT_APP,
+            "app": _FILES_APP,
             "team": _TEAM,
             "client": _CLIENT,
         },
@@ -156,7 +156,7 @@ def _request_core_team_session(client):
     )
 
 
-def _assert_bootstrap_rejection(resp, reason, app_name=_VAULT_APP):
+def _assert_bootstrap_rejection(resp, reason, app_name=_FILES_APP):
     assert resp.status_code == 409
     assert resp.json() == {
         "error": "app_bootstrap_required",
@@ -166,24 +166,24 @@ def _assert_bootstrap_rejection(resp, reason, app_name=_VAULT_APP):
     }
 
 
-def test_unknown_vault_request_does_not_register_app_in_production(playground_dir):
+def test_unknown_files_request_does_not_register_app_in_production(playground_dir):
     """Production request path reports bootstrap need without implicit DB writes."""
     backend, participant_hex, client = _fresh_env(playground_dir)
     nts_db = _note_to_self_db(backend.root_dir, participant_hex)
     team_db = _team_db(backend.root_dir, participant_hex, _TEAM)
 
-    assert _app_rows(nts_db, _VAULT_APP) == []
-    assert _app_rows(team_db, _VAULT_APP) == []
+    assert _app_rows(nts_db, _FILES_APP) == []
+    assert _app_rows(team_db, _FILES_APP) == []
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
-    assert _app_rows(nts_db, _VAULT_APP) == []
-    assert _app_rows(team_db, _VAULT_APP) == []
+    assert _app_rows(nts_db, _FILES_APP) == []
+    assert _app_rows(team_db, _FILES_APP) == []
     _assert_bootstrap_rejection(resp, "app_unknown")
     assert _sighting_rows(backend) == [
         {
             "participant_hex": participant_hex,
-            "app_name": _VAULT_APP,
+            "app_name": _FILES_APP,
             "team_name": _TEAM,
             "client_name": _CLIENT,
             "reason": "app_unknown",
@@ -191,7 +191,7 @@ def test_unknown_vault_request_does_not_register_app_in_production(playground_di
         }
     ]
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
     assert resp.status_code == 409
     assert _sighting_rows(backend)[0]["seen_count"] == 2
@@ -210,13 +210,13 @@ def test_unknown_vault_request_does_not_register_app_in_production(playground_di
 def test_sighting_retry_upserts_across_hub_restart(playground_dir):
     backend, _participant_hex, client = _fresh_env(playground_dir)
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
     assert resp.status_code == 409
     assert _sighting_rows(backend)[0]["seen_count"] == 1
 
     restarted = SmallSea.SmallSeaBackend(root_dir=backend.root_dir)
     app.state.backend = restarted
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
     assert resp.status_code == 409
     assert _sighting_rows(restarted)[0]["seen_count"] == 2
@@ -224,23 +224,23 @@ def test_sighting_retry_upserts_across_hub_restart(playground_dir):
 
 def test_sightings_requires_manager_core_session(playground_dir):
     backend, participant_hex, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     Provisioning.register_app_for_participant(
         backend.root_dir,
         participant_hex,
-        _VAULT_APP,
+        _FILES_APP,
     )
     Provisioning.activate_app_for_team(
         backend.root_dir,
         participant_hex,
         _TEAM,
-        _VAULT_APP,
+        _FILES_APP,
     )
-    vault_token = _open_session(client, _VAULT_APP, _TEAM)
+    files_token = _open_session(client, _FILES_APP, _TEAM)
 
     resp = client.get(
         "/sightings",
-        headers={"Authorization": f"Bearer {vault_token}"},
+        headers={"Authorization": f"Bearer {files_token}"},
     )
 
     assert resp.status_code == 403
@@ -248,7 +248,7 @@ def test_sightings_requires_manager_core_session(playground_dir):
 
 def test_manager_refreshes_sightings_and_applies_local_disposition(playground_dir):
     backend, participant_hex, client = _fresh_env(playground_dir)
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
     assert resp.status_code == 409
     token = _open_core_session(client)
     manager = TeamManager(backend.root_dir, participant_hex, _http_client=client)
@@ -257,10 +257,10 @@ def test_manager_refreshes_sightings_and_applies_local_disposition(playground_di
     sightings = manager.refresh_app_sightings()
 
     assert len(sightings) == 1
-    assert sightings[0]["app_name"] == _VAULT_APP
+    assert sightings[0]["app_name"] == _FILES_APP
 
-    manager.dismiss_team_app_sighting(_TEAM, _VAULT_APP)
-    resp = _request_vault_session(client)
+    manager.dismiss_team_app_sighting(_TEAM, _FILES_APP)
+    resp = _request_files_session(client)
 
     assert resp.status_code == 409
     assert _sighting_rows(backend)[0]["seen_count"] == 2
@@ -269,13 +269,13 @@ def test_manager_refreshes_sightings_and_applies_local_disposition(playground_di
 
 def test_manager_participant_app_disposition_suppresses_sighting(playground_dir):
     backend, participant_hex, client = _fresh_env(playground_dir)
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
     assert resp.status_code == 409
     token = _open_core_session(client)
     manager = TeamManager(backend.root_dir, participant_hex, _http_client=client)
     manager.set_session("NoteToSelf", token, mode="passthrough")
 
-    manager.dismiss_participant_app_sighting(_VAULT_APP)
+    manager.dismiss_participant_app_sighting(_FILES_APP)
 
     assert manager.refresh_app_sightings() == []
 
@@ -285,7 +285,7 @@ def test_team_app_disposition_requires_known_team(playground_dir):
     manager = TeamManager(backend.root_dir, participant_hex, _http_client=client)
 
     try:
-        manager.dismiss_team_app_sighting("MissingTeam", _VAULT_APP)
+        manager.dismiss_team_app_sighting("MissingTeam", _FILES_APP)
     except ValueError as exc:
         assert "MissingTeam" in str(exc)
     else:
@@ -305,10 +305,10 @@ def test_participant_berth_missing_rejection(playground_dir):
     backend, _participant_hex, client = _fresh_env(playground_dir)
     team_db = _team_db(backend.root_dir, _participant_hex, _TEAM)
     app_id = b"\x11" * 16
-    _insert_app(team_db, app_id, _VAULT_APP)
+    _insert_app(team_db, app_id, _FILES_APP)
     _insert_team_berth(team_db, b"\x12" * 16, app_id)
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
     _assert_bootstrap_rejection(resp, "participant_berth_missing")
     assert _sighting_rows(backend)[0]["reason"] == "participant_berth_missing"
@@ -318,7 +318,7 @@ def test_team_berth_missing_rejection(playground_dir):
     backend, participant_hex, client = _fresh_env(playground_dir)
     nts_db = _note_to_self_db(backend.root_dir, participant_hex)
     app_id = b"\x21" * 16
-    _insert_app(nts_db, app_id, _VAULT_APP)
+    _insert_app(nts_db, app_id, _FILES_APP)
     _insert_note_to_self_berth(
         nts_db,
         b"\x22" * 16,
@@ -326,7 +326,7 @@ def test_team_berth_missing_rejection(playground_dir):
         _team_id(nts_db, _TEAM),
     )
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
     _assert_bootstrap_rejection(resp, "team_berth_missing")
     assert _sighting_rows(backend)[0]["reason"] == "team_berth_missing"
@@ -338,7 +338,7 @@ def test_friendly_name_ambiguous_rejection(playground_dir):
     team_id = _team_id(nts_db, _TEAM)
     for index in range(2):
         app_id = bytes([0x31 + index]) * 16
-        _insert_app(nts_db, app_id, _VAULT_APP)
+        _insert_app(nts_db, app_id, _FILES_APP)
         _insert_note_to_self_berth(
             nts_db,
             bytes([0x41 + index]) * 16,
@@ -346,13 +346,13 @@ def test_friendly_name_ambiguous_rejection(playground_dir):
             team_id,
         )
 
-    before = _app_rows(nts_db, _VAULT_APP)
+    before = _app_rows(nts_db, _FILES_APP)
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
     _assert_bootstrap_rejection(resp, "app_friendly_name_ambiguous")
     assert _sighting_rows(backend)[0]["reason"] == "app_friendly_name_ambiguous"
-    assert _app_rows(nts_db, _VAULT_APP) == before
+    assert _app_rows(nts_db, _FILES_APP) == before
 
 
 def test_multiple_berths_for_one_app_is_ambiguous(playground_dir):
@@ -361,19 +361,19 @@ def test_multiple_berths_for_one_app_is_ambiguous(playground_dir):
     team_db = _team_db(backend.root_dir, participant_hex, _TEAM)
     nts_app_id = b"\x51" * 16
     team_app_id = b"\x52" * 16
-    _insert_app(nts_db, nts_app_id, _VAULT_APP)
+    _insert_app(nts_db, nts_app_id, _FILES_APP)
     _insert_note_to_self_berth(
         nts_db,
         b"\x53" * 16,
         nts_app_id,
         _team_id(nts_db, _TEAM),
     )
-    _insert_app(team_db, team_app_id, _VAULT_APP)
+    _insert_app(team_db, team_app_id, _FILES_APP)
     _insert_team_berth(team_db, b"\x54" * 16, team_app_id)
     _insert_team_berth(team_db, b"\x55" * 16, team_app_id)
     before = _team_berth_rows(team_db, team_app_id)
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
     _assert_bootstrap_rejection(resp, "app_friendly_name_ambiguous")
     assert _team_berth_rows(team_db, team_app_id) == before
@@ -386,17 +386,17 @@ def test_cross_scope_name_bridge_allows_distinct_random_app_ids(playground_dir):
     nts_app_id = b"\x61" * 16
     team_app_id = b"\x62" * 16
     assert nts_app_id != team_app_id
-    _insert_app(nts_db, nts_app_id, _VAULT_APP)
+    _insert_app(nts_db, nts_app_id, _FILES_APP)
     _insert_note_to_self_berth(
         nts_db,
         b"\x63" * 16,
         nts_app_id,
         _team_id(nts_db, _TEAM),
     )
-    _insert_app(team_db, team_app_id, _VAULT_APP)
+    _insert_app(team_db, team_app_id, _FILES_APP)
     _insert_team_berth(team_db, b"\x64" * 16, team_app_id)
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
     assert resp.status_code == 200
     assert "pending_id" in resp.json()
@@ -427,11 +427,11 @@ def test_core_team_session_requires_participant_core_berth(playground_dir):
     assert _sighting_rows(backend)[0]["reason"] == "participant_berth_missing"
 
 
-def test_vault_bootstrap_loop_rejects_then_registers_then_activates(playground_dir):
+def test_files_bootstrap_loop_rejects_then_registers_then_activates(playground_dir):
     """Full loop: sighting, participant registration, team activation, success."""
     backend, participant_hex, client = _fresh_env(playground_dir)
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
     assert resp.status_code == 409
     assert resp.json()["reason"] == "app_unknown"
@@ -439,14 +439,14 @@ def test_vault_bootstrap_loop_rejects_then_registers_then_activates(playground_d
     token = _open_core_session(client)
     resp = client.get("/sightings", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200
-    assert resp.json()[0]["app_name"] == _VAULT_APP
+    assert resp.json()[0]["app_name"] == _FILES_APP
 
     Provisioning.register_app_for_participant(
         backend.root_dir,
         participant_hex,
-        _VAULT_APP,
+        _FILES_APP,
     )
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
     assert resp.status_code == 409
     assert resp.json()["reason"] == "team_berth_missing"
@@ -455,9 +455,9 @@ def test_vault_bootstrap_loop_rejects_then_registers_then_activates(playground_d
         backend.root_dir,
         participant_hex,
         _TEAM,
-        _VAULT_APP,
+        _FILES_APP,
     )
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
 
     assert resp.status_code == 200
     assert "pending_id" in resp.json()
@@ -484,13 +484,13 @@ def test_hub_rejection_implies_manager_prompt_parity(playground_dir):
 
     # participant_berth_missing: app row in team DB but not in NoteToSelf.
     def _participant_berth_missing():
-        _insert_app(team_db, b"\xa1" * 16, _VAULT_APP)
+        _insert_app(team_db, b"\xa1" * 16, _FILES_APP)
         _insert_team_berth(team_db, b"\xa2" * 16, b"\xa1" * 16)
     scenarios.append(("participant_berth_missing", _participant_berth_missing))
 
     # team_berth_missing: app row in NoteToSelf but no team berth.
     def _team_berth_missing():
-        _insert_app(nts_db, b"\xb1" * 16, _VAULT_APP)
+        _insert_app(nts_db, b"\xb1" * 16, _FILES_APP)
         _insert_note_to_self_berth(nts_db, b"\xb2" * 16, b"\xb1" * 16, team_id)
     scenarios.append(("team_berth_missing", _team_berth_missing))
 
@@ -498,7 +498,7 @@ def test_hub_rejection_implies_manager_prompt_parity(playground_dir):
     def _ambiguous():
         for index in range(2):
             app_id = bytes([0xc1 + index]) * 16
-            _insert_app(nts_db, app_id, _VAULT_APP)
+            _insert_app(nts_db, app_id, _FILES_APP)
             _insert_note_to_self_berth(
                 nts_db,
                 bytes([0xd1 + index]) * 16,
@@ -511,16 +511,16 @@ def test_hub_rejection_implies_manager_prompt_parity(playground_dir):
         # Wipe app/berth state between scenarios so each starts clean.
         with sqlite3.connect(nts_db) as conn:
             conn.execute("DELETE FROM team_app_berth WHERE app_id != (SELECT id FROM app WHERE name = ?)", (_CORE_APP,))
-            conn.execute("DELETE FROM app WHERE name = ?", (_VAULT_APP,))
+            conn.execute("DELETE FROM app WHERE name = ?", (_FILES_APP,))
             conn.commit()
         with sqlite3.connect(team_db) as conn:
-            conn.execute("DELETE FROM team_app_berth WHERE app_id IN (SELECT id FROM app WHERE name = ?)", (_VAULT_APP,))
-            conn.execute("DELETE FROM app WHERE name = ?", (_VAULT_APP,))
+            conn.execute("DELETE FROM team_app_berth WHERE app_id IN (SELECT id FROM app WHERE name = ?)", (_FILES_APP,))
+            conn.execute("DELETE FROM app WHERE name = ?", (_FILES_APP,))
             conn.commit()
 
         mutate()
 
-        resp = _request_vault_session(client)
+        resp = _request_files_session(client)
         assert resp.status_code == 409, f"{expected_reason}: {resp.text}"
         assert resp.json()["reason"] == expected_reason
 
@@ -551,13 +551,13 @@ def test_resolved_request_does_not_record_sighting(playground_dir):
     Provisioning.register_app_for_participant(
         backend.root_dir,
         participant_hex,
-        _VAULT_APP,
+        _FILES_APP,
     )
     Provisioning.activate_app_for_team(
         backend.root_dir,
         participant_hex,
         _TEAM,
-        _VAULT_APP,
+        _FILES_APP,
     )
 
     calls = []
@@ -569,7 +569,7 @@ def test_resolved_request_does_not_record_sighting(playground_dir):
 
     backend.record_unknown_app_sighting = _spy
     try:
-        resp = _request_vault_session(client)
+        resp = _request_files_session(client)
         assert resp.status_code == 200, resp.text
         assert "pending_id" in resp.json()
     finally:

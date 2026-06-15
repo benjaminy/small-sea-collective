@@ -9,7 +9,7 @@ validation.
 - `uv run pytest packages/small-sea-manager/tests/test_create_team.py packages/small-sea-hub/tests/test_app_bootstrap.py` -> 20 passed
 - `uv run pytest packages/small-sea-manager/tests/test_invitation.py` -> 4 passed
 - `uv run pytest packages/small-sea-hub/tests` -> 78 passed
-- `uv run pytest packages/shared-file-vault/tests` -> 59 passed, 3 skipped
+- `uv run pytest packages/ssc-files/tests` -> 59 passed, 3 skipped
 - `uv run pytest packages/small-sea-manager/tests` -> 60 passed
 - `git diff --check` -> clean
 - `rg -n "if app_name != \"SmallSeaCollectiveCore\"|issue-111-follow-up" packages/small-sea-hub packages/small-sea-manager` -> no hits
@@ -183,8 +183,8 @@ To convince a skeptical reviewer that the goals of the branch have been met:
   read-write `berth_role` row have the same row shape the shared activation
   primitive produces for a non-Core app. The role resolver difference is the
   only intentional variation.
-- Re-run the existing `test_vault_bootstrap_loop_rejects_then_registers_then_activates`
-  test; Vault behavior must remain unchanged.
+- Re-run the existing `test_files_bootstrap_loop_rejects_then_registers_then_activates`
+  test; Files behavior must remain unchanged.
 
 ### Goal 2 — Hub Core exception is gone and behavior is preserved
 
@@ -214,7 +214,7 @@ Run the broader manager/hub suites to catch any coupling we missed:
 
 - `uv run pytest packages/small-sea-manager/tests`
 - `uv run pytest packages/small-sea-hub/tests`
-- `uv run pytest packages/shared-file-vault/tests`
+- `uv run pytest packages/ssc-files/tests`
 
 ## Integrity Checks
 

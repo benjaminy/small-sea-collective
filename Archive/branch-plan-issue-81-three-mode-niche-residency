@@ -2,7 +2,7 @@
 
 ## Goal
 
-Make niche residency an explicit concept in Shared File Vault so the code,
+Make niche residency an explicit concept in Small Sea Collective Files so the code,
 CLI, and spec all agree on the three local states a niche can be in:
 
 - known only from the registry
@@ -16,7 +16,7 @@ branch into transit cleanup or git abstraction work.
 ## Background
 
 After #80 the user-facing language is effectively binary: a niche is either
-"not present" or "has a checkout". But the vault already has a meaningful
+"not present" or "has a checkout". But the files already has a meaningful
 middle state: the niche git dir exists locally, possibly with fetched peer
 refs and local history, while no checkout is attached.
 
@@ -74,24 +74,24 @@ local deletion flow is being introduced here.
 
 ## Scope — what this branch does
 
-1. **Add `NicheResidency` to `vault.py`.**
+1. **Add `NicheResidency` to `files.py`.**
    Three values: `REMOTE_ONLY`, `CACHED`, `CHECKED_OUT`.
 
-2. **Add `niche_residency()` to `vault.py`.**
+2. **Add `niche_residency()` to `files.py`.**
    It computes residency from existing local state only:
    - git dir absent -> `REMOTE_ONLY`
    - git dir present, no checkout row -> `CACHED`
    - git dir present, checkout row present -> `CHECKED_OUT`
 
 3. **Make no-checkout failures residency-aware.**
-   Extend `vault.NoCheckoutError` with a `residency` field and make its
+   Extend `files.NoCheckoutError` with a `residency` field and make its
    message actionable:
    - `REMOTE_ONLY`: tell the caller they need local niche data first
      (`fetch_niche()` / equivalent fetch flow), then a checkout
    - `CACHED`: tell the caller they can attach a checkout directly
 
 4. **Preserve that richer error through the sync layer.**
-   `shared_file_vault.sync.NoCheckoutError` currently wraps the vault-layer
+   `ssc_files.sync.NoCheckoutError` currently wraps the files-layer
    exception. This branch must carry the residency information through that
    wrapper so CLI and web callers do not lose it.
 
@@ -107,7 +107,7 @@ local deletion flow is being introduced here.
      residency label
 
 7. **Update the spec.**
-   Add a "Niche residency" section to `packages/shared-file-vault/spec.md`
+   Add a "Niche residency" section to `packages/ssc-files/spec.md`
    describing the three modes, what they mean, and which operations move a
    niche between them.
 
@@ -128,21 +128,21 @@ local deletion flow is being introduced here.
 
 ## Key files
 
-- `packages/shared-file-vault/shared_file_vault/vault.py` — residency enum,
-  computation, and vault-layer errors
-- `packages/shared-file-vault/shared_file_vault/sync.py` — preserve residency
+- `packages/ssc-files/ssc_files/files.py` — residency enum,
+  computation, and files-layer errors
+- `packages/ssc-files/ssc_files/sync.py` — preserve residency
   through sync-layer exceptions
-- `packages/shared-file-vault/shared_file_vault/cli.py` — list output update
-- `packages/shared-file-vault/spec.md` — residency model and transitions
-- `packages/shared-file-vault/tests/test_vault.py` — core micro tests
+- `packages/ssc-files/ssc_files/cli.py` — list output update
+- `packages/ssc-files/spec.md` — residency model and transitions
+- `packages/ssc-files/tests/test_files.py` — core micro tests
 
 ## Order of work
 
-1. Add `NicheResidency` and `niche_residency()` in `vault.py`.
-2. Update `vault.NoCheckoutError` to carry `residency` and produce
+1. Add `NicheResidency` and `niche_residency()` in `files.py`.
+2. Update `files.NoCheckoutError` to carry `residency` and produce
    state-specific guidance.
 3. Update `sync.NoCheckoutError` and wrapping code so residency survives
-   vault -> sync propagation.
+   files -> sync propagation.
 4. Update `list_niches()` to include `"residency"`.
 5. Update CLI `list` output to show residency without losing checkout-path
    visibility.
@@ -164,7 +164,7 @@ fits the current design cleanly and does not silently disturb other behavior.
   - checkout registered -> `CHECKED_OUT`
 - New micro tests verify `list_niches()` includes `"residency"` and that the
   reported value matches actual local state.
-- New micro tests verify `vault.NoCheckoutError` differs for `REMOTE_ONLY`
+- New micro tests verify `files.NoCheckoutError` differs for `REMOTE_ONLY`
   versus `CACHED`, and that each message tells the user the right next step.
 - New micro tests verify the sync-layer wrapper preserves residency-aware
   behavior instead of collapsing back to a generic message.
@@ -173,7 +173,7 @@ fits the current design cleanly and does not silently disturb other behavior.
 
 ### Repo integrity / containment
 
-- All existing Shared File Vault micro tests still pass.
+- All existing Small Sea Collective Files micro tests still pass.
 - No DB schema version changes are required.
 - No storage paths or checkout semantics change.
 - Existing join flow remains the same:

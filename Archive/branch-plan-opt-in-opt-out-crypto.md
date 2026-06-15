@@ -7,12 +7,12 @@ follow-up comment.
 
 Make Hub encryption a session-level choice for team berths: encrypted by
 default for normal team sessions, passthrough only when explicitly requested.
-Replace the current hard-coded `vault/` path prefix check with this policy.
+Replace the current hard-coded `files/` path prefix check with this policy.
 
 ## Why This Branch Exists
 
 The Hub already does group encryption, but only for paths starting with
-`vault/`. All other traffic currently passes through in plaintext despite going
+`files/`. All other traffic currently passes through in plaintext despite going
 through third-party cloud storage.
 
 The encryption decision should not depend on path naming conventions. It should
@@ -80,8 +80,8 @@ still normal team traffic and should use encrypted team sessions.
 1. Session mode is requested in `/sessions/request`, persists through
    confirmation, and defaults to encrypted for normal team sessions
 2. Hub encrypt/decrypt is driven entirely by session mode, not path
-3. Existing vault traffic still works (now encrypted because the session is,
-   not because the path starts with `vault/`)
+3. Existing files traffic still works (now encrypted because the session is,
+   not because the path starts with `files/`)
 4. Invitation/bootstrap flows are explicitly documented as a separate
    passthrough first-contact path for invitee-directed artifacts, not
    conflated with ordinary team traffic
@@ -121,13 +121,13 @@ still normal team traffic and should use encrypted team sessions.
 
 ## Validation
 
-- Existing Shared File Vault encrypted flow still passes
+- Existing Small Sea Collective Files encrypted flow still passes
 - Invitation acceptance bootstrap still passes end to end
 - A session opened without an explicit mode defaults to encrypted
 - There is no special NoteToSelf default in the Hub or client; callers that need
   plaintext request `passthrough` explicitly
 - A session's mode cannot silently change after creation
-- A new micro test proves a non-`vault/` team path uses encryption on an
+- A new micro test proves a non-`files/` team path uses encryption on an
   encrypted session
 - A new micro test proves a passthrough session stays plaintext
 - A new micro test proves request/confirm preserves the requested mode

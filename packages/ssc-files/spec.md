@@ -1,4 +1,4 @@
-# Shared File Vault — Spec
+# Small Sea Collective Files - Spec
 
 ## Purpose
 
@@ -38,7 +38,7 @@ to derive a local SQLite from a text-based canonical form.)
 
 A checkout is a link between a niche and a directory on the local
 filesystem where the user actually reads and writes files. The git metadata
-lives inside the vault (via `--separate-git-dir`); the checkout directory
+lives inside the Files root (via `--separate-git-dir`); the checkout directory
 contains only the user's files.
 
 Checkouts are **purely local state** — they are not shared with teammates.
@@ -84,26 +84,26 @@ reported as `StaleCheckoutError` and are not a distinct residency mode.
 No automatic transition back to *Remote only* exists; a local deletion flow
 has not been implemented.
 
-### Vault
+### Files Root
 
-The vault is the local storage root for all Shared File Vault data on a
+The Files root is the local storage root for all Small Sea Files data on a
 device (or a user account on a device). It holds:
 - The niche registry git repo per team (shared via Cod Sync)
 - One git repo per niche (each shared via its own Cod Sync chain)
 - Local checkout registrations
 
-The vault is scoped first to a **participant** — the Small Sea identity used
+The Files root is scoped first to a **participant** — the Small Sea identity used
 on this device.
 One participant per local user account is the overwhelming common case, but
 the storage layout preserves a participant layer so that switching
 participants (or having multiple) remains possible without a re-architecture.
 
-Within a participant, session-backed Vault state is scoped by an opaque Vault
+Within a participant, session-backed Files state is scoped by an opaque Files
 `team_id`.
 That `team_id` is sourced from Hub `/session/info["berth_id"]`, where the Hub
 and Manager still use berth language because they model app/team bindings.
 Friendly names such as `team_name` remain display and selection labels.
-They are not local materialization coordinates once Vault has a Hub session.
+They are not local materialization coordinates once Files has a Hub session.
 
 ---
 
@@ -126,12 +126,12 @@ git handles convergence.
 
 ## Local storage layout
 
-The vault root is expected to live in the platform-appropriate user data
-directory (e.g. `~/Library/Application Support/SmallSea/FileVault` on
-macOS, `%APPDATA%\SmallSea\FileVault` on Windows).
+The Files root is expected to live in the platform-appropriate user data
+directory (e.g. `~/Library/Application Support/SmallSea/Files` on
+macOS, `%APPDATA%\SmallSea\Files` on Windows).
 
 ```
-{vault_root}/
+{files_root}/
   participants/
     {participant_hex}/
       checkouts.db            ← purely local: checkout path registrations
@@ -191,9 +191,9 @@ reconstructable). No migration SQL is written.
 
 Hub-backed cloud object keys are paths within the Hub-provided storage boundary
 for the current session.
-Vault currently uses `registry/` for the registry chain and
+Files currently uses `registry/` for the registry chain and
 `niches/{niche_name}/` for each niche chain.
-Those keys intentionally omit both friendly `team_name` and opaque Vault
+Those keys intentionally omit both friendly `team_name` and opaque Files
 `team_id`; the Hub session supplies the storage boundary.
 
 ---
@@ -241,12 +241,12 @@ Those keys intentionally omit both friendly `team_name` and opaque Vault
 - **Participant identity**: `participant_hex` is a required parameter
   throughout the current API. Given that one participant per device is the
   common case, a higher-level API might wrap a default participant so
-  callers don't have to pass it every time. The low-level vault functions
+  callers don't have to pass it every time. The low-level files functions
   should keep it explicit.
 
 - **Joining a niche**: a new team teammate pulls the registry to discover
   which niches exist, then pulls each niche they want. No special
-  "invitation" flow is needed at the vault level — team membership is
+  "invitation" flow is needed at the files level — team membership is
   enforced by Cuttlefish / hub access control.
 
 - **Conflict resolution**: `pull_niche` merges via git. Auto-merge works

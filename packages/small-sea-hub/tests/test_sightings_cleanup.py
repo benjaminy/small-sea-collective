@@ -15,10 +15,10 @@ import small_sea_manager.provisioning as Provisioning
 from small_sea_hub.server import app
 
 
-_VAULT_APP = "SharedFileVault"
+_FILES_APP = "SmallSeaCollectiveFiles"
 _CORE_APP = "SmallSeaCollectiveCore"
 _TEAM = "ProjectX"
-_CLIENT = "SharedFileVaultTest"
+_CLIENT = "SmallSeaCollectiveFilesTest"
 
 
 def _backend(playground_dir, *, now_fn=None, sighting_stale_window=None):
@@ -66,12 +66,12 @@ def _open_core_session(client):
     return _open_session(client, _CORE_APP, "NoteToSelf")
 
 
-def _request_vault_session(client):
+def _request_files_session(client):
     return client.post(
         "/sessions/request",
         json={
             "participant": "alice",
-            "app": _VAULT_APP,
+            "app": _FILES_APP,
             "team": _TEAM,
             "client": _CLIENT,
         },
@@ -133,7 +133,7 @@ def test_record_uses_canonical_six_digit_microseconds(playground_dir):
     fixed = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
     backend, _, client = _fresh_env(playground_dir, now_fn=lambda: fixed)
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
     assert resp.status_code == 409
 
     with sqlite3.connect(backend.path_local_db) as conn:
@@ -155,7 +155,7 @@ def test_get_sightings_last_seen_at_is_byte_identical(playground_dir):
     must carry the column verbatim or the precondition will silently fail."""
     fixed = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
     backend, _, client = _fresh_env(playground_dir, now_fn=lambda: fixed)
-    _request_vault_session(client)
+    _request_files_session(client)
     token = _open_core_session(client)
 
     listed = _list_sightings(client, token)
@@ -173,7 +173,7 @@ def test_get_sightings_last_seen_at_is_byte_identical(playground_dir):
 
 def test_clear_succeeds_for_matching_tuple_and_last_seen_at(playground_dir):
     backend, _, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     token = _open_core_session(client)
     sighting = _list_sightings(client, token)[0]
 
@@ -187,7 +187,7 @@ def test_clear_succeeds_for_matching_tuple_and_last_seen_at(playground_dir):
 
 def test_clear_idempotent_on_repeat(playground_dir):
     _, _, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     token = _open_core_session(client)
     sighting = _list_sightings(client, token)[0]
 
@@ -208,10 +208,10 @@ def test_clear_with_stale_last_seen_at_returns_zero(playground_dir):
     ])
     backend, _, client = _fresh_env(playground_dir, now_fn=lambda: next(times))
 
-    _request_vault_session(client)
+    _request_files_session(client)
     token = _open_core_session(client)
     snapshot = _list_sightings(client, token)[0]
-    _request_vault_session(client)  # bumps last_seen_at to 13:00
+    _request_files_session(client)  # bumps last_seen_at to 13:00
 
     resp = _clear(client, token, _clear_payload_from_sighting(snapshot))
 
@@ -222,12 +222,12 @@ def test_clear_with_stale_last_seen_at_returns_zero(playground_dir):
 
 def test_clear_unauthorized_without_bearer(playground_dir):
     _, _, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
 
     resp = client.post(
         "/sightings/clear",
         json={
-            "app_name": _VAULT_APP,
+            "app_name": _FILES_APP,
             "team_name": _TEAM,
             "client_name": _CLIENT,
             "last_seen_at": "ignored",
@@ -238,29 +238,29 @@ def test_clear_unauthorized_without_bearer(playground_dir):
 
 def test_clear_rejects_non_manager_session(playground_dir):
     backend, participant_hex, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     Provisioning.register_app_for_participant(
         backend.root_dir,
         participant_hex,
-        _VAULT_APP,
+        _FILES_APP,
     )
     Provisioning.activate_app_for_team(
         backend.root_dir,
         participant_hex,
         _TEAM,
-        _VAULT_APP,
+        _FILES_APP,
     )
-    vault_token = _open_session(client, _VAULT_APP, _TEAM)
+    files_token = _open_session(client, _FILES_APP, _TEAM)
 
     resp = client.post(
         "/sightings/clear",
         json={
-            "app_name": _VAULT_APP,
+            "app_name": _FILES_APP,
             "team_name": _TEAM,
             "client_name": _CLIENT,
             "last_seen_at": "ignored",
         },
-        headers={"Authorization": f"Bearer {vault_token}"},
+        headers={"Authorization": f"Bearer {files_token}"},
     )
     assert resp.status_code == 403
 
@@ -273,7 +273,7 @@ def test_clear_rejects_team_name_null(playground_dir):
     token = _open_core_session(client)
 
     resp = _clear(client, token, {
-        "app_name": _VAULT_APP,
+        "app_name": _FILES_APP,
         "team_name": None,
         "client_name": _CLIENT,
         "last_seen_at": "2026-05-01T12:00:00.000000+00:00",
@@ -294,7 +294,7 @@ def test_clear_does_not_register_or_activate_app(playground_dir):
         / "core.db"
     )
 
-    _request_vault_session(client)
+    _request_files_session(client)
     token = _open_core_session(client)
     sighting = _list_sightings(client, token)[0]
     _clear(client, token, _clear_payload_from_sighting(sighting))
@@ -302,7 +302,7 @@ def test_clear_does_not_register_or_activate_app(playground_dir):
     with sqlite3.connect(nts_db) as conn:
         rows = conn.execute(
             "SELECT id FROM app WHERE name = ?",
-            (_VAULT_APP,),
+            (_FILES_APP,),
         ).fetchall()
     assert rows == []
 
@@ -323,12 +323,12 @@ def test_clear_does_not_prune_unrelated_stale_rows(playground_dir):
         participant_hex, "AppOld", _TEAM, _CLIENT, "app_unknown"
     )
     backend.record_unknown_app_sighting(
-        participant_hex, _VAULT_APP, _TEAM, _CLIENT, "app_unknown"
+        participant_hex, _FILES_APP, _TEAM, _CLIENT, "app_unknown"
     )
 
     token = _open_core_session(client)
     sightings = _list_sightings(client, token)
-    fresh = next(s for s in sightings if s["app_name"] == _VAULT_APP)
+    fresh = next(s for s in sightings if s["app_name"] == _FILES_APP)
     _clear(client, token, _clear_payload_from_sighting(fresh))
 
     remaining = _list_sightings(client, token)
@@ -339,12 +339,12 @@ def test_retry_after_clear_records_fresh_sighting(playground_dir):
     """Retrying an app after cleanup creates a fresh row, so cleanup is not a
     durable rejection."""
     backend, _, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     token = _open_core_session(client)
     sighting = _list_sightings(client, token)[0]
     _clear(client, token, _clear_payload_from_sighting(sighting))
 
-    resp = _request_vault_session(client)
+    resp = _request_files_session(client)
     assert resp.status_code == 409
 
     rows = _list_sightings(client, token)
@@ -414,21 +414,21 @@ def test_prune_stale_unauthorized_without_bearer(playground_dir):
 
 def test_prune_stale_rejects_non_manager_session(playground_dir):
     backend, participant_hex, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     Provisioning.register_app_for_participant(
         backend.root_dir,
         participant_hex,
-        _VAULT_APP,
+        _FILES_APP,
     )
     Provisioning.activate_app_for_team(
         backend.root_dir,
         participant_hex,
         _TEAM,
-        _VAULT_APP,
+        _FILES_APP,
     )
-    vault_token = _open_session(client, _VAULT_APP, _TEAM)
+    files_token = _open_session(client, _FILES_APP, _TEAM)
 
-    resp = _prune_stale(client, vault_token)
+    resp = _prune_stale(client, files_token)
     assert resp.status_code == 403
 
 
@@ -453,10 +453,10 @@ def test_prune_stale_is_participant_scoped(playground_dir):
     client = TestClient(app)
 
     backend.record_unknown_app_sighting(
-        alice_hex, _VAULT_APP, _TEAM, _CLIENT, "app_unknown"
+        alice_hex, _FILES_APP, _TEAM, _CLIENT, "app_unknown"
     )
     backend.record_unknown_app_sighting(
-        bob_hex, _VAULT_APP, _TEAM, _CLIENT, "app_unknown"
+        bob_hex, _FILES_APP, _TEAM, _CLIENT, "app_unknown"
     )
 
     alice_token = _open_session(client, _CORE_APP, "NoteToSelf")
@@ -486,7 +486,7 @@ def test_record_does_not_prune_unrelated_stale_rows(playground_dir):
         participant_hex, "AppOld", _TEAM, _CLIENT, "app_unknown"
     )
     backend.record_unknown_app_sighting(
-        participant_hex, _VAULT_APP, _TEAM, _CLIENT, "app_unknown"
+        participant_hex, _FILES_APP, _TEAM, _CLIENT, "app_unknown"
     )
 
     with sqlite3.connect(backend.path_local_db) as conn:

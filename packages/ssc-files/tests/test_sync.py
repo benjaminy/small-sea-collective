@@ -2,14 +2,14 @@ import pathlib
 
 import pytest
 from cod_sync.protocol import LocalFolderRemote
-from shared_file_vault import sync
-from shared_file_vault.vault import (
+from ssc_files import sync
+from ssc_files.files import (
     NicheResidency,
-    VaultMaterializationContext,
+    FilesMaterializationContext,
     add_checkout,
     create_niche,
     fetch_niche,
-    init_vault,
+    init_files,
     materialize_team,
     merge_niche,
     publish,
@@ -18,7 +18,7 @@ from shared_file_vault.vault import (
 
 PARTICIPANT = "bb" * 16
 TEAM_ID = "33" * 16
-TEAM = VaultMaterializationContext(PARTICIPANT, TEAM_ID, "SyncTeam")
+TEAM = FilesMaterializationContext(PARTICIPANT, TEAM_ID, "SyncTeam")
 
 
 def test_sync_niche_between_devices(playground_dir):
@@ -28,7 +28,7 @@ def test_sync_niche_between_devices(playground_dir):
 
     # --- Device A: create and populate a niche ---
     root_a = str(playground / "device-a")
-    init_vault(root_a, PARTICIPANT)
+    init_files(root_a, PARTICIPANT)
     materialize_team(root_a, TEAM)
     create_niche(root_a, PARTICIPANT, TEAM, "photos")
     checkout_a = str(playground / "checkout-a" / "photos")
@@ -42,7 +42,7 @@ def test_sync_niche_between_devices(playground_dir):
 
     # --- Device B: join flow: fetch → attach checkout → merge ---
     root_b = str(playground / "device-b")
-    init_vault(root_b, PARTICIPANT)
+    init_files(root_b, PARTICIPANT)
     materialize_team(root_b, TEAM)
     checkout_b = str(playground / "checkout-b" / "photos")
 
@@ -69,12 +69,12 @@ def test_merge_via_hub_no_checkout_cached_preserves_residency(playground_dir, mo
     """sync.merge_via_hub raises sync.NoCheckoutError with CACHED residency
     when the niche git dir exists locally but no checkout is registered.
 
-    Tests the preflight path in merge_via_hub: it calls vault.get_checkout,
-    detects None, calls vault.niche_residency, and wraps the result in the
-    sync-layer exception — so residency survives the vault->sync boundary.
+    Tests the preflight path in merge_via_hub: it calls files.get_checkout,
+    detects None, calls files.niche_residency, and wraps the result in the
+    sync-layer exception — so residency survives the files->sync boundary.
     """
-    root = str(pathlib.Path(playground_dir) / "vault")
-    init_vault(root, PARTICIPANT)
+    root = str(pathlib.Path(playground_dir) / "files")
+    init_files(root, PARTICIPANT)
     materialize_team(root, TEAM)
     create_niche(root, PARTICIPANT, TEAM, "files")
     # No add_checkout: niche git dir exists but no checkout row → CACHED.
@@ -91,8 +91,8 @@ def test_merge_via_hub_no_checkout_remote_only_preserves_residency(playground_di
     """sync.merge_via_hub raises sync.NoCheckoutError with REMOTE_ONLY residency
     when the niche has no local git dir at all.
     """
-    root = str(pathlib.Path(playground_dir) / "vault")
-    init_vault(root, PARTICIPANT)
+    root = str(pathlib.Path(playground_dir) / "files")
+    init_files(root, PARTICIPANT)
     materialize_team(root, TEAM)
     # No create_niche: no git dir → REMOTE_ONLY.
 

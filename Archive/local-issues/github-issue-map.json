@@ -32,9 +32,9 @@
         "priority:high"
       ],
       "legacy_local_id": "0026",
-      "source_path": "Issues/0026-task-shared-file-vault-sync.md",
+      "source_path": "Issues/0026-task-ssc-files-sync.md",
       "state": "open",
-      "title": "SharedFileVault \u2014 wire push/pull sync through the Hub"
+      "title": "SmallSeaCollectiveFiles \u2014 wire push/pull sync through the Hub"
     },
     {
       "github_issue_number": 6,
@@ -128,9 +128,9 @@
         "priority:medium"
       ],
       "legacy_local_id": "0030",
-      "source_path": "Issues/0030-task-vault-peer-update-ux.md",
+      "source_path": "Issues/0030-task-files-peer-update-ux.md",
       "state": "open",
-      "title": "SharedFileVault \u2014 teammate update detection and pull UX"
+      "title": "SmallSeaCollectiveFiles \u2014 teammate update detection and pull UX"
     },
     {
       "github_issue_number": 14,

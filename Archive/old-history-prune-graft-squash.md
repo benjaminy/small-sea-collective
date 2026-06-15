@@ -91,5 +91,5 @@ months).
 - Issue 0018 — cloud chain compaction (must be done in lockstep with pruning)
 - `packages/cod-sync/cod_sync/protocol.py` — bundle prereq logic in
   `fetch_chain` and `build_link_blob`
-- `packages/shared-file-vault/shared_file_vault/vault.py` — `push_niche`,
+- `packages/ssc-files/ssc_files/files.py` — `push_niche`,
   `pull_niche`

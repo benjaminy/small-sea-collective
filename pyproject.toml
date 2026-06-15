@@ -12,7 +12,7 @@ dev-dependencies = [
     "small-sea-client",
     "small-sea-manager",
     "small-sea-note-to-self",
-    "shared-file-vault",
+    "ssc-files",
     "cod-sync",
     "splice-merge",
     "respx>=0.22.0",
@@ -24,7 +24,7 @@ small-sea-client = { workspace = true }
 small-sea-manager = { workspace = true }
 small-sea-note-to-self = { workspace = true }
 small-sea-live = { workspace = true }
-shared-file-vault = { workspace = true }
+ssc-files = { workspace = true }
 cod-sync = { workspace = true }
 cuttlefish = { workspace = true }
 splice-merge = { workspace = true }

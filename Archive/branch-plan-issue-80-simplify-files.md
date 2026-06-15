@@ -1,8 +1,8 @@
-# Branch Plan: Simplify Vault (Issue #80)
+# Branch Plan: Simplify Files (Issue #80)
 
 ## Goal
 
-Remove DVCS features from Shared File Vault whose complexity cost exceeds their value:
+Remove DVCS features from Small Sea Collective Files whose complexity cost exceeds their value:
 1. **At most one local checkout per niche** — a niche is either not materialized on a device or has exactly one checkout location.
 2. **Require clean checkout before merge-capable sync operations** — the user must commit or drop local changes before integrating fetched changes from elsewhere.
 3. **Keep the `.git`-separate-from-checkout-directory design.**
@@ -20,13 +20,13 @@ Remove DVCS features from Shared File Vault whose complexity cost exceeds their 
 
 ## Planned Changes
 
-### 1. Enforce one-checkout-per-niche in `vault.py`
+### 1. Enforce one-checkout-per-niche in `files.py`
 
 - In `add_checkout()`: if a checkout already exists for `(team_name, niche_name)`, raise an error. The user must explicitly remove the old checkout before attaching a new one.
 - In the `checkout` table, add a UNIQUE constraint on `(team_name, niche_name)`.
 - Add an explicit local schema/version marker for `checkouts.db`, and on mismatch recreate the local DB from scratch instead of doing migration work.
 - Remove (or simplify) the multi-checkout refresh loop in `publish()`, `pull_niche()`, and `merge_niche()` — with at most one checkout, this reduces to a direct single-checkout refresh.
-- Add a helper `get_checkout(vault_root, participant_hex, team_name, niche_name) -> str | None` that returns the single checkout path (or None).
+- Add a helper `get_checkout(files_root, participant_hex, team_name, niche_name) -> str | None` that returns the single checkout path (or None).
 
 ### 2. Fetch/merge semantics after simplification
 
@@ -39,7 +39,7 @@ Edge case: **niche not materialized locally.** If a peer pushes while no checkou
 
 This branch intentionally does **not** require architectural garbage collection of the transit work tree or adjacent Cod Sync helper complexity. That cleanup remains desirable, but it will be tracked as a follow-up issue instead of broadening this branch.
 
-### 3. Require clean checkout before merge in `vault.py`
+### 3. Require clean checkout before merge in `files.py`
 
 - Add `_is_checkout_clean(checkout_path, git_dir) -> bool` that runs `git status --porcelain` scoped to the user's checkout work tree. **Important:** always pass the user's checkout path explicitly — do not let this check accidentally target the transit or any other work tree.
 - `--porcelain` output includes untracked files. Untracked files block merge-time operations just like tracked changes do. The primary motivation is UX simplicity: non-git users have no mental model for the tracked/untracked distinction, so "your folder must be clean" is one rule rather than a leaky git abstraction. Path-collision safety is a secondary benefit. This diverges from git's default merge behavior and should be noted in the function doc. Future relaxation (e.g. ignoring certain noise files) can be motivated by specific cases.
@@ -110,7 +110,7 @@ true:
 - the branch does not add hidden destructive behavior such as partial discard, silent checkout moves, or schema-migration complexity
 - the `.git`-separate-from-checkout-directory design remains intact
 - fetched updates may be parked locally without a checkout, and attaching a checkout later still requires an explicit merge before those parked updates become visible files
-- Shared File Vault behavior becomes simpler rather than more coupled: single-checkout helpers replace list-oriented logic where possible, and UI/CLI language matches runtime reality
+- Small Sea Collective Files behavior becomes simpler rather than more coupled: single-checkout helpers replace list-oriented logic where possible, and UI/CLI language matches runtime reality
 - updated micro tests cover both happy paths and refusal paths, especially the ones most likely to regress the new invariants
 
 ## Validation Evidence To Gather In This Branch
@@ -131,9 +131,9 @@ true:
 
 ## Order of Work
 
-1. `vault.py` — local schema/version handling, one-checkout uniqueness enforcement, and `get_checkout` helper
-2. `vault.py` / `sync.py` — preserve explicit fetch-vs-merge semantics, including parked updates without checkout and explicit merge after attach
-3. `vault.py` — `DirtyCheckoutError` + `_is_checkout_clean` + guards in merge-time paths
+1. `files.py` — local schema/version handling, one-checkout uniqueness enforcement, and `get_checkout` helper
+2. `files.py` / `sync.py` — preserve explicit fetch-vs-merge semantics, including parked updates without checkout and explicit merge after attach
+3. `files.py` — `DirtyCheckoutError` + `_is_checkout_clean` + guards in merge-time paths
 4. Micro tests for the new invariants and refusal paths
 5. `web.py` + templates — single-checkout UI, automatic-plus-manual fetch, explicit merge, dirty-checkout error surfacing
 6. `cli.py` — audit and update, keeping any `pull` command as a documented convenience wrapper only

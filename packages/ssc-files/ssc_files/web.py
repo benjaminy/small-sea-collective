@@ -1,4 +1,4 @@
-"""FastAPI + Jinja2 + htmx web UI for the Small Sea Shared File Vault."""
+"""FastAPI + Jinja2 + htmx web UI for Small Sea Files."""
 
 import pathlib
 
@@ -7,28 +7,28 @@ from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 from small_sea_client.client import SmallSeaClient
 
-from shared_file_vault import sync, vault
+from ssc_files import sync, files
 
 _template_dir = pathlib.Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=_template_dir)
 
 
 def create_app(
-    vault_root: str,
+    files_root: str,
     participant_hex: str,
     hub_port: int = 11437,
     _http_client=None,
 ) -> FastAPI:
     """Create a configured FastAPI application."""
-    app = FastAPI(title="Small Sea Vault")
-    app.state.vault_root = vault_root
+    app = FastAPI(title="Small Sea Files")
+    app.state.files_root = files_root
     app.state.participant_hex = participant_hex
     app.state.hub_port = hub_port
     app.state.http_client = _http_client
     app.state.pending_sessions = {}
 
     def _vr(request: Request) -> str:
-        return request.app.state.vault_root
+        return request.app.state.files_root
 
     def _ph(request: Request) -> str:
         return request.app.state.participant_hex
@@ -65,7 +65,7 @@ def create_app(
     def _team_context(request: Request, team_name: str):
         try:
             return sync.resolve_team_context(_vr(request), _ph(request), team_name)
-        except sync.VaultSyncError as exc:
+        except sync.FilesSyncError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     def _session_fragment(request: Request, team_name: str, error: str | None = None):
@@ -99,7 +99,7 @@ def create_app(
                     peer["teammate_id"],
                     current_signal_count=int(peer.get("signal_count", 0)),
                 )
-        except sync.VaultSyncError:
+        except sync.FilesSyncError:
             peers = []
         return peers
 
@@ -128,13 +128,13 @@ def create_app(
         context = _team_context(request, team_name)
         team_session_status = _session_state(request, team_name)
         peers = _build_peers(request, team_name, niche_name)
-        checkout = vault.get_checkout(vr, ph, context, niche_name)
+        checkout = files.get_checkout(vr, ph, context, niche_name)
         checkout_status = (
-            vault.status(vr, ph, context, niche_name, checkout)
+            files.status(vr, ph, context, niche_name, checkout)
             if checkout is not None
             else []
         )
-        commits = vault.log(vr, ph, context, niche_name)
+        commits = files.log(vr, ph, context, niche_name)
         return templates.TemplateResponse(
             "fragments/niche_detail.html",
             {
@@ -160,7 +160,7 @@ def create_app(
                 "name": ctx.team_name,
                 "niches": _niches_with_info(vr, ph, ctx),
             }
-            for ctx in vault.iter_materialized_teams(vr, ph)
+            for ctx in files.iter_materialized_teams(vr, ph)
         ]
         return templates.TemplateResponse(
             "index.html",
@@ -174,7 +174,7 @@ def create_app(
         vr, ph = _vr(request), _ph(request)
         context = _team_context(request, team_name)
         try:
-            vault.create_niche(vr, ph, context, niche_name)
+            files.create_niche(vr, ph, context, niche_name)
             error = None
         except ValueError as e:
             error = str(e)
@@ -202,7 +202,7 @@ def create_app(
     async def team_session_request(request: Request, team_name: str):
         try:
             session, pending_id = _client(request).start_session(
-                _ph(request), sync.HUB_APP_NAME, team_name, "SharedFileVaultWeb"
+                _ph(request), sync.HUB_APP_NAME, team_name, "SmallSeaCollectiveFilesWeb"
             )
             if session is not None:
                 sync.finalize_login(_vr(request), team_name, _ph(request), session)
@@ -260,11 +260,11 @@ def create_app(
         vr, ph = _vr(request), _ph(request)
         context = _team_context(request, team_name)
         try:
-            vault.add_checkout(vr, ph, context, niche_name, dest_path)
+            files.add_checkout(vr, ph, context, niche_name, dest_path)
             error = None
-        except (ValueError, vault.DuplicateCheckoutError) as e:
+        except (ValueError, files.DuplicateCheckoutError) as e:
             error = str(e)
-        checkout = vault.get_checkout(vr, ph, context, niche_name)
+        checkout = files.get_checkout(vr, ph, context, niche_name)
         return templates.TemplateResponse(
             "fragments/checkouts.html",
             {
@@ -288,8 +288,8 @@ def create_app(
     ):
         vr, ph = _vr(request), _ph(request)
         context = _team_context(request, team_name)
-        vault.remove_checkout(vr, ph, context, niche_name, checkout_path)
-        checkout = vault.get_checkout(vr, ph, context, niche_name)
+        files.remove_checkout(vr, ph, context, niche_name, checkout_path)
+        checkout = files.get_checkout(vr, ph, context, niche_name)
         return templates.TemplateResponse(
             "fragments/checkouts.html",
             {
@@ -314,7 +314,7 @@ def create_app(
         vr, ph = _vr(request), _ph(request)
         context = _team_context(request, team_name)
         try:
-            commit_hash = vault.publish(
+            commit_hash = files.publish(
                 vr, ph, context, niche_name, checkout_path, message=message
             )
             notice = f"Published {commit_hash[:8]}"
@@ -322,8 +322,8 @@ def create_app(
         except Exception as e:
             notice = None
             error = str(e)
-        entries = vault.status(vr, ph, context, niche_name, checkout_path)
-        commits = vault.log(vr, ph, context, niche_name)
+        entries = files.status(vr, ph, context, niche_name, checkout_path)
+        commits = files.log(vr, ph, context, niche_name)
         return templates.TemplateResponse(
             "fragments/status_panel.html",
             {
@@ -354,7 +354,7 @@ def create_app(
             )
             notice = "Pushed niche and registry through the Hub."
             error = None
-        except sync.VaultSyncError as exc:
+        except sync.FilesSyncError as exc:
             notice = None
             error = str(exc)
         return _niche_detail_response(
@@ -405,7 +405,7 @@ def create_app(
             else:
                 notice = f"Checked {teammate_id} for updates."
             error = None
-        except sync.VaultSyncError as exc:
+        except sync.FilesSyncError as exc:
             notice = None
             error = str(exc)
         return _niche_detail_response(
@@ -460,7 +460,7 @@ def create_app(
             )
         except sync.NoCheckoutError as exc:
             notice = None
-            from shared_file_vault.vault import NicheResidency
+            from ssc_files.files import NicheResidency
             if exc.residency is NicheResidency.REMOTE_ONLY:
                 error = (
                     "Merge blocked: the niche has no local data yet. "
@@ -477,7 +477,7 @@ def create_app(
                 )
             else:
                 error = f"Merge left unresolved conflicts in the {exc.scope}."
-        except sync.VaultSyncError as exc:
+        except sync.FilesSyncError as exc:
             notice = None
             error = str(exc)
         return _niche_detail_response(
@@ -492,11 +492,11 @@ def create_app(
     return app
 
 
-def _niches_with_info(vault_root, participant_hex, context):
+def _niches_with_info(files_root, participant_hex, context):
     """Return niches annotated with whether a checkout is attached."""
-    niches = vault.list_niches(vault_root, participant_hex, context)
+    niches = files.list_niches(files_root, participant_hex, context)
     result = []
     for n in niches:
-        checkout = vault.get_checkout(vault_root, participant_hex, context, n["name"])
+        checkout = files.get_checkout(files_root, participant_hex, context, n["name"])
         result.append({**n, "has_checkout": checkout is not None})
     return result

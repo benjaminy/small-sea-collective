@@ -33,7 +33,7 @@ This is genuinely more useful than what we shipped — it gives apps a free cros
 We didn't ship it because:
 
 - No in-tree app needs it yet.
-  Vault's current personal state is device-local (CLI config, vault root path).
+  Files' current personal state is device-local (CLI config, files root path).
 - Once shipped, it becomes load-bearing and hard to remove if the schema decisions were wrong.
 - The burden of proof should be on adding framework surface, not on keeping a stub.
 
@@ -80,14 +80,14 @@ Before removing the `NoteToSelf/SmallSeaCollectiveCore/` directory creation in `
 - Hub berth resolution for NoteToSelf sessions opens `NoteToSelf/Sync/core.db`, not `NoteToSelf/SmallSeaCollectiveCore/`.
 
 Deletion is safe.
-The same audit shape would apply to `SharedFileVault`: app name appears as data, no filesystem path reads.
+The same audit shape would apply to `SmallSeaCollectiveFiles`: app name appears as data, no filesystem path reads.
 
 ## What this branch deliberately did not do
 
 - No framework-managed cross-device personal sync surface.
 - No new app-home helper API or app-bootstrap convenience library.
 - No `/session/info` schema extension (the metadata audit found existing fields sufficient).
-- No Vault migration into a new app-home tree.
+- No Files migration into a new app-home tree.
 - No normative AppHome directory naming.
 
 ## Process notes for future archaeologists
@@ -103,8 +103,8 @@ The same audit shape would apply to `SharedFileVault`: app name appears as data,
 
 ## Validation summary
 
-- Full affected suites: 248 passed, 3 skipped (pre-existing) across `small-sea-manager`, `small-sea-hub`, `shared-file-vault` tests.
-- Code grep for `NoteToSelf/SmallSeaCollectiveCore` or `NoteToSelf/SharedFileVault` filesystem paths in `packages/`: no hits.
+- Full affected suites: 248 passed, 3 skipped (pre-existing) across `small-sea-manager`, `small-sea-hub`, `ssc-files` tests.
+- Code grep for `NoteToSelf/SmallSeaCollectiveCore` or `NoteToSelf/SmallSeaCollectiveFiles` filesystem paths in `packages/`: no hits.
 - Code grep for `NoteToSelf.*mkdir` in `packages/`: only legitimate `NoteToSelf/Sync` and `NoteToSelf/Local` framework directories.
 - Doc grep across `architecture.md`, `packages/*/spec.md`: only updated mentions describing the removal or the new ownership boundary.
 - Hub `_resolve_berth` continues to open only `{team}/Sync/core.db`, unchanged by this branch.

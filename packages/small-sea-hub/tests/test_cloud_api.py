@@ -208,7 +208,7 @@ def test_upload_and_download(test_env):
     assert raw == new_content
 
 
-def test_non_vault_team_path_uses_encryption(test_env):
+def test_non_files_team_path_uses_encryption(test_env):
     client = test_env["client"]
     backend = test_env["backend"]
     minio = test_env["minio"]

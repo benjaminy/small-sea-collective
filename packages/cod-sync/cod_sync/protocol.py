@@ -634,7 +634,7 @@ class SmallSeaRemote(CodSyncRemote):
 
     path_prefix is prepended to every cloud path, allowing multiple
     CodSync repos to coexist in the same bucket without namespace collision.
-    For example, path_prefix="vault/registry/" puts registry bundles under
+    For example, path_prefix="files/registry/" puts registry bundles under
     that prefix while signals.yaml and team-sync data stay at the root.
     """
 

@@ -124,7 +124,7 @@ platforms that force that shape, but they are not equivalent to the general
 Hub boundary.
 Seed apps are useful, production-intended applications that help prove and grow
 the ecosystem; they have no special protocol status.
-The Hedgerow, Tide Table, and Shared File Vault are examples: each gives people
+The Hedgerow, Tide Table, and Small Sea Collective Files are examples: each gives people
 a reason to join the network without holding any architectural privilege.
 The Manager is not a seed app.
 It is the one currently special app — it writes to `SmallSeaCollectiveCore`
@@ -296,7 +296,7 @@ Sea depends on social convergence to avoid or resolve such forks.
 - **[splice-merge](packages/splice-merge/README.md)**: Library for merging concurrent changes and resolving conflicts when automatic merging is not possible.
 - **[Small Sea Client](packages/small-sea-client/README.md)**: Utility library for applications communicating with the Hub. Manages sessions and common workflows.
 - **[Small Sea Manager](packages/small-sea-manager/README.md)**: The essential built-in application. Manages team membership, devices, cloud storage accounts, invitations, and the SmallSeaCollectiveCore database.
-- **[Shared File Vault](packages/shared-file-vault/README.md)**: Example application — team file sharing built on Small Sea.
+- **[Small Sea Collective Files](packages/ssc-files/README.md)**: Example application — team file sharing built on Small Sea.
 
 ## Typical Application Flow
 

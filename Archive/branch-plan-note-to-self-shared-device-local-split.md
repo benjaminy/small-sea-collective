@@ -8,7 +8,7 @@ Related trackers:
 - #58 — joining-device bootstrap
 - #48 — multi-device NoteToSelf sync and team discovery
 - #59 — multi-device sender-key / peer-routing runtime
-- #4 — future home for real vault / enclave-backed secret storage
+- #4 — future home for real files / enclave-backed secret storage
 
 ## Problem
 
@@ -569,7 +569,7 @@ Before wrapping the branch:
 - **accidentally placing the local DB inside the synced repo**
   - Mitigation: lock the path decision in Phase 0 and test it
 - **branch turns into a secret-storage redesign**
-  - Mitigation: keep this mechanical; no keyring/vault work here
+  - Mitigation: keep this mechanical; no keyring/files work here
 
 ## Decisions (formerly Open For Discussion)
 

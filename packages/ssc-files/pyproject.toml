@@ -1,5 +1,5 @@
 [project]
-name = "shared-file-vault"
+name = "ssc-files"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
@@ -11,7 +11,7 @@ dependencies = [
 ]
 
 [project.scripts]
-shared-file-vault = "shared_file_vault.cli:cli"
+ssc-files = "ssc_files.cli:cli"
 
 [tool.uv.sources]
 cod-sync = { workspace = true }

@@ -1,6 +1,6 @@
 """Dropbox ping-pong round-trip latency test.
 
-Alice and Bob each own a niche in a shared vault. This test:
+Alice and Bob each own a niche in a shared files. This test:
   1. Pushes and cross-pulls the niche registry so both participants know
      about the niche.
   2. Alice writes a ping file and pushes it to Dropbox via her Hub. Her Hub
@@ -30,10 +30,10 @@ import pytest
 import requests
 
 import cod_sync.protocol as CS
-from shared_file_vault.vault import (
+from ssc_files.files import (
     add_checkout,
     create_niche,
-    init_vault,
+    init_files,
     publish,
     pull_niche,
     pull_registry,
@@ -49,7 +49,7 @@ NICHE = "ping-pong"
 HUB_STARTUP_TIMEOUT = 30   # seconds
 SIGNAL_POLL_TIMEOUT = 120  # seconds to wait for peer signal
 
-# Repo root: packages/shared-file-vault/tests/ → up three levels
+# Repo root: packages/ssc-files/tests/ → up three levels
 _REPO_ROOT = pathlib.Path(__file__).parent.parent.parent.parent
 
 
@@ -187,7 +187,7 @@ def _open_session(endpoint: str, nickname: str, team: str) -> str:
         f"{endpoint}/sessions/request",
         json={
             "participant": nickname,
-            "app": "SharedFileVault",
+            "app": "SmallSeaCollectiveFiles",
             "team": team,
             "client": "LatencyTest",
         },
@@ -459,16 +459,16 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
         )
         resp.raise_for_status()
 
-    # Create vaults in fresh temp dirs
-    vault0 = str(tmp_path / "vault-p0")
-    vault1 = str(tmp_path / "vault-p1")
-    init_vault(vault0, p0_hex)
-    init_vault(vault1, p1_hex)
+    # Create filess in fresh temp dirs
+    files0 = str(tmp_path / "files-p0")
+    files1 = str(tmp_path / "files-p1")
+    init_files(files0, p0_hex)
+    init_files(files1, p1_hex)
 
     # Remotes — each repo gets its own path prefix so it doesn't collide
-    # with the team sync repo or other vaults in the same Dropbox bucket.
-    reg_pfx = f"vault/{team}/registry/"
-    niche_pfx = f"vault/{team}/niches/{NICHE}/"
+    # with the team sync repo or other filess in the same Dropbox bucket.
+    reg_pfx = f"files/{team}/registry/"
+    niche_pfx = f"files/{team}/niches/{NICHE}/"
 
     reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
     reg_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=reg_pfx)
@@ -479,21 +479,21 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
 
     # p0 creates niche and makes an initial commit so p1 has something to clone
-    create_niche(vault0, p0_hex, team, NICHE)
+    create_niche(files0, p0_hex, team, NICHE)
     co0 = tmp_path / "checkout-p0"
-    add_checkout(vault0, p0_hex, team, NICHE, str(co0))
+    add_checkout(files0, p0_hex, team, NICHE, str(co0))
     (co0 / "init.txt").write_text("initialised\n")
-    publish(vault0, p0_hex, team, NICHE, str(co0), message="init")
-    push_niche(vault0, p0_hex, team, NICHE, niche_remote0)
+    publish(files0, p0_hex, team, NICHE, str(co0), message="init")
+    push_niche(files0, p0_hex, team, NICHE, niche_remote0)
 
     # p0 pushes registry; p1 discovers via registry pull
-    push_registry(vault0, p0_hex, team, reg_remote0)
-    pull_registry(vault1, p1_hex, team, p1_reads_p0_reg)
+    push_registry(files0, p0_hex, team, reg_remote0)
+    pull_registry(files1, p1_hex, team, p1_reads_p0_reg)
 
     # p1 clones the niche (now has at least one commit) and sets up its checkout
-    pull_niche(vault1, p1_hex, team, NICHE, p1_reads_p0_niche)
+    pull_niche(files1, p1_hex, team, NICHE, p1_reads_p0_niche)
     co1 = tmp_path / "checkout-p1"
-    add_checkout(vault1, p1_hex, team, NICHE, str(co1))
+    add_checkout(files1, p1_hex, team, NICHE, str(co1))
 
     # Snapshot etags before the ping
     etag_p0_before = _get_signal_etag(ep1, tok1, p0_teammate_id)
@@ -502,25 +502,25 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     # ---- PING: p0 writes and pushes ----
     t_start = time.time()
     (co0 / "ping.txt").write_text(f"ping {t_start}\n")
-    publish(vault0, p0_hex, team, NICHE, str(co0), message="ping")
-    push_niche(vault0, p0_hex, team, NICHE, niche_remote0)
+    publish(files0, p0_hex, team, NICHE, str(co0), message="ping")
+    push_niche(files0, p0_hex, team, NICHE, niche_remote0)
 
     # ---- p1 detects, pulls, writes pong, pushes ----
     _poll_for_signal_change(ep1, tok1, p0_teammate_id, etag_p0_before)
     t_p1_received = time.time()
 
-    pull_niche(vault1, p1_hex, team, NICHE, p1_reads_p0_niche)
+    pull_niche(files1, p1_hex, team, NICHE, p1_reads_p0_niche)
     assert (co1 / "ping.txt").exists(), f"{p1_nick} should see ping.txt after pull"
 
     (co1 / "pong.txt").write_text(f"pong {t_p1_received}\n")
-    publish(vault1, p1_hex, team, NICHE, str(co1), message="pong")
-    push_niche(vault1, p1_hex, team, NICHE, niche_remote1)
+    publish(files1, p1_hex, team, NICHE, str(co1), message="pong")
+    push_niche(files1, p1_hex, team, NICHE, niche_remote1)
 
     # ---- p0 detects and pulls pong ----
     _poll_for_signal_change(ep0, tok0, p1_teammate_id, etag_p1_before)
     t_p0_received = time.time()
 
-    pull_niche(vault0, p0_hex, team, NICHE, p0_reads_p1_niche)
+    pull_niche(files0, p0_hex, team, NICHE, p0_reads_p1_niche)
     assert (co0 / "pong.txt").exists(), f"{p0_nick} should see pong.txt after pull"
 
     # ---- Report ----
@@ -556,14 +556,14 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
             headers={"Authorization": f"Bearer {tok}"},
         ).raise_for_status()
 
-    vault0 = str(tmp_path / "vault-p0")
-    vault1 = str(tmp_path / "vault-p1")
-    init_vault(vault0, p0_hex)
-    init_vault(vault1, p1_hex)
+    files0 = str(tmp_path / "files-p0")
+    files1 = str(tmp_path / "files-p1")
+    init_files(files0, p0_hex)
+    init_files(files1, p1_hex)
 
     niche_name = "ping-pong-push"
-    reg_pfx = f"vault/{team}/registry-push/"
-    niche_pfx = f"vault/{team}/niches/{niche_name}/"
+    reg_pfx = f"files/{team}/registry-push/"
+    niche_pfx = f"files/{team}/niches/{niche_name}/"
 
     reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
     niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
@@ -573,19 +573,19 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
 
     # p0 creates niche, makes initial commit, pushes
-    create_niche(vault0, p0_hex, team, niche_name)
+    create_niche(files0, p0_hex, team, niche_name)
     co0 = tmp_path / "checkout-p0"
-    add_checkout(vault0, p0_hex, team, niche_name, str(co0))
+    add_checkout(files0, p0_hex, team, niche_name, str(co0))
     (co0 / "init.txt").write_text("initialised\n")
-    publish(vault0, p0_hex, team, niche_name, str(co0), message="init")
-    push_niche(vault0, p0_hex, team, niche_name, niche_remote0)
+    publish(files0, p0_hex, team, niche_name, str(co0), message="init")
+    push_niche(files0, p0_hex, team, niche_name, niche_remote0)
 
-    push_registry(vault0, p0_hex, team, reg_remote0)
-    pull_registry(vault1, p1_hex, team, p1_reads_p0_reg)
+    push_registry(files0, p0_hex, team, reg_remote0)
+    pull_registry(files1, p1_hex, team, p1_reads_p0_reg)
 
-    pull_niche(vault1, p1_hex, team, niche_name, p1_reads_p0_niche)
+    pull_niche(files1, p1_hex, team, niche_name, p1_reads_p0_niche)
     co1 = tmp_path / "checkout-p1"
-    add_checkout(vault1, p1_hex, team, niche_name, str(co1))
+    add_checkout(files1, p1_hex, team, niche_name, str(co1))
 
     # Snapshot counts before ping so _wait_for_notification knows the baseline.
     count_p0_before_ping = _get_peer_count(ep1, tok1, p0_teammate_id)
@@ -594,25 +594,25 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     # ---- PING: p0 writes and pushes ----
     t_start = time.time()
     (co0 / "ping.txt").write_text(f"ping {t_start}\n")
-    publish(vault0, p0_hex, team, niche_name, str(co0), message="ping")
-    push_niche(vault0, p0_hex, team, niche_name, niche_remote0)
+    publish(files0, p0_hex, team, niche_name, str(co0), message="ping")
+    push_niche(files0, p0_hex, team, niche_name, niche_remote0)
 
     # ---- p1 waits for Hub push notification, then pulls and pongs ----
     _wait_for_notification(ep1, tok1, p0_teammate_id, count_p0_before_ping)
     t_p1_received = time.time()
 
-    pull_niche(vault1, p1_hex, team, niche_name, p1_reads_p0_niche)
+    pull_niche(files1, p1_hex, team, niche_name, p1_reads_p0_niche)
     assert (co1 / "ping.txt").exists(), f"{p1_nick} should see ping.txt after pull"
 
     (co1 / "pong.txt").write_text(f"pong {t_p1_received}\n")
-    publish(vault1, p1_hex, team, niche_name, str(co1), message="pong")
-    push_niche(vault1, p1_hex, team, niche_name, niche_remote1)
+    publish(files1, p1_hex, team, niche_name, str(co1), message="pong")
+    push_niche(files1, p1_hex, team, niche_name, niche_remote1)
 
     # ---- p0 waits for push notification of pong ----
     _wait_for_notification(ep0, tok0, p1_teammate_id, count_p1_before_pong)
     t_p0_received = time.time()
 
-    pull_niche(vault0, p0_hex, team, niche_name, p0_reads_p1_niche)
+    pull_niche(files0, p0_hex, team, niche_name, p0_reads_p1_niche)
     assert (co0 / "pong.txt").exists(), f"{p0_nick} should see pong.txt after pull"
 
     # ---- Report ----
@@ -651,14 +651,14 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
             headers={"Authorization": f"Bearer {tok}"},
         ).raise_for_status()
 
-    vault0 = str(tmp_path / "vault-p0")
-    vault1 = str(tmp_path / "vault-p1")
-    init_vault(vault0, p0_hex)
-    init_vault(vault1, p1_hex)
+    files0 = str(tmp_path / "files-p0")
+    files1 = str(tmp_path / "files-p1")
+    init_files(files0, p0_hex)
+    init_files(files1, p1_hex)
 
     niche_name = "ping-pong-ntfy"
-    reg_pfx = f"vault/{team}/registry-ntfy/"
-    niche_pfx = f"vault/{team}/niches/{niche_name}/"
+    reg_pfx = f"files/{team}/registry-ntfy/"
+    niche_pfx = f"files/{team}/niches/{niche_name}/"
 
     reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
     niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
@@ -667,19 +667,19 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=niche_pfx)
     p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
 
-    create_niche(vault0, p0_hex, team, niche_name)
+    create_niche(files0, p0_hex, team, niche_name)
     co0 = tmp_path / "checkout-p0"
-    add_checkout(vault0, p0_hex, team, niche_name, str(co0))
+    add_checkout(files0, p0_hex, team, niche_name, str(co0))
     (co0 / "init.txt").write_text("initialised\n")
-    publish(vault0, p0_hex, team, niche_name, str(co0), message="init")
-    push_niche(vault0, p0_hex, team, niche_name, niche_remote0)
+    publish(files0, p0_hex, team, niche_name, str(co0), message="init")
+    push_niche(files0, p0_hex, team, niche_name, niche_remote0)
 
-    push_registry(vault0, p0_hex, team, reg_remote0)
-    pull_registry(vault1, p1_hex, team, p1_reads_p0_reg)
+    push_registry(files0, p0_hex, team, reg_remote0)
+    pull_registry(files1, p1_hex, team, p1_reads_p0_reg)
 
-    pull_niche(vault1, p1_hex, team, niche_name, p1_reads_p0_niche)
+    pull_niche(files1, p1_hex, team, niche_name, p1_reads_p0_niche)
     co1 = tmp_path / "checkout-p1"
-    add_checkout(vault1, p1_hex, team, niche_name, str(co1))
+    add_checkout(files1, p1_hex, team, niche_name, str(co1))
 
     count_p0_before_ping = _get_peer_count(ep1, tok1, p0_teammate_id)
     count_p1_before_pong = _get_peer_count(ep0, tok0, p1_teammate_id)
@@ -690,10 +690,10 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     # ---- PING ----
     t_start = time.time()
     (co0 / "ping.txt").write_text(f"ping {t_start}\n")
-    publish(vault0, p0_hex, team, niche_name, str(co0), message="ping")
+    publish(files0, p0_hex, team, niche_name, str(co0), message="ping")
 
     t0 = time.time()
-    push_niche(vault0, p0_hex, team, niche_name, niche_remote0)
+    push_niche(files0, p0_hex, team, niche_name, niche_remote0)
     t_push_done = time.time()
 
     # ---- p1 waits for ntfy-driven notification ----
@@ -701,15 +701,15 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     t_p1_notified = time.time()
 
     t1 = time.time()
-    pull_niche(vault1, p1_hex, team, niche_name, p1_reads_p0_niche)
+    pull_niche(files1, p1_hex, team, niche_name, p1_reads_p0_niche)
     t_p1_pulled = time.time()
     assert (co1 / "ping.txt").exists(), f"{p1_nick} should see ping.txt after pull"
 
     (co1 / "pong.txt").write_text(f"pong {t_p1_notified}\n")
-    publish(vault1, p1_hex, team, niche_name, str(co1), message="pong")
+    publish(files1, p1_hex, team, niche_name, str(co1), message="pong")
 
     t2 = time.time()
-    push_niche(vault1, p1_hex, team, niche_name, niche_remote1)
+    push_niche(files1, p1_hex, team, niche_name, niche_remote1)
     t_pong_push_done = time.time()
 
     # ---- p0 waits for ntfy-driven notification of pong ----
@@ -717,7 +717,7 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     t_p0_notified = time.time()
 
     t3 = time.time()
-    pull_niche(vault0, p0_hex, team, niche_name, p0_reads_p1_niche)
+    pull_niche(files0, p0_hex, team, niche_name, p0_reads_p1_niche)
     t_p0_pulled = time.time()
     assert (co0 / "pong.txt").exists(), f"{p0_nick} should see pong.txt after pull"
 

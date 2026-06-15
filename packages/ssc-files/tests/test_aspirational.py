@@ -1,5 +1,5 @@
 """
-Scenario tests for the Shared File Vault.
+Scenario tests for the Small Sea Collective Files.
 
 These cover the multi-participant workflows that exercise the most
 important end-to-end behavior:
@@ -10,7 +10,7 @@ important end-to-end behavior:
   2. Concurrent registry additions — Alice and Bob each create a niche
      independently; after cross-pulling registries both see all niches.
 
-  3. Full join flow — Bob starts with an empty vault, pulls the registry,
+  3. Full join flow — Bob starts with an empty files, pulls the registry,
      discovers a niche, pulls the niche content, adds a checkout, reads
      Alice's files and contributes back.
 
@@ -23,13 +23,13 @@ import pathlib
 import pytest
 from cod_sync.protocol import LocalFolderRemote
 
-from shared_file_vault.vault import (
-    VaultMaterializationContext,
+from ssc_files.files import (
+    FilesMaterializationContext,
     add_checkout,
     create_niche,
     fetch_niche,
     get_checkout,
-    init_vault,
+    init_files,
     list_niches,
     materialize_team,
     merge_niche,
@@ -48,16 +48,16 @@ TEAM_ID = "11" * 16
 
 
 def _team(participant_hex):
-    return VaultMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME)
+    return FilesMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME)
 
 
 # --- Helpers ---
 
 
-def setup_vault(playground, name, participant_hex):
-    """Create an empty vault for a participant. Returns vault_root."""
-    root = playground / f"vault-{name}"
-    init_vault(str(root), participant_hex)
+def setup_files(playground, name, participant_hex):
+    """Create an empty files for a participant. Returns files_root."""
+    root = playground / f"files-{name}"
+    init_files(str(root), participant_hex)
     materialize_team(str(root), _team(participant_hex))
     return root
 
@@ -92,8 +92,8 @@ def test_registry_propagation(playground_dir):
     alice_reg_cloud.mkdir()
     alice_niche_cloud.mkdir()
 
-    # Alice creates a vault, a niche, writes a file, and pushes everything
-    alice_root = setup_vault(playground, "alice", ALICE)
+    # Alice creates a files, a niche, writes a file, and pushes everything
+    alice_root = setup_files(playground, "alice", ALICE)
     create_niche(str(alice_root), ALICE, _team(ALICE), "docs")
 
     alice_co = playground / "checkout-alice-docs"
@@ -105,8 +105,8 @@ def test_registry_propagation(playground_dir):
     push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderRemote(str(alice_reg_cloud)))
     push_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderRemote(str(alice_niche_cloud)))
 
-    # Bob starts with an empty vault and pulls only the registry
-    bob_root = setup_vault(playground, "bob", BOB)
+    # Bob starts with an empty files and pulls only the registry
+    bob_root = setup_files(playground, "bob", BOB)
     pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderRemote(str(alice_reg_cloud)))
 
     niches = list_niches(str(bob_root), BOB, _team(BOB))
@@ -146,12 +146,12 @@ def test_concurrent_registry_additions(playground_dir):
     bob_reg_cloud.mkdir()
 
     # Alice seeds the registry with an initial niche, pushes to seed cloud
-    alice_root = setup_vault(playground, "alice", ALICE)
+    alice_root = setup_files(playground, "alice", ALICE)
     create_niche(str(alice_root), ALICE, _team(ALICE), "seed")
     push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderRemote(str(seed_cloud)))
 
     # Bob pulls from seed cloud before adding anything — establishes common history
-    bob_root = setup_vault(playground, "bob", BOB)
+    bob_root = setup_files(playground, "bob", BOB)
     pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderRemote(str(seed_cloud)))
 
     # Now both add their own niches on top of the shared history
@@ -180,11 +180,11 @@ def test_one_checkout_per_niche(playground_dir):
     checkout, the user must remove the existing one first.
     """
     import pytest
-    from shared_file_vault.vault import DuplicateCheckoutError
+    from ssc_files.files import DuplicateCheckoutError
 
     playground = pathlib.Path(playground_dir)
 
-    alice_root = setup_vault(playground, "alice", ALICE)
+    alice_root = setup_files(playground, "alice", ALICE)
     create_niche(str(alice_root), ALICE, _team(ALICE), "notes")
 
     checkout_a = playground / "checkout-a"
@@ -210,7 +210,7 @@ def test_one_checkout_per_niche(playground_dir):
 
 
 def test_full_join_flow(playground_dir):
-    """Bob starts with an empty vault and joins an existing team niche.
+    """Bob starts with an empty files and joins an existing team niche.
 
     The join flow is:
       1. Pull registry  → discover what niches exist
@@ -230,7 +230,7 @@ def test_full_join_flow(playground_dir):
     bob_niche_cloud.mkdir()
 
     # Alice sets up the team
-    alice_root = setup_vault(playground, "alice", ALICE)
+    alice_root = setup_files(playground, "alice", ALICE)
     create_niche(str(alice_root), ALICE, _team(ALICE), "docs")
 
     alice_co = playground / "checkout-alice"
@@ -242,8 +242,8 @@ def test_full_join_flow(playground_dir):
     push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderRemote(str(alice_reg_cloud)))
     push_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderRemote(str(alice_niche_cloud)))
 
-    # Bob joins from scratch — empty vault, no prior knowledge of niche names
-    bob_root = setup_vault(playground, "bob", BOB)
+    # Bob joins from scratch — empty files, no prior knowledge of niche names
+    bob_root = setup_files(playground, "bob", BOB)
 
     pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderRemote(str(alice_reg_cloud)))
     discovered = [n["name"] for n in list_niches(str(bob_root), BOB, _team(BOB))]

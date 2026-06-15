@@ -33,7 +33,7 @@ This branch succeeds if, at the end:
 2. later fetches do not overwrite parked refs for other peers
 3. a caller can merge the parked ref later and get the same merge behavior as
    the current immediate-merge path
-4. the Shared File Vault web UI demonstrates the fetch-then-merge flow
+4. the Small Sea Collective Files web UI demonstrates the fetch-then-merge flow
 5. micro tests make the guarantees convincing
 
 ## In Scope
@@ -43,7 +43,7 @@ This branch succeeds if, at the end:
 - choose and document a stable ref naming scheme
 - update `CodSync` so fetch can report the fetched SHA and pin it to a ref
 - store the minimum app-local metadata needed to show parked-update state
-- prove the pattern in the Shared File Vault web UI
+- prove the pattern in the Small Sea Collective Files web UI
 - preserve current Hub boundaries and git correctness
 
 ## Out of Scope
@@ -107,14 +107,14 @@ tip has already been integrated.
 ### 3. Primitive Ownership
 
 Keep the low-level git primitive in `CodSync`, but keep teammate-facing state in
-Shared File Vault.
+Small Sea Collective Files.
 
 That likely means:
 
 - `CodSync.fetch_from_remote(..., pin_to_ref=...)` or an equivalent helper that
   returns the fetched SHA
 - `CodSync.merge_from_ref(ref_name)` or an equivalent merge helper
-- Vault-level code owns parked-update status and UI metadata
+- Files-level code owns parked-update status and UI metadata
 
 ### 4. "Already Merged" Detection
 
@@ -129,7 +129,7 @@ gets stale.
 
 Keep metadata minimal and treat it as a UI cache, not as the source of truth.
 
-For Vault, the most likely home is a new table in `checkouts.db` or a small
+For Files, the most likely home is a new table in `checkouts.db` or a small
 adjacent app-local SQLite table with enough scope to distinguish:
 
 - team
@@ -168,9 +168,9 @@ Expose separate operations for:
 Existing callers that want the old immediate-merge behavior should still be
 able to keep using a simple path.
 
-### 3. Shared File Vault Web Flow
+### 3. Small Sea Collective Files Web Flow
 
-Use Shared File Vault as the proving ground.
+Use Small Sea Collective Files as the proving ground.
 
 That slice should show:
 
@@ -196,7 +196,7 @@ Write down the answers to these before editing much code:
 - what counts as "already merged"
 - what happens to parked state after successful merge
 - what happens to parked state after failed merge
-- how Vault scopes parked state for niche repos vs the registry repo
+- how Files scopes parked state for niche repos vs the registry repo
 
 ### Phase 1: CodSync primitive
 
@@ -215,21 +215,21 @@ Required behavior:
 - the parked ref resolves to a commit in the local repo
 - merge can target the parked ref directly
 
-### Phase 2: Vault storage and core flow
+### Phase 2: Files storage and core flow
 
-Then update [`packages/shared-file-vault/shared_file_vault/vault.py`](/Users/ben8/Repos/small-sea-collective/packages/shared-file-vault/shared_file_vault/vault.py).
+Then update [`packages/ssc-files/ssc_files/files.py`](/Users/ben8/Repos/small-sea-collective/packages/ssc-files/ssc_files/files.py).
 
 Implement:
 
 - minimal parked-update metadata storage
-- fetch and merge as separate Vault-level operations
+- fetch and merge as separate Files-level operations
 - ancestry-based "already merged" checks
 
 Keep the metadata clearly subordinate to git state.
 
-### Phase 3: Vault sync layer
+### Phase 3: Files sync layer
 
-Then update [`packages/shared-file-vault/shared_file_vault/sync.py`](/Users/ben8/Repos/small-sea-collective/packages/shared-file-vault/shared_file_vault/sync.py).
+Then update [`packages/ssc-files/ssc_files/sync.py`](/Users/ben8/Repos/small-sea-collective/packages/ssc-files/ssc_files/sync.py).
 
 Expose:
 
@@ -241,8 +241,8 @@ Expose:
 
 Then update:
 
-- [`packages/shared-file-vault/shared_file_vault/web.py`](/Users/ben8/Repos/small-sea-collective/packages/shared-file-vault/shared_file_vault/web.py)
-- [`packages/shared-file-vault/shared_file_vault/templates/fragments/niche_detail.html`](/Users/ben8/Repos/small-sea-collective/packages/shared-file-vault/shared_file_vault/templates/fragments/niche_detail.html)
+- [`packages/ssc-files/ssc_files/web.py`](/Users/ben8/Repos/small-sea-collective/packages/ssc-files/ssc_files/web.py)
+- [`packages/ssc-files/ssc_files/templates/fragments/niche_detail.html`](/Users/ben8/Repos/small-sea-collective/packages/ssc-files/ssc_files/templates/fragments/niche_detail.html)
 
 Change the web flow from:
 
@@ -274,7 +274,7 @@ Add micro tests that prove:
 - the parked ref remains usable after a failed merge unless we deliberately
   clear it
 
-Add app-level tests for the chosen Vault slice that prove:
+Add app-level tests for the chosen Files slice that prove:
 
 - the app can show "update available to merge"
 - the app can merge later without re-fetching
@@ -289,12 +289,12 @@ The branch now implements the core fetch-then-merge primitive:
 - `CodSync.fetch_from_remote(..., pin_to_ref=...)` can return the fetched SHA
   and pin it to a durable local ref
 - `CodSync.merge_from_ref(ref_name)` can merge an already parked ref
-- Shared File Vault splits peer sync into fetch and merge steps
+- Small Sea Collective Files splits peer sync into fetch and merge steps
 - parked refs live under `refs/peers/<member_id_hex>/main`
-- Vault stores minimal peer sync metadata in app-local SQLite as a UI cache
+- Files stores minimal peer sync metadata in app-local SQLite as a UI cache
 - "already merged" is determined from git ancestry rather than only cached
   metadata
-- the Shared File Vault web UI now exposes a fetch-first, merge-later flow
+- the Small Sea Collective Files web UI now exposes a fetch-first, merge-later flow
 
 Compatibility paths were kept where practical:
 
@@ -308,8 +308,8 @@ Compatibility paths were kept where practical:
 The following targeted micro tests passed after implementation:
 
 - `uv run pytest packages/cod-sync/tests/test_roundtrip.py`
-- `uv run pytest packages/shared-file-vault/tests/test_hub_sync.py`
-- `uv run pytest packages/shared-file-vault/tests/test_web_sync.py`
+- `uv run pytest packages/ssc-files/tests/test_hub_sync.py`
+- `uv run pytest packages/ssc-files/tests/test_web_sync.py`
 - `uv run pytest packages/small-sea-manager/tests/test_merge_conflict.py packages/small-sea-manager/tests/test_hub_invitation_flow.py`
 
 ## Risks

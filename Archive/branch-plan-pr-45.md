@@ -157,7 +157,7 @@ The expected integration points in `backend.py` are:
 
 ### 5. End-to-End Proof
 
-Use one normal app berth as the guinea pig, ideally Shared File Vault.
+Use one normal app berth as the guinea pig, ideally Small Sea Collective Files.
 
 The test should prove:
 

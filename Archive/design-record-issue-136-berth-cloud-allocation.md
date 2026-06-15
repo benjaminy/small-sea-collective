@@ -127,7 +127,7 @@ peer-read paths and `team_device` untouched":
    `legacy_transport.bucket` (which is now allocation-sourced via
    `team_device`) rather than the `ss-{berth_id[:16]}` formula, so Core reads
    find the correct allocated bucket.
-   Vault and other app berth peer reads still use the legacy formula —
+   Files and other app berth peer reads still use the legacy formula —
    that is explicitly Slice B (member-berth storage announcements).
 
 The single remaining `_bucket_name_for_protocol` call site
@@ -164,7 +164,7 @@ remainder.
 ## Validation summary
 
 - `uv run pytest packages/small-sea-hub/tests packages/small-sea-manager/tests
-  packages/shared-file-vault/tests` is green
+  packages/ssc-files/tests` is green
   (261 passed, 3 pre-existing skips).
 - `grep -rn 'ss-{.*berth_id' packages/small-sea-hub/small_sea_hub/` returns
   exactly two hits: a notification topic in `server.py` (unrelated to

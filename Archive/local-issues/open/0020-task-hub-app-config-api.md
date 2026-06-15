@@ -44,7 +44,7 @@ GET /teams
 `/info` lets an app discover its own participant identity without the user
 needing to know or type a hex string.
 
-`/teams` lets an app enumerate the teams it can offer the user — e.g. a Vault
+`/teams` lets an app enumerate the teams it can offer the user — e.g. a Files
 `serve` command can pre-populate a "which team?" picker instead of requiring
 manual config.
 
@@ -65,9 +65,9 @@ validates this before returning the response.
 
 Once Tier 1 is available:
 
-- **Shared File Vault** `serve` command can drop `participant_hex` from its
+- **Small Sea Collective Files** `serve` command can drop `participant_hex` from its
   config file — it reads `/info` at startup instead. The config file then only
-  needs `vault_root` and optionally `hub_port`.
+  needs `files_root` and optionally `hub_port`.
 - Any future app follows the same pattern: configure `hub_port`, derive
   everything else from the Hub.
 
@@ -83,5 +83,5 @@ Once Tier 1 is available:
 
 - `packages/small-sea-hub/` — Hub server and backend
 - `packages/small-sea-manager/spec.md` — Manager ↔ Hub relationship, schema
-- `packages/shared-file-vault/shared_file_vault/cli.py` — current `serve`
+- `packages/ssc-files/ssc_files/cli.py` — current `serve`
   command that reads `participant_hex` from config file as a workaround

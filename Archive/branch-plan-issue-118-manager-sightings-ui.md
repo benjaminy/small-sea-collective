@@ -14,7 +14,7 @@ Issue #111 landed everything *except* the human-facing review surface:
 - Manager has `TeamManager.refresh_app_sightings`, `dismiss_participant_app_sighting`, `dismiss_team_app_sighting`, plus the generic `provisioning.register_app_for_participant` / `activate_app_for_team` primitives.
 - Issue #122 removed the Core bypass so those primitives are the only registration writers.
 
-The Manager web UI today has no way to surface any of that. A user whose Vault session was rejected with `participant_berth_missing` cannot see the sighting, register the app, activate it for a team, or dismiss the prompt without dropping into Python.
+The Manager web UI today has no way to surface any of that. A user whose Files session was rejected with `participant_berth_missing` cannot see the sighting, register the app, activate it for a team, or dismiss the prompt without dropping into Python.
 
 This branch fills exactly that gap: a thin htmx surface in `small_sea_manager.web` that walks the v1 four-reason loop end-to-end, plus the minimum `TeamManager` wrappers and template fragments needed to do so. The already-landed Hub feed and disposition plumbing stays the source of truth, with one necessary Manager-side refinement: refresh must re-evaluate old Hub observations against current local registration state so resolved prompts do not linger forever.
 
@@ -29,7 +29,7 @@ The branch is successful if all of the following are true:
    - `team_berth_missing` → Activate for team, Dismiss participant prompt, Dismiss team prompt.
    - `app_friendly_name_ambiguous` → Dismiss participant prompt, Dismiss team prompt; no register/activate action; surface explanatory text.
 3. Dismissing a participant-level prompt removes the row from the rendered list across all teams; dismissing a team-scoped prompt removes only the team-scoped variant.
-4. The full Vault loop (rejection → refresh → register → activate → success) can be driven entirely from the Manager web UI in a micro test, with no manual `provisioning.*` calls outside fixtures.
+4. The full Files loop (rejection → refresh → register → activate → success) can be driven entirely from the Manager web UI in a micro test, with no manual `provisioning.*` calls outside fixtures.
 5. The web layer adds no new business logic: every route delegates to `TeamManager` methods, which delegate to the existing `provisioning` module.
 
 If any of those is fuzzy at implementation time, stop and update this plan.
@@ -82,7 +82,7 @@ The branch should commit the answers below in `branch-plan.md` *before* any test
    - unresolved rows use the current missing reason (`app_unknown`, `participant_berth_missing`, `team_berth_missing`, or `app_friendly_name_ambiguous`), even if the Hub row's stored reason is older.
    This keeps the Hub contract unchanged while making the UI honest after each Manager action.
 7. **Unknown or not-yet-synced teams.** If a Hub sighting references a `team_name` that this Manager device cannot currently find in NoteToSelf/local team state, Manager must keep the row visible with the stored Hub reason and disable registration/activation actions that require the missing team. It may still offer participant-level dismissal, and may offer team-level dismissal only if the existing dismissal primitive can validate the team. Silent-drop is not allowed; invisible stuck prompts are worse than a conservative row.
-8. **Null-team sightings.** V1 Vault sightings always send a team. If a future Hub row has `team_name = null`, the fragment must hide team-scoped actions (`Activate for team`, `Dismiss team prompt`) and keep only participant-level actions that match the current reason. Do not invent a team selector on this branch.
+8. **Null-team sightings.** V1 Files sightings always send a team. If a future Hub row has `team_name = null`, the fragment must hide team-scoped actions (`Activate for team`, `Dismiss team prompt`) and keep only participant-level actions that match the current reason. Do not invent a team selector on this branch.
 
 If any of these change during implementation, update this plan first.
 
@@ -91,13 +91,13 @@ If any of these change during implementation, update this plan first.
 Before any web-side code lands, write the failing skeleton for the end-to-end test in `packages/small-sea-manager/tests/test_manager.py` (or a new `test_app_sightings_ui.py` if it grows past ~150 lines):
 
 ```
-test_vault_bootstrap_loop_via_manager_ui
+test_files_bootstrap_loop_via_manager_ui
   fresh participant + team, NoteToSelf passthrough session active
-  Vault calls /sessions/request -> 409 app_unknown
+  Files calls /sessions/request -> 409 app_unknown
   POST /app-sightings/refresh         -> fragment lists one row, "Register" + "Activate" + "Dismiss" buttons present
   POST /app-sightings/register        -> fragment lists same row but reason now team_berth_missing
   POST /app-sightings/activate        -> fragment shows "No app-bootstrap prompts"
-  Vault retries /sessions/request     -> 200
+  Files retries /sessions/request     -> 200
 ```
 
 The negative-path skeletons (per-reason render, dismissal hides row, dismissal does not register) should also exist in red form before Phase 1 starts, so contract drift can't slip in later. The exit gate for Phase 0.5 is: tests are red because routes are 404 or the fragment is missing, not because assertions disagree on wording.
@@ -180,7 +180,7 @@ A reviewer should be able to convince themselves of all of the following without
 
 **No bypass for any app.**
 - The dismissal-does-not-register test proves the UI cannot accidentally side-write registration state.
-- The end-to-end test starts from zero registered apps and walks the public Manager API. There is no Vault-specific or Core-specific code path in `web.py`; #122's removal of the Core exception remains intact.
+- The end-to-end test starts from zero registered apps and walks the public Manager API. There is no Files-specific or Core-specific code path in `web.py`; #122's removal of the Core exception remains intact.
 
 **Refresh is user-triggered.**
 - No `setInterval`-style htmx polling on the sightings card. Confirmed by template grep: no `hx-trigger="every"`, no `load`-trigger on the sightings list.
@@ -197,7 +197,7 @@ A reviewer should be able to convince themselves of all of the following without
 **Existing behavior is unchanged.**
 - `uv run pytest packages/small-sea-manager/tests` passes.
 - `uv run pytest packages/small-sea-hub/tests` passes.
-- `uv run pytest packages/shared-file-vault/tests` passes — Vault still walks the rejection-and-registration loop the way #111 designed.
+- `uv run pytest packages/ssc-files/tests` passes — Files still walks the rejection-and-registration loop the way #111 designed.
 
 This section will be revisited at end-of-branch with concrete file paths, line numbers, and named tests.
 

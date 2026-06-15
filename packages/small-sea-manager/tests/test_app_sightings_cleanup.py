@@ -17,11 +17,11 @@ from small_sea_hub.server import app as hub_app
 from small_sea_manager.manager import TeamManager
 
 
-_VAULT_APP = "SharedFileVault"
+_FILES_APP = "SmallSeaCollectiveFiles"
 _CORE_APP = "SmallSeaCollectiveCore"
 _TEAM = "ProjectX"
 _OTHER_TEAM = "ProjectY"
-_CLIENT = "SharedFileVaultTest"
+_CLIENT = "SmallSeaCollectiveFilesTest"
 
 
 def _fresh_env(playground_dir, *, now_fn=None, sighting_stale_window=None):
@@ -55,12 +55,12 @@ def _open_core_session(client):
     return resp.json()
 
 
-def _request_vault_session(client):
+def _request_files_session(client):
     return client.post(
         "/sessions/request",
         json={
             "participant": "alice",
-            "app": _VAULT_APP,
+            "app": _FILES_APP,
             "team": _TEAM,
             "client": _CLIENT,
         },
@@ -87,14 +87,14 @@ def _hub_rows(backend):
 
 def test_resolved_row_is_cleared_after_registration_and_activation(playground_dir):
     backend, participant_hex, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     mgr = _make_manager(backend, participant_hex, client)
 
     Provisioning.register_app_for_participant(
-        backend.root_dir, participant_hex, _VAULT_APP,
+        backend.root_dir, participant_hex, _FILES_APP,
     )
     Provisioning.activate_app_for_team(
-        backend.root_dir, participant_hex, _TEAM, _VAULT_APP,
+        backend.root_dir, participant_hex, _TEAM, _FILES_APP,
     )
 
     prompts = mgr.refresh_app_sightings()
@@ -108,15 +108,15 @@ def test_resolved_row_cleared_even_when_dismissed(playground_dir):
     """Resolved + dismissed: dismissal is a UI preference and must not pin a
     resolved row in the Hub."""
     backend, participant_hex, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     mgr = _make_manager(backend, participant_hex, client)
-    mgr.dismiss_team_app_sighting(_TEAM, _VAULT_APP)
+    mgr.dismiss_team_app_sighting(_TEAM, _FILES_APP)
 
     Provisioning.register_app_for_participant(
-        backend.root_dir, participant_hex, _VAULT_APP,
+        backend.root_dir, participant_hex, _FILES_APP,
     )
     Provisioning.activate_app_for_team(
-        backend.root_dir, participant_hex, _TEAM, _VAULT_APP,
+        backend.root_dir, participant_hex, _TEAM, _FILES_APP,
     )
 
     prompts = mgr.refresh_app_sightings()
@@ -130,25 +130,25 @@ def test_resolved_row_cleared_even_when_dismissed(playground_dir):
 
 def test_dismissed_unresolved_row_remains(playground_dir):
     backend, participant_hex, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     mgr = _make_manager(backend, participant_hex, client)
-    mgr.dismiss_team_app_sighting(_TEAM, _VAULT_APP)
+    mgr.dismiss_team_app_sighting(_TEAM, _FILES_APP)
 
     prompts = mgr.refresh_app_sightings()
 
     assert list(prompts) == []
     rows = _hub_rows(backend)
     assert len(rows) == 1
-    assert rows[0]["app_name"] == _VAULT_APP
+    assert rows[0]["app_name"] == _FILES_APP
 
 
 def test_fresh_dismissed_unresolved_row_keeps_existing_display(playground_dir):
     """The Phase 3 reordering must not change display for the
     dismissed-unresolved-fresh path: still no prompt, still no clear."""
     backend, participant_hex, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     mgr = _make_manager(backend, participant_hex, client)
-    mgr.dismiss_participant_app_sighting(_VAULT_APP)
+    mgr.dismiss_participant_app_sighting(_FILES_APP)
 
     prompts = mgr.refresh_app_sightings()
 
@@ -165,14 +165,14 @@ def test_team_not_locally_cloned_keeps_conservative_prompt(playground_dir):
     prompt rather than being cleared. The Hub row must remain."""
     backend, participant_hex, client = _fresh_env(playground_dir)
     backend.record_unknown_app_sighting(
-        participant_hex, _VAULT_APP, _OTHER_TEAM, _CLIENT, "app_unknown",
+        participant_hex, _FILES_APP, _OTHER_TEAM, _CLIENT, "app_unknown",
     )
     mgr = _make_manager(backend, participant_hex, client)
 
     prompts = mgr.refresh_app_sightings()
 
     assert len(prompts) == 1
-    assert prompts[0]["app_name"] == _VAULT_APP
+    assert prompts[0]["app_name"] == _FILES_APP
     assert prompts[0]["team_name"] == _OTHER_TEAM
     assert prompts[0].get("team_unavailable") is True
     rows = _hub_rows(backend)
@@ -196,7 +196,7 @@ def test_stale_row_shown_once_from_pre_prune_snapshot(playground_dir):
     )
 
     backend.record_unknown_app_sighting(
-        participant_hex, _VAULT_APP, _TEAM, _CLIENT, "app_unknown",
+        participant_hex, _FILES_APP, _TEAM, _CLIENT, "app_unknown",
     )
     mgr = _make_manager(backend, participant_hex, client)
 
@@ -223,7 +223,7 @@ def test_stale_row_with_unknown_team_shown_once_then_pruned(playground_dir):
     )
 
     backend.record_unknown_app_sighting(
-        participant_hex, _VAULT_APP, _OTHER_TEAM, _CLIENT, "app_unknown",
+        participant_hex, _FILES_APP, _OTHER_TEAM, _CLIENT, "app_unknown",
     )
     mgr = _make_manager(backend, participant_hex, client)
 
@@ -249,10 +249,10 @@ def test_stale_dismissed_unresolved_row_shown_zero_times_but_pruned(playground_d
     )
 
     backend.record_unknown_app_sighting(
-        participant_hex, _VAULT_APP, _TEAM, _CLIENT, "app_unknown",
+        participant_hex, _FILES_APP, _TEAM, _CLIENT, "app_unknown",
     )
     mgr = _make_manager(backend, participant_hex, client)
-    mgr.dismiss_team_app_sighting(_TEAM, _VAULT_APP)
+    mgr.dismiss_team_app_sighting(_TEAM, _FILES_APP)
 
     prompts = mgr.refresh_app_sightings()
 
@@ -268,13 +268,13 @@ def test_clear_failure_is_non_fatal_and_omits_resolved_prompt(playground_dir):
     it computed and surfaces a single warning. The resolved row is not added
     to prompts because its current_app_sighting_prompt is None."""
     backend, participant_hex, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     mgr = _make_manager(backend, participant_hex, client)
     Provisioning.register_app_for_participant(
-        backend.root_dir, participant_hex, _VAULT_APP,
+        backend.root_dir, participant_hex, _FILES_APP,
     )
     Provisioning.activate_app_for_team(
-        backend.root_dir, participant_hex, _TEAM, _VAULT_APP,
+        backend.root_dir, participant_hex, _TEAM, _FILES_APP,
     )
 
     session = mgr._open_note_to_self_session()
@@ -296,7 +296,7 @@ def test_clear_failure_is_non_fatal_and_omits_resolved_prompt(playground_dir):
 
 def test_prune_failure_is_non_fatal(playground_dir):
     backend, participant_hex, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     mgr = _make_manager(backend, participant_hex, client)
     session = mgr._open_note_to_self_session()
     real_prune = session.prune_stale_app_sightings
@@ -323,9 +323,9 @@ def test_refresh_returns_current_prompts_not_raw_hub_rows(playground_dir):
     current local state. After registration, an old app_unknown row should
     surface as team_berth_missing, not as the stored reason."""
     backend, participant_hex, client = _fresh_env(playground_dir)
-    _request_vault_session(client)
+    _request_files_session(client)
     Provisioning.register_app_for_participant(
-        backend.root_dir, participant_hex, _VAULT_APP,
+        backend.root_dir, participant_hex, _FILES_APP,
     )
     mgr = _make_manager(backend, participant_hex, client)
 

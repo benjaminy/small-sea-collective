@@ -1,24 +1,24 @@
-# Shared File Vault Hub Sync
+# Small Sea Collective Files Hub Sync
 
 Final branch record for
-[Issues/0026-task-shared-file-vault-sync.md](Issues/0026-task-shared-file-vault-sync.md)
-on branch `vault-building-blocks`.
+[Issues/0026-task-ssc-files-sync.md](Issues/0026-task-ssc-files-sync.md)
+on branch `files-building-blocks`.
 
 ## Branch Goal
 
-Move Shared File Vault from a local-only prototype to a credible Small Sea app:
+Move Small Sea Collective Files from a local-only prototype to a credible Small Sea app:
 
-- Vault can open and reuse Hub team sessions
-- Vault can push and pull niche data through the Hub
+- Files can open and reuse Hub team sessions
+- Files can push and pull niche data through the Hub
 - the web UI can drive that flow, including PIN-based session confirmation
-- Vault moves toward teammate-oriented sync UX without violating the
+- Files moves toward teammate-oriented sync UX without violating the
   Manager/Hub boundary rules
 
 ## What Landed
 
-### 1. Hub-backed Vault sync layer
+### 1. Hub-backed Files sync layer
 
-Shared File Vault now has a dedicated sync helper module that owns:
+Small Sea Collective Files now has a dedicated sync helper module that owns:
 
 - config loading and persistence
 - cached per-team Hub session tokens
@@ -27,25 +27,25 @@ Shared File Vault now has a dedicated sync helper module that owns:
 
 This keeps Hub-specific logic out of the web layer and CLI command bodies.
 
-### 2. Vault config and cached team sessions
+### 2. Files config and cached team sessions
 
-Vault now supports a minimal config shape including:
+Files now supports a minimal config shape including:
 
-- `vault_root`
+- `files_root`
 - `participant_hex`
 - `hub_port`
 - cached per-team session tokens
 
-This is enough for Vault to resume team sessions without repeated approval in
+This is enough for Files to resume team sessions without repeated approval in
 the common case.
 
 ### 3. CLI login and manual sync
 
-Vault now supports:
+Files now supports:
 
-- `shared-file-vault login TEAM_NAME`
-- `shared-file-vault push TEAM_NAME NICHE_NAME`
-- `shared-file-vault pull TEAM_NAME NICHE_NAME --from-member MEMBER_ID`
+- `ssc-files login TEAM_NAME`
+- `ssc-files push TEAM_NAME NICHE_NAME`
+- `ssc-files pull TEAM_NAME NICHE_NAME --from-member MEMBER_ID`
 
 The login path supports both auto-approve and PIN-confirmation flows.
 
@@ -61,14 +61,14 @@ The niche detail view now includes:
 - push
 - pull through the Hub
 
-This means a user can stay in the Vault web UI for the whole manual-sync flow.
+This means a user can stay in the Files web UI for the whole manual-sync flow.
 
 ### 5. Peer discovery through the Hub
 
-The Hub now exposes `GET /session/peers`, and Vault uses it instead of reading
+The Hub now exposes `GET /session/peers`, and Files uses it instead of reading
 team DBs directly.
 
-Vault's web UI no longer requires raw peer member ID entry for the normal pull
+Files' web UI no longer requires raw peer member ID entry for the normal pull
 flow. It renders teammate-oriented pull controls driven by Hub peer discovery.
 
 ### 6. Team-scoped peer display names
@@ -89,7 +89,7 @@ improves the product direction and keeps the API honest.
 
 ### 7. Conflict surfacing
 
-Vault now has a typed merge-conflict path for pull behavior and surfaces
+Files now has a typed merge-conflict path for pull behavior and surfaces
 conflicting file paths so the user has something actionable rather than a vague
 error.
 
@@ -97,7 +97,7 @@ error.
 
 This branch preserves the important repo boundaries:
 
-- Vault runtime code does not read team `core.db` directly
+- Files runtime code does not read team `core.db` directly
 - peer discovery is routed through the Hub
 - internet-facing sync still flows through the Hub
 - local-only tests remain the main validation path
@@ -124,7 +124,7 @@ is no longer "finish this branch," but "build the next UX layer."
 
 That follow-on is captured in:
 
-- [Issues/0030-task-vault-peer-update-ux.md](Issues/0030-task-vault-peer-update-ux.md)
+- [Issues/0030-task-files-peer-update-ux.md](Issues/0030-task-files-peer-update-ux.md)
 
 In short, what remains is:
 
@@ -134,7 +134,7 @@ In short, what remains is:
 
 ## Outcome
 
-The branch achieved the main goal: Shared File Vault now has a credible,
+The branch achieved the main goal: Small Sea Collective Files now has a credible,
 architecturally honest Hub-backed sync story for demos.
 
 The user-facing story is now much closer to:
@@ -147,5 +147,5 @@ The user-facing story is now much closer to:
 rather than:
 
 - manually construct remotes
-- read team DBs from Vault
+- read team DBs from Files
 - type raw internal peer IDs into the UI

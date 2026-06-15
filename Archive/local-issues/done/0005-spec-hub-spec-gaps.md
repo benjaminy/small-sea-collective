@@ -42,7 +42,7 @@ The following items are **ready to document** — the implementation is complete
 
 The following items describe **unimplemented features** and should be marked as planned/speculative:
 
-- Credential storage evolution (keyring/vault) (line 53)
+- Credential storage evolution (keyring/files) (line 53)
 - VPN/P2P (line 61)
 - Encryption layer (line 65)
 

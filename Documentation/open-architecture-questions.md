@@ -105,7 +105,7 @@ These questions were worked through in detail and are now captured in the [Cod S
 - **S3Remote elimination**: Requires reworking the invitation flow. Inviter's cloud data is assumed globally readable (security comes from E2E encryption, not access control). Invitation tokens may include time-limited read paths.
 - **Encryption details**: Cipher selection, key exchange protocol, and the bootstrapping flow for new teammates joining a chain are all TBD.
 
-**Why it's urgent:** Every Cod Sync consumer (Small Sea Manager, shared-file-vault, future apps) inherits this format.
+**Why it's urgent:** Every Cod Sync consumer (Small Sea Manager, ssc-files, future apps) inherits this format.
 
 
 ---

@@ -1,13 +1,13 @@
-# Branch Plan: Vault peer-update UX (issue #13)
+# Branch Plan: Files peer-update UX (issue #13)
 
-Branch: `issue-13-vault-peer-update-ux`
-Tracking issue: [#13 — SharedFileVault — teammate update detection and pull UX](https://github.com/benjaminy/small-sea-collective/issues/13)
+Branch: `issue-13-files-peer-update-ux`
+Tracking issue: [#13 — SmallSeaCollectiveFiles — teammate update detection and pull UX](https://github.com/benjaminy/small-sea-collective/issues/13)
 
 ## What landed
 
 ### 1. Signal-count watermark persistence (`sync.py`)
 
-Vault config now stores `[peer_signal_watermarks."{team}"."{member_id}"] = int`.
+Files config now stores `[peer_signal_watermarks."{team}"."{member_id}"] = int`.
 Helpers: `get_signal_watermark`, `set_signal_watermark`, `clear_signal_watermark`.
 `load_config` defaults the table to `{}` for older configs.
 `_dump_toml` serializes it with quoted TOML keys, consistent with `team_sessions`.
@@ -55,7 +55,7 @@ tokens, hint flip logic (`has_unfetched_hint` True/False), watermark advance
 on fetch (using seeded `peer_counts`), other-peer isolation, peer-panel
 fragment with no session vs. active session, and the full
 hint-on → fetch → hint-off integration flow.
-All 59 shared-file-vault tests pass.
+All 59 ssc-files tests pass.
 
 ### 7. Follow-up issues filed
 
@@ -65,7 +65,7 @@ All 59 shared-file-vault tests pass.
 ## Context
 
 Issue #5's Hub-backed sync layer is in place (see
-`Archive/branch-plan-vault-building-blocks.md`). Vault can open a team
+`Archive/branch-plan-files-building-blocks.md`). Files can open a team
 session, push, fetch, merge, and render post-fetch parked state. What is
 still missing is any sense of **"Bob may have changes I haven't fetched
 yet"** — all current change-awareness kicks in only *after* a fetch has
@@ -77,10 +77,10 @@ since been verified to already exist:
 - `GET /session/peers` already returns `signal_count` per peer
   (`packages/small-sea-hub/small_sea_hub/server.py` ~L698–717).
   `SmallSeaSession.session_peers()` wraps it; `sync.list_team_peers` passes
-  it through. Vault currently ignores the field.
+  it through. Files currently ignores the field.
 - `POST /notifications/watch` exists as a long-poll primitive
   (`server.py` ~L868). `SmallSeaSession.watch_notifications()` wraps it.
-  No caller in Vault uses it yet.
+  No caller in Files uses it yet.
 
 ## Goals
 
@@ -101,7 +101,7 @@ since been verified to already exist:
 - **Automatic background pulls.** The hint is a status indicator. The
   user still decides when to fetch.
 - Rich conflict resolution UI.
-- Reading team DBs from Vault runtime code.
+- Reading team DBs from Files runtime code.
 
 ## Design decisions
 
@@ -146,12 +146,12 @@ semantic way to clear it is to actually fetch. Specifics:
 
 ## Work items
 
-### 1. Watermark persistence (`shared_file_vault/sync.py`)
+### 1. Watermark persistence (`ssc_files/sync.py`)
 
-- Extend vault config TOML to include
+- Extend files config TOML to include
   `[peer_signal_watermarks."{team_name}"."{member_id}"] = int`.
   Update `_dump_toml` and `load_config` accordingly (including test-only
-  config override path `SMALL_SEA_VAULT_CONFIG`).
+  config override path `SMALL_SEA_FILES_CONFIG`).
 - Helpers:
   - `get_signal_watermark(team_name, member_id) -> int`
   - `set_signal_watermark(team_name, member_id, count) -> None`
@@ -203,7 +203,7 @@ Micro tests:
 - hint is False when `current == watermark`
 - hint is False when peer has never bumped (both zero)
 
-### 3. Peer-panel fragment endpoint (`shared_file_vault/web.py`)
+### 3. Peer-panel fragment endpoint (`ssc_files/web.py`)
 
 - New route: `GET /teams/{team}/niches/{niche}/peer_panel`. Returns
   the peer-panel HTML fragment only (no surrounding niche detail).
@@ -241,7 +241,7 @@ Micro tests (pytest + FastAPI TestClient):
 
 In `tests/test_web_sync.py` (or a new `test_peer_update_ux.py`):
 
-- Two vaults sharing a team session fixture.
+- Two filess sharing a team session fixture.
 - Peer B pushes through the Hub.
 - Peer A fetches the peer-panel fragment; assert the "has changes" badge
   is present for B.
@@ -256,7 +256,7 @@ In `tests/test_web_sync.py` (or a new `test_peer_update_ux.py`):
    bump, fetch the peer's registry, diff niche tip SHAs against
    local parked/merged state, surface hints per `(peer, niche)`.
 2. **SSE/long-poll refresh via `/notifications/watch`.** Add an SSE
-   endpoint on the Vault web app that wraps
+   endpoint on the Files web app that wraps
    `SmallSeaSession.watch_notifications` and emits the peer-panel
    fragment on each bump. Keep htmx polling as fallback.
 
@@ -272,19 +272,19 @@ Both follow-ups are additive — they don't invalidate the v1 shape.
   visual weight explicitly match the state-reminder intent. No dismiss
   affordance exists.
 - Goal 3 (background refresh): the polling fragment endpoint is covered
-  by a TestClient test. Manual smoke via `shared-file-vault serve` with
-  two vaults confirms the badge appears without a page reload.
+  by a TestClient test. Manual smoke via `ssc-files serve` with
+  two filess confirms the badge appears without a page reload.
 
 ### "Did repo integrity hold up?"
 
-- Coupling: changes are confined to `shared_file_vault/sync.py`,
-  `web.py`, and one template. No new Vault → team-DB reads. No new Hub
+- Coupling: changes are confined to `ssc_files/sync.py`,
+  `web.py`, and one template. No new Files → team-DB reads. No new Hub
   endpoints. No cod-sync changes.
 - Architectural mandates:
   - Hub remains the sole gateway — the new hint is derived from
     existing `GET /session/peers` data.
   - Only the Manager reads team DB directly — unchanged.
-- Backward compatibility: vault config gains an optional table;
+- Backward compatibility: files config gains an optional table;
   pre-existing configs without it default to watermark 0 and behave
   identically to current code until the first fetch.
 - Tests: existing `test_hub_sync.py` / `test_web_sync.py` continue to
@@ -312,5 +312,5 @@ On merge:
 1. File the two follow-up issues on GitHub, linking back to this branch
    plan.
 2. Update `branch-plan.md` with the "What landed" section mirroring the
-   format of `Archive/branch-plan-vault-building-blocks.md`.
-3. Move `branch-plan.md` to `Archive/branch-plan-issue-13-vault-peer-update-ux.md`.
+   format of `Archive/branch-plan-files-building-blocks.md`.
+3. Move `branch-plan.md` to `Archive/branch-plan-issue-13-files-peer-update-ux.md`.

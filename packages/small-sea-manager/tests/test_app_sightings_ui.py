@@ -14,10 +14,10 @@ from small_sea_manager.manager import TeamManager
 from small_sea_manager.web import create_app
 
 
-_APP = "SharedFileVault"
+_APP = "SmallSeaCollectiveFiles"
 _CORE_APP = "SmallSeaCollectiveCore"
 _TEAM = "ProjectX"
-_CLIENT = "SharedFileVaultTest"
+_CLIENT = "SmallSeaCollectiveFilesTest"
 
 
 class _ButtonParser(HTMLParser):
@@ -256,7 +256,7 @@ def test_app_sightings_fragment_hides_team_actions_for_edge_rows(playground_dir,
     assert "Dismiss team prompt" not in response.text
 
 
-def test_vault_bootstrap_loop_via_manager_ui(playground_dir):
+def test_files_bootstrap_loop_via_manager_ui(playground_dir):
     backend, participant_hex, hub_client = _fresh_env(playground_dir)
     manager_client, _manager = _manager_web(backend.root_dir, participant_hex, hub_client)
 

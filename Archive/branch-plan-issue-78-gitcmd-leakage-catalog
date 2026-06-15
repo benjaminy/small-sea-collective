@@ -4,7 +4,7 @@
 **Base:** `main`
 **Primary issue:** #78 "Fix gitCmd sprawl"
 **Date refreshed:** 2026-04-15
-**Related packages:** `packages/cod-sync`, `packages/shared-file-vault`,
+**Related packages:** `packages/cod-sync`, `packages/ssc-files`,
 `packages/small-sea-manager`, `packages/small-sea-hub`
 
 ## Goal
@@ -23,7 +23,7 @@ Reduce the cross-package coupling on `cod_sync.protocol.gitCmd`. Concretely:
 After #80 (one checkout per niche), #81 (three residency modes), #82 (transit
 removal), and #87 (drop .git pointer file), the codebase is in a clean state
 for this work. In particular, #87 established the explicit `(--git-dir,
---work-tree)` pattern in vault, which maps directly onto the `Repo` constructor.
+--work-tree)` pattern in files, which maps directly onto the `Repo` constructor.
 
 ## Design: the `Repo` type
 
@@ -122,7 +122,7 @@ in `manager.py` — which becomes `Repo.head()`.
 
 - High repetition (10+ sites) — maximum deduplication payoff.
 - Low risk — the commit pattern is purely local, no sync or conflict behavior.
-- Doesn't touch vault, which has its own more complex `(git_dir, work_tree)`
+- Doesn't touch files, which has its own more complex `(git_dir, work_tree)`
   usage patterns worth handling in a separate pass.
 
 ## Steps
@@ -162,9 +162,9 @@ assert something was actually committed.
 Re-run the catalog searches and update the appendix. Expected: `provisioning.py`
 drops from 29 to ~19 `CodSync.gitCmd` sites, `manager.py` drops from 5 to ~1.
 
-### 4. Do NOT convert vault in this branch
+### 4. Do NOT convert files in this branch
 
-Vault's gitCmd usage is architecturally different (work-tree coordination,
+Files' gitCmd usage is architecturally different (work-tree coordination,
 conflict handling, registry ops). It deserves its own branch with its own plan,
 built on the `Repo` type this branch introduces.
 
@@ -192,7 +192,7 @@ built on the `Repo` type this branch introduces.
 - `uv run pytest packages/cod-sync/tests -q` — new Repo tests pass.
 - `uv run pytest packages/small-sea-manager/tests -q` — existing manager tests
   still pass.
-- `uv run pytest packages/shared-file-vault/tests -q` — vault unaffected.
+- `uv run pytest packages/ssc-files/tests -q` — files unaffected.
 
 ### Goal: API is usable
 
@@ -213,7 +213,7 @@ built on the `Repo` type this branch introduces.
 - `packages/splice-merge` — clean
 - `packages/wrasse-trust` — clean
 
-### `packages/shared-file-vault/shared_file_vault/vault.py`
+### `packages/ssc-files/ssc_files/files.py`
 
 - `from cod_sync.protocol import gitCmd` — 1 import + 23 call sites
 - 3 `CodSync` usages, all `repo_dir=git_dir` (fetch/push paths only — #87
@@ -243,7 +243,7 @@ Operation families:
 ### Test-only usage
 
 - cod-sync tests: `CS.gitCmd(...)` for fixture setup — expected, not targeted
-- vault tests: `gitCmd` for scenario setup — expected
+- files tests: `gitCmd` for scenario setup — expected
 - manager tests: `CodSync.gitCmd(...)` for repo state construction — expected
 - Test cleanup follows production API cleanup; not in scope here
 
@@ -251,6 +251,6 @@ Operation families:
 
 | Package | File | Mechanism | Sites | Character |
 |---------|------|-----------|-------|-----------|
-| shared-file-vault | vault.py | direct `gitCmd` import | 23+1 | full local git plumbing (NOT targeted this branch) |
+| ssc-files | files.py | direct `gitCmd` import | 23+1 | full local git plumbing (NOT targeted this branch) |
 | small-sea-manager | provisioning.py | `CodSync.gitCmd(...)` | 29 | repo init + recurring stage/commit (**starter refactor target**) |
 | small-sea-manager | manager.py | `CodSyncProtocol.gitCmd(...)` + raw subprocess | 4+1 | NoteToSelf stage/commit + HEAD introspection (**starter refactor target**) |

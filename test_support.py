@@ -16,7 +16,7 @@ def publish_storage_announcement_for_session(backend, session_hex) -> dict | Non
 
     `backend` must expose `.root_dir` and `._lookup_session(session_hex)`
     returning a `SmallSeaSession`.  Duck-typed so this module can stay
-    free of hub/vault imports.
+    free of hub/files imports.
     """
     ss_session = backend._lookup_session(session_hex)
     if ss_session.team_name == "NoteToSelf":

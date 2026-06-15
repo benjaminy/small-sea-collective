@@ -334,12 +334,12 @@ def test_app_berth_peer_read_without_announcement_returns_missing(
         secret_key=minio["secret_key"],
     )
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
-    Provisioning.register_app_for_participant(root, alice_hex, "SharedFileVault")
-    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", "SharedFileVault")
+    Provisioning.register_app_for_participant(root, alice_hex, "SmallSeaCollectiveFiles")
+    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", "SmallSeaCollectiveFiles")
 
     app.state.backend = backend
     client = TestClient(app)
-    session_hex = _request_and_confirm_app(client, app_name="SharedFileVault")
+    session_hex = _request_and_confirm_app(client, app_name="SmallSeaCollectiveFiles")
 
     with pytest.raises(SmallSea.SmallSeaNotFoundExn):
         backend._download_peer_file(
@@ -365,23 +365,23 @@ def test_app_berth_peer_read_uses_announcement_location(
         secret_key=minio["secret_key"],
     )
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
-    Provisioning.register_app_for_participant(root, alice_hex, "SharedFileVault")
+    Provisioning.register_app_for_participant(root, alice_hex, "SmallSeaCollectiveFiles")
     Provisioning.activate_app_for_team(
         root,
         alice_hex,
         "ProjectX",
-        "SharedFileVault",
+        "SmallSeaCollectiveFiles",
     )
     app_berth_id = Provisioning._resolve_berth_id_for_allocation(
         root,
         alice_hex,
         "ProjectX",
-        "SharedFileVault",
+        "SmallSeaCollectiveFiles",
     )
 
     app.state.backend = backend
     client = TestClient(app)
-    session_hex = _request_and_confirm_app(client, app_name="SharedFileVault")
+    session_hex = _request_and_confirm_app(client, app_name="SmallSeaCollectiveFiles")
 
     announced_bucket = "app-berth-announced"
     s3 = _make_bucket_public(minio, announced_bucket)
@@ -425,18 +425,18 @@ def test_peer_read_does_not_use_current_device_bootstrap_allowance(
         secret_key=minio["secret_key"],
     )
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
-    Provisioning.register_app_for_participant(root, alice_hex, "SharedFileVault")
-    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", "SharedFileVault")
+    Provisioning.register_app_for_participant(root, alice_hex, "SmallSeaCollectiveFiles")
+    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", "SmallSeaCollectiveFiles")
     app_berth_id = Provisioning._resolve_berth_id_for_allocation(
         root,
         alice_hex,
         "ProjectX",
-        "SharedFileVault",
+        "SmallSeaCollectiveFiles",
     )
 
     app.state.backend = backend
     client = TestClient(app)
-    session_hex = _request_and_confirm_app(client, app_name="SharedFileVault")
+    session_hex = _request_and_confirm_app(client, app_name="SmallSeaCollectiveFiles")
 
     Provisioning.publish_teammate_berth_storage_announcement(
         root,

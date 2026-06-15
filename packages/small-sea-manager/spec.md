@@ -686,8 +686,8 @@ an `app` row and a `team_app_berth` row in the team DB using a random local app
 ID. It grants `berth_role` rows for all current teammates using their existing Core
 role where possible, then commits the team DB.
 
-The Manager does not know about "blessed" bundled app names. Shared File Vault
-uses `SharedFileVault` through the same generic operations as any other app.
+The Manager does not know about "blessed" bundled app names. Small Sea Collective Files
+uses `SmallSeaCollectiveFiles` through the same generic operations as any other app.
 
 #### Hub sightings
 

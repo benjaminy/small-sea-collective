@@ -408,7 +408,7 @@ open a berth session, the Hub returns:
 {
   "error": "app_bootstrap_required",
   "reason": "app_unknown",
-  "app": "SharedFileVault",
+  "app": "SmallSeaCollectiveFiles",
   "team": "ProjectX"
 }
 ```
@@ -499,9 +499,9 @@ when the row's stored `last_seen_at` is byte-identical to the supplied value.
 
 ```json
 {
-  "app_name": "SharedFileVault",
+  "app_name": "SmallSeaCollectiveFiles",
   "team_name": "ProjectX",
-  "client_name": "shared-file-vault:default",
+  "client_name": "ssc-files:default",
   "last_seen_at": "2026-05-01T12:00:00.000000+00:00"
 }
 ```

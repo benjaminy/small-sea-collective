@@ -22,7 +22,7 @@ from wrasse_trust.keys import generate_hierarchy, key_id_from_public
 
 ALICE_ID = b"alice-id-bytes00"
 CORE_APP = "SmallSeaCollectiveCore"
-VAULT_APP = "SharedFileVault"
+FILES_APP = "SmallSeaCollectiveFiles"
 
 
 def _note_to_self_db(root, participant_hex):
@@ -116,12 +116,12 @@ def test_register_app_for_participant_does_not_materialize_app_directory(playgro
     root = pathlib.Path(playground_dir)
     alice_hex = create_new_participant(root, "Alice")
 
-    register_app_for_participant(root, alice_hex, VAULT_APP)
+    register_app_for_participant(root, alice_hex, FILES_APP)
 
     assert not (
-        root / "Participants" / alice_hex / "NoteToSelf" / VAULT_APP
+        root / "Participants" / alice_hex / "NoteToSelf" / FILES_APP
     ).exists()
-    assert _app_and_berth_counts(_note_to_self_db(root, alice_hex), VAULT_APP) == (1, 1)
+    assert _app_and_berth_counts(_note_to_self_db(root, alice_hex), FILES_APP) == (1, 1)
 
 
 def test_core_participant_registration_is_idempotent(playground_dir):
@@ -326,13 +326,13 @@ def test_core_team_activation_matches_generic_app_shape(playground_dir):
     result = create_team(root, alice_hex, "CoolProject")
     team_db = _team_db(root, alice_hex, "CoolProject")
 
-    activate_app_for_team(root, alice_hex, "CoolProject", VAULT_APP)
+    activate_app_for_team(root, alice_hex, "CoolProject", FILES_APP)
 
     assert not (
-        root / "Participants" / alice_hex / "NoteToSelf" / VAULT_APP
+        root / "Participants" / alice_hex / "NoteToSelf" / FILES_APP
     ).exists()
     assert not (
-        root / "Participants" / alice_hex / "CoolProject" / VAULT_APP
+        root / "Participants" / alice_hex / "CoolProject" / FILES_APP
     ).exists()
 
     with sqlite3.connect(str(team_db)) as conn:
@@ -347,9 +347,9 @@ def test_core_team_activation_matches_generic_app_shape(playground_dir):
         ).fetchall()
 
     by_app = {row[0]: (row[1], row[2]) for row in rows}
-    assert set(by_app) == {CORE_APP, VAULT_APP}
+    assert set(by_app) == {CORE_APP, FILES_APP}
     assert by_app[CORE_APP][0] == bytes.fromhex(result["berth_id_hex"])
-    assert by_app[CORE_APP][1] == by_app[VAULT_APP][1] == "read-write"
+    assert by_app[CORE_APP][1] == by_app[FILES_APP][1] == "read-write"
 
 
 def _team_device_columns(team_db):

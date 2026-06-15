@@ -152,9 +152,9 @@ Authorization: Bearer <Core NoteToSelf session token>
 Content-Type: application/json
 
 {
-  "app_name": "SharedFileVault",
+  "app_name": "SmallSeaCollectiveFiles",
   "team_name": "ProjectX",
-  "client_name": "shared-file-vault:default",
+  "client_name": "ssc-files:default",
   "last_seen_at": "2026-05-01T12:00:00.000000+00:00"
 }
 ```

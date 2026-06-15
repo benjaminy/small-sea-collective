@@ -5,20 +5,20 @@ Branch: `codex-issue-87-drop-git-pointer-file`
 ## Goal
 
 Remove the `.git` pointer file that `_make_work_tree` writes into user checkout
-directories. Switch every Shared File Vault git operation that touches checkout
+directories. Switch every Small Sea Collective Files git operation that touches checkout
 files to the explicit `(--git-dir, --work-tree)` pair. The checkout directory
-becomes 100% user content, with no vault/git bookkeeping files written into it.
+becomes 100% user content, with no files/git bookkeeping files written into it.
 
 ## Background / Key Findings
 
 The `.git` pointer file is written in one place:
 
 ```python
-# vault.py:365
+# files.py:365
 (dest / ".git").write_text(f"gitdir: {pathlib.Path(git_dir).resolve()}\n")
 ```
 
-Most of `vault.py` already passes `--git-dir`/`--work-tree` explicitly and does
+Most of `files.py` already passes `--git-dir`/`--work-tree` explicitly and does
 **not** rely on the pointer file. The two exceptions — the only callers that
 still depend on it — both go through `CodSync(repo_dir=checkout)`, which wraps
 every git call as `git -C <checkout> ...`, relying on git's implicit `.git`
@@ -37,7 +37,7 @@ discovery:
 Both can be rewritten as direct `gitCmd` calls with `--git-dir`/`--work-tree`, which
 eliminates the need for CodSync at these sites entirely — a net simplification.
 
-One micro test asserts the pointer file exists (`test_vault.py`); it needs
+One micro test asserts the pointer file exists (`test_files.py`); it needs
 updating. The `_make_work_tree`, `_cod_pull`, and `_cod_merge_ref` docstrings or
 comments should also stop saying merge works because of a checkout `.git`
 pointer.
@@ -46,7 +46,7 @@ pointer.
 
 - `CodSync(repo_dir=git_dir)` remains acceptable for fetch and push paths because
   those operations do not write into the user checkout.
-- `CodSync(repo_dir=checkout)` should disappear from `shared_file_vault/vault.py`.
+- `CodSync(repo_dir=checkout)` should disappear from `ssc_files/files.py`.
   Checkout-writing git operations should use `gitCmd` with explicit
   `--git-dir` and `--work-tree` flags.
 - Preserve the current conflict behavior: merge conflicts still raise
@@ -126,7 +126,7 @@ Update the docstring to make the new behavior explicit:
 
 ### 4. Update comments/docstrings that describe pointer-file behavior
 
-vault.py:527-529 currently reads:
+files.py:527-529 currently reads:
 > The checkout's .git pointer resolves git_dir automatically, so remotes
 > set up on git_dir (e.g. from a preceding fetch) are visible here.
 
@@ -144,7 +144,7 @@ assert (dest / ".git").exists()
 
 Optionally replace with a negative assertion that confirms the checkout is clean:
 ```python
-# checkout contains no vault/git bookkeeping files
+# checkout contains no files/git bookkeeping files
 assert not (dest / ".git").exists()
 ```
 
@@ -171,29 +171,29 @@ is achieved, and repo integrity did not regress.
 ### Goal validation
 
 - Static search:
-  - `rg -n "CodSync\\([^\\n]*repo_dir=checkout|gitdir:|\\.git pointer" packages/shared-file-vault/shared_file_vault packages/shared-file-vault/tests`
+  - `rg -n "CodSync\\([^\\n]*repo_dir=checkout|gitdir:|\\.git pointer" packages/ssc-files/ssc_files packages/ssc-files/tests`
   - Expected: no production `CodSync(repo_dir=checkout)`, no pointer-file write,
     and no stale pointer-file comments in source or micro tests.
 - Focused micro tests:
-  - `uv run pytest packages/shared-file-vault/tests/test_vault.py -q`
+  - `uv run pytest packages/ssc-files/tests/test_files.py -q`
   - Expected: `test_add_checkout` asserts `(dest / ".git")` does not exist, and
     existing pull/merge/conflict/CWD scenarios still pass.
 - Manual git behavior check, if needed while debugging:
   - after a checkout is created, `git -C <checkout> status` should fail with
     "not a git repository";
-  - `git --git-dir <vault git dir> --work-tree <checkout> status --porcelain`
+  - `git --git-dir <files git dir> --work-tree <checkout> status --porcelain`
     should still succeed.
 
 ### Integrity validation
 
-- Shared File Vault package sweep:
-  - `uv run pytest packages/shared-file-vault/tests -q`
-  - Expected: broader vault/web/hub sync behavior stays green with local mocks.
+- Small Sea Collective Files package sweep:
+  - `uv run pytest packages/ssc-files/tests -q`
+  - Expected: broader files/web/hub sync behavior stays green with local mocks.
 - Cod Sync regression check:
   - `uv run pytest packages/cod-sync/tests -q`
   - Expected: no unintended change to `CodSync` protocol semantics.
 - Coupling review:
-  - The implementation should reduce Shared File Vault's dependence on
+  - The implementation should reduce Small Sea Collective Files' dependence on
     `CodSync` checkout semantics while leaving Cod Sync's public API unchanged.
   - No new compatibility shim is needed because the project is pre-alpha.
   - No network-dependent validation is required for this change; keep tests
@@ -203,7 +203,7 @@ is achieved, and repo integrity did not regress.
 
 - Cross-package `gitCmd` cleanup (#78)
 - Giving `CodSync` a `(git_dir, work_tree)` constructor mode — that is the future
-  shape anticipated by #78 and #87's architecture notes, but vault can use plain
+  shape anticipated by #78 and #87's architecture notes, but files can use plain
   `gitCmd` calls in the meantime.
 - Any change to residency modes or the checkout registry schema.
 - Making user checkouts behave like ordinary command-line git repos.
