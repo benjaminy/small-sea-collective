@@ -12,11 +12,11 @@ Existing contacts and address book clients would talk to Bottlenose over localho
 
 ```text
 Contacts app
-    v CardDAV over localhost
+    ↓ CardDAV over localhost
 Bottlenose
-    v Small Sea client session
+    ↓ Small Sea client session
 Local app-owned contact state
-    v Cod Sync through the Hub
+    ↓ Cod Sync through the Hub
 Team berth
 ```
 
@@ -54,7 +54,7 @@ A future bridge that syncs Bottlenose contacts into Microsoft 365 through Micros
 ## What Bottlenose Is Not
 
 These are enduring positions, not first-version omissions.
-Specific storage, merge, setup, and conflict-resolution choices should live in a later roadmap after protocol spikes have produced evidence.
+The version-scoped sequencing and the open design questions about storage, merge semantics, contact photos, setup, and client compatibility live in `ROADMAP.md`.
 
 - **Not a new native contacts UI.**
   Bottlenose should not replace Apple Contacts, Thunderbird Address Book, GNOME Contacts, KAddressBook, DAVx5, or similar tools.
@@ -70,6 +70,17 @@ Specific storage, merge, setup, and conflict-resolution choices should live in a
 - **Not an Exchange clone.**
   Exchange ActiveSync, MAPI/HTTP, EWS, and Outlook-native compatibility are far larger and more proprietary surfaces than this app should carry early.
 
+## Product Feel
+
+Bottlenose should feel friendly, practical, and quietly careful.
+Its promise is not "a smarter contacts app."
+Its promise is "our shared address book belongs to us, and it still works with the contact tools we already know."
+
+## Roadmap
+
+The phased plan — and the unknowns that drive its sequence — lives in `ROADMAP.md`.
+The roadmap is organized to confront the address book ecosystem's scar tissue (client quirks, setup UX, identity ambiguity, contact photos, group semantics, and vCard rewrites) as early and cheaply as possible, with throwaway spikes ahead of any real architectural commitments.
+
 ## Backlog Notes
 
 When Bottlenose moves beyond concept stage, start with a throwaway CardDAV and account-setup spike rather than storage architecture.
@@ -81,12 +92,11 @@ Configuration profiles, QR pairing, username/password-shaped credentials, local 
 
 Conflict handling should stay Small Sea-shaped.
 When concurrent edits cannot be safely merged, preserve the competing states and make the ambiguity visible.
-Contacts are less dangerous than recurring calendar events, but identity ambiguity is still real: two people can create similar cards for the same person, one teammate can delete while another edits, and clients can rewrite vCards in surprising ways.
+Contact deduplication and merge are notoriously tricky in practice: two people can create similar cards for the same person, one teammate can delete while another edits, groups can behave inconsistently, and clients can rewrite vCards in surprising ways.
 
 A small local resolver should handle ambiguous merges.
 The resolver can offer choices such as pick one version, preserve both as separate contacts, merge selected fields, or defer.
 The ordinary contacts app should provide the breadcrumb, not the whole repair surface.
 
 Above all, Bottlenose should remain an adapter, not an address book empire.
-Its promise is not "a smarter contacts app."
-Its promise is "our shared address book belongs to us, and it still works with the contact tools we already know."
+Focused setup, status, and conflict-resolution screens are useful, but ordinary contacts apps should remain the main address book UI.
