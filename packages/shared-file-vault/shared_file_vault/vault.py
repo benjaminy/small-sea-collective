@@ -337,18 +337,18 @@ CREATE TABLE IF NOT EXISTS peer_sync (
     team_id         TEXT NOT NULL,
     repo_kind        TEXT NOT NULL,
     niche_name       TEXT NOT NULL,
-    member_id        TEXT NOT NULL,
+    teammate_id        TEXT NOT NULL,
     last_fetched_sha TEXT,
     last_merged_sha  TEXT,
     updated_at       TEXT NOT NULL,
-    PRIMARY KEY (team_id, repo_kind, niche_name, member_id)
+    PRIMARY KEY (team_id, repo_kind, niche_name, teammate_id)
 );
 CREATE TABLE IF NOT EXISTS peer_signal_watermark (
     team_id   TEXT NOT NULL,
-    member_id  TEXT NOT NULL,
+    teammate_id  TEXT NOT NULL,
     count      INTEGER NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (team_id, member_id)
+    PRIMARY KEY (team_id, teammate_id)
 );
 """
 
@@ -395,7 +395,7 @@ def _record_peer_fetch(
     context,
     repo_kind,
     niche_name,
-    member_id,
+    teammate_id,
     fetched_sha,
 ):
     context = _validate_context(participant_hex, context)
@@ -403,10 +403,10 @@ def _record_peer_fetch(
     conn.execute(
         """
         INSERT INTO peer_sync (
-            team_id, repo_kind, niche_name, member_id,
+            team_id, repo_kind, niche_name, teammate_id,
             last_fetched_sha, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(team_id, repo_kind, niche_name, member_id)
+        ON CONFLICT(team_id, repo_kind, niche_name, teammate_id)
         DO UPDATE SET
             last_fetched_sha = excluded.last_fetched_sha,
             updated_at = excluded.updated_at
@@ -415,7 +415,7 @@ def _record_peer_fetch(
             context.team_id,
             repo_kind,
             _peer_sync_niche_key(repo_kind, niche_name),
-            member_id,
+            teammate_id,
             fetched_sha,
             datetime.now(timezone.utc).isoformat(),
         ),
@@ -430,7 +430,7 @@ def _record_peer_merge(
     context,
     repo_kind,
     niche_name,
-    member_id,
+    teammate_id,
     merged_sha,
 ):
     context = _validate_context(participant_hex, context)
@@ -438,10 +438,10 @@ def _record_peer_merge(
     conn.execute(
         """
         INSERT INTO peer_sync (
-            team_id, repo_kind, niche_name, member_id,
+            team_id, repo_kind, niche_name, teammate_id,
             last_fetched_sha, last_merged_sha, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(team_id, repo_kind, niche_name, member_id)
+        ON CONFLICT(team_id, repo_kind, niche_name, teammate_id)
         DO UPDATE SET
             last_fetched_sha = excluded.last_fetched_sha,
             last_merged_sha = excluded.last_merged_sha,
@@ -451,7 +451,7 @@ def _record_peer_merge(
             context.team_id,
             repo_kind,
             _peer_sync_niche_key(repo_kind, niche_name),
-            member_id,
+            teammate_id,
             merged_sha,
             merged_sha,
             datetime.now(timezone.utc).isoformat(),
@@ -461,45 +461,45 @@ def _record_peer_merge(
     conn.close()
 
 
-def _peer_sync_row(vault_root, participant_hex, context, repo_kind, niche_name, member_id):
+def _peer_sync_row(vault_root, participant_hex, context, repo_kind, niche_name, teammate_id):
     context = _validate_context(participant_hex, context)
     conn = _connect_checkouts(vault_root, participant_hex)
     row = conn.execute(
         """
-        SELECT team_id, repo_kind, niche_name, member_id, last_fetched_sha, last_merged_sha
+        SELECT team_id, repo_kind, niche_name, teammate_id, last_fetched_sha, last_merged_sha
         FROM peer_sync
-        WHERE team_id = ? AND repo_kind = ? AND niche_name = ? AND member_id = ?
+        WHERE team_id = ? AND repo_kind = ? AND niche_name = ? AND teammate_id = ?
         """,
-        (context.team_id, repo_kind, _peer_sync_niche_key(repo_kind, niche_name), member_id),
+        (context.team_id, repo_kind, _peer_sync_niche_key(repo_kind, niche_name), teammate_id),
     ).fetchone()
     conn.close()
     return row
 
 
-def get_peer_signal_watermark(vault_root, participant_hex, context, member_id):
+def get_peer_signal_watermark(vault_root, participant_hex, context, teammate_id):
     context = _validate_context(participant_hex, context)
     conn = _connect_checkouts(vault_root, participant_hex)
     row = conn.execute(
-        "SELECT count FROM peer_signal_watermark WHERE team_id = ? AND member_id = ?",
-        (context.team_id, member_id),
+        "SELECT count FROM peer_signal_watermark WHERE team_id = ? AND teammate_id = ?",
+        (context.team_id, teammate_id),
     ).fetchone()
     conn.close()
     return int(row["count"]) if row else 0
 
 
-def set_peer_signal_watermark(vault_root, participant_hex, context, member_id, count):
+def set_peer_signal_watermark(vault_root, participant_hex, context, teammate_id, count):
     context = _validate_context(participant_hex, context)
     conn = _connect_checkouts(vault_root, participant_hex)
     conn.execute(
         """
-        INSERT INTO peer_signal_watermark (team_id, member_id, count, updated_at)
+        INSERT INTO peer_signal_watermark (team_id, teammate_id, count, updated_at)
         VALUES (?, ?, ?, ?)
-        ON CONFLICT(team_id, member_id)
+        ON CONFLICT(team_id, teammate_id)
         DO UPDATE SET count = excluded.count, updated_at = excluded.updated_at
         """,
         (
             context.team_id,
-            member_id,
+            teammate_id,
             int(count),
             datetime.now(timezone.utc).isoformat(),
         ),
@@ -508,12 +508,12 @@ def set_peer_signal_watermark(vault_root, participant_hex, context, member_id, c
     conn.close()
 
 
-def clear_peer_signal_watermark(vault_root, participant_hex, context, member_id):
+def clear_peer_signal_watermark(vault_root, participant_hex, context, teammate_id):
     context = _validate_context(participant_hex, context)
     conn = _connect_checkouts(vault_root, participant_hex)
     conn.execute(
-        "DELETE FROM peer_signal_watermark WHERE team_id = ? AND member_id = ?",
-        (context.team_id, member_id),
+        "DELETE FROM peer_signal_watermark WHERE team_id = ? AND teammate_id = ?",
+        (context.team_id, teammate_id),
     )
     conn.commit()
     conn.close()
@@ -618,8 +618,8 @@ def _is_ancestor(git_dir, maybe_ancestor, descendant="HEAD"):
     return result.returncode == 0
 
 
-def _peer_ref_name(member_id, branch="main"):
-    return f"refs/peers/{member_id}/{branch}"
+def _peer_ref_name(teammate_id, branch="main"):
+    return f"refs/peers/{teammate_id}/{branch}"
 
 
 # ---------------------------------------------------------------------------
@@ -958,38 +958,38 @@ def pull_registry(vault_root, participant_hex, context, remote):
     _cod_pull(git_dir, checkout, remote)
 
 
-def fetch_registry(vault_root, participant_hex, context, member_id, remote):
+def fetch_registry(vault_root, participant_hex, context, teammate_id, remote):
     """Fetch the registry from a peer and pin it to a durable local ref."""
     context = _validate_context(participant_hex, context)
     _ensure_registry(vault_root, participant_hex, context)
     git_dir = _registry_git_dir(vault_root, context)
-    ref_name = _peer_ref_name(member_id)
+    ref_name = _peer_ref_name(teammate_id)
     fetched_sha = _cod_fetch(git_dir, remote, ref_name)
     if fetched_sha is not None:
         _record_peer_fetch(
-            vault_root, participant_hex, context, "registry", None, member_id, fetched_sha
+            vault_root, participant_hex, context, "registry", None, teammate_id, fetched_sha
         )
     return fetched_sha
 
 
-def merge_registry(vault_root, participant_hex, context, member_id):
+def merge_registry(vault_root, participant_hex, context, teammate_id):
     """Merge a previously parked registry ref from a peer."""
     context = _validate_context(participant_hex, context)
     _ensure_registry(vault_root, participant_hex, context)
     git_dir = _registry_git_dir(vault_root, context)
     checkout = _registry_checkout_dir(vault_root, context)
-    ref_name = _peer_ref_name(member_id)
+    ref_name = _peer_ref_name(teammate_id)
     parked_sha = _resolve_ref(git_dir, ref_name)
     if parked_sha is None:
         return None
     if _has_commits(git_dir) and _is_ancestor(git_dir, parked_sha, "HEAD"):
         _record_peer_merge(
-            vault_root, participant_hex, context, "registry", None, member_id, parked_sha
+            vault_root, participant_hex, context, "registry", None, teammate_id, parked_sha
         )
         return parked_sha
     _cod_merge_ref(git_dir, checkout, ref_name)
     _record_peer_merge(
-        vault_root, participant_hex, context, "registry", None, member_id, parked_sha
+        vault_root, participant_hex, context, "registry", None, teammate_id, parked_sha
     )
     return parked_sha
 
@@ -1043,7 +1043,7 @@ def pull_niche(vault_root, participant_hex, context, niche_name, remote):
     _cod_pull(git_dir, checkout, remote)
 
 
-def fetch_niche(vault_root, participant_hex, context, niche_name, member_id, remote):
+def fetch_niche(vault_root, participant_hex, context, niche_name, teammate_id, remote):
     """Fetch a niche from a peer and pin it to a durable local ref.
 
     Fetch does not modify the user's checkout, so no clean-checkout guard
@@ -1056,16 +1056,16 @@ def fetch_niche(vault_root, participant_hex, context, niche_name, member_id, rem
         git_dir.mkdir(parents=True)
         _init_git_dir(git_dir)
 
-    ref_name = _peer_ref_name(member_id)
+    ref_name = _peer_ref_name(teammate_id)
     fetched_sha = _cod_fetch(git_dir, remote, ref_name)
     if fetched_sha is not None:
         _record_peer_fetch(
-            vault_root, participant_hex, context, "niche", niche_name, member_id, fetched_sha
+            vault_root, participant_hex, context, "niche", niche_name, teammate_id, fetched_sha
         )
     return fetched_sha
 
 
-def merge_niche(vault_root, participant_hex, context, niche_name, member_id):
+def merge_niche(vault_root, participant_hex, context, niche_name, teammate_id):
     """Merge a previously parked niche ref from a peer.
 
     Requires a checkout to be attached (raises NoCheckoutError if none).
@@ -1077,18 +1077,18 @@ def merge_niche(vault_root, participant_hex, context, niche_name, member_id):
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     checkout = _require_clean_checkout(vault_root, participant_hex, context, niche_name)
 
-    ref_name = _peer_ref_name(member_id)
+    ref_name = _peer_ref_name(teammate_id)
     parked_sha = _resolve_ref(git_dir, ref_name)
     if parked_sha is None:
         return None
     if _has_commits(git_dir) and _is_ancestor(git_dir, parked_sha, "HEAD"):
         _record_peer_merge(
-            vault_root, participant_hex, context, "niche", niche_name, member_id, parked_sha
+            vault_root, participant_hex, context, "niche", niche_name, teammate_id, parked_sha
         )
         return parked_sha
     _cod_merge_ref(git_dir, checkout, ref_name)
     _record_peer_merge(
-        vault_root, participant_hex, context, "niche", niche_name, member_id, parked_sha
+        vault_root, participant_hex, context, "niche", niche_name, teammate_id, parked_sha
     )
     return parked_sha
 
@@ -1134,7 +1134,7 @@ def niche_conflict_paths(vault_root, participant_hex, context, niche_name):
 
 
 def peer_update_status(
-    vault_root, participant_hex, context, repo_kind, niche_name, member_id
+    vault_root, participant_hex, context, repo_kind, niche_name, teammate_id
 ):
     """Return parked-ref status for one peer/repo pair."""
     context = _validate_context(participant_hex, context)
@@ -1146,12 +1146,12 @@ def peer_update_status(
         git_dir = _niche_git_dir(vault_root, context, niche_name)
         if not git_dir.exists():
             row = _peer_sync_row(
-                vault_root, participant_hex, context, repo_kind, niche_name, member_id
+                vault_root, participant_hex, context, repo_kind, niche_name, teammate_id
             )
             return {
-                "member_id": member_id,
+                "teammate_id": teammate_id,
                 "repo_kind": repo_kind,
-                "parked_ref": _peer_ref_name(member_id),
+                "parked_ref": _peer_ref_name(teammate_id),
                 "parked_sha": None,
                 "ready_to_merge": False,
                 "already_merged": False,
@@ -1159,12 +1159,12 @@ def peer_update_status(
                 "last_merged_sha": row["last_merged_sha"] if row else None,
             }
 
-    ref_name = _peer_ref_name(member_id)
+    ref_name = _peer_ref_name(teammate_id)
     parked_sha = _resolve_ref(git_dir, ref_name)
-    row = _peer_sync_row(vault_root, participant_hex, context, repo_kind, niche_name, member_id)
+    row = _peer_sync_row(vault_root, participant_hex, context, repo_kind, niche_name, teammate_id)
     if parked_sha is None:
         return {
-            "member_id": member_id,
+            "teammate_id": teammate_id,
             "repo_kind": repo_kind,
             "parked_ref": ref_name,
             "parked_sha": None,
@@ -1176,7 +1176,7 @@ def peer_update_status(
 
     already_merged = _has_commits(git_dir) and _is_ancestor(git_dir, parked_sha, "HEAD")
     return {
-        "member_id": member_id,
+        "teammate_id": teammate_id,
         "repo_kind": repo_kind,
         "parked_ref": ref_name,
         "parked_sha": parked_sha,

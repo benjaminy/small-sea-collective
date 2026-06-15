@@ -365,7 +365,7 @@ def test_session_peers(playground_dir):
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
     alice_hex = Provisioning.create_new_participant(playground_dir, "alice")
     Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
-    bob_member_id = bytes.fromhex("11" * 16)
+    bob_teammate_id = bytes.fromhex("11" * 16)
     team_db = (
         pathlib.Path(playground_dir)
         / "Participants"
@@ -376,14 +376,14 @@ def test_session_peers(playground_dir):
     )
     conn = sqlite3.connect(str(team_db))
     try:
-        conn.execute("INSERT INTO member (id, display_name) VALUES (?, ?)", (bob_member_id, "Bob"))
+        conn.execute("INSERT INTO teammate (id, display_name) VALUES (?, ?)", (bob_teammate_id, "Bob"))
         conn.execute(
-            "INSERT INTO team_device (device_key_id, member_id, public_key, created_at) "
+            "INSERT INTO team_device (device_key_id, teammate_id, public_key, created_at) "
             "VALUES (?, ?, ?, ?)",
             (
-                bob_member_id,
-                bob_member_id,
-                bob_member_id,
+                bob_teammate_id,
+                bob_teammate_id,
+                bob_teammate_id,
                 "2026-01-01T00:00:00+00:00",
             ),
         )
@@ -402,6 +402,6 @@ def test_session_peers(playground_dir):
     assert resp.status_code == 200
     peers = resp.json()["peers"]
     assert len(peers) == 1
-    assert peers[0]["member_id"] == bob_member_id.hex()
+    assert peers[0]["teammate_id"] == bob_teammate_id.hex()
     assert peers[0]["name"] == "Bob"
     assert peers[0]["label"] == "Bob"

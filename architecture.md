@@ -36,12 +36,12 @@ Small Sea uses Signal-inspired cryptographic protocols ([X3DH](https://signal.or
 
 **Teammate admission is an inviter-orchestrated, transcript-bound, admin-quorum flow.**
 
-- *Governance-snapshot anchor.* Every proposal is anchored to a verifiable team-history reference (the team's `Sync/core.db` commit hash). The anchor freezes the admin roster, membership roster, and member→device mapping. Every participant can independently replay team history to the anchor and verify the frozen state.
-- *Proposal shell published at initiation.* The inviter allocates a fresh UUIDv7 `member_id` for the invitee and publishes a proposal shell to team DB before the invitee is contacted. Other admins in the frozen governance set see the proposal immediately and can withhold approval or object before the invitee has invested any effort.
-- *Transcript binding.* The invitee generates fresh keys and signs an acceptance blob binding to the inviter-allocated `member_id`. The inviter assembles the full admission transcript over the invitee's concrete device keys and the allocated `member_id`. Transport metadata (cloud endpoints) is explicitly excluded from the immutable transcript; post-admission transport setup is a separate flow.
-- *Member/device approval bridge.* Each admin approval is a member-scoped vote executed by a device-key signature. An approval is valid iff the signing key appears in a `device_link` cert at the anchor that maps to a current-admin `member_id`. This bridge is a step-by-step derivation any verifier can replay: cert chain at the anchor → device key → member ID → admin roster check. Approvals from devices linked after the anchor, or from non-admins at the anchor, are rejected. Multiple approvals from different devices of the same admin dedupe to one vote.
+- *Governance-snapshot anchor.* Every proposal is anchored to a verifiable team-history reference (the team's `Sync/core.db` commit hash). The anchor freezes the admin roster, membership roster, and teammate→device mapping. Every participant can independently replay team history to the anchor and verify the frozen state.
+- *Proposal shell published at initiation.* The inviter allocates a fresh UUIDv7 `teammate_id` for the invitee and publishes a proposal shell to team DB before the invitee is contacted. Other admins in the frozen governance set see the proposal immediately and can withhold approval or object before the invitee has invested any effort.
+- *Transcript binding.* The invitee generates fresh keys and signs an acceptance blob binding to the inviter-allocated `teammate_id`. The inviter assembles the full admission transcript over the invitee's concrete device keys and the allocated `teammate_id`. Transport metadata (cloud endpoints) is explicitly excluded from the immutable transcript; post-admission transport setup is a separate flow.
+- *Teammate/device approval bridge.* Each admin approval is a teammate-scoped vote executed by a device-key signature. An approval is valid iff the signing key appears in a `device_link` cert at the anchor that maps to a current-admin `teammate_id`. This bridge is a step-by-step derivation any verifier can replay: cert chain at the anchor → device key → teammate ID → admin roster check. Approvals from devices linked after the anchor, or from non-admins at the anchor, are rejected. Multiple approvals from different devices of the same admin dedupe to one vote.
 - *Inviter-published finalization.* The inviter observes quorum met and publishes the finalization mutation. The invitee never publishes their own admission. `quorum = 1` is the default; the inviter's own approval alone meets quorum and the end-to-end flow reduces to Alice-initiates → Bob-returns-signed-transcript → Alice-approves-and-publishes.
-- *Non-durable proposals.* Proposals are invalidated by any governance-state change relative to the anchor: admin roster changes, membership roster changes, or member→device mapping changes. Proposals also expire after a per-team window. An invalidated proposal cannot be finalized; it is not a durable bearer capability.
+- *Non-durable proposals.* Proposals are invalidated by any governance-state change relative to the anchor: admin roster changes, membership roster changes, or teammate→device mapping changes. Proposals also expire after a per-team window. An invalidated proposal cannot be finalized; it is not a durable bearer capability.
 
 There is no central membership oracle and no globally authoritative admin
 service. Each participant maintains a local clone of the team's history and
@@ -67,7 +67,7 @@ not guarantee that cloud storage has been provisioned for that berth. The
 Manager records the participant's cloud accounts and per-berth allocation
 choices. The Hub performs provider I/O and reconciles those choices with the
 provider, including recording provider-issued locators when materialization
-returns one. Team-visible peer routing is member-plus-berth scoped, because
+returns one. Team-visible peer routing is teammate-plus-berth scoped, because
 different teammates may store their clones of the same berth in different
 providers or accounts.
 
@@ -251,19 +251,19 @@ Before a client can access a berth, it must request access from the Hub. The Hub
 
 ## Permissions
 
-For each berth, a member can have either **read-only** or **read-write**
+For each berth, a teammate can have either **read-only** or **read-write**
 access. These are enforced as a social contract via encryption and sync
 conventions rather than by a central authority.
 
 In concrete technical terms:
 
 - **Read permission** means peers participating in the protocol should do the
-  key exchange needed for that member to read updates in that berth. This is a
+  key exchange needed for that teammate to read updates in that berth. This is a
   protocol convention enforced by social contract, not a cryptographic
   enforcement boundary: admitted parties can in principle proxy plaintext or
   receiver state out of band.
 - **Write permission** means peers participating in the protocol should pay
-  attention to that member's updates for that berth and merge them into their
+  attention to that teammate's updates for that berth and merge them into their
   own clone.
 
 A common shorthand organization is:
@@ -276,7 +276,7 @@ A common shorthand organization is:
 "has write permission to `{Team}/SmallSeaCollectiveCore`", the berth where
 membership and berth-role data live.
 
-"Remove member" therefore means: remove that person from my local clone of the
+"Remove teammate" therefore means: remove that person from my local clone of the
 team DB, push that change, and rotate keys if I want future readable updates to
 exclude them. Other teammates may adopt that view, reject it, or race it with a
 conflicting view of their own.

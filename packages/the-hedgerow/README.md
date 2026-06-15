@@ -1,7 +1,7 @@
 # The Hedgerow
 
 **Status:** concept-stage app.
-This package currently contains only enough metadata to be a valid workspace member; it does not implement the app yet.
+This package currently contains only enough metadata to be a valid workspace teammate; it does not implement the app yet.
 "The Hedgerow" is a working name (replacing an earlier placeholder, "Word of Mouth") pending namespace and trademark collision checks; see Challenging Question 2.
 Current Product Shape lists the load-bearing hypotheses that have emerged with the name: stronger than brainstorms, weaker than final requirements.
 Where the naming discussion exposed real design tensions, this document preserves the tension rather than pretending it has been settled.
@@ -78,7 +78,7 @@ Specific UI/UX choices — vocabulary, provenance rendering, notification model,
 
 The central primitive is a **membership-overlap bridge**:
 
-> A person who is a member of Team A and Team B signs an intentional act of carrying a Hedgerow post from Team A into Team B.
+> A person who is a teammate of Team A and Team B signs an intentional act of carrying a Hedgerow post from Team A into Team B.
 
 That bridge is the atom.
 Not follower edges.
@@ -107,7 +107,7 @@ The Hedgerow lives between private team chat and broadcast social media.
 
 Every Hedgerow item is anchored in a source team context.
 It is a Hedgerow post: user-authored content stored in a Hedgerow berth.
-When a member with standing in another team decides the item should cross, they relay it: a signed carrying act that takes the item from the source team into the destination team's Hedgerow-visible set, where it appears in the mixed feeds of people entitled to see that team context.
+When a teammate with standing in another team decides the item should cross, they relay it: a signed carrying act that takes the item from the source team into the destination team's Hedgerow-visible set, where it appears in the mixed feeds of people entitled to see that team context.
 The receiving team can engage with it, ignore it, annotate it, or relay it onward.
 Each relay adds a signed propagation hop.
 
@@ -124,7 +124,7 @@ Designing around the relay (not the post) is what keeps this from collapsing int
 ## Core Loop
 
 1. Alice writes a Hedgerow-native post in Team A.
-2. Bob, also in Team A and a member of Team B, thinks Team B should see it.
+2. Bob, also in Team A and a teammate of Team B, thinks Team B should see it.
 3. Bob relays the post into Team B with a carrier stance and, optionally, a note explaining why.
 4. Team B sees the post with provenance: the original author's Hedgerow-facing profile, origin team profile, Bob's Hedgerow-facing profile, Bob's relay act, and enough signed path context to verify the membership-overlap bridge that brought it here.
 5. Someone in Team B may relay it onward, extending the path.
@@ -230,9 +230,9 @@ This puts the natural cap on broadcast-style behavior at the UI layer instead of
 
 ### Cold start
 
-Cross-pollination only works once there is enough density of teams, members, and overlap.
+Cross-pollination only works once there is enough density of teams, teammates, and overlap.
 In a young Hedgerow with few users, deliberate-only propagation means almost nothing propagates and the feed looks dead even when the protocol is working.
-Launching into an already-dense seed community (Small Sea Collective members, a deliberately recruited cohort) is probably how this gets off the ground; "open it up and watch it grow" will not work for a slow-by-design feed.
+Launching into an already-dense seed community (Small Sea Collective teammates, a deliberately recruited cohort) is probably how this gets off the ground; "open it up and watch it grow" will not work for a slow-by-design feed.
 See also Challenging Question 13.
 
 ## What This Is Not
@@ -260,7 +260,7 @@ The harder adjacencies — the things users will actually mistake this for:
 
 The reason this app needs Small Sea, rather than any other substrate, is that team membership is itself a real, decentralized, cryptographic thing in Small Sea — not a server's opinion.
 That is what makes a relay authenticatable as a *team-internal act* without a platform vouching for the team.
-"Bob, who really is a member of Team A, really did decide to carry this into Team B" is a verifiable statement here in a way it cannot be on ActivityPub, AT Protocol, or Nostr.
+"Bob, who really is a teammate of Team A, really did decide to carry this into Team B" is a verifiable statement here in a way it cannot be on ActivityPub, AT Protocol, or Nostr.
 
 Everything else Small Sea provides — local-first storage, signed identity, Hub-mediated transport, human-repair-over-false-certainty — is shared with every other Small Sea app, necessary but not distinctive to this one.
 
@@ -397,7 +397,7 @@ That distinction gives three load-bearing principles.
    Subsequent relays are part of the social object the author signed up for.
 
 3. **Bridge certifications reveal exactly carriers and bridges — and nothing else.**
-   When Bob carries a post from Team A to Team B, the social object that needs to be authenticatable is "Bob, who really is a member of both, really did decide to bridge this."
+   When Bob carries a post from Team A to Team B, the social object that needs to be authenticatable is "Bob, who really is a teammate of both, really did decide to bridge this."
    Everything beyond that is bystander information that should not leak through the certification: who else is in Team A, what Team A's membership looked like before or after the relay, when Carol joined, how big the team is.
    This principle constrains the data model now, even before fancier cryptography is in play.
 
@@ -406,12 +406,12 @@ That distinction gives three load-bearing principles.
 The path-certification principle rules out several tempting data-model shapes:
 
 - **Membership snapshots in the relay record.**
-  A "snapshot of Team A at time T" is a roster of every member.
+  A "snapshot of Team A at time T" is a roster of every teammate.
   Even if a verifier only checks Bob's path through it, the snapshot itself leaks size, structure, and — across multiple relays from the same team — join/leave events.
 - **Merkle membership proofs in their naive form.**
   An inclusion proof for Bob exposes tree structure; depth implies size; comparing proofs across relays leaks membership rotation over time.
   Better: anonymous-credential-shaped primitives (BBS+, Idemix, accumulator-based membership).
-  The team authority issues Bob a per-team credential once; Bob presents it as proof against the team's public key; the *list* of members is never part of any proof.
+  The team authority issues Bob a per-team credential once; Bob presents it as proof against the team's public key; the *list* of teammates is never part of any proof.
 - **Carrier history baked into the certification.**
   The Q7 "Bob's last five carries into us" context is a *receiver-side* computation over relays the receiver already has — not a packet attached to each new relay.
   If it were attached, downstream receivers could profile arbitrary upstream carriers and teams they have no business knowing about.
@@ -501,11 +501,11 @@ Technical enforcement of "do not re-broadcast" is impossible, so the levers are 
 The principles above leave several questions unsettled:
 
 - How is the upstream chain rendered to receivers? (See Q4.)
-  The principle rules out exposing non-carrier members or team-internal state, but the receiver still needs to verify the bridge back to origin.
+  The principle rules out exposing non-carrier teammates or team-internal state, but the receiver still needs to verify the bridge back to origin.
   The cryptographic shape of "verifiable but minimally rendered" is not settled.
 - How are membership credentials revoked when someone leaves a team, without producing a side channel that signals their departure?
   This intersects with Q5 (deletion) and the cross-certification correlation problem above.
-- Should authors be able to limit a post's *carrier set* — for example, "anyone in Team A may carry this" vs. "only certain members"?
+- Should authors be able to limit a post's *carrier set* — for example, "anyone in Team A may carry this" vs. "only certain teammates"?
   The current model says no, on hypothesis-4 grounds and on the consent-by-posting principle, but a future use case may push back.
 - Which protocol fields are useful for verification but inappropriate to show in the feed?
   Some signed metadata may be necessary for cryptographic correctness while still being socially noisy or revealing if rendered as user-visible context.
@@ -575,12 +575,12 @@ The first one is the gate; nothing downstream can be answered generically.
    As a companion lever, receiver-side per-edge budgets ("more than 3 relays/week from Team A goes to a review queue") let receivers throttle locally without anyone having to compute a global metric.
 
 8. **What is the anti-spam primitive?**
-   Social scarcity is the layered answer: only team members can relay into their teams; each relay targets one team, so fan-out costs human attention rather than clicks; every relay carries at least a carrier-stance emoji, with optional substantive notes layered on top; and the receiver-side per-edge budgets from question 7 let teams throttle locally.
+   Social scarcity is the layered answer: only team teammates can relay into their teams; each relay targets one team, so fan-out costs human attention rather than clicks; every relay carries at least a carrier-stance emoji, with optional substantive notes layered on top; and the receiver-side per-edge budgets from question 7 let teams throttle locally.
    That stack may be enough without quotas, allowlists, or quarantine states.
    The stance-floor is deliberately lighter than a mandatory-note floor would be, because the single-team rule already does most of the anti-firehose work and because cricket risk dominates firehose risk in the early phase.
 9. **Can a team refuse a relay before it lands?**
-   If Team B gets a post because Bob is a member, does it appear immediately, or does it enter a review queue?
-   Is the answer different for read-write members and observers?
+   If Team B gets a post because Bob is a teammate, does it appear immediately, or does it enter a review queue?
+   Is the answer different for read-write teammates and observers?
    Receiver-side budgets push some of this into a configurable per-edge policy.
 10. **What counts as authorship?**
     An optional relay note can change meaning dramatically.
@@ -597,7 +597,7 @@ The first one is the gate; nothing downstream can be answered generically.
     The question gets sharper as the network grows out of the cricket phase, and the floor may need to rise.
 
 13. **How does The Hedgerow bootstrap?**
-    Cross-pollination needs density: enough teams, enough members, enough membership overlap that posts have somewhere to go and reasons to be carried.
+    Cross-pollination needs density: enough teams, enough teammates, enough membership overlap that posts have somewhere to go and reasons to be carried.
     In a sparse early network, deliberate-only propagation produces a near-empty feed, which reads as broken even when the protocol is working.
     The first real deployment likely needs a deliberately recruited seed community rather than open signup.
     The commentary floor (see Forwarding) is deliberately tuned low — single-emoji stance, optional note — for the same reason: every additional unit of activation energy on the carry action is a relay that does not happen, and in a sparse network the cost of one missing relay is much higher than the cost of one light-touch one.

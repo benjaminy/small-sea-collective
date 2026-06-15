@@ -91,29 +91,29 @@ def test_same_friendly_name_different_teams_do_not_share_storage(playground_dir)
 
     from shared_file_vault import vault as vault_module
 
-    member_id = "ff" * 16
+    teammate_id = "ff" * 16
     vault_module._record_peer_fetch(
-        playground_dir, PARTICIPANT, alpha, "niche", "docs", member_id, "alpha-sha"
+        playground_dir, PARTICIPANT, alpha, "niche", "docs", teammate_id, "alpha-sha"
     )
     vault_module._record_peer_fetch(
-        playground_dir, PARTICIPANT, beta, "niche", "docs", member_id, "beta-sha"
+        playground_dir, PARTICIPANT, beta, "niche", "docs", teammate_id, "beta-sha"
     )
     alpha_status = vault_module.peer_update_status(
-        playground_dir, PARTICIPANT, alpha, "niche", "docs", member_id
+        playground_dir, PARTICIPANT, alpha, "niche", "docs", teammate_id
     )
     beta_status = vault_module.peer_update_status(
-        playground_dir, PARTICIPANT, beta, "niche", "docs", member_id
+        playground_dir, PARTICIPANT, beta, "niche", "docs", teammate_id
     )
     assert alpha_status["last_fetched_sha"] == "alpha-sha"
     assert beta_status["last_fetched_sha"] == "beta-sha"
 
-    vault_module.set_peer_signal_watermark(playground_dir, PARTICIPANT, alpha, member_id, 7)
-    vault_module.set_peer_signal_watermark(playground_dir, PARTICIPANT, beta, member_id, 9)
+    vault_module.set_peer_signal_watermark(playground_dir, PARTICIPANT, alpha, teammate_id, 7)
+    vault_module.set_peer_signal_watermark(playground_dir, PARTICIPANT, beta, teammate_id, 9)
     assert vault_module.get_peer_signal_watermark(
-        playground_dir, PARTICIPANT, alpha, member_id
+        playground_dir, PARTICIPANT, alpha, teammate_id
     ) == 7
     assert vault_module.get_peer_signal_watermark(
-        playground_dir, PARTICIPANT, beta, member_id
+        playground_dir, PARTICIPANT, beta, teammate_id
     ) == 9
 
 

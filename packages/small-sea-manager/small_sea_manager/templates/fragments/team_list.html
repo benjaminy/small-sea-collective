@@ -5,14 +5,14 @@
 {% if teams %}
 <table>
     <thead>
-        <tr><th>Team</th><th>Role</th><th>Members</th></tr>
+        <tr><th>Team</th><th>Role</th><th>Teammates</th></tr>
     </thead>
     <tbody>
     {% for team in teams %}
         <tr>
             <td><a href="/teams/{{ team.name }}">{{ team.name }}</a></td>
             <td>{{ team.role | default("?") }}</td>
-            <td>{{ team.members | default("?") }}</td>
+            <td>{{ team.teammates | default("?") }}</td>
         </tr>
     {% endfor %}
     </tbody>

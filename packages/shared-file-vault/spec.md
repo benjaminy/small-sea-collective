@@ -3,7 +3,7 @@
 ## Purpose
 
 A decentralized shared folder app built on Small Sea. Each shared folder
-(a **niche**) belongs to a Small Sea team. Members of the team can
+(a **niche**) belongs to a Small Sea team. Teammates of the team can
 independently publish changes to a niche and pull changes from teammates,
 without any central file-sync service.
 
@@ -24,8 +24,8 @@ repository; Cod Sync carries it between participants via bundle chains.
 
 The set of niches that exist for a team is shared state. It is stored as
 an SQLite database committed into a git repository and carried by its own
-Cod Sync chain, one per team. Any team member can add a niche to the
-registry; all members see it on their next pull.
+Cod Sync chain, one per team. Any team teammate can add a niche to the
+registry; all teammates see it on their next pull.
 
 Using git to carry an SQLite file means the merge story for the registry
 is the same as for niche content: concurrent additions by different
@@ -170,18 +170,18 @@ CREATE TABLE peer_sync (
     team_id          TEXT NOT NULL,
     repo_kind        TEXT NOT NULL,
     niche_name       TEXT NOT NULL,
-    member_id        TEXT NOT NULL,
+    teammate_id        TEXT NOT NULL,
     last_fetched_sha TEXT,
     last_merged_sha  TEXT,
     updated_at       TEXT NOT NULL,
-    PRIMARY KEY (team_id, repo_kind, niche_name, member_id)
+    PRIMARY KEY (team_id, repo_kind, niche_name, teammate_id)
 );
 CREATE TABLE peer_signal_watermark (
     team_id    TEXT NOT NULL,
-    member_id  TEXT NOT NULL,
+    teammate_id  TEXT NOT NULL,
     count      INTEGER NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (team_id, member_id)
+    PRIMARY KEY (team_id, teammate_id)
 );
 ```
 
@@ -244,7 +244,7 @@ Those keys intentionally omit both friendly `team_name` and opaque Vault
   callers don't have to pass it every time. The low-level vault functions
   should keep it explicit.
 
-- **Joining a niche**: a new team member pulls the registry to discover
+- **Joining a niche**: a new team teammate pulls the registry to discover
   which niches exist, then pulls each niche they want. No special
   "invitation" flow is needed at the vault level — team membership is
   enforced by Cuttlefish / hub access control.
@@ -254,5 +254,5 @@ Those keys intentionally omit both friendly `team_name` and opaque Vault
   a typed `MergeConflictError` is aspirational.
 
 - **Team membership enforcement**: nothing currently checks that the local
-  participant is a member of the team. Full enforcement requires Cuttlefish
+  participant is a teammate of the team. Full enforcement requires Cuttlefish
   integration (issue 0017).

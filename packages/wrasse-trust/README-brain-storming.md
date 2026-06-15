@@ -56,7 +56,7 @@ The ambition is not merely "this account can sign this blob." The ambition
 is closer to:
 
 - teammates can vouch for people and their devices
-- teams can be reasoned about as derived principals built from member and
+- teams can be reasoned about as derived principals built from teammate and
   admission history
 - trust can survive routine key rotation
 - trust and authorization can be expressed as a graph rather than a central
@@ -131,8 +131,8 @@ anything the cross-sig graph doesn't already buy.
 **The honest cost of the device-only model is recovery.** If Alice's only
 device is destroyed, her per-team identity in each team she was in is
 cryptographically unrecoverable — there is no wrapped key to pull back
-down. She can be re-admitted as a new member by her teammates, but as a
-new member, not as a recovery of the old one. Recovery mechanisms (paper
+down. She can be re-admitted as a new teammate by her teammates, but as a
+new teammate, not as a recovery of the old one. Recovery mechanisms (paper
 keys, threshold backup, custodian devices, social recovery) are all
 layerable on top as additional cross-sig sources and are explicitly
 deferred past v1. The v1 UX needs to steer users toward enrolling a
@@ -184,9 +184,9 @@ a separate secret sitting somewhere called "the Accounting private key."
 
 **There is no cryptographic "admin" role in Small Sea.** "Admin" just
 means "a person whose clone other teammates happen to pull from, and who
-therefore tends to be the one typing the commands when new members are
+therefore tends to be the one typing the commands when new teammates are
 added." The cryptographic layer does not enforce who may issue membership
-certs — any existing member's device may issue one. Whether that admission
+certs — any existing teammate's device may issue one. Whether that admission
 actually propagates to the rest of the team depends entirely on whose
 clones teammates sync with. This is a social layer riding on top of a
 cryptographic layer, not a cryptographic hierarchy.
@@ -368,7 +368,7 @@ wrapped on the removed device, do we have to rotate the identity key
 too?" question. That worry is gone.
 
 The hard truth is that a fully decentralized system cannot reliably
-prevent splits under partition. A stale device or removed member may
+prevent splits under partition. A stale device or removed teammate may
 continue making local progress while disconnected.
 
 The design goal is therefore not "prevent every fork." The design goal is:
@@ -403,7 +403,7 @@ Under the device-only model:
 - `self_binding`: legacy transitional type for the current
   BURIED/GUARDED/DAILY placeholder hierarchy. Goes away when that
   hierarchy does.
-- `membership`: an existing member's device admits a new per-team
+- `membership`: an existing teammate's device admits a new per-team
   participant UUID into the team and names their founding device key in
   its claims. The very first membership cert in a team's history is
   self-issued at team creation and serves as the team's trust root.
@@ -452,7 +452,7 @@ shape:
 - team root (the first `membership` cert in the team's history, which is
   self-issued at team creation) →
 - zero or more later `membership` certs transitively admitting `U` into
-  the team, each issued by an existing member's device →
+  the team, each issued by an existing teammate's device →
 - `membership(U, founding_device=K₀, team=T)`, the cert that first
   admitted `U` →
 - zero or more `device_link(K_i → K_{i+1}, U)` edges, each issued by a
@@ -484,14 +484,14 @@ the cert to be meaningful to teammates verifying it.
 | Cert Type | Issuer Rule |
 |-----------|------------|
 | `self_binding` | Legacy placeholder. Goes away with the BURIED/GUARDED/DAILY hierarchy. |
-| `membership` | Any existing-member device in the team. Self-issued is allowed only at team genesis, when no prior member exists. Propagation is social, not cryptographic. |
+| `membership` | Any existing-teammate device in the team. Self-issued is allowed only at team genesis, when no prior teammate exists. Propagation is social, not cryptographic. |
 | `device_link` | A device that already speaks for the same UUID `U` in the same team `T`. This is what grows the equivalence class. |
 | `cross_certification` | Any team-device key, during a ceremony with another participant. |
 | `identity_link` | A team-device key in each of the two teams being linked. Published into whichever team repos the linker wants the link visible in. |
 | `succession` | The device key being superseded, or a co-device key via `device_link`. |
 | `attestation` | The device key whose protection condition is being attested. |
 | `ambient_proximity` | Any team-device key, low stakes. |
-| `revocation` | A device that has a valid trust path to the thing being revoked — either a co-device of the subject (self-revoke) or an existing-member device of the team (membership revoke). |
+| `revocation` | A device that has a valid trust path to the thing being revoked — either a co-device of the subject (self-revoke) or an existing-teammate device of the team (membership revoke). |
 
 None of these rules mention "admin." Admin is a social role — it refers
 to the teammates whose clones other teammates happen to pull from — and
@@ -525,25 +525,25 @@ Answered by a graph walk inside the team's own cert store:
 3. Walk back from that cert's issuer through earlier `membership` certs
    until you reach the team's first membership cert (the self-issued
    genesis cert). If the walk reaches the root and no `revocation` cert
-   prunes the path, `U` is a member.
+   prunes the path, `U` is a teammate.
 4. To prove a *specific device* of Alice's is acting as `U`, walk forward
    from `K₀` through `device_link` edges. If the device in question is
    reachable, it speaks for `U`.
 
 A teammate whose sync clones don't carry some of Alice's membership or
 `device_link` certs will correctly conclude that Alice is not visible in
-the team — not because Alice isn't a member, but because the social sync
+the team — not because Alice isn't a teammate, but because the social sync
 layer hasn't delivered the relevant certs. That is the honest answer and
 matches the derived-principal story.
 
 ### "Who speaks for the team?"
 
-In Small Sea v1, **the team itself does not speak.** Individual members
+In Small Sea v1, **the team itself does not speak.** Individual teammates
 speak; the team's "voice" is the aggregated history in its repo.
 
-Any existing-member device can issue a `membership` cert admitting a new
+Any existing-teammate device can issue a `membership` cert admitting a new
 participant. Whether that admission is seen by other teammates depends
-on the social sync layer, not on cryptographic admin authority. A member
+on the social sync layer, not on cryptographic admin authority. A teammate
 whose clone is not widely watched can still unilaterally admit someone,
 but only teammates who actually pull from that clone will see the new
 admission.
@@ -576,7 +576,7 @@ a low per-edge weight. No new subject types are needed.
 
 - **Trust is social.** The fact that Alice and Bob physically co-locate
   regularly is meaningful evidence that traditional PKI ignores.
-- **Team identity gets cryptographic weight.** A team where members
+- **Team identity gets cryptographic weight.** A team where teammates
   regularly see each other in person has a qualitatively different trust
   profile than a team of strangers.
 - **Continuous verification.** Instead of a one-time ceremony, trust is
@@ -627,10 +627,10 @@ Summary of provisioning under the device-only model:
   `U` into the new team and naming the new team-device key as the
   founding device. No prior key (not even the NoteToSelf key) needs to
   participate — team creation is inherently a self-anchoring act.
-- **Joining an existing team.** A current member's device issues a
+- **Joining an existing team.** A current teammate's device issues a
   `membership` cert admitting the joiner's UUID and founding device key.
   The joiner generates their per-team participant UUID and team-device
-  key locally before the ceremony; the existing member's `membership`
+  key locally before the ceremony; the existing teammate's `membership`
   cert carries both.
 - **Enrolling a second device in a team Alice is already in.** The new
   device generates its own team-device key for that team. An
@@ -817,7 +817,7 @@ Design direction:
   worth naming explicitly in the UX.
 - How does the invitation flow (see invitation architecture in Manager)
   bind to the trust model? The invitation token likely needs to carry
-  the joiner's founding device key so the admitting member can include
+  the joiner's founding device key so the admitting teammate can include
   it in the `membership` cert.
 - What exact epoch data must be committed so stale writes are
   unambiguously detectable?

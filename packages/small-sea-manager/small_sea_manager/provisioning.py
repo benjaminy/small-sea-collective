@@ -121,8 +121,8 @@ from wrasse_trust.identity import (
     issue_device_link_cert,
     issue_membership_cert,
     parse_cert_type,
-    trusted_device_keys_by_member as resolve_trusted_device_keys_by_member,
-    trusted_device_keys_for_member as resolve_trusted_device_keys_for_member,
+    trusted_device_keys_by_teammate as resolve_trusted_device_keys_by_teammate,
+    trusted_device_keys_for_teammate as resolve_trusted_device_keys_for_teammate,
     verify_device_link_cert,
     verify_membership_cert,
 )
@@ -134,13 +134,13 @@ from wrasse_trust.keys import (
 )
 from wrasse_trust.transport import (
     EffectiveTransportSelection,
-    MemberBerthStorageAnnouncement,
-    MemberTransportAnnouncement,
-    canonical_member_berth_storage_announcement_bytes,
-    canonical_member_transport_announcement_bytes,
+    TeammateBerthStorageAnnouncement,
+    TeammateTransportAnnouncement,
+    canonical_teammate_berth_storage_announcement_bytes,
+    canonical_teammate_transport_announcement_bytes,
     key_certificate_from_team_db_record,
-    select_effective_member_berth_storage,
-    select_effective_member_transport,
+    select_effective_teammate_berth_storage,
+    select_effective_teammate_transport,
 )
 
 
@@ -876,7 +876,7 @@ def _proposal_transcript_payload(
     proposal_id: bytes,
     nonce: bytes,
     team_id: bytes,
-    invitee_member_id: bytes,
+    invitee_teammate_id: bytes,
     invitee_device_public_key: bytes,
     invitee_bootstrap_key: bytes,
 ) -> dict[str, str]:
@@ -884,7 +884,7 @@ def _proposal_transcript_payload(
         "proposal_id": proposal_id.hex(),
         "nonce": nonce.hex(),
         "team_id": team_id.hex(),
-        "invitee_member_id": invitee_member_id.hex(),
+        "invitee_teammate_id": invitee_teammate_id.hex(),
         "invitee_device_public_key": invitee_device_public_key.hex(),
         "invitee_bootstrap_key": invitee_bootstrap_key.hex(),
     }
@@ -894,22 +894,22 @@ def _proposal_transcript_digest(payload: dict[str, str]) -> bytes:
     return _sha256_bytes(_json_bytes(payload))
 
 
-def _approval_payload(*, proposal_id: bytes, transcript_digest: bytes, admin_member_id: bytes) -> bytes:
+def _approval_payload(*, proposal_id: bytes, transcript_digest: bytes, admin_teammate_id: bytes) -> bytes:
     return _json_bytes(
         {
             "proposal_id": proposal_id.hex(),
             "transcript_digest": transcript_digest.hex(),
-            "admin_member_id": admin_member_id.hex(),
+            "admin_teammate_id": admin_teammate_id.hex(),
         }
     )
 
 
-def _finalization_payload(*, proposal_id: bytes, transcript_digest: bytes, invitee_member_id: bytes) -> bytes:
+def _finalization_payload(*, proposal_id: bytes, transcript_digest: bytes, invitee_teammate_id: bytes) -> bytes:
     return _json_bytes(
         {
             "proposal_id": proposal_id.hex(),
             "transcript_digest": transcript_digest.hex(),
-            "invitee_member_id": invitee_member_id.hex(),
+            "invitee_teammate_id": invitee_teammate_id.hex(),
         }
     )
 
@@ -923,29 +923,29 @@ def _role_to_core_berth_role(role: str) -> str:
 
 
 def _governance_snapshot(conn) -> dict[str, object]:
-    member_ids = [row[0].hex() for row in conn.execute(text("SELECT id FROM member ORDER BY id")).fetchall()]
+    teammate_ids = [row[0].hex() for row in conn.execute(text("SELECT id FROM teammate ORDER BY id")).fetchall()]
     admin_ids = [
         row[0].hex()
         for row in conn.execute(
             text(
-                "SELECT br.member_id "
+                "SELECT br.teammate_id "
                 "FROM berth_role br "
                 "JOIN team_app_berth tab ON tab.id = br.berth_id "
                 "JOIN app a ON a.id = tab.app_id "
                 "WHERE a.name = 'SmallSeaCollectiveCore' AND br.role = 'read-write' "
-                "ORDER BY br.member_id"
+                "ORDER BY br.teammate_id"
             )
         ).fetchall()
     ]
-    member_devices: dict[str, list[str]] = {member_id_hex: [] for member_id_hex in member_ids}
-    for member_id, device_key_id in conn.execute(
-        text("SELECT member_id, device_key_id FROM team_device ORDER BY member_id, device_key_id")
+    teammate_devices: dict[str, list[str]] = {teammate_id_hex: [] for teammate_id_hex in teammate_ids}
+    for teammate_id, device_key_id in conn.execute(
+        text("SELECT teammate_id, device_key_id FROM team_device ORDER BY teammate_id, device_key_id")
     ).fetchall():
-        member_devices.setdefault(member_id.hex(), []).append(device_key_id.hex())
+        teammate_devices.setdefault(teammate_id.hex(), []).append(device_key_id.hex())
     return {
         "admins": admin_ids,
-        "members": member_ids,
-        "member_devices": member_devices,
+        "teammates": teammate_ids,
+        "teammate_devices": teammate_devices,
     }
 
 
@@ -956,7 +956,7 @@ def _governance_digest(snapshot: dict[str, object]) -> bytes:
 def _load_admission_proposal_row(conn, proposal_id: bytes):
     row = conn.execute(
         text(
-            "SELECT proposal_id, nonce, team_id, inviter_member_id, invitee_member_id, "
+            "SELECT proposal_id, nonce, team_id, inviter_teammate_id, invitee_teammate_id, "
             "invitee_label, role, anchor_commit, governance_digest, governance_snapshot_json, "
             "state, created_at, expires_at, acceptance_recorded_at, invitee_device_public_key, "
             "invitee_bootstrap_key, acceptance_signature, transcript_digest, transcript_json, "
@@ -1014,7 +1014,7 @@ def _approval_count(conn, proposal_id: bytes, transcript_digest: bytes) -> int:
     # on the sync/write-acceptance model rather than an isolated authority layer.
     row = conn.execute(
         text(
-            "SELECT COUNT(DISTINCT admin_member_id) "
+            "SELECT COUNT(DISTINCT admin_teammate_id) "
             "FROM admin_approval "
             "WHERE proposal_id = :proposal_id AND transcript_digest = :transcript_digest"
         ),
@@ -1030,21 +1030,21 @@ def _proposal_has_quorum(conn, proposal_row) -> bool:
     return _approval_count(conn, proposal_row[0], transcript_digest) >= _proposal_quorum(conn)
 
 
-def _proposal_admin_device_is_valid(snapshot: dict[str, object], admin_member_id: bytes, approver_device_key_id: bytes) -> bool:
-    admin_member_id_hex = admin_member_id.hex()
-    if admin_member_id_hex not in snapshot.get("admins", []):
+def _proposal_admin_device_is_valid(snapshot: dict[str, object], admin_teammate_id: bytes, approver_device_key_id: bytes) -> bool:
+    admin_teammate_id_hex = admin_teammate_id.hex()
+    if admin_teammate_id_hex not in snapshot.get("admins", []):
         return False
-    member_devices = snapshot.get("member_devices", {})
-    if not isinstance(member_devices, dict):
+    teammate_devices = snapshot.get("teammate_devices", {})
+    if not isinstance(teammate_devices, dict):
         return False
-    return approver_device_key_id.hex() in member_devices.get(admin_member_id_hex, [])
+    return approver_device_key_id.hex() in teammate_devices.get(admin_teammate_id_hex, [])
 
 
 def _insert_admin_approval(
     conn,
     *,
     proposal_id: bytes,
-    admin_member_id: bytes,
+    admin_teammate_id: bytes,
     approver_device_key_id: bytes,
     signature: bytes,
     transcript_digest: bytes,
@@ -1052,15 +1052,15 @@ def _insert_admin_approval(
     conn.execute(
         text(
             "INSERT OR REPLACE INTO admin_approval "
-            "(approval_id, proposal_id, admin_member_id, approver_device_key_id, "
+            "(approval_id, proposal_id, admin_teammate_id, approver_device_key_id, "
             "transcript_digest, signature, created_at) "
-            "VALUES (:approval_id, :proposal_id, :admin_member_id, :approver_device_key_id, "
+            "VALUES (:approval_id, :proposal_id, :admin_teammate_id, :approver_device_key_id, "
             ":transcript_digest, :signature, :created_at)"
         ),
         {
             "approval_id": uuid7(),
             "proposal_id": proposal_id,
-            "admin_member_id": admin_member_id,
+            "admin_teammate_id": admin_teammate_id,
             "approver_device_key_id": approver_device_key_id,
             "transcript_digest": transcript_digest,
             "signature": signature,
@@ -1069,26 +1069,26 @@ def _insert_admin_approval(
     )
 
 
-def _upsert_member_row(
+def _upsert_teammate_row(
     conn,
-    member_id: bytes,
+    teammate_id: bytes,
     *,
     display_name: str | None = None,
     identity_public_key: bytes | None = None,
 ) -> None:
     conn.execute(
         text(
-            "INSERT OR IGNORE INTO member (id, display_name, identity_public_key) "
+            "INSERT OR IGNORE INTO teammate (id, display_name, identity_public_key) "
             "VALUES (:id, :display_name, :identity_public_key)"
         ),
         {
-            "id": member_id,
+            "id": teammate_id,
             "display_name": display_name,
             "identity_public_key": identity_public_key,
         },
     )
     updates = []
-    params: dict[str, object] = {"id": member_id}
+    params: dict[str, object] = {"id": teammate_id}
     if display_name is not None:
         updates.append("display_name = :display_name")
         params["display_name"] = display_name
@@ -1097,20 +1097,20 @@ def _upsert_member_row(
         params["identity_public_key"] = identity_public_key
     if updates:
         conn.execute(
-            text(f"UPDATE member SET {', '.join(updates)} WHERE id = :id"),
+            text(f"UPDATE teammate SET {', '.join(updates)} WHERE id = :id"),
             params,
         )
 
 
 def _upsert_team_device_row(
     conn,
-    member_id: bytes,
+    teammate_id: bytes,
     public_key: bytes,
     *,
     created_at: str | None = None,
 ) -> bytes:
     # team_device carries device identity only. Storage routing now lives in
-    # signed member_berth_storage_announcement rows, so this row has no
+    # signed teammate_berth_storage_announcement rows, so this row has no
     # protocol/url/bucket columns to write (see issue #138).
     device_key_id = key_id_from_public(public_key)
     if created_at is None:
@@ -1118,12 +1118,12 @@ def _upsert_team_device_row(
     conn.execute(
         text(
             "INSERT OR IGNORE INTO team_device "
-            "(device_key_id, member_id, public_key, created_at) "
-            "VALUES (:device_key_id, :member_id, :public_key, :created_at)"
+            "(device_key_id, teammate_id, public_key, created_at) "
+            "VALUES (:device_key_id, :teammate_id, :public_key, :created_at)"
         ),
         {
             "device_key_id": device_key_id,
-            "member_id": member_id,
+            "teammate_id": teammate_id,
             "public_key": public_key,
             "created_at": created_at,
         },
@@ -1131,12 +1131,12 @@ def _upsert_team_device_row(
     conn.execute(
         text(
             "UPDATE team_device "
-            "SET member_id = :member_id, public_key = :public_key "
+            "SET teammate_id = :teammate_id, public_key = :public_key "
             "WHERE device_key_id = :device_key_id"
         ),
         {
             "device_key_id": device_key_id,
-            "member_id": member_id,
+            "teammate_id": teammate_id,
             "public_key": public_key,
         },
     )
@@ -1155,7 +1155,7 @@ def _publish_local_device_prekey_bundle(
     team_device_public_key: bytes | None = None,
 ) -> dict:
     if team_id is None:
-        team_id, _member_id = _team_row(root_dir, participant_hex, team_name)
+        team_id, _teammate_id = _team_row(root_dir, participant_hex, team_name)
     if team_device_public_key is None:
         _private_key, team_device_public_key = get_current_team_device_key(
             root_dir, participant_hex, team_name
@@ -1629,7 +1629,7 @@ class TeamDevice(Base):
     __tablename__ = "team_device"
 
     device_key_id = Column(LargeBinary, primary_key=True)
-    member_id = Column(LargeBinary, nullable=False)
+    teammate_id = Column(LargeBinary, nullable=False)
     public_key = Column(LargeBinary, nullable=False)
     protocol = Column(String, nullable=True)
     url = Column(String, nullable=True)
@@ -1642,7 +1642,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 60
+USER_SCHEMA_VERSION = 61
 
 
 # ---- Provisioning functions ----
@@ -2015,385 +2015,26 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
 
 
 def _migrate_user_db(conn, from_version):
-    """Apply incremental migrations to bring a user DB up to USER_SCHEMA_VERSION."""
-    if from_version < 44:
-        for col in [
-            "client_id",
-            "client_secret",
-            "refresh_token",
-            "access_token",
-            "token_expiry",
-            "path_metadata",
-        ]:
-            conn.execute(text(f"ALTER TABLE cloud_storage ADD COLUMN {col} TEXT"))
-    if from_version < 45:
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS notification_service ("
-                "id BLOB PRIMARY KEY, "
-                "protocol TEXT NOT NULL, "
-                "url TEXT NOT NULL)"
-            )
-        )
-    if from_version < 46:
-        pass  # team DB schema updated (app, team_app_berth, berth_role); NoteToSelf schema unchanged
-    if from_version < 47:
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS team_signing_key ("
-                "id BLOB PRIMARY KEY, "
-                "team_id BLOB NOT NULL, "
-                "public_key BLOB NOT NULL, "
-                "private_key BLOB NOT NULL, "
-                "created_at TEXT NOT NULL, "
-                "FOREIGN KEY (team_id) REFERENCES team(id))"
-            )
-        )
-    if from_version < 48:
-        conn.execute(text("ALTER TABLE notification_service ADD COLUMN access_key TEXT"))
-        conn.execute(text("ALTER TABLE notification_service ADD COLUMN access_token TEXT"))
-    if from_version < 49:
-        pass  # peer.bucket added to team DB schema; NoteToSelf schema unchanged
-    if from_version < 50:
-        pass  # peer.display_name added to team DB schema; NoteToSelf schema unchanged
-    if from_version < 51:
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS team_sender_key ("
-                "team_id BLOB PRIMARY KEY, "
-                "group_id BLOB NOT NULL, "
-                "sender_device_key_id BLOB NOT NULL, "
-                "chain_id BLOB NOT NULL, "
-                "chain_key BLOB NOT NULL, "
-                "iteration INTEGER NOT NULL, "
-                "signing_public_key BLOB NOT NULL, "
-                "signing_private_key BLOB, "
-                "skipped_message_keys TEXT NOT NULL DEFAULT '{}', "
-                "FOREIGN KEY (team_id) REFERENCES team(id))"
-            )
-        )
-    if from_version < 52:
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS team_identity ("
-                "team_id BLOB PRIMARY KEY, "
-                "member_id BLOB NOT NULL, "
-                "public_key BLOB NOT NULL, "
-                "created_at TEXT NOT NULL, "
-                "FOREIGN KEY (team_id) REFERENCES team(id))"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS wrapped_team_identity_key ("
-                "team_id BLOB NOT NULL, "
-                "device_id BLOB NOT NULL, "
-                "wrapped_private_key BLOB NOT NULL, "
-                "wrapper_version TEXT NOT NULL, "
-                "created_at TEXT NOT NULL, "
-                "revoked_at TEXT, "
-                "PRIMARY KEY (team_id, device_id), "
-                "FOREIGN KEY (team_id) REFERENCES team(id), "
-                "FOREIGN KEY (device_id) REFERENCES user_device(id))"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS team_device_key ("
-                "team_id BLOB NOT NULL, "
-                "device_id BLOB NOT NULL, "
-                "public_key BLOB NOT NULL, "
-                "private_key_ref TEXT NOT NULL, "
-                "created_at TEXT NOT NULL, "
-                "revoked_at TEXT, "
-                "PRIMARY KEY (team_id, device_id), "
-                "FOREIGN KEY (team_id) REFERENCES team(id), "
-                "FOREIGN KEY (device_id) REFERENCES user_device(id))"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS peer_sender_key ("
-                "team_id BLOB NOT NULL, "
-                "group_id BLOB NOT NULL, "
-                "sender_device_key_id BLOB NOT NULL, "
-                "chain_id BLOB NOT NULL, "
-                "chain_key BLOB NOT NULL, "
-                "iteration INTEGER NOT NULL, "
-                "signing_public_key BLOB NOT NULL, "
-                "signing_private_key BLOB, "
-                "skipped_message_keys TEXT NOT NULL DEFAULT '{}', "
-                "PRIMARY KEY (team_id, sender_device_key_id), "
-                "FOREIGN KEY (team_id) REFERENCES team(id))"
-            )
-        )
-    if from_version < 55:
-        _rename_sender_key_column_if_present(conn, "team_sender_key")
-        _rename_sender_key_column_if_present(conn, "peer_sender_key")
+    """Scaffold for future user DB migrations.
+
+    Pre-alpha databases older than the current schema are intentionally not
+    migrated. Delete and recreate the local workspace instead.
+    """
+    raise NotImplementedError(
+        "Pre-alpha NoteToSelf user DB migrations are not supported; "
+        f"delete/recreate this DB (schema {from_version} -> {USER_SCHEMA_VERSION})."
+    )
 
 
 def _migrate_team_db(conn, from_version):
-    """Apply incremental migrations to bring a team DB up to USER_SCHEMA_VERSION."""
-    if from_version < 49:
-        conn.execute(text("ALTER TABLE peer ADD COLUMN bucket TEXT"))
-    if from_version < 50:
-        conn.execute(text("ALTER TABLE peer ADD COLUMN display_name TEXT"))
-    if from_version < 52:
-        conn.execute(text("ALTER TABLE member RENAME COLUMN public_key TO device_public_key"))
-        conn.execute(text("ALTER TABLE member ADD COLUMN identity_public_key BLOB"))
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS key_certificate ("
-                "cert_id BLOB PRIMARY KEY, "
-                "cert_type TEXT NOT NULL, "
-                "subject_key_id BLOB NOT NULL, "
-                "subject_public_key BLOB NOT NULL, "
-                "issuer_key_id BLOB NOT NULL, "
-                "issuer_member_id BLOB NOT NULL, "
-                "issued_at TEXT NOT NULL, "
-                "claims TEXT NOT NULL, "
-                "signature BLOB NOT NULL, "
-                "FOREIGN KEY (issuer_member_id) REFERENCES member(id) ON DELETE CASCADE)"
-            )
-        )
-    if from_version < 56:
-        _migrate_team_db_to_member_and_team_device(conn)
-    if from_version < 57:
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS member_transport_announcement ("
-                "announcement_id BLOB PRIMARY KEY, "
-                "member_id BLOB NOT NULL, "
-                "protocol TEXT NOT NULL, "
-                "url TEXT NOT NULL, "
-                "bucket TEXT NOT NULL, "
-                "announced_at TEXT NOT NULL, "
-                "signer_key_id BLOB NOT NULL, "
-                "signature BLOB NOT NULL, "
-                "FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE)"
-            )
-        )
-    if from_version < 58:
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS team_setting ("
-                "key TEXT PRIMARY KEY, "
-                "value TEXT NOT NULL)"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS admission_proposal ("
-                "proposal_id BLOB PRIMARY KEY, "
-                "nonce BLOB NOT NULL, "
-                "team_id BLOB NOT NULL, "
-                "inviter_member_id BLOB NOT NULL, "
-                "invitee_member_id BLOB NOT NULL, "
-                "invitee_label TEXT, "
-                "role TEXT NOT NULL DEFAULT 'admin', "
-                "anchor_commit TEXT NOT NULL, "
-                "governance_digest BLOB NOT NULL, "
-                "governance_snapshot_json TEXT NOT NULL, "
-                "state TEXT NOT NULL, "
-                "created_at TEXT NOT NULL, "
-                "expires_at TEXT NOT NULL, "
-                "acceptance_recorded_at TEXT, "
-                "invitee_device_public_key BLOB, "
-                "invitee_bootstrap_key BLOB, "
-                "acceptance_signature BLOB, "
-                "transcript_digest BLOB, "
-                "transcript_json TEXT, "
-                "finalized_at TEXT, "
-                "finalization_signature BLOB, "
-                "invalid_reason TEXT)"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS admin_approval ("
-                "approval_id BLOB PRIMARY KEY, "
-                "proposal_id BLOB NOT NULL, "
-                "admin_member_id BLOB NOT NULL, "
-                "approver_device_key_id BLOB NOT NULL, "
-                "transcript_digest BLOB NOT NULL, "
-                "signature BLOB NOT NULL, "
-                "created_at TEXT NOT NULL, "
-                "UNIQUE (proposal_id, approver_device_key_id), "
-                "FOREIGN KEY (proposal_id) REFERENCES admission_proposal(proposal_id) "
-                "ON DELETE CASCADE)"
-            )
-        )
-    if from_version < 59:
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS member_berth_storage_announcement ("
-                "announcement_id BLOB PRIMARY KEY, "
-                "member_id BLOB NOT NULL, "
-                "berth_id BLOB NOT NULL, "
-                "protocol TEXT NOT NULL, "
-                "url TEXT NOT NULL, "
-                "location TEXT NOT NULL, "
-                "announced_at TEXT NOT NULL, "
-                "signer_key_id BLOB NOT NULL, "
-                "signature BLOB NOT NULL)"
-            )
-        )
-        conn.execute(
-            text(
-                "CREATE INDEX IF NOT EXISTS idx_member_berth_storage_announcement_scan "
-                "ON member_berth_storage_announcement(member_id, berth_id, announcement_id)"
-            )
-        )
-    if from_version < 60:
-        # team_device dropped its storage-routing columns (issue #138). Peer
-        # storage routing now lives only in member_berth_storage_announcement.
-        # Existing current-version DBs still carry protocol/url/bucket, so drop
-        # them here; the guard makes this a no-op for DBs whose team_device was
-        # already created without those columns.
-        team_device_columns = set(_table_columns(conn, "team_device"))
-        for column in ("protocol", "url", "bucket"):
-            if column in team_device_columns:
-                conn.execute(text(f"ALTER TABLE team_device DROP COLUMN {column}"))
+    """Scaffold for future team DB migrations.
 
-
-def _table_columns(conn, table_name: str) -> list[str]:
-    return [row[1] for row in conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()]
-
-
-def _table_exists(conn, table_name: str) -> bool:
-    row = conn.execute(
-        text("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = :name"),
-        {"name": table_name},
-    ).fetchone()
-    return row is not None
-
-
-def _migrate_team_db_to_member_and_team_device(conn) -> None:
-    member_columns = set(_table_columns(conn, "member"))
-    if "display_name" not in member_columns:
-        conn.execute(text("ALTER TABLE member ADD COLUMN display_name TEXT"))
-    if "identity_public_key" not in member_columns:
-        conn.execute(text("ALTER TABLE member ADD COLUMN identity_public_key BLOB"))
-
-    peer_rows = []
-    if _table_exists(conn, "peer"):
-        peer_rows = conn.execute(
-            text(
-                "SELECT member_id, display_name "
-                "FROM peer ORDER BY member_id, id"
-            )
-        ).fetchall()
-        seen_member_ids: set[bytes] = set()
-        for row in peer_rows:
-            member_id = row[0]
-            if member_id in seen_member_ids:
-                raise ValueError(
-                    f"Cannot migrate team DB with multiple peer rows for member {member_id.hex()}"
-                )
-            seen_member_ids.add(member_id)
-            conn.execute(
-                text(
-                    "UPDATE member SET display_name = :display_name "
-                    "WHERE id = :member_id AND display_name IS NULL"
-                ),
-                {"member_id": member_id, "display_name": row[1]},
-            )
-
-    conn.execute(
-        text(
-            "CREATE TABLE IF NOT EXISTS team_device ("
-            "device_key_id BLOB PRIMARY KEY, "
-            "member_id BLOB NOT NULL, "
-            "public_key BLOB NOT NULL, "
-            "created_at TEXT NOT NULL, "
-            "FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE)"
-        )
-    )
-
-    cert_rows = conn.execute(
-        text(
-            "SELECT cert_type, subject_public_key, issued_at, claims "
-            "FROM key_certificate ORDER BY issued_at ASC"
-        )
-    ).fetchall()
-    devices_by_key: dict[bytes, dict[str, object]] = {}
-    for cert_type, subject_public_key, issued_at, claims_json in cert_rows:
-        if cert_type not in {"membership", "device_link"}:
-            continue
-        claims = json.loads(claims_json)
-        member_id_hex = claims.get("member_id")
-        if not isinstance(member_id_hex, str):
-            continue
-        try:
-            member_id = bytes.fromhex(member_id_hex)
-        except ValueError:
-            continue
-        device_key_id = key_id_from_public(subject_public_key)
-        if device_key_id not in devices_by_key:
-            devices_by_key[device_key_id] = {
-                "member_id": member_id,
-                "public_key": subject_public_key,
-                "created_at": issued_at or _now_iso(),
-            }
-
-    if "device_public_key" in member_columns:
-        legacy_member_rows = conn.execute(
-            text("SELECT id, device_public_key FROM member WHERE device_public_key IS NOT NULL")
-        ).fetchall()
-        for member_id, public_key in legacy_member_rows:
-            device_key_id = key_id_from_public(public_key)
-            devices_by_key.setdefault(
-                device_key_id,
-                {
-                    "member_id": member_id,
-                    "public_key": public_key,
-                    "created_at": _now_iso(),
-                },
-            )
-
-    for row in devices_by_key.values():
-        conn.execute(
-            text(
-                "INSERT OR REPLACE INTO team_device "
-                "(device_key_id, member_id, public_key, created_at) "
-                "VALUES (:device_key_id, :member_id, :public_key, :created_at)"
-            ),
-            {
-                "device_key_id": key_id_from_public(row["public_key"]),
-                "member_id": row["member_id"],
-                "public_key": row["public_key"],
-                "created_at": row["created_at"],
-            },
-        )
-
-    if not _table_exists(conn, "device_prekey_bundle"):
-        conn.execute(
-            text(
-                "CREATE TABLE IF NOT EXISTS device_prekey_bundle ("
-                "device_key_id BLOB PRIMARY KEY, "
-                "prekey_bundle_json TEXT NOT NULL, "
-                "published_at TEXT NOT NULL, "
-                "FOREIGN KEY (device_key_id) REFERENCES team_device(device_key_id) ON DELETE CASCADE)"
-            )
-        )
-
-    invitation_columns = set(_table_columns(conn, "invitation"))
-    if "acceptor_device_key_id" not in invitation_columns:
-        conn.execute(text("ALTER TABLE invitation ADD COLUMN acceptor_device_key_id BLOB"))
-
-
-def _rename_sender_key_column_if_present(conn, table_name: str) -> None:
-    columns = {
-        row[1]
-        for row in conn.execute(text(f"PRAGMA table_info({table_name})")).fetchall()
-    }
-    if "sender_participant_id" not in columns or "sender_device_key_id" in columns:
-        return
-    conn.execute(
-        text(
-            f"ALTER TABLE {table_name} "
-            "RENAME COLUMN sender_participant_id TO sender_device_key_id"
-        )
+    The member->teammate rename is a pre-alpha schema reset boundary, so older
+    team DB shapes are intentionally not migrated.
+    """
+    raise NotImplementedError(
+        "Pre-alpha team DB migrations are not supported; "
+        f"delete/recreate this DB (schema {from_version} -> {USER_SCHEMA_VERSION})."
     )
 
 
@@ -2445,9 +2086,9 @@ def make_device_link_invitation(session):
 
 
 def prepare_linked_device_team_join(root_dir, participant_hex, team_name):
-    """Prepare a same-member encrypted team bootstrap request on the joining device."""
+    """Prepare a same-teammate encrypted team bootstrap request on the joining device."""
     root_dir = pathlib.Path(root_dir)
-    team_id, _member_id = _team_row(root_dir, participant_hex, team_name)
+    team_id, _teammate_id = _team_row(root_dir, participant_hex, team_name)
     bootstrap_id = uuid7()
 
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
@@ -2520,7 +2161,7 @@ def prepare_linked_device_team_join(root_dir, participant_hex, team_name):
 
 
 def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_request_bundle):
-    """Authorize a same-member bootstrap and return the encrypted bootstrap payload."""
+    """Authorize a same-teammate bootstrap and return the encrypted bootstrap payload."""
     root_dir = pathlib.Path(root_dir)
     request = _untokenize(join_request_bundle)
     request_body = {
@@ -2536,7 +2177,7 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
     device_id = bytes.fromhex(request["device_id"])
     proposed_team_device_public_key = bytes.fromhex(request["team_device_public_key"])
 
-    team_id, member_id = _team_row(root_dir, participant_hex, team_name)
+    team_id, teammate_id = _team_row(root_dir, participant_hex, team_name)
     if requested_team_id != team_id:
         raise ValueError("Join request team_id does not match local team")
 
@@ -2578,7 +2219,7 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
             "bootstrap_bundle": pending["bootstrap_bundle"],
         }
 
-    cert = issue_device_link_for_member(
+    cert = issue_device_link_for_teammate(
         root_dir,
         participant_hex,
         team_name,
@@ -2668,7 +2309,7 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
 
 
 def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, bootstrap_bundle):
-    """Finish a same-member bootstrap on the joining device."""
+    """Finish a same-teammate bootstrap on the joining device."""
     root_dir = pathlib.Path(root_dir)
     response = _untokenize(bootstrap_bundle)
     response_body = {
@@ -2687,15 +2328,15 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         response["authorizing_team_device_public_key"]
     )
 
-    team_id, member_id = _team_row(root_dir, participant_hex, team_name)
+    team_id, teammate_id = _team_row(root_dir, participant_hex, team_name)
     if response_team_id != team_id:
         raise ValueError("Bootstrap bundle team_id does not match local team")
 
-    trusted_keys = get_trusted_device_keys_for_member(
-        root_dir, participant_hex, team_name, member_id
+    trusted_keys = get_trusted_device_keys_for_teammate(
+        root_dir, participant_hex, team_name, teammate_id
     )
     if authorizing_team_device_public_key not in trusted_keys:
-        raise ValueError("Bootstrap bundle signer is not trusted for this member")
+        raise ValueError("Bootstrap bundle signer is not trusted for this teammate")
     if not _verify_signature(
         authorizing_team_device_public_key,
         response_bytes,
@@ -2711,7 +2352,7 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         cert,
         issuer_public_key=authorizing_team_device_public_key,
         team_id=team_id,
-        member_id=member_id,
+        teammate_id=teammate_id,
         subject_public_key=session_row["team_device_public_key"],
     ):
         raise ValueError("Bootstrap bundle device_link cert is invalid")
@@ -2843,15 +2484,15 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
             cert_inserted = _insert_team_certificate_if_missing(
                 conn,
                 cert,
-                issuer_member_id=member_id,
+                issuer_teammate_id=teammate_id,
             )
             # team_device no longer carries storage routing. A linked device
-            # shares its member's already-announced berth storage, so this
+            # shares its teammate's already-announced berth storage, so this
             # bootstrap path records device identity only. Per-linked-device
             # storage announcements are deferred (see FOLLOW-UP.md / #138).
             _upsert_team_device_row(
                 conn,
-                member_id,
+                teammate_id,
                 session_row["team_device_public_key"],
             )
             _publish_local_device_prekey_bundle(
@@ -2947,15 +2588,15 @@ def _initialize_team_sender_key_state(user_db_path, team_id, sender_device_key_i
     )
     return distribution
 
-def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes) -> None:
+def _store_team_certificate(conn, cert: KeyCertificate, issuer_teammate_id: bytes) -> None:
     conn.execute(
         text(
             "INSERT INTO key_certificate ("
             "cert_id, cert_type, subject_key_id, subject_public_key, "
-            "issuer_key_id, issuer_member_id, issued_at, claims, signature"
+            "issuer_key_id, issuer_teammate_id, issued_at, claims, signature"
             ") VALUES ("
             ":cert_id, :cert_type, :subject_key_id, :subject_public_key, "
-            ":issuer_key_id, :issuer_member_id, :issued_at, :claims, :signature)"
+            ":issuer_key_id, :issuer_teammate_id, :issued_at, :claims, :signature)"
         ),
         {
             "cert_id": cert.cert_id,
@@ -2963,7 +2604,7 @@ def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes)
             "subject_key_id": cert.subject_key_id,
             "subject_public_key": cert.subject_public_key,
             "issuer_key_id": cert.issuer_key_id,
-            "issuer_member_id": issuer_member_id,
+            "issuer_teammate_id": issuer_teammate_id,
             "issued_at": cert.issued_at_iso,
             "claims": json.dumps(cert.claims, sort_keys=True),
             "signature": cert.signature,
@@ -2971,13 +2612,13 @@ def _store_team_certificate(conn, cert: KeyCertificate, issuer_member_id: bytes)
     )
 
 
-def _same_team_certificate_row(row, cert: KeyCertificate, issuer_member_id: bytes) -> bool:
+def _same_team_certificate_row(row, cert: KeyCertificate, issuer_teammate_id: bytes) -> bool:
     return (
         row[0] == cert.cert_type.value
         and row[1] == cert.subject_key_id
         and row[2] == cert.subject_public_key
         and row[3] == cert.issuer_key_id
-        and row[4] == issuer_member_id
+        and row[4] == issuer_teammate_id
         and row[5] == cert.issued_at_iso
         and json.loads(row[6]) == cert.claims
         and row[7] == cert.signature
@@ -2987,16 +2628,16 @@ def _same_team_certificate_row(row, cert: KeyCertificate, issuer_member_id: byte
 def _insert_team_certificate_if_missing(
     conn,
     cert: KeyCertificate,
-    issuer_member_id: bytes,
+    issuer_teammate_id: bytes,
 ) -> bool:
     result = conn.execute(
         text(
             "INSERT OR IGNORE INTO key_certificate ("
             "cert_id, cert_type, subject_key_id, subject_public_key, "
-            "issuer_key_id, issuer_member_id, issued_at, claims, signature"
+            "issuer_key_id, issuer_teammate_id, issued_at, claims, signature"
             ") VALUES ("
             ":cert_id, :cert_type, :subject_key_id, :subject_public_key, "
-            ":issuer_key_id, :issuer_member_id, :issued_at, :claims, :signature)"
+            ":issuer_key_id, :issuer_teammate_id, :issued_at, :claims, :signature)"
         ),
         {
             "cert_id": cert.cert_id,
@@ -3004,7 +2645,7 @@ def _insert_team_certificate_if_missing(
             "subject_key_id": cert.subject_key_id,
             "subject_public_key": cert.subject_public_key,
             "issuer_key_id": cert.issuer_key_id,
-            "issuer_member_id": issuer_member_id,
+            "issuer_teammate_id": issuer_teammate_id,
             "issued_at": cert.issued_at_iso,
             "claims": json.dumps(cert.claims, sort_keys=True),
             "signature": cert.signature,
@@ -3016,12 +2657,12 @@ def _insert_team_certificate_if_missing(
     existing = conn.execute(
         text(
             "SELECT cert_type, subject_key_id, subject_public_key, issuer_key_id, "
-            "issuer_member_id, issued_at, claims, signature "
+            "issuer_teammate_id, issued_at, claims, signature "
             "FROM key_certificate WHERE cert_id = :cert_id"
         ),
         {"cert_id": cert.cert_id},
     ).fetchone()
-    if existing is None or not _same_team_certificate_row(existing, cert, issuer_member_id):
+    if existing is None or not _same_team_certificate_row(existing, cert, issuer_teammate_id):
         raise ValueError("Existing team certificate does not match bootstrap certificate")
     return False
 
@@ -3030,7 +2671,7 @@ def _load_team_certificates(conn, team_id: bytes) -> list[KeyCertificate]:
     rows = conn.execute(
         text(
             "SELECT cert_id, cert_type, subject_key_id, subject_public_key, "
-            "issuer_key_id, issuer_member_id, issued_at, claims, signature "
+            "issuer_key_id, issuer_teammate_id, issued_at, claims, signature "
             "FROM key_certificate ORDER BY issued_at ASC"
         )
     ).fetchall()
@@ -3044,7 +2685,7 @@ def _load_team_certificates(conn, team_id: bytes) -> list[KeyCertificate]:
                 subject_key_id=row[2],
                 subject_public_key=row[3],
                 issuer_key_id=row[4],
-                issuer_member_id=row[5],
+                issuer_teammate_id=row[5],
                 issued_at=row[6],
                 claims_json=row[7],
                 signature=row[8],
@@ -3053,18 +2694,18 @@ def _load_team_certificates(conn, team_id: bytes) -> list[KeyCertificate]:
     return certs
 
 
-def _load_member_transport_announcements(conn) -> list[MemberTransportAnnouncement]:
+def _load_teammate_transport_announcements(conn) -> list[TeammateTransportAnnouncement]:
     rows = conn.execute(
         text(
-            "SELECT announcement_id, member_id, protocol, url, bucket, announced_at, "
+            "SELECT announcement_id, teammate_id, protocol, url, bucket, announced_at, "
             "signer_key_id, signature "
-            "FROM member_transport_announcement ORDER BY announcement_id DESC"
+            "FROM teammate_transport_announcement ORDER BY announcement_id DESC"
         )
     ).fetchall()
     return [
-        MemberTransportAnnouncement(
+        TeammateTransportAnnouncement(
             announcement_id=row[0],
-            member_id=row[1],
+            teammate_id=row[1],
             protocol=row[2],
             url=row[3],
             bucket=row[4],
@@ -3076,29 +2717,29 @@ def _load_member_transport_announcements(conn) -> list[MemberTransportAnnounceme
     ]
 
 
-def load_member_berth_storage_announcements(
+def load_teammate_berth_storage_announcements(
     conn,
-    member_id,
+    teammate_id,
     berth_id,
-) -> list[MemberBerthStorageAnnouncement]:
-    if isinstance(member_id, str):
-        member_id = bytes.fromhex(member_id)
+) -> list[TeammateBerthStorageAnnouncement]:
+    if isinstance(teammate_id, str):
+        teammate_id = bytes.fromhex(teammate_id)
     if isinstance(berth_id, str):
         berth_id = bytes.fromhex(berth_id)
     rows = conn.execute(
         text(
-            "SELECT announcement_id, member_id, berth_id, protocol, url, location, "
+            "SELECT announcement_id, teammate_id, berth_id, protocol, url, location, "
             "announced_at, signer_key_id, signature "
-            "FROM member_berth_storage_announcement "
-            "WHERE member_id = :member_id AND berth_id = :berth_id "
+            "FROM teammate_berth_storage_announcement "
+            "WHERE teammate_id = :teammate_id AND berth_id = :berth_id "
             "ORDER BY announcement_id DESC"
         ),
-        {"member_id": member_id, "berth_id": berth_id},
+        {"teammate_id": teammate_id, "berth_id": berth_id},
     ).fetchall()
     return [
-        MemberBerthStorageAnnouncement(
+        TeammateBerthStorageAnnouncement(
             announcement_id=row[0],
-            member_id=row[1],
+            teammate_id=row[1],
             berth_id=row[2],
             protocol=row[3],
             url=row[4],
@@ -3111,16 +2752,16 @@ def load_member_berth_storage_announcements(
     ]
 
 
-def selected_member_berth_storage_announcement(
+def selected_teammate_berth_storage_announcement(
     conn,
-    member_id,
+    teammate_id,
     berth_id,
     key_certificate_view=None,
     *,
     team_id: bytes | None = None,
 ) -> EffectiveTransportSelection:
-    if isinstance(member_id, str):
-        member_id = bytes.fromhex(member_id)
+    if isinstance(teammate_id, str):
+        teammate_id = bytes.fromhex(teammate_id)
     if isinstance(berth_id, str):
         berth_id = bytes.fromhex(berth_id)
     if team_id is None:
@@ -3132,10 +2773,10 @@ def selected_member_berth_storage_announcement(
         if key_certificate_view is not None
         else _load_team_certificates(conn, team_id)
     )
-    return select_effective_member_berth_storage(
-        member_id=member_id,
+    return select_effective_teammate_berth_storage(
+        teammate_id=teammate_id,
         berth_id=berth_id,
-        announcements=load_member_berth_storage_announcements(conn, member_id, berth_id),
+        announcements=load_teammate_berth_storage_announcements(conn, teammate_id, berth_id),
         certs=certs,
         team_id=team_id,
         device_public_keys_by_key_id=_device_public_keys_by_key_id(conn),
@@ -3149,26 +2790,26 @@ def _device_public_keys_by_key_id(conn) -> dict[bytes, bytes]:
     return {row[0]: row[1] for row in rows}
 
 
-def _effective_transports_by_member(
+def _effective_transports_by_teammate(
     conn,
     *,
     team_id: bytes,
-    member_ids: list[bytes],
+    teammate_ids: list[bytes],
 ) -> dict[bytes, EffectiveTransportSelection]:
     certs = _load_team_certificates(conn, team_id)
-    announcements = _load_member_transport_announcements(conn)
+    announcements = _load_teammate_transport_announcements(conn)
     device_public_keys = _device_public_keys_by_key_id(conn)
-    trusted_by_member = resolve_trusted_device_keys_by_member(certs, team_id)
+    trusted_by_teammate = resolve_trusted_device_keys_by_teammate(certs, team_id)
     return {
-        member_id: select_effective_member_transport(
-            member_id=member_id,
+        teammate_id: select_effective_teammate_transport(
+            teammate_id=teammate_id,
             announcements=announcements,
             certs=certs,
             team_id=team_id,
             device_public_keys_by_key_id=device_public_keys,
-            trusted_public_keys=trusted_by_member.get(member_id, set()),
+            trusted_public_keys=trusted_by_teammate.get(teammate_id, set()),
         )
-        for member_id in member_ids
+        for teammate_id in teammate_ids
     }
 
 
@@ -3183,23 +2824,23 @@ def _team_row(root_dir, participant_hex, team_name):
     return row
 
 
-def get_trusted_device_keys_for_member_in_team_db(team_db_path, team_id, member_id):
-    """Return trusted team-device public keys for one member from one team DB."""
-    if isinstance(member_id, str):
-        member_id = bytes.fromhex(member_id)
+def get_trusted_device_keys_for_teammate_in_team_db(team_db_path, team_id, teammate_id):
+    """Return trusted team-device public keys for one teammate from one team DB."""
+    if isinstance(teammate_id, str):
+        teammate_id = bytes.fromhex(teammate_id)
     engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
             certs = _load_team_certificates(conn, team_id)
     finally:
         engine.dispose()
-    return resolve_trusted_device_keys_for_member(certs, team_id, member_id)
+    return resolve_trusted_device_keys_for_teammate(certs, team_id, teammate_id)
 
 
-def get_trusted_device_keys_for_member(root_dir, participant_hex, team_name, member_id):
-    """Return trusted team-device public keys for one member from cert history."""
-    if isinstance(member_id, str):
-        member_id = bytes.fromhex(member_id)
+def get_trusted_device_keys_for_teammate(root_dir, participant_hex, team_name, teammate_id):
+    """Return trusted team-device public keys for one teammate from cert history."""
+    if isinstance(teammate_id, str):
+        teammate_id = bytes.fromhex(teammate_id)
     team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
     team_db_path = (
         pathlib.Path(root_dir)
@@ -3209,11 +2850,11 @@ def get_trusted_device_keys_for_member(root_dir, participant_hex, team_name, mem
         / "Sync"
         / "core.db"
     )
-    return get_trusted_device_keys_for_member_in_team_db(team_db_path, team_id, member_id)
+    return get_trusted_device_keys_for_teammate_in_team_db(team_db_path, team_id, teammate_id)
 
 
-def get_trusted_device_keys_by_member(root_dir, participant_hex, team_name):
-    """Return trusted team-device public keys for every member from cert history."""
+def get_trusted_device_keys_by_teammate(root_dir, participant_hex, team_name):
+    """Return trusted team-device public keys for every teammate from cert history."""
     team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
     team_db_path = (
         pathlib.Path(root_dir)
@@ -3229,7 +2870,7 @@ def get_trusted_device_keys_by_member(root_dir, participant_hex, team_name):
             certs = _load_team_certificates(conn, team_id)
     finally:
         engine.dispose()
-    return resolve_trusted_device_keys_by_member(certs, team_id)
+    return resolve_trusted_device_keys_by_teammate(certs, team_id)
 
 
 def _team_sync_dir(root_dir, participant_hex, team_name) -> pathlib.Path:
@@ -3237,7 +2878,7 @@ def _team_sync_dir(root_dir, participant_hex, team_name) -> pathlib.Path:
     return pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync"
 
 
-def announce_member_transport(
+def announce_teammate_transport(
     root_dir,
     participant_hex,
     team_name,
@@ -3247,13 +2888,13 @@ def announce_member_transport(
     bucket: str,
 ) -> dict:
     root_dir = pathlib.Path(root_dir)
-    team_id, member_id = _team_row(root_dir, participant_hex, team_name)
+    team_id, teammate_id = _team_row(root_dir, participant_hex, team_name)
     private_key, public_key = get_current_team_device_key(root_dir, participant_hex, team_name)
     announcement_id = uuid7()
     signer_key_id = key_id_from_public(public_key)
-    announcement = MemberTransportAnnouncement(
+    announcement = TeammateTransportAnnouncement(
         announcement_id=announcement_id,
-        member_id=member_id,
+        teammate_id=teammate_id,
         protocol=protocol,
         url=url,
         bucket=bucket,
@@ -3263,7 +2904,7 @@ def announce_member_transport(
     )
     signature = _sign_bytes(
         private_key,
-        canonical_member_transport_announcement_bytes(announcement),
+        canonical_teammate_transport_announcement_bytes(announcement),
     )
     signed_announcement = replace(announcement, signature=signature)
     team_db_path = _team_sync_dir(root_dir, participant_hex, team_name) / "core.db"
@@ -3273,15 +2914,15 @@ def announce_member_transport(
         with engine.begin() as conn:
             conn.execute(
                 text(
-                    "INSERT INTO member_transport_announcement "
-                    "(announcement_id, member_id, protocol, url, bucket, announced_at, "
+                    "INSERT INTO teammate_transport_announcement "
+                    "(announcement_id, teammate_id, protocol, url, bucket, announced_at, "
                     "signer_key_id, signature) "
-                    "VALUES (:announcement_id, :member_id, :protocol, :url, :bucket, "
+                    "VALUES (:announcement_id, :teammate_id, :protocol, :url, :bucket, "
                     ":announced_at, :signer_key_id, :signature)"
                 ),
                 {
                     "announcement_id": signed_announcement.announcement_id,
-                    "member_id": signed_announcement.member_id,
+                    "teammate_id": signed_announcement.teammate_id,
                     "protocol": signed_announcement.protocol,
                     "url": signed_announcement.url,
                     "bucket": signed_announcement.bucket,
@@ -3294,7 +2935,7 @@ def announce_member_transport(
         engine.dispose()
     return {
         "announcement_id_hex": signed_announcement.announcement_id.hex(),
-        "member_id_hex": signed_announcement.member_id.hex(),
+        "teammate_id_hex": signed_announcement.teammate_id.hex(),
         "signer_key_id_hex": signed_announcement.signer_key_id.hex(),
         "protocol": signed_announcement.protocol,
         "url": signed_announcement.url,
@@ -3304,19 +2945,19 @@ def announce_member_transport(
     }
 
 
-def _insert_member_berth_storage_announcement(
+def _insert_teammate_berth_storage_announcement(
     conn,
     *,
     team_id: bytes,
-    member_id: bytes,
+    teammate_id: bytes,
     berth_id: bytes,
     allocation_record,
     private_key,
     public_key: bytes,
 ) -> dict:
-    """Sign and insert a member-berth storage announcement using an open conn.
+    """Sign and insert a teammate-berth storage announcement using an open conn.
 
-    Transaction-safe core of `publish_member_berth_storage_announcement`.
+    Transaction-safe core of `publish_teammate_berth_storage_announcement`.
     Provisioning flows that already hold a write transaction on the team
     `core.db` (e.g. `create_team`) must call this with their live `conn`
     rather than the public helper, which opens its own engine and would
@@ -3327,9 +2968,9 @@ def _insert_member_berth_storage_announcement(
     url = allocation_record["url"]
     location = allocation_record["location"]
 
-    selected = selected_member_berth_storage_announcement(
+    selected = selected_teammate_berth_storage_announcement(
         conn,
-        member_id,
+        teammate_id,
         berth_id,
         team_id=team_id,
     )
@@ -3347,7 +2988,7 @@ def _insert_member_berth_storage_announcement(
                 if selected.announcement_id is not None
                 else None
             ),
-            "member_id_hex": member_id.hex(),
+            "teammate_id_hex": teammate_id.hex(),
             "berth_id_hex": berth_id.hex(),
             "signer_key_id_hex": (
                 selected.signer_key_id.hex()
@@ -3360,9 +3001,9 @@ def _insert_member_berth_storage_announcement(
             "team_id_hex": team_id.hex(),
         }
 
-    announcement = MemberBerthStorageAnnouncement(
+    announcement = TeammateBerthStorageAnnouncement(
         announcement_id=uuid7(),
-        member_id=member_id,
+        teammate_id=teammate_id,
         berth_id=berth_id,
         protocol=protocol,
         url=url,
@@ -3373,20 +3014,20 @@ def _insert_member_berth_storage_announcement(
     )
     signature = _sign_bytes(
         private_key,
-        canonical_member_berth_storage_announcement_bytes(announcement),
+        canonical_teammate_berth_storage_announcement_bytes(announcement),
     )
     signed_announcement = replace(announcement, signature=signature)
     conn.execute(
         text(
-            "INSERT INTO member_berth_storage_announcement "
-            "(announcement_id, member_id, berth_id, protocol, url, location, "
+            "INSERT INTO teammate_berth_storage_announcement "
+            "(announcement_id, teammate_id, berth_id, protocol, url, location, "
             "announced_at, signer_key_id, signature) "
-            "VALUES (:announcement_id, :member_id, :berth_id, :protocol, "
+            "VALUES (:announcement_id, :teammate_id, :berth_id, :protocol, "
             ":url, :location, :announced_at, :signer_key_id, :signature)"
         ),
         {
             "announcement_id": signed_announcement.announcement_id,
-            "member_id": signed_announcement.member_id,
+            "teammate_id": signed_announcement.teammate_id,
             "berth_id": signed_announcement.berth_id,
             "protocol": signed_announcement.protocol,
             "url": signed_announcement.url,
@@ -3399,7 +3040,7 @@ def _insert_member_berth_storage_announcement(
     return {
         "wrote": True,
         "announcement_id_hex": signed_announcement.announcement_id.hex(),
-        "member_id_hex": signed_announcement.member_id.hex(),
+        "teammate_id_hex": signed_announcement.teammate_id.hex(),
         "berth_id_hex": signed_announcement.berth_id.hex(),
         "signer_key_id_hex": signed_announcement.signer_key_id.hex(),
         "protocol": signed_announcement.protocol,
@@ -3410,18 +3051,18 @@ def _insert_member_berth_storage_announcement(
     }
 
 
-def publish_member_berth_storage_announcement(
+def publish_teammate_berth_storage_announcement(
     root_dir,
     participant_hex,
     team_name,
-    member_id,
+    teammate_id,
     berth_id,
     allocation_record,
     signer_key=None,
 ) -> dict:
     root_dir = pathlib.Path(root_dir)
-    if isinstance(member_id, str):
-        member_id = bytes.fromhex(member_id)
+    if isinstance(teammate_id, str):
+        teammate_id = bytes.fromhex(teammate_id)
     if isinstance(berth_id, str):
         berth_id = bytes.fromhex(berth_id)
 
@@ -3438,10 +3079,10 @@ def publish_member_berth_storage_announcement(
     engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
-            return _insert_member_berth_storage_announcement(
+            return _insert_teammate_berth_storage_announcement(
                 conn,
                 team_id=team_id,
-                member_id=member_id,
+                teammate_id=teammate_id,
                 berth_id=berth_id,
                 allocation_record=allocation_record,
                 private_key=private_key,
@@ -3475,17 +3116,17 @@ def set_note_to_self_adopted_signal_count(
     set_note_to_self_adopted_count(root_dir, participant_hex, berth_id, count)
 
 
-def _core_berth_role(conn, member_id: bytes) -> str | None:
+def _core_berth_role(conn, teammate_id: bytes) -> str | None:
     row = conn.execute(
         text(
             "SELECT br.role "
             "FROM berth_role br "
             "JOIN team_app_berth tab ON tab.id = br.berth_id "
             "JOIN app a ON a.id = tab.app_id "
-            "WHERE br.member_id = :member_id AND a.name = 'SmallSeaCollectiveCore' "
+            "WHERE br.teammate_id = :teammate_id AND a.name = 'SmallSeaCollectiveCore' "
             "LIMIT 1"
         ),
-        {"member_id": member_id},
+        {"teammate_id": teammate_id},
     ).fetchone()
     return row[0] if row is not None else None
 
@@ -3509,7 +3150,7 @@ def _runtime_reconciliation_state_row(root_dir, participant_hex: str, team_id: b
         return conn.execute(
             """
             SELECT team_id,
-                   trusted_member_ids_json,
+                   trusted_teammate_ids_json,
                    trusted_device_key_ids_json,
                    last_sender_device_key_id,
                    last_sender_chain_id,
@@ -3526,7 +3167,7 @@ def _store_runtime_reconciliation_state(
     participant_hex: str,
     *,
     team_id: bytes,
-    trusted_member_ids_hex: list[str],
+    trusted_teammate_ids_hex: list[str],
     trusted_device_key_ids_hex: list[str],
     last_sender_device_key_id: bytes | None,
     last_sender_chain_id: bytes | None,
@@ -3536,7 +3177,7 @@ def _store_runtime_reconciliation_state(
             """
             INSERT OR REPLACE INTO runtime_reconciliation_state (
                 team_id,
-                trusted_member_ids_json,
+                trusted_teammate_ids_json,
                 trusted_device_key_ids_json,
                 last_sender_device_key_id,
                 last_sender_chain_id,
@@ -3545,7 +3186,7 @@ def _store_runtime_reconciliation_state(
             """,
             (
                 team_id,
-                _json_dumps_sorted(sorted(trusted_member_ids_hex)),
+                _json_dumps_sorted(sorted(trusted_teammate_ids_hex)),
                 _json_dumps_sorted(sorted(trusted_device_key_ids_hex)),
                 last_sender_device_key_id,
                 last_sender_chain_id,
@@ -3684,7 +3325,7 @@ def peek_redistribution_payload_metadata(distribution_payload: str) -> dict:
 
 def rotate_team_sender_key(root_dir, participant_hex, team_name):
     root_dir = pathlib.Path(root_dir)
-    team_id, _member_id = _team_row(root_dir, participant_hex, team_name)
+    team_id, _teammate_id = _team_row(root_dir, participant_hex, team_name)
     _team_device_private_key, team_device_public_key = get_current_team_device_key(
         root_dir, participant_hex, team_name
     )
@@ -3722,11 +3363,11 @@ def redistribute_sender_key(root_dir, participant_hex, team_name, target_device_
             for target in target_device_key_ids
         }
 
-    trusted_public_keys_by_member = get_trusted_device_keys_by_member(
+    trusted_public_keys_by_teammate = get_trusted_device_keys_by_teammate(
         root_dir, participant_hex, team_name
     )
     candidate_public_keys: dict[bytes, bytes] = {}
-    for member_id, public_keys in trusted_public_keys_by_member.items():
+    for teammate_id, public_keys in trusted_public_keys_by_teammate.items():
         for public_key in public_keys:
             device_key_id = key_id_from_public(public_key)
             if device_key_id == sender_device_key_id:
@@ -3816,7 +3457,7 @@ def receive_sender_key_distribution(root_dir, participant_hex, team_name, distri
     }
     payload_bytes = _json_bytes(payload_body)
 
-    team_id, _member_id = _team_row(root_dir, participant_hex, team_name)
+    team_id, _teammate_id = _team_row(root_dir, participant_hex, team_name)
     if bytes.fromhex(payload["team_id"]) != team_id:
         raise ValueError("Distribution payload team_id does not match local team")
 
@@ -3841,7 +3482,7 @@ def receive_sender_key_distribution(root_dir, participant_hex, team_name, distri
 
     trusted_public_keys = {
         public_key
-        for public_keys in get_trusted_device_keys_by_member(
+        for public_keys in get_trusted_device_keys_by_teammate(
             root_dir, participant_hex, team_name
         ).values()
         for public_key in public_keys
@@ -3930,30 +3571,30 @@ def reconcile_runtime_state(root_dir, participant_hex, team_name):
         root_dir, participant_hex, team_name
     )
     local_device_key_id = key_id_from_public(local_team_device_public_key)
-    trusted_public_keys_by_member = get_trusted_device_keys_by_member(
+    trusted_public_keys_by_teammate = get_trusted_device_keys_by_teammate(
         root_dir,
         participant_hex,
         team_name,
     )
-    trusted_self_public_keys = trusted_public_keys_by_member.get(self_in_team, [])
+    trusted_self_public_keys = trusted_public_keys_by_teammate.get(self_in_team, [])
     if local_team_device_public_key not in trusted_self_public_keys:
         return {
             "team_id_hex": team_id.hex(),
             "local_device_key_id_hex": local_device_key_id.hex(),
             "local_device_trusted": False,
             "rotated": False,
-            "removed_member_ids_hex": [],
+            "removed_teammate_ids_hex": [],
             "redistribution_artifacts": [],
             "skipped_device_key_ids_hex": [],
         }
 
-    current_trusted_member_ids_hex = sorted(
-        member_id.hex() for member_id in trusted_public_keys_by_member
+    current_trusted_teammate_ids_hex = sorted(
+        teammate_id.hex() for teammate_id in trusted_public_keys_by_teammate
     )
     current_trusted_device_key_ids = sorted(
         {
             key_id_from_public(public_key)
-            for public_keys in trusted_public_keys_by_member.values()
+            for public_keys in trusted_public_keys_by_teammate.values()
             for public_key in public_keys
         }
     )
@@ -3962,15 +3603,15 @@ def reconcile_runtime_state(root_dir, participant_hex, team_name):
     )
 
     state_row = _runtime_reconciliation_state_row(root_dir, participant_hex, team_id)
-    previous_member_ids_hex = set()
+    previous_teammate_ids_hex = set()
     if state_row is not None:
-        previous_member_ids_hex = set(json.loads(state_row["trusted_member_ids_json"]))
+        previous_teammate_ids_hex = set(json.loads(state_row["trusted_teammate_ids_json"]))
 
-    removed_member_ids_hex = sorted(
-        previous_member_ids_hex - set(current_trusted_member_ids_hex) - {self_in_team.hex()}
+    removed_teammate_ids_hex = sorted(
+        previous_teammate_ids_hex - set(current_trusted_teammate_ids_hex) - {self_in_team.hex()}
     )
     rotated = False
-    if removed_member_ids_hex:
+    if removed_teammate_ids_hex:
         rotate_team_sender_key(root_dir, participant_hex, team_name)
         rotated = True
 
@@ -4008,7 +3649,7 @@ def reconcile_runtime_state(root_dir, participant_hex, team_name):
         root_dir,
         participant_hex,
         team_id=team_id,
-        trusted_member_ids_hex=current_trusted_member_ids_hex,
+        trusted_teammate_ids_hex=current_trusted_teammate_ids_hex,
         trusted_device_key_ids_hex=current_trusted_device_key_ids_hex,
         last_sender_device_key_id=sender_record.sender_device_key_id,
         last_sender_chain_id=sender_record.chain_id,
@@ -4018,7 +3659,7 @@ def reconcile_runtime_state(root_dir, participant_hex, team_name):
         "local_device_key_id_hex": local_device_key_id.hex(),
         "local_device_trusted": True,
         "rotated": rotated,
-        "removed_member_ids_hex": removed_member_ids_hex,
+        "removed_teammate_ids_hex": removed_teammate_ids_hex,
         "sender_device_key_id_hex": sender_record.sender_device_key_id.hex(),
         "sender_chain_id_hex": sender_record.chain_id.hex(),
         "redistribution_artifacts": artifacts,
@@ -4026,37 +3667,37 @@ def reconcile_runtime_state(root_dir, participant_hex, team_name):
     }
 
 
-def remove_member(root_dir, participant_hex, team_name, member):
+def remove_teammate(root_dir, participant_hex, team_name, teammate):
     root_dir = pathlib.Path(root_dir)
-    removed_member_id = bytes.fromhex(member) if isinstance(member, str) else member
+    removed_teammate_id = bytes.fromhex(teammate) if isinstance(teammate, str) else teammate
     team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
-    if removed_member_id == self_in_team:
-        raise ValueError("remove_member cannot remove self in this branch")
+    if removed_teammate_id == self_in_team:
+        raise ValueError("remove_teammate cannot remove self in this branch")
 
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
-    removed_device_public_keys = get_trusted_device_keys_for_member(
-        root_dir, participant_hex, team_name, removed_member_id
+    removed_device_public_keys = get_trusted_device_keys_for_teammate(
+        root_dir, participant_hex, team_name, removed_teammate_id
     )
     removed_device_key_ids = [key_id_from_public(public_key) for public_key in removed_device_public_keys]
 
     try:
         with engine.begin() as conn:
-            member_exists = conn.execute(
-                text("SELECT 1 FROM member WHERE id = :member_id"),
-                {"member_id": removed_member_id},
+            teammate_exists = conn.execute(
+                text("SELECT 1 FROM teammate WHERE id = :teammate_id"),
+                {"teammate_id": removed_teammate_id},
             ).fetchone()
-            if member_exists is None:
-                raise ValueError(f"Member '{removed_member_id.hex()}' not found")
+            if teammate_exists is None:
+                raise ValueError(f"Teammate '{removed_teammate_id.hex()}' not found")
             role = _core_berth_role(conn, self_in_team)
             if role != "read-write":
-                raise ValueError("Removing a member requires read-write permission on the Core berth")
+                raise ValueError("Removing a teammate requires read-write permission on the Core berth")
             certs = _load_team_certificates(conn, team_id)
             cert_ids_to_delete = [
                 cert.cert_id
                 for cert in certs
-                if cert.claims.get("member_id") == removed_member_id.hex()
+                if cert.claims.get("teammate_id") == removed_teammate_id.hex()
             ]
             for cert_id in cert_ids_to_delete:
                 conn.execute(
@@ -4064,8 +3705,8 @@ def remove_member(root_dir, participant_hex, team_name, member):
                     {"cert_id": cert_id},
                 )
             conn.execute(
-                text("DELETE FROM member WHERE id = :member_id"),
-                {"member_id": removed_member_id},
+                text("DELETE FROM teammate WHERE id = :teammate_id"),
+                {"teammate_id": removed_teammate_id},
             )
             _publish_local_device_prekey_bundle(
                 root_dir,
@@ -4081,7 +3722,7 @@ def remove_member(root_dir, participant_hex, team_name, member):
     team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
-    repo.commit(f"Removed member {removed_member_id.hex()}")
+    repo.commit(f"Removed teammate {removed_teammate_id.hex()}")
 
     _delete_peer_sender_key_rows(
         device_local_db_path(root_dir, participant_hex),
@@ -4092,7 +3733,7 @@ def remove_member(root_dir, participant_hex, team_name, member):
     redistribution = redistribute_sender_key(root_dir, participant_hex, team_name)
     return {
         "team_id_hex": team_id.hex(),
-        "removed_member_id_hex": removed_member_id.hex(),
+        "removed_teammate_id_hex": removed_teammate_id.hex(),
         "removed_device_key_ids_hex": [device_key_id.hex() for device_key_id in removed_device_key_ids],
         "rotated_sender_device_key_id_hex": rotated["sender_device_key_id_hex"],
         "redistribution_artifacts": redistribution["artifacts"],
@@ -4100,23 +3741,23 @@ def remove_member(root_dir, participant_hex, team_name, member):
     }
 
 
-def issue_device_link_for_member(root_dir, participant_hex, team_name, linked_device_public_key):
+def issue_device_link_for_teammate(root_dir, participant_hex, team_name, linked_device_public_key):
     """Issue and store a device_link cert for an externally generated public key."""
     if isinstance(linked_device_public_key, str):
         linked_device_public_key = bytes.fromhex(linked_device_public_key)
 
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
-    team_id, member_id = _team_row(root_dir, participant_hex, team_name)
+    team_id, teammate_id = _team_row(root_dir, participant_hex, team_name)
     issuer_private_key, issuer_public_key = get_current_team_device_key(
         root_dir, participant_hex, team_name
     )
 
-    current_trusted_keys = get_trusted_device_keys_for_member(
-        root_dir, participant_hex, team_name, member_id
+    current_trusted_keys = get_trusted_device_keys_for_teammate(
+        root_dir, participant_hex, team_name, teammate_id
     )
     if issuer_public_key not in current_trusted_keys:
-        raise ValueError("Current team device key is not trusted for this member")
+        raise ValueError("Current team device key is not trusted for this teammate")
 
     issuer_key = _participant_key_from_public(issuer_public_key)
     subject_key = _participant_key_from_public(linked_device_public_key)
@@ -4125,13 +3766,13 @@ def issue_device_link_for_member(root_dir, participant_hex, team_name, linked_de
         issuer_key=issuer_key,
         issuer_private_key=issuer_private_key,
         team_id=team_id,
-        member_id=member_id,
+        teammate_id=teammate_id,
     )
     if not verify_device_link_cert(
         cert,
         issuer_public_key=issuer_public_key,
         team_id=team_id,
-        member_id=member_id,
+        teammate_id=teammate_id,
         subject_public_key=linked_device_public_key,
     ):
         raise ValueError("Failed to issue a valid device_link cert")
@@ -4141,10 +3782,10 @@ def issue_device_link_for_member(root_dir, participant_hex, team_name, linked_de
     engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
-            _store_team_certificate(conn, cert, issuer_member_id=member_id)
+            _store_team_certificate(conn, cert, issuer_teammate_id=teammate_id)
             _upsert_team_device_row(
                 conn,
-                member_id,
+                teammate_id,
                 linked_device_public_key,
             )
     finally:
@@ -4288,16 +3929,16 @@ def create_team(root_dir, participant_hex, team_name):
     """Create a new team for an existing participant.
 
     Adds team + team_app_berth rows to the user's NoteToSelf/Sync/core.db,
-    creates the team directory with its own core.db (member table),
+    creates the team directory with its own core.db (teammate table),
     and initializes a git repo for the team sync directory.
 
-    Returns {"team_id_hex": ..., "member_id_hex": ...}.
+    Returns {"team_id_hex": ..., "teammate_id_hex": ...}.
     """
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
 
     team_id = uuid7()
-    member_id = uuid7()
+    teammate_id = uuid7()
 
     # --- Update the user's NoteToSelf core.db ---
     # Only a lightweight membership pointer goes here; structural team data
@@ -4306,7 +3947,7 @@ def create_team(root_dir, participant_hex, team_name):
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         conn.execute(
             "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
-            (team_id, team_name, member_id),
+            (team_id, team_name, teammate_id),
         )
         conn.commit()
 
@@ -4319,8 +3960,8 @@ def create_team(root_dir, participant_hex, team_name):
         issuer_key=team_keys["device_key"],
         issuer_private_key=team_keys["device_private_key"],
         team_id=team_id,
-        issuer_member_id=member_id,
-        admitted_member_id=member_id,
+        issuer_teammate_id=teammate_id,
+        admitted_teammate_id=teammate_id,
     )
     _initialize_team_sender_key_state(
         device_local_db_path(root_dir, participant_hex),
@@ -4335,26 +3976,26 @@ def create_team(root_dir, participant_hex, team_name):
     team_db_path = team_sync_dir / "core.db"
     team_engine = _init_team_db(team_db_path)
 
-    # Populate the team DB: creator member, app, berth, and creator's role.
+    # Populate the team DB: creator teammate, app, berth, and creator's role.
     creator_display_name = get_nickname(root_dir, participant_hex) or None
     with team_engine.begin() as conn:
-        _upsert_member_row(conn, member_id, display_name=creator_display_name)
-        # The creator is the only member present while bootstrapping Core for a
-        # new team, so every current member receives the initial Core role.
+        _upsert_teammate_row(conn, teammate_id, display_name=creator_display_name)
+        # The creator is the only teammate present while bootstrapping Core for a
+        # new team, so every current teammate receives the initial Core role.
         _app_id, berth_id, _changed = _ensure_team_app_activation(
             conn,
             "SmallSeaCollectiveCore",
-            lambda _member_id: "read-write",
+            lambda _teammate_id: "read-write",
         )
         creator_allocation = _auto_allocate_berth_cloud_if_available(
             root_dir, participant_hex, berth_id
         )
         _upsert_team_device_row(
             conn,
-            member_id,
+            teammate_id,
             team_keys["device_key"].public_key,
         )
-        _store_team_certificate(conn, membership_cert, issuer_member_id=member_id)
+        _store_team_certificate(conn, membership_cert, issuer_teammate_id=teammate_id)
         _publish_local_device_prekey_bundle(
             root_dir,
             participant_hex,
@@ -4364,16 +4005,16 @@ def create_team(root_dir, participant_hex, team_name):
             team_device_public_key=team_keys["device_key"].public_key,
         )
         # Announce the creator's berth storage so peers discover it through the
-        # signed member_berth_storage_announcement channel rather than legacy
+        # signed teammate_berth_storage_announcement channel rather than legacy
         # team_device transport fields. Done in-transaction (the public helper
         # would deadlock against this open write transaction) and signed with
         # the creator's own team device key, the only key trusted for this
-        # member.
+        # teammate.
         if creator_allocation is not None:
-            _insert_member_berth_storage_announcement(
+            _insert_teammate_berth_storage_announcement(
                 conn,
                 team_id=team_id,
-                member_id=member_id,
+                teammate_id=teammate_id,
                 berth_id=berth_id,
                 allocation_record=creator_allocation,
                 private_key=team_keys["device_private_key"],
@@ -4388,7 +4029,7 @@ def create_team(root_dir, participant_hex, team_name):
 
     return {
         "team_id_hex": team_id.hex(),
-        "member_id_hex": member_id.hex(),
+        "teammate_id_hex": teammate_id.hex(),
         "berth_id_hex": berth_id.hex(),
     }
 
@@ -4468,8 +4109,8 @@ def register_app_for_participant(root_dir, participant_hex, app_name):
     return app_id.hex()
 
 
-def _ensure_team_app_activation(conn, app_name, role_for_member):
-    """Ensure a team DB has an app berth and member roles for that app."""
+def _ensure_team_app_activation(conn, app_name, role_for_teammate):
+    """Ensure a team DB has an app berth and teammate roles for that app."""
     changed = False
     app_id = _single_app_id_by_name_sa(conn, app_name)
     if app_id is None:
@@ -4496,28 +4137,28 @@ def _ensure_team_app_activation(conn, app_name, role_for_member):
         )
         changed = True
 
-    member_rows = conn.execute(text("SELECT id FROM member")).fetchall()
-    for (member_id,) in member_rows:
+    teammate_rows = conn.execute(text("SELECT id FROM teammate")).fetchall()
+    for (teammate_id,) in teammate_rows:
         role_row = conn.execute(
             text(
                 "SELECT 1 FROM berth_role "
-                "WHERE member_id = :member_id AND berth_id = :berth_id"
+                "WHERE teammate_id = :teammate_id AND berth_id = :berth_id"
             ),
-            {"member_id": member_id, "berth_id": berth_id},
+            {"teammate_id": teammate_id, "berth_id": berth_id},
         ).fetchone()
         if role_row is not None:
             continue
-        role = role_for_member(member_id)
+        role = role_for_teammate(teammate_id)
         if role is None:
-            raise ValueError("Cannot activate app for member without Core berth role")
+            raise ValueError("Cannot activate app for teammate without Core berth role")
         conn.execute(
             text(
-                "INSERT INTO berth_role (id, member_id, berth_id, role) "
-                "VALUES (:id, :member_id, :berth_id, :role)"
+                "INSERT INTO berth_role (id, teammate_id, berth_id, role) "
+                "VALUES (:id, :teammate_id, :berth_id, :role)"
             ),
             {
                 "id": uuid7(),
-                "member_id": member_id,
+                "teammate_id": teammate_id,
                 "berth_id": berth_id,
                 "role": role,
             },
@@ -4540,7 +4181,7 @@ def activate_app_for_team(root_dir, participant_hex, team_name, app_name):
         app_id, _berth_id, changed = _ensure_team_app_activation(
             conn,
             app_name,
-            lambda member_id: _core_berth_role(conn, member_id),
+            lambda teammate_id: _core_berth_role(conn, teammate_id),
         )
 
     engine.dispose()
@@ -4569,7 +4210,7 @@ def create_invitation(
     if team_row is None:
         raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
     team_id = team_row[0]
-    inviter_member_id = team_row[1]
+    inviter_teammate_id = team_row[1]
     inviter_display_name = get_nickname(root_dir, participant_hex) or None
 
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
@@ -4597,7 +4238,7 @@ def create_invitation(
             raise ValueError("inviter_cloud does not match the Core cloud allocation")
 
     proposal_id = uuid7()
-    invitee_member_id = uuid7()
+    invitee_teammate_id = uuid7()
     nonce = secrets.token_bytes(16)
     now_dt = datetime.now(timezone.utc)
     now = now_dt.isoformat()
@@ -4612,11 +4253,11 @@ def create_invitation(
         conn.execute(
             text(
                 "INSERT INTO admission_proposal ("
-                "proposal_id, nonce, team_id, inviter_member_id, invitee_member_id, "
+                "proposal_id, nonce, team_id, inviter_teammate_id, invitee_teammate_id, "
                 "invitee_label, role, anchor_commit, governance_digest, governance_snapshot_json, "
                 "state, created_at, expires_at"
                 ") VALUES ("
-                ":proposal_id, :nonce, :team_id, :inviter_member_id, :invitee_member_id, "
+                ":proposal_id, :nonce, :team_id, :inviter_teammate_id, :invitee_teammate_id, "
                 ":invitee_label, :role, :anchor_commit, :governance_digest, :governance_snapshot_json, "
                 "'awaiting_invitee', :created_at, :expires_at)"
             ),
@@ -4624,8 +4265,8 @@ def create_invitation(
                 "proposal_id": proposal_id,
                 "nonce": nonce,
                 "team_id": team_id,
-                "inviter_member_id": inviter_member_id,
-                "invitee_member_id": invitee_member_id,
+                "inviter_teammate_id": inviter_teammate_id,
+                "invitee_teammate_id": invitee_teammate_id,
                 "invitee_label": invitee_label,
                 "role": role,
                 "anchor_commit": anchor_commit,
@@ -4643,8 +4284,8 @@ def create_invitation(
         "nonce": nonce.hex(),
         "team_id": team_id.hex(),
         "team_name": team_name,
-        "inviter_member_id": inviter_member_id.hex(),
-        "invitee_member_id": invitee_member_id.hex(),
+        "inviter_teammate_id": inviter_teammate_id.hex(),
+        "invitee_teammate_id": invitee_teammate_id.hex(),
         "inviter_display_name": inviter_display_name,
         "invitee_label": invitee_label,
         "role": role,
@@ -4670,7 +4311,7 @@ def accept_invitation(
     token_b64,
     inviter_remote,
     acceptor_remote=None,
-    acceptor_member_id=None,
+    acceptor_teammate_id=None,
 ):
     """Accept a transcript-bound team invitation token (invitee side).
 
@@ -4682,21 +4323,21 @@ def accept_invitation(
     token = _untokenize(token_b64)
     team_name = token["team_name"]
     team_id = bytes.fromhex(token["team_id"])
-    inviter_member_id = bytes.fromhex(token["inviter_member_id"])
+    inviter_teammate_id = bytes.fromhex(token["inviter_teammate_id"])
     inviter_cloud = token["inviter_cloud"]  # protocol + url only, no credentials
     inviter_bucket = token["inviter_bucket"]
     inviter_display_name = token.get("inviter_display_name") or None
     inviter_sender_key = deserialize_distribution_message(token["inviter_sender_key"])
     proposal_id = bytes.fromhex(token["proposal_id"])
     nonce = bytes.fromhex(token["nonce"])
-    invitee_member_id = bytes.fromhex(token["invitee_member_id"])
+    invitee_teammate_id = bytes.fromhex(token["invitee_teammate_id"])
 
-    # Use pre-generated member ID if provided (required when acceptor_remote must
+    # Use pre-generated teammate ID if provided (required when acceptor_remote must
     # be constructed before this call, e.g. Dropbox folder-prefix naming).
-    if acceptor_member_id is None:
-        acceptor_member_id = invitee_member_id
-    if acceptor_member_id != invitee_member_id:
-        raise ValueError("Invitation token member binding mismatch")
+    if acceptor_teammate_id is None:
+        acceptor_teammate_id = invitee_teammate_id
+    if acceptor_teammate_id != invitee_teammate_id:
+        raise ValueError("Invitation token teammate binding mismatch")
 
     acceptor_dir = root_dir / "Participants" / acceptor_participant_hex
 
@@ -4739,7 +4380,7 @@ def accept_invitation(
             raise ValueError(f"Team '{team_name}' already exists in NoteToSelf")
         conn.execute(
             "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
-            (team_id, team_name, acceptor_member_id),
+            (team_id, team_name, acceptor_teammate_id),
         )
         # Core participant registration is identity-wide in NoteToSelf. Hub
         # berth resolution currently accepts any NoteToSelf Core berth for the
@@ -4776,11 +4417,11 @@ def accept_invitation(
             # the acceptor's freshly generated team device key, so peers can
             # discover the acceptor's storage without any team_device transport
             # fallback. Committed below so the acceptor's next push carries it.
-            publish_member_berth_storage_announcement(
+            publish_teammate_berth_storage_announcement(
                 root_dir,
                 acceptor_participant_hex,
                 team_name,
-                acceptor_member_id,
+                acceptor_teammate_id,
                 core_berth_row[0],
                 acceptor_allocation,
                 signer_key=(
@@ -4809,7 +4450,7 @@ def accept_invitation(
         proposal_id=proposal_id,
         nonce=nonce,
         team_id=team_id,
-        invitee_member_id=acceptor_member_id,
+        invitee_teammate_id=acceptor_teammate_id,
         invitee_device_public_key=team_keys["device_key"].public_key,
         invitee_bootstrap_key=invitee_bootstrap_key,
     )
@@ -4823,8 +4464,8 @@ def accept_invitation(
         "invitation_id": proposal_id.hex(),
         "nonce": nonce.hex(),
         "team_id": team_id.hex(),
-        "invitee_member_id": acceptor_member_id.hex(),
-        "acceptor_member_id": acceptor_member_id.hex(),
+        "invitee_teammate_id": acceptor_teammate_id.hex(),
+        "acceptor_teammate_id": acceptor_teammate_id.hex(),
         "invitee_device_key_id": acceptor_device_key_id.hex(),
         "acceptor_device_key_id": acceptor_device_key_id.hex(),
         "invitee_device_public_key": team_keys["device_key"].public_key.hex(),
@@ -4846,7 +4487,7 @@ def complete_invitation_acceptance(
     proposal_id = bytes.fromhex(acceptance["proposal_id"])
     nonce = bytes.fromhex(acceptance["nonce"])
     team_id = bytes.fromhex(acceptance["team_id"])
-    invitee_member_id = bytes.fromhex(acceptance["invitee_member_id"])
+    invitee_teammate_id = bytes.fromhex(acceptance["invitee_teammate_id"])
     invitee_device_key_id = bytes.fromhex(acceptance["invitee_device_key_id"])
     invitee_device_public_key = bytes.fromhex(acceptance["invitee_device_public_key"])
     invitee_bootstrap_key = bytes.fromhex(acceptance["invitee_bootstrap_key"])
@@ -4873,7 +4514,7 @@ def complete_invitation_acceptance(
             raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
         if inviter_team_row[0] != team_id:
             raise ValueError("Acceptance team_id does not match local team")
-        inviter_member_id = inviter_team_row[1]
+        inviter_teammate_id = inviter_team_row[1]
     finally:
         user_engine.dispose()
 
@@ -4882,15 +4523,15 @@ def complete_invitation_acceptance(
         issuer_key=inviter_device_key,
         issuer_private_key=inviter_private_key,
         team_id=team_id,
-        issuer_member_id=inviter_member_id,
-        admitted_member_id=invitee_member_id,
+        issuer_teammate_id=inviter_teammate_id,
+        admitted_teammate_id=invitee_teammate_id,
     )
     if not verify_membership_cert(
         membership_cert,
         issuer_public_key=inviter_public_key,
         team_id=team_id,
-        issuer_member_id=inviter_member_id,
-        admitted_member_id=invitee_member_id,
+        issuer_teammate_id=inviter_teammate_id,
+        admitted_teammate_id=invitee_teammate_id,
         subject_public_key=invitee_device_public_key,
     ):
         raise ValueError("Failed to issue a valid membership cert for the invitee")
@@ -4907,14 +4548,14 @@ def complete_invitation_acceptance(
             raise ValueError("Nonce mismatch")
         elif proposal_row[2] != team_id:
             raise ValueError("Acceptance team_id does not match proposal")
-        elif proposal_row[4] != invitee_member_id:
-            raise ValueError("Acceptance member_id does not match proposal")
+        elif proposal_row[4] != invitee_teammate_id:
+            raise ValueError("Acceptance teammate_id does not match proposal")
         else:
             transcript_payload = _proposal_transcript_payload(
                 proposal_id=proposal_id,
                 nonce=nonce,
                 team_id=team_id,
-                invitee_member_id=invitee_member_id,
+                invitee_teammate_id=invitee_teammate_id,
                 invitee_device_public_key=invitee_device_public_key,
                 invitee_bootstrap_key=invitee_bootstrap_key,
             )
@@ -4956,13 +4597,13 @@ def complete_invitation_acceptance(
                 _approval_payload(
                     proposal_id=proposal_id,
                     transcript_digest=transcript_digest,
-                    admin_member_id=inviter_member_id,
+                    admin_teammate_id=inviter_teammate_id,
                 ),
             )
             _insert_admin_approval(
                 conn,
                 proposal_id=proposal_id,
-                admin_member_id=inviter_member_id,
+                admin_teammate_id=inviter_teammate_id,
                 approver_device_key_id=key_id_from_public(inviter_public_key),
                 signature=approval_signature,
                 transcript_digest=transcript_digest,
@@ -4970,11 +4611,11 @@ def complete_invitation_acceptance(
 
             refreshed_row = _load_admission_proposal_row(conn, proposal_id)
             if _proposal_has_quorum(conn, refreshed_row):
-                _upsert_member_row(conn, invitee_member_id, display_name=proposal_row[5])
-                _store_team_certificate(conn, membership_cert, issuer_member_id=inviter_member_id)
+                _upsert_teammate_row(conn, invitee_teammate_id, display_name=proposal_row[5])
+                _store_team_certificate(conn, membership_cert, issuer_teammate_id=inviter_teammate_id)
                 stored_device_key_id = _upsert_team_device_row(
                     conn,
-                    invitee_member_id,
+                    invitee_teammate_id,
                     invitee_device_public_key,
                 )
                 if stored_device_key_id != invitee_device_key_id:
@@ -4985,12 +4626,12 @@ def complete_invitation_acceptance(
                 for berth_row in berth_rows:
                     conn.execute(
                         text(
-                            "INSERT INTO berth_role (id, member_id, berth_id, role) "
-                            "VALUES (:id, :member_id, :berth_id, :role)"
+                            "INSERT INTO berth_role (id, teammate_id, berth_id, role) "
+                            "VALUES (:id, :teammate_id, :berth_id, :role)"
                         ),
                         {
                             "id": uuid7(),
-                            "member_id": invitee_member_id,
+                            "teammate_id": invitee_teammate_id,
                             "berth_id": berth_row[0],
                             "role": core_role,
                         },
@@ -5000,7 +4641,7 @@ def complete_invitation_acceptance(
                     _finalization_payload(
                         proposal_id=proposal_id,
                         transcript_digest=transcript_digest,
-                        invitee_member_id=invitee_member_id,
+                        invitee_teammate_id=invitee_teammate_id,
                     ),
                 )
                 conn.execute(
@@ -5053,7 +4694,7 @@ def sign_admin_approval(root_dir, participant_hex, team_name, proposal_id_hex):
         ).fetchone()
     if row is None:
         raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
-    admin_member_id = row[0]
+    admin_teammate_id = row[0]
     failure_reason = None
     try:
         with engine.begin() as conn:
@@ -5065,20 +4706,20 @@ def sign_admin_approval(root_dir, participant_hex, team_name, proposal_id_hex):
                 raise ValueError("Proposal does not have a recorded transcript yet")
             else:
                 snapshot = _load_governance_snapshot_json(proposal_row)
-                if not _proposal_admin_device_is_valid(snapshot, admin_member_id, approver_device_key_id):
+                if not _proposal_admin_device_is_valid(snapshot, admin_teammate_id, approver_device_key_id):
                     raise ValueError("Approver device was not linked to an admin at the proposal anchor")
                 signature = _sign_bytes(
                     approver_private_key,
                     _approval_payload(
                         proposal_id=proposal_id,
                         transcript_digest=proposal_row[17],
-                        admin_member_id=admin_member_id,
+                        admin_teammate_id=admin_teammate_id,
                     ),
                 )
                 _insert_admin_approval(
                     conn,
                     proposal_id=proposal_id,
-                    admin_member_id=admin_member_id,
+                    admin_teammate_id=admin_teammate_id,
                     approver_device_key_id=approver_device_key_id,
                     signature=signature,
                     transcript_digest=proposal_row[17],
@@ -5111,7 +4752,7 @@ def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
         ).fetchone()
     if row is None:
         raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
-    self_member_id = row[0]
+    self_teammate_id = row[0]
     failure_reason = None
     try:
         with engine.begin() as conn:
@@ -5119,44 +4760,44 @@ def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
             ok, reason = _proposal_is_still_valid(conn, proposal_row)
             if not ok:
                 failure_reason = reason
-            elif proposal_row[3] != self_member_id:
+            elif proposal_row[3] != self_teammate_id:
                 raise ValueError("Only the inviter may finalize this proposal")
             elif proposal_row[17] is None or proposal_row[14] is None:
                 raise ValueError("Proposal transcript is incomplete")
             elif not _proposal_has_quorum(conn, proposal_row):
                 raise ValueError("Proposal has not met quorum")
             else:
-                invitee_member_id = proposal_row[4]
+                invitee_teammate_id = proposal_row[4]
                 invitee_device_public_key = proposal_row[14]
                 membership_cert = issue_membership_cert(
                     subject_key=_participant_key_from_public(invitee_device_public_key),
                     issuer_key=_participant_key_from_public(inviter_public_key),
                     issuer_private_key=inviter_private_key,
                     team_id=proposal_row[2],
-                    issuer_member_id=self_member_id,
-                    admitted_member_id=invitee_member_id,
+                    issuer_teammate_id=self_teammate_id,
+                    admitted_teammate_id=invitee_teammate_id,
                 )
-                _upsert_member_row(conn, invitee_member_id, display_name=proposal_row[5])
-                _store_team_certificate(conn, membership_cert, issuer_member_id=self_member_id)
-                _upsert_team_device_row(conn, invitee_member_id, invitee_device_public_key)
+                _upsert_teammate_row(conn, invitee_teammate_id, display_name=proposal_row[5])
+                _store_team_certificate(conn, membership_cert, issuer_teammate_id=self_teammate_id)
+                _upsert_team_device_row(conn, invitee_teammate_id, invitee_device_public_key)
                 berth_rows = conn.execute(text("SELECT id FROM team_app_berth")).fetchall()
                 role = _role_to_core_berth_role(proposal_row[6])
                 for berth_row in berth_rows:
                     existing = conn.execute(
                         text(
-                            "SELECT 1 FROM berth_role WHERE member_id = :member_id AND berth_id = :berth_id"
+                            "SELECT 1 FROM berth_role WHERE teammate_id = :teammate_id AND berth_id = :berth_id"
                         ),
-                        {"member_id": invitee_member_id, "berth_id": berth_row[0]},
+                        {"teammate_id": invitee_teammate_id, "berth_id": berth_row[0]},
                     ).fetchone()
                     if existing is None:
                         conn.execute(
                             text(
-                                "INSERT INTO berth_role (id, member_id, berth_id, role) "
-                                "VALUES (:id, :member_id, :berth_id, :role)"
+                                "INSERT INTO berth_role (id, teammate_id, berth_id, role) "
+                                "VALUES (:id, :teammate_id, :berth_id, :role)"
                             ),
                             {
                                 "id": uuid7(),
-                                "member_id": invitee_member_id,
+                                "teammate_id": invitee_teammate_id,
                                 "berth_id": berth_row[0],
                                 "role": role,
                             },
@@ -5175,7 +4816,7 @@ def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
                             _finalization_payload(
                                 proposal_id=proposal_id,
                                 transcript_digest=proposal_row[17],
-                                invitee_member_id=invitee_member_id,
+                                invitee_teammate_id=invitee_teammate_id,
                             ),
                         ),
                     },
@@ -5679,7 +5320,7 @@ def list_teams(root_dir, participant_hex):
 
 
 def get_self_in_team(root_dir, participant_hex, team_name):
-    """Return this participant's member ID for one team, or None if absent."""
+    """Return this participant's teammate ID for one team, or None if absent."""
     root_dir = pathlib.Path(root_dir)
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         row = conn.execute(
@@ -5689,37 +5330,37 @@ def get_self_in_team(root_dir, participant_hex, team_name):
     return row[0].hex() if row is not None else None
 
 
-def list_members(root_dir, participant_hex, team_name):
-    """List members of a team with their berth roles. Returns list of dicts."""
+def list_teammates(root_dir, participant_hex, team_name):
+    """List teammates of a team with their berth roles. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
     team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     engine = _sqlite_engine(team_db_path)
 
     with engine.begin() as conn:
-        members = conn.execute(text("SELECT id, display_name FROM member")).fetchall()
+        teammates = conn.execute(text("SELECT id, display_name FROM teammate")).fetchall()
         role_rows = conn.execute(
-            text("SELECT member_id, berth_id, role FROM berth_role")
+            text("SELECT teammate_id, berth_id, role FROM berth_role")
         ).fetchall()
-        transport_by_member = _effective_transports_by_member(
+        transport_by_teammate = _effective_transports_by_teammate(
             conn,
             team_id=team_id,
-            member_ids=[row[0] for row in members],
+            teammate_ids=[row[0] for row in teammates],
         )
 
     engine.dispose()
 
-    roles_by_member = {}
+    roles_by_teammate = {}
     for r in role_rows:
         key = r[0].hex()
-        roles_by_member.setdefault(key, []).append(
+        roles_by_teammate.setdefault(key, []).append(
             {"berth_id": r[1].hex(), "role": r[2]}
         )
 
     result = []
-    for row in members:
-        member_id = row[0]
-        transport = transport_by_member.get(member_id)
+    for row in teammates:
+        teammate_id = row[0]
+        transport = transport_by_teammate.get(teammate_id)
         transport_dict = None
         if transport is not None and transport.transport is not None:
             transport_dict = {
@@ -5729,13 +5370,13 @@ def list_members(root_dir, participant_hex, team_name):
             }
         result.append(
             {
-                "id": member_id.hex(),
+                "id": teammate_id.hex(),
                 "display_name": row[1],
-                "berth_roles": roles_by_member.get(member_id.hex(), []),
+                "berth_roles": roles_by_teammate.get(teammate_id.hex(), []),
                 "transport_status": transport.status if transport is not None else "missing",
                 "effective_transport": transport_dict,
                 "needs_transport_announcement": (
-                    member_id == self_in_team
+                    teammate_id == self_in_team
                     and (transport is None or transport.status == "missing")
                 ),
             }

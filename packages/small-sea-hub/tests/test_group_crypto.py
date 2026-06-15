@@ -13,7 +13,7 @@ from small_sea_note_to_self.sender_keys import (
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
 
-def test_runtime_keeps_two_sender_devices_from_one_member_distinct(playground_dir):
+def test_runtime_keeps_two_sender_devices_from_one_teammate_distinct(playground_dir):
     root = Path(playground_dir)
     bob_hex = create_new_participant(root, "Bob")
     team_result = create_team(root, bob_hex, "ProjectX")

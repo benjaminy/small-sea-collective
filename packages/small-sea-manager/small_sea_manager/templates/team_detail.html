@@ -6,9 +6,9 @@
 <h1>{{ team.name }}</h1>
 
 <div class="section">
-    <h2>Members</h2>
-    <div id="member-list"
-         hx-get="/fragments/teams/{{ team.name }}/members"
+    <h2>Teammates</h2>
+    <div id="teammate-list"
+         hx-get="/fragments/teams/{{ team.name }}/teammates"
          hx-trigger="load">
         Loading...
     </div>

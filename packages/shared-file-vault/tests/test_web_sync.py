@@ -64,7 +64,7 @@ def _session_berth_info(http, session_hex):
     ).json()
 
 
-def _setup_two_member_team(playground_dir, minio_server_gen):
+def _setup_two_teammate_team(playground_dir, minio_server_gen):
     alice_minio = minio_server_gen(port=_free_port())
     bob_minio = minio_server_gen(port=_free_port())
     root = pathlib.Path(playground_dir)
@@ -97,7 +97,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
 
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
     Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", sync.HUB_APP_NAME)
-    alice_member_id_hex = team_result["member_id_hex"]
+    alice_teammate_id_hex = team_result["teammate_id_hex"]
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
     alice_vault_berth = _session_berth_info(http, alice_team_token)["berth_id"]
@@ -133,7 +133,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
     acceptance_b64 = bob_manager.accept_invitation(token_b64)
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
-    bob_member_id_hex = acceptance["acceptor_member_id"]
+    bob_teammate_id_hex = acceptance["acceptor_teammate_id"]
     bob_team_token = _open_session(http, "Bob", "ProjectX")
     bob_vault_berth = _session_berth_info(http, bob_team_token)["berth_id"]
     # Match Alice's stable fixture shape for Bob's own app berth.
@@ -157,8 +157,8 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         "http": http,
         "alice_hex": alice_hex,
         "bob_hex": bob_hex,
-        "alice_member_id_hex": alice_member_id_hex,
-        "bob_member_id_hex": bob_member_id_hex,
+        "alice_teammate_id_hex": alice_teammate_id_hex,
+        "bob_teammate_id_hex": bob_teammate_id_hex,
     }
 
 
@@ -268,7 +268,7 @@ def test_web_session_request_pin_flow(playground_dir, monkeypatch):
 
 
 def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeypatch):
-    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
     root = env["root"]
     http = env["http"]
 
@@ -293,7 +293,7 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     detail_resp = alice_client.get("/teams/ProjectX/niches/docs")
     assert detail_resp.status_code == 200
     assert "Check For Updates" in detail_resp.text
-    assert 'placeholder="Peer member ID hex"' not in detail_resp.text
+    assert 'placeholder="Peer teammate ID hex"' not in detail_resp.text
 
     push_resp = alice_client.post("/teams/ProjectX/niches/docs/push")
     assert push_resp.status_code == 200
@@ -308,7 +308,7 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
         env["bob_hex"],
         "ProjectX",
         "docs",
-        env["alice_member_id_hex"],
+        env["alice_teammate_id_hex"],
         _http_client=http,
     )
     vault.add_checkout(bob_vault_root, env["bob_hex"], bob_context, "docs", str(bob_checkout))
@@ -317,7 +317,7 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
         env["bob_hex"],
         "ProjectX",
         "docs",
-        env["alice_member_id_hex"],
+        env["alice_teammate_id_hex"],
         _http_client=http,
     )
 
@@ -333,24 +333,24 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     detail_resp = bob_client.get("/teams/ProjectX/niches/docs")
     assert detail_resp.status_code == 200
     assert "Check For Updates" in detail_resp.text
-    assert 'placeholder="Peer member ID hex"' not in detail_resp.text
+    assert 'placeholder="Peer teammate ID hex"' not in detail_resp.text
     assert "Merge Changes" not in detail_resp.text
 
     fetch_resp = bob_client.post(
         "/teams/ProjectX/niches/docs/fetch",
-        data={"from_member_id": env["alice_member_id_hex"]},
+        data={"from_teammate_id": env["alice_teammate_id_hex"]},
     )
     assert fetch_resp.status_code == 200
-    assert f"Fetched changes from {env['alice_member_id_hex']}. They are ready to merge." in fetch_resp.text
+    assert f"Fetched changes from {env['alice_teammate_id_hex']}. They are ready to merge." in fetch_resp.text
     assert "Merge Changes" in fetch_resp.text
     assert (bob_checkout / "notes.txt").read_text() == "hello from web\n"
 
     merge_resp = bob_client.post(
         "/teams/ProjectX/niches/docs/merge",
-        data={"from_member_id": env["alice_member_id_hex"]},
+        data={"from_teammate_id": env["alice_teammate_id_hex"]},
     )
     assert merge_resp.status_code == 200
-    assert f"Merged parked changes from {env['alice_member_id_hex']}." in merge_resp.text
+    assert f"Merged parked changes from {env['alice_teammate_id_hex']}." in merge_resp.text
     assert (bob_checkout / "notes.txt").read_text() == "hello again\n"
 
 
@@ -375,7 +375,7 @@ def test_peer_panel_fragment_no_session(playground_dir, monkeypatch):
 
 
 def test_peer_panel_fragment_active_session(playground_dir, minio_server_gen, monkeypatch):
-    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
     root = env["root"]
     http = env["http"]
 
@@ -402,7 +402,7 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     from small_sea_client.client import SmallSeaClient, SmallSeaSession
     from small_sea_hub.server import app as hub_app
 
-    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
     root = env["root"]
     http = env["http"]
 
@@ -434,7 +434,7 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     bob_berth_id_hex = bob_session.session_info()["berth_id"]
     if not hasattr(hub_app.state, "peer_counts"):
         hub_app.state.peer_counts = {}
-    hub_app.state.peer_counts[(bob_berth_id_hex, env["alice_member_id_hex"])] = 3
+    hub_app.state.peer_counts[(bob_berth_id_hex, env["alice_teammate_id_hex"])] = 3
 
     bob_context = vault.materialization_context_from_session_info(bob_login.session_info)
     vault.create_niche(bob_vault_root, env["bob_hex"], bob_context, "docs")
@@ -451,7 +451,7 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     vault.add_checkout(bob_vault_root, env["bob_hex"], bob_context, "docs", str(bob_checkout))
     fetch_resp = bob_client.post(
         "/teams/ProjectX/niches/docs/fetch",
-        data={"from_member_id": env["alice_member_id_hex"]},
+        data={"from_teammate_id": env["alice_teammate_id_hex"]},
     )
     assert fetch_resp.status_code == 200
 

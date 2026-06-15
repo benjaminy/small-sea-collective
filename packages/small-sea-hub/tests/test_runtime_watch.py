@@ -32,9 +32,9 @@ def _request_and_confirm(client, team="ProjectX", mode="encrypted"):
     return resp.json()
 
 
-def _add_same_member_linked_device_bundle(root: Path, participant_hex: str, team_name: str):
+def _add_same_teammate_linked_device_bundle(root: Path, participant_hex: str, team_name: str):
     linked_device_key, _linked_device_private_key = generate_key_pair(ProtectionLevel.DAILY)
-    provisioning.issue_device_link_for_member(
+    provisioning.issue_device_link_for_teammate(
         root,
         participant_hex,
         team_name,
@@ -114,7 +114,7 @@ def _create_shared_team_with_bob(root: Path):
 
 
 def _insert_teammate_linked_device_event(root: Path, observer_hex: str, teammate_hex: str):
-    team_id, teammate_member_id = provisioning._team_row(root, teammate_hex, "ProjectX")
+    team_id, teammate_teammate_id = provisioning._team_row(root, teammate_hex, "ProjectX")
     teammate_private_key, teammate_public_key = provisioning.get_current_team_device_key(
         root,
         teammate_hex,
@@ -126,14 +126,14 @@ def _insert_teammate_linked_device_event(root: Path, observer_hex: str, teammate
         issuer_key=provisioning._participant_key_from_public(teammate_public_key),
         issuer_private_key=teammate_private_key,
         team_id=team_id,
-        member_id=teammate_member_id,
+        teammate_id=teammate_teammate_id,
     )
     observer_db_path = root / "Participants" / observer_hex / "ProjectX" / "Sync" / "core.db"
     engine = provisioning._sqlite_engine(observer_db_path)
     try:
         with engine.begin() as conn:
-            provisioning._store_team_certificate(conn, cert, issuer_member_id=teammate_member_id)
-            provisioning._upsert_team_device_row(conn, teammate_member_id, linked_public_key)
+            provisioning._store_team_certificate(conn, cert, issuer_teammate_id=teammate_teammate_id)
+            provisioning._upsert_team_device_row(conn, teammate_teammate_id, linked_public_key)
     finally:
         engine.dispose()
     return cert
@@ -144,7 +144,7 @@ def test_watcher_reconciliation_uploads_runtime_artifact_once(playground_dir, mo
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
     alice_hex = provisioning.create_new_participant(playground_dir, "alice")
     provisioning.create_team(playground_dir, alice_hex, "ProjectX")
-    linked_device_key_id = _add_same_member_linked_device_bundle(root, alice_hex, "ProjectX")
+    linked_device_key_id = _add_same_teammate_linked_device_bundle(root, alice_hex, "ProjectX")
     app.state.backend = backend
     app.state.watched_sessions = {}
     app.state.watched_peers = {}
@@ -175,7 +175,7 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
     root = Path(playground_dir)
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
     alice_hex, bob_hex = _create_shared_team_with_bob(root)
-    alice_self_member_id = provisioning.get_self_in_team(root, alice_hex, "ProjectX")
+    alice_self_teammate_id = provisioning.get_self_in_team(root, alice_hex, "ProjectX")
 
     app.state.backend = backend
     app.state.watched_sessions = {}
@@ -192,7 +192,7 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
         root,
         alice_hex,
         "ProjectX",
-        self_member_id_hex=alice_self_member_id,
+        self_teammate_id_hex=alice_self_teammate_id,
     )
     linked_cert = _insert_teammate_linked_device_event(root, alice_hex, bob_hex)
 
@@ -253,9 +253,9 @@ def test_watcher_does_not_notify_for_self_linked_device_events(playground_dir, m
         root,
         alice_hex,
         "ProjectX",
-        self_member_id_hex=provisioning.get_self_in_team(root, alice_hex, "ProjectX"),
+        self_teammate_id_hex=provisioning.get_self_in_team(root, alice_hex, "ProjectX"),
     )
-    provisioning.issue_device_link_for_member(
+    provisioning.issue_device_link_for_teammate(
         root,
         alice_hex,
         "ProjectX",

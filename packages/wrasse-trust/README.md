@@ -17,7 +17,7 @@ That work lives elsewhere, especially in `cuttlefish`.
 
 The code currently implements an earlier **layered** model:
 
-- each member has a per-team identity key
+- each teammate has a per-team identity key
 - each device has a separate per-team device key
 - `device_binding` certs link device keys to the per-team identity key
 - wrapped private identity-key material is stored via `NoteToSelf`
@@ -36,7 +36,7 @@ The design direction has shifted to a **device-only, per-team** model:
   validly speak for it"
 - `membership` certs admit per-team participant UUIDs and name their
   founding device keys
-- `device_link` certs expand an existing member's device set within one team
+- `device_link` certs expand an existing teammate's device set within one team
 - NoteToSelf is socially useful for bookkeeping, but it is not
   cryptographically privileged
 - "admin" remains a social sync concept, not a special key role

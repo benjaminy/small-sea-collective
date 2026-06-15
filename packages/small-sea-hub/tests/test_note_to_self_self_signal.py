@@ -151,7 +151,7 @@ def test_existing_peer_watch_behavior_unaffected(playground_dir):
 
 
 def test_team_db_revision_pulses_watchers_for_device_link_only_changes(playground_dir, monkeypatch):
-    """A device_link-only team DB change wakes berth waiters even without member-list changes."""
+    """A device_link-only team DB change wakes berth waiters even without teammate-list changes."""
     root = pathlib.Path(playground_dir)
     cloud_dir = root / "cloud"
     cloud_dir.mkdir()
@@ -175,7 +175,7 @@ def test_team_db_revision_pulses_watchers_for_device_link_only_changes(playgroun
     pulses.clear()
 
     linked_public_key = generate_key_pair(ProtectionLevel.DAILY)[0].public_key
-    Provisioning.issue_device_link_for_member(root, alice_hex, "ProjectX", linked_public_key)
+    Provisioning.issue_device_link_for_teammate(root, alice_hex, "ProjectX", linked_public_key)
 
     Server._watcher_pass(app)
 

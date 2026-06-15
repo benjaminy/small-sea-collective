@@ -23,8 +23,8 @@ The Hub-as-chokepoint architecture exists to enable transparent E2E encryption, 
 
 - **Key storage format** — how private keys are persisted on disk (OS keychain, encrypted file, secure enclave where available) is TBD.
 - **Key backup/recovery** — base keys that encrypt data can themselves be re-encrypted under multiple other keys (local use, sharing, backup). Mechanism TBD; see also Section 5.
-- **`member` key/cert material schema** — placeholder exists in `core.db`; contents now unblocked by Cuttlefish key model.
-- **Cod Sync encryption wiring** — cipher and key-exchange bootstrapping for new members joining an existing chain are TBD (see Section 4).
+- **`teammate` key/cert material schema** — placeholder exists in `core.db`; contents now unblocked by Cuttlefish key model.
+- **Cod Sync encryption wiring** — cipher and key-exchange bootstrapping for new teammates joining an existing chain are TBD (see Section 4).
 
 ---
 
@@ -41,9 +41,9 @@ Explicitly TBD in the Hub spec. Hub needs to read team membership/permissions to
 - **Sessions in Hub-only DB** — sessions live in `small_sea_collective_local.db` (separate from `core.db`). Other apps access sessions through the Hub API only.
 - **Single-user-per-Hub** — one Hub per device/user; no multi-participant file-watcher complexity needed.
 - **Hub and Small Sea Manager stay version-locked** — they are the core infrastructure and update together; no cross-version compatibility needed.
-- **Permissions are per-berth, two-table schema** — `member(id)` (per-team identity) + `berth_role(id, member_id, berth_id, role)` where role ∈ `{read-only, read-write}`. "Admin" simply means read-write on the TeamManager berth. The `member` table will eventually carry key/cert material.
+- **Permissions are per-berth, two-table schema** — `teammate(id)` (per-team identity) + `berth_role(id, teammate_id, berth_id, role)` where role ∈ `{read-only, read-write}`. "Admin" simply means read-write on the TeamManager berth. The `teammate` table will eventually carry key/cert material.
 - **Local permissions are authoritative** — Hub only incorporates changes from teammates who have read-write permission in its own local copy. Permission-change race conditions (e.g. Alice upgrades Bob mid-sync) are implementation details, not architecture.
-- **Teammate cloud locations belong to member** — stored linked to the `member` record (set via invitation flow). Multiple locations per member deferred.
+- **Teammate cloud locations belong to teammate** — stored linked to the `teammate` record (set via invitation flow). Multiple locations per teammate deferred.
 - **Data is globally readable; privacy via encryption** — Hub reads teammates' Cod Sync chains without special credentials (just the URL). Security comes from E2E encryption, not access control.
 - **Hub is always-on background monitor** — runs a background loop watching teammates' cloud locations and incorporating updates when permissions allow. Hub does all cloud I/O (consistent with Section 4).
 
@@ -52,7 +52,7 @@ Explicitly TBD in the Hub spec. Hub needs to read team membership/permissions to
 - **Hub monitoring API** — apps may need a way to register/deregister cloud locations for the Hub to watch, rather than hard-coding assumptions into the Hub. Shape TBD.
 - **Hub's `/cloud_locations` endpoint** — needs to be removed; currently writes to `core.db` directly which is Small Sea Manager's domain.
 - **Hub `open_session` for non-NoteToSelf teams** — currently reads `App`/`TeamAppBerth` from NoteToSelf/core.db; needs updating to read from the team DB for non-NoteToSelf sessions.
-- **`member` key/cert material** — schema placeholder exists; contents TBD (tied to Section 1 encryption decisions).
+- **`teammate` key/cert material** — schema placeholder exists; contents TBD (tied to Section 1 encryption decisions).
 - **NoteToSelf/[App] berths** — per-app personal state that's more app-specific than team-specific; useful but not yet designed.
 
 
@@ -103,7 +103,7 @@ These questions were worked through in detail and are now captured in the [Cod S
 ### Remaining Open Items
 
 - **S3Remote elimination**: Requires reworking the invitation flow. Inviter's cloud data is assumed globally readable (security comes from E2E encryption, not access control). Invitation tokens may include time-limited read paths.
-- **Encryption details**: Cipher selection, key exchange protocol, and the bootstrapping flow for new members joining a chain are all TBD.
+- **Encryption details**: Cipher selection, key exchange protocol, and the bootstrapping flow for new teammates joining a chain are all TBD.
 
 **Why it's urgent:** Every Cod Sync consumer (Small Sea Manager, shared-file-vault, future apps) inherits this format.
 
@@ -150,16 +150,16 @@ and `packages/small-sea-manager/spec.md` for the full descriptions.
 
 - **Teammate admission is an inviter-orchestrated, transcript-bound,
   admin-quorum flow.** Key properties that are non-negotiable:
-  - The inviter allocates the invitee's `member_id` at proposal creation; the
+  - The inviter allocates the invitee's `teammate_id` at proposal creation; the
     invitee does not choose it.
   - A governance-snapshot anchor (team-history commit hash) freezes the admin
-    roster, membership roster, and member→device mapping. Every signer verifies
+    roster, membership roster, and teammate→device mapping. Every signer verifies
     independently against the anchor.
-  - Admin approvals are member-scoped votes exercised by anchor-trusted device
-    signatures. The member/device bridge is a step-by-step derivation: device
-    key → `device_link` cert at anchor → `member_id` → admin roster check.
+  - Admin approvals are teammate-scoped votes exercised by anchor-trusted device
+    signatures. The teammate/device bridge is a step-by-step derivation: device
+    key → `device_link` cert at anchor → `teammate_id` → admin roster check.
   - The admission transcript binds the invitee's concrete device keys and the
-    pre-allocated `member_id`. Transport metadata (cloud endpoints) is
+    pre-allocated `teammate_id`. Transport metadata (cloud endpoints) is
     explicitly excluded.
   - The proposal shell is published to team DB at initiation, before the
     invitee is contacted, so other admins can approve or withhold early.
@@ -170,7 +170,7 @@ and `packages/small-sea-manager/spec.md` for the full descriptions.
 
 - **Proposals are non-durable.** A proposal is invalidated by any
   governance-state change relative to the anchor (admin roster, membership
-  roster, or member→device mapping) or by expiry. An invalidated proposal
+  roster, or teammate→device mapping) or by expiry. An invalidated proposal
   cannot be finalized.
 
 - **Rotation means exclusion or hygiene, never admission.** Exclusion handles
@@ -178,9 +178,9 @@ and `packages/small-sea-manager/spec.md` for the full descriptions.
   primitive. Hygiene is routine and semantically neutral.
 
 - **Post-admission transport setup is a separate flow (B7).** A newly admitted
-  member configures their incoming cloud endpoint after finalization via a
+  teammate configures their incoming cloud endpoint after finalization via a
   signed announce-endpoint mutation. This capability is independent of
-  admission and is also how existing members change cloud providers.
+  admission and is also how existing teammates change cloud providers.
 
 
 

@@ -6,13 +6,13 @@ from dataclasses import dataclass
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from .identity import KeyCertificate, parse_cert_type, trusted_device_keys_for_member
+from .identity import KeyCertificate, parse_cert_type, trusted_device_keys_for_teammate
 
 
 @dataclass(frozen=True)
-class MemberTransportAnnouncement:
+class TeammateTransportAnnouncement:
     announcement_id: bytes
-    member_id: bytes
+    teammate_id: bytes
     protocol: str
     url: str
     bucket: str
@@ -22,9 +22,9 @@ class MemberTransportAnnouncement:
 
 
 @dataclass(frozen=True)
-class MemberBerthStorageAnnouncement:
+class TeammateBerthStorageAnnouncement:
     announcement_id: bytes
-    member_id: bytes
+    teammate_id: bytes
     berth_id: bytes
     protocol: str
     url: str
@@ -57,7 +57,7 @@ def key_certificate_from_team_db_record(
     subject_key_id: bytes,
     subject_public_key: bytes,
     issuer_key_id: bytes,
-    issuer_member_id: bytes,
+    issuer_teammate_id: bytes,
     issued_at: str,
     claims_json: str,
     signature: bytes,
@@ -74,15 +74,15 @@ def key_certificate_from_team_db_record(
         subject_key_id=subject_key_id,
         subject_public_key=subject_public_key,
         issuer_key_id=issuer_key_id,
-        issuer_participant_id=issuer_member_id,
+        issuer_participant_id=issuer_teammate_id,
         issued_at_iso=issued_at,
         claims=json.loads(claims_json),
         signature=signature,
     )
 
 
-def canonical_member_transport_announcement_bytes(
-    announcement: MemberTransportAnnouncement,
+def canonical_teammate_transport_announcement_bytes(
+    announcement: TeammateTransportAnnouncement,
 ) -> bytes:
     # `signature` is intentionally excluded: callers sign these canonical bytes
     # and store the resulting signature alongside the row.
@@ -90,7 +90,7 @@ def canonical_member_transport_announcement_bytes(
         "announcement_id": announcement.announcement_id.hex(),
         "announced_at": announcement.announced_at,
         "bucket": announcement.bucket,
-        "member_id": announcement.member_id.hex(),
+        "teammate_id": announcement.teammate_id.hex(),
         "protocol": announcement.protocol,
         "signer_key_id": announcement.signer_key_id.hex(),
         "url": announcement.url,
@@ -98,8 +98,8 @@ def canonical_member_transport_announcement_bytes(
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def canonical_member_berth_storage_announcement_bytes(
-    announcement: MemberBerthStorageAnnouncement,
+def canonical_teammate_berth_storage_announcement_bytes(
+    announcement: TeammateBerthStorageAnnouncement,
 ) -> bytes:
     # `signature` is intentionally excluded: callers sign these canonical bytes
     # and store the resulting signature alongside the row.
@@ -108,7 +108,7 @@ def canonical_member_berth_storage_announcement_bytes(
         "announced_at": announcement.announced_at,
         "berth_id": announcement.berth_id.hex(),
         "location": announcement.location,
-        "member_id": announcement.member_id.hex(),
+        "teammate_id": announcement.teammate_id.hex(),
         "protocol": announcement.protocol,
         "signer_key_id": announcement.signer_key_id.hex(),
         "url": announcement.url,
@@ -116,38 +116,38 @@ def canonical_member_berth_storage_announcement_bytes(
     return json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def verify_member_transport_announcement_signature(
-    announcement: MemberTransportAnnouncement,
+def verify_teammate_transport_announcement_signature(
+    announcement: TeammateTransportAnnouncement,
     signer_public_key: bytes,
 ) -> bool:
     try:
         Ed25519PublicKey.from_public_bytes(signer_public_key).verify(
             announcement.signature,
-            canonical_member_transport_announcement_bytes(announcement),
+            canonical_teammate_transport_announcement_bytes(announcement),
         )
         return True
     except InvalidSignature:
         return False
 
 
-def verify_member_berth_storage_announcement_signature(
-    announcement: MemberBerthStorageAnnouncement,
+def verify_teammate_berth_storage_announcement_signature(
+    announcement: TeammateBerthStorageAnnouncement,
     signer_public_key: bytes,
 ) -> bool:
     try:
         Ed25519PublicKey.from_public_bytes(signer_public_key).verify(
             announcement.signature,
-            canonical_member_berth_storage_announcement_bytes(announcement),
+            canonical_teammate_berth_storage_announcement_bytes(announcement),
         )
         return True
     except InvalidSignature:
         return False
 
 
-def select_effective_member_transport(
+def select_effective_teammate_transport(
     *,
-    member_id: bytes,
-    announcements: list[MemberTransportAnnouncement],
+    teammate_id: bytes,
+    announcements: list[TeammateTransportAnnouncement],
     certs: list[KeyCertificate] | None = None,
     team_id: bytes,
     device_public_keys_by_key_id: dict[bytes, bytes],
@@ -156,9 +156,9 @@ def select_effective_member_transport(
     if trusted_public_keys is None:
         if certs is None:
             raise ValueError("certs are required when trusted_public_keys is not provided")
-        trusted_public_keys = trusted_device_keys_for_member(certs, team_id, member_id)
+        trusted_public_keys = trusted_device_keys_for_teammate(certs, team_id, teammate_id)
     relevant = [
-        announcement for announcement in announcements if announcement.member_id == member_id
+        announcement for announcement in announcements if announcement.teammate_id == teammate_id
     ]
     relevant.sort(key=lambda announcement: announcement.announcement_id, reverse=True)
 
@@ -168,7 +168,7 @@ def select_effective_member_transport(
             continue
         if signer_public_key not in trusted_public_keys:
             continue
-        if not verify_member_transport_announcement_signature(
+        if not verify_teammate_transport_announcement_signature(
             announcement,
             signer_public_key,
         ):
@@ -187,11 +187,11 @@ def select_effective_member_transport(
     return EffectiveTransportSelection(status="missing", transport=None)
 
 
-def select_effective_member_berth_storage(
+def select_effective_teammate_berth_storage(
     *,
-    member_id: bytes,
+    teammate_id: bytes,
     berth_id: bytes,
-    announcements: list[MemberBerthStorageAnnouncement],
+    announcements: list[TeammateBerthStorageAnnouncement],
     certs: list[KeyCertificate] | None = None,
     team_id: bytes,
     device_public_keys_by_key_id: dict[bytes, bytes],
@@ -200,11 +200,11 @@ def select_effective_member_berth_storage(
     if trusted_public_keys is None:
         if certs is None:
             raise ValueError("certs are required when trusted_public_keys is not provided")
-        trusted_public_keys = trusted_device_keys_for_member(certs, team_id, member_id)
+        trusted_public_keys = trusted_device_keys_for_teammate(certs, team_id, teammate_id)
     relevant = [
         announcement
         for announcement in announcements
-        if announcement.member_id == member_id and announcement.berth_id == berth_id
+        if announcement.teammate_id == teammate_id and announcement.berth_id == berth_id
     ]
     relevant.sort(key=lambda announcement: announcement.announcement_id, reverse=True)
 
@@ -214,7 +214,7 @@ def select_effective_member_berth_storage(
             continue
         if signer_public_key not in trusted_public_keys:
             continue
-        if not verify_member_berth_storage_announcement_signature(
+        if not verify_teammate_berth_storage_announcement_signature(
             announcement,
             signer_public_key,
         ):

@@ -61,17 +61,17 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             return "5s"
         return "0.2s" if hub_available else "5s"
 
-    def _mark_member_fields(team: dict[str, Any]) -> list[dict[str, Any]]:
+    def _mark_teammate_fields(team: dict[str, Any]) -> list[dict[str, Any]]:
         self_in_team = team.get("self_in_team")
-        members: list[dict[str, Any]] = []
-        for raw_member in team["members"]:
-            member = dict(raw_member)
-            member["is_self"] = member["id"] == self_in_team
-            roles = member.get("berth_roles", [])
-            member["core_role"] = roles[0]["role"] if roles else None
-            member["can_remove"] = team.get("viewer_is_admin", False) and not member["is_self"]
-            members.append(member)
-        return members
+        teammates: list[dict[str, Any]] = []
+        for raw_teammate in team["teammates"]:
+            teammate = dict(raw_teammate)
+            teammate["is_self"] = teammate["id"] == self_in_team
+            roles = teammate.get("berth_roles", [])
+            teammate["core_role"] = roles[0]["role"] if roles else None
+            teammate["can_remove"] = team.get("viewer_is_admin", False) and not teammate["is_self"]
+            teammates.append(teammate)
+        return teammates
 
     def _team_detail_context(mgr: TeamManager, team_name: str, *, notice: str = None, error: str = None):
         team = mgr.get_team(team_name)
@@ -79,7 +79,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             return {
                 "team_name": team_name,
                 "joined_locally": False,
-                "members": [],
+                "teammates": [],
                 "invitations": [],
                 "admission_events": [],
                 "viewer_is_admin": False,
@@ -92,7 +92,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         return {
             "team_name": team_name,
             "joined_locally": True,
-            "members": _mark_member_fields(team),
+            "teammates": _mark_teammate_fields(team),
             "invitations": team["invitations"],
             "admission_events": team["admission_events"],
             "viewer_is_admin": team["viewer_is_admin"],
@@ -600,7 +600,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     ):
         mgr = _mgr(request)
         try:
-            mgr.announce_member_transport(
+            mgr.announce_teammate_transport(
                 team_name,
                 protocol=protocol.strip(),
                 url=url.strip(),
@@ -613,12 +613,12 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             error = str(e)
         return _render_team_detail(request, team_name, notice=notice, error=error)
 
-    @app.post("/teams/{team_name}/members/{member_id}/remove", response_class=HTMLResponse)
-    async def remove_member(request: Request, team_name: str, member_id: str):
+    @app.post("/teams/{team_name}/teammates/{teammate_id}/remove", response_class=HTMLResponse)
+    async def remove_teammate(request: Request, team_name: str, teammate_id: str):
         mgr = _mgr(request)
         try:
-            mgr.remove_member(team_name, member_id)
-            notice = "Member excluded and team sender key rotated."
+            mgr.remove_teammate(team_name, teammate_id)
+            notice = "Teammate excluded and team sender key rotated."
             error = None
         except Exception as e:
             notice = None

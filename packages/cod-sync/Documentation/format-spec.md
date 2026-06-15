@@ -129,4 +129,4 @@ Design decisions so far:
 - Link blobs and git bundles are encrypted as **separate files**, allowing chain traversal (decrypting the small link blob) without downloading the full bundle.
 - Both files use the same encryption key for a given chain.
 - Cipher selection and key exchange protocol are TBD.
-- During the invitation/clone flow, the new member receives key material as part of the invitation process (separate protocol, not yet specified).
+- During the invitation/clone flow, the new teammate receives key material as part of the invitation process (separate protocol, not yet specified).

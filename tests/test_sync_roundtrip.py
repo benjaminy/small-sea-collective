@@ -90,7 +90,7 @@ def sync_env(playground_dir, minio, hub):
     # Alice creates the team; the team DB gets a fresh berth_id.
     alice_team = Provisioning.create_team(root_dir, alice_hex, "SyncTest")
     berth_id_hex = alice_team["berth_id_hex"]
-    alice_member_id_hex = alice_team["member_id_hex"]
+    alice_teammate_id_hex = alice_team["teammate_id_hex"]
     berth_id = bytes.fromhex(berth_id_hex)
 
     # Replicate Alice's team DB for Bob (simulate the invitation/clone flow).
@@ -103,7 +103,7 @@ def sync_env(playground_dir, minio, hub):
     shutil.copytree(str(alice_team_sync), str(bob_team_sync))
 
     # Add team row to Bob's NoteToSelf so Hub can resolve his berth.
-    bob_member_id = os.urandom(16)
+    bob_teammate_id = os.urandom(16)
     bob_nts_db = (
         pathlib.Path(root_dir)
         / "Participants" / bob_hex / "NoteToSelf" / "Sync" / "core.db"
@@ -113,21 +113,21 @@ def sync_env(playground_dir, minio, hub):
     with engine_nts.begin() as conn:
         conn.execute(
             text("INSERT INTO team (id, name, self_in_team) VALUES (:id, :name, :sim)"),
-            {"id": team_id, "name": "SyncTest", "sim": bob_member_id},
+            {"id": team_id, "name": "SyncTest", "sim": bob_teammate_id},
         )
 
-    # Add Bob as a member in his own team DB copy. Alice's cloned team_device
+    # Add Bob as a teammate in his own team DB copy. Alice's cloned team_device
     # row already provides the endpoint Bob will pull from.
     bob_team_db = bob_team_sync / "core.db"
     engine_team = create_engine(f"sqlite:///{bob_team_db}")
     with engine_team.begin() as conn:
         conn.execute(
-            text("INSERT INTO member (id, display_name) VALUES (:id, :display_name)"),
-            {"id": bob_member_id, "display_name": "Bob"},
+            text("INSERT INTO teammate (id, display_name) VALUES (:id, :display_name)"),
+            {"id": bob_teammate_id, "display_name": "Bob"},
         )
         conn.execute(
-            text("INSERT INTO berth_role (id, member_id, berth_id, role) VALUES (:id, :mid, :bid, :role)"),
-            {"id": os.urandom(16), "mid": bob_member_id, "bid": berth_id, "role": "read-write"},
+            text("INSERT INTO berth_role (id, teammate_id, berth_id, role) VALUES (:id, :mid, :bid, :role)"),
+            {"id": os.urandom(16), "mid": bob_teammate_id, "bid": berth_id, "role": "read-write"},
         )
 
     # Open sessions via auto-approve.
@@ -153,7 +153,7 @@ def sync_env(playground_dir, minio, hub):
         "bob_hex": bob_hex,
         "alice_token": alice_token,
         "bob_token": bob_token,
-        "alice_member_id_hex": alice_member_id_hex,
+        "alice_teammate_id_hex": alice_teammate_id_hex,
         "berth_id_hex": berth_id_hex,
     }
 
@@ -163,7 +163,7 @@ def test_push_and_pull_via_hub(sync_env):
     hub_endpoint = sync_env["hub_endpoint"]
     alice_token = sync_env["alice_token"]
     bob_token = sync_env["bob_token"]
-    alice_member_id_hex = sync_env["alice_member_id_hex"]
+    alice_teammate_id_hex = sync_env["alice_teammate_id_hex"]
 
     scratch = pathlib.Path(tempfile.mkdtemp())
     try:
@@ -195,7 +195,7 @@ def test_push_and_pull_via_hub(sync_env):
 
         # ---- Bob: fetch via peer proxy ----
         bob_remote = CS.PeerSmallSeaRemote(
-            bob_token, alice_member_id_hex, base_url=hub_endpoint
+            bob_token, alice_teammate_id_hex, base_url=hub_endpoint
         )
         bob_cod = CS.CodSync("peer", repo_dir=bob_repo)
         bob_cod.remote = bob_remote

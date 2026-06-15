@@ -1,7 +1,7 @@
 # Tide Table
 
 **Status:** concept-stage app.
-This package currently contains only enough metadata to be a valid workspace member; it does not implement the app yet.
+This package currently contains only enough metadata to be a valid workspace teammate; it does not implement the app yet.
 
 Tide Table is a Small Sea team calendar and scheduling app.
 The name leans on the useful double meaning: a tide table is already a schedule, and Small Sea teams need a shared rhythm that belongs to them.

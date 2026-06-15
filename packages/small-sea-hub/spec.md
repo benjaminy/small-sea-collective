@@ -82,7 +82,7 @@ Everything important is persisted to durable storage:
 | Data | Where stored |
 |---|---|
 | Session tokens and all session metadata | Hub SQLite DB (`small_sea_collective_local.db`) |
-| Peer cloud locations | Team DB (`member_berth_storage_announcement`), synced via Cod Sync |
+| Peer cloud locations | Team DB (`teammate_berth_storage_announcement`), synced via Cod Sync |
 | Signal file contents (push counts) | Cloud storage (`signals.yaml`) |
 | Cloud locator metadata | NoteToSelf shared DB (`cloud_storage` table) |
 | Berth cloud allocations | NoteToSelf shared DB (`berth_cloud_allocation` table) |
@@ -92,7 +92,7 @@ The Hub's in-process state (`watched_sessions`, `watched_peers`, `peer_counts`) 
 derived entirely from these durable sources and is **rebuilt at startup**:
 
 1. `watched_sessions` is repopulated by reading all confirmed session rows from the Hub DB.
-2. `watched_peers` is repopulated by reading each session's team DB member list (excluding self).
+2. `watched_peers` is repopulated by reading each session's team DB teammate list (excluding self).
 3. `peer_counts` is repopulated by the peer watcher's first pass (which runs immediately on startup rather than after the full poll interval).
 
 This means that after a Hub restart, an app that reconnects with its existing session token
@@ -155,7 +155,7 @@ The shared databases are the contract between them.
 | Table | Used for |
 |---|---|
 | `app`, `team_app_berth` | Team-level app activation and berth lookup |
-| `member_berth_storage_announcement` | Peer-readable storage location for `(member_id, berth_id)` |
+| `teammate_berth_storage_announcement` | Peer-readable storage location for `(teammate_id, berth_id)` |
 
 ## Cloud Storage
 
@@ -173,8 +173,8 @@ The target model separates four concepts:
   `local.cloud_storage_credential`.
 - **Berth cloud allocation:** the local participant's chosen provider-facing
   location for one berth, stored as explicit Manager-owned allocation state.
-- **Member berth storage announcement:** a signed team-visible announcement
-  for `(member_id, berth_id)` telling peers where that member stores readable
+- **Teammate berth storage announcement:** a signed team-visible announcement
+  for `(teammate_id, berth_id)` telling peers where that teammate stores readable
   data for that berth.
 
 The Hub must not synthesize provider-facing locations from `berth_id` as a
@@ -271,16 +271,16 @@ Materialization outcomes:
 
 ### Peer Storage Routing
 
-Peer reads are scoped by `(member_id, berth_id)`, not just by member and not
+Peer reads are scoped by `(teammate_id, berth_id)`, not just by teammate and not
 just by berth. For the current session's berth, the Hub selects the target
-member's newest valid `member_berth_storage_announcement` by sorting
+teammate's newest valid `teammate_berth_storage_announcement` by sorting
 `announcement_id` descending. `announcement_id` is UUIDv7, so that ordering is
 the "newest valid" rule. `announced_at` is display/audit data and is not the
 ordering authority.
 
 An announcement is valid when its signature verifies and the signer key is
-currently trusted for the announcing member. There is no max-age policy in v1.
-A valid `member_berth_storage_announcement` is the only source of peer storage
+currently trusted for the announcing teammate. There is no max-age policy in v1.
+A valid `teammate_berth_storage_announcement` is the only source of peer storage
 routing; `team_device` carries device identity only and has no transport
 columns, so there is no legacy fallback. Peer reads with no valid announcement
 return `404` for every berth, including the Core berth; the Hub must not
@@ -294,7 +294,7 @@ This lets an invitee push an accepted-but-not-finalized team repo before the
 trust-chain update has been adopted locally. Peer reads never use this
 allowance.
 
-Remote reads from another device of the same member use the announcement path,
+Remote reads from another device of the same teammate use the announcement path,
 not this device's local allocation. This device's local allocation describes
 where this device writes. A sibling device may have written the same berth to a
 different location.
@@ -311,7 +311,7 @@ Cod Sync rather than shared SQLite locks. Two sibling devices may both
 materialize locations before sync convergence. For provider-issued locators,
 that can create orphaned provider objects. This is recoverable clutter, not a
 correctness failure, as long as peers do not silently route to the wrong
-location. If multiple same-member announcements briefly coexist, peers select
+location. If multiple same-teammate announcements briefly coexist, peers select
 the newest valid announcement by UUIDv7 `announcement_id`; after sync
 convergence, losing provider locations can be cleaned up by follow-up tooling.
 
@@ -614,10 +614,10 @@ Errors:
 
 ---
 
-**`GET /peer_cloud_file?member_id=<hex>&path=<remote path>`** — Download a file from a peer's
+**`GET /peer_cloud_file?teammate_id=<hex>&path=<remote path>`** — Download a file from a peer's
 cloud location via the Hub proxy. The Hub resolves the target
-member's readable location solely through the newest valid
-`member_berth_storage_announcement` for `(member_id, session.berth_id)`.
+teammate's readable location solely through the newest valid
+`teammate_berth_storage_announcement` for `(teammate_id, session.berth_id)`.
 There is no `team_device` transport fallback.
 
 Response: same as `GET /cloud_file`.
@@ -626,7 +626,7 @@ Errors: `404` if peer not found or file not found.
 
 ---
 
-**`GET /peer_signal?member_id=<hex>`** — Return the parsed signal file for a peer.
+**`GET /peer_signal?teammate_id=<hex>`** — Return the parsed signal file for a peer.
 
 Response:
 ```json
@@ -642,17 +642,17 @@ Errors: `404` if the peer's `signals.yaml` does not exist yet.
 
 **`POST /notifications/watch`** — Long-poll for peer sync updates.
 
-The client supplies its current known push counts per peer member. If the Hub already has higher
+The client supplies its current known push counts per peer teammate. If the Hub already has higher
 counts for any of them, returns immediately. Otherwise blocks until a peer's count increases,
 or until timeout.
 
 ```json
-{ "known": { "<member_id_hex>": <last_known_count>, ... }, "timeout": 30 }
+{ "known": { "<teammate_id_hex>": <last_known_count>, ... }, "timeout": 30 }
 ```
 
 Response:
 ```json
-{ "updated": { "<member_id_hex>": <new_count>, ... } }
+{ "updated": { "<teammate_id_hex>": <new_count>, ... } }
 ```
 
 `updated` is empty on timeout or on a structural change (membership update, local `notify=True`

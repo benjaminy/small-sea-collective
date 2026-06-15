@@ -66,3 +66,22 @@ def test_future_device_local_note_to_self_db_version_fails_fast(tmp_path):
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     assert version == future_version
     assert "note_to_self_sync_state" not in _table_names(db_path)
+
+
+def test_old_device_local_note_to_self_db_version_requires_recreate(tmp_path):
+    db_path = tmp_path / "device_local.db"
+    old_version = LOCAL_SCHEMA_VERSION - 1
+    _stamp_future_version(db_path, old_version)
+
+    with pytest.raises(NotImplementedError) as exc_info:
+        initialize_device_local_db(db_path)
+
+    message = str(exc_info.value)
+    assert "Pre-alpha NoteToSelf device-local DB migrations are not supported" in message
+    assert str(old_version) in message
+    assert str(LOCAL_SCHEMA_VERSION) in message
+
+    with sqlite3.connect(str(db_path)) as conn:
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+    assert version == old_version
+    assert "note_to_self_sync_state" not in _table_names(db_path)

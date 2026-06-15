@@ -36,7 +36,7 @@ Device provisioning is the process of making a new device a trusted
 representative of a participant's team-membership identity. It must answer:
 
 1. How does a new device prove it belongs to Alice?
-2. How do other team members verify that Alice's new device is legitimate?
+2. How do other team teammates verify that Alice's new device is legitimate?
 3. How does this work across the per-team identity model (Alice/Sharks,
    Alice/Jets, Alice/NoteToSelf are separate identities)?
 4. Where does the private key for `Alice/Sharks` actually live?
@@ -284,7 +284,7 @@ slot in later without disturbing the surrounding code.
 
 - [ ] `verify_device_binding(device_key, team_membership_identity)`: check that
   a valid device_binding cert chain exists
-- [ ] During sync: other team members can verify that a device acting as
+- [ ] During sync: other team teammates can verify that a device acting as
   Alice/Sharks has a valid cert chain from Alice/Sharks' team-membership
   identity
 - [ ] During sync: reject ordinary writes from stale epochs once a newer epoch

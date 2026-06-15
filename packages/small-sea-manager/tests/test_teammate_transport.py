@@ -11,21 +11,21 @@ from small_sea_manager.web import create_app
 from small_sea_note_to_self.ids import uuid7
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_public
 from wrasse_trust.transport import (
-    MemberTransportAnnouncement,
-    canonical_member_transport_announcement_bytes,
+    TeammateTransportAnnouncement,
+    canonical_teammate_transport_announcement_bytes,
 )
 
 
 def _signed_announcement(
     *,
-    member_id: bytes,
+    teammate_id: bytes,
     signer_private_key: bytes,
     signer_key_id: bytes,
     bucket: str,
-) -> MemberTransportAnnouncement:
-    unsigned = MemberTransportAnnouncement(
+) -> TeammateTransportAnnouncement:
+    unsigned = TeammateTransportAnnouncement(
         announcement_id=uuid7(),
-        member_id=member_id,
+        teammate_id=teammate_id,
         protocol="localfolder",
         url="file:///transport-announced",
         bucket=bucket,
@@ -34,12 +34,12 @@ def _signed_announcement(
         signature=b"",
     )
     signature = Ed25519PrivateKey.from_private_bytes(signer_private_key).sign(
-        canonical_member_transport_announcement_bytes(unsigned)
+        canonical_teammate_transport_announcement_bytes(unsigned)
     )
     return replace(unsigned, signature=signature)
 
 
-def test_announce_member_transport_updates_manager_member_status(playground_dir):
+def test_announce_teammate_transport_updates_manager_teammate_status(playground_dir):
     root = pathlib.Path(playground_dir)
     cloud_dir = root / "cloud"
     cloud_dir.mkdir()
@@ -50,14 +50,14 @@ def test_announce_member_transport_updates_manager_member_status(playground_dir)
 
     manager = TeamManager(root, alice_hex)
     team_before = manager.get_team("ProjectX")
-    alice_before = next(member for member in team_before["members"] if member["id"] == team_before["self_in_team"])
-    # team_device no longer supplies a legacy-fallback transport, so a member
-    # who has not published a signed member_transport_announcement reports
+    alice_before = next(teammate for teammate in team_before["teammates"] if teammate["id"] == team_before["self_in_team"])
+    # team_device no longer supplies a legacy-fallback transport, so a teammate
+    # who has not published a signed teammate_transport_announcement reports
     # missing and is flagged as needing to announce.
     assert alice_before["transport_status"] == "missing"
     assert alice_before["needs_transport_announcement"] is True
 
-    announced = manager.announce_member_transport(
+    announced = manager.announce_teammate_transport(
         "ProjectX",
         protocol="localfolder",
         url="file:///transport-announced",
@@ -65,7 +65,7 @@ def test_announce_member_transport_updates_manager_member_status(playground_dir)
     )
 
     team_after = manager.get_team("ProjectX")
-    alice_after = next(member for member in team_after["members"] if member["id"] == team_after["self_in_team"])
+    alice_after = next(teammate for teammate in team_after["teammates"] if teammate["id"] == team_after["self_in_team"])
     assert announced["bucket"] == "announced-bucket"
     assert alice_after["transport_status"] == "announced"
     assert alice_after["needs_transport_announcement"] is False
@@ -80,18 +80,18 @@ def test_transport_announcement_becomes_inert_after_device_link_removal(playgrou
     alice_hex = Provisioning.create_new_participant(root, "Alice")
     Provisioning.add_cloud_storage(root, alice_hex, protocol="localfolder", url=str(cloud_dir))
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
-    alice_member_id = bytes.fromhex(team_result["member_id_hex"])
+    alice_teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
 
     linked_key, linked_private_key = generate_key_pair(ProtectionLevel.DAILY)
     linked_public_key = linked_key.public_key
-    linked_cert = Provisioning.issue_device_link_for_member(
+    linked_cert = Provisioning.issue_device_link_for_teammate(
         root,
         alice_hex,
         "ProjectX",
         linked_public_key,
     )
     announcement = _signed_announcement(
-        member_id=alice_member_id,
+        teammate_id=alice_teammate_id,
         signer_private_key=linked_private_key,
         signer_key_id=key_id_from_public(linked_public_key),
         bucket="linked-device-bucket",
@@ -101,13 +101,13 @@ def test_transport_announcement_becomes_inert_after_device_link_removal(playgrou
     with sqlite3.connect(str(team_db)) as conn:
         conn.execute(
             """
-            INSERT INTO member_transport_announcement
-            (announcement_id, member_id, protocol, url, bucket, announced_at, signer_key_id, signature)
+            INSERT INTO teammate_transport_announcement
+            (announcement_id, teammate_id, protocol, url, bucket, announced_at, signer_key_id, signature)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 announcement.announcement_id,
-                announcement.member_id,
+                announcement.teammate_id,
                 announcement.protocol,
                 announcement.url,
                 announcement.bucket,
@@ -120,7 +120,7 @@ def test_transport_announcement_becomes_inert_after_device_link_removal(playgrou
 
     manager = TeamManager(root, alice_hex)
     team_before = manager.get_team("ProjectX")
-    alice_before = next(member for member in team_before["members"] if member["id"] == team_before["self_in_team"])
+    alice_before = next(teammate for teammate in team_before["teammates"] if teammate["id"] == team_before["self_in_team"])
     assert alice_before["transport_status"] == "announced"
     assert alice_before["effective_transport"]["bucket"] == "linked-device-bucket"
 
@@ -132,9 +132,9 @@ def test_transport_announcement_becomes_inert_after_device_link_removal(playgrou
         conn.commit()
 
     team_after = manager.get_team("ProjectX")
-    alice_after = next(member for member in team_after["members"] if member["id"] == team_after["self_in_team"])
+    alice_after = next(teammate for teammate in team_after["teammates"] if teammate["id"] == team_after["self_in_team"])
     # Once the linked device's cert is gone the announcement is untrusted and,
-    # with no team_device fallback, the member reports missing.
+    # with no team_device fallback, the teammate reports missing.
     assert alice_after["transport_status"] == "missing"
     assert alice_after["needs_transport_announcement"] is True
 
@@ -166,7 +166,7 @@ def test_transport_announcement_route_updates_team_detail(playground_dir):
     assert "ui-bucket" in response.text
 
 
-def test_member_berth_storage_publish_is_deduped_by_current_location(playground_dir):
+def test_teammate_berth_storage_publish_is_deduped_by_current_location(playground_dir):
     root = pathlib.Path(playground_dir)
     cloud_dir = root / "cloud"
     cloud_dir.mkdir()
@@ -186,30 +186,30 @@ def test_member_berth_storage_publish_is_deduped_by_current_location(playground_
     )
     assert allocation is not None
 
-    first = Provisioning.publish_member_berth_storage_announcement(
+    first = Provisioning.publish_teammate_berth_storage_announcement(
         root,
         alice_hex,
         "ProjectX",
-        team_result["member_id_hex"],
+        team_result["teammate_id_hex"],
         team_result["berth_id_hex"],
         allocation,
     )
-    second = Provisioning.publish_member_berth_storage_announcement(
+    second = Provisioning.publish_teammate_berth_storage_announcement(
         root,
         alice_hex,
         "ProjectX",
-        team_result["member_id_hex"],
+        team_result["teammate_id_hex"],
         team_result["berth_id_hex"],
         allocation,
     )
 
     changed_allocation = dict(allocation)
     changed_allocation["location"] = "provider-final-location"
-    third = Provisioning.publish_member_berth_storage_announcement(
+    third = Provisioning.publish_teammate_berth_storage_announcement(
         root,
         alice_hex,
         "ProjectX",
-        team_result["member_id_hex"],
+        team_result["teammate_id_hex"],
         team_result["berth_id_hex"],
         changed_allocation,
     )
@@ -219,7 +219,7 @@ def test_member_berth_storage_publish_is_deduped_by_current_location(playground_
         rows = conn.execute(
             """
             SELECT location
-            FROM member_berth_storage_announcement
+            FROM teammate_berth_storage_announcement
             ORDER BY announcement_id ASC
             """
         ).fetchall()

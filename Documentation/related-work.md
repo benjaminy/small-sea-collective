@@ -138,7 +138,7 @@ visible and respected; cite them rather than ignore them.
 distributed object-capability programming environment, as the substrate for
 secure decentralized applications. The full institute name is "Spritely
 Networked Communities Institute"; their stated mission centers on
-communities organizing, governing, and protecting their members. Christine
+communities organizing, governing, and protecting their teammates. Christine
 Lemmer-Webber (co-author of ActivityPub) is the lead. Active in 2026,
 presenting at QCon London.
 

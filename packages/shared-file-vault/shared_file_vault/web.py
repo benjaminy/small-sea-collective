@@ -96,7 +96,7 @@ def create_app(
                     ph,
                     _team_context(request, team_name),
                     niche_name,
-                    peer["member_id"],
+                    peer["teammate_id"],
                     current_signal_count=int(peer.get("signal_count", 0)),
                 )
         except sync.VaultSyncError:
@@ -122,7 +122,7 @@ def create_app(
         *,
         sync_notice: str | None = None,
         sync_error: str | None = None,
-        from_member_id: str = "",
+        from_teammate_id: str = "",
     ):
         vr, ph = _vr(request), _ph(request)
         context = _team_context(request, team_name)
@@ -146,7 +146,7 @@ def create_app(
                 "commits": commits,
                 "sync_notice": sync_notice,
                 "sync_error": sync_error,
-                "from_member_id": from_member_id,
+                "from_teammate_id": from_teammate_id,
                 "team_session_status": team_session_status,
                 "peers": peers,
             },
@@ -372,7 +372,7 @@ def create_app(
         request: Request,
         team_name: str,
         niche_name: str,
-        from_member_id: str = Form(...),
+        from_teammate_id: str = Form(...),
     ):
         vr, ph, hub_port, http_client = (
             _vr(request),
@@ -380,14 +380,14 @@ def create_app(
             _hub_port(request),
             _http_client(request),
         )
-        member_id = from_member_id.strip()
+        teammate_id = from_teammate_id.strip()
         try:
             sync.fetch_via_hub(
                 vr,
                 ph,
                 team_name,
                 niche_name,
-                member_id,
+                teammate_id,
                 hub_port=hub_port,
                 _http_client=http_client,
             )
@@ -396,14 +396,14 @@ def create_app(
                 ph,
                 _team_context(request, team_name),
                 niche_name,
-                member_id,
+                teammate_id,
             )
             if status.ready_to_merge:
-                notice = f"Fetched changes from {member_id}. They are ready to merge."
+                notice = f"Fetched changes from {teammate_id}. They are ready to merge."
             elif status.already_merged:
-                notice = f"Fetched the latest changes from {member_id}. They are already merged."
+                notice = f"Fetched the latest changes from {teammate_id}. They are already merged."
             else:
-                notice = f"Checked {member_id} for updates."
+                notice = f"Checked {teammate_id} for updates."
             error = None
         except sync.VaultSyncError as exc:
             notice = None
@@ -414,7 +414,7 @@ def create_app(
             niche_name,
             sync_notice=notice,
             sync_error=error,
-            from_member_id=member_id,
+            from_teammate_id=teammate_id,
         )
 
     @app.post(
@@ -424,7 +424,7 @@ def create_app(
         request: Request,
         team_name: str,
         niche_name: str,
-        from_member_id: str = Form(...),
+        from_teammate_id: str = Form(...),
     ):
         vr, ph, hub_port, http_client = (
             _vr(request),
@@ -432,18 +432,18 @@ def create_app(
             _hub_port(request),
             _http_client(request),
         )
-        member_id = from_member_id.strip()
+        teammate_id = from_teammate_id.strip()
         try:
             sync.merge_via_hub(
                 vr,
                 ph,
                 team_name,
                 niche_name,
-                member_id,
+                teammate_id,
                 hub_port=hub_port,
                 _http_client=http_client,
             )
-            notice = f"Merged parked changes from {member_id}."
+            notice = f"Merged parked changes from {teammate_id}."
             error = None
         except sync.DirtyCheckoutError as exc:
             notice = None
@@ -486,7 +486,7 @@ def create_app(
             niche_name,
             sync_notice=notice,
             sync_error=error,
-            from_member_id=member_id,
+            from_teammate_id=teammate_id,
         )
 
     return app

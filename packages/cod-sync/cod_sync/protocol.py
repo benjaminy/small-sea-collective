@@ -175,7 +175,7 @@ class CodSync:
         # Strip 'codsync:'
         self.url = remote_url[8:]
 
-    def push_to_remote(self, branches, signing_key=None, member_id=None, device_public_key=None):
+    def push_to_remote(self, branches, signing_key=None, teammate_id=None, device_public_key=None):
         logger.debug(f"push_to_remote {self.remote_name} {branches}")
 
         bundle_uid = CodSync.token_hex(8)
@@ -226,7 +226,7 @@ class CodSync:
 
         blob = self.build_link_blob(
             link_uid, link_uid_prev, bundle_uid, prerequisites,
-            signing_key=signing_key, member_id=member_id, device_public_key=device_public_key,
+            signing_key=signing_key, teammate_id=teammate_id, device_public_key=device_public_key,
         )
         logger.debug(f"pushing link {link_uid} bundle {bundle_path_tmp}")
         return self.remote.upload_latest_link(
@@ -234,7 +234,7 @@ class CodSync:
         )
 
     def build_link_blob(self, new_link_uid, prev_link_uid, bundle_uid, prerequisites,
-                        signing_key=None, member_id=None, device_public_key=None):
+                        signing_key=None, teammate_id=None, device_public_key=None):
         link_ids = [new_link_uid, prev_link_uid]
         branch_names = self.get_branches()
         branches = []
@@ -244,7 +244,7 @@ class CodSync:
         bundles = [[bundle_uid, ["main", prerequisites["main"]]]]
         supplement = {"cod_version": COD_SYNC_VERSION}
 
-        if signing_key is not None and member_id is not None:
+        if signing_key is not None and teammate_id is not None:
             signable = canonical_link_bytes(link_ids, branches, bundles, supplement)
             signature = sign_link(signing_key, signable)
             if device_public_key is None:
@@ -252,7 +252,7 @@ class CodSync:
             if isinstance(device_public_key, bytes):
                 device_public_key = device_public_key.hex()
             supplement["signatures"] = {
-                member_id: {
+                teammate_id: {
                     "device_public_key": device_public_key,
                     "signature": signature,
                 }
@@ -739,10 +739,10 @@ class PeerSmallSeaRemote(CodSyncRemote):
     when the peer pushed the content via SmallSeaRemote.
     """
 
-    def __init__(self, session_hex, member_id_hex, base_url="http://localhost:11437",
+    def __init__(self, session_hex, teammate_id_hex, base_url="http://localhost:11437",
                  client=None, path_prefix=""):
         self.session_hex = session_hex
-        self.member_id_hex = member_id_hex
+        self.teammate_id_hex = teammate_id_hex
         self._auth = {"Authorization": f"Bearer {session_hex}"}
         self._path_prefix = path_prefix
 
@@ -754,7 +754,7 @@ class PeerSmallSeaRemote(CodSyncRemote):
     def _download(self, cloud_path):
         resp = self._get(
             "/peer_cloud_file",
-            params={"member_id": self.member_id_hex, "path": self._path_prefix + cloud_path},
+            params={"teammate_id": self.teammate_id_hex, "path": self._path_prefix + cloud_path},
             headers=self._auth,
         )
         if resp.status_code != 200:

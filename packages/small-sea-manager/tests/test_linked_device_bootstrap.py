@@ -40,7 +40,7 @@ def _copy_team_baseline(
     dst_participant_hex: str,
     team_name: str,
     team_id: bytes,
-    member_id: bytes,
+    teammate_id: bytes,
 ):
     src = provisioning._team_sync_dir(src_root, src_participant_hex, team_name).parent
     dst = provisioning._team_sync_dir(dst_root, dst_participant_hex, team_name).parent
@@ -48,7 +48,7 @@ def _copy_team_baseline(
     with sqlite3.connect(note_to_self_sync_db_path(dst_root, dst_participant_hex)) as conn:
         conn.execute(
             "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
-            (team_id, team_name, member_id),
+            (team_id, team_name, teammate_id),
         )
         conn.commit()
 
@@ -91,16 +91,16 @@ def _copy_device_prekey_bundle_row(src_team_db: pathlib.Path, dst_team_db: pathl
         dst_conn.commit()
 
 
-def _bootstrap_remote_member_installation(
+def _bootstrap_remote_teammate_installation(
     alice_root: pathlib.Path,
     alice_hex: str,
     bob_root: pathlib.Path,
     bob_hex: str,
     team_name: str,
     team_id: bytes,
-    alice_member_id: bytes,
+    alice_teammate_id: bytes,
 ):
-    bob_member_id = provisioning.uuid7()
+    bob_teammate_id = provisioning.uuid7()
     _copy_team_baseline(
         alice_root,
         bob_root,
@@ -108,7 +108,7 @@ def _bootstrap_remote_member_installation(
         bob_hex,
         team_name,
         team_id,
-        bob_member_id,
+        bob_teammate_id,
     )
 
     bob_team_keys = provisioning._generate_initial_team_device_key(bob_root, bob_hex, team_id)
@@ -122,8 +122,8 @@ def _bootstrap_remote_member_installation(
         issuer_key=provisioning._participant_key_from_public(alice_public_key),
         issuer_private_key=alice_private_key,
         team_id=team_id,
-        issuer_member_id=alice_member_id,
-        admitted_member_id=bob_member_id,
+        issuer_teammate_id=alice_teammate_id,
+        admitted_teammate_id=bob_teammate_id,
     )
 
     bob_device_key_id = key_id_from_public(bob_team_keys["device_key"].public_key)
@@ -134,25 +134,25 @@ def _bootstrap_remote_member_installation(
         engine = create_engine(f"sqlite:///{team_db}")
         try:
             with engine.begin() as conn:
-                existing_member = conn.execute(
-                    text("SELECT 1 FROM member WHERE id = :id"),
-                    {"id": bob_member_id},
+                existing_teammate = conn.execute(
+                    text("SELECT 1 FROM teammate WHERE id = :id"),
+                    {"id": bob_teammate_id},
                 ).fetchone()
-                if existing_member is None:
+                if existing_teammate is None:
                     conn.execute(
-                        text("INSERT INTO member (id, display_name) VALUES (:id, :display_name)"),
-                        {"id": bob_member_id, "display_name": "Bob"},
+                        text("INSERT INTO teammate (id, display_name) VALUES (:id, :display_name)"),
+                        {"id": bob_teammate_id, "display_name": "Bob"},
                     )
                 berth_rows = conn.execute(text("SELECT id FROM team_app_berth")).fetchall()
                 for berth_row in berth_rows:
                     conn.execute(
                         text(
-                            "INSERT OR IGNORE INTO berth_role (id, member_id, berth_id, role) "
-                            "VALUES (:id, :member_id, :berth_id, :role)"
+                            "INSERT OR IGNORE INTO berth_role (id, teammate_id, berth_id, role) "
+                            "VALUES (:id, :teammate_id, :berth_id, :role)"
                         ),
                         {
                             "id": provisioning.uuid7(),
-                            "member_id": bob_member_id,
+                            "teammate_id": bob_teammate_id,
                             "berth_id": berth_row[0],
                             "role": "read-write",
                         },
@@ -160,11 +160,11 @@ def _bootstrap_remote_member_installation(
                 provisioning._store_team_certificate(
                     conn,
                     membership_cert,
-                    issuer_member_id=alice_member_id,
+                    issuer_teammate_id=alice_teammate_id,
                 )
                 provisioning._upsert_team_device_row(
                     conn,
-                    bob_member_id,
+                    bob_teammate_id,
                     bob_team_keys["device_key"].public_key,
                 )
         finally:
@@ -194,13 +194,13 @@ def _bootstrap_remote_member_installation(
     )
 
     return {
-        "member_id": bob_member_id,
+        "teammate_id": bob_teammate_id,
         "device_key_id": bob_device_key_id,
         "local_db": bob_local_db,
     }
 
 
-def test_linked_device_bootstrap_round_trip_same_member(playground_dir):
+def test_linked_device_bootstrap_round_trip_same_teammate(playground_dir):
     workspace = pathlib.Path(playground_dir)
     root1 = workspace / "install-a"
     root2 = workspace / "install-b"
@@ -219,8 +219,8 @@ def test_linked_device_bootstrap_round_trip_same_member(playground_dir):
 
     team_result = manager1.create_team("ProjectX")
     team_id = bytes.fromhex(team_result["team_id_hex"])
-    member_id = bytes.fromhex(team_result["member_id_hex"])
-    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, member_id)
+    teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
+    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, teammate_id)
 
     local_db1 = device_local_db_path(root1, alice_hex)
     local_db2 = device_local_db_path(root2, alice_hex)
@@ -325,8 +325,8 @@ def test_linked_device_bootstrap_rejects_invalid_join_signatures(playground_dir)
 
     team_result = manager1.create_team("ProjectX")
     team_id = bytes.fromhex(team_result["team_id_hex"])
-    member_id = bytes.fromhex(team_result["member_id_hex"])
-    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, member_id)
+    teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
+    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, teammate_id)
 
     manager2 = TeamManager(root2, alice_hex)
     prepared = manager2.prepare_linked_device_team_join("ProjectX")
@@ -372,8 +372,8 @@ def test_linked_device_bootstrap_create_replay_returns_stored_bundle_without_ext
 
     team_result = manager1.create_team("ProjectX")
     team_id = bytes.fromhex(team_result["team_id_hex"])
-    member_id = bytes.fromhex(team_result["member_id_hex"])
-    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, member_id)
+    teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
+    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, teammate_id)
 
     manager2 = TeamManager(root2, alice_hex)
     prepared = manager2.prepare_linked_device_team_join("ProjectX")
@@ -427,8 +427,8 @@ def test_linked_device_bootstrap_retry_after_interrupted_finalize_is_idempotent(
 
     team_result = manager1.create_team("ProjectX")
     team_id = bytes.fromhex(team_result["team_id_hex"])
-    member_id = bytes.fromhex(team_result["member_id_hex"])
-    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, member_id)
+    teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
+    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, teammate_id)
 
     manager2 = TeamManager(root2, alice_hex)
     prepared = manager2.prepare_linked_device_team_join("ProjectX")
@@ -491,17 +491,17 @@ def test_linked_device_bootstrap_peer_sender_keys_transferred(playground_dir):
 
     team_result = manager1.create_team("ProjectX")
     team_id = bytes.fromhex(team_result["team_id_hex"])
-    member_id = bytes.fromhex(team_result["member_id_hex"])
-    bob = _bootstrap_remote_member_installation(
+    teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
+    bob = _bootstrap_remote_teammate_installation(
         root1,
         alice_hex,
         bob_root,
         bob_hex,
         "ProjectX",
         team_id,
-        member_id,
+        teammate_id,
     )
-    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, member_id)
+    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, teammate_id)
 
     local_db1 = device_local_db_path(root1, alice_hex)
     local_db2 = device_local_db_path(root2, alice_hex)
@@ -569,17 +569,17 @@ def test_linked_device_bootstrap_transfers_skipped_peer_sender_keys(playground_d
 
     team_result = manager1.create_team("ProjectX")
     team_id = bytes.fromhex(team_result["team_id_hex"])
-    member_id = bytes.fromhex(team_result["member_id_hex"])
-    bob = _bootstrap_remote_member_installation(
+    teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
+    bob = _bootstrap_remote_teammate_installation(
         root1,
         alice_hex,
         bob_root,
         bob_hex,
         "ProjectX",
         team_id,
-        member_id,
+        teammate_id,
     )
-    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, member_id)
+    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, teammate_id)
 
     local_db1 = device_local_db_path(root1, alice_hex)
     local_db2 = device_local_db_path(root2, alice_hex)
@@ -639,17 +639,17 @@ def test_linked_device_bootstrap_exclusion_cuts_off_peer(playground_dir):
 
     team_result = manager1.create_team("ProjectX")
     team_id = bytes.fromhex(team_result["team_id_hex"])
-    member_id = bytes.fromhex(team_result["member_id_hex"])
-    bob = _bootstrap_remote_member_installation(
+    teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
+    bob = _bootstrap_remote_teammate_installation(
         root1,
         alice_hex,
         bob_root,
         bob_hex,
         "ProjectX",
         team_id,
-        member_id,
+        teammate_id,
     )
-    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, member_id)
+    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, teammate_id)
 
     local_db1 = device_local_db_path(root1, alice_hex)
     local_db2 = device_local_db_path(root2, alice_hex)
@@ -747,8 +747,8 @@ def test_linked_device_bootstrap_prepare_reentry_is_rejected(playground_dir):
 
     team_result = manager1.create_team("ProjectX")
     team_id = bytes.fromhex(team_result["team_id_hex"])
-    member_id = bytes.fromhex(team_result["member_id_hex"])
-    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, member_id)
+    teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
+    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, teammate_id)
 
     manager2 = TeamManager(root2, alice_hex)
     manager2.prepare_linked_device_team_join("ProjectX")

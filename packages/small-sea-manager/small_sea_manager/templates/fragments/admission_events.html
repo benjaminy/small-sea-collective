@@ -45,8 +45,8 @@
             <button class="btn btn-secondary btn-sm" type="submit">Revoke</button>
           </form>
           {% endif %}
-          {% if event.can_exclude and viewer_is_admin and event.member_id_hex %}
-          <form hx-post="/teams/{{ team_name }}/members/{{ event.member_id_hex }}/remove"
+          {% if event.can_exclude and viewer_is_admin and event.teammate_id_hex %}
+          <form hx-post="/teams/{{ team_name }}/teammates/{{ event.teammate_id_hex }}/remove"
                 hx-sync="#team-detail:replace"
                 hx-target="#team-detail"
                 hx-swap="innerHTML">

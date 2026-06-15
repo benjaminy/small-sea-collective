@@ -80,7 +80,7 @@ def _session_berth_info(http, session_hex):
     ).json()
 
 
-def _setup_two_member_team(playground_dir, minio_server_gen):
+def _setup_two_teammate_team(playground_dir, minio_server_gen):
     alice_minio = minio_server_gen(port=_free_port())
     bob_minio = minio_server_gen(port=_free_port())
     root = pathlib.Path(playground_dir)
@@ -113,7 +113,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
 
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
     Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", sync.HUB_APP_NAME)
-    alice_member_id_hex = team_result["member_id_hex"]
+    alice_teammate_id_hex = team_result["teammate_id_hex"]
 
     alice_team_token = _open_session(http, "Alice", "ProjectX")
     alice_vault_berth = _session_berth_info(http, alice_team_token)["berth_id"]
@@ -150,7 +150,7 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
     acceptance_b64 = bob_manager.accept_invitation(token_b64)
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
-    bob_member_id_hex = acceptance["acceptor_member_id"]
+    bob_teammate_id_hex = acceptance["acceptor_teammate_id"]
     bob_team_token = _open_session(http, "Bob", "ProjectX")
     bob_vault_berth = _session_berth_info(http, bob_team_token)["berth_id"]
     # Match Alice's stable fixture shape for Bob's own app berth.
@@ -175,8 +175,8 @@ def _setup_two_member_team(playground_dir, minio_server_gen):
         "alice_minio": alice_minio,
         "alice_hex": alice_hex,
         "bob_hex": bob_hex,
-        "alice_member_id_hex": alice_member_id_hex,
-        "bob_member_id_hex": bob_member_id_hex,
+        "alice_teammate_id_hex": alice_teammate_id_hex,
+        "bob_teammate_id_hex": bob_teammate_id_hex,
         "team_bucket": team_bucket,
     }
 
@@ -198,7 +198,7 @@ def test_signal_watermark_roundtrip(tmp_path, monkeypatch):
     assert sync.get_signal_watermark(root, participant, team_a, "aa" * 16) == 5
     assert sync.get_signal_watermark(root, participant, team_a, "bb" * 16) == 2
     assert sync.get_signal_watermark(root, participant, team_b, "aa" * 16) == 9
-    # Unrelated team/member still 0
+    # Unrelated team/teammate still 0
     assert sync.get_signal_watermark(root, participant, team_c, "cc" * 16) == 0
 
     sync.clear_signal_watermark(root, participant, team_a, "aa" * 16)
@@ -235,7 +235,7 @@ def test_peer_update_status_has_unfetched_hint(tmp_path, monkeypatch, playground
 
     root = playground_dir
     participant = "bb" * 16
-    member_id = "cc" * 16
+    teammate_id = "cc" * 16
     team = vault.VaultMaterializationContext(participant, "44" * 16, "HintTeam")
     niche = "files"
 
@@ -244,15 +244,15 @@ def test_peer_update_status_has_unfetched_hint(tmp_path, monkeypatch, playground
     vault.create_niche(root, participant, team, niche)
 
     # No watermark set → current 3 > watermark 0 → hint True
-    status = sync.peer_update_status(root, participant, team, niche, member_id,
+    status = sync.peer_update_status(root, participant, team, niche, teammate_id,
                                      current_signal_count=3)
     assert status.has_unfetched_hint is True
     assert status.current_signal_count == 3
     assert status.last_seen_signal_count == 0
 
     # Set watermark to match → hint False
-    sync.set_signal_watermark(root, participant, team, member_id, 3)
-    status = sync.peer_update_status(root, participant, team, niche, member_id,
+    sync.set_signal_watermark(root, participant, team, teammate_id, 3)
+    status = sync.peer_update_status(root, participant, team, niche, teammate_id,
                                      current_signal_count=3)
     assert status.has_unfetched_hint is False
 
@@ -263,7 +263,7 @@ def test_peer_update_status_has_unfetched_hint(tmp_path, monkeypatch, playground
 
 
 def test_fetch_via_hub_advances_watermark(playground_dir, minio_server_gen, monkeypatch):
-    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
     root = env["root"]
     http = env["http"]
 
@@ -294,25 +294,25 @@ def test_fetch_via_hub_advances_watermark(playground_dir, minio_server_gen, monk
     bob_berth_id_hex = bob_session.session_info()["berth_id"]
     if not hasattr(app.state, "peer_counts"):
         app.state.peer_counts = {}
-    app.state.peer_counts[(bob_berth_id_hex, env["alice_member_id_hex"])] = 5
+    app.state.peer_counts[(bob_berth_id_hex, env["alice_teammate_id_hex"])] = 5
 
     assert sync.get_signal_watermark(
-        bob_vault_root, env["bob_hex"], bob_context, env["alice_member_id_hex"]
+        bob_vault_root, env["bob_hex"], bob_context, env["alice_teammate_id_hex"]
     ) == 0
 
     sync.fetch_via_hub(
         bob_vault_root, env["bob_hex"], "ProjectX", "docs",
-        env["alice_member_id_hex"], _http_client=http,
+        env["alice_teammate_id_hex"], _http_client=http,
     )
 
     # Watermark should equal the observed signal_count (5)
     assert sync.get_signal_watermark(
-        bob_vault_root, env["bob_hex"], bob_context, env["alice_member_id_hex"]
+        bob_vault_root, env["bob_hex"], bob_context, env["alice_teammate_id_hex"]
     ) == 5
 
 
 def test_fetch_via_hub_does_not_touch_other_peers_watermark(playground_dir, minio_server_gen, monkeypatch):
-    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
     root = env["root"]
     http = env["http"]
 
@@ -338,16 +338,16 @@ def test_fetch_via_hub_does_not_touch_other_peers_watermark(playground_dir, mini
     bob_context = vault.materialization_context_from_session_info(bob_login.session_info)
 
     # Plant a watermark for a different fake peer
-    other_member = "ff" * 16
-    sync.set_signal_watermark(bob_vault_root, env["bob_hex"], bob_context, other_member, 99)
+    other_teammate = "ff" * 16
+    sync.set_signal_watermark(bob_vault_root, env["bob_hex"], bob_context, other_teammate, 99)
 
     sync.fetch_via_hub(
         bob_vault_root, env["bob_hex"], "ProjectX", "docs",
-        env["alice_member_id_hex"], _http_client=http,
+        env["alice_teammate_id_hex"], _http_client=http,
     )
 
     # Other peer's watermark is untouched
-    assert sync.get_signal_watermark(bob_vault_root, env["bob_hex"], bob_context, other_member) == 99
+    assert sync.get_signal_watermark(bob_vault_root, env["bob_hex"], bob_context, other_teammate) == 99
 
 
 def test_sync_config_roundtrip_and_remote_prefixes(tmp_path, monkeypatch):
@@ -526,7 +526,7 @@ def test_cli_local_command_without_materialization_fails(monkeypatch, tmp_path):
 
 
 def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monkeypatch):
-    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
     root = env["root"]
     http = env["http"]
 
@@ -568,7 +568,7 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
         env["bob_hex"],
         "ProjectX",
         "docs",
-        env["alice_member_id_hex"],
+        env["alice_teammate_id_hex"],
         _http_client=http,
     )
     vault.add_checkout(bob_vault_root, env["bob_hex"], bob_context, "docs", str(bob_checkout))
@@ -577,7 +577,7 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
         env["bob_hex"],
         "ProjectX",
         "docs",
-        env["alice_member_id_hex"],
+        env["alice_teammate_id_hex"],
         _http_client=http,
     )
     assert (bob_checkout / "notes.txt").read_text() == "v1\n"
@@ -594,14 +594,14 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
         env["bob_hex"],
         "ProjectX",
         "docs",
-        env["alice_member_id_hex"],
+        env["alice_teammate_id_hex"],
         _http_client=http,
     )
     assert (bob_checkout / "notes.txt").read_text() == "v2\n"
 
 
 def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monkeypatch):
-    env = _setup_two_member_team(playground_dir, minio_server_gen)
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
     root = env["root"]
     http = env["http"]
 
@@ -633,7 +633,7 @@ def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monke
         env["bob_hex"],
         "ProjectX",
         "docs",
-        env["alice_member_id_hex"],
+        env["alice_teammate_id_hex"],
         _http_client=http,
     )
     vault.add_checkout(bob_vault_root, env["bob_hex"], bob_context, "docs", str(bob_checkout))
@@ -642,7 +642,7 @@ def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monke
         env["bob_hex"],
         "ProjectX",
         "docs",
-        env["alice_member_id_hex"],
+        env["alice_teammate_id_hex"],
         _http_client=http,
     )
 
@@ -661,7 +661,7 @@ def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monke
             env["bob_hex"],
             "ProjectX",
             "docs",
-            env["alice_member_id_hex"],
+            env["alice_teammate_id_hex"],
             _http_client=http,
         )
 

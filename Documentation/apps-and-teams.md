@@ -10,11 +10,11 @@ The NoteToSelf-_App_ berths are where apps can keep any user-private customizati
 
 Teams in Small Sea are similar to any other groupware framework, but there is at least one important difference.
 The sharing in Small Sea is entirely distributed and voluntary.
-There might be some intuitive notion of a heirarchy of leaders, core members or owners, but the built-in permission structure in Small Sea is very simple.
+There might be some intuitive notion of a heirarchy of leaders, core teammates or owners, but the built-in permission structure in Small Sea is very simple.
 Each participant has either full or read-only permissions in each berth.
 One common arrangement is:
 
-1. Some participants have read-write permissions for _Team_-SmallSeaCore; these are the _admins_ for the team; they can create invitations for new members and propose member removals.
+1. Some participants have read-write permissions for _Team_-SmallSeaCore; these are the _admins_ for the team; they can create invitations for new teammates and propose teammate removals.
 2. All other apps have the same permissions for participants, dividing the group into authors and observers.
 
 If people want more fine-grained permissions systems, this might be achievable with linked teams.

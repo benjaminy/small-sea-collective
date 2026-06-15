@@ -1,0 +1,29 @@
+{% if message %}
+<div class="message">{{ message }}</div>
+{% endif %}
+
+{% if teammates %}
+<table>
+    <thead>
+        <tr><th>Nickname</th><th>Role</th><th></th></tr>
+    </thead>
+    <tbody>
+    {% for teammate in teammates %}
+        <tr>
+            <td>{{ teammate.nickname }}</td>
+            <td>{{ teammate.role | default("?") }}</td>
+            <td>
+                <button class="danger"
+                        hx-delete="/fragments/teams/{{ team_name }}/teammates/{{ teammate.nickname }}"
+                        hx-target="#teammate-list"
+                        hx-confirm="Remove {{ teammate.nickname }} from {{ team_name }}?">
+                    Remove
+                </button>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p>No teammates.</p>
+{% endif %}

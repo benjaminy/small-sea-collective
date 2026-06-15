@@ -32,7 +32,7 @@ In scope:
 
 - per-device reachability and current transport mode
 - membership and device addressing, derived from Small Sea's authorization model
-- delivery of app-opaque events to a device, to all of a member's devices, to all reachable devices in a team, or to a caller-supplied scope within that team
+- delivery of app-opaque events to a device, to all of a teammate's devices, to all reachable devices in a team, or to a caller-supplied scope within that team
 - reliable byte streams between authorized devices, when the active transport supports them
 - unreliable datagrams between authorized devices, when the active transport supports them
 - explicit reporting of the mode and degradation the available transport currently provides
@@ -44,7 +44,7 @@ Deliberately not in scope:
 - presence semantics — online vs. away vs. idle vs. typing, what counts as activity, when "online" expires
 - heartbeat policy and expiry
 - durable rooms, channel membership, or subscription state
-- reconciliation across multiple devices reporting different states for the same member
+- reconciliation across multiple devices reporting different states for the same teammate
 - app-specific liveness inference
 
 Routing scopes are named, app-defined labels for best-effort live fanout.
@@ -64,7 +64,7 @@ Apps start an authorized Hub session, then ask the Hub to move app-opaque live e
 The likely primitives are:
 
 - send to a specific device
-- send to a member's reachable devices
+- send to a teammate's reachable devices
 - broadcast to reachable devices in the team
 - register connection-bound interest in an app-defined routing scope
 - broadcast to reachable devices interested in a routing scope
@@ -98,11 +98,11 @@ At a glance, in rough order of implementation priority:
 - **STUN** — cheap direct path when NATs cooperate.
 - **TURN** — vendor relay fallback for hostile NATs.
 - **LAN and proximity** — beats everything when teammates are on the same link.
-- **User operated relays** — team-controlled relay if a member is willing to deploy and own it.
+- **User operated relays** — team-controlled relay if a teammate is willing to deploy and own it.
 
 **Power-user opt-in:**
 
-- **Whole team subscribes to some VPN service** — high-quality direct paths if every member joins the same vendor.
+- **Whole team subscribes to some VPN service** — high-quality direct paths if every teammate joins the same vendor.
 
 **Exploratory or constrained:**
 
@@ -153,7 +153,7 @@ Hubs reach each other directly over local-area networking — mDNS, Bluetooth, W
 
 ### User operated relays
 
-A team member deploys a Small Sea relay binary on infrastructure they pay for and trust — a PaaS click-deploy, a VPS, or a home machine — and the team's Hubs route through it when direct connectivity fails.
+A team teammate deploys a Small Sea relay binary on infrastructure they pay for and trust — a PaaS click-deploy, a VPS, or a home machine — and the team's Hubs route through it when direct connectivity fails.
 
 - **Shape:** personal-egress (one person provisions, the rest connect).
 - **Strengths:** no vendor lock-in; team controls the relay; relay is app-opaque so it can be swapped or rotated.
@@ -162,9 +162,9 @@ A team member deploys a Small Sea relay binary on infrastructure they pay for an
 
 ### Whole team subscribes to some VPN service
 
-Every team member joins the same mesh VPN product (Tailscale, ZeroTier, NetBird), and Hubs talk to each other as if on a flat private network.
+Every team teammate joins the same mesh VPN product (Tailscale, ZeroTier, NetBird), and Hubs talk to each other as if on a flat private network.
 
-- **Shape:** shared-network — every participant must be a member of the same instance for it to be useful.
+- **Shape:** shared-network — every participant must be a teammate of the same instance for it to be useful.
 - **Strengths:** very high quality once configured — direct paths, low latency, generic transport; products are mature.
 - **Weaknesses:** every teammate must adopt the same vendor; useless across teams that picked different vendors; vendor failure blocks the entire team's live transport.
 - **Fit:** power-user opt-in only; never the baseline path; the matched-membership cost must be documented.
