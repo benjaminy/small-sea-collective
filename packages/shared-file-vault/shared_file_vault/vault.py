@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import cod_sync.protocol as CS
-from cod_sync.protocol import gitCmd
+from cod_sync.repo import Repo, RepoError, ConflictError
 
 
 class NicheResidency(enum.Enum):
@@ -52,6 +52,18 @@ class MergeConflictError(RuntimeError):
     def __init__(self, paths):
         self.paths = paths
         super().__init__("Merge conflict during pull")
+
+
+class NothingToPublishError(RuntimeError):
+    """Raised when publish() is called but there are no staged changes to commit.
+
+    Preserves the invariant that publish() never returns None: callers slice the
+    return value as a commit hash. Replaces the lower-level GitCmdFailed that a
+    no-op ``git commit`` used to raise with a vault-domain error.
+    """
+
+    def __init__(self):
+        super().__init__("Nothing to publish: no changes staged for commit.")
 
 
 class DuplicateCheckoutError(ValueError):
@@ -524,8 +536,7 @@ def clear_peer_signal_watermark(vault_root, participant_hex, context, teammate_i
 # ---------------------------------------------------------------------------
 
 def _has_commits(git_dir):
-    r = gitCmd(["--git-dir", str(git_dir), "rev-parse", "HEAD"], raise_on_error=False)
-    return r.returncode == 0
+    return Repo(git_dir).has_commits()
 
 
 def _make_work_tree(git_dir, dest):
@@ -535,11 +546,9 @@ def _make_work_tree(git_dir, dest):
     """
     dest = pathlib.Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
-    if _has_commits(git_dir):
-        gitCmd([
-            "--git-dir", str(git_dir), "--work-tree", str(dest),
-            "checkout", "HEAD", "--", ".",
-        ])
+    repo = Repo(git_dir).with_work_tree(dest)
+    if repo.has_commits():
+        repo.checkout_head()
 
 
 def _refresh_work_tree(git_dir, dest):
@@ -552,10 +561,7 @@ def _refresh_work_tree(git_dir, dest):
     dest = pathlib.Path(dest)
     if not dest.exists():
         return
-    gitCmd([
-        "--git-dir", str(git_dir), "--work-tree", str(dest),
-        "checkout", "HEAD", "--", ".",
-    ])
+    Repo(git_dir).with_work_tree(dest).checkout_head()
 
 
 def _is_checkout_clean(checkout_path, git_dir):
@@ -575,47 +581,25 @@ def _is_checkout_clean(checkout_path, git_dir):
     """
     if not pathlib.Path(checkout_path).exists():
         return False
-    result = gitCmd(
-        [
-            "--git-dir", str(git_dir), "--work-tree", str(checkout_path),
-            "status", "--porcelain",
-        ],
-        raise_on_error=False,
-    )
-    return result.returncode == 0 and result.stdout.strip() == ""
+    # "Can't tell" (an unexpected git failure) is treated as not-clean — the safe
+    # direction. Existence is already guarded above and by _require_clean_checkout.
+    try:
+        return Repo(git_dir).with_work_tree(checkout_path).status() == []
+    except RepoError:
+        return False
 
 
 def _conflict_paths(git_dir, work_tree):
     """Return unresolved merge-conflict paths for a git/work tree pair."""
-    result = gitCmd(
-        [
-            "--git-dir", str(git_dir), "--work-tree", str(work_tree),
-            "diff", "--name-only", "--diff-filter=U",
-        ],
-        raise_on_error=False,
-    )
-    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    return Repo(git_dir).with_work_tree(work_tree).conflict_paths()
 
 
 def _resolve_ref(git_dir, ref_name):
-    result = gitCmd(
-        ["--git-dir", str(git_dir), "rev-parse", "--verify", ref_name],
-        raise_on_error=False,
-    )
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip()
+    return Repo(git_dir).resolve_ref(ref_name)
 
 
 def _is_ancestor(git_dir, maybe_ancestor, descendant="HEAD"):
-    result = gitCmd(
-        [
-            "--git-dir", str(git_dir),
-            "merge-base", "--is-ancestor", maybe_ancestor, descendant,
-        ],
-        raise_on_error=False,
-    )
-    return result.returncode == 0
+    return Repo(git_dir).is_ancestor(maybe_ancestor, descendant)
 
 
 def _peer_ref_name(teammate_id, branch="main"):
@@ -633,8 +617,7 @@ def _init_git_dir(git_dir):
     immediately sets core.bare = false so that 'git checkout' and other
     work-tree commands succeed when run from a linked work tree.
     """
-    gitCmd(["init", "--bare", str(git_dir)])
-    gitCmd(["--git-dir", str(git_dir), "config", "core.bare", "false"])
+    Repo.init(git_dir)
 
 
 def _ensure_registry(vault_root, participant_hex, context):
@@ -677,26 +660,16 @@ def _cod_pull(git_dir, checkout, remote):
         raise RuntimeError("pull failed: could not fetch from remote")
 
     tmp_remote = "cloud-codsync-bundle-tmp"
-    git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
-    head_result = gitCmd(
-        ["--git-dir", str(git_dir), "rev-parse", "--verify", "HEAD"],
-        raise_on_error=False,
-    )
-    if head_result.returncode != 0:
-        # Unborn branch — adopt fetched branch as initial local branch.
-        result = gitCmd(
-            git_prefix + ["checkout", "-B", "main", f"{tmp_remote}/main"],
-            raise_on_error=False,
-        )
-        exit_code = result.returncode
+    repo = Repo(git_dir).with_work_tree(checkout)
+    if repo.has_commits():
+        try:
+            repo.merge(f"{tmp_remote}/main")
+        except ConflictError as exc:
+            raise MergeConflictError(exc.conflict_paths)
     else:
-        result = gitCmd(
-            git_prefix + ["merge", f"{tmp_remote}/main"],
-            raise_on_error=False,
-        )
-        exit_code = result.returncode
-    if exit_code != 0:
-        raise MergeConflictError(_conflict_paths(git_dir, checkout))
+        # Unborn branch — adopt fetched branch as initial local branch.
+        # A fresh checkout cannot conflict; any failure surfaces as RepoError.
+        repo.checkout_branch("main", f"{tmp_remote}/main")
 
 
 def _cod_fetch(git_dir, remote, pin_to_ref):
@@ -715,15 +688,16 @@ def _cod_merge_ref(git_dir, checkout, ref_name):
 
     Uses explicit --git-dir/--work-tree flags throughout.
     """
-    git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
-    if _has_commits(git_dir):
-        result = gitCmd(git_prefix + ["merge", ref_name], raise_on_error=False)
-        if result.returncode != 0:
-            raise MergeConflictError(_conflict_paths(git_dir, checkout))
+    repo = Repo(git_dir).with_work_tree(checkout)
+    if repo.has_commits():
+        try:
+            repo.merge(ref_name)
+        except ConflictError as exc:
+            raise MergeConflictError(exc.conflict_paths)
     else:
         # No local history: initialise the branch from the parked peer ref.
-        # Content conflicts are impossible here; GitCmdFailed propagates as-is.
-        gitCmd(git_prefix + ["checkout", "-B", "main", ref_name])
+        # Content conflicts are impossible here; RepoError propagates as-is.
+        repo.checkout_branch("main", ref_name)
 
 
 # ---------------------------------------------------------------------------
@@ -759,7 +733,7 @@ def create_niche(vault_root, participant_hex, context, niche_name):
     # Write niche record to registry checkout and commit
     registry_git = _registry_git_dir(vault_root, context)
     registry_co = _registry_checkout_dir(vault_root, context)
-    git_prefix = ["--git-dir", str(registry_git), "--work-tree", str(registry_co)]
+    registry = Repo(registry_git).with_work_tree(registry_co)
 
     niche_id = uuid7().hex()
     record = {
@@ -771,13 +745,13 @@ def create_niche(vault_root, participant_hex, context, niche_name):
     # On the very first niche, also commit .gitattributes so that concurrent
     # additions of the same-named niche produce explicit conflicts while
     # additions of different niches (different filenames) auto-merge cleanly.
-    if not _has_commits(registry_git):
+    if not registry.has_commits():
         (registry_co / ".gitattributes").write_text("*.json merge=binary\n")
-        gitCmd(git_prefix + ["add", ".gitattributes"])
+        registry.stage([".gitattributes"])
 
     (registry_co / f"{niche_name}.json").write_text(json.dumps(record, indent=2))
-    gitCmd(git_prefix + ["add", f"{niche_name}.json"])
-    gitCmd(git_prefix + ["commit", "-m", f"add niche {niche_name}"])
+    registry.stage([f"{niche_name}.json"])
+    registry.commit(f"add niche {niche_name}")
 
     return niche_id
 
@@ -890,22 +864,21 @@ def niche_residency(vault_root, participant_hex, context, niche_name):
 
 def publish(vault_root, participant_hex, context, niche_name, checkout_path,
             files=None, message=None):
-    """Stage changes in a checkout and commit. Returns commit hash."""
+    """Stage changes in a checkout and commit. Returns commit hash.
+
+    Raises NothingToPublishError if there are no staged changes to commit.
+    """
     context = _validate_context(participant_hex, context)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     checkout = pathlib.Path(checkout_path).resolve()
-    git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
+    repo = Repo(git_dir).with_work_tree(checkout)
 
-    if files:
-        for f in files:
-            gitCmd(git_prefix + ["add", f])
-    else:
-        gitCmd(git_prefix + ["add", "--all"])
+    repo.stage(list(files) if files else None)
 
-    gitCmd(git_prefix + ["commit", "-m", message or "Published changes"])
-
-    result = gitCmd(git_prefix + ["rev-parse", "HEAD"])
-    return result.stdout.strip()
+    sha = repo.commit(message or "Published changes")
+    if sha is None:
+        raise NothingToPublishError()
+    return sha
 
 
 def status(vault_root, participant_hex, context, niche_name, checkout_path):
@@ -913,32 +886,20 @@ def status(vault_root, participant_hex, context, niche_name, checkout_path):
     context = _validate_context(participant_hex, context)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
     checkout = pathlib.Path(checkout_path)
-    result = gitCmd(
-        ["--git-dir", str(git_dir), "--work-tree", str(checkout),
-         "status", "--porcelain"],
-        raise_on_error=False,
-    )
-    entries = []
-    for line in result.stdout.strip().splitlines():
-        if line:
-            entries.append({"status": line[:2].strip(), "path": line[3:]})
-    return entries
+    return [
+        {"status": e["xy"].strip(), "path": e["path"]}
+        for e in Repo(git_dir).with_work_tree(checkout).status()
+    ]
 
 
 def log(vault_root, participant_hex, context, niche_name, limit=20):
     """Get commit log for a niche. Returns list of {hash, message} dicts."""
     context = _validate_context(participant_hex, context)
     git_dir = _niche_git_dir(vault_root, context, niche_name)
-    result = gitCmd(
-        ["--git-dir", str(git_dir), "log", "--oneline", "-n", str(limit)],
-        raise_on_error=False,
-    )
-    entries = []
-    for line in result.stdout.strip().splitlines():
-        if line:
-            parts = line.split(" ", 1)
-            entries.append({"hash": parts[0], "message": parts[1] if len(parts) > 1 else ""})
-    return entries
+    return [
+        {"hash": e["sha"], "message": e["message"]}
+        for e in Repo(git_dir).log(limit)
+    ]
 
 
 def push_registry(vault_root, participant_hex, context, remote):

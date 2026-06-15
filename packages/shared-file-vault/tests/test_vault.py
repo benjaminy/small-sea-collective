@@ -8,6 +8,7 @@ from shared_file_vault.vault import (
     DuplicateCheckoutError,
     NicheResidency,
     NoCheckoutError,
+    NothingToPublishError,
     VaultMaterializationContext,
     add_checkout,
     create_niche,
@@ -259,6 +260,22 @@ def test_publish_and_log(playground_dir):
     entries = log(playground_dir, PARTICIPANT, TEAM, "notes")
     assert len(entries) == 1
     assert "first note" in entries[0]["message"]
+
+
+def test_publish_with_no_changes_raises(playground_dir):
+    """publish() on a clean checkout raises NothingToPublishError rather than
+    returning None — callers slice the result as a commit hash."""
+    _init(playground_dir)
+    create_niche(playground_dir, PARTICIPANT, TEAM, "notes")
+    dest = pathlib.Path(playground_dir) / "checkout" / "notes"
+    add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest))
+
+    (dest / "hello.txt").write_text("hello world")
+    publish(playground_dir, PARTICIPANT, TEAM, "notes", str(dest), message="first note")
+
+    # Nothing changed since the last publish -> nothing to commit.
+    with pytest.raises(NothingToPublishError):
+        publish(playground_dir, PARTICIPANT, TEAM, "notes", str(dest), message="noop")
 
 
 def test_status(playground_dir):
