@@ -125,21 +125,21 @@ class StaleCheckoutError(VaultSyncError):
 
 @dataclass
 class FetchResult:
-    member_id: str
+    teammate_id: str
     registry_sha: str | None
     niche_sha: str | None
 
 
 @dataclass
 class MergeResult:
-    member_id: str
+    teammate_id: str
     registry_sha: str | None
     niche_sha: str | None
 
 
 @dataclass
 class PeerUpdateStatus:
-    member_id: str
+    teammate_id: str
     parked_sha: str | None
     ready_to_merge: bool
     already_merged: bool
@@ -236,11 +236,11 @@ def get_signal_watermark(
     vault_root: str,
     participant_hex: str,
     context,
-    member_id: str,
+    teammate_id: str,
 ) -> int:
     """Return the last-seen signal count for a peer, defaulting to 0."""
     return vault.get_peer_signal_watermark(
-        vault_root, participant_hex, context, member_id
+        vault_root, participant_hex, context, teammate_id
     )
 
 
@@ -248,12 +248,12 @@ def set_signal_watermark(
     vault_root: str,
     participant_hex: str,
     context,
-    member_id: str,
+    teammate_id: str,
     count: int,
 ) -> None:
     """Persist a signal-count watermark for a peer."""
     vault.set_peer_signal_watermark(
-        vault_root, participant_hex, context, member_id, count
+        vault_root, participant_hex, context, teammate_id, count
     )
 
 
@@ -261,11 +261,11 @@ def clear_signal_watermark(
     vault_root: str,
     participant_hex: str,
     context,
-    member_id: str,
+    teammate_id: str,
 ) -> None:
     """Remove any persisted signal-count watermark for a peer."""
     vault.clear_peer_signal_watermark(
-        vault_root, participant_hex, context, member_id
+        vault_root, participant_hex, context, teammate_id
     )
 
 
@@ -435,10 +435,10 @@ def make_niche_remote(niche_name: str, session: SmallSeaSession) -> SmallSeaRemo
     )
 
 
-def make_peer_registry_remote(member_id: str, session: SmallSeaSession) -> PeerSmallSeaRemote:
+def make_peer_registry_remote(teammate_id: str, session: SmallSeaSession) -> PeerSmallSeaRemote:
     return PeerSmallSeaRemote(
         session.token,
-        member_id,
+        teammate_id,
         path_prefix=registry_path_prefix(),
         **_remote_kwargs(session),
     )
@@ -446,12 +446,12 @@ def make_peer_registry_remote(member_id: str, session: SmallSeaSession) -> PeerS
 
 def make_peer_niche_remote(
     niche_name: str,
-    member_id: str,
+    teammate_id: str,
     session: SmallSeaSession,
 ) -> PeerSmallSeaRemote:
     return PeerSmallSeaRemote(
         session.token,
-        member_id,
+        teammate_id,
         path_prefix=niche_path_prefix(niche_name),
         **_remote_kwargs(session),
     )
@@ -506,7 +506,7 @@ def pull_via_hub(
     participant_hex: str,
     team_name: str,
     niche_name: str,
-    from_member_id: str,
+    from_teammate_id: str,
     *,
     hub_port: int = SmallSeaClient.DEFAULT_PORT,
     _http_client=None,
@@ -517,7 +517,7 @@ def pull_via_hub(
         participant_hex,
         team_name,
         niche_name,
-        from_member_id,
+        from_teammate_id,
         hub_port=hub_port,
         _http_client=_http_client,
     )
@@ -526,7 +526,7 @@ def pull_via_hub(
         participant_hex,
         team_name,
         niche_name,
-        from_member_id,
+        from_teammate_id,
         hub_port=hub_port,
         _http_client=_http_client,
     )
@@ -537,7 +537,7 @@ def fetch_via_hub(
     participant_hex: str,
     team_name: str,
     niche_name: str,
-    from_member_id: str,
+    from_teammate_id: str,
     *,
     hub_port: int = SmallSeaClient.DEFAULT_PORT,
     _http_client=None,
@@ -553,7 +553,7 @@ def fetch_via_hub(
     observed_signal_count = 0
     try:
         for peer in session.session_peers():
-            if peer["member_id"] == from_member_id:
+            if peer["teammate_id"] == from_teammate_id:
                 observed_signal_count = int(peer.get("signal_count", 0))
                 break
     except Exception:
@@ -563,25 +563,25 @@ def fetch_via_hub(
         vault_root,
         participant_hex,
         context,
-        from_member_id,
-        make_peer_registry_remote(from_member_id, session),
+        from_teammate_id,
+        make_peer_registry_remote(from_teammate_id, session),
     )
     niche_sha = vault.fetch_niche(
         vault_root,
         participant_hex,
         context,
         niche_name,
-        from_member_id,
-        make_peer_niche_remote(niche_name, from_member_id, session),
+        from_teammate_id,
+        make_peer_niche_remote(niche_name, from_teammate_id, session),
     )
 
     # Advance the watermark now that the fetch succeeded.
     set_signal_watermark(
-        vault_root, participant_hex, context, from_member_id, observed_signal_count
+        vault_root, participant_hex, context, from_teammate_id, observed_signal_count
     )
 
     return FetchResult(
-        member_id=from_member_id,
+        teammate_id=from_teammate_id,
         registry_sha=registry_sha,
         niche_sha=niche_sha,
     )
@@ -592,7 +592,7 @@ def merge_via_hub(
     participant_hex: str,
     team_name: str,
     niche_name: str,
-    from_member_id: str,
+    from_teammate_id: str,
     *,
     hub_port: int = SmallSeaClient.DEFAULT_PORT,
     _http_client=None,
@@ -623,7 +623,7 @@ def merge_via_hub(
             vault_root,
             participant_hex,
             context,
-            from_member_id,
+            from_teammate_id,
         )
     except vault.MergeConflictError as exc:
         raise PullConflictError("registry", exc.paths) from exc
@@ -634,7 +634,7 @@ def merge_via_hub(
             participant_hex,
             context,
             niche_name,
-            from_member_id,
+            from_teammate_id,
         )
     except vault.MergeConflictError as exc:
         raise PullConflictError("niche", exc.paths) from exc
@@ -646,7 +646,7 @@ def merge_via_hub(
         raise StaleCheckoutError(exc.team_name, exc.niche_name, exc.checkout_path) from exc
 
     return MergeResult(
-        member_id=from_member_id,
+        teammate_id=from_teammate_id,
         registry_sha=registry_sha,
         niche_sha=niche_sha,
     )
@@ -657,7 +657,7 @@ def peer_update_status(
     participant_hex: str,
     context,
     niche_name: str,
-    member_id: str,
+    teammate_id: str,
     *,
     current_signal_count: int = 0,
 ) -> PeerUpdateStatus:
@@ -668,10 +668,10 @@ def peer_update_status(
     it against the locally persisted watermark.
     """
     registry_status = vault.peer_update_status(
-        vault_root, participant_hex, context, "registry", None, member_id
+        vault_root, participant_hex, context, "registry", None, teammate_id
     )
     niche_status = vault.peer_update_status(
-        vault_root, participant_hex, context, "niche", niche_name, member_id
+        vault_root, participant_hex, context, "niche", niche_name, teammate_id
     )
     parked_sha = niche_status["parked_sha"] or registry_status["parked_sha"]
     ready_to_merge = (
@@ -679,7 +679,7 @@ def peer_update_status(
     )
     already_merged = bool(parked_sha) and not ready_to_merge
     return PeerUpdateStatus(
-        member_id=member_id,
+        teammate_id=teammate_id,
         parked_sha=parked_sha,
         ready_to_merge=ready_to_merge,
         already_merged=already_merged,
@@ -689,7 +689,7 @@ def peer_update_status(
         last_merged_sha=niche_status["last_merged_sha"] or registry_status["last_merged_sha"],
         current_signal_count=current_signal_count,
         last_seen_signal_count=get_signal_watermark(
-            vault_root, participant_hex, context, member_id
+            vault_root, participant_hex, context, teammate_id
         ),
     )
 

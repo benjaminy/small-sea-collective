@@ -295,7 +295,7 @@ def test_no_crosstalk_between_berths(stub_app):
 def test_peer_with_higher_count_not_in_known_is_not_returned(stub_app):
     """A peer that pushed but is not in the known dict is not returned.
 
-    This is the expected behaviour when the app doesn't yet know about a member
+    This is the expected behaviour when the app doesn't yet know about a teammate
     (e.g. they joined after the last watch call). The spurious wakeup from
     membership change (test above) gives the app a chance to add them to known.
     """

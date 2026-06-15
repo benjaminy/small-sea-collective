@@ -17,7 +17,7 @@ DROPBOX_CONTENT = "https://content.dropboxapi.com/2"
 class DropboxCodSyncRemote(CodSyncRemote):
     """Direct Dropbox remote — wraps the Dropbox API for CodSync push/pull.
 
-    folder_prefix: e.g. "ss-{member_id_hex[:16]}" — all paths are stored under
+    folder_prefix: e.g. "ss-{teammate_id_hex[:16]}" — all paths are stored under
         this folder inside the app's Dropbox folder.
     """
 

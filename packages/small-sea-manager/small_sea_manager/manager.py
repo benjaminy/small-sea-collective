@@ -67,7 +67,7 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=11437, _h
 class TeamManager:
     """Business logic for team management operations.
 
-    Reads team/member/invitation data directly from the local SQLite DB.
+    Reads team/teammate/invitation data directly from the local SQLite DB.
     Hub sessions (via SmallSeaClient) are used only for cloud sync operations.
     """
 
@@ -302,13 +302,13 @@ class TeamManager:
             return {
                 "name": team_name,
                 "joined_locally": False,
-                "members": [],
+                "teammates": [],
                 "invitations": [],
                 "admission_events": [],
                 "viewer_is_admin": False,
                 "self_in_team": None,
             }
-        members = provisioning.list_members(self.root_dir, self.participant_hex, team_name)
+        teammates = provisioning.list_teammates(self.root_dir, self.participant_hex, team_name)
         invitations = provisioning.list_invitations(self.root_dir, self.participant_hex, team_name)
         self_in_team = provisioning.get_self_in_team(
             self.root_dir,
@@ -317,22 +317,22 @@ class TeamManager:
         )
         viewer_is_admin = False
         if self_in_team is not None:
-            for member in members:
-                if member["id"] != self_in_team:
+            for teammate in teammates:
+                if teammate["id"] != self_in_team:
                     continue
-                roles = member.get("berth_roles", [])
+                roles = teammate.get("berth_roles", [])
                 viewer_is_admin = any(role["role"] == "read-write" for role in roles)
                 break
         return {
             "name": team_name,
             "joined_locally": True,
-            "members": members,
+            "teammates": teammates,
             "invitations": invitations,
             "admission_events": admission_events.list_admission_events(
                 self.root_dir,
                 self.participant_hex,
                 team_name,
-                self_member_id_hex=self_in_team,
+                self_teammate_id_hex=self_in_team,
                 viewer_is_admin=viewer_is_admin,
             ),
             "viewer_is_admin": viewer_is_admin,
@@ -343,24 +343,24 @@ class TeamManager:
         """Delete a team. Must be an admin."""
         raise NotImplementedError("delete_team")
 
-    # --- Members ---
+    # --- Teammates ---
 
-    def list_members(self, team_name):
-        """List members of a team."""
-        return provisioning.list_members(self.root_dir, self.participant_hex, team_name)
+    def list_teammates(self, team_name):
+        """List teammates of a team."""
+        return provisioning.list_teammates(self.root_dir, self.participant_hex, team_name)
 
-    def remove_member(self, team_name, member):
-        """Remove a member from a team. Must be an admin."""
-        return provisioning.remove_member(
+    def remove_teammate(self, team_name, teammate):
+        """Remove a teammate from a team. Must be an admin."""
+        return provisioning.remove_teammate(
             self.root_dir,
             self.participant_hex,
             team_name,
-            member,
+            teammate,
         )
 
-    def announce_member_transport(self, team_name, *, protocol: str, url: str, bucket: str):
-        """Publish a signed transport announcement for the current member."""
-        return provisioning.announce_member_transport(
+    def announce_teammate_transport(self, team_name, *, protocol: str, url: str, bucket: str):
+        """Publish a signed transport announcement for the current teammate."""
+        return provisioning.announce_teammate_transport(
             self.root_dir,
             self.participant_hex,
             team_name,
@@ -369,10 +369,10 @@ class TeamManager:
             bucket=bucket,
         )
 
-    def publish_member_berth_storage_announcement(self, team_name, berth_id, allocation):
-        """Publish this member's storage location for one berth."""
+    def publish_teammate_berth_storage_announcement(self, team_name, berth_id, allocation):
+        """Publish this teammate's storage location for one berth."""
         team = provisioning._team_row(self.root_dir, self.participant_hex, team_name)
-        return provisioning.publish_member_berth_storage_announcement(
+        return provisioning.publish_teammate_berth_storage_announcement(
             self.root_dir,
             self.participant_hex,
             team_name,
@@ -389,11 +389,11 @@ class TeamManager:
             team_name,
         )
 
-    def set_member_role(self, team_name, member, role):
-        """Set a member's role (admin or observer)."""
+    def set_teammate_role(self, team_name, teammate, role):
+        """Set a teammate's role (admin or observer)."""
         if role not in ("admin", "observer"):
             raise ValueError(f"Unknown role: {role}. Must be 'admin' or 'observer'.")
-        raise NotImplementedError("set_member_role")
+        raise NotImplementedError("set_teammate_role")
 
     # --- Invitations ---
 
@@ -420,7 +420,7 @@ class TeamManager:
         return result
 
     def prepare_linked_device_team_join(self, team_name):
-        """Prepare the joining-device side of same-member encrypted team bootstrap."""
+        """Prepare the joining-device side of same-teammate encrypted team bootstrap."""
         return provisioning.prepare_linked_device_team_join(
             self.root_dir,
             self.participant_hex,
@@ -713,7 +713,7 @@ class TeamManager:
             return False
         try:
             known = {
-                peer["member_id"]: int(peer.get("signal_count", 0))
+                peer["teammate_id"]: int(peer.get("signal_count", 0))
                 for peer in session.session_peers()
             }
             result = session.watch_notifications(known, timeout=timeout)

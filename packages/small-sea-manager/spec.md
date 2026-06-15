@@ -5,7 +5,7 @@
 Small Sea Manager is the essential built-in user application for Small Sea Collective. It manages:
 
 - **Teams** — create, configure, and leave teams
-- **Membership** — invite members, accept invitations, set berth permissions, remove members from the local team view
+- **Membership** — invite teammates, accept invitations, set berth permissions, remove teammates from the local team view
 - **Devices** — link new devices, revoke old ones, manage the participant's device identity
 - **Apps** — register which apps are active for each team (berth management)
 - **Service Subscriptions** — configure the cloud storage accounts, notification services, and other general-purpose services that the Hub needs to operate
@@ -85,7 +85,7 @@ Stores this participant's personal Small Sea metadata. The Hub reads it to know 
 | `participant_unification` | Maps device-local participant IDs to a canonical person ID (see §Device Management) |
 | `user_device` | Devices registered as belonging to this participant; each carries explicit bootstrap encryption and signing public keys |
 | `nickname` | Human-readable names associated with this participant |
-| `team` | Lightweight pointer to each team the participant belongs to; `self_in_team` is the member ID in that team's DB |
+| `team` | Lightweight pointer to each team the participant belongs to; `self_in_team` is the teammate ID in that team's DB |
 | `app` | Apps registered for the NoteToSelf team |
 | `team_app_berth` | Berths for the NoteToSelf team (one per app; carries `team_id` since NoteToSelf DB may host multiple teams' personal berths) |
 | `cloud_storage` | Shared cloud account locator metadata (`protocol`, `url`, `client_id`); `path_metadata` is provider adapter cache, not a berth location |
@@ -107,18 +107,18 @@ Schema versions are tracked independently via SQLite `PRAGMA user_version`.
 
 ### Team DB (`{TeamName}/Sync/core.db`)
 
-Stores the shared state for one team. All members maintain their own copy; changes are merged via Cod Sync and the splice-sqlite merge driver.
+Stores the shared state for one team. All teammates maintain their own copy; changes are merged via Cod Sync and the splice-sqlite merge driver.
 
 | Table | Purpose |
 |-------|---------|
-| `member` | One row per team member; the primary key is that member's team-local identity; member-facing fields such as `display_name` live here |
-| `member_unification` | Maps multiple member IDs to the same person (for the oops-unification device flow; see §Device Management) |
+| `teammate` | One row per team teammate; the primary key is that teammate's team-local identity; teammate-facing fields such as `display_name` live here |
+| `teammate_unification` | Maps multiple teammate IDs to the same person (for the oops-unification device flow; see §Device Management) |
 | `app` | Apps active for this team |
 | `team_app_berth` | Berths for this team (one per app; `team_id` omitted — implicit from which DB this is) |
-| `berth_role` | Per-member, per-berth role assignments: `read-only` or `read-write` |
+| `berth_role` | Per-teammate, per-berth role assignments: `read-only` or `read-write` |
 | `invitation` | Invitation records (pending, accepted, revoked) |
 | `team_device` | One row per team device; carries device identity only (no storage-routing fields) |
-| `member_berth_storage_announcement` | Signed peer-readable storage locations scoped to `(member_id, berth_id)` |
+| `teammate_berth_storage_announcement` | Signed peer-readable storage locations scoped to `(teammate_id, berth_id)` |
 
 Manager-local admission prompt dismissals are stored in a per-team sidecar DB outside `Sync/`, keyed by `(event_type, artifact_id)`, so ignored prompts persist across restarts without becoming synced team state.
 
@@ -149,14 +149,14 @@ Important clarifications:
 - These roles are **local policy and protocol expectations**, not centrally
   enforced entitlements.
 - `read-only` means peers participating in the protocol should continue doing
-  whatever key exchange is needed for that member to read updates in the berth.
+  whatever key exchange is needed for that teammate to read updates in the berth.
 - `read-write` means peers participating in the protocol should merge that
-  member's updates for the berth into their own clone.
+  teammate's updates for the berth into their own clone.
 - `admin` is not a special cryptographic authority. It just means
   `read-write` on `{Team}/SmallSeaCollectiveCore`.
 
 > The Hub respects these roles when deciding whose changes to incorporate: it
-> only merges changes from members who have `read-write` permission in its
+> only merges changes from teammates who have `read-write` permission in its
 > **local** copy of the team DB.
 
 This means different participants can legitimately have different views of who
@@ -225,7 +225,7 @@ Per-team join remains a separate later flow:
 
 #### Linked-device team bootstrap into an existing team
 
-The current implemented slice is **per-team** and **same-member**: an already
+The current implemented slice is **per-team** and **same-teammate**: an already
 linked device can be bootstrapped into one existing team by another device that
 already belongs to the same participant in that team. This is not a blanket
 "join every known team" operation. Each team is bootstrapped independently.
@@ -234,7 +234,7 @@ Protocol/product boundary:
 
 - **Payload 0 prerequisite** — Before linked-team bootstrap begins, the joining
   device must already know the team exists in shared NoteToSelf and must already
-  have a readable baseline clone of that team's repo. The current same-member
+  have a readable baseline clone of that team's repo. The current same-teammate
   bootstrap flow does **not** solve team discovery or baseline delivery by
   itself.
   Evidence: `prepare_linked_device_team_join(...)` looks up the team from the
@@ -243,7 +243,7 @@ Protocol/product boundary:
   baseline explicitly with `_copy_team_baseline(...)` in
   `tests/test_linked_device_bootstrap.py`.
 - **Scope of the current slice** — The current flow bootstraps the new device
-  into one team using a sibling device of the same member. As part of bootstrap,
+  into one team using a sibling device of the same teammate. As part of bootstrap,
   the sibling hands off its snapshot of peer sender keys, giving the new device
   join-time-forward access across all senders the sibling held. Each team is
   bootstrapped independently; this is not a blanket "join every known team"
@@ -263,7 +263,7 @@ Protocol/product boundary:
   `receive_sender_key_distribution(...)` in
   `small_sea_manager/provisioning.py`.
 
-Current same-member flow:
+Current same-teammate flow:
 
 1. The joining device calls `prepare_linked_device_team_join(...)`, generates a
    fresh team-device keypair plus X3DH prekeys, stores the bootstrap session in
@@ -293,7 +293,7 @@ Current same-member flow:
    `receive_sender_key_distribution(...)`.
    Evidence: `redistribute_sender_key(...)`,
    `receive_sender_key_distribution(...)`, and
-   `test_linked_device_bootstrap_round_trip_same_member` in
+   `test_linked_device_bootstrap_round_trip_same_teammate` in
    `small_sea_manager/provisioning.py`.
 
 Historical boundary and visibility:
@@ -367,7 +367,7 @@ Storage boundary:
   in `NoteToSelf/Local/device_local.db` and persists as normal local schema; it
   is not a shared `NoteToSelf/Sync/core.db` table.
   Evidence: `small-sea-note-to-self/small_sea_note_to_self/sql/device_local_schema.sql`
-  and `test_linked_device_bootstrap_round_trip_same_member`.
+  and `test_linked_device_bootstrap_round_trip_same_teammate`.
 
 #### Unify with existing identity — secondary (oops) flow
 
@@ -375,7 +375,7 @@ For the case where Small Sea was set up on a new device independently (creating 
 
 **Shallow unification (implemented):** Write a `participant_unification` row linking the two participant IDs. This tells the local Manager to treat them as the same person for display purposes. Team memberships on both sides remain separate.
 
-**Deep unification (stub — not yet implemented):** Merging team memberships, reconciling member IDs across teams, and re-keying is deferred. The Manager should raise a clear `NotImplementedError` with an explanation if deep unification is attempted.
+**Deep unification (stub — not yet implemented):** Merging team memberships, reconciling teammate IDs across teams, and re-keying is deferred. The Manager should raise a clear `NotImplementedError` with an explanation if deep unification is attempted.
 
 #### List devices
 
@@ -392,7 +392,7 @@ Deletes the `user_device` row and triggers key rotation (so the removed device c
 #### Create team
 
 Creates `{TeamName}/Sync/` directory with a fresh team DB and git repo. Adds a
-Team pointer to NoteToSelf DB. The creator is added as the first member with
+Team pointer to NoteToSelf DB. The creator is added as the first teammate with
 `admin` role on all berths, meaning their local starting view is that they have
 `read-write` access everywhere, including Core.
 
@@ -411,36 +411,36 @@ Reads the `team` table from NoteToSelf DB. Does not query the Hub.
 
 #### Get team details
 
-Reads from the team's `core.db` directly: members, berths, pending invitations.
+Reads from the team's `core.db` directly: teammates, berths, pending invitations.
 
 #### Leave team
 
 Removes the Team pointer from NoteToSelf DB. Deletes the `{TeamName}/Sync/` directory locally. Pushes the NoteToSelf change so other devices can pick it up and do the corresponding deletion. Other apps are responsible for cleaning up their own data in that team's berths.
 
-> There is no "disband team" operation. Other members continue to exist. A member leaving is purely a local act.
+> There is no "disband team" operation. Other teammates continue to exist. A teammate leaving is purely a local act.
 
 ---
 
 ### Membership
 
-#### List members
+#### List teammates
 
-Reads `member` + `berth_role` from the team DB. Does not query the Hub.
+Reads `teammate` + `berth_role` from the team DB. Does not query the Hub.
 
-#### Set member role
+#### Set teammate role
 
-Writes `berth_role` rows for the target member: sets
+Writes `berth_role` rows for the target teammate: sets
 `read-write`/`read-only` on each berth according to the role mapping in
 §Roles. Commits and eventually pushes.
 
 This is a mutation to the local clone of the team DB. It becomes socially
 important only insofar as peers adopt that updated view and behave accordingly.
 
-#### Remove member
+#### Remove teammate
 
-Deletes the member's `berth_role` rows and `peer` row from the local team DB
+Deletes the teammate's `berth_role` rows and `peer` row from the local team DB
 clone. Commits. Triggers key rotation so that peers following this updated view
-can stop giving the removed member future readable updates.
+can stop giving the removed teammate future readable updates.
 
 This is not a magical globally authoritative act. It means, roughly, "my clone
 now says this person is no longer part of the team, and I am publishing that
@@ -460,17 +460,17 @@ See §Invitation Protocol for the full step-by-step.
 
 #### Create invitation
 
-Initiates an invitation proposal: allocates a fresh UUIDv7 `member_id` for the
+Initiates an invitation proposal: allocates a fresh UUIDv7 `teammate_id` for the
 prospective invitee, anchors the proposal to the current team-history commit
-hash (freezing the admin roster, membership roster, and member→device mapping
+hash (freezing the admin roster, membership roster, and teammate→device mapping
 at that snapshot), records a proposal shell in team DB, commits and pushes, and
 returns a proposal token for out-of-band delivery to the invitee.
 
 Inputs: `team_name`, optional `invitee_label`, `role` (default: admin).
 
-Token contents: proposal ID, nonce, team name, inviter member ID, inviter display
+Token contents: proposal ID, nonce, team name, inviter teammate ID, inviter display
 name, inviter cloud endpoint (protocol + URL only — no credentials), and the
-pre-allocated invitee `member_id`. Privacy is provided by E2E encryption
+pre-allocated invitee `teammate_id`. Privacy is provided by E2E encryption
 (issue #0008), not by access control.
 
 The proposal shell is visible to all admins in the frozen governance set as
@@ -496,7 +496,7 @@ Takes an out-of-band proposal token. All cloud I/O goes through the Hub:
    adds a Team pointer to NoteToSelf DB. (All local DB/git ops; no network.)
 3. Generates a fresh team device keypair (bootstrap-encryption key + signing
    key).
-4. Signs an acceptance blob binding to the inviter-allocated `member_id` and
+4. Signs an acceptance blob binding to the inviter-allocated `teammate_id` and
    the proposal ID/nonce. Cloud endpoints are **not** included in the
    acceptance blob — transport is configured post-admission (B7 scope).
 
@@ -519,40 +519,40 @@ no-cloud team creation.
 Takes the invitee's out-of-band acceptance blob. The inviter:
 
 1. Verifies the acceptance blob (signature valid, binds to the correct
-   `member_id` and proposal nonce).
+   `teammate_id` and proposal nonce).
 2. Assembles the full admission transcript: proposal ID/nonce, team-history
    anchor reference, frozen-governance-state digest (covers admin roster,
-   membership roster, and member→device mapping at the anchor), inviter/
-   finalizer `member_id`, pre-allocated invitee `member_id`, and the invitee's
+   membership roster, and teammate→device mapping at the anchor), inviter/
+   finalizer `teammate_id`, pre-allocated invitee `teammate_id`, and the invitee's
    signed acceptance blob carrying the invitee's concrete device keys.
    Transport metadata is explicitly excluded from the transcript.
 3. Signs an approval over the transcript (counts as 1 toward quorum). Publishes
    transcript + approval as an update to the existing proposal row.
 4. For `quorum > 1`: waits for other admins' approval signatures to accrue in
    team DB. Each approval is valid iff its signing key appears in a
-   `device_link` cert at the anchor that maps to a current-admin `member_id`
-   (the member/device bridge derivation). Quorum counts distinct
-   `admin_member_id`s over valid approval rows; multiple approvals from
+   `device_link` cert at the anchor that maps to a current-admin `teammate_id`
+   (the teammate/device bridge derivation). Quorum counts distinct
+   `admin_teammate_id`s over valid approval rows; multiple approvals from
    different devices of the same admin dedupe to one vote.
 5. Upon observing quorum met, signs and publishes the finalization mutation.
    Commits.
 
-After finalization, the newly admitted member sets up their incoming cloud
-endpoint via the member-transport-configuration flow (B7) and then publishes
+After finalization, the newly admitted teammate sets up their incoming cloud
+endpoint via the teammate-transport-configuration flow (B7) and then publishes
 their own sender key via `redistribute_sender_key(...)`.
 
 DB schema for proposals, acceptance transcripts, and approval signatures: see
 [SQL Schemas → Team schema](#sql-schemas) below — the current `invitation`
 table is a placeholder pending the B5 schema definition.
 
-#### Member berth storage announcements
+#### Teammate berth storage announcements
 
 Mutable storage routing is published after admission.
 It is not part of the immutable admission transcript.
 
-Storage routing is scoped to `(member_id, berth_id)`.
+Storage routing is scoped to `(teammate_id, berth_id)`.
 Different teammates may store their clones of the same berth in different
-providers or accounts, so member-only transport is not precise enough for berth
+providers or accounts, so teammate-only transport is not precise enough for berth
 storage.
 
 The team DB therefore carries a separate append-only signed table:
@@ -560,7 +560,7 @@ The team DB therefore carries a separate append-only signed table:
 | Column | Meaning |
 |-------|---------|
 | `announcement_id` | UUIDv7 primary key; also the ordering key for "newest wins" |
-| `member_id` | Team-local identity whose storage location is being published |
+| `teammate_id` | Team-local identity whose storage location is being published |
 | `berth_id` | Berth whose readable storage location is being published |
 | `protocol` | Storage protocol (`s3`, `dropbox`, `gdrive`, etc.) |
 | `url` | Provider endpoint or account locator URL |
@@ -572,7 +572,7 @@ The team DB therefore carries a separate append-only signed table:
 Canonical signed payload fields are:
 
 - `announcement_id`
-- `member_id`
+- `teammate_id`
 - `berth_id`
 - `protocol`
 - `url`
@@ -586,13 +586,13 @@ JSON object encoding with `sort_keys=True` and `separators=(",", ":")`.
 Verification and selection rules:
 
 1. Team DB sync may bring in any syntactically valid row.
-2. Effective storage for `(member_id, berth_id)` is selected by descending
+2. Effective storage for `(teammate_id, berth_id)` is selected by descending
    UUIDv7 `announcement_id`, not by `announced_at`.
 3. This dependence on UUIDv7 ordering is intentional.
    If announcement IDs ever stop being time-ordered, the selection rule must
    change in the same branch.
 4. A row is usable iff its signature verifies under `signer_key_id` and that
-   signer resolves, at derivation time, to one of the member's currently
+   signer resolves, at derivation time, to one of the teammate's currently
    trusted device keys via the team DB's `key_certificate` history.
 5. Validity is structural.
    There is no max-age policy in v1.
@@ -606,7 +606,7 @@ Important implementation bridge:
 - when reconstructing `wrasse_trust.identity.KeyCertificate` objects from DB
   rows, callers must inject the enclosing team's `team_id`
 - callers must also bridge DB field names to dataclass fields:
-  `issuer_member_id -> issuer_participant_id`,
+  `issuer_teammate_id -> issuer_participant_id`,
   `issued_at -> issued_at_iso`,
   and JSON-decode `claims TEXT -> claims dict`
 
@@ -617,14 +617,14 @@ issuance path.
 
 Current runtime status exposed by Manager reads is:
 
-- `announced` — a valid member-berth storage announcement is selected
+- `announced` — a valid teammate-berth storage announcement is selected
 - `missing` — no usable current announcement exists
 
-A signed `member_berth_storage_announcement` is the only source of peer storage
+A signed `teammate_berth_storage_announcement` is the only source of peer storage
 routing. `team_device` carries device identity only and has no transport
 columns; there is no legacy fallback. Admission, bootstrap, and team creation
-publish a member-berth storage announcement for the berth they allocate, so a
-member with no valid signed announcement simply reports `missing`.
+publish a teammate-berth storage announcement for the berth they allocate, so a
+teammate with no valid signed announcement simply reports `missing`.
 
 ---
 
@@ -638,7 +638,7 @@ App management has two explicit levels:
   the participant's devices. It does not create an app data directory.
 - **Team-level activation** records that an app may use a team's berth.
   Manager writes the team DB `app` row, `team_app_berth`, and `berth_role` rows
-  for current members.
+  for current teammates.
 
 These are separate operations because "I use this app" and "this app may access
 this team" are separate human decisions. Apps never write either table
@@ -683,7 +683,7 @@ CREATE TABLE app_unification (
 
 `activate_app_for_team(root_dir, participant_hex, team_name, app_name)` inserts
 an `app` row and a `team_app_berth` row in the team DB using a random local app
-ID. It grants `berth_role` rows for all current members using their existing Core
+ID. It grants `berth_role` rows for all current teammates using their existing Core
 role where possible, then commits the team DB.
 
 The Manager does not know about "blessed" bundled app names. Shared File Vault
@@ -822,15 +822,15 @@ on the allocation still matching the materialization request.
 V1 allows at most one allocation per berth. It does not add provider-migration
 history columns; those can be added with migration tooling later.
 
-#### Member berth storage announcements
+#### Teammate berth storage announcements
 
-A member berth storage announcement is the team-visible signed statement that
-tells peers where one member stores readable data for one berth. It is scoped
-to `(member_id, berth_id)`.
+A teammate berth storage announcement is the team-visible signed statement that
+tells peers where one teammate stores readable data for one berth. It is scoped
+to `(teammate_id, berth_id)`.
 
-This replaces member-scoped transport announcements for berth storage routing.
+This replaces teammate-scoped transport announcements for berth storage routing.
 Different teammates may store their clones of the same berth in different
-providers or accounts, so neither `member_id` alone nor `berth_id` alone is
+providers or accounts, so neither `teammate_id` alone nor `berth_id` alone is
 sufficient.
 
 The announcement belongs in the relevant team Core DB for team berths. For
@@ -841,18 +841,18 @@ durably recorded.
 
 Selection mirrors the current transport-announcement rule: sort
 `announcement_id` descending and choose the first valid row for
-`(member_id, berth_id)`. The ID is UUIDv7, so this is the time-ordering rule;
+`(teammate_id, berth_id)`. The ID is UUIDv7, so this is the time-ordering rule;
 `announced_at` is display/audit data. Validity is structural: the signature
-verifies and the signer key is currently trusted for `member_id`. There is no
+verifies and the signer key is currently trusted for `teammate_id`. There is no
 max-age policy in v1.
 
-The table intentionally does not enforce SQLite foreign keys on `member_id` or
+The table intentionally does not enforce SQLite foreign keys on `teammate_id` or
 `berth_id`. Invitation and linked-device bootstrap flows can temporarily know
-the signed statement before every clone has adopted the corresponding member,
+the signed statement before every clone has adopted the corresponding teammate,
 berth, or trust rows. Selection treats structurally invalid or untrusted rows
 as inert.
 
-A valid member-berth storage announcement is the sole source of peer storage
+A valid teammate-berth storage announcement is the sole source of peer storage
 routing. `team_device` carries no transport columns, so there is no legacy
 fallback to take precedence over.
 
@@ -887,7 +887,7 @@ The Manager owns admission-event interpretation for both the UI and Hub-triggere
 push prompts. `list_admission_events(...)` remains the UI-facing event list.
 For Hub delivery, the Manager exposes a narrower helper that returns only
 notification-eligible teammate `LINKED_DEVICE` events, already filtered for the
-observing member and local disposition state.
+observing teammate and local disposition state.
 
 Admission-event disposition is device-local and per-team, stored beside the
 team clone in `admission-events-local.db`. The table records independent
@@ -932,9 +932,9 @@ shared team DB.
 Alice (inviter)                    Bob (invitee)         Other admins
   |                                     |                      |
   | create_invitation()                 |                      |
-  |  → allocates invitee member_id      |                      |
+  |  → allocates invitee teammate_id      |                      |
   |  → anchors to team-history commit   |                      |
-  |    hash (freezes admin/member/      |                      |
+  |    hash (freezes admin/teammate/      |                      |
   |    device mapping at snapshot)      |                      |
   |  → publishes proposal shell to      |                      |
   |    {TeamName}/Sync/core.db            |                      |
@@ -951,7 +951,7 @@ Alice (inviter)                    Bob (invitee)         Other admins
   |                      → clones {TeamName}/Sync locally        |
   |                      → generates fresh team device keypair |
   |                      → signs acceptance blob binding to    |
-  |                        inviter-allocated member_id and     |
+  |                        inviter-allocated teammate_id and     |
   |                        proposal nonce                      |
   |                        (NO cloud endpoint in blob)         |
   |                      → returns acceptance_b64              |
@@ -961,7 +961,7 @@ Alice (inviter)                    Bob (invitee)         Other admins
   | finalize_invitation(acceptance_b64) |                      |
   |  → verifies acceptance blob         |                      |
   |  → assembles admission transcript   |                      |
-  |    (anchor, member_id, invitee keys;|                      |
+  |    (anchor, teammate_id, invitee keys;|                      |
   |     NO transport metadata)          |                      |
   |  → signs approval over transcript   |                      |
   |  → publishes transcript + approval  |                      |
@@ -983,13 +983,13 @@ Alice (inviter)                    Bob (invitee)         Other admins
   |               own sender key via redistribute_sender_key]  |
 ```
 
-**Token contents:** proposal ID, nonce, team name, inviter member ID, inviter
+**Token contents:** proposal ID, nonce, team name, inviter teammate ID, inviter
 display name, inviter cloud endpoint (protocol + URL only — no credentials),
-pre-allocated invitee `member_id`.
+pre-allocated invitee `teammate_id`.
 
 **Acceptance blob contents:** proposal ID, nonce, the invitee's concrete device
 bootstrap-encryption key and signing key, confirmation of the inviter-allocated
-`member_id`. No cloud endpoint — transport is not part of the admission
+`teammate_id`. No cloud endpoint — transport is not part of the admission
 transcript.
 
 **Security model:** Inviter's bucket is publicly readable (anonymous reads via
@@ -1001,16 +1001,16 @@ inviter proceeds directly from publishing transcript + own approval to
 publishing finalization.
 
 **Proposal invalidation:** If the admin roster, membership roster, or
-member→device mapping changes relative to the anchor before finalization, the
+teammate→device mapping changes relative to the anchor before finalization, the
 proposal is invalid and cannot be finalized. The inviter must start a new
 proposal from the updated state.
 
-**Member/device bridge for approvals:** Each approval signature is validated
-against the member→device mapping frozen at the anchor. An approval is valid
+**Teammate/device bridge for approvals:** Each approval signature is validated
+against the teammate→device mapping frozen at the anchor. An approval is valid
 iff the signing device key appears in a `device_link` cert at the anchor that
-maps to a current-admin `member_id`. Approvals by post-anchor devices or
+maps to a current-admin `teammate_id`. Approvals by post-anchor devices or
 non-admins are rejected; multiple approvals from devices of the same admin
-dedupe to one vote per `admin_member_id`.
+dedupe to one vote per `admin_teammate_id`.
 
 ---
 
@@ -1085,7 +1085,7 @@ CREATE TABLE IF NOT EXISTS nickname (
 CREATE TABLE IF NOT EXISTS team (
     id           BLOB PRIMARY KEY,
     name         TEXT NOT NULL,
-    self_in_team BLOB NOT NULL   -- member ID in the team's own DB
+    self_in_team BLOB NOT NULL   -- teammate ID in the team's own DB
 );
 
 CREATE TABLE IF NOT EXISTS app (
@@ -1177,7 +1177,7 @@ CREATE TABLE IF NOT EXISTS team_device_key_secret (
 ```sql
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS member (
+CREATE TABLE IF NOT EXISTS teammate (
     id BLOB PRIMARY KEY,
     display_name TEXT,
     identity_public_key BLOB
@@ -1197,39 +1197,39 @@ CREATE TABLE IF NOT EXISTS team_app_berth (
 
 CREATE TABLE IF NOT EXISTS berth_role (
     id        BLOB PRIMARY KEY,
-    member_id BLOB NOT NULL,
+    teammate_id BLOB NOT NULL,
     berth_id  BLOB NOT NULL,
     role      TEXT NOT NULL CHECK(role IN ('read-only', 'read-write')),
-    FOREIGN KEY (member_id) REFERENCES member(id)          ON DELETE CASCADE,
+    FOREIGN KEY (teammate_id) REFERENCES teammate(id)          ON DELETE CASCADE,
     FOREIGN KEY (berth_id)  REFERENCES team_app_berth(id)  ON DELETE CASCADE
 );
 
 -- [SCHEMA TBD — to be defined in B5]
 -- Target fields (from accepted model):
 --   proposal table: proposal_id, nonce, team_history_anchor (commit hash),
---     frozen_governance_digest, inviter_member_id (= finalizer_member_id),
---     pre_allocated_invitee_member_id, role, invitee_label, state,
+--     frozen_governance_digest, inviter_teammate_id (= finalizer_teammate_id),
+--     pre_allocated_invitee_teammate_id, role, invitee_label, state,
 --     created_at, expires_at
 --   acceptance_transcript: proposal_id (FK), invitee_device_bootstrap_key,
 --     invitee_device_signing_key, invitee_acceptance_signature
---   admin_approval_signatures: proposal_id (FK), admin_member_id,
+--   admin_approval_signatures: proposal_id (FK), admin_teammate_id,
 --     approver_device_key_id, transcript_digest, signature, created_at
 -- Transport metadata (cloud endpoints etc.) is NOT part of this schema;
--- that is configured post-admission via the B7 member-transport flow.
+-- that is configured post-admission via the B7 teammate-transport flow.
 
 CREATE TABLE IF NOT EXISTS team_device (
     device_key_id BLOB PRIMARY KEY,
-    member_id BLOB NOT NULL,
+    teammate_id BLOB NOT NULL,
     public_key BLOB NOT NULL,
     created_at TEXT NOT NULL,
     -- device identity only: no protocol/url/bucket storage-routing columns.
-    -- Peer storage routing lives in member_berth_storage_announcement.
-    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
+    -- Peer storage routing lives in teammate_berth_storage_announcement.
+    FOREIGN KEY (teammate_id) REFERENCES teammate(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS member_berth_storage_announcement (
+CREATE TABLE IF NOT EXISTS teammate_berth_storage_announcement (
     announcement_id BLOB PRIMARY KEY,
-    member_id       BLOB NOT NULL,
+    teammate_id       BLOB NOT NULL,
     berth_id        BLOB NOT NULL,
     protocol        TEXT NOT NULL,
     url             TEXT NOT NULL,

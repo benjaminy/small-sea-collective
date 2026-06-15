@@ -1,6 +1,6 @@
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS member (
+CREATE TABLE IF NOT EXISTS teammate (
     id BLOB PRIMARY KEY,
     display_name TEXT,
     identity_public_key BLOB
@@ -20,10 +20,10 @@ CREATE TABLE IF NOT EXISTS team_app_berth (
 
 CREATE TABLE IF NOT EXISTS berth_role (
     id BLOB PRIMARY KEY,
-    member_id BLOB NOT NULL,
+    teammate_id BLOB NOT NULL,
     berth_id BLOB NOT NULL,
     role TEXT NOT NULL CHECK(role IN ('read-only', 'read-write')),
-    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE,
+    FOREIGN KEY (teammate_id) REFERENCES teammate(id) ON DELETE CASCADE,
     FOREIGN KEY (berth_id) REFERENCES team_app_berth(id) ON DELETE CASCADE
 );
 
@@ -50,8 +50,8 @@ CREATE TABLE IF NOT EXISTS admission_proposal (
     proposal_id BLOB PRIMARY KEY,
     nonce BLOB NOT NULL,
     team_id BLOB NOT NULL,
-    inviter_member_id BLOB NOT NULL,
-    invitee_member_id BLOB NOT NULL,
+    inviter_teammate_id BLOB NOT NULL,
+    invitee_teammate_id BLOB NOT NULL,
     invitee_label TEXT,
     role TEXT NOT NULL DEFAULT 'admin',
     anchor_commit TEXT NOT NULL,
@@ -74,7 +74,7 @@ CREATE TABLE IF NOT EXISTS admission_proposal (
 CREATE TABLE IF NOT EXISTS admin_approval (
     approval_id BLOB PRIMARY KEY,
     proposal_id BLOB NOT NULL,
-    admin_member_id BLOB NOT NULL,
+    admin_teammate_id BLOB NOT NULL,
     approver_device_key_id BLOB NOT NULL,
     transcript_digest BLOB NOT NULL,
     signature BLOB NOT NULL,
@@ -85,10 +85,10 @@ CREATE TABLE IF NOT EXISTS admin_approval (
 
 CREATE TABLE IF NOT EXISTS team_device (
     device_key_id BLOB PRIMARY KEY,
-    member_id BLOB NOT NULL,
+    teammate_id BLOB NOT NULL,
     public_key BLOB NOT NULL,
     created_at TEXT NOT NULL,
-    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
+    FOREIGN KEY (teammate_id) REFERENCES teammate(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS key_certificate (
@@ -97,28 +97,28 @@ CREATE TABLE IF NOT EXISTS key_certificate (
     subject_key_id BLOB NOT NULL,
     subject_public_key BLOB NOT NULL,
     issuer_key_id BLOB NOT NULL,
-    issuer_member_id BLOB NOT NULL,
+    issuer_teammate_id BLOB NOT NULL,
     issued_at TEXT NOT NULL,
     claims TEXT NOT NULL,
     signature BLOB NOT NULL,
-    FOREIGN KEY (issuer_member_id) REFERENCES member(id) ON DELETE CASCADE
+    FOREIGN KEY (issuer_teammate_id) REFERENCES teammate(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS member_transport_announcement (
+CREATE TABLE IF NOT EXISTS teammate_transport_announcement (
     announcement_id BLOB PRIMARY KEY,
-    member_id BLOB NOT NULL,
+    teammate_id BLOB NOT NULL,
     protocol TEXT NOT NULL,
     url TEXT NOT NULL,
     bucket TEXT NOT NULL,
     announced_at TEXT NOT NULL,
     signer_key_id BLOB NOT NULL,
     signature BLOB NOT NULL,
-    FOREIGN KEY (member_id) REFERENCES member(id) ON DELETE CASCADE
+    FOREIGN KEY (teammate_id) REFERENCES teammate(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS member_berth_storage_announcement (
+CREATE TABLE IF NOT EXISTS teammate_berth_storage_announcement (
     announcement_id BLOB PRIMARY KEY,
-    member_id BLOB NOT NULL,
+    teammate_id BLOB NOT NULL,
     berth_id BLOB NOT NULL,
     protocol TEXT NOT NULL,
     url TEXT NOT NULL,
@@ -128,8 +128,8 @@ CREATE TABLE IF NOT EXISTS member_berth_storage_announcement (
     signature BLOB NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_member_berth_storage_announcement_scan
-    ON member_berth_storage_announcement(member_id, berth_id, announcement_id);
+CREATE INDEX IF NOT EXISTS idx_teammate_berth_storage_announcement_scan
+    ON teammate_berth_storage_announcement(teammate_id, berth_id, announcement_id);
 
 CREATE TABLE IF NOT EXISTS device_prekey_bundle (
     device_key_id BLOB PRIMARY KEY,

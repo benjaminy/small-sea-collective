@@ -116,7 +116,7 @@ Once the core is honest about its semantics, the surrounding pieces matter.
 
 - Multiple calendars per team (work events, social events, deadlines, etc.) exposed as separate CalDAV collections under one Small Sea team.
 - The provisioning flow upgraded from "rough" to "easy enough to demo to a non-technical friend without preparing them."
-- Export-to-`.ics` as a partial answer to unknown 6: a team member can hand a single event or a curated subset to someone outside Small Sea over ordinary email.
+- Export-to-`.ics` as a partial answer to unknown 6: a team teammate can hand a single event or a curated subset to someone outside Small Sea over ordinary email.
 - Notifications and reminders posture clarified (current leaning: let the calendar client handle reminders; Tide Table does not push, because Small Sea has its own notification rails and double-notifying users is worse than no notifications).
 
 ## Indefinitely Deferred

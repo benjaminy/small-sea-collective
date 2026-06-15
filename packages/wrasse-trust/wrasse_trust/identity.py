@@ -203,17 +203,17 @@ def issue_device_binding_cert(
     issuer_key: ParticipantKey,
     issuer_private_key: bytes,
     team_id: bytes,
-    member_id: bytes,
+    teammate_id: bytes,
 ) -> KeyCertificate:
-    """Issue a team-scoped device-binding cert for one member's device key."""
+    """Issue a team-scoped device-binding cert for one teammate's device key."""
     return issue_cert(
         subject_key,
         issuer_key,
         issuer_private_key,
-        issuer_participant_id=member_id,
+        issuer_participant_id=teammate_id,
         cert_type=CertType.DEVICE_BINDING,
         team_id=team_id,
-        claims={"member_id": member_id.hex()},
+        claims={"teammate_id": teammate_id.hex()},
     )
 
 
@@ -222,18 +222,18 @@ def issue_membership_cert(
     issuer_key: ParticipantKey,
     issuer_private_key: bytes,
     team_id: bytes,
-    issuer_member_id: bytes,
-    admitted_member_id: bytes,
+    issuer_teammate_id: bytes,
+    admitted_teammate_id: bytes,
 ) -> KeyCertificate:
-    """Issue a team-scoped membership cert for one member's initial device key."""
+    """Issue a team-scoped membership cert for one teammate's initial device key."""
     return issue_cert(
         subject_key,
         issuer_key,
         issuer_private_key,
-        issuer_participant_id=issuer_member_id,
+        issuer_participant_id=issuer_teammate_id,
         cert_type=CertType.MEMBERSHIP,
         team_id=team_id,
-        claims={"member_id": admitted_member_id.hex()},
+        claims={"teammate_id": admitted_teammate_id.hex()},
     )
 
 
@@ -242,17 +242,17 @@ def issue_device_link_cert(
     issuer_key: ParticipantKey,
     issuer_private_key: bytes,
     team_id: bytes,
-    member_id: bytes,
+    teammate_id: bytes,
 ) -> KeyCertificate:
-    """Issue a team-scoped device-link cert for an additional member device."""
+    """Issue a team-scoped device-link cert for an additional teammate device."""
     return issue_cert(
         subject_key,
         issuer_key,
         issuer_private_key,
-        issuer_participant_id=member_id,
+        issuer_participant_id=teammate_id,
         cert_type=CertType.DEVICE_LINK,
         team_id=team_id,
-        claims={"member_id": member_id.hex()},
+        claims={"teammate_id": teammate_id.hex()},
     )
 
 
@@ -260,19 +260,19 @@ def verify_device_binding_cert(
     cert: KeyCertificate,
     issuer_public_key: bytes,
     team_id: bytes,
-    member_id: bytes,
+    teammate_id: bytes,
     subject_public_key: bytes,
 ) -> bool:
-    """Verify a device-binding cert against explicit team/member constraints."""
+    """Verify a device-binding cert against explicit team/teammate constraints."""
     if cert.cert_type != CertType.DEVICE_BINDING:
         return False
     if cert.team_id != team_id:
         return False
     if cert.subject_public_key != subject_public_key:
         return False
-    if cert.issuer_participant_id != member_id:
+    if cert.issuer_participant_id != teammate_id:
         return False
-    if cert.claims.get("member_id") != member_id.hex():
+    if cert.claims.get("teammate_id") != teammate_id.hex():
         return False
     return verify_cert(cert, issuer_public_key)
 
@@ -281,19 +281,19 @@ def verify_device_link_cert(
     cert: KeyCertificate,
     issuer_public_key: bytes,
     team_id: bytes,
-    member_id: bytes,
+    teammate_id: bytes,
     subject_public_key: bytes,
 ) -> bool:
-    """Verify a device-link cert against explicit team/member/device constraints."""
+    """Verify a device-link cert against explicit team/teammate/device constraints."""
     if cert.cert_type != CertType.DEVICE_LINK:
         return False
     if cert.team_id != team_id:
         return False
     if cert.subject_public_key != subject_public_key:
         return False
-    if cert.issuer_participant_id != member_id:
+    if cert.issuer_participant_id != teammate_id:
         return False
-    if cert.claims.get("member_id") != member_id.hex():
+    if cert.claims.get("teammate_id") != teammate_id.hex():
         return False
     return verify_cert(cert, issuer_public_key)
 
@@ -302,33 +302,33 @@ def verify_membership_cert(
     cert: KeyCertificate,
     issuer_public_key: bytes,
     team_id: bytes,
-    issuer_member_id: bytes,
-    admitted_member_id: bytes,
+    issuer_teammate_id: bytes,
+    admitted_teammate_id: bytes,
     subject_public_key: bytes,
 ) -> bool:
-    """Verify a membership cert against explicit team/member/device constraints."""
+    """Verify a membership cert against explicit team/teammate/device constraints."""
     if cert.cert_type != CertType.MEMBERSHIP:
         return False
     if cert.team_id != team_id:
         return False
     if cert.subject_public_key != subject_public_key:
         return False
-    if cert.issuer_participant_id != issuer_member_id:
+    if cert.issuer_participant_id != issuer_teammate_id:
         return False
-    if cert.claims.get("member_id") != admitted_member_id.hex():
+    if cert.claims.get("teammate_id") != admitted_teammate_id.hex():
         return False
     return verify_cert(cert, issuer_public_key)
 
 
-def trusted_device_keys_by_member(
+def trusted_device_keys_by_teammate(
     certs: list[KeyCertificate],
     team_id: bytes,
 ) -> dict[bytes, set[bytes]]:
-    """Resolve each member's trusted device keys from team cert history.
+    """Resolve each teammate's trusted device keys from team cert history.
 
     Trust starts from self-issued genesis memberships and expands through:
-    - memberships signed by already-trusted devices of some member
-    - device_link certs signed by already-trusted devices of the same member
+    - memberships signed by already-trusted devices of some teammate
+    - device_link certs signed by already-trusted devices of the same teammate
     """
     trusted: dict[bytes, set[bytes]] = {}
     memberships = [cert for cert in certs if cert.cert_type == CertType.MEMBERSHIP]
@@ -341,17 +341,17 @@ def trusted_device_keys_by_member(
         for cert in memberships:
             if cert.team_id != team_id:
                 continue
-            member_id_hex = cert.claims.get("member_id")
-            if not isinstance(member_id_hex, str):
+            teammate_id_hex = cert.claims.get("teammate_id")
+            if not isinstance(teammate_id_hex, str):
                 continue
             try:
-                admitted_member_id = bytes.fromhex(member_id_hex)
+                admitted_teammate_id = bytes.fromhex(teammate_id_hex)
             except ValueError:
                 continue
 
             # Team genesis membership is self-issued; later memberships are
-            # authorized by an already-trusted device of some member.
-            if cert.issuer_participant_id == admitted_member_id:
+            # authorized by an already-trusted device of some teammate.
+            if cert.issuer_participant_id == admitted_teammate_id:
                 issuer_keys = [cert.subject_public_key]
             else:
                 issuer_keys = sorted(trusted.get(cert.issuer_participant_id, set()))
@@ -364,28 +364,28 @@ def trusted_device_keys_by_member(
                     cert,
                     issuer_public_key=issuer_public_key,
                     team_id=team_id,
-                    issuer_member_id=cert.issuer_participant_id,
-                    admitted_member_id=admitted_member_id,
+                    issuer_teammate_id=cert.issuer_participant_id,
+                    admitted_teammate_id=admitted_teammate_id,
                     subject_public_key=cert.subject_public_key,
                 ):
                     continue
-                member_keys = trusted.setdefault(admitted_member_id, set())
-                if cert.subject_public_key not in member_keys:
-                    member_keys.add(cert.subject_public_key)
+                teammate_keys = trusted.setdefault(admitted_teammate_id, set())
+                if cert.subject_public_key not in teammate_keys:
+                    teammate_keys.add(cert.subject_public_key)
                     changed = True
                 break
 
         for cert in device_links:
             if cert.team_id != team_id:
                 continue
-            member_id_hex = cert.claims.get("member_id")
-            if not isinstance(member_id_hex, str):
+            teammate_id_hex = cert.claims.get("teammate_id")
+            if not isinstance(teammate_id_hex, str):
                 continue
             try:
-                member_id = bytes.fromhex(member_id_hex)
+                teammate_id = bytes.fromhex(teammate_id_hex)
             except ValueError:
                 continue
-            issuer_keys = sorted(trusted.get(member_id, set()))
+            issuer_keys = sorted(trusted.get(teammate_id, set()))
             if not issuer_keys:
                 continue
             for issuer_public_key in issuer_keys:
@@ -393,26 +393,26 @@ def trusted_device_keys_by_member(
                     cert,
                     issuer_public_key=issuer_public_key,
                     team_id=team_id,
-                    member_id=member_id,
+                    teammate_id=teammate_id,
                     subject_public_key=cert.subject_public_key,
                 ):
                     continue
-                member_keys = trusted.setdefault(member_id, set())
-                if cert.subject_public_key not in member_keys:
-                    member_keys.add(cert.subject_public_key)
+                teammate_keys = trusted.setdefault(teammate_id, set())
+                if cert.subject_public_key not in teammate_keys:
+                    teammate_keys.add(cert.subject_public_key)
                     changed = True
                 break
 
     return trusted
 
 
-def trusted_device_keys_for_member(
+def trusted_device_keys_for_teammate(
     certs: list[KeyCertificate],
     team_id: bytes,
-    member_id: bytes,
+    teammate_id: bytes,
 ) -> set[bytes]:
-    """Resolve one member's trusted device keys from team cert history."""
-    return trusted_device_keys_by_member(certs, team_id).get(member_id, set())
+    """Resolve one teammate's trusted device keys from team cert history."""
+    return trusted_device_keys_by_teammate(certs, team_id).get(teammate_id, set())
 
 
 def issue_revocation(

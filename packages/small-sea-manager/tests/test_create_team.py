@@ -158,11 +158,11 @@ def test_create_team(playground_dir):
     # Create a team
     result = create_team(root, alice_hex, "CoolProject")
     team_id_hex = result["team_id_hex"]
-    member_id_hex = result["member_id_hex"]
+    teammate_id_hex = result["teammate_id_hex"]
     assert len(team_id_hex) == 32  # 16 bytes (UUIDv7) -> 32 hex chars
-    assert len(member_id_hex) == 32
-    # Member ID should be different from participant ID (fresh per-team ID)
-    assert member_id_hex != alice_hex
+    assert len(teammate_id_hex) == 32
+    # Teammate ID should be different from participant ID (fresh per-team ID)
+    assert teammate_id_hex != alice_hex
 
     # --- Verify NoteToSelf core.db has only a lightweight team membership pointer ---
     user_db = root / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"
@@ -175,7 +175,7 @@ def test_create_team(playground_dir):
     teams = conn.execute("SELECT * FROM team WHERE name = 'CoolProject'").fetchall()
     assert len(teams) == 1
     assert teams[0]["id"] == bytes.fromhex(team_id_hex)
-    assert teams[0]["self_in_team"] == bytes.fromhex(member_id_hex)
+    assert teams[0]["self_in_team"] == bytes.fromhex(teammate_id_hex)
 
     with pytest.raises(sqlite3.OperationalError):
         conn.execute(
@@ -186,7 +186,7 @@ def test_create_team(playground_dir):
 
     with pytest.raises(sqlite3.OperationalError):
         conn.execute(
-            "SELECT member_id, public_key FROM team_identity WHERE team_id = ?",
+            "SELECT teammate_id, public_key FROM team_identity WHERE team_id = ?",
             (bytes.fromhex(team_id_hex),),
         ).fetchone()
 
@@ -246,23 +246,23 @@ def test_create_team(playground_dir):
 
     tconn = sqlite3.connect(str(team_db))
 
-    # member: Alice as first member (fresh per-team ID)
-    members = tconn.execute("SELECT id, display_name FROM member").fetchall()
-    assert len(members) == 1
-    assert members[0][0] == bytes.fromhex(member_id_hex)
-    assert members[0][1] == "Alice"
+    # teammate: Alice as first teammate (fresh per-team ID)
+    teammates = tconn.execute("SELECT id, display_name FROM teammate").fetchall()
+    assert len(teammates) == 1
+    assert teammates[0][0] == bytes.fromhex(teammate_id_hex)
+    assert teammates[0][1] == "Alice"
     team_devices = tconn.execute(
-        "SELECT member_id, device_key_id, public_key "
+        "SELECT teammate_id, device_key_id, public_key "
         "FROM team_device"
     ).fetchall()
     assert len(team_devices) == 1
-    assert team_devices[0][0] == bytes.fromhex(member_id_hex)
+    assert team_devices[0][0] == bytes.fromhex(teammate_id_hex)
     assert team_devices[0][1] == team_device_key_id
     assert team_devices[0][2] == team_device_key[0]
 
     cert_row = tconn.execute(
         "SELECT cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, "
-        "issuer_member_id, issued_at, claims, signature FROM key_certificate"
+        "issuer_teammate_id, issued_at, claims, signature FROM key_certificate"
     ).fetchone()
     assert cert_row is not None
     cert = _deserialize_cert(
@@ -283,8 +283,8 @@ def test_create_team(playground_dir):
         cert,
         issuer_public_key=team_device_key[0],
         team_id=bytes.fromhex(team_id_hex),
-        issuer_member_id=bytes.fromhex(member_id_hex),
-        admitted_member_id=bytes.fromhex(member_id_hex),
+        issuer_teammate_id=bytes.fromhex(teammate_id_hex),
+        admitted_teammate_id=bytes.fromhex(teammate_id_hex),
         subject_public_key=team_device_key[0],
     )
 
@@ -300,10 +300,10 @@ def test_create_team(playground_dir):
 
     # Alice has read-write on the berth
     roles = tconn.execute(
-        "SELECT member_id, berth_id, role FROM berth_role"
+        "SELECT teammate_id, berth_id, role FROM berth_role"
     ).fetchall()
     assert len(roles) == 1
-    assert roles[0][0] == bytes.fromhex(member_id_hex)
+    assert roles[0][0] == bytes.fromhex(teammate_id_hex)
     assert roles[0][1] == bytes.fromhex(berth_id_hex)
     assert roles[0][2] == "read-write"
 
@@ -369,38 +369,28 @@ def test_create_team_produces_team_device_without_transport_columns(playground_d
     assert "bucket" not in columns
 
 
-def test_migration_drops_legacy_team_device_transport_columns(playground_dir):
-    """An existing (pre-#138) team DB has protocol/url/bucket dropped on open.
-
-    Simulates a DB written by the prior current-version code: re-add the legacy
-    columns and stamp it back to the pre-#138 schema version, then prove
-    ensure_team_db_schema migrates it forward and removes them. Without the
-    version bump + DROP COLUMN migration, such DBs would silently keep the
-    columns forever.
-    """
+def test_old_team_db_version_requires_recreate(playground_dir):
+    """Pre-alpha old team DBs fail clearly instead of migrating old shapes."""
     root = pathlib.Path(playground_dir)
     alice_hex = create_new_participant(root, "Alice")
     create_team(root, alice_hex, "ProjectX")
     team_db = _team_db(root, alice_hex, "ProjectX")
+    old_version = USER_SCHEMA_VERSION - 1
 
-    # Reconstruct the legacy shape: add the columns back and stamp the old version.
     with sqlite3.connect(str(team_db)) as conn:
-        conn.execute("ALTER TABLE team_device ADD COLUMN protocol TEXT")
-        conn.execute("ALTER TABLE team_device ADD COLUMN url TEXT")
-        conn.execute("ALTER TABLE team_device ADD COLUMN bucket TEXT")
-        conn.execute(f"PRAGMA user_version = {USER_SCHEMA_VERSION - 1}")
+        conn.execute(f"PRAGMA user_version = {old_version}")
         conn.commit()
-    assert {"protocol", "url", "bucket"} <= _team_device_columns(team_db)
 
-    ensure_team_db_schema(team_db)
+    with pytest.raises(NotImplementedError) as exc_info:
+        ensure_team_db_schema(team_db)
 
-    columns = _team_device_columns(team_db)
-    assert "protocol" not in columns
-    assert "url" not in columns
-    assert "bucket" not in columns
+    message = str(exc_info.value)
+    assert "Pre-alpha team DB migrations are not supported" in message
+    assert str(old_version) in message
+    assert str(USER_SCHEMA_VERSION) in message
     with sqlite3.connect(str(team_db)) as conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
-    assert version == USER_SCHEMA_VERSION
+    assert version == old_version
 
 
 def test_future_team_db_version_fails_fast(playground_dir):

@@ -315,7 +315,7 @@ def test_team_cloud_file_requires_storage_announcement(test_env):
         / "core.db"
     )
     with sqlite3.connect(str(team_db_path)) as conn:
-        conn.execute("DELETE FROM member_berth_storage_announcement")
+        conn.execute("DELETE FROM teammate_berth_storage_announcement")
         conn.commit()
     blocked_download = client.get(
         "/cloud_file",

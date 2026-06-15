@@ -60,7 +60,7 @@ def _refresh_session_peers(app: FastAPI, session_hex: str):
         conn = _sqlite3.connect(team_db_path)
         try:
             rows = conn.execute(
-                "SELECT id FROM member WHERE id != ?",
+                "SELECT id FROM teammate WHERE id != ?",
                 (bytes.fromhex(self_in_team),),
             ).fetchall()
         finally:
@@ -69,29 +69,29 @@ def _refresh_session_peers(app: FastAPI, session_hex: str):
         app.state.logger.warning(f"_refresh_session_peers: DB read failed: {exc}")
         return
 
-    current_member_ids = {row[0].hex() for row in rows}
-    existing_member_ids = {
+    current_teammate_ids = {row[0].hex() for row in rows}
+    existing_teammate_ids = {
         mid for (sid, mid) in app.state.watched_peers if sid == session_hex
     }
 
-    new_members = current_member_ids - existing_member_ids
-    removed_members = existing_member_ids - current_member_ids
+    new_teammates = current_teammate_ids - existing_teammate_ids
+    removed_teammates = existing_teammate_ids - current_teammate_ids
 
-    for member_id_hex in new_members:
-        key = (session_hex, member_id_hex)
+    for teammate_id_hex in new_teammates:
+        key = (session_hex, teammate_id_hex)
         app.state.watched_peers[key] = {
             "etag": None,
             "signals": {},
             "berth_id_hex": berth_id_hex,
         }
         app.state.logger.info(
-            f"Watcher: new peer {member_id_hex[:8]} on berth {berth_id_hex[:8]}"
+            f"Watcher: new peer {teammate_id_hex[:8]} on berth {berth_id_hex[:8]}"
         )
 
-    for member_id_hex in removed_members:
-        app.state.watched_peers.pop((session_hex, member_id_hex), None)
+    for teammate_id_hex in removed_teammates:
+        app.state.watched_peers.pop((session_hex, teammate_id_hex), None)
 
-    if new_members:
+    if new_teammates:
         _pulse_berth_event(app, berth_id_hex)
 
 
@@ -160,13 +160,13 @@ def _notify_linked_device_events_for_session(app: FastAPI, session_hex: str, ss_
     session_info = app.state.watched_sessions.get(session_hex)
     if session_info is None:
         return False
-    self_member_id_hex = session_info.get("self_in_team")
+    self_teammate_id_hex = session_info.get("self_in_team")
     try:
         candidates = AdmissionEvents.list_linked_device_notification_candidates(
             app.state.backend.root_dir,
             ss_session.participant_id.hex(),
             ss_session.team_name,
-            self_member_id_hex=self_member_id_hex,
+            self_teammate_id_hex=self_teammate_id_hex,
         )
     except Exception as exc:
         app.state.logger.warning(
@@ -267,10 +267,10 @@ def _run_runtime_reconciliation_for_session(app: FastAPI, session_hex: str):
     return revision_changed
 
 
-def _process_runtime_inbox_from_member(
+def _process_runtime_inbox_from_teammate(
     app: FastAPI,
     session_hex: str,
-    member_id_hex: str,
+    teammate_id_hex: str,
     *,
     use_local_bucket: bool,
 ):
@@ -285,16 +285,16 @@ def _process_runtime_inbox_from_member(
         team_name,
     )
     local_device_key_id = Provisioning.key_id_from_public(local_team_device_public_key)
-    trusted_public_keys_by_member = Provisioning.get_trusted_device_keys_by_member(
+    trusted_public_keys_by_teammate = Provisioning.get_trusted_device_keys_by_teammate(
         root_dir,
         participant_hex,
         team_name,
     )
-    member_id = bytes.fromhex(member_id_hex)
-    if member_id not in trusted_public_keys_by_member:
+    teammate_id = bytes.fromhex(teammate_id_hex)
+    if teammate_id not in trusted_public_keys_by_teammate:
         return
 
-    for public_key in trusted_public_keys_by_member[member_id]:
+    for public_key in trusted_public_keys_by_teammate[teammate_id]:
         sender_device_key_id = Provisioning.key_id_from_public(public_key)
         if sender_device_key_id == local_device_key_id:
             continue
@@ -310,7 +310,7 @@ def _process_runtime_inbox_from_member(
         else:
             ok, data, _etag = app.state.backend.download_runtime_artifact_from_peer(
                 session_hex,
-                member_id_hex,
+                teammate_id_hex,
                 artifact_path,
             )
         if not ok:
@@ -370,7 +370,7 @@ def _refresh_local_runtime_signal(app: FastAPI, session_hex: str):
         )
     except Exception:
         return
-    _process_runtime_inbox_from_member(
+    _process_runtime_inbox_from_teammate(
         app,
         session_hex,
         self_in_team.hex(),
@@ -430,11 +430,11 @@ def _watcher_pass(app: FastAPI):
     # sessions or peers triggered the change.
     notified_berths: set = set()
     for key, state in list(peers.items()):
-        session_hex, member_id_hex = key
+        session_hex, teammate_id_hex = key
         berth_id_hex = state.get("berth_id_hex")
         try:
             signals, etag = app.state.backend.get_peer_signal(
-                session_hex, member_id_hex
+                session_hex, teammate_id_hex
             )
             if signals is None:
                 continue
@@ -449,22 +449,22 @@ def _watcher_pass(app: FastAPI):
                 if count > prev.get(bid, 0):
                     # Key by the watching berth (berth_id_hex) so that
                     # /notifications/watch _check() can find it by session.
-                    peer_key = (berth_id_hex, member_id_hex)
+                    peer_key = (berth_id_hex, teammate_id_hex)
                     if count > app.state.peer_counts.get(peer_key, 0):
                         app.state.peer_counts[peer_key] = count
                     changed = True
                     logger.info(
-                        f"Peer {member_id_hex[:8]} berth {bid[:8]}: count={count}"
+                        f"Peer {teammate_id_hex[:8]} berth {bid[:8]}: count={count}"
                     )
 
             state["etag"] = etag
             state["signals"] = {k: v for k, v in signals.items() if k != "version"}
 
             if changed and berth_id_hex:
-                _process_runtime_inbox_from_member(
+                _process_runtime_inbox_from_teammate(
                     app,
                     session_hex,
-                    member_id_hex,
+                    teammate_id_hex,
                     use_local_bucket=False,
                 )
                 _pulse_berth_event(app, berth_id_hex)
@@ -480,7 +480,7 @@ def _watcher_pass(app: FastAPI):
                 app.state.watched_peers.pop(k, None)
             logger.info(f"Removed expired session {session_hex[:8]} from watcher")
         except Exception as exc:
-            logger.warning(f"Peer watcher error for {member_id_hex[:8]}: {exc}")
+            logger.warning(f"Peer watcher error for {teammate_id_hex[:8]}: {exc}")
 
 
 async def _peer_watcher_loop(app: FastAPI):
@@ -489,7 +489,7 @@ async def _peer_watcher_loop(app: FastAPI):
     On each round, re-reads the peer list for every active session so that
     membership changes (new or removed peers) are picked up automatically.
     New peers cause an immediate event pulse so any waiting long-pollers wake
-    and can re-enumerate the current member list.
+    and can re-enumerate the current teammate list.
 
     When a peer's signal count increases, updates peer_counts and pulses the
     berth event to wake /notifications/watch waiters.
@@ -542,9 +542,9 @@ async def lifespan(app: FastAPI):
     if not hasattr(app.state, "watched_sessions"):
         app.state.watched_sessions = {}   # session_hex → {berth_id_hex, team_db_path}
     if not hasattr(app.state, "watched_peers"):
-        app.state.watched_peers = {}      # (session_hex, member_id_hex) → state
+        app.state.watched_peers = {}      # (session_hex, teammate_id_hex) → state
     if not hasattr(app.state, "peer_counts"):
-        app.state.peer_counts = {}        # (berth_id_hex, member_id_hex) → int
+        app.state.peer_counts = {}        # (berth_id_hex, teammate_id_hex) → int
     if not hasattr(app.state, "self_signal_counts"):
         app.state.self_signal_counts = {}  # berth_id_hex → int
     if not hasattr(app.state, "peer_signal_events"):
@@ -889,14 +889,14 @@ async def session_peers(session_hex: str = Depends(_require_session)):
     peer_counts = getattr(app.state, "peer_counts", {})
     peers = []
     for peer in small_sea.list_peers(session_hex):
-        member_id_hex = peer["member_id"]
+        teammate_id_hex = peer["teammate_id"]
         name = peer.get("name")
         peers.append(
             {
-                "member_id": member_id_hex,
+                "teammate_id": teammate_id_hex,
                 "name": name,
-                "label": name or f"Teammate {member_id_hex[:8]}...",
-                "signal_count": peer_counts.get((berth_id_hex, member_id_hex), 0),
+                "label": name or f"Teammate {teammate_id_hex[:8]}...",
+                "signal_count": peer_counts.get((berth_id_hex, teammate_id_hex), 0),
             }
         )
     return {"peers": peers}
@@ -992,14 +992,14 @@ async def cloud_setup(session_hex: str = Depends(_require_session)):
 
 @app.get("/peer_cloud_file")
 async def download_peer_cloud_file(
-    member_id: str,
+    teammate_id: str,
     path: str,
     session_hex: str = Depends(_require_session),
 ):
     import base64
 
     small_sea = app.state.backend
-    ok, data, etag = small_sea.download_from_peer(session_hex, member_id, path)
+    ok, data, etag = small_sea.download_from_peer(session_hex, teammate_id, path)
     if not ok:
         raise HTTPException(status_code=404, detail=etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
@@ -1044,12 +1044,12 @@ async def bootstrap_cloud_file(
 
 @app.get("/peer_signal")
 async def get_peer_signal(
-    member_id: str,
+    teammate_id: str,
     session_hex: str = Depends(_require_session),
     if_none_match: Optional[str] = Header(default=None),
 ):
     small_sea = app.state.backend
-    signals, etag = small_sea.get_peer_signal(session_hex, member_id)
+    signals, etag = small_sea.get_peer_signal(session_hex, teammate_id)
     if signals is None:
         raise HTTPException(status_code=404, detail="No signal file found for peer")
     if if_none_match and etag == if_none_match:
@@ -1064,7 +1064,7 @@ async def get_peer_signal(
 
 
 class WatchNotificationsReq(pydantic.BaseModel):
-    known: dict[str, int] = {}  # member_id_hex → last known count
+    known: dict[str, int] = {}  # teammate_id_hex → last known count
     known_self_count: Optional[int] = None
     timeout: int = 30
 
@@ -1076,11 +1076,11 @@ async def watch_notifications(
 ):
     """Long-poll for peer sync updates.
 
-    The client supplies its current known counts per peer member. If the Hub
+    The client supplies its current known counts per peer teammate. If the Hub
     already has higher counts, returns immediately. Otherwise blocks until a
     peer's count increases (or timeout), then returns whatever changed.
 
-    The response is {"updated": {member_id_hex: new_count, ...}}, empty on
+    The response is {"updated": {teammate_id_hex: new_count, ...}}, empty on
     timeout.
     """
     ss_session = app.state.backend._lookup_session(session_hex)
@@ -1088,10 +1088,10 @@ async def watch_notifications(
 
     def _check():
         updated = {}
-        for member_id_hex, known_count in req.known.items():
-            current = app.state.peer_counts.get((berth_id_hex, member_id_hex), 0)
+        for teammate_id_hex, known_count in req.known.items():
+            current = app.state.peer_counts.get((berth_id_hex, teammate_id_hex), 0)
             if current > known_count:
-                updated[member_id_hex] = current
+                updated[teammate_id_hex] = current
         result = {"updated": updated}
         if req.known_self_count is not None:
             self_counts = getattr(app.state, "self_signal_counts", {})

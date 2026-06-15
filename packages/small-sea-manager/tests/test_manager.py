@@ -115,7 +115,7 @@ def _create_shared_team_with_bob(root: pathlib.Path):
 
 
 def _insert_teammate_linked_device_event(root: pathlib.Path, observer_hex: str, teammate_hex: str):
-    team_id, teammate_member_id = Provisioning._team_row(root, teammate_hex, "ProjectX")
+    team_id, teammate_teammate_id = Provisioning._team_row(root, teammate_hex, "ProjectX")
     teammate_private_key, teammate_public_key = Provisioning.get_current_team_device_key(
         root,
         teammate_hex,
@@ -127,13 +127,13 @@ def _insert_teammate_linked_device_event(root: pathlib.Path, observer_hex: str, 
         issuer_key=Provisioning._participant_key_from_public(teammate_public_key),
         issuer_private_key=teammate_private_key,
         team_id=team_id,
-        member_id=teammate_member_id,
+        teammate_id=teammate_teammate_id,
     )
     assert Provisioning.verify_device_link_cert(
         cert,
         issuer_public_key=teammate_public_key,
         team_id=team_id,
-        member_id=teammate_member_id,
+        teammate_id=teammate_teammate_id,
         subject_public_key=linked_public_key,
     )
 
@@ -141,8 +141,8 @@ def _insert_teammate_linked_device_event(root: pathlib.Path, observer_hex: str, 
     engine = Provisioning._sqlite_engine(observer_db_path)
     try:
         with engine.begin() as conn:
-            Provisioning._store_team_certificate(conn, cert, issuer_member_id=teammate_member_id)
-            Provisioning._upsert_team_device_row(conn, teammate_member_id, linked_public_key)
+            Provisioning._store_team_certificate(conn, cert, issuer_teammate_id=teammate_teammate_id)
+            Provisioning._upsert_team_device_row(conn, teammate_teammate_id, linked_public_key)
     finally:
         engine.dispose()
     return cert
@@ -158,7 +158,7 @@ def test_admission_event_dismissals_persist_across_manager_instances(playground_
     Provisioning.create_team(root, alice_hex, "ProjectX")
 
     linked_public_key = generate_key_pair(ProtectionLevel.DAILY)[0].public_key
-    linked_cert = Provisioning.issue_device_link_for_member(root, alice_hex, "ProjectX", linked_public_key)
+    linked_cert = Provisioning.issue_device_link_for_teammate(root, alice_hex, "ProjectX", linked_public_key)
     invitation_token = Provisioning.create_invitation(
         root,
         alice_hex,
@@ -192,7 +192,7 @@ def test_admission_event_dismissals_persist_across_manager_instances(playground_
 def test_linked_device_notification_candidates_seed_backlog_and_keep_notified_cards_visible(playground_dir):
     root = pathlib.Path(playground_dir)
     alice_hex, bob_hex = _create_shared_team_with_bob(root)
-    alice_self_member_id = Provisioning.get_self_in_team(root, alice_hex, "ProjectX")
+    alice_self_teammate_id = Provisioning.get_self_in_team(root, alice_hex, "ProjectX")
 
     historical_cert = _insert_teammate_linked_device_event(root, alice_hex, bob_hex)
 
@@ -200,7 +200,7 @@ def test_linked_device_notification_candidates_seed_backlog_and_keep_notified_ca
         root,
         alice_hex,
         "ProjectX",
-        self_member_id_hex=alice_self_member_id,
+        self_teammate_id_hex=alice_self_teammate_id,
     )
     assert first_candidates == []
 
@@ -209,7 +209,7 @@ def test_linked_device_notification_candidates_seed_backlog_and_keep_notified_ca
         root,
         alice_hex,
         "ProjectX",
-        self_member_id_hex=alice_self_member_id,
+        self_teammate_id_hex=alice_self_teammate_id,
     )
     assert [candidate.artifact_id_hex for candidate in second_candidates] == [fresh_cert.cert_id.hex()]
 
@@ -224,7 +224,7 @@ def test_linked_device_notification_candidates_seed_backlog_and_keep_notified_ca
         root,
         alice_hex,
         "ProjectX",
-        self_member_id_hex=alice_self_member_id,
+        self_teammate_id_hex=alice_self_teammate_id,
     ) == []
 
     team = TeamManager(root, alice_hex).get_team("ProjectX")
@@ -277,7 +277,7 @@ def test_manager_web_renders_admin_and_non_admin_admission_controls(playground_d
         # Test-only fixture shortcut: force Bob into a non-admin local view so
         # we can assert the UI hides admin-only controls for that viewer.
         conn.execute(
-            "UPDATE berth_role SET role = 'read-only' WHERE member_id = ?",
+            "UPDATE berth_role SET role = 'read-only' WHERE teammate_id = ?",
             (bytes.fromhex(bob_self_id_hex),),
         )
         conn.commit()

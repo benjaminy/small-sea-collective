@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS redistribution_receipt (
 
 CREATE TABLE IF NOT EXISTS runtime_reconciliation_state (
     team_id BLOB PRIMARY KEY,
-    trusted_member_ids_json TEXT NOT NULL,
+    trusted_teammate_ids_json TEXT NOT NULL,
     trusted_device_key_ids_json TEXT NOT NULL,
     last_sender_device_key_id BLOB,
     last_sender_chain_id BLOB,

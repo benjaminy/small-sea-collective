@@ -112,13 +112,13 @@ def test_get_team_not_joined_locally_returns_guard_dict(playground_dir):
     detail = manager.get_team("GhostTeam")
     assert detail["name"] == "GhostTeam"
     assert detail["joined_locally"] is False
-    # guard dict must not contain members/invitations from a non-existent local DB
-    assert detail["members"] == []
+    # guard dict must not contain teammates/invitations from a non-existent local DB
+    assert detail["teammates"] == []
     assert detail["invitations"] == []
 
 
 def test_get_team_joined_locally_returns_full_detail(playground_dir):
-    """get_team on a fully joined team returns joined_locally=True with member data."""
+    """get_team on a fully joined team returns joined_locally=True with teammate data."""
     root = pathlib.Path(playground_dir)
     alice_hex = create_new_participant(root, "Alice")
     manager = TeamManager(root, alice_hex)
@@ -126,7 +126,7 @@ def test_get_team_joined_locally_returns_full_detail(playground_dir):
 
     detail = manager.get_team("RealProject")
     assert detail["joined_locally"] is True
-    assert len(detail["members"]) == 1
+    assert len(detail["teammates"]) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ def test_refresh_note_to_self_two_device_team_discovery(playground_dir, minio_se
     # get_team guard: returns clear not-joined state
     detail = manager_b.get_team("PostBootstrapProject")
     assert detail["joined_locally"] is False
-    assert detail["members"] == []
+    assert detail["teammates"] == []
 
 
 def test_refresh_does_not_sync_device_local_state(playground_dir, minio_server_gen):

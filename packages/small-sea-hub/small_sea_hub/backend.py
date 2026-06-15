@@ -45,10 +45,10 @@ from small_sea_note_to_self.db import attached_note_to_self_connection
 from small_sea_note_to_self.ids import uuid7
 from wrasse_trust.keys import key_id_from_public
 from wrasse_trust.transport import (
-    MemberBerthStorageAnnouncement,
+    TeammateBerthStorageAnnouncement,
     key_certificate_from_team_db_record,
-    select_effective_member_berth_storage,
-    verify_member_berth_storage_announcement_signature,
+    select_effective_teammate_berth_storage,
+    verify_teammate_berth_storage_announcement_signature,
 )
 
 
@@ -1295,10 +1295,10 @@ class SmallSeaBackend:
     def ensure_cloud_ready(self, session_hex):
         return self.materialize_for_session(session_hex)
 
-    def download_from_peer(self, session_hex, member_id_hex, path):
+    def download_from_peer(self, session_hex, teammate_id_hex, path):
         """Download a file from a peer's public cloud bucket via the Hub proxy."""
         ss_session = self._lookup_session(session_hex)
-        ok, data, etag = self._download_peer_file(session_hex, member_id_hex, path)
+        ok, data, etag = self._download_peer_file(session_hex, teammate_id_hex, path)
         if ok and ss_session.mode == "encrypted":
             data = decrypt_group_payload(ss_session, data)
         return ok, data, etag
@@ -1306,7 +1306,7 @@ class SmallSeaBackend:
     def list_peers(self, session_hex):
         """Return peer details visible to the current team session.
 
-        Prefers the team DB's member.display_name when present. Falls back to
+        Prefers the team DB's teammate.display_name when present. Falls back to
         accepted invitation labels for older team DBs.
         """
         ss_session = self._lookup_session(session_hex)
@@ -1327,7 +1327,7 @@ class SmallSeaBackend:
         conn = sqlite3.connect(team_db_path)
         try:
             rows = conn.execute(
-                "SELECT id, display_name FROM member WHERE id != ? ORDER BY id",
+                "SELECT id, display_name FROM teammate WHERE id != ? ORDER BY id",
                 (self_in_team,),
             ).fetchall()
             name_rows = conn.execute(
@@ -1338,20 +1338,20 @@ class SmallSeaBackend:
         finally:
             conn.close()
 
-        names_by_member = {}
-        for member_id, invitee_label in name_rows:
-            if member_id is None or not invitee_label:
+        names_by_teammate = {}
+        for teammate_id, invitee_label in name_rows:
+            if teammate_id is None or not invitee_label:
                 continue
-            names_by_member[member_id.hex()] = invitee_label
+            names_by_teammate[teammate_id.hex()] = invitee_label
 
         result = []
         for row in rows:
-            member_id_hex = row[0].hex()
+            teammate_id_hex = row[0].hex()
             display_name = row[1]
             result.append(
                 {
-                    "member_id": member_id_hex,
-                    "name": display_name or names_by_member.get(member_id_hex),
+                    "teammate_id": teammate_id_hex,
+                    "name": display_name or names_by_teammate.get(teammate_id_hex),
                 }
             )
         return result
@@ -1401,9 +1401,9 @@ class SmallSeaBackend:
         adapter = self._make_storage_adapter(ss_session)
         return adapter.download(path)
 
-    def download_runtime_artifact_from_peer(self, session_hex, member_id_hex, path):
+    def download_runtime_artifact_from_peer(self, session_hex, teammate_id_hex, path):
         """Download a raw runtime-control artifact from a peer bucket."""
-        return self._download_peer_file(session_hex, member_id_hex, path)
+        return self._download_peer_file(session_hex, teammate_id_hex, path)
 
     def get_local_signal(self, session_hex):
         """Return (signals_dict, etag) from this session's own signals.yaml."""
@@ -1481,14 +1481,14 @@ class SmallSeaBackend:
         except Exception as exc:
             self.logger.debug(f"ntfy publish error: {exc}")
 
-    def get_peer_signal(self, session_hex, member_id_hex):
+    def get_peer_signal(self, session_hex, teammate_id_hex):
         """Return (signals_dict, etag) from a peer's public signals.yaml.
 
         Uses the same anonymous S3 read path as download_from_peer.
         Returns (None, None) if the file does not exist yet.
         """
         ok, data, etag = self._download_peer_file(
-            session_hex, member_id_hex, self._SIGNAL_PATH
+            session_hex, teammate_id_hex, self._SIGNAL_PATH
         )
         if not ok:
             return None, None
@@ -1567,17 +1567,17 @@ class SmallSeaBackend:
             code = e.response["Error"]["Code"]
             return False, None, f"Bootstrap download failed: {code}"
 
-    def _download_peer_file(self, session_hex, member_id_hex, path):
+    def _download_peer_file(self, session_hex, teammate_id_hex, path):
         """Core of download_from_peer, factored out for reuse."""
         ss_session = self._lookup_session(session_hex)
 
-        member_id = bytes.fromhex(member_id_hex)
+        teammate_id = bytes.fromhex(teammate_id_hex)
         conn = sqlite3.connect(self._team_db_path_for_session(ss_session))
         try:
-            selection = self._select_member_berth_storage(
+            selection = self._select_teammate_berth_storage(
                 conn,
                 ss_session.team_id,
-                member_id,
+                teammate_id,
                 ss_session.berth_id,
             )
         finally:
@@ -1585,7 +1585,7 @@ class SmallSeaBackend:
 
         transport = selection.transport
         if transport is None:
-            raise SmallSeaNotFoundExn(f"No peer found for member {member_id_hex}")
+            raise SmallSeaNotFoundExn(f"No peer found for teammate {teammate_id_hex}")
 
         protocol = transport.protocol
         url = transport.url
@@ -1637,7 +1637,7 @@ class SmallSeaBackend:
         rows = conn.execute(
             """
             SELECT cert_id, cert_type, subject_key_id, subject_public_key,
-                   issuer_key_id, issuer_member_id, issued_at, claims, signature
+                   issuer_key_id, issuer_teammate_id, issued_at, claims, signature
             FROM key_certificate ORDER BY issued_at ASC
             """
         ).fetchall()
@@ -1649,7 +1649,7 @@ class SmallSeaBackend:
                 subject_key_id=row[2],
                 subject_public_key=row[3],
                 issuer_key_id=row[4],
-                issuer_member_id=row[5],
+                issuer_teammate_id=row[5],
                 issued_at=row[6],
                 claims_json=row[7],
                 signature=row[8],
@@ -1657,28 +1657,28 @@ class SmallSeaBackend:
             for row in rows
         ]
 
-    def _load_member_berth_storage_announcements(
+    def _load_teammate_berth_storage_announcements(
         self,
         conn,
-        member_id: bytes,
+        teammate_id: bytes,
         berth_id: bytes,
     ):
-        if not self._table_exists(conn, "member_berth_storage_announcement"):
+        if not self._table_exists(conn, "teammate_berth_storage_announcement"):
             return []
         rows = conn.execute(
             """
-            SELECT announcement_id, member_id, berth_id, protocol, url, location,
+            SELECT announcement_id, teammate_id, berth_id, protocol, url, location,
                    announced_at, signer_key_id, signature
-            FROM member_berth_storage_announcement
-            WHERE member_id = ? AND berth_id = ?
+            FROM teammate_berth_storage_announcement
+            WHERE teammate_id = ? AND berth_id = ?
             ORDER BY announcement_id DESC
             """,
-            (member_id, berth_id),
+            (teammate_id, berth_id),
         ).fetchall()
         return [
-            MemberBerthStorageAnnouncement(
+            TeammateBerthStorageAnnouncement(
                 announcement_id=row[0],
-                member_id=row[1],
+                teammate_id=row[1],
                 berth_id=row[2],
                 protocol=row[3],
                 url=row[4],
@@ -1703,7 +1703,7 @@ class SmallSeaBackend:
             ss_session.participant_path / ss_session.team_name / "Sync" / "core.db"
         )
 
-    def _self_member_id_for_session(self, ss_session: SmallSeaSession) -> bytes | None:
+    def _self_teammate_id_for_session(self, ss_session: SmallSeaSession) -> bytes | None:
         with attached_note_to_self_connection(
             self.root_dir,
             ss_session.participant_id.hex(),
@@ -1734,19 +1734,19 @@ class SmallSeaBackend:
             ).fetchone()
         return row[0] if row is not None else None
 
-    def _select_member_berth_storage(
+    def _select_teammate_berth_storage(
         self,
         conn,
         team_id: bytes,
-        member_id: bytes,
+        teammate_id: bytes,
         berth_id: bytes,
     ):
-        return select_effective_member_berth_storage(
-            member_id=member_id,
+        return select_effective_teammate_berth_storage(
+            teammate_id=teammate_id,
             berth_id=berth_id,
-            announcements=self._load_member_berth_storage_announcements(
+            announcements=self._load_teammate_berth_storage_announcements(
                 conn,
-                member_id,
+                teammate_id,
                 berth_id,
             ),
             certs=self._load_team_certificates(conn, team_id),
@@ -1761,15 +1761,15 @@ class SmallSeaBackend:
     ) -> None:
         if ss_session.team_name == "NoteToSelf":
             return
-        member_id = self._self_member_id_for_session(ss_session)
-        if member_id is None:
+        teammate_id = self._self_teammate_id_for_session(ss_session)
+        if teammate_id is None:
             raise CloudAnnouncementMissingExn()
         conn = sqlite3.connect(self._team_db_path_for_session(ss_session))
         try:
-            selection = self._select_member_berth_storage(
+            selection = self._select_teammate_berth_storage(
                 conn,
                 ss_session.team_id,
-                member_id,
+                teammate_id,
                 ss_session.berth_id,
             )
         finally:
@@ -1785,7 +1785,7 @@ class SmallSeaBackend:
             return
         if self._has_current_device_storage_announcement(
             ss_session,
-            member_id,
+            teammate_id,
             cloud,
         ):
             return
@@ -1794,7 +1794,7 @@ class SmallSeaBackend:
     def _has_current_device_storage_announcement(
         self,
         ss_session: SmallSeaSession,
-        member_id: bytes,
+        teammate_id: bytes,
         cloud: BerthCloudRecord,
     ) -> bool:
         signer_public_key = self._current_team_device_public_key(ss_session)
@@ -1803,9 +1803,9 @@ class SmallSeaBackend:
         signer_key_id = key_id_from_public(signer_public_key)
         conn = sqlite3.connect(self._team_db_path_for_session(ss_session))
         try:
-            announcements = self._load_member_berth_storage_announcements(
+            announcements = self._load_teammate_berth_storage_announcements(
                 conn,
-                member_id,
+                teammate_id,
                 ss_session.berth_id,
             )
         finally:
@@ -1818,7 +1818,7 @@ class SmallSeaBackend:
                 or announcement.signer_key_id != signer_key_id
             ):
                 continue
-            if verify_member_berth_storage_announcement_signature(
+            if verify_teammate_berth_storage_announcement_signature(
                 announcement,
                 signer_public_key,
             ):

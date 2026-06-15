@@ -111,7 +111,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
 
     # -- Alice: create team --
     team_result = create_team(root, alice_hex, "ProjectX")
-    alice_member_id_hex = team_result["member_id_hex"]
+    alice_teammate_id_hex = team_result["teammate_id_hex"]
     team_allocation = get_berth_cloud_allocation_for_berth(
         root,
         alice_hex,
@@ -128,8 +128,8 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     conn = sqlite3.connect(str(alice_team_db))
     row = conn.execute(
-        "SELECT public_key FROM team_device WHERE member_id = ?",
-        (bytes.fromhex(alice_member_id_hex),),
+        "SELECT public_key FROM team_device WHERE teammate_id = ?",
+        (bytes.fromhex(alice_teammate_id_hex),),
     ).fetchone()
     conn.close()
     assert row is not None
@@ -140,7 +140,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     alice_team_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     _push_via_hub(
         http, alice_team_token, alice_team_sync,
-        signing_key=alice_priv, member_id=alice_member_id_hex, device_public_key=alice_pub,
+        signing_key=alice_priv, teammate_id=alice_teammate_id_hex, device_public_key=alice_pub,
     )
 
     _make_bucket_public(
@@ -156,7 +156,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     )
     _push_via_hub(
         http, alice_team_token, alice_team_sync,
-        signing_key=alice_priv, member_id=alice_member_id_hex, device_public_key=alice_pub,
+        signing_key=alice_priv, teammate_id=alice_teammate_id_hex, device_public_key=alice_pub,
     )
 
     # -- Bob: accept via Manager --
@@ -168,11 +168,11 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
 
     # -- Bob: read Alice's latest link via Hub and verify signature --
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
-    bob_member_id_hex = acceptance["acceptor_member_id"]
+    bob_teammate_id_hex = acceptance["acceptor_teammate_id"]
 
     bob_team_token = _open_session(http, "Bob", "ProjectX", mode="passthrough")
     peer_remote = PeerSmallSeaRemote(
-        bob_team_token, alice_member_id_hex,
+        bob_team_token, alice_teammate_id_hex,
         base_url="http://testserver", client=http,
     )
     result = peer_remote.get_latest_link()
@@ -181,8 +181,8 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     [link_ids, branches, bundles, supp_data] = link
 
     assert "signatures" in supp_data
-    assert alice_member_id_hex in supp_data["signatures"]
-    alice_signature = supp_data["signatures"][alice_member_id_hex]
+    assert alice_teammate_id_hex in supp_data["signatures"]
+    alice_signature = supp_data["signatures"][alice_teammate_id_hex]
     assert alice_signature["device_public_key"] == alice_pub.hex()
     sig_b64 = alice_signature["signature"]
 
@@ -190,8 +190,8 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
     alice_pub_from_bob = bconn.execute(
-        "SELECT public_key FROM team_device WHERE member_id = ?",
-        (bytes.fromhex(alice_member_id_hex),),
+        "SELECT public_key FROM team_device WHERE teammate_id = ?",
+        (bytes.fromhex(alice_teammate_id_hex),),
     ).fetchone()[0]
     bconn.close()
 
@@ -201,8 +201,8 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     # --- Verify Bob's public key is in Alice's team DB (from acceptance token) ---
     aconn = sqlite3.connect(str(alice_team_db))
     bob_pub_row = aconn.execute(
-        "SELECT public_key FROM team_device WHERE member_id = ?",
-        (bytes.fromhex(bob_member_id_hex),),
+        "SELECT public_key FROM team_device WHERE teammate_id = ?",
+        (bytes.fromhex(bob_teammate_id_hex),),
     ).fetchone()
     aconn.close()
     assert bob_pub_row is not None

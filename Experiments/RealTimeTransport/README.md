@@ -51,7 +51,7 @@ TURN relays have the same shape: only one side needs the credential, both peers 
 Notification gateways too.
 
 **Shared-network services.**
-Every participant must be a member of the same instance.
+Every participant must be a teammate of the same instance.
 The value comes from co-membership.
 Tailscale, ZeroTier, NetBird and similar mesh VPNs work this way.
 "Alice has Tailscale, Bob doesn't" is useless for that pair.
@@ -106,7 +106,7 @@ Services regular users can adopt without operating infrastructure or matching pr
 
 Acceptable but never required for the baseline path:
 
-- mesh VPN systems (Tailscale, ZeroTier, NetBird) — useful only when every team member is on the same product, so the matched-membership cost must be documented
+- mesh VPN systems (Tailscale, ZeroTier, NetBird) — useful only when every team teammate is on the same product, so the matched-membership cost must be documented
 - self-hosted relay on a VPS — operationally heavier than the PaaS option above, same shape
 - user-managed private networking between Hubs
 
@@ -123,7 +123,7 @@ The guiding lines:
 
 > Generic connectivity services are acceptable.
 > Bespoke application services are not.
-> No team member should have to operate infrastructure or negotiate provider compatibility with another team for the baseline path to work.
+> No team teammate should have to operate infrastructure or negotiate provider compatibility with another team for the baseline path to work.
 
 ## Transport Modes
 
@@ -157,7 +157,7 @@ Candidate provider families:
 - vendor TURN (Twilio, Cloudflare Calls, Xirsys, Metered, Vonage) — personal-egress shape, no infrastructure to operate, fits the default tier.
 - a personal Small Sea Relay deployed on a PaaS-shaped substrate (Fly.io, Railway, Render, Cloudflare Workers / Durable Objects, Deno Deploy). Two distinct UX problems live here:
   - *operator setup* (signup, billing, deploy click-through, custom domain, certificate, billing-card permanence) — the hard part. Needs a UX investigation against real non-technical users on each candidate platform.
-  - *member onboarding to that relay* — solved by distributing the relay address and shared secret over the existing sync layer (see Config Distribution below). No out-of-band cred sharing, automatic rotation, multi-relay redundancy lists.
+  - *teammate onboarding to that relay* — solved by distributing the relay address and shared secret over the existing sync layer (see Config Distribution below). No out-of-band cred sharing, automatic rotation, multi-relay redundancy lists.
 - mesh VPN relay paths — power-user tier; same matched-membership cost as above.
 - self-hosted VPS relay running a generic protocol — power-user tier; operationally heavier than the PaaS option, same shape.
 
@@ -210,7 +210,7 @@ Bootstrap order, with no chicken-and-egg:
 Properties this gives:
 
 - New devices joining the team get transport config as part of normal bootstrap.
-- Rotation: write a new value to the synced config, members pick it up.
+- Rotation: write a new value to the synced config, teammates pick it up.
 - Redundancy: synced config is a list; the Hub picks an available relay.
 - Failover: if all listed relays are unreachable, the Hub falls back to mailbox mode automatically.
 

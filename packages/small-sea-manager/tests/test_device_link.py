@@ -11,9 +11,9 @@ from small_sea_manager.provisioning import (
     create_invitation,
     create_new_participant,
     create_team,
-    get_trusted_device_keys_for_member,
-    get_trusted_device_keys_for_member_in_team_db,
-    issue_device_link_for_member,
+    get_trusted_device_keys_for_teammate,
+    get_trusted_device_keys_for_teammate_in_team_db,
+    issue_device_link_for_teammate,
 )
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
@@ -31,24 +31,24 @@ def _make_cod_sync(repo_dir, remote_name):
     return CS.CodSync(remote_name, repo_dir=pathlib.Path(repo_dir))
 
 
-def test_issue_device_link_for_member_updates_trusted_device_lookup(playground_dir):
+def test_issue_device_link_for_teammate_updates_trusted_device_lookup(playground_dir):
     root = pathlib.Path(playground_dir)
 
     alice_hex = create_new_participant(root, "Alice")
     team_result = create_team(root, alice_hex, "ProjectX")
-    alice_member_id_hex = team_result["member_id_hex"]
+    alice_teammate_id_hex = team_result["teammate_id_hex"]
 
     _linked_key, linked_priv = generate_key_pair(ProtectionLevel.DAILY)
     linked_public_key = _linked_key.public_key
 
-    cert = issue_device_link_for_member(
+    cert = issue_device_link_for_teammate(
         root, alice_hex, "ProjectX", linked_public_key
     )
     assert cert.cert_type.value == "device_link"
     assert cert.subject_public_key == linked_public_key
 
-    trusted_keys = get_trusted_device_keys_for_member(
-        root, alice_hex, "ProjectX", alice_member_id_hex
+    trusted_keys = get_trusted_device_keys_for_teammate(
+        root, alice_hex, "ProjectX", alice_teammate_id_hex
     )
     assert linked_public_key in trusted_keys
     assert len(trusted_keys) == 2
@@ -58,14 +58,14 @@ def test_issue_device_link_for_member_updates_trusted_device_lookup(playground_d
     cert_types = conn.execute(
         "SELECT cert_type FROM key_certificate ORDER BY issued_at"
     ).fetchall()
-    member_count = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
+    teammate_count = conn.execute("SELECT COUNT(*) FROM teammate").fetchone()[0]
     team_device_count = conn.execute(
-        "SELECT COUNT(*) FROM team_device WHERE member_id = ?",
-        (bytes.fromhex(alice_member_id_hex),),
+        "SELECT COUNT(*) FROM team_device WHERE teammate_id = ?",
+        (bytes.fromhex(alice_teammate_id_hex),),
     ).fetchone()[0]
     conn.close()
     assert [row[0] for row in cert_types] == ["membership", "device_link"]
-    assert member_count == 1
+    assert teammate_count == 1
     assert team_device_count == 2
 
     # Silence lint-style "unused" suspicion around the generated signing key by
@@ -90,8 +90,8 @@ def test_device_link_honored_after_fetch_merge_without_extra_shared_state(playgr
     )
     team_result = create_team(root1, alice_hex, "ProjectX")
     team_id = bytes.fromhex(team_result["team_id_hex"])
-    alice_member_id_hex = team_result["member_id_hex"]
-    alice_member_id = bytes.fromhex(alice_member_id_hex)
+    alice_teammate_id_hex = team_result["teammate_id_hex"]
+    alice_teammate_id = bytes.fromhex(alice_teammate_id_hex)
 
     team_sync_1 = root1 / "Participants" / alice_hex / "ProjectX" / "Sync"
     cloud_remote = CS.LocalFolderRemote(str(cloud_dir))
@@ -108,7 +108,7 @@ def test_device_link_honored_after_fetch_merge_without_extra_shared_state(playgr
     linked_key, linked_priv = generate_key_pair(ProtectionLevel.DAILY)
     linked_public_key = linked_key.public_key
 
-    issue_device_link_for_member(root1, alice_hex, "ProjectX", linked_public_key)
+    issue_device_link_for_teammate(root1, alice_hex, "ProjectX", linked_public_key)
     cod1 = _make_cod_sync(team_sync_1, "cloud")
     cod1.remote = cloud_remote
     cod1.push_to_remote(["main"])
@@ -118,8 +118,8 @@ def test_device_link_honored_after_fetch_merge_without_extra_shared_state(playgr
     cod2.fetch_from_remote(["main"])
     cod2.merge_from_remote(["main"])
 
-    trusted_keys_on_device_2 = get_trusted_device_keys_for_member_in_team_db(
-        team_sync_2 / "core.db", team_id, alice_member_id
+    trusted_keys_on_device_2 = get_trusted_device_keys_for_teammate_in_team_db(
+        team_sync_2 / "core.db", team_id, alice_teammate_id
     )
     assert linked_public_key in trusted_keys_on_device_2
 
@@ -129,14 +129,14 @@ def test_device_link_honored_after_fetch_merge_without_extra_shared_state(playgr
     cod1.push_to_remote(
         ["main"],
         signing_key=linked_priv,
-        member_id=alice_member_id_hex,
+        teammate_id=alice_teammate_id_hex,
         device_public_key=linked_public_key,
     )
 
     latest_link, _etag = cloud_remote.get_latest_link()
     assert latest_link is not None
     [link_ids, branches, bundles, supp_data] = latest_link
-    linked_signature = supp_data["signatures"][alice_member_id_hex]
+    linked_signature = supp_data["signatures"][alice_teammate_id_hex]
     assert linked_signature["device_public_key"] == linked_public_key.hex()
 
     canonical = canonical_link_bytes(link_ids, branches, bundles, supp_data)

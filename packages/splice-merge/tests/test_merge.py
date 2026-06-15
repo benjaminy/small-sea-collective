@@ -18,7 +18,7 @@ SCHEMA_PATH = (
 SCHEMA_SQL = SCHEMA_PATH.read_text()
 
 
-def _make_db(tmp, name, members=None, invitations=None):
+def _make_db(tmp, name, teammates=None, invitations=None):
     """Create a small team DB and return its path."""
     db_path = pathlib.Path(tmp) / name
     conn = sqlite3.connect(str(db_path))
@@ -29,8 +29,8 @@ def _make_db(tmp, name, members=None, invitations=None):
             conn.execute(stmt)
     conn.execute("PRAGMA user_version = 44")
 
-    for m in members or []:
-        conn.execute("INSERT INTO member (id) VALUES (?)", (m,))
+    for m in teammates or []:
+        conn.execute("INSERT INTO teammate (id) VALUES (?)", (m,))
 
     for inv in invitations or []:
         conn.execute(
@@ -56,19 +56,19 @@ def _query_table(db_path, table, columns="*"):
 def test_merge_both_insert():
     """Non-conflicting insertions from both sides are kept."""
     with tempfile.TemporaryDirectory() as tmp:
-        member_a = b"\x01" * 16
+        teammate_a = b"\x01" * 16
 
-        ancestor = _make_db(tmp, "ancestor.db", members=[member_a])
+        ancestor = _make_db(tmp, "ancestor.db", teammates=[teammate_a])
         ours_db = _make_db(
             tmp,
             "ours.db",
-            members=[member_a],
+            teammates=[teammate_a],
             invitations=[(b"\x10" * 16, b"\xaa" * 16, "pending", "Bob", "2025-01-01")],
         )
         theirs_db = _make_db(
             tmp,
             "theirs.db",
-            members=[member_a],
+            teammates=[teammate_a],
             invitations=[
                 (b"\x20" * 16, b"\xbb" * 16, "pending", "Carol", "2025-01-01")
             ],
@@ -96,12 +96,12 @@ def test_merge_one_side_modification():
     nonce = b"\xaa" * 16
 
     with tempfile.TemporaryDirectory() as tmp:
-        member_a = b"\x01" * 16
+        teammate_a = b"\x01" * 16
 
         ancestor = _make_db(
             tmp,
             "ancestor.db",
-            members=[member_a],
+            teammates=[teammate_a],
             invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01")],
         )
         # Ours: changed status to accepted
@@ -136,12 +136,12 @@ def test_theirs_only_modification():
     nonce = b"\xaa" * 16
 
     with tempfile.TemporaryDirectory() as tmp:
-        member_a = b"\x01" * 16
+        teammate_a = b"\x01" * 16
 
         ancestor = _make_db(
             tmp,
             "ancestor.db",
-            members=[member_a],
+            teammates=[teammate_a],
             invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01")],
         )
         # Ours: unchanged
@@ -176,12 +176,12 @@ def test_merge_deletion():
     nonce = b"\xaa" * 16
 
     with tempfile.TemporaryDirectory() as tmp:
-        member_a = b"\x01" * 16
+        teammate_a = b"\x01" * 16
 
         ancestor = _make_db(
             tmp,
             "ancestor.db",
-            members=[member_a],
+            teammates=[teammate_a],
             invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01")],
         )
 
@@ -216,12 +216,12 @@ def test_merge_true_conflict_ours_wins():
     nonce = b"\xaa" * 16
 
     with tempfile.TemporaryDirectory() as tmp:
-        member_a = b"\x01" * 16
+        teammate_a = b"\x01" * 16
 
         ancestor = _make_db(
             tmp,
             "ancestor.db",
-            members=[member_a],
+            teammates=[teammate_a],
             invitations=[(inv_id, nonce, "pending", "Bob", "2025-01-01")],
         )
 
@@ -256,7 +256,7 @@ def test_merge_true_conflict_ours_wins():
 def test_merge_non_id_primary_key_rows():
     """Non-id primary keys merge cleanly when both sides insert different rows."""
     with tempfile.TemporaryDirectory() as tmp:
-        ancestor = _make_db(tmp, "ancestor.db", members=[b"\x01" * 16])
+        ancestor = _make_db(tmp, "ancestor.db", teammates=[b"\x01" * 16])
         ours_db = pathlib.Path(tmp) / "ours.db"
         theirs_db = pathlib.Path(tmp) / "theirs.db"
         shutil.copy(ancestor, str(ours_db))

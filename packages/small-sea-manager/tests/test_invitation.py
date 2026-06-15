@@ -24,8 +24,8 @@ from test_support import publish_storage_announcement_for_session
 from wrasse_trust.identity import verify_membership_cert
 from wrasse_trust.keys import key_id_from_public
 from wrasse_trust.transport import (
-    MemberBerthStorageAnnouncement,
-    verify_member_berth_storage_announcement_signature,
+    TeammateBerthStorageAnnouncement,
+    verify_teammate_berth_storage_announcement_signature,
 )
 
 
@@ -183,7 +183,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
 
     # -- Alice: create team and push via Hub --
     team_result = create_team(root, alice_hex, "ProjectX")
-    alice_member_id_hex = team_result["member_id_hex"]
+    alice_teammate_id_hex = team_result["teammate_id_hex"]
     team_bucket = _core_allocation(root, alice_hex, team_result)["location"]
 
     alice_team_token = _open_session(http, "Alice", "ProjectX", mode="passthrough")
@@ -216,9 +216,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert isinstance(acceptance_b64, str)
 
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
-    bob_member_id_hex = acceptance["acceptor_member_id"]
-    assert bob_member_id_hex != bob_hex
-    assert len(bob_member_id_hex) == 32
+    bob_teammate_id_hex = acceptance["acceptor_teammate_id"]
+    assert bob_teammate_id_hex != bob_hex
+    assert len(bob_teammate_id_hex) == 32
     assert acceptance["team_id"] == token_data["team_id"]
     assert len(acceptance["acceptor_device_public_key"]) == 64
     assert "acceptor_sender_key" not in acceptance
@@ -227,17 +227,17 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
 
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     with sqlite3.connect(str(bob_team_db)) as conn:
-        bob_member_rows = conn.execute(
-            "SELECT id FROM member WHERE id = ?",
-            (bytes.fromhex(bob_member_id_hex),),
+        bob_teammate_rows = conn.execute(
+            "SELECT id FROM teammate WHERE id = ?",
+            (bytes.fromhex(bob_teammate_id_hex),),
         ).fetchall()
         bob_ann_rows = conn.execute(
-            "SELECT announcement_id, member_id, berth_id, protocol, url, location, "
+            "SELECT announcement_id, teammate_id, berth_id, protocol, url, location, "
             "announced_at, signer_key_id, signature "
-            "FROM member_berth_storage_announcement WHERE member_id = ?",
-            (bytes.fromhex(bob_member_id_hex),),
+            "FROM teammate_berth_storage_announcement WHERE teammate_id = ?",
+            (bytes.fromhex(bob_teammate_id_hex),),
         ).fetchall()
-    assert bob_member_rows == []
+    assert bob_teammate_rows == []
 
     # accept_invitation auto-published Bob's own berth storage announcement,
     # signed with Bob's freshly generated team device key. This is the invitee
@@ -246,10 +246,10 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     # was discoverable through no channel at all. No manual publish call and no
     # _push_via_hub helper ran for Bob here.
     assert len(bob_ann_rows) == 1
-    bob_ann = MemberBerthStorageAnnouncement(*bob_ann_rows[0])
+    bob_ann = TeammateBerthStorageAnnouncement(*bob_ann_rows[0])
     bob_device_public_key = bytes.fromhex(acceptance["acceptor_device_public_key"])
     assert bob_ann.signer_key_id == key_id_from_public(bob_device_public_key)
-    assert verify_member_berth_storage_announcement_signature(
+    assert verify_teammate_berth_storage_announcement_signature(
         bob_ann, bob_device_public_key
     )
     bob_allocation = provisioning.get_berth_cloud_allocation_for_berth(
@@ -268,40 +268,40 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert len(invitations) == 1
     assert invitations[0]["status"] == "finalized"
 
-    # --- Verify Alice's team DB has 2 members, a device row for Bob, and 2 berth_roles ---
+    # --- Verify Alice's team DB has 2 teammates, a device row for Bob, and 2 berth_roles ---
     alice_team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     aconn = sqlite3.connect(str(alice_team_db))
-    members = aconn.execute(
-        "SELECT id, display_name FROM member ORDER BY id"
+    teammates = aconn.execute(
+        "SELECT id, display_name FROM teammate ORDER BY id"
     ).fetchall()
-    assert len(members) == 2
-    member_ids = {row[0].hex() for row in members}
-    assert alice_member_id_hex in member_ids
-    assert bob_member_id_hex in member_ids
-    bob_member_row = next(row for row in members if row[0] == bytes.fromhex(bob_member_id_hex))
-    assert bob_member_row[1] == "Bob"
+    assert len(teammates) == 2
+    teammate_ids = {row[0].hex() for row in teammates}
+    assert alice_teammate_id_hex in teammate_ids
+    assert bob_teammate_id_hex in teammate_ids
+    bob_teammate_row = next(row for row in teammates if row[0] == bytes.fromhex(bob_teammate_id_hex))
+    assert bob_teammate_row[1] == "Bob"
     team_devices = aconn.execute(
-        "SELECT member_id, device_key_id, public_key "
-        "FROM team_device ORDER BY member_id, device_key_id"
+        "SELECT teammate_id, device_key_id, public_key "
+        "FROM team_device ORDER BY teammate_id, device_key_id"
     ).fetchall()
     assert len(team_devices) == 2
     bob_team_device_row = next(
-        row for row in team_devices if row[0] == bytes.fromhex(bob_member_id_hex)
+        row for row in team_devices if row[0] == bytes.fromhex(bob_teammate_id_hex)
     )
     assert bob_team_device_row[1] == bytes.fromhex(acceptance["acceptor_device_key_id"])
     assert bob_team_device_row[2] == bytes.fromhex(acceptance["acceptor_device_public_key"])
 
     bob_cert_row = aconn.execute(
         "SELECT cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, "
-        "issuer_member_id, issued_at, claims, signature "
+        "issuer_teammate_id, issued_at, claims, signature "
         "FROM key_certificate WHERE subject_public_key = ?",
         (bytes.fromhex(acceptance["acceptor_device_public_key"]),),
     ).fetchone()
     assert bob_cert_row is not None
     assert bob_cert_row[1] == "membership"
     assert bob_cert_row[3] == bytes.fromhex(acceptance["acceptor_device_public_key"])
-    assert bob_cert_row[5] == bytes.fromhex(alice_member_id_hex)
-    assert json.loads(bob_cert_row[7])["member_id"] == bob_member_id_hex
+    assert bob_cert_row[5] == bytes.fromhex(alice_teammate_id_hex)
+    assert json.loads(bob_cert_row[7])["teammate_id"] == bob_teammate_id_hex
     bob_membership_cert = provisioning._deserialize_cert(
         {
             "cert_id": bob_cert_row[0].hex(),
@@ -317,44 +317,44 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
         }
     )
     alice_device_public_key = next(
-        row[2] for row in team_devices if row[0] == bytes.fromhex(alice_member_id_hex)
+        row[2] for row in team_devices if row[0] == bytes.fromhex(alice_teammate_id_hex)
     )
     assert verify_membership_cert(
         bob_membership_cert,
         issuer_public_key=alice_device_public_key,
         team_id=bytes.fromhex(token_data["team_id"]),
-        issuer_member_id=bytes.fromhex(alice_member_id_hex),
-        admitted_member_id=bytes.fromhex(bob_member_id_hex),
+        issuer_teammate_id=bytes.fromhex(alice_teammate_id_hex),
+        admitted_teammate_id=bytes.fromhex(bob_teammate_id_hex),
         subject_public_key=bytes.fromhex(acceptance["acceptor_device_public_key"]),
     )
 
-    roles = aconn.execute("SELECT member_id, role FROM berth_role").fetchall()
+    roles = aconn.execute("SELECT teammate_id, role FROM berth_role").fetchall()
     assert len(roles) == 2
     role_map = {row[0].hex(): row[1] for row in roles}
-    assert role_map[alice_member_id_hex] == "read-write"
-    assert role_map[bob_member_id_hex] == "read-write"
+    assert role_map[alice_teammate_id_hex] == "read-write"
+    assert role_map[bob_teammate_id_hex] == "read-write"
     aconn.close()
 
     # --- Verify Bob's local clone still reflects the pre-finalization team view until sync ---
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
-    members = bconn.execute(
-        "SELECT id, display_name FROM member ORDER BY id"
+    teammates = bconn.execute(
+        "SELECT id, display_name FROM teammate ORDER BY id"
     ).fetchall()
-    assert len(members) == 1
-    member_ids = {row[0].hex() for row in members}
-    assert alice_member_id_hex in member_ids
+    assert len(teammates) == 1
+    teammate_ids = {row[0].hex() for row in teammates}
+    assert alice_teammate_id_hex in teammate_ids
     team_devices = bconn.execute(
-        "SELECT member_id, public_key FROM team_device ORDER BY member_id, device_key_id"
+        "SELECT teammate_id, public_key FROM team_device ORDER BY teammate_id, device_key_id"
     ).fetchall()
     assert len(team_devices) == 1
     # team_device no longer carries transport. Alice's storage is discoverable
     # through her signed berth storage announcement (published by create_team),
     # which Bob received when he cloned the team repo.
     alice_storage = bconn.execute(
-        "SELECT protocol, url FROM member_berth_storage_announcement "
-        "WHERE member_id = ? ORDER BY announcement_id DESC LIMIT 1",
-        (bytes.fromhex(alice_member_id_hex),),
+        "SELECT protocol, url FROM teammate_berth_storage_announcement "
+        "WHERE teammate_id = ? ORDER BY announcement_id DESC LIMIT 1",
+        (bytes.fromhex(alice_teammate_id_hex),),
     ).fetchone()
     assert alice_storage is not None
     assert alice_storage[0] == "s3"
@@ -370,7 +370,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     teams = buconn.execute("SELECT * FROM team WHERE name = 'ProjectX'").fetchall()
     assert len(teams) == 1
     assert teams[0]["id"] == bytes.fromhex(token_data["team_id"])
-    assert teams[0]["self_in_team"] == bytes.fromhex(bob_member_id_hex)
+    assert teams[0]["self_in_team"] == bytes.fromhex(bob_teammate_id_hex)
     alice_sender_device_key_id = key_id_from_public(alice_device_public_key)
     bob_sender_device_key_id = key_id_from_public(
         bytes.fromhex(acceptance["acceptor_device_public_key"])

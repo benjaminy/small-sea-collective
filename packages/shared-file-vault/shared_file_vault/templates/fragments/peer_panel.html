@@ -27,7 +27,7 @@
         <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/fetch"
               hx-target="#niche-detail"
               hx-swap="innerHTML">
-          <input type="hidden" name="from_member_id" value="{{ peer.member_id }}">
+          <input type="hidden" name="from_teammate_id" value="{{ peer.teammate_id }}">
           <button class="btn btn-secondary" type="submit">
             Check For Updates
           </button>
@@ -36,7 +36,7 @@
         <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/merge"
               hx-target="#niche-detail"
               hx-swap="innerHTML">
-          <input type="hidden" name="from_member_id" value="{{ peer.member_id }}">
+          <input type="hidden" name="from_teammate_id" value="{{ peer.teammate_id }}">
           <button class="btn btn-primary" type="submit">
             Merge Changes
           </button>

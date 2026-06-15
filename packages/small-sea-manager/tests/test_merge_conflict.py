@@ -140,39 +140,39 @@ def _create_invitation_on_device(team_sync_dir, invitee_label):
     ).stdout.strip()
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
-    member_ids = [row[0].hex() for row in conn.execute("SELECT id FROM member ORDER BY id").fetchall()]
+    teammate_ids = [row[0].hex() for row in conn.execute("SELECT id FROM teammate ORDER BY id").fetchall()]
     admin_ids = [
         row[0].hex()
         for row in conn.execute(
             """
-            SELECT br.member_id
+            SELECT br.teammate_id
             FROM berth_role br
             JOIN team_app_berth tab ON tab.id = br.berth_id
             JOIN app a ON a.id = tab.app_id
             WHERE a.name = 'SmallSeaCollectiveCore' AND br.role = 'read-write'
-            ORDER BY br.member_id
+            ORDER BY br.teammate_id
             """
         ).fetchall()
     ]
-    member_devices: dict[str, list[str]] = {member_id_hex: [] for member_id_hex in member_ids}
-    for member_id, device_key_id in conn.execute(
-        "SELECT member_id, device_key_id FROM team_device ORDER BY member_id, device_key_id"
+    teammate_devices: dict[str, list[str]] = {teammate_id_hex: [] for teammate_id_hex in teammate_ids}
+    for teammate_id, device_key_id in conn.execute(
+        "SELECT teammate_id, device_key_id FROM team_device ORDER BY teammate_id, device_key_id"
     ).fetchall():
-        member_devices.setdefault(member_id.hex(), []).append(device_key_id.hex())
+        teammate_devices.setdefault(teammate_id.hex(), []).append(device_key_id.hex())
     governance_snapshot = {
         "admins": admin_ids,
-        "members": member_ids,
-        "member_devices": member_devices,
+        "teammates": teammate_ids,
+        "teammate_devices": teammate_devices,
     }
     governance_digest = provisioning._governance_digest(governance_snapshot)
     # The team DB is scoped to one team and does not persist a team_id column.
     # For this merge test we only need a stable non-null value to exercise
     # concurrent append-only proposal rows through the sqlite merge driver.
     pseudo_team_id = conn.execute("SELECT id FROM app LIMIT 1").fetchone()["id"]
-    team_row = conn.execute("SELECT id FROM member ORDER BY id LIMIT 1").fetchone()
+    team_row = conn.execute("SELECT id FROM teammate ORDER BY id LIMIT 1").fetchone()
     conn.execute(
         "INSERT INTO admission_proposal ("
-        "proposal_id, nonce, team_id, inviter_member_id, invitee_member_id, "
+        "proposal_id, nonce, team_id, inviter_teammate_id, invitee_teammate_id, "
         "invitee_label, role, anchor_commit, governance_digest, governance_snapshot_json, "
         "state, created_at, expires_at"
         ") VALUES (?, ?, ?, ?, ?, ?, 'admin', ?, ?, ?, 'awaiting_invitee', ?, ?)",

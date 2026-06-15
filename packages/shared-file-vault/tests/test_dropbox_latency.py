@@ -80,8 +80,8 @@ def _get_nickname(workspace: pathlib.Path, participant_hex: str) -> str:
     return row[0] if row else participant_hex
 
 
-def _get_member_id_hex(workspace: pathlib.Path, participant_hex: str, team_name: str) -> str:
-    """Read participant's member_id in team from NoteToSelf DB."""
+def _get_teammate_id_hex(workspace: pathlib.Path, participant_hex: str, team_name: str) -> str:
+    """Read participant's teammate_id in team from NoteToSelf DB."""
     db = workspace / "Participants" / participant_hex / "NoteToSelf" / "Sync" / "core.db"
     conn = sqlite3.connect(str(db))
     try:
@@ -212,11 +212,11 @@ def _open_session(endpoint: str, nickname: str, team: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _get_signal_etag(endpoint: str, token: str, member_id_hex: str) -> str | None:
+def _get_signal_etag(endpoint: str, token: str, teammate_id_hex: str) -> str | None:
     """Return current etag of peer's signal file, or None if not yet present."""
     resp = requests.get(
         f"{endpoint}/peer_signal",
-        params={"member_id": member_id_hex},
+        params={"teammate_id": teammate_id_hex},
         headers={"Authorization": f"Bearer {token}"},
         timeout=5,
     )
@@ -227,18 +227,18 @@ def _get_signal_etag(endpoint: str, token: str, member_id_hex: str) -> str | Non
 
 
 def _poll_for_signal_change(
-    endpoint: str, token: str, member_id_hex: str,
+    endpoint: str, token: str, teammate_id_hex: str,
     known_etag: str | None, timeout: int = SIGNAL_POLL_TIMEOUT,
 ) -> None:
     """Block until peer's signal etag differs from known_etag."""
     deadline = time.time() + timeout
     while time.time() < deadline:
-        etag = _get_signal_etag(endpoint, token, member_id_hex)
+        etag = _get_signal_etag(endpoint, token, teammate_id_hex)
         if etag is not None and etag != known_etag:
             return
         time.sleep(1)
     raise TimeoutError(
-        f"Signal for {member_id_hex[:8]}… did not change within {timeout}s"
+        f"Signal for {teammate_id_hex[:8]}… did not change within {timeout}s"
     )
 
 
@@ -247,11 +247,11 @@ def _poll_for_signal_change(
 # ---------------------------------------------------------------------------
 
 
-def _get_peer_count(endpoint: str, token: str, member_id_hex: str) -> int:
+def _get_peer_count(endpoint: str, token: str, teammate_id_hex: str) -> int:
     """Return the current max signal count for a peer, or 0 if not yet present."""
     resp = requests.get(
         f"{endpoint}/peer_signal",
-        params={"member_id": member_id_hex},
+        params={"teammate_id": teammate_id_hex},
         headers={"Authorization": f"Bearer {token}"},
         timeout=5,
     )
@@ -263,7 +263,7 @@ def _get_peer_count(endpoint: str, token: str, member_id_hex: str) -> int:
 
 
 def _wait_for_notification(
-    endpoint: str, token: str, member_id_hex: str,
+    endpoint: str, token: str, teammate_id_hex: str,
     known_count: int, timeout: int = SIGNAL_POLL_TIMEOUT,
 ) -> int:
     """Long-poll until Hub watcher detects a new signal count for the peer.
@@ -273,17 +273,17 @@ def _wait_for_notification(
     """
     resp = requests.post(
         f"{endpoint}/notifications/watch",
-        json={"known": {member_id_hex: known_count}, "timeout": timeout},
+        json={"known": {teammate_id_hex: known_count}, "timeout": timeout},
         headers={"Authorization": f"Bearer {token}"},
         timeout=timeout + 10,
     )
     resp.raise_for_status()
     updated = resp.json().get("updated", {})
-    if member_id_hex not in updated:
+    if teammate_id_hex not in updated:
         raise TimeoutError(
-            f"No push notification for {member_id_hex[:8]}… within {timeout}s"
+            f"No push notification for {teammate_id_hex[:8]}… within {timeout}s"
         )
-    return updated[member_id_hex]
+    return updated[teammate_id_hex]
 
 
 # ---------------------------------------------------------------------------
@@ -310,8 +310,8 @@ def dropbox_env(tmp_path_factory):
     )
     p0_nick = _get_nickname(workspace, p0_hex)
     p1_nick = _get_nickname(workspace, p1_hex)
-    p0_member_id = _get_member_id_hex(workspace, p0_hex, team_name)
-    p1_member_id = _get_member_id_hex(workspace, p1_hex, team_name)
+    p0_teammate_id = _get_teammate_id_hex(workspace, p0_hex, team_name)
+    p1_teammate_id = _get_teammate_id_hex(workspace, p1_hex, team_name)
 
     # Isolated Hub root dirs: copy each participant into its own root
     hub0_root = str(tmp_path_factory.mktemp("hub0"))
@@ -340,8 +340,8 @@ def dropbox_env(tmp_path_factory):
 
         yield {
             "team_name": team_name,
-            "p0_hex": p0_hex, "p0_nick": p0_nick, "p0_member_id": p0_member_id,
-            "p1_hex": p1_hex, "p1_nick": p1_nick, "p1_member_id": p1_member_id,
+            "p0_hex": p0_hex, "p0_nick": p0_nick, "p0_teammate_id": p0_teammate_id,
+            "p1_hex": p1_hex, "p1_nick": p1_nick, "p1_teammate_id": p1_teammate_id,
             "ep0": ep0, "ep1": ep1,
             "log0": log0, "log1": log1,
         }
@@ -380,8 +380,8 @@ def dropbox_ntfy_env(tmp_path_factory):
     )
     p0_nick = _get_nickname(workspace, p0_hex)
     p1_nick = _get_nickname(workspace, p1_hex)
-    p0_member_id = _get_member_id_hex(workspace, p0_hex, team_name)
-    p1_member_id = _get_member_id_hex(workspace, p1_hex, team_name)
+    p0_teammate_id = _get_teammate_id_hex(workspace, p0_hex, team_name)
+    p1_teammate_id = _get_teammate_id_hex(workspace, p1_hex, team_name)
 
     # Isolated Hub root dirs
     hub0_root = pathlib.Path(tmp_path_factory.mktemp("hub0_ntfy"))
@@ -417,8 +417,8 @@ def dropbox_ntfy_env(tmp_path_factory):
 
         yield {
             "team_name": team_name,
-            "p0_hex": p0_hex, "p0_nick": p0_nick, "p0_member_id": p0_member_id,
-            "p1_hex": p1_hex, "p1_nick": p1_nick, "p1_member_id": p1_member_id,
+            "p0_hex": p0_hex, "p0_nick": p0_nick, "p0_teammate_id": p0_teammate_id,
+            "p1_hex": p1_hex, "p1_nick": p1_nick, "p1_teammate_id": p1_teammate_id,
             "ep0": ep0, "ep1": ep1,
             "log0": log0, "log1": log1,
             "ntfy_url": ntfy_url,
@@ -440,8 +440,8 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     team = dropbox_env["team_name"]
     p0_hex, p0_nick = dropbox_env["p0_hex"], dropbox_env["p0_nick"]
     p1_hex, p1_nick = dropbox_env["p1_hex"], dropbox_env["p1_nick"]
-    p0_member_id = dropbox_env["p0_member_id"]
-    p1_member_id = dropbox_env["p1_member_id"]
+    p0_teammate_id = dropbox_env["p0_teammate_id"]
+    p1_teammate_id = dropbox_env["p1_teammate_id"]
     ep0, ep1 = dropbox_env["ep0"], dropbox_env["ep1"]
 
     print(f"\nParticipants: {p0_nick} ({p0_hex[:8]}…) and {p1_nick} ({p1_hex[:8]}…)")
@@ -474,9 +474,9 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     reg_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=reg_pfx)
     niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
     niche_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=niche_pfx)
-    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=reg_pfx)
-    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=niche_pfx)
-    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_member_id, base_url=ep0, path_prefix=niche_pfx)
+    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=reg_pfx)
+    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=niche_pfx)
+    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
 
     # p0 creates niche and makes an initial commit so p1 has something to clone
     create_niche(vault0, p0_hex, team, NICHE)
@@ -496,8 +496,8 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     add_checkout(vault1, p1_hex, team, NICHE, str(co1))
 
     # Snapshot etags before the ping
-    etag_p0_before = _get_signal_etag(ep1, tok1, p0_member_id)
-    etag_p1_before = _get_signal_etag(ep0, tok0, p1_member_id)
+    etag_p0_before = _get_signal_etag(ep1, tok1, p0_teammate_id)
+    etag_p1_before = _get_signal_etag(ep0, tok0, p1_teammate_id)
 
     # ---- PING: p0 writes and pushes ----
     t_start = time.time()
@@ -506,7 +506,7 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     push_niche(vault0, p0_hex, team, NICHE, niche_remote0)
 
     # ---- p1 detects, pulls, writes pong, pushes ----
-    _poll_for_signal_change(ep1, tok1, p0_member_id, etag_p0_before)
+    _poll_for_signal_change(ep1, tok1, p0_teammate_id, etag_p0_before)
     t_p1_received = time.time()
 
     pull_niche(vault1, p1_hex, team, NICHE, p1_reads_p0_niche)
@@ -517,7 +517,7 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     push_niche(vault1, p1_hex, team, NICHE, niche_remote1)
 
     # ---- p0 detects and pulls pong ----
-    _poll_for_signal_change(ep0, tok0, p1_member_id, etag_p1_before)
+    _poll_for_signal_change(ep0, tok0, p1_teammate_id, etag_p1_before)
     t_p0_received = time.time()
 
     pull_niche(vault0, p0_hex, team, NICHE, p0_reads_p1_niche)
@@ -540,8 +540,8 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     team = dropbox_env["team_name"]
     p0_hex, p0_nick = dropbox_env["p0_hex"], dropbox_env["p0_nick"]
     p1_hex, p1_nick = dropbox_env["p1_hex"], dropbox_env["p1_nick"]
-    p0_member_id = dropbox_env["p0_member_id"]
-    p1_member_id = dropbox_env["p1_member_id"]
+    p0_teammate_id = dropbox_env["p0_teammate_id"]
+    p1_teammate_id = dropbox_env["p1_teammate_id"]
     ep0, ep1 = dropbox_env["ep0"], dropbox_env["ep1"]
 
     print(f"\nParticipants: {p0_nick} ({p0_hex[:8]}…) and {p1_nick} ({p1_hex[:8]}…)")
@@ -568,9 +568,9 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
     niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
     niche_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=niche_pfx)
-    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=reg_pfx)
-    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=niche_pfx)
-    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_member_id, base_url=ep0, path_prefix=niche_pfx)
+    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=reg_pfx)
+    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=niche_pfx)
+    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
 
     # p0 creates niche, makes initial commit, pushes
     create_niche(vault0, p0_hex, team, niche_name)
@@ -588,8 +588,8 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     add_checkout(vault1, p1_hex, team, niche_name, str(co1))
 
     # Snapshot counts before ping so _wait_for_notification knows the baseline.
-    count_p0_before_ping = _get_peer_count(ep1, tok1, p0_member_id)
-    count_p1_before_pong = _get_peer_count(ep0, tok0, p1_member_id)
+    count_p0_before_ping = _get_peer_count(ep1, tok1, p0_teammate_id)
+    count_p1_before_pong = _get_peer_count(ep0, tok0, p1_teammate_id)
 
     # ---- PING: p0 writes and pushes ----
     t_start = time.time()
@@ -598,7 +598,7 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     push_niche(vault0, p0_hex, team, niche_name, niche_remote0)
 
     # ---- p1 waits for Hub push notification, then pulls and pongs ----
-    _wait_for_notification(ep1, tok1, p0_member_id, count_p0_before_ping)
+    _wait_for_notification(ep1, tok1, p0_teammate_id, count_p0_before_ping)
     t_p1_received = time.time()
 
     pull_niche(vault1, p1_hex, team, niche_name, p1_reads_p0_niche)
@@ -609,7 +609,7 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     push_niche(vault1, p1_hex, team, niche_name, niche_remote1)
 
     # ---- p0 waits for push notification of pong ----
-    _wait_for_notification(ep0, tok0, p1_member_id, count_p1_before_pong)
+    _wait_for_notification(ep0, tok0, p1_teammate_id, count_p1_before_pong)
     t_p0_received = time.time()
 
     pull_niche(vault0, p0_hex, team, niche_name, p0_reads_p1_niche)
@@ -634,8 +634,8 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     team = dropbox_ntfy_env["team_name"]
     p0_hex, p0_nick = dropbox_ntfy_env["p0_hex"], dropbox_ntfy_env["p0_nick"]
     p1_hex, p1_nick = dropbox_ntfy_env["p1_hex"], dropbox_ntfy_env["p1_nick"]
-    p0_member_id = dropbox_ntfy_env["p0_member_id"]
-    p1_member_id = dropbox_ntfy_env["p1_member_id"]
+    p0_teammate_id = dropbox_ntfy_env["p0_teammate_id"]
+    p1_teammate_id = dropbox_ntfy_env["p1_teammate_id"]
     ep0, ep1 = dropbox_ntfy_env["ep0"], dropbox_ntfy_env["ep1"]
     ntfy_url = dropbox_ntfy_env["ntfy_url"]
 
@@ -663,9 +663,9 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
     niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
     niche_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=niche_pfx)
-    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=reg_pfx)
-    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_member_id, base_url=ep1, path_prefix=niche_pfx)
-    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_member_id, base_url=ep0, path_prefix=niche_pfx)
+    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=reg_pfx)
+    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=niche_pfx)
+    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
 
     create_niche(vault0, p0_hex, team, niche_name)
     co0 = tmp_path / "checkout-p0"
@@ -681,8 +681,8 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     co1 = tmp_path / "checkout-p1"
     add_checkout(vault1, p1_hex, team, niche_name, str(co1))
 
-    count_p0_before_ping = _get_peer_count(ep1, tok1, p0_member_id)
-    count_p1_before_pong = _get_peer_count(ep0, tok0, p1_member_id)
+    count_p0_before_ping = _get_peer_count(ep1, tok1, p0_teammate_id)
+    count_p1_before_pong = _get_peer_count(ep0, tok0, p1_teammate_id)
 
     def _ms(start, end=None):
         return f"{((end or time.time()) - start) * 1000:.0f} ms"
@@ -697,7 +697,7 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     t_push_done = time.time()
 
     # ---- p1 waits for ntfy-driven notification ----
-    _wait_for_notification(ep1, tok1, p0_member_id, count_p0_before_ping)
+    _wait_for_notification(ep1, tok1, p0_teammate_id, count_p0_before_ping)
     t_p1_notified = time.time()
 
     t1 = time.time()
@@ -713,7 +713,7 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     t_pong_push_done = time.time()
 
     # ---- p0 waits for ntfy-driven notification of pong ----
-    _wait_for_notification(ep0, tok0, p1_member_id, count_p1_before_pong)
+    _wait_for_notification(ep0, tok0, p1_teammate_id, count_p1_before_pong)
     t_p0_notified = time.time()
 
     t3 = time.time()

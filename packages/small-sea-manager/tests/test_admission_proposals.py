@@ -21,13 +21,13 @@ def _bootstrap_existing_admin_clone(
     team_name: str,
     display_name: str,
 ) -> str:
-    team_id, inviter_member_id = provisioning._team_row(root, inviter_hex, team_name)
-    invitee_member_id = provisioning.uuid7()
+    team_id, inviter_teammate_id = provisioning._team_row(root, inviter_hex, team_name)
+    invitee_teammate_id = provisioning.uuid7()
 
     with provisioning.attached_note_to_self_connection(root, invitee_hex) as conn:
         conn.execute(
             "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
-            (team_id, team_name, invitee_member_id),
+            (team_id, team_name, invitee_teammate_id),
         )
         conn.commit()
 
@@ -45,8 +45,8 @@ def _bootstrap_existing_admin_clone(
         issuer_key=provisioning._participant_key_from_public(inviter_public_key),
         issuer_private_key=inviter_private_key,
         team_id=team_id,
-        issuer_member_id=inviter_member_id,
-        admitted_member_id=invitee_member_id,
+        issuer_teammate_id=inviter_teammate_id,
+        admitted_teammate_id=invitee_teammate_id,
     )
 
     alice_db = inviter_sync / "core.db"
@@ -54,23 +54,23 @@ def _bootstrap_existing_admin_clone(
     engine = provisioning._sqlite_engine(alice_db)
     try:
         with engine.begin() as conn:
-            provisioning._upsert_member_row(conn, invitee_member_id, display_name=display_name)
+            provisioning._upsert_teammate_row(conn, invitee_teammate_id, display_name=display_name)
             provisioning._upsert_team_device_row(
                 conn,
-                invitee_member_id,
+                invitee_teammate_id,
                 invitee_keys["device_key"].public_key,
             )
-            provisioning._store_team_certificate(conn, membership_cert, issuer_member_id=inviter_member_id)
+            provisioning._store_team_certificate(conn, membership_cert, issuer_teammate_id=inviter_teammate_id)
             berth_id = conn.execute(
                 provisioning.text("SELECT id FROM team_app_berth LIMIT 1")
             ).fetchone()[0]
             conn.execute(
                 provisioning.text(
-                    "INSERT INTO berth_role (id, member_id, berth_id, role) VALUES (:id, :member_id, :berth_id, :role)"
+                    "INSERT INTO berth_role (id, teammate_id, berth_id, role) VALUES (:id, :teammate_id, :berth_id, :role)"
                 ),
                 {
                     "id": provisioning.uuid7(),
-                    "member_id": invitee_member_id,
+                    "teammate_id": invitee_teammate_id,
                     "berth_id": berth_id,
                     "role": "read-write",
                 },
@@ -78,7 +78,7 @@ def _bootstrap_existing_admin_clone(
     finally:
         engine.dispose()
     shutil.copy2(alice_db, invitee_sync / "core.db")
-    return invitee_member_id.hex()
+    return invitee_teammate_id.hex()
 
 
 def test_quorum_two_requires_second_admin_and_inviter_finalization(playground_dir):
@@ -134,8 +134,8 @@ def test_quorum_two_requires_second_admin_and_inviter_finalization(playground_di
     assert proposals[0]["status"] == "finalized"
 
     with sqlite3.connect(alice_sync / "core.db") as conn:
-        member_count = conn.execute("SELECT COUNT(*) FROM member").fetchone()[0]
-    assert member_count == 3
+        teammate_count = conn.execute("SELECT COUNT(*) FROM teammate").fetchone()[0]
+    assert teammate_count == 3
 
 
 def test_governance_drift_invalidates_proposal(playground_dir):
@@ -166,7 +166,7 @@ def test_governance_drift_invalidates_proposal(playground_dir):
 
     with sqlite3.connect(alice_sync / "core.db") as conn:
         conn.execute(
-            "INSERT INTO member (id, display_name) VALUES (?, ?)",
+            "INSERT INTO teammate (id, display_name) VALUES (?, ?)",
             (provisioning.uuid7(), "Unexpected"),
         )
         conn.commit()
@@ -212,6 +212,6 @@ def test_observer_role_finalizes_as_read_only(playground_dir):
 
     with sqlite3.connect(alice_sync / "core.db") as conn:
         bob_role = conn.execute(
-            "SELECT role FROM berth_role br JOIN member m ON m.id = br.member_id WHERE m.display_name = 'Bob'"
+            "SELECT role FROM berth_role br JOIN teammate m ON m.id = br.teammate_id WHERE m.display_name = 'Bob'"
         ).fetchone()[0]
     assert bob_role == "read-only"

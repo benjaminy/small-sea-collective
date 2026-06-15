@@ -22,7 +22,7 @@ from wrasse_trust.identity import (
     issue_cert,
     issue_membership_cert,
     issue_revocation,
-    trusted_device_keys_for_member,
+    trusted_device_keys_for_teammate,
     verify_cert,
     verify_device_link_cert,
     verify_membership_cert,
@@ -451,23 +451,23 @@ def test_issue_membership_cert_round_trip():
     guarded = collection.guarded_keys()[0]
 
     team_id = b"team-id-bytes-01"
-    admitted_member_id = b"member-id-bytes1"
+    admitted_teammate_id = b"teammate-id-bytes1"
 
     cert = issue_membership_cert(
         subject_key=guarded,
         issuer_key=buried,
         issuer_private_key=privates[buried.key_id],
         team_id=team_id,
-        issuer_member_id=ALICE_ID,
-        admitted_member_id=admitted_member_id,
+        issuer_teammate_id=ALICE_ID,
+        admitted_teammate_id=admitted_teammate_id,
     )
 
     assert verify_membership_cert(
         cert,
         issuer_public_key=buried.public_key,
         team_id=team_id,
-        issuer_member_id=ALICE_ID,
-        admitted_member_id=admitted_member_id,
+        issuer_teammate_id=ALICE_ID,
+        admitted_teammate_id=admitted_teammate_id,
         subject_public_key=guarded.public_key,
     )
 
@@ -478,29 +478,29 @@ def test_issue_device_link_cert_round_trip():
     guarded = collection.guarded_keys()[0]
 
     team_id = b"team-id-bytes-01"
-    member_id = b"member-id-bytes1"
+    teammate_id = b"teammate-id-bytes1"
 
     cert = issue_device_link_cert(
         subject_key=guarded,
         issuer_key=buried,
         issuer_private_key=privates[buried.key_id],
         team_id=team_id,
-        member_id=member_id,
+        teammate_id=teammate_id,
     )
 
     assert verify_device_link_cert(
         cert,
         issuer_public_key=buried.public_key,
         team_id=team_id,
-        member_id=member_id,
+        teammate_id=teammate_id,
         subject_public_key=guarded.public_key,
     )
 
 
-def test_trusted_device_keys_for_member_allows_transitive_device_links():
+def test_trusted_device_keys_for_teammate_allows_transitive_device_links():
     team_id = b"team-id-bytes-01"
-    alice_member_id = b"alice-member-id0"
-    bob_member_id = b"bob-member-id0000"
+    alice_teammate_id = b"alice-teammate-id0"
+    bob_teammate_id = b"bob-teammate-id0000"
 
     alice_initial, alice_initial_priv = generate_key_pair(ProtectionLevel.DAILY)
     alice_laptop, alice_laptop_priv = generate_key_pair(ProtectionLevel.DAILY)
@@ -512,27 +512,27 @@ def test_trusted_device_keys_for_member_allows_transitive_device_links():
             issuer_key=alice_initial,
             issuer_private_key=alice_initial_priv,
             team_id=team_id,
-            issuer_member_id=alice_member_id,
-            admitted_member_id=alice_member_id,
+            issuer_teammate_id=alice_teammate_id,
+            admitted_teammate_id=alice_teammate_id,
         ),
         issue_membership_cert(
             subject_key=bob_initial,
             issuer_key=alice_initial,
             issuer_private_key=alice_initial_priv,
             team_id=team_id,
-            issuer_member_id=alice_member_id,
-            admitted_member_id=bob_member_id,
+            issuer_teammate_id=alice_teammate_id,
+            admitted_teammate_id=bob_teammate_id,
         ),
         issue_device_link_cert(
             subject_key=alice_laptop,
             issuer_key=alice_initial,
             issuer_private_key=alice_initial_priv,
             team_id=team_id,
-            member_id=alice_member_id,
+            teammate_id=alice_teammate_id,
         ),
     ]
 
-    trusted = trusted_device_keys_for_member(certs, team_id, alice_member_id)
+    trusted = trusted_device_keys_for_teammate(certs, team_id, alice_teammate_id)
     assert alice_initial.public_key in trusted
     assert alice_laptop.public_key in trusted
     # The Bob membership cert is not a device_link for Alice, so Bob's key must
@@ -540,9 +540,9 @@ def test_trusted_device_keys_for_member_allows_transitive_device_links():
     assert bob_initial.public_key not in trusted
 
 
-def test_trusted_device_keys_for_member_accepts_transitive_non_founding_signer():
+def test_trusted_device_keys_for_teammate_accepts_transitive_non_founding_signer():
     team_id = b"team-id-bytes-01"
-    member_id = b"alice-member-id0"
+    teammate_id = b"alice-teammate-id0"
 
     first_device, first_priv = generate_key_pair(ProtectionLevel.DAILY)
     second_device, second_priv = generate_key_pair(ProtectionLevel.DAILY)
@@ -554,34 +554,34 @@ def test_trusted_device_keys_for_member_accepts_transitive_non_founding_signer()
             issuer_key=first_device,
             issuer_private_key=first_priv,
             team_id=team_id,
-            issuer_member_id=member_id,
-            admitted_member_id=member_id,
+            issuer_teammate_id=teammate_id,
+            admitted_teammate_id=teammate_id,
         ),
         issue_device_link_cert(
             subject_key=second_device,
             issuer_key=first_device,
             issuer_private_key=first_priv,
             team_id=team_id,
-            member_id=member_id,
+            teammate_id=teammate_id,
         ),
         issue_device_link_cert(
             subject_key=third_device,
             issuer_key=second_device,
             issuer_private_key=second_priv,
             team_id=team_id,
-            member_id=member_id,
+            teammate_id=teammate_id,
         ),
     ]
 
-    trusted = trusted_device_keys_for_member(certs, team_id, member_id)
+    trusted = trusted_device_keys_for_teammate(certs, team_id, teammate_id)
     assert first_device.public_key in trusted
     assert second_device.public_key in trusted
     assert third_device.public_key in trusted
 
 
-def test_trusted_device_keys_for_member_ignores_unknown_signer():
+def test_trusted_device_keys_for_teammate_ignores_unknown_signer():
     team_id = b"team-id-bytes-01"
-    member_id = b"alice-member-id0"
+    teammate_id = b"alice-teammate-id0"
 
     founding_device, founding_priv = generate_key_pair(ProtectionLevel.DAILY)
     stranger_device, stranger_priv = generate_key_pair(ProtectionLevel.DAILY)
@@ -593,19 +593,19 @@ def test_trusted_device_keys_for_member_ignores_unknown_signer():
             issuer_key=founding_device,
             issuer_private_key=founding_priv,
             team_id=team_id,
-            issuer_member_id=member_id,
-            admitted_member_id=member_id,
+            issuer_teammate_id=teammate_id,
+            admitted_teammate_id=teammate_id,
         ),
         issue_device_link_cert(
             subject_key=candidate_device,
             issuer_key=stranger_device,
             issuer_private_key=stranger_priv,
             team_id=team_id,
-            member_id=member_id,
+            teammate_id=teammate_id,
         ),
     ]
 
-    trusted = trusted_device_keys_for_member(certs, team_id, member_id)
+    trusted = trusted_device_keys_for_teammate(certs, team_id, teammate_id)
     assert founding_device.public_key in trusted
     assert candidate_device.public_key not in trusted
 

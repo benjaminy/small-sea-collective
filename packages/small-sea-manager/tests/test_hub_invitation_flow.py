@@ -116,7 +116,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
 
     # ---- Alice: create team (local) ----
     team_result = Provisioning.create_team(root, alice_hex, "ProjectX")
-    alice_member_id_hex = team_result["member_id_hex"]
+    alice_teammate_id_hex = team_result["teammate_id_hex"]
     team_allocation = Provisioning.get_berth_cloud_allocation_for_berth(
         root,
         alice_hex,
@@ -157,7 +157,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
 
     assert isinstance(acceptance_b64, str)
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
-    bob_member_id_hex = acceptance["acceptor_member_id"]
+    bob_teammate_id_hex = acceptance["acceptor_teammate_id"]
 
     # ---- Bob: push accepted team repo via Hub ----
     bob_team_token = _open_session(http, "Bob", "ProjectX")
@@ -183,41 +183,41 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     # ---- Verify Alice's team DB ----
     alice_team_db = alice_team_sync / "core.db"
     aconn = sqlite3.connect(str(alice_team_db))
-    members = aconn.execute("SELECT id FROM member").fetchall()
-    assert len(members) == 2
-    member_ids = {row[0].hex() for row in members}
-    assert alice_member_id_hex in member_ids
-    assert bob_member_id_hex in member_ids
+    teammates = aconn.execute("SELECT id FROM teammate").fetchall()
+    assert len(teammates) == 2
+    teammate_ids = {row[0].hex() for row in teammates}
+    assert alice_teammate_id_hex in teammate_ids
+    assert bob_teammate_id_hex in teammate_ids
 
     team_devices = aconn.execute(
-        "SELECT member_id, public_key FROM team_device ORDER BY member_id, device_key_id"
+        "SELECT teammate_id, public_key FROM team_device ORDER BY teammate_id, device_key_id"
     ).fetchall()
     assert len(team_devices) == 2
     # team_device carries identity only; storage routing is published separately
-    # through signed member_berth_storage_announcement rows (issue #138).
-    device_member_ids = {row[0].hex() for row in team_devices}
-    assert alice_member_id_hex in device_member_ids
-    assert bob_member_id_hex in device_member_ids
+    # through signed teammate_berth_storage_announcement rows (issue #138).
+    device_teammate_ids = {row[0].hex() for row in team_devices}
+    assert alice_teammate_id_hex in device_teammate_ids
+    assert bob_teammate_id_hex in device_teammate_ids
     aconn.close()
 
     # ---- Bob's local clone remains pre-finalization until he syncs again ----
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     bconn = sqlite3.connect(str(bob_team_db))
-    members = bconn.execute("SELECT id FROM member").fetchall()
-    assert len(members) == 1
-    member_ids = {row[0].hex() for row in members}
-    assert alice_member_id_hex in member_ids
+    teammates = bconn.execute("SELECT id FROM teammate").fetchall()
+    assert len(teammates) == 1
+    teammate_ids = {row[0].hex() for row in teammates}
+    assert alice_teammate_id_hex in teammate_ids
     team_devices = bconn.execute(
-        "SELECT member_id FROM team_device ORDER BY member_id, device_key_id"
+        "SELECT teammate_id FROM team_device ORDER BY teammate_id, device_key_id"
     ).fetchall()
     assert len(team_devices) == 1
-    assert team_devices[0][0].hex() == alice_member_id_hex
+    assert team_devices[0][0].hex() == alice_teammate_id_hex
     # Alice's storage is discoverable through her synced berth storage
     # announcement rather than team_device transport columns.
     alice_storage = bconn.execute(
-        "SELECT protocol FROM member_berth_storage_announcement "
-        "WHERE member_id = ? ORDER BY announcement_id DESC LIMIT 1",
-        (bytes.fromhex(alice_member_id_hex),),
+        "SELECT protocol FROM teammate_berth_storage_announcement "
+        "WHERE teammate_id = ? ORDER BY announcement_id DESC LIMIT 1",
+        (bytes.fromhex(alice_teammate_id_hex),),
     ).fetchone()
     assert alice_storage is not None
     assert alice_storage[0] == "s3"

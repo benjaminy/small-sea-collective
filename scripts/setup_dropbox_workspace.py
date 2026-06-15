@@ -7,7 +7,7 @@ Sequence:
   4. Bob accepts the invitation (clones from Alice's folder, pushes to his own)
   5. Alice completes the acceptance
 
-Each participant gets their own Dropbox folder: ss-{member_id_hex[:16]}/
+Each participant gets their own Dropbox folder: ss-{teammate_id_hex[:16]}/
 This avoids collisions when both participants share a single Dropbox app account.
 
 Usage:
@@ -108,9 +108,9 @@ def _setup_team(
 ):
     print(f"\nCreating team '{_TEAM_NAME}' for Alice...")
     team_result = create_team(workspace, alice_hex, _TEAM_NAME)
-    alice_member_id_hex = team_result["member_id_hex"]
-    alice_bucket = f"ss-{alice_member_id_hex[:16]}"
-    print(f"  Alice member_id: {alice_member_id_hex[:16]}... bucket: {alice_bucket}")
+    alice_teammate_id_hex = team_result["teammate_id_hex"]
+    alice_bucket = f"ss-{alice_teammate_id_hex[:16]}"
+    print(f"  Alice teammate_id: {alice_teammate_id_hex[:16]}... bucket: {alice_bucket}")
 
     alice_remote = DropboxCodSyncRemote(alice_access_token, folder_prefix=alice_bucket)
 
@@ -134,11 +134,11 @@ def _setup_team(
         f"Unexpected inviter_bucket: {token_data['inviter_bucket']!r} vs {alice_bucket!r}"
     )
 
-    # Pre-generate Bob's member_id so we can construct his Dropbox remote with the
+    # Pre-generate Bob's teammate_id so we can construct his Dropbox remote with the
     # correct folder prefix before calling accept_invitation.
-    bob_member_id = uuid7()
-    bob_bucket = f"ss-{bob_member_id.hex()[:16]}"
-    print(f"  Bob member_id: {bob_member_id.hex()[:16]}... bucket: {bob_bucket}")
+    bob_teammate_id = uuid7()
+    bob_bucket = f"ss-{bob_teammate_id.hex()[:16]}"
+    print(f"  Bob teammate_id: {bob_teammate_id.hex()[:16]}... bucket: {bob_bucket}")
 
     # Bob reads from Alice's folder using his own token; writes to his own folder.
     inviter_remote = DropboxCodSyncRemote(bob_access_token, folder_prefix=alice_bucket)
@@ -149,7 +149,7 @@ def _setup_team(
         workspace, bob_hex, token_b64,
         inviter_remote=inviter_remote,
         acceptor_remote=bob_remote,
-        acceptor_member_id=bob_member_id,
+        acceptor_teammate_id=bob_teammate_id,
     )
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
     print(f"  Bob accepted — acceptor_bucket: {acceptance['acceptor_bucket']}")
@@ -157,12 +157,12 @@ def _setup_team(
     print("  Alice completing acceptance...")
     complete_invitation_acceptance(workspace, alice_hex, _TEAM_NAME, acceptance_b64)
 
-    # Alice pushes updated team repo (now includes Bob as member/peer)
+    # Alice pushes updated team repo (now includes Bob as teammate/peer)
     print("  Alice re-pushing after Bob joined...")
     _push_team_repo(workspace, alice_hex, _TEAM_NAME, alice_remote)
 
     print("  Team setup complete.")
-    return alice_member_id_hex, bob_member_id.hex()
+    return alice_teammate_id_hex, bob_teammate_id.hex()
 
 
 # ---------------------------------------------------------------------------
@@ -253,7 +253,7 @@ def main():
     bob_hex, bob_token = _create_and_auth(workspace, "Bob", args.app_key, args.app_secret)
 
     if not args.skip_team:
-        alice_member_id_hex, bob_member_id_hex = _setup_team(
+        alice_teammate_id_hex, bob_teammate_id_hex = _setup_team(
             workspace, alice_hex, alice_token, bob_hex, bob_token
         )
 
@@ -264,8 +264,8 @@ def main():
     print(f"  Alice: {alice_hex}")
     print(f"  Bob:   {bob_hex}")
     if not args.skip_team:
-        print(f"  Alice member_id: {alice_member_id_hex}")
-        print(f"  Bob   member_id: {bob_member_id_hex}")
+        print(f"  Alice teammate_id: {alice_teammate_id_hex}")
+        print(f"  Bob   teammate_id: {bob_teammate_id_hex}")
 
 
 if __name__ == "__main__":

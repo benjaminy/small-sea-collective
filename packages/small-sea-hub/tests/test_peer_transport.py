@@ -13,8 +13,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from small_sea_hub.server import app
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_public
 from wrasse_trust.transport import (
-    MemberBerthStorageAnnouncement,
-    canonical_member_berth_storage_announcement_bytes,
+    TeammateBerthStorageAnnouncement,
+    canonical_teammate_berth_storage_announcement_bytes,
 )
 
 
@@ -92,16 +92,16 @@ def _core_allocation_bucket(root, participant_hex, team_result):
 
 def _signed_storage_announcement(
     *,
-    member_id: bytes,
+    teammate_id: bytes,
     berth_id: bytes,
     signer_private_key: bytes,
     signer_key_id: bytes,
     url: str,
     location: str,
 ):
-    unsigned = MemberBerthStorageAnnouncement(
+    unsigned = TeammateBerthStorageAnnouncement(
         announcement_id=Provisioning.uuid7(),
-        member_id=member_id,
+        teammate_id=teammate_id,
         berth_id=berth_id,
         protocol="s3",
         url=url,
@@ -111,11 +111,11 @@ def _signed_storage_announcement(
         signature=b"",
     )
     signature = Ed25519PrivateKey.from_private_bytes(signer_private_key).sign(
-        canonical_member_berth_storage_announcement_bytes(unsigned)
+        canonical_teammate_berth_storage_announcement_bytes(unsigned)
     )
-    return MemberBerthStorageAnnouncement(
+    return TeammateBerthStorageAnnouncement(
         announcement_id=unsigned.announcement_id,
-        member_id=unsigned.member_id,
+        teammate_id=unsigned.teammate_id,
         berth_id=unsigned.berth_id,
         protocol=unsigned.protocol,
         url=unsigned.url,
@@ -126,7 +126,7 @@ def _signed_storage_announcement(
     )
 
 
-def test_peer_download_uses_member_berth_storage_announcement(
+def test_peer_download_uses_teammate_berth_storage_announcement(
     playground_dir, minio_server_gen
 ):
     root = pathlib.Path(playground_dir)
@@ -154,11 +154,11 @@ def test_peer_download_uses_member_berth_storage_announcement(
     s3.put_object(Bucket=fallback_bucket, Key="peer.txt", Body=b"berth")
     s3.put_object(Bucket=announced_bucket, Key="peer.txt", Body=b"announced")
 
-    Provisioning.publish_member_berth_storage_announcement(
+    Provisioning.publish_teammate_berth_storage_announcement(
         root,
         alice_hex,
         "ProjectX",
-        bytes.fromhex(team_result["member_id_hex"]),
+        bytes.fromhex(team_result["teammate_id_hex"]),
         bytes.fromhex(team_result["berth_id_hex"]),
         {
             "protocol": "s3",
@@ -169,7 +169,7 @@ def test_peer_download_uses_member_berth_storage_announcement(
 
     ok, data, _etag = backend._download_peer_file(
         session_hex,
-        team_result["member_id_hex"],
+        team_result["teammate_id_hex"],
         "peer.txt",
     )
 
@@ -205,11 +205,11 @@ def test_peer_download_falls_back_when_announcement_signature_is_invalid(
     s3.put_object(Bucket=fallback_bucket, Key="peer.txt", Body=b"fallback")
     s3.put_object(Bucket=announced_bucket, Key="peer.txt", Body=b"announced")
 
-    announced = Provisioning.publish_member_berth_storage_announcement(
+    announced = Provisioning.publish_teammate_berth_storage_announcement(
         root,
         alice_hex,
         "ProjectX",
-        bytes.fromhex(team_result["member_id_hex"]),
+        bytes.fromhex(team_result["teammate_id_hex"]),
         bytes.fromhex(team_result["berth_id_hex"]),
         {
             "protocol": "s3",
@@ -220,14 +220,14 @@ def test_peer_download_falls_back_when_announcement_signature_is_invalid(
     team_db = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
     with sqlite3.connect(str(team_db)) as conn:
         conn.execute(
-            "UPDATE member_berth_storage_announcement SET signature = ? WHERE announcement_id = ?",
+            "UPDATE teammate_berth_storage_announcement SET signature = ? WHERE announcement_id = ?",
             (b"\x00" * 64, bytes.fromhex(announced["announcement_id_hex"])),
         )
         conn.commit()
 
     ok, data, _etag = backend._download_peer_file(
         session_hex,
-        team_result["member_id_hex"],
+        team_result["teammate_id_hex"],
         "peer.txt",
     )
 
@@ -265,14 +265,14 @@ def test_peer_download_falls_back_when_announcement_signer_loses_trust(
 
     linked_key, linked_private_key = generate_key_pair(ProtectionLevel.DAILY)
     linked_public_key = linked_key.public_key
-    linked_cert = Provisioning.issue_device_link_for_member(
+    linked_cert = Provisioning.issue_device_link_for_teammate(
         root,
         alice_hex,
         "ProjectX",
         linked_public_key,
     )
     announcement = _signed_storage_announcement(
-        member_id=bytes.fromhex(team_result["member_id_hex"]),
+        teammate_id=bytes.fromhex(team_result["teammate_id_hex"]),
         berth_id=bytes.fromhex(team_result["berth_id_hex"]),
         signer_private_key=linked_private_key,
         signer_key_id=key_id_from_public(linked_public_key),
@@ -283,13 +283,13 @@ def test_peer_download_falls_back_when_announcement_signer_loses_trust(
     with sqlite3.connect(str(team_db)) as conn:
         conn.execute(
             """
-            INSERT INTO member_berth_storage_announcement
-            (announcement_id, member_id, berth_id, protocol, url, location, announced_at, signer_key_id, signature)
+            INSERT INTO teammate_berth_storage_announcement
+            (announcement_id, teammate_id, berth_id, protocol, url, location, announced_at, signer_key_id, signature)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 announcement.announcement_id,
-                announcement.member_id,
+                announcement.teammate_id,
                 announcement.berth_id,
                 announcement.protocol,
                 announcement.url,
@@ -310,7 +310,7 @@ def test_peer_download_falls_back_when_announcement_signer_loses_trust(
 
     ok, data, _etag = backend._download_peer_file(
         session_hex,
-        team_result["member_id_hex"],
+        team_result["teammate_id_hex"],
         "peer.txt",
     )
 
@@ -344,7 +344,7 @@ def test_app_berth_peer_read_without_announcement_returns_missing(
     with pytest.raises(SmallSea.SmallSeaNotFoundExn):
         backend._download_peer_file(
             session_hex,
-            team_result["member_id_hex"],
+            team_result["teammate_id_hex"],
             "peer.txt",
         )
 
@@ -386,11 +386,11 @@ def test_app_berth_peer_read_uses_announcement_location(
     announced_bucket = "app-berth-announced"
     s3 = _make_bucket_public(minio, announced_bucket)
     s3.put_object(Bucket=announced_bucket, Key="peer.txt", Body=b"app-announced")
-    Provisioning.publish_member_berth_storage_announcement(
+    Provisioning.publish_teammate_berth_storage_announcement(
         root,
         alice_hex,
         "ProjectX",
-        bytes.fromhex(team_result["member_id_hex"]),
+        bytes.fromhex(team_result["teammate_id_hex"]),
         app_berth_id,
         {
             "protocol": "s3",
@@ -401,7 +401,7 @@ def test_app_berth_peer_read_uses_announcement_location(
 
     ok, data, _etag = backend._download_peer_file(
         session_hex,
-        team_result["member_id_hex"],
+        team_result["teammate_id_hex"],
         "peer.txt",
     )
 
@@ -438,11 +438,11 @@ def test_peer_read_does_not_use_current_device_bootstrap_allowance(
     client = TestClient(app)
     session_hex = _request_and_confirm_app(client, app_name="SharedFileVault")
 
-    Provisioning.publish_member_berth_storage_announcement(
+    Provisioning.publish_teammate_berth_storage_announcement(
         root,
         alice_hex,
         "ProjectX",
-        bytes.fromhex(team_result["member_id_hex"]),
+        bytes.fromhex(team_result["teammate_id_hex"]),
         app_berth_id,
         {
             "protocol": "s3",
@@ -458,7 +458,7 @@ def test_peer_read_does_not_use_current_device_bootstrap_allowance(
     with pytest.raises(SmallSea.SmallSeaNotFoundExn):
         backend._download_peer_file(
             session_hex,
-            team_result["member_id_hex"],
+            team_result["teammate_id_hex"],
             "peer.txt",
         )
 
@@ -468,7 +468,7 @@ def test_create_team_publishes_creator_storage_for_peer_download(
 ):
     """create_team alone makes the creator's berth storage discoverable.
 
-    No manual publish_member_berth_storage_announcement call: this proves the
+    No manual publish_teammate_berth_storage_announcement call: this proves the
     production publishing wired into create_team (issue #138) is what enables
     peer discovery now that the legacy team_device transport fallback is gone.
     """
@@ -497,7 +497,7 @@ def test_create_team_publishes_creator_storage_for_peer_download(
 
     ok, data, _etag = backend._download_peer_file(
         session_hex,
-        team_result["member_id_hex"],
+        team_result["teammate_id_hex"],
         "peer.txt",
     )
     assert ok is True

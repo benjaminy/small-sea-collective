@@ -21,7 +21,7 @@ In scope:
 
 - per-device reachability state and current transport mode
 - membership-aware addressing, derived from Small Sea's authorization model
-- app-opaque event delivery to a device, to a member's reachable devices, to all reachable devices in a team, or to a caller-supplied scope within that team
+- app-opaque event delivery to a device, to a teammate's reachable devices, to all reachable devices in a team, or to a caller-supplied scope within that team
 - reliable byte streams between authorized devices, when the active transport supports them
 - unreliable datagrams between authorized devices, when the active transport supports them
 - explicit reporting of mode and degradation
@@ -33,7 +33,7 @@ Above the line, deliberately not in scope:
 - presence semantics — online vs. away vs. idle vs. typing, what counts as activity, when "online" expires
 - heartbeat policy and expiry
 - durable rooms, channel membership, or subscription state
-- reconciliation across multiple devices reporting different states for the same member
+- reconciliation across multiple devices reporting different states for the same teammate
 - app-specific liveness inference
 
 Routing scopes are named, app-defined labels for best-effort live fanout.
@@ -54,7 +54,7 @@ Scopes are therefore convenience and fanout hints, not privacy or cost boundarie
 Two reasons to draw the line there.
 
 Presence semantics are easy to design wrong and hard to change.
-Whichever model gets baked in — heartbeat vs. event-based, per-device vs. per-member, eventual vs. last-writer-wins, what "online" means when the only path is mailbox polling — apps will depend on it, and reversing later breaks them.
+Whichever model gets baked in — heartbeat vs. event-based, per-device vs. per-teammate, eventual vs. last-writer-wins, what "online" means when the only path is mailbox polling — apps will depend on it, and reversing later breaks them.
 A separate layer is reversible; a primitive baked into the Hub abstraction is not.
 
 The wider the package's contract, the harder it is to honestly represent transport reality across modes.
@@ -101,7 +101,7 @@ Putting them inside the package would mean baking decisions about wire formats, 
 ### App-facing Primitives (provisional)
 
 - send an app-opaque event to a device
-- send an app-opaque event to a member's reachable devices
+- send an app-opaque event to a teammate's reachable devices
 - broadcast an app-opaque event to reachable devices in a team
 - broadcast an app-opaque event to reachable devices currently interested in an app-defined scope
 - register connection-bound interest in an app-defined scope

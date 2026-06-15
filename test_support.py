@@ -27,17 +27,17 @@ def publish_storage_announcement_for_session(backend, session_hex) -> dict | Non
         ss_session.berth_id,
     )
     assert allocation is not None
-    team_id, self_member_id = provisioning._team_row(
+    team_id, self_teammate_id = provisioning._team_row(
         backend.root_dir,
         ss_session.participant_id.hex(),
         ss_session.team_name,
     )
     assert team_id == ss_session.team_id
-    return provisioning.publish_member_berth_storage_announcement(
+    return provisioning.publish_teammate_berth_storage_announcement(
         backend.root_dir,
         ss_session.participant_id.hex(),
         ss_session.team_name,
-        self_member_id,
+        self_teammate_id,
         ss_session.berth_id,
         allocation,
     )

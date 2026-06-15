@@ -138,19 +138,19 @@ def push_cmd(team_name, niche_name, vault_root, participant, hub_port):
 @cli.command("fetch")
 @click.argument("team_name")
 @click.argument("niche_name")
-@click.option("--from-member", "from_member", required=True, help="Peer member ID hex")
+@click.option("--from-teammate", "from_teammate", required=True, help="Peer teammate ID hex")
 @click.option("--vault-root", default=None, help="Override vault root from config")
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
-def fetch_cmd(team_name, niche_name, from_member, vault_root, participant, hub_port):
+def fetch_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub_port):
     """Fetch updates from a peer without merging.
 
     Parks fetched content locally. No checkout is required. Use this as the
     first step of the join flow:
 
-      1. fetch --from-member PEER_ID   (no checkout needed)
+      1. fetch --from-teammate PEER_ID   (no checkout needed)
       2. checkout ... PATH             (attach a local directory)
-      3. merge --from-member PEER_ID   (integrate fetched content)
+      3. merge --from-teammate PEER_ID   (integrate fetched content)
     """
     vault_root, participant, hub_port = _resolve_sync(vault_root, participant, hub_port)
     try:
@@ -161,26 +161,26 @@ def fetch_cmd(team_name, niche_name, from_member, vault_root, participant, hub_p
             participant,
             team_name,
             niche_name,
-            from_member,
+            from_teammate,
             hub_port=hub_port,
         )
     except (sync.VaultSyncError, OSError) as exc:
         _die(str(exc))
 
     if result.niche_sha:
-        click.echo(f"Fetched niche updates from {from_member} ({result.niche_sha[:8]}). Ready to merge.")
+        click.echo(f"Fetched niche updates from {from_teammate} ({result.niche_sha[:8]}). Ready to merge.")
     else:
-        click.echo(f"No new niche updates from {from_member}.")
+        click.echo(f"No new niche updates from {from_teammate}.")
 
 
 @cli.command("merge")
 @click.argument("team_name")
 @click.argument("niche_name")
-@click.option("--from-member", "from_member", required=True, help="Peer member ID hex")
+@click.option("--from-teammate", "from_teammate", required=True, help="Peer teammate ID hex")
 @click.option("--vault-root", default=None, help="Override vault root from config")
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
-def merge_cmd(team_name, niche_name, from_member, vault_root, participant, hub_port):
+def merge_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub_port):
     """Merge previously fetched peer updates into the attached checkout.
 
     Requires a clean checkout. If the niche has no checkout yet, run
@@ -195,7 +195,7 @@ def merge_cmd(team_name, niche_name, from_member, vault_root, participant, hub_p
             participant,
             team_name,
             niche_name,
-            from_member,
+            from_teammate,
             hub_port=hub_port,
         )
     except sync.DirtyCheckoutError as exc:
@@ -219,17 +219,17 @@ def merge_cmd(team_name, niche_name, from_member, vault_root, participant, hub_p
     except (sync.VaultSyncError, OSError) as exc:
         _die(str(exc))
 
-    click.echo(f"Merged updates from {from_member} into '{niche_name}'.")
+    click.echo(f"Merged updates from {from_teammate} into '{niche_name}'.")
 
 
 @cli.command("pull")
 @click.argument("team_name")
 @click.argument("niche_name")
-@click.option("--from-member", "from_member", required=True, help="Peer member ID hex")
+@click.option("--from-teammate", "from_teammate", required=True, help="Peer teammate ID hex")
 @click.option("--vault-root", default=None, help="Override vault root from config")
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
-def pull_cmd(team_name, niche_name, from_member, vault_root, participant, hub_port):
+def pull_cmd(team_name, niche_name, from_teammate, vault_root, participant, hub_port):
     """Convenience wrapper for fetch + merge (requires an attached checkout).
 
     For initial join (no checkout yet), use fetch → checkout → merge instead.
@@ -243,7 +243,7 @@ def pull_cmd(team_name, niche_name, from_member, vault_root, participant, hub_po
             participant,
             team_name,
             niche_name,
-            from_member,
+            from_teammate,
             hub_port=hub_port,
         )
     except sync.DirtyCheckoutError as exc:
@@ -268,7 +268,7 @@ def pull_cmd(team_name, niche_name, from_member, vault_root, participant, hub_po
         _die(str(exc))
 
     click.echo(
-        f"Pulled niche '{niche_name}' for team '{team_name}' from member {from_member}."
+        f"Pulled niche '{niche_name}' for team '{team_name}' from teammate {from_teammate}."
     )
 
 

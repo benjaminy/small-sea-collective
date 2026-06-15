@@ -378,7 +378,7 @@ class SmallSeaSession:
     ) -> dict:
         """Block until a sync count exceeds a known value.
 
-        known: {member_id_hex: last_known_count} — the counts the caller has
+        known: {teammate_id_hex: last_known_count} — the counts the caller has
             already processed. Returns immediately if the Hub already has higher
             counts; otherwise blocks up to timeout seconds.
 
@@ -393,7 +393,7 @@ class SmallSeaSession:
     # ---- ntfy Notifications ----
 
     def send_notification(self, message: str, title: Optional[str] = None) -> str:
-        """Send a notification to all berth members. Returns the message id."""
+        """Send a notification to all berth teammates. Returns the message id."""
         body: dict = {"message": message}
         if title is not None:
             body["title"] = title

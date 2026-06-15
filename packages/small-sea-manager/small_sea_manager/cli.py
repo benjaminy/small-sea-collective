@@ -123,20 +123,20 @@ def list_teams(ctx):
         click.echo(f"  {team['name']}")
 
 
-@cli.command("members")
+@cli.command("teammates")
 @click.argument("team_name")
 @click.pass_context
-def list_members(ctx, team_name):
-    """List members of a team."""
+def list_teammates(ctx, team_name):
+    """List teammates of a team."""
     manager = _make_manager(ctx)
-    members = manager.list_members(team_name)
-    if not members:
-        click.echo(f"No members in '{team_name}'.")
+    teammates = manager.list_teammates(team_name)
+    if not teammates:
+        click.echo(f"No teammates in '{team_name}'.")
         return
-    for member in members:
-        roles = member.get("berth_roles", [])
+    for teammate in teammates:
+        roles = teammate.get("berth_roles", [])
         role_str = roles[0]["role"] if roles else "no role"
-        click.echo(f"  {member['id'][:12]}…  {role_str}")
+        click.echo(f"  {teammate['id'][:12]}…  {role_str}")
 
 
 @cli.command("invite")
@@ -203,27 +203,27 @@ def revoke_invitation(ctx, team_name, invitation_id):
     click.echo(f"Revoked invitation '{invitation_id}'")
 
 
-@cli.command("remove-member")
+@cli.command("remove-teammate")
 @click.argument("team_name")
-@click.argument("member")
+@click.argument("teammate")
 @click.pass_context
-def remove_member(ctx, team_name, member):
-    """Remove a member from a team."""
+def remove_teammate(ctx, team_name, teammate):
+    """Remove a teammate from a team."""
     manager = _make_manager(ctx)
-    result = manager.remove_member(team_name, member)
+    result = manager.remove_teammate(team_name, teammate)
     click.echo(json.dumps(result, indent=2, sort_keys=True))
 
 
 @cli.command("set-role")
 @click.argument("team_name")
-@click.argument("member")
+@click.argument("teammate")
 @click.argument("role", type=click.Choice(["admin", "observer"]))
 @click.pass_context
-def set_role(ctx, team_name, member, role):
-    """Set a member's role in a team."""
+def set_role(ctx, team_name, teammate, role):
+    """Set a teammate's role in a team."""
     manager = _make_manager(ctx)
-    manager.set_member_role(team_name, member, role)
-    click.echo(f"Set '{member}' role to '{role}' in '{team_name}'")
+    manager.set_teammate_role(team_name, teammate, role)
+    click.echo(f"Set '{teammate}' role to '{role}' in '{team_name}'")
 
 
 @cli.command("set-notification-service")
