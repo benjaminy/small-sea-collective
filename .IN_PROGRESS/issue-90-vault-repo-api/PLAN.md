@@ -11,7 +11,9 @@ concrete `Repo` type in `cod_sync/repo.py`.
 Non-goals (explicitly out of scope per the issue):
 - The 3 `CodSync` usages (`_cod_push`, `_cod_pull` fetch, `_cod_fetch`) stay.
   Those are remote sync, not local repo ops.
-- No test changes (test cleanup follows production cleanup in a later branch).
+- **Test policy:** do not modify existing vault tests or fixtures (broader test
+  cleanup follows production cleanup in a later branch). Exactly one *new* focused
+  micro test is added, for the newly identified no-op-publish contract (Nuance 4).
 - No new `Repo` API surface — the existing API covers every operation family.
 
 ## Current state (verified)
@@ -56,11 +58,24 @@ depend on the observable contract; two are *intentional* changes (Nuances 1 and
    - **Intentional change:** today vault turns *any* nonzero merge in the
      existing-history path into `MergeConflictError`, even when conflict paths are
      empty (i.e. a non-conflict failure is mislabeled as a conflict). Under the new
-     contract a non-conflict `RepoError` will propagate as `RepoError` instead of
-     masquerading as a conflict. This is the cleaner contract (AGENTS.md: prefer
-     cleanest design; pre-alpha). The existing conflict tests still pass because
-     they produce *real* conflicts (verified: `test_merge_conflict_paths_in_user_checkout`
-     and the `test_scenarios.py` conflict test both edit the same line divergently).
+     contract a non-conflict failure will no longer masquerade as a conflict. This
+     is the cleaner contract (AGENTS.md: prefer cleanest design; pre-alpha — and
+     per maintainer: improvements trump interface stability here). The existing
+     conflict tests still pass because they produce *real* conflicts (verified:
+     `test_merge_conflict_paths_in_user_checkout` and the `test_scenarios.py`
+     conflict test both edit the same line divergently).
+   - **Error-boundary contract (resolves committee inconsistency re `RepoError`):**
+     vault's public API names its *expected, meaningful* failure modes as
+     vault-domain errors — `MergeConflictError`, `NothingToPublishError`, plus the
+     existing `NoCheckoutError` / `StaleCheckoutError` / `DirtyCheckoutError`.
+     *Unexpected* low-level git failures (a non-conflict merge failure, or an
+     `init`/`stage`/`commit` that errors) surface as `cod_sync.repo.RepoError`.
+     This is deliberate and consistent with the `NothingToPublishError` reasoning:
+     the distinction is *expected-condition → vault error* vs *unexpected-failure →
+     repo-facade error*, not "every error must be vault-typed." It is also strictly
+     an improvement over today, where those same unexpected paths leak the
+     lower-level `cod_sync.protocol.GitCmdFailed`. A comprehensive "wrap every
+     `RepoError` at the vault boundary" pass is a separate concern → FOLLOW-UP.md.
 
 2. **`status()` return shape.** Repo returns `{"xy", "path"}`; vault's public
    `status()` returns `{"status", "path"}` where `status == line[:2].strip()`.
@@ -126,22 +141,21 @@ Work in clusters, running the vault suite after each so a regression is localize
    `status`, `log`) with shape preservation. Add `NothingToPublishError` and the
    no-op-publish guard (Nuance 4). Run vault suite.
 5. Add the new no-op-publish micro test (Nuance 4). Run vault suite.
-6. Confirm `gitCmd` count is 0 and the import is gone.
-
-**Test-scope note:** the issue says "do NOT touch vault tests." Read as: do not
-modify existing tests or fixtures. *Adding* a new micro test for the
-no-op-publish contract is in-bounds and is the validation rigor AGENTS.md
-demands. No existing test is edited.
+6. Confirm `gitCmd` is gone (see Validation). Test policy is stated in Non-goals.
 
 ## Validation (convince a skeptic)
 
 **Goal accomplished:**
-- `rg -c 'gitCmd' packages/shared-file-vault/shared_file_vault/vault.py` → `0`.
-- No `from cod_sync.protocol import gitCmd` remains; `grep gitCmd` over the whole
-  `shared-file-vault` package shows only test files (untouched) if any.
-- `uv run pytest packages/shared-file-vault/tests -q` → all pass (this is the
-  primary safety net: behavior is pinned by the existing suite, and we changed no
-  tests, so green means observable behavior is preserved).
+- `! rg -n 'gitCmd' packages/shared-file-vault/shared_file_vault/vault.py`
+  (asserts zero matches — `rg` exits non-zero and prints nothing when clean, so a
+  count of `0` is not a reliable signal).
+- No `from cod_sync.protocol import gitCmd` remains; `rg -n gitCmd` over the whole
+  `shared-file-vault` package shows only test files (untouched), if any.
+- `uv run pytest packages/shared-file-vault/tests -q` → all pass. Observable
+  behavior is *mostly* pinned by the existing suite (unchanged), with the single
+  new no-op-publish micro test covering the one newly documented edge contract
+  that the existing suite does not exercise. Green therefore means: preserved
+  behavior is preserved, and the new edge contract holds.
 - `uv run pytest packages/small-sea-manager/tests -q` → no regressions
   (manager imports vault paths indirectly).
 
