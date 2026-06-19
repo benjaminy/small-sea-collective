@@ -50,7 +50,7 @@ def hub_env(playground_dir, minio, hub_server_gen):
 
     # Write S3 cloud config directly to NoteToSelf DB before starting the Hub.
     # The Hub reads this at request time; no HTTP endpoint for cloud registration.
-    Provisioning.add_cloud_storage(
+    storage_id = Provisioning.add_cloud_storage(
         root_dir, alice_hex, "s3", minio["endpoint"],
         access_key=minio["access_key"],
         secret_key=minio["secret_key"],
@@ -81,10 +81,18 @@ def hub_env(playground_dir, minio, hub_server_gen):
     assert resp.status_code == 200
     session_hex = resp.json()
 
-    # Derive bucket name from berth_id and pre-create it in MinIO.
+    # Allocate a berth cloud for the session's berth, then pre-create the bucket.
+    # The Hub resolves storage per berth via berth_cloud_allocation, so the account
+    # config alone is insufficient — the session's berth needs an explicit allocation.
     ss = SmallSea.SmallSeaBackend(root_dir=root_dir)
     ss_session = ss._lookup_session(session_hex)
-    bucket_name = f"ss-{ss_session.berth_id.hex()[:16]}"
+    allocation = Provisioning.add_berth_cloud_allocation_by_berth_id(
+        root_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+    )
+    bucket_name = allocation["location"]
 
     s3 = boto3.client(
         "s3",

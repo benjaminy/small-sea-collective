@@ -55,8 +55,10 @@ def hub_env(playground_dir, minio):
     assert resp.status_code == 200
     session_hex = resp.json()
 
-    # Register MinIO cloud location and pre-create bucket
-    backend.add_cloud_location(
+    # Register MinIO cloud account, allocate a berth cloud, and pre-create the bucket.
+    # Account registration alone is insufficient: the Hub resolves storage per berth
+    # via berth_cloud_allocation, so the session's berth needs an explicit allocation.
+    storage_id = backend.add_cloud_location(
         session_hex,
         "s3",
         minio["endpoint"],
@@ -64,7 +66,13 @@ def hub_env(playground_dir, minio):
         secret_key=minio["secret_key"],
     )
     ss_session = backend._lookup_session(session_hex)
-    bucket_name = backend._make_storage_adapter(ss_session).bucket_name
+    allocation = Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+    )
+    bucket_name = allocation["location"]
     boto3.client(
         "s3",
         endpoint_url=minio["endpoint"],
