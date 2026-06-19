@@ -8,9 +8,9 @@ resolution-markers = [
 
 [manifest]
 members = [
+    "bottlenose-address-book",
     "cod-sync",
     "cuttlefish",
-    "ssc-files",
     "small-sea-client",
     "small-sea-hub",
     "small-sea-live",
@@ -18,6 +18,7 @@ members = [
     "small-sea-note-to-self",
     "small-sea-sandbox",
     "splice-merge",
+    "ssc-files",
     "the-hedgerow",
     "tide-table",
     "wrasse-trust",
@@ -29,12 +30,12 @@ dev = [
     { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "pytest", specifier = ">=8.4.2" },
     { name = "respx", specifier = ">=0.22.0" },
-    { name = "ssc-files", editable = "packages/ssc-files" },
     { name = "small-sea-client", editable = "packages/small-sea-client" },
     { name = "small-sea-hub", editable = "packages/small-sea-hub" },
     { name = "small-sea-manager", editable = "packages/small-sea-manager" },
     { name = "small-sea-note-to-self", editable = "packages/small-sea-note-to-self" },
     { name = "splice-merge", editable = "packages/splice-merge" },
+    { name = "ssc-files", editable = "packages/ssc-files" },
 ]
 
 [[package]]
@@ -130,6 +131,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/c7/bd/c569fc1705188f630
 wheels = [
     { url = "https://files.pythonhosted.org/packages/2b/9f/8015bf28231429e55fdab62903c38bff428cc357601b4749c7b30f72a477/botocore-1.40.53-py3-none-any.whl", hash = "sha256:840322b0af4be7a6e2effddb4eb388053c25af0618f627f37d8b03cc1edbc928", size = 14113269, upload-time = "2025-10-15T19:28:41.86Z" },
 ]
+
+[[package]]
+name = "bottlenose-address-book"
+version = "0.1.0"
+source = { editable = "packages/bottlenose-address-book" }
 
 [[package]]
 name = "certifi"
@@ -1063,27 +1069,6 @@ wheels = [
 ]
 
 [[package]]
-name = "ssc-files"
-version = "0.1.0"
-source = { editable = "packages/ssc-files" }
-dependencies = [
-    { name = "click" },
-    { name = "cod-sync" },
-    { name = "fastapi", extra = ["standard"] },
-    { name = "jinja2" },
-    { name = "small-sea-client" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "click", specifier = ">=8.0" },
-    { name = "cod-sync", editable = "packages/cod-sync" },
-    { name = "fastapi", extras = ["standard"], specifier = ">=0.118.0" },
-    { name = "jinja2", specifier = ">=3.1" },
-    { name = "small-sea-client", editable = "packages/small-sea-client" },
-]
-
-[[package]]
 name = "shellingham"
 version = "1.5.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1269,6 +1254,27 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/32/d5/0e66097fc64fa266f29a7963296b40a80d6a997b7ac13806183700676f86/sqlalchemy-2.0.44-cp313-cp313-win32.whl", hash = "sha256:ee51625c2d51f8baadf2829fae817ad0b66b140573939dd69284d2ba3553ae73", size = 2101275, upload-time = "2025-10-10T15:03:26.096Z" },
     { url = "https://files.pythonhosted.org/packages/03/51/665617fe4f8c6450f42a6d8d69243f9420f5677395572c2fe9d21b493b7b/sqlalchemy-2.0.44-cp313-cp313-win_amd64.whl", hash = "sha256:c1c80faaee1a6c3428cecf40d16a2365bcf56c424c92c2b6f0f9ad204b899e9e", size = 2127901, upload-time = "2025-10-10T15:03:27.548Z" },
     { url = "https://files.pythonhosted.org/packages/9c/5e/6a29fa884d9fb7ddadf6b69490a9d45fded3b38541713010dad16b77d015/sqlalchemy-2.0.44-py3-none-any.whl", hash = "sha256:19de7ca1246fbef9f9d1bff8f1ab25641569df226364a0e40457dc5457c54b05", size = 1928718, upload-time = "2025-10-10T15:29:45.32Z" },
+]
+
+[[package]]
+name = "ssc-files"
+version = "0.1.0"
+source = { editable = "packages/ssc-files" }
+dependencies = [
+    { name = "click" },
+    { name = "cod-sync" },
+    { name = "fastapi", extra = ["standard"] },
+    { name = "jinja2" },
+    { name = "small-sea-client" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "click", specifier = ">=8.0" },
+    { name = "cod-sync", editable = "packages/cod-sync" },
+    { name = "fastapi", extras = ["standard"], specifier = ">=0.118.0" },
+    { name = "jinja2", specifier = ">=3.1" },
+    { name = "small-sea-client", editable = "packages/small-sea-client" },
 ]
 
 [[package]]
