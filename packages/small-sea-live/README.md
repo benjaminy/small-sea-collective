@@ -7,11 +7,11 @@ Something more evocative will eventually replace it.
 
 The Small Sea project itself provides no internet services.
 Apps run against a local Hub, and the Hub translates their needs onto generic services users can choose or operate.
-For Small Sea apps to offer real-time collaboration — live events and live transport capabilities between authorized devices — Small Sea Live has to build that experience from the transports available in the wild: local networks, NAT traversal, relays, cloud storage, notifications, and other imperfect options.
+For Small Sea apps to offer real-time collaboration — live events and live transport capabilities among devices recognized in the participant's local team view — Small Sea Live has to build that experience from the transports available in the wild: local networks, NAT traversal, relays, cloud storage, notifications, and other imperfect options.
 
 Small Sea Live is the third major networking service the Hub provides to applications, after cloud storage and peer notification.
 It is the Hub's live coordination layer for Small Sea devices — across teammates and across one person's own devices — and it is explicit about the transport quality it is currently delivering rather than pretending all paths feel the same.
-It moves app-opaque events between authorized devices, plus the membership and reachability information apps need to address those events.
+It moves app-opaque events among devices recognized in the local team view, plus the membership and reachability information apps need to address those events.
 It also exposes which live transport capabilities are currently available — best-effort events, reliable byte streams, and unreliable datagrams when the underlying transport supports them.
 
 Live transport between devices on uncooperative networks is a patchwork of partial options that compromise differently on latency, cost, operator burden, vendor entanglement, and privacy.
@@ -19,10 +19,11 @@ This package centralizes that complexity inside Small Sea, so app developers get
 If the best available path falls all the way back to storage plus notifications, users will experience something different.
 The abstraction should report that difference rather than papering it over.
 
-What makes Small Sea Live not just another generic networking layer is its integration with Small Sea's identity and authorization.
-The Manager owns provider account configuration and the team/device authorization model.
+What makes Small Sea Live not just another generic networking layer is its integration with Small Sea's identity and local team/device trust view.
+The Manager owns provider account configuration and the local team/device view.
 The Hub is responsible for live communication through both.
-Apps don't authenticate users, don't pair devices, and don't decide who's allowed to talk to whom — the Hub answers all of that, the same way it does for storage and notifications.
+Apps don't authenticate users, pair devices, or interpret team history.
+The local Hub answers those questions from the participant's current view, just as it does for storage and notifications.
 
 ## Scope
 
@@ -31,10 +32,10 @@ Small Sea Live owns transport and the thin information layer immediately above i
 In scope:
 
 - per-device reachability and current transport mode
-- membership and device addressing, derived from Small Sea's authorization model
+- membership and device addressing, derived from the participant's local team/device view
 - delivery of app-opaque events to a device, to all of a teammate's devices, to all reachable devices in a team, or to a caller-supplied scope within that team
-- reliable byte streams between authorized devices, when the active transport supports them
-- unreliable datagrams between authorized devices, when the active transport supports them
+- reliable byte streams between devices recognized by the local team view, when the active transport supports them
+- unreliable datagrams between devices recognized by the local team view, when the active transport supports them
 - explicit reporting of the mode and degradation the available transport currently provides
 
 Deliberately not in scope:
@@ -69,9 +70,9 @@ The likely primitives are:
 - register connection-bound interest in an app-defined routing scope
 - broadcast to reachable devices interested in a routing scope
 - receive events delivered to any of the above
-- open a reliable byte stream to an authorized device, when supported
-- accept a reliable byte stream from another authorized device, when supported
-- send and receive unreliable datagrams to and from an authorized device, when supported
+- open a reliable byte stream to a device recognized by the local team view, when supported
+- accept a reliable byte stream from another device recognized by the local team view, when supported
+- send and receive unreliable datagrams to and from a device recognized by the local team view, when supported
 - observe the current transport mode and per-primitive availability
 
 Delivery is best-effort: apps should expect out-of-order arrival and possible duplicates, especially in degraded modes.

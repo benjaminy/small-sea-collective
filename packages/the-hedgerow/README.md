@@ -45,8 +45,8 @@ The metaphor lines up with the engineering: every relay is a signed, intentional
 
 One important caveat sharpened the metaphor: a hedgerow is a boundary, not a room.
 That would be awkward if the product were framed as "each team has its own Hedgerow."
-The current leaning is different: The Hedgerow is the mixed edge habitat where a person sees items from all the team contexts they are entitled to see, with provenance made explicit.
-Teams remain the permission and meaning contexts; they are not the primary navigation rooms.
+The current leaning is different: The Hedgerow is the mixed edge habitat where a person sees items from all the team contexts present in their local view, with provenance made explicit.
+Teams remain the provenance and meaning contexts; they are not the primary navigation rooms.
 This is a design hypothesis, not a settled UI specification.
 
 ## Current Product Shape
@@ -107,7 +107,8 @@ The Hedgerow lives between private team chat and broadcast social media.
 
 Every Hedgerow item is anchored in a source team context.
 It is a Hedgerow post: user-authored content stored in a Hedgerow berth.
-When a teammate with standing in another team decides the item should cross, they relay it: a signed carrying act that takes the item from the source team into the destination team's Hedgerow-visible set, where it appears in the mixed feeds of people entitled to see that team context.
+When a teammate with standing in another team decides the item should cross, they relay it: a signed carrying act that takes the item from the source team into the destination team's Hedgerow-visible set.
+It can then appear in mixed feeds produced from participants' local views of that destination team.
 The receiving team can engage with it, ignore it, annotate it, or relay it onward.
 Each relay adds a signed propagation hop.
 

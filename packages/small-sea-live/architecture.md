@@ -20,10 +20,10 @@ Small Sea Live owns transport and a thin information layer immediately above it;
 In scope:
 
 - per-device reachability state and current transport mode
-- membership-aware addressing, derived from Small Sea's authorization model
+- membership-aware addressing, derived from the participant's local team/device view
 - app-opaque event delivery to a device, to a teammate's reachable devices, to all reachable devices in a team, or to a caller-supplied scope within that team
-- reliable byte streams between authorized devices, when the active transport supports them
-- unreliable datagrams between authorized devices, when the active transport supports them
+- reliable byte streams between devices recognized by the local team view, when the active transport supports them
+- unreliable datagrams between devices recognized by the local team view, when the active transport supports them
 - explicit reporting of mode and degradation
 
 Above the line, deliberately not in scope:
@@ -105,9 +105,9 @@ Putting them inside the package would mean baking decisions about wire formats, 
 - broadcast an app-opaque event to reachable devices in a team
 - broadcast an app-opaque event to reachable devices currently interested in an app-defined scope
 - register connection-bound interest in an app-defined scope
-- open a reliable byte stream to an authorized device, when the active transport mode supports it
-- accept a reliable byte stream from another authorized device
-- send and receive unreliable datagrams to and from an authorized device, when the active transport mode supports them
+- open a reliable byte stream to a device recognized by the local team view, when the active transport mode supports it
+- accept a reliable byte stream from another device recognized by the local team view
+- send and receive unreliable datagrams to and from a device recognized by the local team view, when the active transport mode supports them
 - report the current transport mode and per-primitive availability
 
 ## Delivery Semantics

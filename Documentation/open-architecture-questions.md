@@ -30,7 +30,7 @@ The Hub-as-chokepoint architecture exists to enable transparent E2E encryption, 
 
 ## 2. Hub ↔ Small Sea Manager Database Contract
 
-Explicitly TBD in the Hub spec. Hub needs to read team membership/permissions to make authorization decisions; Small Sea Manager owns writes. This is a hard coupling.
+Explicitly TBD in the Hub spec. Hub needs to read team membership and berth integration policy to make local synchronization decisions; Small Sea Manager owns writes. This is a hard coupling.
 
 **Why it's urgent:** The Small Sea Manager spec is skeleton-only. This contract unblocks finishing it.
 
@@ -41,11 +41,11 @@ Explicitly TBD in the Hub spec. Hub needs to read team membership/permissions to
 - **Sessions in Hub-only DB** — sessions live in `small_sea_collective_local.db` (separate from `core.db`). Other apps access sessions through the Hub API only.
 - **Single-user-per-Hub** — one Hub per device/user; no multi-participant file-watcher complexity needed.
 - **Hub and Small Sea Manager stay version-locked** — they are the core infrastructure and update together; no cross-version compatibility needed.
-- **Permissions are per-berth, two-table schema** — `teammate(id)` (per-team identity) + `berth_role(id, teammate_id, berth_id, role)` where role ∈ `{read-only, read-write}`. "Admin" simply means read-write on the TeamManager berth. The `teammate` table will eventually carry key/cert material.
-- **Local permissions are authoritative** — Hub only incorporates changes from teammates who have read-write permission in its own local copy. Permission-change race conditions (e.g. Alice upgrades Bob mid-sync) are implementation details, not architecture.
+- **Integration policy is per-berth, using a two-table schema** — `teammate(id)` (per-team identity) + `berth_role(id, teammate_id, berth_id, role)` where role ∈ `{read-only, read-write}`. "Admin" simply means read-write on the TeamManager berth. The `teammate` table will eventually carry key/cert material.
+- **Local integration policy determines what should count** — The target Hub policy only fetches and incorporates ordinary changes from teammates marked read-write in its own local copy. The current watcher still discovers signals from every teammate, so strict role-aware replication remains implementation work. Policy-change race conditions (e.g. Alice changes Bob from read-only to read-write mid-sync) are implementation details, not architecture.
 - **Teammate cloud locations belong to teammate** — stored linked to the `teammate` record (set via invitation flow). Multiple locations per teammate deferred.
 - **Data is globally readable; privacy via encryption** — Hub reads teammates' Cod Sync chains without special credentials (just the URL). Security comes from E2E encryption, not access control.
-- **Hub is always-on background monitor** — runs a background loop watching teammates' cloud locations and incorporating updates when permissions allow. Hub does all cloud I/O (consistent with Section 4).
+- **Hub is always-on background monitor** — runs a background loop watching teammates' cloud locations and incorporating updates when its local integration policy calls for it. Hub does all cloud I/O (consistent with Section 4).
 
 ### Remaining Open Items
 

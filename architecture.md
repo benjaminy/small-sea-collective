@@ -6,7 +6,7 @@ Small Sea Collective is a framework for building collaborative team applications
 
 - **Team**: The primary unit of collaboration. In Small Sea, teams are decentralized; there is no central registry.
 - **Application (App)**: A way to organize resources like storage, notifications, and identity. Apps are not specific client software but logical groupings of resources.
-- **Berth**: The intersection of a specific **Team** and a specific **App**. It is the fundamental unit of resource allocation and access control.
+- **Berth**: The intersection of a specific **Team** and a specific **App**. It is the fundamental unit of resource allocation, local client authorization, cryptographic readability, and teammate integration policy.
 - **Client**: Any software (GUI, CLI, agent) that accesses resources through the Small Sea Hub.
 - **Hub**: By default, a local service that mediates all access to general-purpose cloud services.
   It acts as a security gateway and protocol translator.
@@ -22,6 +22,25 @@ registration, authorization, and stable IDs; it does not create arbitrary app
 data folders under Manager/Core's NoteToSelf tree. Apps consuming Hub session
 info should use exposed hex-string IDs, such as `participant_hex` and
 `berth_id`, for Small Sea-derived path components rather than friendly names.
+
+### No Team Server
+
+Small Sea has no central team service that can grant or deny a teammate's writes.
+Each teammate publishes their own history, and each participant independently decides which histories to watch, fetch, and integrate into their local clones.
+The same teammate update may therefore be integrated by Alice, rejected by Bob, and not yet observed by Carol.
+
+Three related policies are easy to blur together:
+
+- **Readability** concerns which teammates receive the key material needed to interpret future berth updates.
+- **Replication** concerns which published histories a participant watches or fetches.
+- **Integration** concerns which fetched changes a participant merges into a local clone.
+
+The persisted `read-only` and `read-write` berth-role values are shorthand for these protocol expectations and local policies.
+They are not capabilities bestowed by a team-wide authority.
+
+Local Hub authorization is different and real.
+A participant's Hub enforces which client software may act in which berth on that device, protects provider credentials, and mediates Small Sea internet traffic.
+Authorization language in this document refers to an enforced local boundary unless a passage explicitly says otherwise.
 
 ## Technical Pillars
 
@@ -244,28 +263,33 @@ Manager writes Core registration state, and the Hub reads that Core state by
 framework contract, but arbitrary app homes are not Hub-readable databases.
 
 ### Security: PIN-Based Access
-Before a client can access a berth, it must request access from the Hub. The Hub generates a PIN and sends it to the user via OS notifications. The user must enter this PIN into the client to complete the handshake, ensuring that only authorized software can access team data.
+
+Before a client can access a berth, it must request a local session from the Hub.
+The Hub generates a PIN and sends it to the user via OS notifications.
+The user must enter this PIN into the client to complete the handshake.
+This is a locally enforced client-to-Hub authorization boundary, not a team-wide decision about which teammate histories count.
 
 ## Terminology
 
 - **Micro Tests**: We prefer the term "micro tests" over "unit tests." These are quick, frequent tests intended to catch simple mistakes during development.
 
-## Permissions
+## Teammate Integration Policy
 
-For each berth, a teammate can have either **read-only** or **read-write**
-access. These are enforced as a social contract via encryption and sync
-conventions rather than by a central authority.
+For each berth, the current schema records either **read-only** or **read-write** for a teammate.
+The names are familiar shorthand, but the behavior is replication and integration policy rather than centrally enforced access.
 
 In concrete technical terms:
 
-- **Read permission** means peers participating in the protocol should do the
-  key exchange needed for that teammate to read updates in that berth. This is a
-  protocol convention enforced by social contract, not a cryptographic
-  enforcement boundary: admitted parties can in principle proxy plaintext or
-  receiver state out of band.
-- **Write permission** means peers participating in the protocol should pay
-  attention to that teammate's updates for that berth and merge them into their
-  own clone.
+- **Read-only** means peers following the policy should continue the key exchange needed for that teammate to read updates in the berth, but should not automatically fetch and integrate that teammate's ordinary berth publications.
+- **Read-write** means peers following the policy should also watch or fetch that teammate's berth publications and integrate accepted updates into their own clones.
+
+This is the intended policy model, not a claim that every runtime path already applies both halves.
+The current Hub watcher discovers signals from all teammates, while strict role-aware replication remains future work.
+A proposal-discovery path must remain observable even when ordinary publications are not fetched; issue #162 tracks that design together with berth-scoped merge requests.
+
+The readability convention is endpoint-trust-scoped, not a cryptographic enforcement boundary.
+An admitted party can in principle proxy plaintext or receiver state out of band.
+Likewise, `read-only` does not make a teammate incapable of preparing a change; it says that their ordinary published changes are not automatically integrated.
 
 A common shorthand organization is:
 
@@ -273,9 +297,9 @@ A common shorthand organization is:
 - **Contributor**: Read-write to all berths _except_ Core (their changes to team metadata are ignored by peers following the conventional role mapping).
 - **Observer**: Read-only to all berths.
 
-`Admin` is not a special cryptographic authority. It is just shorthand for
-"has write permission to `{Team}/SmallSeaCollectiveCore`", the berth where
-membership and berth-role data live.
+`Admin` is not a special cryptographic authority.
+It is shorthand for a teammate whose Core publications are normally integrated by peers following the conventional role mapping.
+In that limited sense, an admin is a **Core integrator**, not an operator of a central control plane.
 
 "Remove teammate" therefore means: remove that person from my local clone of the
 team DB, push that change, and rotate keys if I want future readable updates to

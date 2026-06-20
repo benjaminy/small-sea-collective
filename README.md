@@ -88,10 +88,14 @@ Small Sea Collective addresses two big challenges for local-first software:
 1.  **Identity and Sharing**: Decentralized identity linked to team membership, allowing people to share resources securely without a central authority.
 2.  **Synchronization**: A reliable, safe synchronization framework ("Cod Sync") based on git, allowing applications to be built on top of familiar version-control metaphors.
 
-That decentralization is meant literally: there is no central authority over a
-team's membership or permissions, and different participants' local views can
-diverge. Small Sea provides shared history and protocol conventions, not a
-single forced global answer.
+That decentralization is meant literally: there is no team server that grants or denies writes, and different participants' local views can diverge.
+Each teammate publishes their own history.
+Each participant's local system decides which histories to watch, fetch, and integrate into its own clones.
+Small Sea provides shared history and protocol conventions, not a single forced global answer.
+
+This is deliberately different from local Hub authorization.
+A participant's Hub really does enforce which client software may act in which berth on that device.
+Team roles instead describe readability and expected replication and integration behavior among independent clones.
 
 ### Human-Scale Local-First
 

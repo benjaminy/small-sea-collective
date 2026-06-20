@@ -739,6 +739,5 @@ lexicographic comparison of the column matches chronological order.
 
 ## Open Questions
 
-- Should the Hub enforce permissions, or is enforcement purely cryptographic? (Current design: permissions are a social contract; see top-level spec.)
 - Can a single Hub instance serve multiple users on the same device?
 - How will credential storage evolve when the encryption layer is implemented?

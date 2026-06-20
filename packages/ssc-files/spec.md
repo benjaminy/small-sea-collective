@@ -244,15 +244,13 @@ Those keys intentionally omit both friendly `team_name` and opaque Files
   callers don't have to pass it every time. The low-level files functions
   should keep it explicit.
 
-- **Joining a niche**: a new team teammate pulls the registry to discover
-  which niches exist, then pulls each niche they want. No special
-  "invitation" flow is needed at the files level — team membership is
-  enforced by Cuttlefish / hub access control.
+- **Joining a niche**: a new team teammate pulls the registry to discover which niches exist, then pulls each niche they want.
+  No special "invitation" flow is needed at the files level.
+  Team admission and cryptographic readability come from Core, while each participant's local integration policy determines whose Files publications enter their clone.
 
 - **Conflict resolution**: `pull_niche` merges via git. Auto-merge works
   for non-overlapping changes. Conflicts raise an untyped exception today;
   a typed `MergeConflictError` is aspirational.
 
-- **Team membership enforcement**: nothing currently checks that the local
-  participant is a teammate of the team. Full enforcement requires Cuttlefish
-  integration (issue 0017).
+- **Team membership validation**: nothing currently checks that the local participant has a team identity recognized by their local Core view.
+  Cryptographic readability requires Cuttlefish integration (issue 0017), but it cannot create a centrally enforced team-membership boundary.

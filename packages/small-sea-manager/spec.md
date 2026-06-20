@@ -5,7 +5,7 @@
 Small Sea Manager is the essential built-in user application for Small Sea Collective. It manages:
 
 - **Teams** — create, configure, and leave teams
-- **Membership** — invite teammates, accept invitations, set berth permissions, remove teammates from the local team view
+- **Membership** — invite teammates, accept invitations, set berth integration policies, remove teammates from the local team view
 - **Devices** — link new devices, revoke old ones, manage the participant's device identity
 - **Apps** — register which apps are active for each team (berth management)
 - **Service Subscriptions** — configure the cloud storage accounts, notification services, and other general-purpose services that the Hub needs to operate
@@ -127,7 +127,9 @@ Manager-local admission prompt dismissals are stored in a per-team sidecar DB ou
 
 ## Roles
 
-Roles are semantic shorthands. Underneath, everything is per-berth `read-only` / `read-write` in `berth_role`.
+Roles are semantic shorthands.
+Underneath, `berth_role` stores the existing per-berth `read-only` / `read-write` values.
+Those values describe local replication and integration policy plus readability conventions; they are not grants from a central team authority.
 
 | Role | `{Team}/SmallSeaCollectiveCore` | All other berths |
 |------|---------------------------------|------------------|
@@ -135,12 +137,9 @@ Roles are semantic shorthands. Underneath, everything is per-berth `read-only` /
 | **contributor** | read-only | read-write |
 | **observer** | read-only | read-only |
 
-- **admin** — shorthand for "has write permission to the team's Core berth",
-  and therefore can publish updates to membership and berth permissions
-- **contributor** — can publish app data updates but, by convention, not Core
-  updates
-- **observer** — should continue receiving readable updates, but peers are not
-  expected to merge their writes anywhere
+- **admin** — peers following the conventional mapping automatically integrate this teammate's Core and app-berth publications; this makes the teammate a Core integrator, not a central authority
+- **contributor** — peers automatically integrate this teammate's app-berth publications but not their ordinary Core publications
+- **observer** — should continue receiving readable updates, but peers do not automatically integrate their ordinary publications
 
 The default role when accepting an invitation is **admin** for small teams. The inviter may specify a different role when creating the invitation.
 
@@ -148,16 +147,16 @@ Important clarifications:
 
 - These roles are **local policy and protocol expectations**, not centrally
   enforced entitlements.
-- `read-only` means peers participating in the protocol should continue doing
-  whatever key exchange is needed for that teammate to read updates in the berth.
-- `read-write` means peers participating in the protocol should merge that
-  teammate's updates for the berth into their own clone.
-- `admin` is not a special cryptographic authority. It just means
-  `read-write` on `{Team}/SmallSeaCollectiveCore`.
+- `read-only` means peers should continue the key exchange needed for that teammate to read berth updates, but should not automatically fetch and integrate that teammate's ordinary publications for the berth.
+- `read-write` means peers should also watch or fetch that teammate's publications for the berth and integrate accepted updates into their own clone.
+- `admin` is not a special cryptographic authority.
+  It is the role shorthand for `read-write` on `{Team}/SmallSeaCollectiveCore`.
+- These values do not prevent anyone from preparing or publishing a change.
+  They describe what peers following a local view do with that publication.
 
-> The Hub respects these roles when deciding whose changes to incorporate: it
-> only merges changes from teammates who have `read-write` permission in its
-> **local** copy of the team DB.
+> The intended Hub policy is to watch, fetch, and integrate ordinary changes only from teammates marked `read-write` in its **local** copy of the team DB.
+> The current watcher still discovers signals from every teammate.
+> Strict role-aware replication depends on separating ordinary publication discovery from the merge-request discovery path explored in issue #162.
 
 This means different participants can legitimately have different views of who
 is an admin, who is a contributor, or who is still in the team at all.
@@ -392,9 +391,9 @@ Deletes the `user_device` row and triggers key rotation (so the removed device c
 #### Create team
 
 Creates `{TeamName}/Sync/` directory with a fresh team DB and git repo. Adds a
-Team pointer to NoteToSelf DB. The creator is added as the first teammate with
-`admin` role on all berths, meaning their local starting view is that they have
-`read-write` access everywhere, including Core.
+Team pointer to NoteToSelf DB.
+The creator is added as the first teammate with `admin` role on all berths.
+Peers who adopt that published view treat the creator as an integrator everywhere, including Core.
 
 If a `cloud_storage` row exists for the participant, team creation auto-allocates
 the Core berth against that account with a fresh Manager-generated location, so
@@ -427,7 +426,7 @@ Removes the Team pointer from NoteToSelf DB. Deletes the `{TeamName}/Sync/` dire
 
 Reads `teammate` + `berth_role` from the team DB. Does not query the Hub.
 
-#### Set teammate role
+#### Set teammate integration policy
 
 Writes `berth_role` rows for the target teammate: sets
 `read-write`/`read-only` on each berth according to the role mapping in
