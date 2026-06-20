@@ -12,7 +12,8 @@ As an AI agent working in this repository, you must follow these rules to mainta
 - **Pre-alpha: do not spend effort on backward compatibility.**
    Prefer the cleanest design over migration shims or compatibility layers unless the user explicitly asks for them.
    Keep schema/version markers in place so future compatibility work remains possible.
-- The typical workflow for a nontrivial unit of work should be:
+- The typical workflow for a nontrivial unit of work should be the following.
+   For work that is conceptually very small in scope (cleanup, rename, etc) this ceremony can be skipped.
    1. Make a git branch for the current task
    2. Make a branch folder for working docs in .IN_PROGRESS/{branch slug}
    3. In the branch folder make a PLAN.md file
