@@ -112,7 +112,7 @@ These questions were worked through in detail and are now captured in the [Cod S
 
 ## 5. Identity Model: NoteToSelf Berth & Multi-Device
 
-The `NoteToSelf-SmallSeaCore` berth holds personal keys and device info. The open question "can a single Hub serve multiple users?" is related.
+The `NoteToSelf-SmallSeaCollectiveCore` berth (the Core berth) holds personal keys and device info. The open question "can a single Hub serve multiple users?" is related.
 
 **Questions to answer:**
 - Is identity device-local or portable? Two devices = two identities, or one?

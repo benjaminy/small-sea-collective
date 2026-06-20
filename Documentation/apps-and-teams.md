@@ -3,9 +3,10 @@
 The primary organizing concepts in Small Sea are **teams** and **apps**.
 Each _team_-_app_ combination defines a _berth_ that things like storage space can be allocated to.
 
-There is one special built-in team (NoteToSelf) and one special built-in app (SmallSeaCore).
-The berth at the intersection of these two (NoteToSelf-SmallSeaCore) is where special stuff like information about a users' authorized devices is kept.
-The _Team_-SmallSeaCore berths are where team membership, invitations and associated metadata is kept.
+There is one special built-in team (NoteToSelf) and one special built-in app (SmallSeaCollectiveCore).
+The berth at the intersection of these two (NoteToSelf-SmallSeaCollectiveCore) is where special stuff like information about a users' authorized devices is kept.
+This particular berth comes up often enough that it has a name: the **Core berth**.
+The _Team_-SmallSeaCollectiveCore berths are where team membership, invitations and associated metadata is kept.
 The NoteToSelf-_App_ berths are where apps can keep any user-private customization.
 
 Teams in Small Sea are similar to any other groupware framework, but there is at least one important difference.
@@ -14,7 +15,7 @@ There might be some intuitive notion of a heirarchy of leaders, core teammates o
 Each participant has either full or read-only permissions in each berth.
 One common arrangement is:
 
-1. Some participants have read-write permissions for _Team_-SmallSeaCore; these are the _admins_ for the team; they can create invitations for new teammates and propose teammate removals.
+1. Some participants have read-write permissions for _Team_-SmallSeaCollectiveCore; these are the _admins_ for the team; they can create invitations for new teammates and propose teammate removals.
 2. All other apps have the same permissions for participants, dividing the group into authors and observers.
 
 If people want more fine-grained permissions systems, this might be achievable with linked teams.
@@ -28,7 +29,7 @@ I'm not especially interested in this topic.
 </tr>
 <tr>
 <th>Teams ↓</th>
-<th style="background-color:rgba(255,255,0,0.2)">SmallSeaCore</th>
+<th style="background-color:rgba(255,255,0,0.2)">SmallSeaCollectiveCore</th>
 <th>FileShare</th>
 <th>Notes</th>
 <th>ManyHands</th>

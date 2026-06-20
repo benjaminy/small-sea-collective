@@ -222,7 +222,8 @@ This is not a problem to solve now, but it belongs on the architecture TODO
 list rather than being quietly inherited.
 
 ### Database Access
-**Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
+**Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager.
+The NoteToSelf-SmallSeaCollectiveCore berth specifically (the one holding device and identity state) is referred to as the **Core berth**. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
 
 ### App Bootstrap
 Apps may request Hub sessions, but they do not register themselves. If an app
