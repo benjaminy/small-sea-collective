@@ -5,7 +5,7 @@
 Small Sea Manager is the essential built-in user application for Small Sea Collective. It manages:
 
 - **Teams** — create, configure, and leave teams
-- **Membership** — invite teammates, accept invitations, set berth integration policies, remove teammates from the local team view
+- **Membership** — invite teammates, accept invitations, set berth integration modes, remove teammates from the local team view
 - **Devices** — link new devices, revoke old ones, manage the participant's device identity
 - **Apps** — register which apps are active for each team (berth management)
 - **Service Subscriptions** — configure the cloud storage accounts, notification services, and other general-purpose services that the Hub needs to operate
@@ -111,55 +111,49 @@ Stores the shared state for one team. All teammates maintain their own copy; cha
 
 | Table | Purpose |
 |-------|---------|
-| `teammate` | One row per team teammate; the primary key is that teammate's team-local identity; teammate-facing fields such as `display_name` live here |
+| `teammate` | Current projection with one row per team teammate; the primary key is that teammate's team-local identity |
 | `teammate_unification` | Maps multiple teammate IDs to the same person (for the oops-unification device flow; see §Device Management) |
 | `app` | Apps active for this team |
 | `team_app_berth` | Berths for this team (one per app; `team_id` omitted — implicit from which DB this is) |
-| `berth_role` | Per-teammate, per-berth role assignments: `read-only` or `read-write` |
-| `invitation` | Invitation records (pending, accepted, revoked) |
+| `berth_role` | Current projection of per-teammate, per-berth integration mode using the existing `read-only` or `read-write` values |
+| `invitation` | Current mutable projection of invitation workflow state |
 | `team_device` | One row per team device; carries device identity only (no storage-routing fields) |
 | `teammate_berth_storage_announcement` | Signed peer-readable storage locations scoped to `(teammate_id, berth_id)` |
 
 Manager-local admission prompt dismissals are stored in a per-team sidecar DB outside `Sync/`, keyed by `(event_type, artifact_id)`, so ignored prompts persist across restarts without becoming synced team state.
 
+The current schema stores mutable teammate projections.
+The target model instead makes significant teammate facts signed and append-only, including admission, device changes, display-name and teammate-unification claims, integration-mode changes, exclusions, storage announcements, proposals, and endorsements.
+Projection tables may remain for efficient UI and policy queries, but they must be rebuildable from the accepted signed Core lineage rather than serving as the only durable history.
+
 
 ---
 
-## Roles
+## Per-Berth Integration Modes
 
-Roles are semantic shorthands.
-Underneath, `berth_role` stores the existing per-berth `read-only` / `read-write` values.
-Those values describe local replication and integration policy plus readability conventions; they are not grants from a central team authority.
+The conceptual model has only two per-berth teammate modes:
 
-| Role | `{Team}/SmallSeaCollectiveCore` | All other berths |
-|------|---------------------------------|------------------|
-| **admin** | read-write | read-write |
-| **contributor** | read-only | read-write |
-| **observer** | read-only | read-only |
+- **automatic** — peers monitor this teammate's ordinary berth publications and integrate every valid change by default
+- **proposal-only** — peers do not monitor this teammate's ordinary berth publications; the teammate submits signed proposals that require endorsement by at least one automatic integrator and by any higher threshold configured for the berth or event type
 
-- **admin** — peers following the conventional mapping automatically integrate this teammate's Core and app-berth publications; this makes the teammate a Core integrator, not a central authority
-- **contributor** — peers automatically integrate this teammate's app-berth publications but not their ordinary Core publications
-- **observer** — should continue receiving readable updates, but peers do not automatically integrate their ordinary publications
+Both modes describe recognized teammates who may receive readable updates, author changes, and sign records.
+The distinction controls expected integration behavior rather than authorship or cryptographic capability.
+A proposal-only Core teammate may still sign a team-visible display-name proposal; a local alias remains participant-local and needs no endorsement.
 
-The default role when accepting an invitation is **admin** for small teams. The inviter may specify a different role when creating the invitation.
+The current `read-write` value approximates `automatic`, and the current `read-only` value approximates `proposal-only`.
+The current Manager role names are convenience presets over those two values: `admin` selects automatic everywhere, `contributor` selects proposal-only on Core and automatic on other berths, and `observer` selects proposal-only everywhere.
+They are not additional protocol categories.
+The default invitation preset remains `admin` for small teams in the current implementation.
 
-Important clarifications:
+`Admin` remains useful shorthand for a teammate in automatic mode on Core.
+Whether a signer held that status is evaluated against the accepted Core state referenced by the signed record.
 
-- These roles are **local policy and protocol expectations**, not centrally
-  enforced entitlements.
-- `read-only` means peers should continue the key exchange needed for that teammate to read berth updates, but should not automatically fetch and integrate that teammate's ordinary publications for the berth.
-- `read-write` means peers should also watch or fetch that teammate's publications for the berth and integrate accepted updates into their own clone.
-- `admin` is not a special cryptographic authority.
-  It is the role shorthand for `read-write` on `{Team}/SmallSeaCollectiveCore`.
-- These values do not prevent anyone from preparing or publishing a change.
-  They describe what peers following a local view do with that publication.
-
-> The intended Hub policy is to watch, fetch, and integrate ordinary changes only from teammates marked `read-write` in its **local** copy of the team DB.
+> The intended Hub policy is to monitor and integrate ordinary changes only from teammates in automatic mode in its **local** Core projection.
 > The current watcher still discovers signals from every teammate.
-> Strict role-aware replication depends on separating ordinary publication discovery from the merge-request discovery path explored in issue #162.
+> Strict mode-aware replication depends on separating ordinary publication discovery from the merge-request discovery path explored in issue #162.
 
-This means different participants can legitimately have different views of who
-is an admin, who is a contributor, or who is still in the team at all.
+Different participants can temporarily hold different Core projections.
+Persistent incompatible Core lineages represent a team fork rather than routine app-data divergence.
 
 ---
 
@@ -426,30 +420,23 @@ Removes the Team pointer from NoteToSelf DB. Deletes the `{TeamName}/Sync/` dire
 
 Reads `teammate` + `berth_role` from the team DB. Does not query the Hub.
 
-#### Set teammate integration policy
+#### Set teammate integration mode
 
-Writes `berth_role` rows for the target teammate: sets
-`read-write`/`read-only` on each berth according to the role mapping in
-§Roles. Commits and eventually pushes.
+The target operation appends a signed Core record setting the teammate's integration mode for the berth to `automatic` or `proposal-only`.
+The record identifies its causal Core anchor so historical integrator standing can be replayed.
+The current implementation instead mutates `berth_role` projection rows using the existing `read-write` and `read-only` values.
 
-This is a mutation to the local clone of the team DB. It becomes socially
-important only insofar as peers adopt that updated view and behave accordingly.
+The updated Core lineage becomes socially important only insofar as peers validate and adopt it.
 
 #### Remove teammate
 
-Deletes the teammate's `berth_role` rows and `peer` row from the local team DB
-clone. Commits. Triggers key rotation so that peers following this updated view
-can stop giving the removed teammate future readable updates.
+The target operation appends a signed exclusion record and preserves all earlier teammate, device, display-name, unification, storage-announcement, and integration-mode records.
+It triggers key rotation so peers adopting the updated lineage can stop giving the excluded teammate future readable updates.
+The current implementation still deletes mutable projection rows and must move to the append-only model in later implementation work.
 
-This is not a magical globally authoritative act. It means, roughly, "my clone
-now says this person is no longer part of the team, and I am publishing that
-view." Other teammates may adopt that view, reject it, or publish a conflicting
-view.
-
-Because team history is kept in git, long-lived disagreement gets awkward
-quickly. Conflicting removals effectively fork the team into incompatible
-futures. Participants cannot comfortably inhabit both without an explicit
-translation layer.
+An exclusion cannot change another participant's clone by fiat.
+Other teammates may adopt the Core lineage, reject it, or publish a conflicting lineage.
+Long-lived disagreement constitutes a team fork whose incompatible futures require explicit human resolution or translation.
 
 ---
 
@@ -459,11 +446,9 @@ See §Invitation Protocol for the full step-by-step.
 
 #### Create invitation
 
-Initiates an invitation proposal: allocates a fresh UUIDv7 `teammate_id` for the
-prospective invitee, anchors the proposal to the current team-history commit
-hash (freezing the admin roster, membership roster, and teammate→device mapping
-at that snapshot), records a proposal shell in team DB, commits and pushes, and
-returns a proposal token for out-of-band delivery to the invitee.
+Initiates an invitation proposal: allocates a fresh UUIDv7 `teammate_id` for the prospective invitee, anchors the proposal to the current team-history commit hash, records a proposal shell in team DB, commits and pushes, and returns a proposal token for out-of-band delivery to the invitee.
+The anchor freezes the automatic Core integrator roster, membership roster, and teammate→device mapping at that snapshot.
+The target event model appends the proposal shell; the current implementation creates a mutable `admission_proposal` row.
 
 Inputs: `team_name`, optional `invitee_label`, `role` (default: admin).
 
@@ -472,17 +457,19 @@ name, inviter cloud endpoint (protocol + URL only — no credentials), and the
 pre-allocated invitee `teammate_id`. Privacy is provided by E2E encryption
 (issue #0008), not by access control.
 
-The proposal shell is visible to all admins in the frozen governance set as
-soon as it is pushed — before the invitee is contacted.
+The proposal shell is visible to all automatic Core integrators in the frozen governance set as soon as it is pushed — before the invitee is contacted.
 
 #### List invitations
 
-Reads invitation proposal rows from team DB. Does not query the Hub.
+Reads the invitation projection from team DB.
+The target projection includes proposal, revision, acceptance, endorsement, revocation, expiry, and finalization events without deleting historical states.
+Does not query the Hub.
 
 #### Revoke invitation
 
-Marks a pending proposal as revoked. A revoked proposal cannot be finalized.
-Commits.
+The target operation appends a signed revocation record.
+The proposal and its existing responses remain inspectable, but it can no longer be finalized along that accepted lineage.
+The current implementation mutates the proposal's state projection.
 
 #### Accept invitation (invitee side)
 
@@ -520,29 +507,23 @@ Takes the invitee's out-of-band acceptance blob. The inviter:
 1. Verifies the acceptance blob (signature valid, binds to the correct
    `teammate_id` and proposal nonce).
 2. Assembles the full admission transcript: proposal ID/nonce, team-history
-   anchor reference, frozen-governance-state digest (covers admin roster,
-   membership roster, and teammate→device mapping at the anchor), inviter/
+   anchor reference, frozen-governance-state digest (covers automatic Core
+   integrator roster, membership roster, and teammate→device mapping at the anchor), inviter/
    finalizer `teammate_id`, pre-allocated invitee `teammate_id`, and the invitee's
    signed acceptance blob carrying the invitee's concrete device keys.
    Transport metadata is explicitly excluded from the transcript.
-3. Signs an approval over the transcript (counts as 1 toward quorum). Publishes
-   transcript + approval as an update to the existing proposal row.
-4. For `quorum > 1`: waits for other admins' approval signatures to accrue in
-   team DB. Each approval is valid iff its signing key appears in a
-   `device_link` cert at the anchor that maps to a current-admin `teammate_id`
-   (the teammate/device bridge derivation). Quorum counts distinct
-   `admin_teammate_id`s over valid approval rows; multiple approvals from
-   different devices of the same admin dedupe to one vote.
-5. Upon observing quorum met, signs and publishes the finalization mutation.
-   Commits.
+3. Signs an endorsement over the transcript, counting as one toward quorum, and publishes the signed transcript and endorsement records.
+4. For `quorum > 1`, waits for other automatic Core integrators' endorsement signatures to accrue in team DB.
+   Each endorsement is valid iff its signing key appears in a `device_link` cert at the anchor that maps to a teammate in automatic mode on Core.
+   Quorum counts distinct endorsing teammates over valid endorsement records; multiple device signatures from the same teammate dedupe to one endorsement.
+5. Upon observing quorum met, signs and publishes the finalization record, then commits.
 
 After finalization, the newly admitted teammate sets up their incoming cloud
 endpoint via the teammate-transport-configuration flow (B7) and then publishes
 their own sender key via `redistribute_sender_key(...)`.
 
-DB schema for proposals, acceptance transcripts, and approval signatures: see
-[SQL Schemas → Team schema](#sql-schemas) below — the current `invitation`
-table is a placeholder pending the B5 schema definition.
+The current schema stores a mutable `admission_proposal` row plus append-only `admin_approval` rows.
+The target schema replaces mutable durable state transitions with signed append-only proposal lifecycle records and treats any status column as a projection.
 
 #### Teammate berth storage announcements
 
@@ -928,7 +909,7 @@ The inviter orchestrates the entire flow; the invitee never writes to the
 shared team DB.
 
 ```
-Alice (inviter)                    Bob (invitee)         Other admins
+Alice (inviter)                    Bob (invitee)         Other Core integrators
   |                                     |                      |
   | create_invitation()                 |                      |
   |  → allocates invitee teammate_id      |                      |
@@ -962,17 +943,17 @@ Alice (inviter)                    Bob (invitee)         Other admins
   |  → assembles admission transcript   |                      |
   |    (anchor, teammate_id, invitee keys;|                      |
   |     NO transport metadata)          |                      |
-  |  → signs approval over transcript   |                      |
-  |  → publishes transcript + approval  |                      |
-  |    as update to proposal row        |                      |
+  |  → signs endorsement over transcript|                      |
+  |  → publishes transcript + signed    |                      |
+  |    endorsement records              |                      |
   |  → commits + pushes via Hub         |                      |
   |                                     |           (syncs; verifies transcript
   |                                     |            against anchor; signs
-  |                                     |            approval if quorum > 1;
-  |                                     |            pushes approval row)
+  |                                     |            endorsement if quorum > 1;
+  |                                     |            pushes endorsement record)
   |                                     |                      |
   | [inviter observes quorum met]       |                      |
-  |  → publishes finalization mutation  |                      |
+  |  → publishes finalization record    |                      |
   |  → commits + pushes via Hub         |                      |
   |                                     |                      |
   | ---- finalization notice (OOB) ---> |                      |
@@ -995,21 +976,18 @@ transcript.
 unsigned requests). Privacy is provided by E2E encryption (issue #0008), not
 by access control. Credentials are never transmitted in tokens.
 
-**Quorum at default (`quorum = 1`):** Other-admin approval step is skipped;
-inviter proceeds directly from publishing transcript + own approval to
-publishing finalization.
+**Quorum at default (`quorum = 1`):** Other-integrator endorsement is skipped.
+The inviter proceeds directly from publishing the transcript and their own endorsement to publishing finalization.
 
-**Proposal invalidation:** If the admin roster, membership roster, or
-teammate→device mapping changes relative to the anchor before finalization, the
-proposal is invalid and cannot be finalized. The inviter must start a new
-proposal from the updated state.
+**Proposal eligibility:** If the automatic Core integrator roster, membership roster, or teammate→device mapping changes relative to the anchor before finalization, the proposal becomes ineligible and cannot be finalized.
+The proposal records remain inspectable, and the inviter must start a new proposal from the updated state.
 
-**Teammate/device bridge for approvals:** Each approval signature is validated
-against the teammate→device mapping frozen at the anchor. An approval is valid
-iff the signing device key appears in a `device_link` cert at the anchor that
-maps to a current-admin `teammate_id`. Approvals by post-anchor devices or
-non-admins are rejected; multiple approvals from devices of the same admin
-dedupe to one vote per `admin_teammate_id`.
+**Teammate/device bridge for endorsements:** Each endorsement signature is validated against the teammate→device mapping frozen at the anchor.
+An endorsement is valid iff the signing device key appears in a `device_link` cert at the anchor that maps to a teammate in automatic mode on Core.
+Endorsements by post-anchor devices or proposal-only Core teammates are rejected; multiple device endorsements from the same teammate dedupe to one.
+
+The current implementation represents most proposal lifecycle state by mutating `admission_proposal` and uses `admin_approval` for endorsement rows.
+The append-only target keeps the proposal, transcript, acceptance, endorsement, eligibility-loss, revocation, and finalization records independently inspectable.
 
 ---
 
@@ -1172,6 +1150,10 @@ CREATE TABLE IF NOT EXISTS team_device_key_secret (
 ```
 
 ### Team schema (`sql/core_other_team.sql`)
+
+The SQL below documents the current mutable projection schema.
+It does not yet include the target signed append-only teammate-event history described above.
+Future schema work should add that durable event source and make projection rows rebuildable without retaining compatibility shims for the pre-alpha mutable model.
 
 ```sql
 PRAGMA foreign_keys = ON;

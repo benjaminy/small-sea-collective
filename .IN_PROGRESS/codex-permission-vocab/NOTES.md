@@ -39,7 +39,20 @@ The following identifiers remain unchanged:
 - `admin`, `contributor`, and `observer`
 - API fields, database columns, exception names, and serialized values
 
-The prose now explains those existing names as shorthand for readability, replication, and integration behavior.
+The prose now explains those existing names as shorthand for per-berth integration behavior.
+
+The second draft narrows that interpretation further.
+`read-write` approximates automatic integration, while `read-only` approximates proposal-only integration.
+Recognition, readability, and proposal discovery are separate concerns rather than additional teammate categories.
+
+## Signed history direction
+
+The current team schema is a mutable snapshot and does not preserve all historical teammate state.
+The target model moves significant teammate facts into signed append-only Core records and treats mutable teammate, role, invitation, and UI rows as rebuildable projections.
+Git continues to carry snapshots and merge histories; signatures inside the application database preserve domain authorship and meaning.
+
+The Core lineage provides the state-relative referent for signer recognition and automatic-integrator standing.
+A valid Core record does not force local adoption, and persistent incompatible accepted Core lineages constitute a team fork.
 
 ## Prior work
 

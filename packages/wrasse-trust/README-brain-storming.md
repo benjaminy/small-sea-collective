@@ -294,33 +294,21 @@ that Alice's device-management UI can answer "show me everything I have
 signed up for" by reading a single local DB instead of walking every team
 repo.
 
-### Append-Only Trust Log (Sigchains in Git)
+### Signed Domain History Carried by Git
 
-Trust accumulation requires tamper-evident history. Small Sea already has
-this: **the git commit DAG**.
+Trust accumulation requires signed, inspectable history.
+Git provides content-addressed snapshots, transport history, and three-way merging, but Git authorship alone does not express the domain meaning of teammate facts.
 
-Certificates live in the `{Team}/SmallSeaCollectiveCore` databases, and
-the git history provides the hash-linked chain. This means:
+Certificates and other significant teammate records live in `{Team}/SmallSeaCollectiveCore` as signed append-only data.
+Admissions, device changes, integration-mode changes, exclusions, proposals, and endorsements remain independently verifiable after rebases or synthesized merge commits.
+Each record references the causal Core state against which its signer and meaning should be evaluated.
 
-- Each team's trust state is append-only by construction (git commits are
-  content-addressed and hash-linked)
-- Any party can verify the history of cert issuance by walking the commit
-  DAG
-- Pruning stale data (which Small Sea already supports) does not destroy
-  the trust chain — the commit DAG structure is preserved even when old
-  content is pruned
-- No separate sigchain format is needed — git IS the sigchain
-- Public certs and admission history live in the team repo; nothing
-  else needs to be synced anywhere
+Git carries and versions those database records.
+The accepted signed record lineage is the domain history; the Git commit DAG is the versioning and transport substrate around it.
+Mutable lookup tables may cache current state only when they can be rebuilt from that signed lineage.
 
-This is a significant architectural advantage. Systems like Keybase had
-to build their own Merkle tree infrastructure; Small Sea gets it from the
-substrate.
-
-NoteToSelf is its own git repo and thus has its own append-only history.
-Device enrollment bookkeeping (Alice's own record of "this device is
-enrolled in that team") can live there when a record-of-the-record is
-useful, even though the canonical cert already lives in the team repo.
+NoteToSelf may keep local records of device enrollment and team participation for convenient inventory.
+Those local records do not replace the signed teammate facts in the relevant team Core history.
 
 ## Time and Rotation
 
@@ -493,11 +481,9 @@ the cert to be meaningful to teammates verifying it.
 | `ambient_proximity` | Any team-device key, low stakes. |
 | `revocation` | A device that has a valid trust path to the thing being revoked — either a co-device of the subject (self-revoke) or an existing-teammate device of the team (membership revoke). |
 
-None of these rules mention "admin." Admin is a social role — it refers
-to the teammates whose clones other teammates happen to pull from — and
-the cert layer does not need to encode that relationship. The cert layer
-provides the signed history; the sync layer decides which histories
-teammates actually see.
+`Admin` is not a special key class.
+It is shorthand for a teammate in automatic mode on Core at the accepted state referenced by a record.
+The cert layer provides signed identity and device relationships, while Core replay determines whether a signing device represented an eligible endorser at that anchor.
 
 This table is preliminary and will need refinement as the protocol
 solidifies.
@@ -715,10 +701,8 @@ The likely Small Sea synthesis is:
 - device-rooted keys with no persistent per-participant key (inspired by
   Matrix/Signal, simpler than the layered alternative we previously
   considered)
-- admission as the only team-level authority concept, with "admin" left
-  as a social role (inspired by Keybase's per-team chain, pushed further)
-- append-only trust state via git commit DAG (novel use of existing
-  substrate)
+- admission and signed Core proposals as anchor-relative validity mechanisms, with "admin" left as shorthand for automatic Core integration
+- signed append-only teammate records carried and versioned through the git commit DAG
 - typed certificates and delegation inspired by SPKI
 - ambient proximity trust as continuous verification (novel)
 - transport/session crypto kept separate in Cuttlefish, informed by MLS
@@ -761,8 +745,7 @@ Design direction:
   may not even need to exist under device-only (see Open Questions).
 - Cross-team identity linking remains opt-in and published by the user
   into whichever team repos they choose.
-- Admin authority remains a purely social concept — no cryptographic
-  admin role is introduced.
+- Admin remains an integration-mode shorthand evaluated from accepted Core history; no special admin key class is introduced.
 - Trust anchoring is the team's first (self-issued, genesis) `membership`
   cert, reached by walking back through the cert graph and git commit
   DAG.

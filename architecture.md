@@ -6,7 +6,7 @@ Small Sea Collective is a framework for building collaborative team applications
 
 - **Team**: The primary unit of collaboration. In Small Sea, teams are decentralized; there is no central registry.
 - **Application (App)**: A way to organize resources like storage, notifications, and identity. Apps are not specific client software but logical groupings of resources.
-- **Berth**: The intersection of a specific **Team** and a specific **App**. It is the fundamental unit of resource allocation, local client authorization, cryptographic readability, and teammate integration policy.
+- **Berth**: The intersection of a specific **Team** and a specific **App**. It is the fundamental unit of resource allocation, local client authorization, cryptographic readability, and teammate integration mode.
 - **Client**: Any software (GUI, CLI, agent) that accesses resources through the Small Sea Hub.
 - **Hub**: By default, a local service that mediates all access to general-purpose cloud services.
   It acts as a security gateway and protocol translator.
@@ -29,18 +29,64 @@ Small Sea has no central team service that can grant or deny a teammate's writes
 Each teammate publishes their own history, and each participant independently decides which histories to watch, fetch, and integrate into their local clones.
 The same teammate update may therefore be integrated by Alice, rejected by Bob, and not yet observed by Carol.
 
-Three related policies are easy to blur together:
+Four questions are easy to blur together:
 
+- **Recognition** asks whether a signature can be traced through the accepted teammate and device history at the state the record references.
 - **Readability** concerns which teammates receive the key material needed to interpret future berth updates.
-- **Replication** concerns which published histories a participant watches or fetches.
-- **Integration** concerns which fetched changes a participant merges into a local clone.
+- **Integration mode** determines whether a teammate's ordinary berth publications are accepted automatically or only through explicit proposals.
+- **Replication and discovery** concern how publications and proposals are noticed and fetched.
 
-The persisted `read-only` and `read-write` berth-role values are shorthand for these protocol expectations and local policies.
-They are not capabilities bestowed by a team-wide authority.
+Only integration mode is a per-berth teammate category in this model:
+
+- **Automatic** means peers following the policy are expected to monitor the teammate's ordinary berth publications and integrate every valid change by default.
+- **Proposal-only** means peers are not expected to monitor ordinary berth publications from that teammate.
+  The teammate may instead sign a change proposal, which becomes eligible for integration after endorsement by the berth's required number of automatic integrators.
+
+The endorsement threshold is always at least one automatic integrator and may be higher for a berth or event type such as Core admission.
+
+Both modes describe recognized teammates who may read, author, and sign data.
+The mode changes what peers are expected to integrate, not whether the teammate can produce a change.
+The current `read-write` and `read-only` schema values approximate `automatic` and `proposal-only` respectively; renaming those stored values is deferred until the proposal mechanism exists.
+
+Replication is mostly a consequence of integration intent, but it is not identical to it.
+A lightweight proposal-discovery path must remain observable even when peers do not monitor the proposer's ordinary berth publications.
 
 Local Hub authorization is different and real.
 A participant's Hub enforces which client software may act in which berth on that device, protects provider credentials, and mediates Small Sea internet traffic.
 Authorization language in this document refers to an enforced local boundary unless a passage explicitly says otherwise.
+
+### Signed, Append-Only Teammate History
+
+The target model stores significant teammate information as signed, append-only domain records in Core.
+Admissions, device links and revocations, display-name and teammate-unification claims, berth integration-mode changes, exclusions, storage announcements, proposals, and endorsements append new facts rather than overwriting or deleting old ones.
+Mutable tables and UI models may serve as rebuildable projections, but they are not the durable source of teammate history.
+
+Each durable record identifies its author and carries a signature over canonical domain bytes.
+Governance-bearing records also reference the causal Core state against which they should be evaluated.
+Governance state is derived by replaying an accepted causal lineage, not by trusting wall-clock timestamps or whichever row happened to arrive last.
+Operational announcement streams may define narrower domain-specific projection rules, but arrival order is never authority.
+Historical questions such as “which devices could speak for this teammate?” or “who could endorse a Core proposal?” are answered at the record's referenced state.
+
+Git remains the snapshot, transport, versioning, and three-way-merge framework.
+The application database carries signatures for facts whose domain meaning must survive rebases, synthesized merge commits, and later history inspection.
+Git provenance and signed domain provenance complement one another; Git commit authorship alone is not the authority for significant teammate facts.
+
+A proposal preserves the proposer's signature over its exact payload and each automatic integrator's endorsement of that proposal digest.
+If review or conflict resolution changes the payload, the result is a new proposal revision requiring fresh signatures rather than a silent mutation attributed to the original proposer.
+
+### Core as Constitutional History
+
+An accepted Core lineage is the shared referent against which teammate recognition, device standing, integration modes, and proposal endorsements are evaluated.
+A claim such as “Alice is a Core integrator” is therefore incomplete without the Core state at which it is evaluated.
+
+Core validity and Core acceptance remain distinct.
+A proposal can be replayably valid relative to its anchor because its authors and endorsers satisfy the rules recorded there.
+That validity does not let anyone change another participant's clone by fiat.
+The admission ceremony and future merge-request machinery replace a central server as validity mechanisms; social adoption and merging still produce convergence.
+
+Ordinary app-berth divergence can be routine and healthy.
+Persistent incompatible Core lineages disagree about the team's constitution and should be surfaced as an explicit team fork.
+Append-only storage preserves every side of such a fork; it does not pretend the disagreement has disappeared.
 
 ## Technical Pillars
 
@@ -53,14 +99,14 @@ Small Sea uses Signal-inspired cryptographic protocols ([X3DH](https://signal.or
 
 **Linked-device admission is a unilateral identity-owner act.** An existing sibling device bootstraps the new device by handing off current team state and the sibling's snapshot of peer sender keys. The sibling issues a `device_link` cert over the new device's concrete public keys and publishes it to the team DB. Other teammates observe the new device via the published cert; objection is handled post-hoc by exclusion. The new device's access is join-time-forward: it reads from what the sibling held at bootstrap time and does not receive historical ciphertext encrypted before the cert was published.
 
-**Teammate admission is an inviter-orchestrated, transcript-bound, admin-quorum flow.**
+**Teammate admission is an inviter-orchestrated, transcript-bound, Core-integrator-quorum flow.**
 
-- *Governance-snapshot anchor.* Every proposal is anchored to a verifiable team-history reference (the team's `Sync/core.db` commit hash). The anchor freezes the admin roster, membership roster, and teammate→device mapping. Every participant can independently replay team history to the anchor and verify the frozen state.
-- *Proposal shell published at initiation.* The inviter allocates a fresh UUIDv7 `teammate_id` for the invitee and publishes a proposal shell to team DB before the invitee is contacted. Other admins in the frozen governance set see the proposal immediately and can withhold approval or object before the invitee has invested any effort.
+- *Governance-snapshot anchor.* Every proposal is anchored to a verifiable team-history reference (the team's `Sync/core.db` commit hash). The anchor freezes the automatic Core integrator roster, membership roster, and teammate→device mapping. Every participant can independently replay team history to the anchor and verify the frozen state.
+- *Proposal shell published at initiation.* The inviter allocates a fresh UUIDv7 `teammate_id` for the invitee and publishes a proposal shell to team DB before the invitee is contacted. Other automatic Core integrators in the frozen governance set see the proposal immediately and can withhold endorsement or object before the invitee has invested any effort.
 - *Transcript binding.* The invitee generates fresh keys and signs an acceptance blob binding to the inviter-allocated `teammate_id`. The inviter assembles the full admission transcript over the invitee's concrete device keys and the allocated `teammate_id`. Transport metadata (cloud endpoints) is explicitly excluded from the immutable transcript; post-admission transport setup is a separate flow.
-- *Teammate/device approval bridge.* Each admin approval is a teammate-scoped vote executed by a device-key signature. An approval is valid iff the signing key appears in a `device_link` cert at the anchor that maps to a current-admin `teammate_id`. This bridge is a step-by-step derivation any verifier can replay: cert chain at the anchor → device key → teammate ID → admin roster check. Approvals from devices linked after the anchor, or from non-admins at the anchor, are rejected. Multiple approvals from different devices of the same admin dedupe to one vote.
-- *Inviter-published finalization.* The inviter observes quorum met and publishes the finalization mutation. The invitee never publishes their own admission. `quorum = 1` is the default; the inviter's own approval alone meets quorum and the end-to-end flow reduces to Alice-initiates → Bob-returns-signed-transcript → Alice-approves-and-publishes.
-- *Non-durable proposals.* Proposals are invalidated by any governance-state change relative to the anchor: admin roster changes, membership roster changes, or teammate→device mapping changes. Proposals also expire after a per-team window. An invalidated proposal cannot be finalized; it is not a durable bearer capability.
+- *Teammate/device endorsement bridge.* Each endorsement is a teammate-scoped decision executed by a device-key signature. An endorsement is valid iff the signing key appears in a `device_link` cert at the anchor that maps to a teammate in automatic mode on Core. This bridge is a step-by-step derivation any verifier can replay: cert chain at the anchor → device key → teammate ID → Core integration mode. Endorsements from devices linked after the anchor, or from proposal-only Core teammates at the anchor, are rejected. Multiple device endorsements from the same teammate dedupe to one.
+- *Inviter-published finalization.* The inviter observes quorum met and publishes the signed finalization record. The invitee never publishes their own admission. `quorum = 1` is the default; the inviter's own endorsement alone meets quorum and the end-to-end flow reduces to Alice-initiates → Bob-returns-signed-transcript → Alice-endorses-and-publishes.
+- *Non-durable proposal eligibility.* Proposal records remain inspectable, but their eligibility is invalidated by any governance-state change relative to the anchor: automatic Core integrator changes, membership changes, or teammate→device mapping changes. Eligibility also expires after a per-team window. An ineligible proposal cannot be finalized and is not a durable bearer capability.
 
 There is no central membership oracle and no globally authoritative admin
 service. Each participant maintains a local clone of the team's history and
@@ -273,38 +319,31 @@ This is a locally enforced client-to-Hub authorization boundary, not a team-wide
 
 - **Micro Tests**: We prefer the term "micro tests" over "unit tests." These are quick, frequent tests intended to catch simple mistakes during development.
 
-## Teammate Integration Policy
+## Per-Berth Integration Modes
 
-For each berth, the current schema records either **read-only** or **read-write** for a teammate.
-The names are familiar shorthand, but the behavior is replication and integration policy rather than centrally enforced access.
+The conceptual model has two integration modes for a recognized teammate in a berth:
 
-In concrete technical terms:
+- **Automatic**: monitor the teammate's ordinary publications and integrate every valid change by default.
+- **Proposal-only**: do not monitor the teammate's ordinary publications; consider only explicitly signed proposals endorsed by at least one automatic integrator and by any higher threshold configured for that berth or event type.
 
-- **Read-only** means peers following the policy should continue the key exchange needed for that teammate to read updates in the berth, but should not automatically fetch and integrate that teammate's ordinary berth publications.
-- **Read-write** means peers following the policy should also watch or fetch that teammate's berth publications and integrate accepted updates into their own clones.
+“Valid” still requires a recognized signer at the referenced state, the correct team and berth, a valid signature and causal base, app-specific structural validation, and any special domain rules.
+Automatic integration is not permission to accept malformed or semantically invalid data.
 
-This is the intended policy model, not a claim that every runtime path already applies both halves.
-The current Hub watcher discovers signals from all teammates, while strict role-aware replication remains future work.
-A proposal-discovery path must remain observable even when ordinary publications are not fetched; issue #162 tracks that design together with berth-scoped merge requests.
+Both modes may receive readable updates and author signed changes.
+Readability remains endpoint-trust-scoped rather than cryptographically enforceable after keys or plaintext reach an admitted endpoint.
+Integration mode answers what peers normally incorporate, not who is capable of writing bytes.
+A proposal-only Core teammate can therefore sign a team-visible display-name proposal for an automatic Core integrator to endorse, while a purely local alias needs no team proposal.
 
-The readability convention is endpoint-trust-scoped, not a cryptographic enforcement boundary.
-An admitted party can in principle proxy plaintext or receiver state out of band.
-Likewise, `read-only` does not make a teammate incapable of preparing a change; it says that their ordinary published changes are not automatically integrated.
+The current schema stores `read-write` for approximately **automatic** and `read-only` for approximately **proposal-only**.
+The current Hub watcher still discovers signals from every teammate, and the proposal-discovery mechanism does not yet exist.
+Issue #162 tracks the runtime design needed before those stored values and UI labels can be renamed honestly.
 
-A common shorthand organization is:
+`Admin` remains useful shorthand for a teammate in automatic mode on Core.
+That status is evaluated relative to an accepted Core state and does not make the teammate a central authority.
 
-- **Admin**: Read-write to all berths, including the team's Core berth (team metadata).
-- **Contributor**: Read-write to all berths _except_ Core (their changes to team metadata are ignored by peers following the conventional role mapping).
-- **Observer**: Read-only to all berths.
-
-`Admin` is not a special cryptographic authority.
-It is shorthand for a teammate whose Core publications are normally integrated by peers following the conventional role mapping.
-In that limited sense, an admin is a **Core integrator**, not an operator of a central control plane.
-
-"Remove teammate" therefore means: remove that person from my local clone of the
-team DB, push that change, and rotate keys if I want future readable updates to
-exclude them. Other teammates may adopt that view, reject it, or race it with a
-conflicting view of their own.
+“Remove teammate” therefore means appending a signed exclusion fact to the local Core lineage, publishing it, and rotating keys if future readable updates should exclude that person.
+The earlier admission, device, and integration-mode records remain inspectable.
+Other teammates may adopt that lineage, reject it, or race it with a conflicting lineage of their own.
 
 Because Small Sea uses git history, maintaining a persistent split gets awkward
 quickly. If Alice removes Carol and Carol removes Alice, the team has

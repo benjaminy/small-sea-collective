@@ -30,7 +30,7 @@ The Hub-as-chokepoint architecture exists to enable transparent E2E encryption, 
 
 ## 2. Hub ↔ Small Sea Manager Database Contract
 
-Explicitly TBD in the Hub spec. Hub needs to read team membership and berth integration policy to make local synchronization decisions; Small Sea Manager owns writes. This is a hard coupling.
+Explicitly TBD in the Hub spec. Hub needs to read team membership and berth integration modes to make local synchronization decisions; Small Sea Manager owns writes. This is a hard coupling.
 
 **Why it's urgent:** The Small Sea Manager spec is skeleton-only. This contract unblocks finishing it.
 
@@ -41,11 +41,12 @@ Explicitly TBD in the Hub spec. Hub needs to read team membership and berth inte
 - **Sessions in Hub-only DB** — sessions live in `small_sea_collective_local.db` (separate from `core.db`). Other apps access sessions through the Hub API only.
 - **Single-user-per-Hub** — one Hub per device/user; no multi-participant file-watcher complexity needed.
 - **Hub and Small Sea Manager stay version-locked** — they are the core infrastructure and update together; no cross-version compatibility needed.
-- **Integration policy is per-berth, using a two-table schema** — `teammate(id)` (per-team identity) + `berth_role(id, teammate_id, berth_id, role)` where role ∈ `{read-only, read-write}`. "Admin" simply means read-write on the TeamManager berth. The `teammate` table will eventually carry key/cert material.
-- **Local integration policy determines what should count** — The target Hub policy only fetches and incorporates ordinary changes from teammates marked read-write in its own local copy. The current watcher still discovers signals from every teammate, so strict role-aware replication remains implementation work. Policy-change race conditions (e.g. Alice changes Bob from read-only to read-write mid-sync) are implementation details, not architecture.
+- **Integration mode is per-berth** — the conceptual values are `automatic` and `proposal-only`. The current `berth_role` schema still stores `read-write` and `read-only` as approximations. “Admin” simply means automatic on Core.
+- **Local integration mode determines what should count** — The target Hub policy only fetches and incorporates ordinary changes from automatic teammates in its own local Core projection. The current watcher still discovers signals from every teammate, so strict mode-aware replication remains implementation work. Mode-change races preserve competing signed records and may require explicit Core-fork resolution.
+- **Significant teammate facts are append-only** — admission, device, integration-mode, display-name, unification, exclusion, storage-announcement, proposal, and endorsement records remain inspectable. Mutable teammate and role tables become rebuildable projections of an accepted signed Core lineage.
 - **Teammate cloud locations belong to teammate** — stored linked to the `teammate` record (set via invitation flow). Multiple locations per teammate deferred.
 - **Data is globally readable; privacy via encryption** — Hub reads teammates' Cod Sync chains without special credentials (just the URL). Security comes from E2E encryption, not access control.
-- **Hub is always-on background monitor** — runs a background loop watching teammates' cloud locations and incorporating updates when its local integration policy calls for it. Hub does all cloud I/O (consistent with Section 4).
+- **Hub is always-on background monitor** — runs a background loop watching teammates' cloud locations and incorporating updates when its local integration mode calls for it. Hub does all cloud I/O (consistent with Section 4).
 
 ### Remaining Open Items
 
@@ -149,29 +150,31 @@ and `packages/small-sea-manager/spec.md` for the full descriptions.
   per-sender redistribution ceremony is required for admission.
 
 - **Teammate admission is an inviter-orchestrated, transcript-bound,
-  admin-quorum flow.** Key properties that are non-negotiable:
+  Core-integrator-quorum flow.** Key properties that are non-negotiable:
   - The inviter allocates the invitee's `teammate_id` at proposal creation; the
     invitee does not choose it.
-  - A governance-snapshot anchor (team-history commit hash) freezes the admin
-    roster, membership roster, and teammate→device mapping. Every signer verifies
-    independently against the anchor.
-  - Admin approvals are teammate-scoped votes exercised by anchor-trusted device
+  - A governance-snapshot anchor (team-history commit hash) freezes the automatic
+    Core integrator roster, membership roster, and teammate→device mapping. Every
+    signer verifies independently against the anchor.
+  - Endorsements are teammate-scoped decisions exercised by anchor-trusted device
     signatures. The teammate/device bridge is a step-by-step derivation: device
-    key → `device_link` cert at anchor → `teammate_id` → admin roster check.
+    key → `device_link` cert at anchor → `teammate_id` → Core integration mode.
   - The admission transcript binds the invitee's concrete device keys and the
     pre-allocated `teammate_id`. Transport metadata (cloud endpoints) is
     explicitly excluded.
   - The proposal shell is published to team DB at initiation, before the
-    invitee is contacted, so other admins can approve or withhold early.
+    invitee is contacted, so other automatic Core integrators can endorse or
+    withhold early.
   - The inviter observes quorum met and publishes finalization. The invitee
     never publishes their own admission.
-  - `quorum = 1` is the default; the inviter's own approval alone meets
+  - `quorum = 1` is the default; the inviter's own endorsement alone meets
     quorum, preserving Alice-invites / Bob-responds / Alice-finalizes UX.
 
-- **Proposals are non-durable.** A proposal is invalidated by any
-  governance-state change relative to the anchor (admin roster, membership
-  roster, or teammate→device mapping) or by expiry. An invalidated proposal
-  cannot be finalized.
+- **Proposal eligibility is non-durable.** Proposal records remain in history,
+  but their eligibility is invalidated by any governance-state change relative
+  to the anchor (automatic Core integrator roster, membership roster, or
+  teammate→device mapping) or by expiry. An ineligible proposal cannot be
+  finalized.
 
 - **Rotation means exclusion or hygiene, never admission.** Exclusion handles
   removal and post-admission objections via the rotate-with-exclusion

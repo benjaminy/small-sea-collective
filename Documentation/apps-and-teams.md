@@ -14,17 +14,16 @@ The sharing in Small Sea is entirely distributed and voluntary.
 There is no team server that grants or denies writes.
 Each teammate publishes their own history, and each participant decides which histories to watch, fetch, and integrate into their local clones.
 
-There might be some intuitive notion of a hierarchy of leaders, core teammates or owners, but the built-in integration policy in Small Sea is very simple.
-The current schema records either `read-write` or `read-only` for each teammate in each berth.
-These are protocol expectations and local policy, not centrally enforced entitlements.
-One common arrangement is:
+There might be some intuitive notion of a hierarchy of leaders, core teammates, or owners, but Small Sea needs only two per-berth integration modes.
+Peers monitor and integrate every valid ordinary publication from an **automatic** teammate by default.
+Peers do not monitor ordinary publications from a **proposal-only** teammate, who instead submits signed proposals for endorsement by at least one automatic integrator.
 
-1. Peers automatically integrate some teammates' publications for _Team_-SmallSeaCollectiveCore; these teammates are the _admins_ or Core integrators for the team, and they can create invitations for new teammates and propose teammate removals.
-2. Other app berths commonly divide the group into contributors whose ordinary publications are automatically integrated and observers whose publications are not.
+Both modes describe full teammates who may read, author, and sign data.
+The distinction is integration behavior, not permission to produce a change.
+The current schema's `read-write` and `read-only` values approximate `automatic` and `proposal-only` respectively.
 
-If people want more fine-grained integration policy, this might be achievable with linked teams.
-Or something like that.
-I'm not especially interested in this topic.
+An _admin_ is useful shorthand for an automatic integrator on _Team_-SmallSeaCollectiveCore.
+Core records significant teammate facts as signed append-only history, so past membership and integrator standing remain inspectable even after the current view changes.
 
 <table>
 <tr>

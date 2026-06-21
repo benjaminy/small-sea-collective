@@ -95,7 +95,11 @@ Small Sea provides shared history and protocol conventions, not a single forced 
 
 This is deliberately different from local Hub authorization.
 A participant's Hub really does enforce which client software may act in which berth on that device.
-Team roles instead describe readability and expected replication and integration behavior among independent clones.
+Teammate berth modes instead describe whether ordinary publications are integrated automatically or arrive only as explicit proposals.
+
+Significant teammate facts belong in signed, append-only Core records so that past membership, device, and integration state remains inspectable.
+Core is therefore more consequential than an ordinary app berth: a Core proposal can be valid relative to an accepted history without any central service being able to force every participant to adopt it.
+Persistent disagreement about Core history is a team fork, not an ordinary permission dispute.
 
 ### Human-Scale Local-First
 

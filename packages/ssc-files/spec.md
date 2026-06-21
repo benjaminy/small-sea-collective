@@ -246,7 +246,7 @@ Those keys intentionally omit both friendly `team_name` and opaque Files
 
 - **Joining a niche**: a new team teammate pulls the registry to discover which niches exist, then pulls each niche they want.
   No special "invitation" flow is needed at the files level.
-  Team admission and cryptographic readability come from Core, while each participant's local integration policy determines whose Files publications enter their clone.
+  Team admission and cryptographic readability come from Core, while each participant's local integration mode determines whose Files publications enter their clone.
 
 - **Conflict resolution**: `pull_niche` merges via git. Auto-merge works
   for non-overlapping changes. Conflicts raise an untyped exception today;

@@ -2,28 +2,39 @@
 
 ## Decision
 
-Describe teammate berth roles as local readability, replication, and integration policy rather than team-wide permissions granted by a central authority.
-Retain authorization language for boundaries that a participant's local Hub, operating system, cryptographic verifier, or provider actually enforces.
+Use only two conceptual per-berth teammate integration modes: **automatic** and **proposal-only**.
+Both modes describe recognized teammates who may read, author, and sign data.
+The mode controls expected integration behavior rather than permission to produce bytes or records.
 
-Keep the existing `berth_role`, `read-only`, `read-write`, `admin`, `contributor`, and `observer` identifiers for now.
-This branch changes the conceptual model in prose without prematurely changing serialized contracts or UI vocabulary.
+Keep the existing `berth_role`, `read-only`, `read-write`, `admin`, `contributor`, and `observer` implementation identifiers for now.
+The stored values approximate the new modes, while existing role names are merely presets over them.
 
-## Operational meanings
+## Signed teammate history
 
-- **Readability** concerns distribution of key material needed to interpret future berth updates.
-- **Replication** concerns which histories a participant watches or fetches.
-- **Integration** concerns which fetched changes enter a participant's local clone.
-- **Admin** remains a shorthand role; operationally, it identifies a teammate whose Core publications peers normally integrate under the conventional mapping.
-- **Local Hub authorization** governs which client software may act in which berth on one participant's device.
+Significant teammate facts belong in signed append-only Core records.
+Admissions, device links and revocations, display-name and teammate-unification claims, integration-mode changes, exclusions, storage announcements, proposals, and endorsements append facts instead of deleting or overwriting history.
+Governance state is a projection of an accepted causal Core lineage, not a last-timestamp-wins view.
+Operational signed streams may define narrower domain-specific projection rules.
 
-## Important caveat
+Git remains responsible for snapshots, transport, versioning, and three-way merging.
+Application database records carry the signatures and canonical payloads for domain facts whose provenance must survive repository-history manipulation and synthesized merges.
+Proposal revisions preserve the proposer's payload signature and automatic integrators' endorsements; a modified payload requires a freshly signed revision.
+
+## Core semantics
+
+An accepted Core lineage is the referent against which signer recognition and integrator standing are evaluated.
+Validity is replayable relative to an anchor; adoption remains local.
+Admission and merge-request machinery replace a central server as validity mechanisms, not as a way to mutate another participant's clone by fiat.
+Persistent incompatible Core lineages are explicit team forks.
+
+## Important implementation gaps
 
 The current Hub watcher still discovers signals from every teammate without consulting the session berth's role row.
-Strictly avoiding ordinary pulls from `read-only` teammates is therefore an intended policy direction, not a completed runtime guarantee.
-Merge-request discovery must remain observable when ordinary publications are not fetched, so role-aware replication should be designed together with issue #162 rather than added as an isolated filter.
+The current team schema mutates or deletes teammate, role, and invitation state instead of maintaining a complete signed append-only event source.
+Merge-request discovery must remain observable when ordinary publications are not fetched, so mode-aware replication should be designed together with issue #162 rather than added as an isolated filter.
 
 ## Why this boundary
 
-Replacing every authorization-related word would erase real security boundaries and produce less precise documentation.
-Renaming schema and public values before proposal discovery and role-aware replication settle would make code churn lead the design.
-The conservative split makes the decentralized model louder while preserving stable implementation surfaces.
+Replacing every authorization-related word would erase real local security boundaries and produce less precise documentation.
+Renaming schema and public values before proposal discovery and append-only history settle would make code churn lead the design.
+The conservative split makes the decentralized model louder while preserving stable implementation surfaces for this draft.
