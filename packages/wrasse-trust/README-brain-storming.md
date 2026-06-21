@@ -16,6 +16,9 @@
 > Design decisions are being calved off into issues and branches as they
 > solidify. This document intentionally holds ideas that are not yet
 > coherent with each other — it is a brainstorming surface, not a spec.
+> The identity, governance, integration-mode, recovery, and retention rules in
+> [`architecture.md`](../../architecture.md#no-team-server) are canonical when
+> this note disagrees with them.
 
 Wrasse Trust is the Small Sea package for identity, certification, and trust
 evaluation. It is the layer that tries to answer questions like:
@@ -95,13 +98,17 @@ These identities are distinct and unlinked by default. They can be
 publish into whichever team repos she wants the link visible in — but the
 protocol does not require or assume such linkage.
 
-**Within a team, the only keys are team-device keys.** There is no rare-use
+**Within ordinary team operation, the only signing keys are team-device keys.** There is no rare-use
 "team-membership identity key" sitting above the device keys. There is no
 private key material shared across Alice's Accounting devices. Each device
 holds exactly one private signing key for each team it is enrolled in, and
-that private key never leaves the device. "Alice in Accounting" is an
+that operational private key never leaves the device. "Alice in Accounting" is an
 **equivalence class of device keys** linked by cross-signatures, rooted at
 a membership cert that admitted the first device.
+
+Prepared recovery is separate from that operational key graph.
+A user may keep per-team recovery keys and supporting data in out-of-band backup storage, but a recovery key is not a spare device key and cannot make a new device impersonate an old one.
+It can only authorize a fresh device key through the explicit recovery event described by the canonical architecture.
 
 This design has important properties:
 
@@ -128,16 +135,11 @@ per device, created a "compromised device exposes the identity key" worry,
 and added a layer of ceremony around device provisioning without buying
 anything the cross-sig graph doesn't already buy.
 
-**The honest cost of the device-only model is recovery.** If Alice's only
-device is destroyed, her per-team identity in each team she was in is
-cryptographically unrecoverable — there is no wrapped key to pull back
-down. She can be re-admitted as a new teammate by her teammates, but as a
-new teammate, not as a recovery of the old one. Recovery mechanisms (paper
-keys, threshold backup, custodian devices, social recovery) are all
-layerable on top as additional cross-sig sources and are explicitly
-deferred past v1. The v1 UX needs to steer users toward enrolling a
-second device early, precisely because that is the only cheap recovery
-path the base model offers.
+**The honest cost of the device-only model is recovery ceremony.** An enrolled sibling device remains the simplest way to link a fresh device key.
+A user may instead prepare a separate per-team recovery capability in advance and keep it outside routine Small Sea sync.
+Using that capability must be a loud, replay-resistant process that records a signed recovery event and authorizes a fresh device key without copying or impersonating the destroyed device's key.
+If Alice has neither an enrolled sibling nor usable prepared recovery material, her old teammate identity is cryptographically unrecoverable.
+She must be admitted under a new teammate UUID and rebuild her connections rather than having the software claim continuity it cannot prove.
 
 ### Display Convention
 
@@ -177,19 +179,14 @@ Instead, the team is a derived principal represented by the history in its
 - who was admitted (membership certs)
 - who was removed or revoked
 - which devices are linked to which per-team participant UUID
-- the overall commit DAG that hash-links everything together
+- which recovery, integration-mode, proposal, and endorsement events were accepted
 
 In that sense, "Accounting" is its membership and revocation history, not
 a separate secret sitting somewhere called "the Accounting private key."
 
-**There is no cryptographic "admin" role in Small Sea.** "Admin" just
-means "a person whose clone other teammates happen to pull from, and who
-therefore tends to be the one typing the commands when new teammates are
-added." The cryptographic layer does not enforce who may issue membership
-certs — any existing teammate's device may issue one. Whether that admission
-actually propagates to the rest of the team depends entirely on whose
-clones teammates sync with. This is a social layer riding on top of a
-cryptographic layer, not a cryptographic hierarchy.
+**There is no special "admin" key class in Small Sea.** "Admin" is shorthand for a teammate in automatic mode on Core at an accepted Core state.
+Any key can physically emit bytes shaped like a membership record, but conforming clients accept an admission only when its complete signed transcript and automatic-Core-integrator endorsements satisfy the anchor-relative Core rules.
+Cryptographic validity still does not force another participant to adopt the resulting Core lineage.
 
 One consequence worth naming: two teammates who pull from disjoint sets
 of clones can have internally consistent but mutually different views of
@@ -270,17 +267,21 @@ its subject:
 
 Protection is a device-policy axis, not a Wrasse Trust subject.
 
-### Where Private Keys Live
+### Where Operational Private Keys Live
 
 Very simply: **each device holds its own private keys, for each team it
 is enrolled in, in that device's local key store.** Private key material
-never leaves the device. There is no synced wrapped-key blob anywhere in
-Small Sea.
+for an operational device identity never leaves that device.
+There is no synced wrapped copy that lets another device impersonate it.
 
 NoteToSelf holds each device's own view of its enrollments (one row per
 team saying "I am UUID `U` in team `T` with local private key `K`"), not
 any shared secret material. If a device is destroyed, its private keys
 are gone — there is no other copy.
+
+A separately generated per-team recovery capability may be stored in a user-controlled backup prepared in advance.
+It is not an ordinary device key or routine NoteToSelf sync payload.
+Its only role is to authorize a new device key through a conspicuous, signed recovery ceremony with replay and rollback defenses.
 
 Public certs — the part teammates need to see — live in each team's
 `{Team}/SmallSeaCollectiveCore` berth, and are synced through the normal
@@ -300,8 +301,11 @@ Trust accumulation requires signed, inspectable history.
 Git provides content-addressed snapshots, transport history, and three-way merging, but Git authorship alone does not express the domain meaning of teammate facts.
 
 Certificates and other significant teammate records live in `{Team}/SmallSeaCollectiveCore` as signed append-only data.
-Admissions, device changes, integration-mode changes, exclusions, proposals, and endorsements remain independently verifiable after rebases or synthesized merge commits.
+Admissions, device changes, recovery events, integration-mode changes, exclusions, staleness observations, proposals, and endorsements remain independently verifiable after synthesized merge commits or other repository-history manipulation.
 Each record references the causal Core state against which its signer and meaning should be evaluated.
+
+Every Core database snapshot contains the complete signed record lineage through that snapshot's state.
+A verifier does not depend on old checkout blobs to answer a current trust question.
 
 Git carries and versions those database records.
 The accepted signed record lineage is the domain history; the Git commit DAG is the versioning and transport substrate around it.
@@ -391,10 +395,12 @@ Under the device-only model:
 - `self_binding`: legacy transitional type for the current
   BURIED/GUARDED/DAILY placeholder hierarchy. Goes away when that
   hierarchy does.
-- `membership`: an existing teammate's device admits a new per-team
-  participant UUID into the team and names their founding device key in
-  its claims. The very first membership cert in a team's history is
-  self-issued at team creation and serves as the team's trust root.
+- `membership`: the finalized admission transcript names the admitted
+  per-team participant UUID and founding device key.
+  The transcript is valid only with the required automatic Core integrator
+  endorsements at its Core anchor.
+  The first membership record is self-issued at team creation and begins
+  the team's Core history.
 - `device_link`: an existing device (already speaking for UUID `U` in
   team `T`) vouches that a second device also speaks for `U` in `T`.
   This is the equivalence-class expansion cert — what gets issued when
@@ -433,22 +439,9 @@ readers mid-transition don't confuse themselves.
 Trust traversal must be **typed**. A valid trust path is not just "a pile
 of signatures" — it is a meaningful chain of statements.
 
-Under the device-only model, the canonical question is: "is device `K`
-trusted as UUID `U` in team `T`?" A valid answer walks a path of this
-shape:
-
-- team root (the first `membership` cert in the team's history, which is
-  self-issued at team creation) →
-- zero or more later `membership` certs transitively admitting `U` into
-  the team, each issued by an existing teammate's device →
-- `membership(U, founding_device=K₀, team=T)`, the cert that first
-  admitted `U` →
-- zero or more `device_link(K_i → K_{i+1}, U)` edges, each issued by a
-  device already known to speak for `U` →
-- arriving at `K`
-
-The anchor is always the team's first membership cert. Everything walks
-back to it.
+Under the device-only model, the canonical question is: "did device `K` validly speak as UUID `U` in team `T` at Core state `C`?"
+A valid answer replays the complete signed Core history from team genesis through `C`, validates the anchor-relative admission transcript and its automatic-Core-integrator endorsements, finds the founding device `K₀`, applies later valid `device_link` and revocation events, and determines whether `K` was in the resulting device set.
+Genesis anchors the history, but governance-bearing records are evaluated at their own causal Core references rather than by signature reachability alone.
 
 Other cert types compose into this graph rather than replacing it:
 
@@ -472,7 +465,7 @@ the cert to be meaningful to teammates verifying it.
 | Cert Type | Issuer Rule |
 |-----------|------------|
 | `self_binding` | Legacy placeholder. Goes away with the BURIED/GUARDED/DAILY hierarchy. |
-| `membership` | Any existing-teammate device in the team. Self-issued is allowed only at team genesis, when no prior teammate exists. Propagation is social, not cryptographic. |
+| `membership` | The inviter signs the candidate transcript; it constitutes an admission only with the required automatic-Core-integrator endorsements at its Core anchor. Self-issued genesis is the special team-creation case. |
 | `device_link` | A device that already speaks for the same UUID `U` in the same team `T`. This is what grows the equivalence class. |
 | `cross_certification` | Any team-device key, during a ceremony with another participant. |
 | `identity_link` | A team-device key in each of the two teams being linked. Published into whichever team repos the linker wants the link visible in. |
@@ -501,20 +494,20 @@ typed certs are the fix.
 
 ### "Is Alice on team Accounting?"
 
-Answered by a graph walk inside the team's own cert store:
+Answered by replay inside the team's signed Core history:
 
 1. Find Alice's per-team participant UUID `U` in this team's cert store
    (Alice's device tells the UI which UUID to ask about, since the UUID
    is opaque and per-team).
-2. Find the `membership(U, founding_device=K₀, team=Accounting)` cert
-   that admitted `U`.
-3. Walk back from that cert's issuer through earlier `membership` certs
-   until you reach the team's first membership cert (the self-issued
-   genesis cert). If the walk reaches the root and no `revocation` cert
-   prunes the path, `U` is a teammate.
-4. To prove a *specific device* of Alice's is acting as `U`, walk forward
-   from `K₀` through `device_link` edges. If the device in question is
-   reachable, it speaks for `U`.
+2. Find the finalized `membership(U, founding_device=K₀, team=Accounting)`
+   transcript that admitted `U`.
+3. Replay Core through the transcript's anchor and verify that its proposal,
+   invitee acceptance, and automatic-Core-integrator endorsements satisfy the
+   admission rule at that state.
+4. Replay later signed `device_link`, recovery, and revocation records through
+   the Core state being queried.
+5. To prove a *specific device* of Alice's is acting as `U`, verify that the
+   resulting device set contains it and that the device's signature is valid.
 
 A teammate whose sync clones don't carry some of Alice's membership or
 `device_link` certs will correctly conclude that Alice is not visible in
@@ -527,12 +520,9 @@ matches the derived-principal story.
 In Small Sea v1, **the team itself does not speak.** Individual teammates
 speak; the team's "voice" is the aggregated history in its repo.
 
-Any existing-teammate device can issue a `membership` cert admitting a new
-participant. Whether that admission is seen by other teammates depends
-on the social sync layer, not on cryptographic admin authority. A teammate
-whose clone is not widely watched can still unilaterally admit someone,
-but only teammates who actually pull from that clone will see the new
-admission.
+Any device can emit a candidate certificate, but that fact does not make the certificate a valid admission.
+A conforming client recognizes a new teammate only through the architecture's transcript-bound, anchor-relative admission flow and its required automatic-Core-integrator endorsements.
+Whether a valid admission is adopted remains a local integration decision, so different participants may still accept different Core lineages.
 
 Future directions for contested or high-stakes team governance — quorum
 signing, tiered roles, time-locked operations with cancellation windows —
@@ -613,11 +603,11 @@ Summary of provisioning under the device-only model:
   `U` into the new team and naming the new team-device key as the
   founding device. No prior key (not even the NoteToSelf key) needs to
   participate — team creation is inherently a self-anchoring act.
-- **Joining an existing team.** A current teammate's device issues a
-  `membership` cert admitting the joiner's UUID and founding device key.
-  The joiner generates their per-team participant UUID and team-device
-  key locally before the ceremony; the existing teammate's `membership`
-  cert carries both.
+- **Joining an existing team.** An inviter allocates the joiner's per-team
+  teammate UUID and publishes an admission proposal anchored to Core.
+  The joiner generates a fresh team-device key and signs the transcript.
+  The proposal becomes a valid admission only after the required automatic
+  Core integrator endorsements and inviter-published finalization.
 - **Enrolling a second device in a team Alice is already in.** The new
   device generates its own team-device key for that team. An
   already-enrolled device of Alice's, *for that same team*, issues a
@@ -702,7 +692,7 @@ The likely Small Sea synthesis is:
   Matrix/Signal, simpler than the layered alternative we previously
   considered)
 - admission and signed Core proposals as anchor-relative validity mechanisms, with "admin" left as shorthand for automatic Core integration
-- signed append-only teammate records carried and versioned through the git commit DAG
+- a complete signed teammate-record lineage in every Core snapshot, carried and versioned alongside the complete Git commit DAG
 - typed certificates and delegation inspired by SPKI
 - ambient proximity trust as continuous verification (novel)
 - transport/session crypto kept separate in Cuttlefish, informed by MLS
@@ -747,17 +737,16 @@ Design direction:
   into whichever team repos they choose.
 - Admin remains an integration-mode shorthand evaluated from accepted Core history; no special admin key class is introduced.
 - Trust anchoring is the team's first (self-issued, genesis) `membership`
-  cert, reached by walking back through the cert graph and git commit
-  DAG.
+  cert, reached by replaying the complete signed Core history through the
+  referenced state.
+- The Git commit DAG remains complete bookkeeping and merge ancestry, but it
+  is not the sole storage or validity mechanism for the signed trust log.
 
 ## What Can Be Deferred Past Version 1
 
 - Post-quantum crypto (API should be agnostic; ship Ed25519/X25519 only)
-- Device recovery: paper keys, threshold backup, custodian devices,
-  social recovery — all layerable on top of the base model as additional
-  cross-sig sources
-- Quorum/threshold team governance (single-admin-as-social-role is fine
-  for v1)
+- Additional quorum and threshold governance beyond the existing
+  automatic-Core-integrator endorsement rule
 - Hardware attestation certs
 - Complex trust policies beyond TOFU
 - Key rotation with overlapping validity windows (hard rotation is fine)
@@ -770,17 +759,23 @@ Design direction:
 - Per-team participant UUIDs as the only identifier for a
   participant-in-team (already how the code works)
 - `membership` and `device_link` cert types with clear issuer rules
-- Device-only private key storage (no wrapped keys anywhere)
-- Trust log via git (already in place)
+- Device-only operational private key storage with no synced mechanism for
+  one device to impersonate another
+- Prepared per-team recovery capability, a loud recovery ceremony, and a
+  clearly separate new-identity path when no recovery was prepared
+- A complete signed trust log inside every Core database snapshot, with the
+  Git commit DAG retained for bookkeeping and merge ancestry
 - Epoch transitions and stale-epoch rejection rules for removals
 - A v1 UX that steers new users toward enrolling a second device early,
-  because that is the only cheap recovery path the base model offers
+  because it remains the cheapest recovery path
 
 ## Open Questions
 
-- How exactly does the UI surface the "sole device destroyed = lost
-  membership" consequence so users are nudged toward a second device
-  early, without being alarming?
+- What is the prepared recovery-key format, and how does the recovery event
+  prevent replay, rollback, or accidental reuse while preserving per-team
+  isolation?
+- How does the UI distinguish routine device linking, prepared recovery of an
+  existing teammate UUID, and tier-two readmission under a new UUID?
 - Under the device-only model, is the `succession` cert type actually
   needed, or is "rotate a key within a device" always expressible as a
   `device_link` from the old key to the new key?

@@ -41,9 +41,13 @@ The design direction has shifted to a **device-only, per-team** model:
   cryptographically privileged
 - "admin" remains shorthand for automatic Core integration at an accepted Core state, not a special key role
 - significant teammate facts are signed append-only domain records carried by the team repository rather than inferred from Git authorship alone
+- ordinary device keys never leave their devices; separately prepared recovery capability can authorize a fresh device key through a signed, conspicuous recovery ceremony
 
 This direction is simpler, preserves per-team isolation more honestly,
-and avoids syncing wrapped higher-level private keys around the system.
+and avoids syncing wrapped higher-level private keys around the system during ordinary operation.
+
+The identity, admission, integration-mode, recovery, and history-retention rules in [`architecture.md`](../../architecture.md#no-team-server) are canonical.
+Wrasse defines cryptographic mechanisms that satisfy those rules; it does not independently decide who counts as a Core integrator or when an admission is acceptable.
 
 ## What Is Implemented Today
 
@@ -60,8 +64,9 @@ clarity beats compatibility.
 
 ## Where To Read Next
 
-- [README-brain-storming.md](README-brain-storming.md) is the live design
-  note for the identity/trust rethink
+- [README-brain-storming.md](README-brain-storming.md) explores cryptographic
+  mechanisms for the identity/trust rethink and is subordinate to the
+  canonical architecture model
 - [device_provisioning_todo.md](device_provisioning_todo.md) captures the
   older provisioning plan and is currently a transitional reference, not the
   active intended design

@@ -98,8 +98,13 @@ A participant's Hub really does enforce which client software may act in which b
 Teammate berth modes instead describe whether ordinary publications are integrated automatically or arrive only as explicit proposals.
 
 Significant teammate facts belong in signed, append-only Core records so that past membership, device, and integration state remains inspectable.
+Every Core snapshot carries that complete signed history through its current state, while Git retains the complete commit DAG for bookkeeping and merge ancestry.
 Core is therefore more consequential than an ordinary app berth: a Core proposal can be valid relative to an accepted history without any central service being able to force every participant to adopt it.
 Persistent disagreement about Core history is a team fork, not an ordinary permission dispute.
+
+Devices remain cryptographically distinct even during recovery.
+A user may prepare a separate per-team recovery capability in advance, but using it is a conspicuous signed process that authorizes a fresh device key rather than copying a lost device's identity.
+Without an enrolled sibling or prepared recovery, recovery means joining again under a new teammate identity and rebuilding connections.
 
 ### Human-Scale Local-First
 
@@ -107,6 +112,10 @@ Small Sea is designed first for small groups of people, not for internet-scale
 coordination. A team with several dozen people is already near the upper end of
 the intended shape; larger communities should usually become multiple related
 teams.
+
+Within that range, medium-sized groups naturally develop different levels of involvement.
+Small Sea provides one modest outer layer for teammates who mostly observe and propose while a smaller inner group performs routine integration.
+It deliberately stops there rather than trying to encode the full universe of group governance.
 
 That scale assumption changes the engineering tradeoffs. When automatic
 convergence would require complex machinery, Small Sea prefers to preserve both

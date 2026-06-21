@@ -123,8 +123,10 @@ Stores the shared state for one team. All teammates maintain their own copy; cha
 Manager-local admission prompt dismissals are stored in a per-team sidecar DB outside `Sync/`, keyed by `(event_type, artifact_id)`, so ignored prompts persist across restarts without becoming synced team state.
 
 The current schema stores mutable teammate projections.
-The target model instead makes significant teammate facts signed and append-only, including admission, device changes, display-name and teammate-unification claims, integration-mode changes, exclusions, storage announcements, proposals, and endorsements.
+The target model instead makes significant teammate facts signed and append-only, including admission, device changes, prepared recovery and recovery use, display-name and teammate-unification claims, integration-mode changes, exclusions, storage announcements, staleness observations, proposals, and endorsements.
 Projection tables may remain for efficient UI and policy queries, but they must be rebuildable from the accepted signed Core lineage rather than serving as the only durable history.
+Every Core database snapshot carries that complete signed lineage through the snapshot's state.
+The Manager must not require an old Git checkout to explain a current teammate, device, or governance decision.
 
 
 ---
@@ -144,6 +146,9 @@ The current `read-write` value approximates `automatic`, and the current `read-o
 The current Manager role names are convenience presets over those two values: `admin` selects automatic everywhere, `contributor` selects proposal-only on Core and automatic on other berths, and `observer` selects proposal-only everywhere.
 They are not additional protocol categories.
 The default invitation preset remains `admin` for small teams in the current implementation.
+
+This is deliberately a shallow involvement model for medium-sized teams.
+It lets a smaller inner group perform routine integration while an outer group mostly observes and proposes, without turning Manager into a general group-governance toolkit or accumulating more teammate categories.
 
 `Admin` remains useful shorthand for a teammate in automatic mode on Core.
 Whether a signer held that status is evaluated against the accepted Core state referenced by the signed record.
@@ -215,6 +220,19 @@ Per-team join remains a separate later flow:
 2. The device requests or records team participation.
 3. A device already participating in that team issues the necessary trust
    material (`membership` / `device_link`).
+
+#### Prepared recovery — target flow
+
+Routine device linking always creates a fresh device key and never copies an existing device's operational private key.
+A device therefore cannot impersonate a lost sibling, even when the same person controls both.
+
+The target Manager allows a participant to prepare a separate per-team recovery key and the supporting recovery data in advance for storage outside routine Small Sea sync.
+Using that material is a loud, separate ceremony that authorizes a fresh device key for the existing teammate UUID and appends a signed recovery event to Core.
+The final protocol must bind the current Core state, expose replay or rollback attempts, and retire or rotate used recovery capability where appropriate.
+
+If the participant has neither an enrolled sibling device nor usable prepared recovery material, Manager must not manufacture continuity.
+It guides the person through tier-two recovery: create a new per-team teammate UUID, seek fresh admission, and rebuild the relevant connections.
+The backup format, storage UX, and signed recovery-event schema are not implemented yet.
 
 #### Linked-device team bootstrap into an existing team
 
@@ -376,7 +394,10 @@ Returns all `user_device` rows for this participant.
 
 #### Remove/revoke device
 
-Deletes the `user_device` row and triggers key rotation (so the removed device cannot decrypt future data). Key rotation mechanics are TBD pending Cuttlefish integration.
+The target operation appends a signed device-revocation record and triggers key rotation so the removed device cannot decrypt future data.
+The device and its historical standing remain inspectable.
+The current implementation deletes the `user_device` projection row.
+Key rotation mechanics and the append-only revocation path are TBD pending Cuttlefish and teammate-history work.
 
 ---
 
@@ -437,6 +458,17 @@ The current implementation still deletes mutable projection rows and must move t
 An exclusion cannot change another participant's clone by fiat.
 Other teammates may adopt the Core lineage, reject it, or publish a conflicting lineage.
 Long-lived disagreement constitutes a team fork whose incompatible futures require explicit human resolution or translation.
+
+#### Record teammate-clone staleness — candidate flow
+
+Manager may eventually append a signed Core observation that the local participant has not seen a particular teammate's berth clone advance since a named state, despite a stated amount of local time or number of accepted updates passing.
+The record should identify the observer, observed teammate and berth, last observed head or signal, and objective counters where available.
+It may also warn that the observer expects their live-data window to advance past that state soon.
+
+This record is evidence for humans and future checkpoint logic.
+It does not exclude the quiet teammate, advance anyone's retention horizon, authorize pruning, or make a Core lineage final.
+Manager should surface conflicting observations honestly because different participants may have seen different publication histories.
+Core's live-data window should be conservative by default because Core data is normally small.
 
 ---
 
@@ -1154,6 +1186,7 @@ CREATE TABLE IF NOT EXISTS team_device_key_secret (
 The SQL below documents the current mutable projection schema.
 It does not yet include the target signed append-only teammate-event history described above.
 Future schema work should add that durable event source and make projection rows rebuildable without retaining compatibility shims for the pre-alpha mutable model.
+That source must retain the complete signed history inside every Core database snapshot, including prepared-recovery and recovery-use records and any teammate-clone staleness observations.
 
 ```sql
 PRAGMA foreign_keys = ON;

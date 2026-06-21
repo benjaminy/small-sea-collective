@@ -9,6 +9,9 @@ The mode controls expected integration behavior rather than permission to produc
 Keep the existing `berth_role`, `read-only`, `read-write`, `admin`, `contributor`, and `observer` implementation identifiers for now.
 The stored values approximate the new modes, while existing role names are merely presets over them.
 
+The two modes intentionally provide only one outer involvement layer for medium-sized teams.
+They allow a smaller group to perform routine integration while other teammates mostly observe and propose, without making Small Sea a general-purpose governance framework or encouraging a growing role taxonomy.
+
 ## Signed teammate history
 
 Significant teammate facts belong in signed append-only Core records.
@@ -20,18 +23,38 @@ Git remains responsible for snapshots, transport, versioning, and three-way merg
 Application database records carry the signatures and canonical payloads for domain facts whose provenance must survive repository-history manipulation and synthesized merges.
 Proposal revisions preserve the proposer's payload signature and automatic integrators' endorsements; a modified payload requires a freshly signed revision.
 
+Every Core database snapshot carries the complete signed teammate-history chain through its state.
+The current database must be sufficient to explain a current trust decision without loading historical checkout blobs.
+The complete Git commit DAG also remains available as bookkeeping and merge ancestry even if Cod Sync compacts its uploaded bundle chain or dehydrates older bulk blobs.
+
+## Device recovery
+
+An operational team-device private key remains bound to one device and is never copied so that another device can impersonate it.
+Routine sibling enrollment and prepared recovery both create a fresh device key.
+A separately prepared per-team recovery capability may authorize that new key for the existing teammate UUID, but only through a conspicuous signed recovery event designed against replay and rollback.
+Without an enrolled sibling or prepared recovery, tier-two recovery creates a new teammate UUID and rebuilds connections through admission.
+
 ## Core semantics
 
 An accepted Core lineage is the referent against which signer recognition and integrator standing are evaluated.
 Validity is replayable relative to an anchor; adoption remains local.
 Admission and merge-request machinery replace a central server as validity mechanisms, not as a way to mutate another participant's clone by fiat.
 Persistent incompatible Core lineages are explicit team forks.
+Forking is a failure mode to diagnose rather than a feature to encourage.
+
+## Retention and quiet teammates
+
+Content rehydration horizons are distinct from both Git history and constitutional history.
+Core should keep a conservative live-data window because its data is normally small.
+A signed staleness observation may warn that a teammate's last-seen state is approaching the edge of that window and preserve useful evidence for later reconvergence.
+It is not a checkpoint, exclusion, finality declaration, or pruning authority; those effects require an explicit protocol rule that remains unsettled.
 
 ## Important implementation gaps
 
 The current Hub watcher still discovers signals from every teammate without consulting the session berth's role row.
 The current team schema mutates or deletes teammate, role, and invitation state instead of maintaining a complete signed append-only event source.
 Merge-request discovery must remain observable when ordinary publications are not fetched, so mode-aware replication should be designed together with issue #162 rather than added as an isolated filter.
+Prepared recovery, anti-replay ceremony, Git object-retention mechanics, live-window checkpoints, and staleness-observation schema are also design targets rather than implemented behavior.
 
 ## Why this boundary
 

@@ -28,9 +28,11 @@ Future implementation work should introduce a signed teammate-event source that 
 
 - admission and exclusion
 - device linking and revocation
+- prepared recovery capability and recovery use
 - display-name and teammate-unification claims
 - per-berth integration-mode changes
 - teammate berth storage announcements
+- teammate-clone staleness observations
 - proposals, revisions, endorsements, rejection, expiry, and finalization
 
 Each event needs canonical signed bytes, author device identity, and enough stable identifiers to replay validation.
@@ -43,6 +45,61 @@ Because this repository is pre-alpha, the implementation should prefer a clean e
 Reuse the canonical-signing patterns already established by `key_certificate` and `teammate_berth_storage_announcement` rather than creating a parallel notion of authorship.
 
 Micro tests should rebuild projections from signed history, verify historical integrator standing at multiple anchors, preserve revoked devices and excluded teammates in history, and retain both sides of a conflicting Core branch.
+
+Every Core database snapshot must carry the complete signed event chain through that snapshot's state.
+Micro tests should prove that a fresh clone can explain current teammate and device standing from the current Core database without retrieving historical checkout blobs.
+
+## Device recovery ceremony
+
+The architecture now fixes the recovery invariants but not the wire format or UX.
+Ordinary team-device private keys remain bound to one device and are never copied to a replacement.
+A prepared per-team recovery capability may authorize a fresh device key for the existing teammate UUID only through a conspicuous signed recovery event.
+
+Future design must settle:
+
+- backup-key generation, encryption, export, storage, verification, and rotation
+- strict per-team isolation and whether recovery data contains any non-secret reconstruction metadata
+- how a recovery event anchors to current Core state
+- replay, rollback, duplication, and reused-recovery-capability handling
+- interaction with revoked or compromised devices and sender-key rotation
+- UI language that distinguishes routine sibling linking, prepared recovery, and tier-two readmission
+
+If no sibling or prepared recovery exists, the Manager must create a new teammate UUID and guide fresh admission plus connection rebuilding.
+It must not silently reuse an old operational device key or claim continuity that cannot be proven.
+
+Micro tests should prove that the recovered device has a fresh key, that the lost device key cannot sign as the replacement, that replayed recovery events are rejected or visibly idempotent, and that the unprepared path never reuses the old teammate UUID.
+
+## Git history and Core trust-log retention
+
+Cod Sync chain compaction and application-data dehydration need an explicit object-retention implementation.
+The complete Git commit DAG, parent relationships, and stable commit IDs remain available for bookkeeping and merge ancestry.
+Compaction must not synthesize replacement history or require rebasing from a new snapshot root.
+
+Old bulk blobs and trees may dehydrate beyond a live-data window, but every Core database snapshot retains the complete signed teammate-history chain through its state.
+Core should default to a conservative window because its data is small and there is little pressure to prune aggressively.
+
+Micro tests should compact a chain, verify every original commit ID and parent edge remains addressable, reconstruct a recent checkout from retained objects, and verify current Core trust without loading an old Core blob.
+They should also document exactly which old trees and blobs may be absent and how a later fetch reports that absence.
+
+## Staleness observations and checkpoints
+
+A candidate signed Core record may state that one participant has not observed another teammate's clone advance for a measured time or number of accepted updates and expects a live-data horizon to pass that state soon.
+Its likely payload includes observer, observed teammate, berth, last observed head or signal, local Core anchor, counters, and warning horizon.
+
+The observation is evidence and warning only.
+It cannot exclude the observed teammate, advance another participant's horizon, authorize garbage collection, or declare finality.
+Different participants may publish conflicting observations without either record being malformed.
+
+Separate protocol work must decide whether Small Sea needs signed checkpoints, who may endorse them, what evidence makes them eligible, and how a late teammate reconverges after old bulk blobs are no longer rehydratable.
+The checkpoint design should prefer conservative Core retention and a catch-up warning period over aggressive pruning.
+
+Micro tests should preserve conflicting observations, prove that an observation alone cannot change retention state, and show that the Manager can warn a quiet teammate or integrator before any separately authorized checkpoint takes effect.
+
+## Canonical documentation ownership
+
+`architecture.md` is now the canonical source for teammate identity, governance, integration-mode, recovery, and retention semantics.
+Package documentation should explain mechanisms and implementation status, link upward for policy, and avoid independently redefining admission or recovery rules.
+A later documentation pass should continue auditing stale brainstorming and archived design notes as those surfaces become active again.
 
 ## Remaining vocabulary surfaces
 

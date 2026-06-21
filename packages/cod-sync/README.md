@@ -24,7 +24,7 @@ The most recent link in the chain can be updated atomically (atomic update of a 
 The Cod Sync format has two challenges with long-lived repos with a nontrivial amount of churn:
 
 1. The chain of bundles grows forever, such that starting at the beginning and coming up to date would take a really long time.
-2. The repo itself by default keeps all its commits, which is unnecesary overhead for apps that only care about recent states.
+2. Keeping every historical file body immediately available can consume substantial space even when an app only needs recent states.
 
 Challenge 1 is pretty easy to deal with.
 Every once in a while (exact schedule TBD), a chain compaction can be run:
@@ -36,10 +36,21 @@ Every once in a while (exact schedule TBD), a chain compaction can be run:
 This is conceptually pretty simple.
 It could be fairly expensive, but there's no need to do it frequently.
 
-The repo itself is trickier to handle, but not impossible.
+Compacting the uploaded bundle chain is not a rebase and does not replace the repository's history with a new root commit.
+The complete Git commit DAG and stable commit identities remain available for bookkeeping and merge ancestry even when older transport links are removed.
+
+Historical file content is trickier to handle, but not impossible.
 The core trick is that git can do clones that only contain:
 
 1. The metadata for all commits (so that e.g. commit hashes can stay stable)
 2. The blob data necessary to rehydrate some specified subset of commits
 
 Using this we can make a repo that churns at a relatively high rate, but only accumulates a modest amount of space overhead (i.e. the commit metadata).
+
+The subset in item 2 is the repo's live-data window.
+The window is a content-retention policy, not a history-rewriting operation.
+Core berths should use a conservative window because Core data is normally small, and every retained Core database snapshot must contain the complete signed teammate-history chain through that snapshot.
+Cod Sync may dehydrate older application blobs, but it must not turn constitutional history into an external or checkout-dependent log.
+
+Advancing a live-data window past a quiet teammate's last known state needs more protocol design.
+Signed staleness observations in Core may provide warning and diagnostic evidence, but an observation alone is not a checkpoint and cannot authorize pruning or declare a teammate's unseen work obsolete.

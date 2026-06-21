@@ -29,6 +29,9 @@ Small Sea has no central team service that can grant or deny a teammate's writes
 Each teammate publishes their own history, and each participant independently decides which histories to watch, fetch, and integrate into their local clones.
 The same teammate update may therefore be integrated by Alice, rejected by Bob, and not yet observed by Carol.
 
+This section is the canonical source for Small Sea's teammate identity, governance, and integration model.
+Package-level specifications may describe their mechanisms and current implementation gaps, but they should defer to these semantics rather than inventing parallel policy.
+
 Four questions are easy to blur together:
 
 - **Recognition** asks whether a signature can be traced through the accepted teammate and device history at the state the record references.
@@ -48,6 +51,11 @@ Both modes describe recognized teammates who may read, author, and sign data.
 The mode changes what peers are expected to integrate, not whether the teammate can produce a change.
 The current `read-write` and `read-only` schema values approximate `automatic` and `proposal-only` respectively; renaming those stored values is deferred until the proposal mechanism exists.
 
+This two-mode model is an intentionally modest accommodation for medium-sized teams.
+As a group grows, it is natural for a smaller inner group to handle routine integration while a larger outer group mostly observes and occasionally proposes changes.
+Small Sea needs to support that difference in involvement without becoming a general-purpose group-governance system.
+Automatic and proposal-only are therefore the entire built-in involvement gradient, not the first two entries in an expanding hierarchy of roles.
+
 Replication is mostly a consequence of integration intent, but it is not identical to it.
 A lightweight proposal-discovery path must remain observable even when peers do not monitor the proposer's ordinary berth publications.
 
@@ -58,7 +66,7 @@ Authorization language in this document refers to an enforced local boundary unl
 ### Signed, Append-Only Teammate History
 
 The target model stores significant teammate information as signed, append-only domain records in Core.
-Admissions, device links and revocations, display-name and teammate-unification claims, berth integration-mode changes, exclusions, storage announcements, proposals, and endorsements append new facts rather than overwriting or deleting old ones.
+Admissions, device links and revocations, prepared recovery and recovery use, display-name and teammate-unification claims, berth integration-mode changes, exclusions, storage announcements, staleness observations, proposals, and endorsements append new facts rather than overwriting or deleting old ones.
 Mutable tables and UI models may serve as rebuildable projections, but they are not the durable source of teammate history.
 
 Each durable record identifies its author and carries a signature over canonical domain bytes.
@@ -71,8 +79,30 @@ Git remains the snapshot, transport, versioning, and three-way-merge framework.
 The application database carries signatures for facts whose domain meaning must survive rebases, synthesized merge commits, and later history inspection.
 Git provenance and signed domain provenance complement one another; Git commit authorship alone is not the authority for significant teammate facts.
 
+Every Core database snapshot contains the complete signed teammate-history chain through that snapshot's state.
+Current trust decisions must therefore be explainable from the current database without checking out discarded historical blobs or consulting a separate log service.
+These cryptographically significant records are expected to be small and infrequent enough that retaining the complete chain is a reasonable default.
+Growth remains worth measuring, but it is not a reason to make constitutional history depend on Git object retention.
+
+The Git commit DAG is also retained in full.
+Cod Sync may compact its transport chain and may eventually dehydrate old bulk file contents, but it does not replace old commits with a fresh snapshot history or rebase away commit identities.
+
 A proposal preserves the proposer's signature over its exact payload and each automatic integrator's endorsement of that proposal digest.
 If review or conflict resolution changes the payload, the result is a new proposal revision requiring fresh signatures rather than a silent mutation attributed to the original proposer.
+
+### Device Identity and Recovery
+
+Each enrolled device has its own team-device key and one device must never impersonate another.
+Ordinary device enrollment therefore creates and links a fresh key; it does not copy an existing device's operational private key.
+
+A participant may prepare separate per-team recovery keys and supporting data in advance and keep them in user-controlled backup storage.
+Recovery material is not an ordinary device identity and is not distributed through routine Small Sea sync.
+Using it authorizes a fresh device key for the existing teammate identity through a separate, conspicuous recovery ceremony recorded in signed Core history.
+That ceremony must be designed to make replay and rollback visible, retire or rotate used recovery capability where appropriate, and let peers distinguish recovery from routine device linking.
+
+If no usable recovery material or already-enrolled sibling device exists, recovery falls into the deliberately painful tier-two case.
+The person creates a new per-team teammate identity and rebuilds their connections through fresh admission rather than pretending to have recovered an old device or identity.
+The exact backup format and recovery protocol remain implementation work, but these identity invariants are not deferred.
 
 ### Core as Constitutional History
 
@@ -87,6 +117,27 @@ The admission ceremony and future merge-request machinery replace a central serv
 Ordinary app-berth divergence can be routine and healthy.
 Persistent incompatible Core lineages disagree about the team's constitution and should be surfaced as an explicit team fork.
 Append-only storage preserves every side of such a fork; it does not pretend the disagreement has disappeared.
+
+Forking is a failure mode to understand, not a collaboration feature to optimize for.
+The common case should remain convergence on one accepted Core lineage.
+
+### Retention Horizons and Staleness
+
+Keeping the Git commit DAG does not require keeping every historical bulk blob immediately rehydratable.
+A live-data window may bound the content needed to reconstruct recent states while preserving commit identities and the complete signed constitutional log carried by every Core snapshot.
+Core data is generally small, so its live-data window should default to a conservative horizon with little pressure to prune aggressively.
+
+Occasionally a recognized teammate may be quiet or unable to publish for a long time while the rest of the team continues moving.
+A useful candidate record is a signed Core staleness observation such as: “Alice has not observed Bob's berth clone advance since this head, for this much local time or this many accepted updates, and expects the live-data window to advance past it soon.”
+The record should identify the observer, the teammate and berth observed, the last observed state, and objective counters or references where available.
+
+A staleness observation is evidence and warning, not a command, exclusion, or unilateral declaration of finality.
+Different teammates may have different observations because they have seen different network and clone states.
+Recording those observations could make a later reconvergence attempt easier to diagnose and give a quiet teammate time to catch up before older bulk data is pruned.
+It cannot itself advance another participant's retention horizon or recreate data that has already been discarded.
+
+Any rule that turns a retention horizon into an accepted checkpoint needs an explicit signed protocol and validation rule.
+Until that rule exists, implementations should preserve and surface late or divergent history rather than silently treating staleness as consent to abandon it.
 
 ## Technical Pillars
 

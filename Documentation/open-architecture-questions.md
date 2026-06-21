@@ -1,6 +1,7 @@
 # Open Architecture Questions
 
 Decisions that are hard to change once downstream code is written. Work through these roughly in order.
+The identity, governance, integration-mode, recovery, and retention invariants in [`architecture.md`](../architecture.md#no-team-server) are canonical; this file tracks unresolved mechanisms rather than competing policy.
 
 ---
 
@@ -22,7 +23,7 @@ The Hub-as-chokepoint architecture exists to enable transparent E2E encryption, 
 ### Remaining Open Items
 
 - **Key storage format** — how private keys are persisted on disk (OS keychain, encrypted file, secure enclave where available) is TBD.
-- **Key backup/recovery** — base keys that encrypt data can themselves be re-encrypted under multiple other keys (local use, sharing, backup). Mechanism TBD; see also Section 5.
+- **Prepared recovery format and ceremony** — ordinary device keys never leave their devices. A separate per-team recovery capability may authorize a fresh device key for the same teammate UUID through a loud, signed, replay-resistant recovery event. Backup storage, rotation, rollback protection, and UX remain TBD; see also Section 5.
 - **`teammate` key/cert material schema** — placeholder exists in `core.db`; contents now unblocked by Cuttlefish key model.
 - **Cod Sync encryption wiring** — cipher and key-exchange bootstrapping for new teammates joining an existing chain are TBD (see Section 4).
 
@@ -43,7 +44,8 @@ Explicitly TBD in the Hub spec. Hub needs to read team membership and berth inte
 - **Hub and Small Sea Manager stay version-locked** — they are the core infrastructure and update together; no cross-version compatibility needed.
 - **Integration mode is per-berth** — the conceptual values are `automatic` and `proposal-only`. The current `berth_role` schema still stores `read-write` and `read-only` as approximations. “Admin” simply means automatic on Core.
 - **Local integration mode determines what should count** — The target Hub policy only fetches and incorporates ordinary changes from automatic teammates in its own local Core projection. The current watcher still discovers signals from every teammate, so strict mode-aware replication remains implementation work. Mode-change races preserve competing signed records and may require explicit Core-fork resolution.
-- **Significant teammate facts are append-only** — admission, device, integration-mode, display-name, unification, exclusion, storage-announcement, proposal, and endorsement records remain inspectable. Mutable teammate and role tables become rebuildable projections of an accepted signed Core lineage.
+- **Significant teammate facts are append-only** — admission, device, prepared-recovery, recovery-use, integration-mode, display-name, unification, exclusion, storage-announcement, staleness-observation, proposal, and endorsement records remain inspectable. Mutable teammate and role tables become rebuildable projections of an accepted signed Core lineage.
+- **The complete trust log lives in Core** — every Core database snapshot contains the full signed teammate-history chain through that state. The complete Git commit DAG remains bookkeeping and merge ancestry, but current trust decisions do not depend on old checkout blobs.
 - **Teammate cloud locations belong to teammate** — stored linked to the `teammate` record (set via invitation flow). Multiple locations per teammate deferred.
 - **Data is globally readable; privacy via encryption** — Hub reads teammates' Cod Sync chains without special credentials (just the URL). Security comes from E2E encryption, not access control.
 - **Hub is always-on background monitor** — runs a background loop watching teammates' cloud locations and incorporating updates when its local integration mode calls for it. Hub does all cloud I/O (consistent with Section 4).
@@ -99,12 +101,14 @@ These questions were worked through in detail and are now captured in the [Cod S
 - **Versioning**: Per-link semver in `supp_data.cod_version`. Major bump = breaking (reader refuses), minor/patch = additive. Version numbers are monotonically non-decreasing forward through the chain.
 - **Encryption**: Link blobs and git bundles encrypted as separate files (allows chain traversal without downloading full bundles). Cipher and key exchange TBD.
 - **GC / compaction**: Chain compaction (collapse to fresh initial-snapshot) handles both garbage collection and format migration. Any user with write access can trigger it.
+- **History retention**: Compaction does not rebase or replace the Git commit DAG. Old bulk blobs may eventually dehydrate beyond a live-data window, while Core retains its complete signed trust log and defaults to a conservative window.
 - **Hub owns cloud interaction**: S3Remote to be eliminated; all cloud access goes through the Hub.
 
 ### Remaining Open Items
 
 - **S3Remote elimination**: Requires reworking the invitation flow. Inviter's cloud data is assumed globally readable (security comes from E2E encryption, not access control). Invitation tokens may include time-limited read paths.
 - **Encryption details**: Cipher selection, key exchange protocol, and the bootstrapping flow for new teammates joining a chain are all TBD.
+- **Staleness and checkpoints**: Signed observations that a teammate clone has not advanced may warn about an approaching retention horizon and aid later reconvergence. They are evidence only; the explicit protocol rule that could establish a checkpoint or permit pruning past a quiet teammate remains TBD.
 
 **Why it's urgent:** Every Cod Sync consumer (Small Sea Manager, ssc-files, future apps) inherits this format.
 
@@ -116,21 +120,20 @@ These questions were worked through in detail and are now captured in the [Cod S
 The `NoteToSelf-SmallSeaCollectiveCore` berth (the Core berth) holds personal keys and device info. The open question "can a single Hub serve multiple users?" is related.
 
 **Questions to answer:**
-- Is identity device-local or portable? Two devices = two identities, or one?
+- What is the exact prepared-recovery key and data format, and where does the user keep it?
+- How does a loud recovery ceremony prevent replay and rollback while authorizing a fresh device key for an existing teammate UUID?
+- How should Manager explain that recovery without prepared material requires a new teammate UUID and rebuilding connections?
 - How does an X3DH prekey bundle get published so that people inviting you can discover it? Is it in your public S3, and what signs it?
-- What happens to encrypted data if a device is lost — is there a key backup/recovery story?
 
 **Why it's urgent:** The invitation flow and key rotation logic both depend on the identity model. It can be stubbed longer than the others but shouldn't be deferred past the point where invitations are fully wired up.
 
 
 Answers:
-- This is not implemented at all yet, but my plan is that a person can have the same identity with any number of devides, but it's cryptographically a little complicated.
-   Unique key-pairs are generated on devices that support secure enclave fanciness (and fudged on devices that don't).
-   That key is the one that's used to sign data that goes out.
-   And then there's another cert signing kind of layer where a person can say "yes, this is 'my' device"
-- The question about prekeys and signing will be addressed (soon) in addressing section 1.
-- The backup key question is important.
-   As is common with E2E encrypted systems, the base keys that encrypt the data can themselves be copied and encrypted with lots of other keys for different purposes (local use, sharing, backup)
+- Each device has a distinct per-team operational key and one device never copies or impersonates another's key.
+- An already-enrolled sibling can link a fresh device key for the same teammate UUID.
+- A separately prepared per-team recovery capability may also authorize a fresh device key, but only through a conspicuous signed recovery event.
+- Without a sibling or prepared recovery, tier-two recovery creates a new teammate UUID and rebuilds connections through fresh admission.
+- The question about prekeys and signing will be addressed in Section 1.
 
 ### Settled Decisions (from issue-97 trust-domain reframe)
 

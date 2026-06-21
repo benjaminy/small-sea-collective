@@ -119,6 +119,17 @@ Over time, chains grow long and accumulate orphaned bundles (from failed CAS att
 
 Compaction also serves as the version migration path: compact into the new format, producing a single-link chain in the latest version.
 
+The fresh initial bundle contains the repository state and Git object reachability required by the retention policy.
+Compaction does not synthesize a replacement root commit, rebase history, or discard the commit DAG.
+Stable commit identities and parent relationships remain available even when older bulk blobs have been dehydrated beyond the live-data window.
+
+Core has an additional retention invariant: every Core database snapshot includes the complete signed teammate-history chain through that snapshot.
+That history is application data in the database, not something reconstructed from Git authorship or from pruned historical checkouts.
+Because Core is expected to be small, its live-data window should be conservative.
+
+The checkpoint rule that would permit safe window advancement past a long-unseen teammate is not yet specified.
+A signed staleness observation can warn that advancement is approaching and preserve what an observer knew, but it is not itself finality or pruning authority.
+
 Any user with write access to the cloud storage can trigger compaction. There is no admin/permission distinction at this layer.
 
 ## 8. Encryption Envelope
