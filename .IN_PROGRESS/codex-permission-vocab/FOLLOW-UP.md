@@ -78,6 +78,10 @@ Compaction must not synthesize replacement history or require rebasing from a ne
 Old bulk blobs and trees may dehydrate beyond a live-data window, but every Core database snapshot retains the complete signed teammate-history chain through its state.
 Core should default to a conservative window because its data is small and there is little pressure to prune aggressively.
 
+The assumption that constitutional events remain small and infrequent needs empirical protection rather than an invented design-time bound.
+Implementation work should measure event counts, serialized event sizes, total signed-log size, and projection-rebuild cost, and should expose useful warning thresholds before growth becomes operationally surprising.
+If those measurements challenge the human-scale assumption, revisit the representation without silently deleting or severing signed history.
+
 Micro tests should compact a chain, verify every original commit ID and parent edge remains addressable, reconstruct a recent checkout from retained objects, and verify current Core trust without loading an old Core blob.
 They should also document exactly which old trees and blobs may be absent and how a later fetch reports that absence.
 

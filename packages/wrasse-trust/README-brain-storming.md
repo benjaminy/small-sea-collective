@@ -761,8 +761,10 @@ Design direction:
 - `membership` and `device_link` cert types with clear issuer rules
 - Device-only operational private key storage with no synced mechanism for
   one device to impersonate another
-- Prepared per-team recovery capability, a loud recovery ceremony, and a
-  clearly separate new-identity path when no recovery was prepared
+- The recovery invariants: never copy an operational device key; prepared
+  recovery authorizes a fresh device key through a separate loud event; and
+  the absence of usable recovery material leads to a new teammate identity.
+  The concrete recovery-key format and ceremony remain open.
 - A complete signed trust log inside every Core database snapshot, with the
   Git commit DAG retained for bookkeeping and merge ancestry
 - Epoch transitions and stale-epoch rejection rules for removals
