@@ -148,7 +148,8 @@ They are not additional protocol categories.
 The default invitation preset remains `admin` for small teams in the current implementation.
 
 This is deliberately a shallow involvement model for medium-sized teams.
-It lets a smaller inner group perform routine integration while an outer group mostly observes and proposes, without turning Manager into a general group-governance toolkit or accumulating more teammate categories.
+It lets a smaller inner group perform routine integration while an outer group mostly observes and proposes, reflecting the different levels of engagement and accountability a medium-sized team really has.
+Manager ships these two modes today rather than a general group-governance toolkit; a team-configurable role scheme that maps richer roles onto integration expectations is a plausible future direction, not a current commitment.
 
 `Admin` remains useful shorthand for a teammate in automatic mode on Core.
 Whether a signer held that status is evaluated against the accepted Core state referenced by the signed record.

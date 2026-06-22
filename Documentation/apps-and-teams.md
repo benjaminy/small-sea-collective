@@ -14,7 +14,8 @@ The sharing in Small Sea is entirely distributed and voluntary.
 There is no team server that grants or denies writes.
 Each teammate publishes their own history, and each participant decides which histories to watch, fetch, and integrate into their local clones.
 
-There might be some intuitive notion of a hierarchy of leaders, core teammates, or owners, but Small Sea needs only two per-berth integration modes.
+There might be some intuitive notion of a hierarchy of leaders, core teammates, or owners, and a medium-sized team really does have different levels of engagement and accountability.
+Small Sea reflects that today with just two built-in per-berth integration modes, leaving richer team-configurable roles as a possible future direction.
 Peers monitor and integrate every valid ordinary publication from an **automatic** teammate by default.
 Peers do not monitor ordinary publications from a **proposal-only** teammate, who instead submits signed proposals for endorsement by at least one automatic integrator.
 

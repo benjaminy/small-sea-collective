@@ -10,7 +10,8 @@ Keep the existing `berth_role`, `read-only`, `read-write`, `admin`, `contributor
 The stored values approximate the new modes, while existing role names are merely presets over them.
 
 The two modes intentionally provide only one outer involvement layer for medium-sized teams.
-They allow a smaller group to perform routine integration while other teammates mostly observe and propose, without making Small Sea a general-purpose governance framework or encouraging a growing role taxonomy.
+They allow a smaller group to perform routine integration while other teammates mostly observe and propose, acknowledging the different levels of engagement and accountability a medium-sized team has without trying to design for every arrangement.
+They are the current built-in set, not a claim that two modes are permanently sufficient: a later team-configurable role scheme (team-defined roles plus the changes each role is expected to integrate from which others) remains an open future direction.
 
 ## Signed teammate history
 

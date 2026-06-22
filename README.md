@@ -113,9 +113,9 @@ coordination. A team with several dozen people is already near the upper end of
 the intended shape; larger communities should usually become multiple related
 teams.
 
-Within that range, medium-sized groups naturally develop different levels of involvement.
-Small Sea provides one modest outer layer for teammates who mostly observe and propose while a smaller inner group performs routine integration.
-It deliberately stops there rather than trying to encode the full universe of group governance.
+Within that range, medium-sized groups naturally develop different levels of engagement, responsibility, and accountability.
+Small Sea provides one modest built-in layer for that today: a smaller inner group performs routine integration while a larger outer group mostly observes and proposes.
+It deliberately does not try to encode every possible governance arrangement, and a richer team-configurable role scheme remains a possible future direction rather than a current commitment.
 
 That scale assumption changes the engineering tradeoffs. When automatic
 convergence would require complex machinery, Small Sea prefers to preserve both

@@ -1,5 +1,23 @@
 # Follow-up
 
+## Vocabulary propagation (prose only, no functional change)
+
+This branch establishes `architecture.md` as canonical but does not yet reach every prose surface.
+A first, low-risk follow-up branch should propagate the new vocabulary into remaining documentation, comments, and docstrings without touching any code identifier, schema value, or serialized contract.
+
+In scope:
+
+- residual SaaS-permission framing in untouched docs, including `packages/ssc-files/NOTES.md` and `Experiments/RealTimeTransport/README.md`
+- code comments and docstrings that still describe teammate policy as central "permission" enforcement
+- any package README that still implies a team authority rather than local integration
+
+Explicitly out of scope for this pass (deferred to the runtime model; see "Remaining vocabulary surfaces"):
+
+- renaming `berth_role`, its `read-only` / `read-write` values, or the admission identifiers
+- changing API fields, exception messages, or serialized values
+
+The point of separating this pass is to keep the cheap, safe text alignment from front-running the runtime design that justifies any identifier rename.
+
 ## Mode-aware ordinary replication
 
 The vocabulary survey exposed a runtime gap behind the proposed terminology.
@@ -79,7 +97,8 @@ Old bulk blobs and trees may dehydrate beyond a live-data window, but every Core
 Core should default to a conservative window because its data is small and there is little pressure to prune aggressively.
 
 The assumption that constitutional events remain small and infrequent needs empirical protection rather than an invented design-time bound.
-Implementation work should measure event counts, serialized event sizes, total signed-log size, and projection-rebuild cost, and should expose useful warning thresholds before growth becomes operationally surprising.
+The current working assumption is roughly a few hundred bytes of constitutional history per day for a small-to-medium team — kilobytes per year, a few megabytes over a team's lifetime.
+Implementation work should measure event counts, serialized event sizes, total signed-log size, and projection-rebuild cost against that assumption, and should expose useful warning thresholds before growth becomes operationally surprising.
 If those measurements challenge the human-scale assumption, revisit the representation without silently deleting or severing signed history.
 
 Micro tests should compact a chain, verify every original commit ID and parent edge remains addressable, reconstruct a recent checkout from retained objects, and verify current Core trust without loading an old Core blob.
@@ -108,10 +127,34 @@ A later documentation pass should continue auditing stale brainstorming and arch
 ## Remaining vocabulary surfaces
 
 This conservative branch intentionally leaves runtime identifiers, UI labels, and serialized role values unchanged.
-A later implementation branch may want to revisit:
+The spec prose now describes admission in `endorsement` / `Core integrator` terms while the code still uses approval/admin identifiers, so a later implementation branch should reconcile at least:
 
 - the `read-only` / `read-write` values stored in `berth_role`
+- the admission identifiers in `small-sea-manager`: the `admin_approval` table and its `approval_id` / `admin_teammate_id` columns, `sign_admin_approval`, `_approval_count`, `_insert_admin_approval`, the `admins` key in the frozen-governance snapshot, and `admission_quorum` / `quorum` naming
 - the Manager UI's “Core berth role” and related action labels
 - exception messages such as “requires read-write permission on the Core berth”
 
-Those changes should follow a settled runtime model rather than lead it.
+Those changes should follow a settled runtime model rather than lead it, and should land alongside the runtime that justifies each rename rather than as a standalone churn pass.
+
+## Sequencing toward doc–code harmony
+
+Merging this branch deliberately opens a documentation-ahead-of-code gap.
+The plan to close it should exist before merge, even though most of the work happens after.
+
+1. **This branch** — land the canonical model and the target-vs-current labeling in docs.
+2. **Vocabulary propagation** (see first section) — align remaining prose/comments/docstrings, no identifier changes.
+3. **Issue survey** — reconcile the existing backlog with the canonical model before building. Known candidates to amend or close:
+   - #20 "Cloud chain compaction (rebase to new initial snapshot)" — title contradicts the no-rebase / preserve-DAG invariant; retitle.
+   - #16 "Add permission checks to Hub cloud location methods" — reframe as mode-aware replication plus local Hub authorization.
+   - #6 "Settle identity model … multi-device" — device-identity and recovery invariants are now fixed; trim to the open mechanism (prepared-recovery format/ceremony).
+   - #162 — confirmed anchor for two-mode replication and merge-request discovery.
+   - #57 admission pipeline, #150 storage-announcement delivery — fold under signed append-only history.
+   - #11 / #12 pruning, #135 rebase-vs-merge, #73 / #43 rotation — reframe under retention horizons and staleness.
+4. **Implementation branches**, in dependency order, each carrying the identifier renames the runtime justifies:
+   - signed append-only teammate history (foundation for the rest)
+   - mode-aware replication + merge-request discovery (#162)
+   - prepared-recovery format and ceremony
+   - retention horizons and object-retention mechanics
+   - staleness observations and any checkpoint rule
+
+Themes 2–5 above are epics, not single issues; the survey should split them at a granularity the team can schedule.

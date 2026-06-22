@@ -53,8 +53,9 @@ The current `read-write` and `read-only` schema values approximate `automatic` a
 
 This two-mode model is an intentionally modest accommodation for medium-sized teams.
 As a group grows, it is natural for a smaller inner group to handle routine integration while a larger outer group mostly observes and occasionally proposes changes.
-Small Sea needs to support that difference in involvement without becoming a general-purpose group-governance system.
-Automatic and proposal-only are therefore the entire built-in involvement gradient, not the first two entries in an expanding hierarchy of roles.
+A medium-sized team genuinely has different levels of engagement, responsibility, and accountability, and Small Sea should support that without trying to model every possible governance arrangement.
+Automatic and proposal-only are the two built-in modes today, not a claim that two modes are all a team could ever want.
+A richer, team-configurable scheme — where a team defines its own roles and specifies which kinds of changes each role is expected to integrate from which others — is a plausible future direction that is deliberately left undesigned for now.
 
 Replication is mostly a consequence of integration intent, but it is not identical to it.
 A lightweight proposal-discovery path must remain observable even when peers do not monitor the proposer's ordinary berth publications.
@@ -81,8 +82,12 @@ Git provenance and signed domain provenance complement one another; Git commit a
 
 Every Core database snapshot contains the complete signed teammate-history chain through that snapshot's state.
 Current trust decisions must therefore be explainable from the current database without checking out discarded historical blobs or consulting a separate log service.
-These cryptographically significant records are expected to be small and infrequent enough that retaining the complete chain is a reasonable default.
+These cryptographically significant records are expected to be small and infrequent.
+As a working assumption, a small-to-medium team generates on the order of a few hundred bytes of constitutional history per day — kilobytes per year, and a few megabytes over a team's lifetime — so retaining the complete chain is cheap at the expected scale.
 Growth remains worth measuring, but it is not a reason to make constitutional history depend on Git object retention.
+
+One tension is acknowledged rather than resolved here: a complete append-only log is in conflict with ever having to truly excise content for legal or policy reasons, much as it has been for version-control history.
+The mechanism for any such excision is deferred; until one exists, the default is to retain and surface history rather than silently drop it.
 
 The Git commit DAG is also retained in full.
 Cod Sync may compact its transport chain and may eventually dehydrate old bulk file contents, but it does not replace old commits with a fresh snapshot history or rebase away commit identities.
