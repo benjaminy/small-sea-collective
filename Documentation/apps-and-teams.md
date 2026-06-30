@@ -16,6 +16,7 @@ Each teammate publishes their own history, and each participant decides which hi
 
 There might be some intuitive notion of a hierarchy of leaders, core teammates, or owners, and a medium-sized team really does have different levels of engagement and accountability.
 Small Sea's canonical model reflects that with just two built-in per-berth integration modes, leaving richer team-configurable roles as a possible future direction.
+When a group outgrows a single human-sized team, the intended answer is more teams rather than a bigger one; how separate teams might cooperate is explored in [linked-teams.md](linked-teams.md).
 Peers monitor and integrate every valid ordinary publication from an **automatic** teammate by default.
 Peers do not monitor ordinary publications from a **proposal-only** teammate, who instead submits signed proposals for endorsement by at least one automatic integrator.
 

@@ -63,3 +63,12 @@ Prepared recovery, anti-replay ceremony, Git object-retention mechanics, live-wi
 Replacing every authorization-related word would erase real local security boundaries and produce less precise documentation.
 Renaming schema and public values before proposal discovery and append-only history settle would make code churn lead the design.
 The conservative split makes the decentralized model louder while preserving stable implementation surfaces for this draft.
+
+## Seeded forward direction: linked teams
+
+`Documentation/linked-teams.md` was seeded on this branch as an exploratory design note, not as part of the permission-vocabulary cleanup.
+It explores how separate human-sized teams might recognize and cooperate with each other without merging, building directly on the primitives this branch sharpened (no team server, signed append-only Core history, two integration modes, recovery invariants).
+Its current leaning is the *bridge teammate* model: another team is reached through people who belong to both teams, dissolving the team-as-principal problem rather than inventing a team key.
+It is explicitly marked exploratory, claims no implemented behavior, and changes no vocabulary or schema.
+README, `Documentation/apps-and-teams.md`, and `architecture.md` point to it as the across-team scaling direction, distinct from the within-team richer-roles direction.
+Viability is still being weighed; see `FOLLOW-UP.md` for the recommended next steps.

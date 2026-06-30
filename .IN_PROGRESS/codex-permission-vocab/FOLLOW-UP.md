@@ -144,6 +144,23 @@ Micro tests should preserve conflicting observations, prove that an observation 
 Package documentation should explain mechanisms and implementation status, link upward for policy, and avoid independently redefining admission or recovery rules.
 A later documentation pass should continue auditing stale brainstorming and archived design notes as those surfaces become active again.
 
+## Linked teams (exploratory, viability under review)
+
+`Documentation/linked-teams.md` was added this branch as an exploratory design note.
+It is not part of the permission-vocabulary cleanup and asserts no implemented behavior, vocabulary change, or schema.
+It explores how separate human-sized teams might recognize and cooperate without merging, currently leaning on a *bridge teammate* model where another team is reached through people who belong to both teams.
+README, `Documentation/apps-and-teams.md`, and `architecture.md` now point to it as the across-team scaling direction.
+
+Status: the team is still weighing whether this is a viable path; do not begin implementation off this note.
+
+Recommended next steps when the idea is taken up:
+
+- Open a GitHub issue as the durable anchor for the direction (the way #162 anchors the two-mode runtime work), and link the note to it.
+- Resolve the central open question first: witness vs. router as the default bridge mode, since most downstream design follows from it.
+- Pin the team-identity question (what is the stable cryptographic name of a team, and how `identity_link` grounds a bridge as a *local* witness rather than verified remote membership).
+- Decide bridge-quorum independence semantics (already leaning: dedupe by Team A teammate identity; the distinct-Team-B-identity question is open).
+- Keep the vocabulary discipline the note now establishes: "Team B" never acts as a principal; a bridge attests facts about the Team B view it holds.
+
 ## Remaining vocabulary surfaces
 
 This conservative branch intentionally leaves runtime identifiers, UI labels, and serialized role values unchanged.

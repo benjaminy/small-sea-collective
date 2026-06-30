@@ -81,6 +81,9 @@ It is the same principle the rest of Small Sea already commits to, lifted one le
   An opaque genesis hash with no human straddling the boundary is, correctly, meaningless to Team A.
 - A bridge teammate is, cryptographically, a person who has published an `identity_link` between their Team A identity and their Team B identity, plus a Team A designation of a bridging role and scope.
   Much of the machinery may already exist.
+  Be sharp about what that `identity_link` proves to Team A, though: under the witness model it is Sarah's own assertion that she is also in Team B, trusted because Team A trusts Sarah, not an independently verified fact about Team B's membership.
+  There is no hidden cryptographic remote-membership check here.
+  Team A is trusting a local person, and the design should say so plainly everywhere it relies on it.
 
 The fork problem does not disappear, but it relocates to something answerable.
 "Which Team B?" becomes "which Team B does this bridge person see?"
@@ -107,6 +110,8 @@ Key properties this draft is leaning toward:
   A single bridge is a single point of failure and a single point of trust.
   Team A may require a quorum of bridges — k-of-n — before acting on cross-team information.
   This maps directly onto the existing endorsement-threshold concept; it is the same shape as automatic-integrator quorum, applied to cross-team facts.
+  "Independent" here means distinct **Team A teammate identities**, not distinct device signatures: as with admission endorsements, multiple devices of the same bridge person dedupe to one.
+  (Whether a quorum should also require distinct *Team B* identities, or tolerate several Team A people bridging through the same Team B person, is left open.)
 - **Accountable.**
   A bridge's attestations are signed and append-only.
   A bridge that misreports Team B leaves an inspectable record, and Team A can revoke the bridge role by exclusion the same way it manages any other teammate standing.
@@ -127,10 +132,15 @@ The link *is* the existence of one or more dual-member people, plus a local desi
 The single most important unresolved question is what a bridge actually *attests*, and how much Team A independently verifies.
 
 **Witness (oracle).**
-The bridge asserts facts about Team B directly into Team A's Core:
-"this proposal genuinely came from Team B," or "Team B's current accepted tip is X."
-Team A trusts the assertion because the bridge is a recognized Team A teammate.
+The bridge attests, into Team A's Core, that an artifact is meaningful in the Team B view that bridge currently holds:
+"Sarah attests that this artifact is a real proposal in her Team B view," or "Sarah attests that the Team B tip she holds is X."
+Team A trusts the attestation because Sarah is a recognized Team A teammate, not because Team A has independently verified anything about Team B.
 Team A does *not* replay Team B's constitution.
+
+Be careful with the phrasing here, because it is easy to smuggle the team-principal back in.
+Since the team does not speak, the honest claim is never "Team B did X" but "a trusted bridge attests that X holds in the Team B view they carry."
+This document calls such an artifact a **bridge-witnessed remote proposal**, and uses looser phrases like "a Team B proposal" only as defined shorthand for that — never as a claim that Team B is a principal with a voice of its own.
+A literal "Team B did X" would require router mode plus independent verification, or a future team-voice model that does not yet exist.
 
 - Cheap and simple.
 - Makes the remote-signer and fork-choice problems vanish from Team A's machinery, because that work happens inside the bridge's own client as a real Team B participant.
@@ -184,7 +194,7 @@ It helps to split purposes by whether a bridge can carry them without sharing pl
 - **Recognition.** Team A records that Team B is the team it claims to be, grounded by a bridge person who vouches "yes, that identity is the team we know."
   This supports display, discovery, or later policy without granting data access.
   *Irreducibly cross-team; a bridge can witness it without sharing any Team B content.*
-- **Proposal routing.** A bridge carries a signed Team B proposal into a Team A berth.
+- **Proposal routing.** A bridge carries a bridge-witnessed remote proposal into a Team A berth.
   Team A automatic integrators still decide whether to endorse and merge it.
   *Irreducibly cross-team; works under the witness model with no plaintext sharing.*
 - **Read sharing.** Team A grants Team B read access to a particular berth, object set, or app-defined view.
@@ -232,6 +242,12 @@ For an enterprise federation product that would be a defect.
 For this project — regular people, human-scale, no operator trust — it is the right scope, and it rhymes with the device-recovery philosophy:
 do not manufacture continuity that cannot be grounded in people.
 If no human continuity exists, the honest move is to rebuild the relationship, not to claim a standing that no living person backs.
+
+This boundary is about live authority, not historical provenance.
+When a bridge person leaves or is excluded, the link dies as a *route*: no new cross-team input flows through them.
+It does not retroactively invalidate what already happened.
+Proposals Team A already accepted keep their explanation in signed Core history — including which bridge witnessed them — and data already shared does not become un-shared.
+The bridge's past attestations remain evidence of why earlier actions were legitimate at the time; only the live channel closes.
 
 This should be written as a chosen boundary, not left as an apparent omission, because a skeptical reader will otherwise read it as one.
 
@@ -292,7 +308,7 @@ scope:
     - app-defined-kind
 policy:
   expires_at: null
-  quorum: 1                        # number of independent bridges required to act
+  quorum: 1                        # distinct bridge teammate identities required to act
   remote_membership_expansion: none
 local_core_anchor: team-a-core-commit
 author_teammate_id: alice
@@ -388,7 +404,7 @@ a bridge produces a signed proposal, and local automatic integrators retain resp
 ### Hub
 
 The Hub must remain the gateway for Small Sea internet traffic.
-Even recognition requires reading some of Team B's data, so a bridge's cross-team I/O still flows through the local Hub.
+When a bridge does read Team B data to form an attestation, that I/O still flows through that bridge's local Hub.
 Team links must not create a path where an app bypasses the local Hub to talk directly to a remote team's storage, notification endpoint, or peer device.
 
 ### Manager

@@ -57,6 +57,7 @@ As a group grows, it is natural for a smaller inner group to handle routine inte
 A medium-sized team genuinely has different levels of engagement, responsibility, and accountability, and Small Sea should support that without trying to model every possible governance arrangement.
 Automatic and proposal-only are the two built-in modes in the canonical model, not a claim that two modes are all a team could ever want.
 A richer, team-configurable scheme — where a team defines its own roles and specifies which kinds of changes each role is expected to integrate from which others — is a plausible future direction that is deliberately left undesigned for now.
+A separate scaling axis — letting larger structures emerge as graphs of cooperating small teams rather than one large team — is explored in [`Documentation/linked-teams.md`](Documentation/linked-teams.md); it is exploratory and not part of the canonical model yet.
 
 Replication is mostly a consequence of integration intent, but it is not identical to it.
 A lightweight proposal-discovery path must remain observable even when peers do not monitor the proposer's ordinary berth publications.

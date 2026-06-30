@@ -111,7 +111,9 @@ Without an enrolled sibling or prepared recovery, recovery means joining again u
 Small Sea is designed first for small groups of people, not for internet-scale
 coordination. A team with several dozen people is already near the upper end of
 the intended shape; larger communities should usually become multiple related
-teams.
+teams. How those teams might recognize and cooperate with each other without
+merging is an exploratory direction described in
+[`Documentation/linked-teams.md`](Documentation/linked-teams.md).
 
 Within that range, medium-sized groups naturally develop different levels of engagement, responsibility, and accountability.
 Small Sea provides one modest built-in layer for that today: a smaller inner group performs routine integration while a larger outer group mostly observes and proposes.
