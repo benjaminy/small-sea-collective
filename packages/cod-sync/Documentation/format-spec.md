@@ -122,6 +122,8 @@ Compaction also serves as the version migration path: compact into the new forma
 The fresh initial bundle contains the repository state and Git object reachability required by the retention policy.
 Compaction does not synthesize a replacement root commit, rebase history, or discard the commit DAG.
 Stable commit identities and parent relationships remain available even when older bulk blobs have been dehydrated beyond the live-data window.
+That window is not a strong erasure boundary.
+It describes what the shared Cod Sync substrate keeps readily rehydratable; any teammate who has already fetched an older snapshot may retain an independent copy.
 
 Core has an additional retention invariant: every Core database snapshot includes the complete signed teammate-history chain through that snapshot.
 That history is application data in the database, not something reconstructed from Git authorship or from pruned historical checkouts.

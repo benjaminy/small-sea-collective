@@ -27,6 +27,7 @@ Proposal revisions preserve the proposer's payload signature and automatic integ
 Every Core database snapshot carries the complete signed teammate-history chain through its state.
 The current database must be sufficient to explain a current trust decision without loading historical checkout blobs.
 The complete Git commit DAG also remains available as bookkeeping and merge ancestry even if Cod Sync compacts its uploaded bundle chain or dehydrates older bulk blobs.
+That dehydration is a shared-substrate content-retention policy, not a promise that old snapshot data no longer exists; any teammate who fetched a snapshot may retain it independently.
 
 ## Device recovery
 

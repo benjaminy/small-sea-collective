@@ -101,7 +101,7 @@ These questions were worked through in detail and are now captured in the [Cod S
 - **Versioning**: Per-link semver in `supp_data.cod_version`. Major bump = breaking (reader refuses), minor/patch = additive. Version numbers are monotonically non-decreasing forward through the chain.
 - **Encryption**: Link blobs and git bundles encrypted as separate files (allows chain traversal without downloading full bundles). Cipher and key exchange TBD.
 - **GC / compaction**: Chain compaction (collapse to fresh initial-snapshot) handles both garbage collection and format migration. Any user with write access can trigger it.
-- **History retention**: Compaction does not rebase or replace the Git commit DAG. Old bulk blobs may eventually dehydrate beyond a live-data window, while Core retains its complete signed trust log and defaults to a conservative window.
+- **History retention**: Compaction does not rebase or replace the Git commit DAG. Old bulk blobs may eventually dehydrate beyond a live-data window, while Core retains its complete signed trust log and defaults to a conservative window. The window is not an erasure guarantee; teammates may keep independent copies of snapshots they already fetched.
 - **Hub owns cloud interaction**: S3Remote to be eliminated; all cloud access goes through the Hub.
 
 ### Remaining Open Items

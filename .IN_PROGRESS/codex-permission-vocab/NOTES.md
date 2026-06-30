@@ -60,6 +60,7 @@ A valid Core record does not force local adoption, and persistent incompatible a
 Every Core database snapshot must contain the complete signed teammate-history chain through that state.
 This makes the current database sufficient to explain current trust without depending on old Git checkout blobs.
 The complete Git commit DAG is also retained for bookkeeping and merge ancestry even when Cod Sync compacts transport bundles or dehydrates older bulk blobs.
+Dehydration bounds what the shared sync substrate keeps readily rehydratable; it is not an erasure guarantee against teammates who already fetched and kept a snapshot.
 
 ## Recovery direction
 

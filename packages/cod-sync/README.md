@@ -49,6 +49,8 @@ Using this we can make a repo that churns at a relatively high rate, but only ac
 
 The subset in item 2 is the repo's live-data window.
 The window is a content-retention policy, not a history-rewriting operation.
+It is also not an erasure guarantee: any teammate who has already fetched an older snapshot may keep their own copy, and Cod Sync cannot make that copy disappear.
+The window's job is to bound what the shared sync substrate keeps readily rehydratable after the team has had enough time to notice, fetch, and converge.
 Core berths should use a conservative window because Core data is normally small, and every retained Core database snapshot must contain the complete signed teammate-history chain through that snapshot.
 Cod Sync may dehydrate older application blobs, but it must not turn constitutional history into an external or checkout-dependent log.
 

@@ -54,7 +54,7 @@ The current `read-write` and `read-only` schema values approximate `automatic` a
 This two-mode model is an intentionally modest accommodation for medium-sized teams.
 As a group grows, it is natural for a smaller inner group to handle routine integration while a larger outer group mostly observes and occasionally proposes changes.
 A medium-sized team genuinely has different levels of engagement, responsibility, and accountability, and Small Sea should support that without trying to model every possible governance arrangement.
-Automatic and proposal-only are the two built-in modes today, not a claim that two modes are all a team could ever want.
+Automatic and proposal-only are the two built-in modes in the canonical model, not a claim that two modes are all a team could ever want.
 A richer, team-configurable scheme — where a team defines its own roles and specifies which kinds of changes each role is expected to integrate from which others — is a plausible future direction that is deliberately left undesigned for now.
 
 Replication is mostly a consequence of integration intent, but it is not identical to it.
@@ -84,7 +84,7 @@ Git provenance and signed domain provenance complement one another; Git commit a
 Every Core database snapshot contains the complete signed teammate-history chain through that snapshot's state.
 Current trust decisions must therefore be explainable from the current database without checking out discarded historical blobs or consulting a separate log service.
 These cryptographically significant records are expected to be small and infrequent.
-As a working assumption, a small-to-medium team generates on the order of a few hundred bytes of constitutional history per day — kilobytes per year, and a few megabytes over a team's lifetime — so retaining the complete chain is cheap at the expected scale.
+As a working assumption, a small-to-medium team generates on the order of a few hundred bytes of constitutional history per day — tens to hundreds of kilobytes per year, and perhaps a few megabytes over a team's lifetime — so retaining the complete chain is cheap at the expected scale.
 Growth remains worth measuring, but it is not a reason to make constitutional history depend on Git object retention.
 
 The chain carries governance facts, not personal data.
@@ -92,6 +92,9 @@ See *Personal Data Is Not in the Long-Term Chain* below for what is deliberately
 
 The Git commit DAG is also retained in full.
 Cod Sync may compact its transport chain and may eventually dehydrate old bulk file contents, but it does not replace old commits with a fresh snapshot history or rebase away commit identities.
+The intended shape is that Git commit metadata, stable commit IDs, and parent relationships remain available indefinitely, while the object data needed to rehydrate older snapshots may be dropped after a live-data window long enough for the team to notice, fetch, and converge.
+That window is deliberately not precise yet, and it should be understood as a content-retention practice rather than an erasure guarantee.
+Any teammate who has seen a snapshot may keep their own copy of it outside Cod Sync's retention policy.
 
 A proposal preserves the proposer's signature over its exact payload and each automatic integrator's endorsement of that proposal digest.
 If review or conflict resolution changes the payload, the result is a new proposal revision requiring fresh signatures rather than a silent mutation attributed to the original proposer.
@@ -100,12 +103,13 @@ If review or conflict resolution changes the payload, the result is a new propos
 
 The signed, append-only Core chain is deliberately limited to a governance *skeleton*: per-team participant UUIDs, device public keys, the edges among them (admission, device link, revocation, exclusion, integration-mode change, endorsement), the endorsement thresholds, and the Core anchors those records reference.
 Governance replay branches only on that skeleton.
-Personally identifying information — display names, identity material attached at admission, free-text reasons, and similar human-readable labels — is intentionally *not* a durable part of the cryptographic chain or DAG.
+Personally identifying information — display names, identity material attached at admission, free-text reasons, and similar human-readable labels — is intentionally not part of the durable governance skeleton.
+The system can try to keep that content outside the always-retained Core event stream and outside non-dehydratable Git objects, but it cannot promise that no copy exists once a teammate has received a snapshot.
 
 This is a deliberate invariant, not an oversight.
 Three reasons make it load-bearing:
 
-- A complete append-only governance log cannot be selectively erased without breaking replay, so anything that may later have to be withheld, encrypted, or truly excised must not live in the permanent chain.
+- A complete append-only governance log cannot be selectively erased without breaking replay, so anything that may later have to be withheld, encrypted, or excised from the ordinary retained dataset must not live in the permanent chain.
 - Real-world identity is observer-relative: the chain can attest what a UUID *did*, but who that UUID *is* belongs to each participant's own knowledge, which is expected to accrete through interaction over time rather than being fixed by a one-time record.
 - Keeping personal data out of the permanent skeleton is what lets pseudonymous participation be the safe default rather than a conspicuous opt-out.
 
@@ -115,9 +119,9 @@ When a team does want identity material attached to a membership change, it ride
 - Signatures cover the commitment, never the raw payload, so the payload can be encrypted to a current-membership window or dropped entirely without invalidating any signature or any governance replay.
 - Governance never reads the payload. Validity is decided from the skeleton alone, so a participant who cannot read the payload — a future member, or anyone after the payload is excised — replays to the identical result.
 
-The consequence is explicit and accepted: once such a payload is excised, there is no way to verify what it was.
+The consequence is explicit and accepted: once such a payload is excised, there is no way to recover what it was from the retained record alone.
 The permanent record then proves only that the signers committed to and approved *some* payload with the recorded commitment, bound to a specific UUID's membership change.
-Cryptographic replay stays sound; forensic reconstruction of the payload's content does not survive its excision.
+If someone later presents a candidate payload and the commitment opening, the record may verify that candidate, but forensic reconstruction of the payload's content does not survive its excision.
 The exact commitment scheme, the optional encryption-window key schedule, and the interaction-based identity-confidence model are mechanism details tracked in [`Documentation/open-architecture-questions.md`](Documentation/open-architecture-questions.md).
 
 ### Device Identity and Recovery

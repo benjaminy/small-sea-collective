@@ -112,10 +112,12 @@ The complete Git commit DAG, parent relationships, and stable commit IDs remain 
 Compaction must not synthesize replacement history or require rebasing from a new snapshot root.
 
 Old bulk blobs and trees may dehydrate beyond a live-data window, but every Core database snapshot retains the complete signed teammate-history chain through its state.
+That window is not an erasure guarantee; it only describes what Cod Sync keeps readily rehydratable after the team has had time to notice, fetch, and converge.
+Any teammate who has already fetched an older snapshot may keep an independent copy outside the shared retention policy.
 Core should default to a conservative window because its data is small and there is little pressure to prune aggressively.
 
 The assumption that constitutional events remain small and infrequent needs empirical protection rather than an invented design-time bound.
-The current working assumption is roughly a few hundred bytes of constitutional history per day for a small-to-medium team — kilobytes per year, a few megabytes over a team's lifetime.
+The current working assumption is roughly a few hundred bytes of constitutional history per day for a small-to-medium team — tens to hundreds of kilobytes per year, and perhaps a few megabytes over a team's lifetime.
 Implementation work should measure event counts, serialized event sizes, total signed-log size, and projection-rebuild cost against that assumption, and should expose useful warning thresholds before growth becomes operationally surprising.
 If those measurements challenge the human-scale assumption, revisit the representation without silently deleting or severing signed history.
 
