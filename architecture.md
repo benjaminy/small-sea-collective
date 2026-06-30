@@ -50,6 +50,7 @@ The endorsement threshold is always at least one automatic integrator and may be
 Both modes describe recognized teammates who may read, author, and sign data.
 The mode changes what peers are expected to integrate, not whether the teammate can produce a change.
 The current `read-write` and `read-only` schema values approximate `automatic` and `proposal-only` respectively; renaming those stored values is deferred until the proposal mechanism exists.
+Throughout Small Sea, **admin** is shorthand for a teammate in automatic mode on Core, evaluated relative to an accepted Core state; it is not a central authority or a special key class.
 
 This two-mode model is an intentionally modest accommodation for medium-sized teams.
 As a group grows, it is natural for a smaller inner group to handle routine integration while a larger outer group mostly observes and occasionally proposes changes.
@@ -113,9 +114,10 @@ Three reasons make it load-bearing:
 - Real-world identity is observer-relative: the chain can attest what a UUID *did*, but who that UUID *is* belongs to each participant's own knowledge, which is expected to accrete through interaction over time rather than being fixed by a one-time record.
 - Keeping personal data out of the permanent skeleton is what lets pseudonymous participation be the safe default rather than a conspicuous opt-out.
 
-When a team does want identity material attached to a membership change, it rides *outside* the skeleton as inert payload:
+When a team does want identity material attached to a membership change, the intended design has it ride *outside* the skeleton as inert payload.
+The mechanism is not yet settled — the commitment scheme in particular still needs cryptographic analysis — but it must satisfy these properties:
 
-- The chain stores only a hiding (salted) commitment to the payload, so the permanent commitment does not leak low-entropy content such as a name.
+- The chain stores only a hiding commitment to the payload, so the permanent commitment does not leak low-entropy content such as a name. A bare `hash(name)` is not hiding for low-entropy input, so the commitment must be salted or otherwise randomized.
 - Signatures cover the commitment, never the raw payload, so the payload can be encrypted to a current-membership window or dropped entirely without invalidating any signature or any governance replay.
 - Governance never reads the payload. Validity is decided from the skeleton alone, so a participant who cannot read the payload — a future member, or anyone after the payload is excised — replays to the identical result.
 
@@ -406,10 +408,8 @@ This is a locally enforced client-to-Hub authorization boundary, not a team-wide
 
 ## Per-Berth Integration Modes
 
-The conceptual model has two integration modes for a recognized teammate in a berth:
-
-- **Automatic**: monitor the teammate's ordinary publications and integrate every valid change by default.
-- **Proposal-only**: do not monitor the teammate's ordinary publications; consider only explicitly signed proposals endorsed by at least one automatic integrator and by any higher threshold configured for that berth or event type.
+The two integration modes — **automatic** and **proposal-only** — are defined under [No Team Server](#no-team-server) above, which is the canonical source.
+This section elaborates what counts as a valid change under them, how authorship relates to integration, and how the current schema and removal flow approximate the model.
 
 “Valid” still requires a recognized signer at the referenced state, the correct team and berth, a valid signature and causal base, app-specific structural validation, and any special domain rules.
 Automatic integration is not permission to accept malformed or semantically invalid data.

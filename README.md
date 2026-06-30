@@ -97,7 +97,7 @@ This is deliberately different from local Hub authorization.
 A participant's Hub really does enforce which client software may act in which berth on that device.
 Teammate berth modes instead describe whether ordinary publications are integrated automatically or arrive only as explicit proposals.
 
-Significant teammate facts belong in signed, append-only Core records so that past membership, device, and integration state remains inspectable.
+In the design Small Sea is building toward, significant teammate facts live in signed, append-only Core records so that past membership, device, and integration state remains inspectable.
 Every Core snapshot carries that complete signed history through its current state, while Git retains the complete commit DAG for bookkeeping and merge ancestry.
 Core is therefore more consequential than an ordinary app berth: a Core proposal can be valid relative to an accepted history without any central service being able to force every participant to adopt it.
 Persistent disagreement about Core history is a team fork, not an ordinary permission dispute.
