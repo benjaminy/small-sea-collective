@@ -67,6 +67,24 @@ Micro tests should rebuild projections from signed history, verify historical in
 Every Core database snapshot must carry the complete signed event chain through that snapshot's state.
 Micro tests should prove that a fresh clone can explain current teammate and device standing from the current Core database without retrieving historical checkout blobs.
 
+## Personal data off the chain
+
+`architecture.md` now states canonically that the permanent Core chain carries only the governance skeleton and that personally identifying content (display names, identity material, free-text reasons) is intentionally not durable chain data.
+See the `Personal Data Is Not in the Long-Term Chain` section and the sharpened excision item in `Documentation/open-architecture-questions.md`.
+
+Prose propagation still to do (no functional change):
+
+- The signed-event list above (display-name and teammate-unification claims) and the parallel lists in `design-record-codex-permission-vocab.md`, the Manager spec, and `wrasse-trust` should consistently distinguish the durable governance fact and commitment from the separable personal payload. `architecture.md` and the Manager-spec projection paragraph are already reconciled.
+- The branch design record should capture the PII-off-chain decision and its rationale (excision would break replay; identity is observer-relative and accretes over time; pseudonymous default avoids an opt-out spotlight) at wrap-up.
+
+Mechanism work (tracked in `open-architecture-questions.md`, needs cryptographic analysis before adoption):
+
+- Hiding commitment scheme (a bare `hash(name)` is brute-forceable for low-entropy payloads); sign over the commitment, never the raw payload; keep governance replay strictly inert to payload content.
+- Optional encryption-window key schedule, kept as a lineage separate from content/sender-key rotation; understood as roster-hygiene convenience, not erasure.
+- The interaction-based identity-confidence (accretion) mechanism, which should be the primary identity story rather than a seed-only admission payload.
+
+Micro tests, when implemented, should prove that a record's governance effect is unchanged when its personal payload is absent, encrypted-to-a-subset, or excised, and that an excised payload is unrecoverable from the retained commitment.
+
 ## Device recovery ceremony
 
 The architecture now fixes the recovery invariants but not the wire format or UX.
