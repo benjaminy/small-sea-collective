@@ -16,12 +16,18 @@ They are projections: deterministically rebuildable caches of "what does the Con
 
 ## Why admission is the one quorum-gated action
 
-Every Constitution record is signed by a device belonging to an already-recognized teammate — except one.
-Admission is establishing an identity that does not yet have standing to sign for itself, so nothing about admission can be self-attested the way "I am revoking my own device" can be.
-That is the entire reason admission carries a transcript-bound, quorum-gated endorsement flow while everything else in this schema is a single-signer record, valid the moment a currently-recognized authority signs it.
+Two different properties are easy to conflate here, so this document keeps them separate.
 
-This split — one quorum-gated action, everything else single-signer — is a schema decision worth naming explicitly, because it would be easy to over-generalize a proposal/endorsement/quorum mechanism onto every record type.
-The actual invariant ("the endorsement threshold is always at least one automatic integrator") is already satisfied by "the signer currently holds standing" for every action except admission.
+**Who is allowed to sign at all.** Every Constitution record is signed by a key a verifier can already check has standing — ordinarily an already-recognized teammate's device.
+Exactly one record type breaks that: `admission_acceptance` (see below), signed by the invitee's brand-new device before any `device_link` exists for it, and therefore verified against a public key the record itself supplies rather than looked up in the device graph.
+`admission_proposal` is *not* an exception on this axis — it is signed by the inviter, who is already recognized.
+
+**How many signers are required.** Every record type is valid the moment one currently-recognized authority signs it, except `admission_proposal`, whose finalization requires a quorum of automatic Core integrators' endorsements.
+This is a separate, tunable design choice, not a consequence of the invitee being unable to self-attest: a single recognized inviter's signature would already satisfy the "who is allowed to sign" concern above, which is exactly why `quorum = 1` (one recognized signer, no additional endorsers) is a valid and default configuration.
+Requiring *more* than one endorser is optional hardening a team can choose for a high-stakes action, independent of who is doing the signing.
+
+So there are two, independent, single-exception rules — not one action that is exceptional on both axes at once.
+This is worth naming explicitly because it would be easy to over-generalize a proposal/endorsement/quorum mechanism onto every record type when the actual invariant ("the endorsement threshold is always at least one automatic integrator") is already satisfied by "one currently-recognized signer" for every action except admission's finalization.
 
 ## The shared envelope
 
@@ -103,9 +109,10 @@ A record whose frontier is merely no longer the *current* tip (newer records hav
   The Manager UI still offers an `admin`/`contributor`/`observer` *preset* at invitation time, but it is realized as a set of `integration_mode_change` records appended alongside finalization, not a field on the proposal itself.
   This keeps "who is admitted" and "what mode do they start in" as separately inspectable facts.
 - **`admission_acceptance`** — new, replacing the mutated acceptance columns on today's `admission_proposal` row.
-  References `proposal_id`, carries the invitee's signed acceptance blob.
+  References `subject_record_id` (= `admission_proposal.record_id`), the same FK column name and target `endorsement` and `finalization` use below, so all three types that reference a proposal do so identically rather than three different ways.
+  Carries the invitee's signed acceptance blob.
   Append-only: an invitee accepting is its own record, not an update to the proposal row.
-  **This is the schema's second deliberate exception to "author must already be recognized," alongside admission itself.** The invitee's `teammate_id` was pre-allocated by the inviter and already exists, but the invitee's *device* has no `device_link` yet, so the usual verification rule (look up `author_device_key_id` in the device graph, confirm it resolves to `author_teammate_id`) does not apply. `admission_acceptance` is instead self-certifying: it carries `invitee_device_public_key` directly, and the record's signature is verified against that embedded key, not against a prior device-link cert. That key only becomes an ordinary recognized device once `finalization` succeeds.
+  **This is the schema's one exception to "the signer already has standing"** (see *Why admission is the one quorum-gated action* above). The invitee's `teammate_id` was pre-allocated by the inviter and already exists, but the invitee's *device* has no `device_link` yet, so the usual verification rule (look up `author_device_key_id` in the device graph, confirm it resolves to `author_teammate_id`) does not apply. `admission_acceptance` is instead self-certifying: it carries `invitee_device_public_key` directly, and the record's signature is verified against that embedded key, not against a prior device-link cert. That key only becomes an ordinary recognized device once `finalization` succeeds.
 - **`endorsement`** — generalized from `admin_approval`.
   References two distinct things, kept separate rather than conflated: `subject_record_id` (the FK — the `record_id` of the proposal being endorsed, e.g. `admission_proposal.record_id`) and `subject_digest` (a content-commitment over the exact reviewed payload, generalizing today's `transcript_digest`, which is computed independently of `proposal_id` and guards against the proposal's content changing out from under an endorser between review and use).
   If a proposal's payload needs to change after endorsements exist, that is a new `proposal_revision` record referencing the original `subject_record_id` with a fresh `subject_digest` — not a mutation of the original and not something existing endorsements silently carry over. (`proposal_revision` is named here as the concept `architecture.md` already commits to; its exact columns are not fully specified in this pass.)
@@ -147,8 +154,11 @@ Each of these is valid immediately when signed by the appropriate currently-reco
 Several record types above (`admission_proposal`'s invitee label, `display_name_claim`, `teammate_unification_claim`, `exclusion`) carry personal content that must not be permanent chain data, per `architecture.md`'s *Personal Data Is Not in the Long-Term Chain*.
 Each such type follows the same shape, using the envelope's signed/separable-payload split defined under *The shared envelope* above rather than a bolt-on rule:
 
-- a `*_commitment` column — signed, ordinary, part of `constitution_skeleton_at`
-- a `*_payload` column — separable, never signed, never part of `constitution_skeleton_at`, and therefore droppable, encryptable-to-a-window, or physically deleted later without touching the signature or breaking replay
+- a `*_commitment` column — signed, so that specific record is independently tamper-evident, but **not** part of `constitution_skeleton_at`: no other record's validity ever depends on inspecting a display name, an exclusion reason, or unification evidence, so there is no governance reason to fold it into the skeleton, and every reason not to (unbounded skeleton growth over a team's lifetime for data nothing consults)
+- a `*_payload` column — separable, never signed, never part of `constitution_skeleton_at` either, and therefore droppable, encryptable-to-a-window, or physically deleted later without touching the signature or breaking replay
+
+Skeleton verification — recomputing `constitution_digest_at` to check an anchor — therefore never touches any PII-adjacent field, commitment or payload, for any record type.
+`*_commitment` is consulted only when someone wants to verify that one specific claim record's integrity, e.g. checking a later-presented payload against its own commitment — a per-record check, not a governance-replay input.
 
 This document fixes that shape and, for each PII-bearing type, names the specific `*_commitment`/`*_payload` column pair.
 It does not fix the commitment construction itself — that is a distinct, tracked, cryptography-review item, not a schema question.
