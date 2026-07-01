@@ -123,8 +123,8 @@ Stores the shared state for one team. All teammates maintain their own copy; cha
 Manager-local admission prompt dismissals are stored in a per-team sidecar DB outside `Sync/`, keyed by `(event_type, artifact_id)`, so ignored prompts persist across restarts without becoming synced team state.
 
 The current schema stores mutable teammate projections.
-The target model instead makes significant teammate facts signed and append-only, including admission, device changes, prepared recovery and recovery use, display-name and teammate-unification claims, integration-mode changes, exclusions, storage announcements, staleness observations, proposals, and endorsements.
-Projection tables may remain for efficient UI and policy queries, but they must be rebuildable from the accepted signed Core lineage rather than serving as the only durable history.
+The target model instead makes significant teammate facts part of the signed, append-only **Team Constitution** — see [`Documentation/team-constitution.md`](../../Documentation/team-constitution.md) for the field-level schema — including admission, device changes, prepared recovery and recovery use, display-name and teammate-unification claims, integration-mode changes, exclusions, storage announcements, staleness observations, proposals, and endorsements.
+Projection tables may remain for efficient UI and policy queries, but they must be rebuildable from the accepted signed Constitution lineage rather than serving as the only durable history.
 For records that carry personally identifying content — display-name and identity claims especially — only the governance fact and a commitment to that content are durable; the personal content itself is separable payload that may be excised or encryption-windowed, per [`architecture.md`](../../architecture.md#personal-data-is-not-in-the-long-term-chain).
 Every Core database snapshot carries that complete signed lineage through the snapshot's state.
 The Manager must not require an old Git checkout to explain a current teammate, device, or governance decision.

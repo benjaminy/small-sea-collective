@@ -140,7 +140,10 @@ Team A does *not* replay Team B's constitution.
 Be careful with the phrasing here, because it is easy to smuggle the team-principal back in.
 Since the team does not speak, the honest claim is never "Team B did X" but "a trusted bridge attests that X holds in the Team B view they carry."
 This document calls such an artifact a **bridge-witnessed remote proposal**, and uses looser phrases like "a Team B proposal" only as defined shorthand for that — never as a claim that Team B is a principal with a voice of its own.
-A literal "Team B did X" would require router mode plus independent verification, or a future team-voice model that does not yet exist.
+Router mode does not close this gap.
+Router lets Team A independently verify Team B's signatures and history, but the strongest honest claim it buys is still person-level — "this artifact was signed by a recognized Team B teammate at remote anchor X" — not "Team B did X."
+Router changes who verifies, not who speaks.
+A literal "Team B did X" would require a future team-voice model that does not yet exist.
 
 - Cheap and simple.
 - Makes the remote-signer and fork-choice problems vanish from Team A's machinery, because that work happens inside the bridge's own client as a real Team B participant.
@@ -519,7 +522,7 @@ A deliberately narrow first version might be:
 - A team has a stable cryptographic identity that a person can vouch for.
 - A dual-member person publishes the `identity_link` that makes them a candidate bridge.
 - Team A records a unilateral, scoped bridge designation for that person to Team B.
-- A bridge carries signed Team B proposals into a specific Team A berth under the witness model.
+- A bridge carries bridge-witnessed remote proposals into a specific Team A berth under the witness model.
 - Cross-team input is never an ordinary automatic publication.
 - Team A automatic integrators endorse or reject those proposals under unchanged local rules.
 - No bilateral link treaty is required.

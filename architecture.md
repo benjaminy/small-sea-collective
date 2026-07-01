@@ -68,6 +68,9 @@ Authorization language in this document refers to an enforced local boundary unl
 
 ### Signed, Append-Only Teammate History
 
+This signed, append-only lineage is named the **Team Constitution**, distinct from Core, which is the berth and database that carries it.
+[`Documentation/team-constitution.md`](Documentation/team-constitution.md) is the field-level schema for it: the shared record envelope, the anchor mechanism, and the record catalog.
+
 The target model stores significant teammate information as signed, append-only domain records in Core.
 Admissions, device links and revocations, prepared recovery and recovery use, display-name and teammate-unification claims, berth integration-mode changes, exclusions, storage announcements, staleness observations, proposals, and endorsements append new facts rather than overwriting or deleting old ones.
 Mutable tables and UI models may serve as rebuildable projections, but they are not the durable source of teammate history.
