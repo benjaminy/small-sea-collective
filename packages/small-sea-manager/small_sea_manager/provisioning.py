@@ -3830,6 +3830,20 @@ def set_teammate_integration_mode(
     engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
+            published_device = conn.execute(
+                text(
+                    "SELECT public_key FROM team_device "
+                    "WHERE device_key_id = :device_key_id AND teammate_id = :teammate_id"
+                ),
+                {"device_key_id": author_device_key_id, "teammate_id": self_in_team},
+            ).fetchone()
+            if published_device is None or published_device[0] != author_public_key:
+                raise ValueError(
+                    "Local team-device key is not published in this team's Core "
+                    "team_device table yet; peers would not be able to verify a "
+                    "record signed by it"
+                )
+
             if conn.execute(
                 text("SELECT 1 FROM teammate WHERE id = :teammate_id"),
                 {"teammate_id": teammate_id},
@@ -3852,12 +3866,14 @@ def set_teammate_integration_mode(
             digest = _constitution_digest(snapshot)
             now = _now_iso()
             new_role = _role_value_for_mode(mode)
+            anchor_commit = _team_head_commit(team_sync_dir)
 
             signed_fields = {
                 "record_type": "integration_mode_change",
                 "author_teammate_id": self_in_team.hex(),
                 "author_device_key_id": author_device_key_id.hex(),
                 "created_at": now,
+                "anchor_commit": anchor_commit,
                 "constitution_digest": digest.hex(),
                 "schema_version": 1,
                 "teammate_id": teammate_id.hex(),
@@ -3886,7 +3902,7 @@ def set_teammate_integration_mode(
                     "author_teammate_id": self_in_team,
                     "author_device_key_id": author_device_key_id,
                     "created_at": now,
-                    "anchor_commit": _team_head_commit(team_sync_dir),
+                    "anchor_commit": anchor_commit,
                     "constitution_digest": digest,
                     "constitution_snapshot_json": _json_dumps_sorted(snapshot),
                     "schema_version": 1,

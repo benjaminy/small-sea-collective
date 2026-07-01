@@ -82,14 +82,16 @@ def test_set_integration_mode_appends_record_and_updates_projection(playground_d
     with sqlite3.connect(str(db_path)) as conn:
         row = conn.execute(
             "SELECT record_id, record_type, author_teammate_id, author_device_key_id, "
-            "created_at, constitution_digest, schema_version, teammate_id, berth_id, mode, signature "
+            "created_at, anchor_commit, constitution_digest, schema_version, "
+            "teammate_id, berth_id, mode, signature "
             "FROM integration_mode_change WHERE record_id = ?",
             (record_id,),
         ).fetchone()
     assert row is not None
     (
         row_record_id, record_type, author_teammate_id, author_device_key_id,
-        created_at, digest, schema_version, row_teammate_id, row_berth_id, mode, signature,
+        created_at, anchor_commit, digest, schema_version,
+        row_teammate_id, row_berth_id, mode, signature,
     ) = row
     assert row_record_id == record_id
     assert record_type == "integration_mode_change"
@@ -98,15 +100,19 @@ def test_set_integration_mode_appends_record_and_updates_projection(playground_d
     assert mode == "proposal-only"
     assert schema_version == 1
     assert author_teammate_id == _self_teammate_id(root, alice_hex, "CoolProject")
+    assert anchor_commit  # a real git commit hash, not left null for a governance-bearing record
 
     _, author_public_key = get_current_team_device_key(root, alice_hex, "CoolProject")
     assert author_device_key_id == key_id_from_public(author_public_key)
 
+    # Every envelope column except record_id/signature must be part of the
+    # signed bytes (Documentation/team-constitution.md, "Canonical bytes:").
     signed_fields = {
         "record_type": record_type,
         "author_teammate_id": author_teammate_id.hex(),
         "author_device_key_id": author_device_key_id.hex(),
         "created_at": created_at,
+        "anchor_commit": anchor_commit,
         "constitution_digest": digest.hex(),
         "schema_version": schema_version,
         "teammate_id": row_teammate_id.hex(),
@@ -116,7 +122,35 @@ def test_set_integration_mode_appends_record_and_updates_projection(playground_d
     canonical = canonical_constitution_bytes(signed_fields)
     assert verify_constitution_record(author_public_key, canonical, signature)
 
+    # anchor_commit is envelope, not payload: tampering with it must break verification.
+    tampered_fields = dict(signed_fields, anchor_commit="0" * 40)
+    tampered_canonical = canonical_constitution_bytes(tampered_fields)
+    assert not verify_constitution_record(author_public_key, tampered_canonical, signature)
+
     assert _berth_role_row(db_path, bob_id, core_berth_id) == "read-only"
+
+
+def test_set_integration_mode_rejects_unpublished_local_device_key(playground_dir):
+    """A record signed by a key peers can't look up in `team_device` is
+    unverifiable to anyone but its author -- catch that locally rather than
+    publish it."""
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+    create_team(root, alice_hex, "CoolProject")
+
+    db_path = _team_db(root, alice_hex, "CoolProject")
+    core_berth_id = _core_berth_id(db_path)
+    bob_id = uuid7()
+    _insert_bare_teammate(db_path, bob_id, berth_id=core_berth_id, role="read-write")
+
+    # Simulate Alice's own device key never having been published to Core,
+    # e.g. a sync gap between local key generation and publication.
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("DELETE FROM team_device WHERE teammate_id = ?", (_self_teammate_id(root, alice_hex, "CoolProject"),))
+        conn.commit()
+
+    with pytest.raises(ValueError, match="not published"):
+        set_teammate_integration_mode(root, alice_hex, "CoolProject", bob_id, core_berth_id, "proposal-only")
 
 
 def test_set_integration_mode_inserts_projection_row_when_none_exists(playground_dir):
