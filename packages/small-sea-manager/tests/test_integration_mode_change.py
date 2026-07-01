@@ -130,10 +130,14 @@ def test_set_integration_mode_appends_record_and_updates_projection(playground_d
     assert _berth_role_row(db_path, bob_id, core_berth_id) == "read-only"
 
 
-def test_set_integration_mode_rejects_unpublished_local_device_key(playground_dir):
-    """A record signed by a key peers can't look up in `team_device` is
-    unverifiable to anyone but its author -- catch that locally rather than
-    publish it."""
+def test_set_integration_mode_rejects_key_without_cert_trust(playground_dir):
+    """A record signed by a key that doesn't resolve through the cert graph
+    is unverifiable to peers -- catch that locally rather than publish it.
+
+    This is the same check `issue_device_link_for_teammate` already relies on
+    (`resolve_trusted_device_keys_for_teammate`), not the weaker `team_device`
+    table, which is a cache that could in principle exist without matching
+    cert-graph trust."""
     root = pathlib.Path(playground_dir)
     alice_hex = create_new_participant(root, "Alice")
     create_team(root, alice_hex, "CoolProject")
@@ -143,13 +147,14 @@ def test_set_integration_mode_rejects_unpublished_local_device_key(playground_di
     bob_id = uuid7()
     _insert_bare_teammate(db_path, bob_id, berth_id=core_berth_id, role="read-write")
 
-    # Simulate Alice's own device key never having been published to Core,
-    # e.g. a sync gap between local key generation and publication.
+    # Remove Alice's genesis membership cert, so her own device key no longer
+    # resolves through the cert graph, even though her `team_device` row and
+    # `berth_role` standing are untouched.
     with sqlite3.connect(str(db_path)) as conn:
-        conn.execute("DELETE FROM team_device WHERE teammate_id = ?", (_self_teammate_id(root, alice_hex, "CoolProject"),))
+        conn.execute("DELETE FROM key_certificate")
         conn.commit()
 
-    with pytest.raises(ValueError, match="not published"):
+    with pytest.raises(ValueError, match="not certificate-trusted"):
         set_teammate_integration_mode(root, alice_hex, "CoolProject", bob_id, core_berth_id, "proposal-only")
 
 

@@ -3818,7 +3818,7 @@ def set_teammate_integration_mode(
     teammate_id = bytes.fromhex(teammate_id) if isinstance(teammate_id, str) else teammate_id
     berth_id = bytes.fromhex(berth_id) if isinstance(berth_id, str) else berth_id
 
-    _team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+    team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
     author_private_key, author_public_key = get_current_team_device_key(
         root_dir, participant_hex, team_name
     )
@@ -3830,18 +3830,13 @@ def set_teammate_integration_mode(
     engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
-            published_device = conn.execute(
-                text(
-                    "SELECT public_key FROM team_device "
-                    "WHERE device_key_id = :device_key_id AND teammate_id = :teammate_id"
-                ),
-                {"device_key_id": author_device_key_id, "teammate_id": self_in_team},
-            ).fetchone()
-            if published_device is None or published_device[0] != author_public_key:
+            certs = _load_team_certificates(conn, team_id)
+            trusted_keys = resolve_trusted_device_keys_for_teammate(certs, team_id, self_in_team)
+            if author_public_key not in trusted_keys:
                 raise ValueError(
-                    "Local team-device key is not published in this team's Core "
-                    "team_device table yet; peers would not be able to verify a "
-                    "record signed by it"
+                    "Local team-device key is not certificate-trusted for this "
+                    "teammate; peers would not be able to verify a record signed "
+                    "by it"
                 )
 
             if conn.execute(
