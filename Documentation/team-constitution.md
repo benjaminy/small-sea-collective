@@ -31,7 +31,7 @@ This is worth naming explicitly because it would be easy to over-generalize a pr
 
 ## The shared envelope
 
-Every Constitution record type shares one column prefix, produced by one shared signing helper instead of the three independent reimplementations of the same idiom found in `key_certificate`, `teammate_berth_storage_announcement`, and the admission-proposal code today (see `NOTES.md` in this branch's working-docs folder for the survey).
+Every Constitution record type shares one column prefix, produced by one shared signing helper instead of the three independent reimplementations of the same idiom found in `key_certificate`, `teammate_berth_storage_announcement`, and the admission-proposal code today (see `Archive/design-record-team-constitution-schema.md` for the survey).
 Concretely:
 
 | Column | Type | Meaning |
@@ -103,7 +103,7 @@ A record whose frontier is merely no longer the *current* tip (newer records hav
 
 ### Generalized: the one quorum-gated flow
 
-- **`admission_proposal`** — the existing table (see `NOTES.md`), moved onto the shared envelope.
+- **`admission_proposal`** — the existing table (see `Archive/design-record-team-constitution-schema.md`), moved onto the shared envelope.
   Type-specific columns: `nonce`, `invitee_teammate_id` (freshly allocated), `invitee_label_commitment` (signed) and `invitee_label_payload` (separable — see *PII handling* below), `invitee_device_public_key`, `expires_at`.
   Drops `role`: admission no longer carries an integration-mode preset directly (see `integration_mode_change` below).
   The Manager UI still offers an `admin`/`contributor`/`observer` *preset* at invitation time, but it is realized as a set of `integration_mode_change` records appended alongside finalization, not a field on the proposal itself.

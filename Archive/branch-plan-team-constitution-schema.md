@@ -1,5 +1,8 @@
 # Team Constitution Schema Plan
 
+**Branch:** `team-constitution-schema`
+**Archived:** Merged into `main` (fast-forward `a95fb22..b3bc317`) alongside `codex/permission-vocab`, which it was branched from. This branch's wrap-up (`design-record`) was written retroactively at archive time — see `Archive/design-record-team-constitution-schema.md`, which also folds in this branch's `NOTES.md` grounding survey.
+
 ## Goal
 
 Turn the signed-append-only-teammate-history requirements already committed to in `architecture.md`
@@ -30,7 +33,7 @@ depends on it yet.
 
 ## Survey
 
-See `NOTES.md` for the full grounding survey. Summary: the canonical-signing idiom already exists,
+See `Archive/design-record-team-constitution-schema.md` for the full grounding survey (moved there from this branch's `NOTES.md` at archive time). Summary: the canonical-signing idiom already exists,
 duplicated three times with no shared helper; the anchor mechanism already exists in miniature,
 scoped only to `admission_proposal`; `key_certificate` and `teammate_berth_storage_announcement` are
 existing signed record families to reuse rather than replace; there is no migration system, so new

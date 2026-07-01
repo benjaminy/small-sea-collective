@@ -1,5 +1,8 @@
 # Permission Vocabulary Plan
 
+**Branch:** `codex/permission-vocab`
+**Archived:** Merged into `main` (fast-forward `a95fb22..b3bc317`) alongside the follow-on `team-constitution-schema` branch. See `Archive/follow-up-codex-permission-vocab.md` for the issue-survey outcome and `Archive/design-record-codex-permission-vocab.md` for the boiled-down decisions.
+
 ## Goal
 
 Make Small Sea's decentralized collaboration model harder to mistake for a centrally enforced SaaS permission system.
