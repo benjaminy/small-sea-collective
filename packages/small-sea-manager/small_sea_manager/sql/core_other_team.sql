@@ -131,6 +131,34 @@ CREATE TABLE IF NOT EXISTS teammate_berth_storage_announcement (
 CREATE INDEX IF NOT EXISTS idx_teammate_berth_storage_announcement_scan
     ON teammate_berth_storage_announcement(teammate_id, berth_id, announcement_id);
 
+-- Team Constitution record: see Documentation/team-constitution.md.
+-- `constitution_digest`/`constitution_snapshot_json` are a Phase 1 stand-in
+-- for the doc's target `anchor_frontier` mechanism (see that phase's
+-- Archive/design-record for why): a live-query digest over current
+-- teammate/device/berth-role state, generalizing `admission_proposal`'s
+-- existing `governance_digest` beyond just Core admins.
+CREATE TABLE IF NOT EXISTS integration_mode_change (
+    record_id BLOB PRIMARY KEY,
+    record_type TEXT NOT NULL DEFAULT 'integration_mode_change',
+    author_teammate_id BLOB NOT NULL,
+    author_device_key_id BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    anchor_commit TEXT,
+    constitution_digest BLOB NOT NULL,
+    constitution_snapshot_json TEXT NOT NULL,
+    schema_version INTEGER NOT NULL DEFAULT 1,
+    teammate_id BLOB NOT NULL,
+    berth_id BLOB NOT NULL,
+    mode TEXT NOT NULL CHECK(mode IN ('automatic', 'proposal-only')),
+    signature BLOB NOT NULL,
+    FOREIGN KEY (author_teammate_id) REFERENCES teammate(id) ON DELETE CASCADE,
+    FOREIGN KEY (teammate_id) REFERENCES teammate(id) ON DELETE CASCADE,
+    FOREIGN KEY (berth_id) REFERENCES team_app_berth(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_integration_mode_change_scan
+    ON integration_mode_change(teammate_id, berth_id, record_id);
+
 CREATE TABLE IF NOT EXISTS device_prekey_bundle (
     device_key_id BLOB PRIMARY KEY,
     prekey_bundle_json TEXT NOT NULL,

@@ -115,6 +115,11 @@ from small_sea_note_to_self.sender_keys import (
     serialize_sender_key_record,
     serialize_distribution_message,
 )
+from wrasse_trust.constitution import (
+    canonical_constitution_bytes,
+    derive_record_id,
+    sign_constitution_record,
+)
 from wrasse_trust.identity import (
     CertType,
     KeyCertificate,
@@ -1642,7 +1647,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 61
+USER_SCHEMA_VERSION = 62
 
 
 # ---- Provisioning functions ----
@@ -3739,6 +3744,191 @@ def remove_teammate(root_dir, participant_hex, team_name, teammate):
         "redistribution_artifacts": redistribution["artifacts"],
         "skipped_device_key_ids_hex": redistribution["skipped_device_key_ids_hex"],
     }
+
+
+def _berth_role(conn, teammate_id: bytes, berth_id: bytes) -> str | None:
+    row = conn.execute(
+        text(
+            "SELECT role FROM berth_role WHERE teammate_id = :teammate_id AND berth_id = :berth_id"
+        ),
+        {"teammate_id": teammate_id, "berth_id": berth_id},
+    ).fetchone()
+    return row[0] if row is not None else None
+
+
+def _role_value_for_mode(mode: str) -> str:
+    if mode == "automatic":
+        return "read-write"
+    if mode == "proposal-only":
+        return "read-only"
+    raise ValueError(f"Unknown integration mode: {mode!r}")
+
+
+def _constitution_snapshot(conn) -> dict[str, object]:
+    """Generalizes `_governance_snapshot` beyond Core admins to every berth's
+    current integration mode, since Constitution record types besides
+    admission anchor against the full membership/device/mode picture rather
+    than just the Core admin roster.
+    """
+    teammate_ids = [
+        row[0].hex() for row in conn.execute(text("SELECT id FROM teammate ORDER BY id")).fetchall()
+    ]
+    teammate_devices: dict[str, list[str]] = {teammate_id_hex: [] for teammate_id_hex in teammate_ids}
+    for teammate_id, device_key_id in conn.execute(
+        text("SELECT teammate_id, device_key_id FROM team_device ORDER BY teammate_id, device_key_id")
+    ).fetchall():
+        teammate_devices.setdefault(teammate_id.hex(), []).append(device_key_id.hex())
+    berth_roles = [
+        {"teammate_id": row[0].hex(), "berth_id": row[1].hex(), "role": row[2]}
+        for row in conn.execute(
+            text("SELECT teammate_id, berth_id, role FROM berth_role ORDER BY teammate_id, berth_id")
+        ).fetchall()
+    ]
+    return {
+        "teammates": teammate_ids,
+        "teammate_devices": teammate_devices,
+        "berth_roles": berth_roles,
+    }
+
+
+def _constitution_digest(snapshot: dict[str, object]) -> bytes:
+    return _sha256_bytes(_json_bytes(snapshot))
+
+
+def set_teammate_integration_mode(
+    root_dir,
+    participant_hex,
+    team_name,
+    teammate_id,
+    berth_id,
+    mode: str,
+) -> bytes:
+    """Append a signed `integration_mode_change` Constitution record for
+    `teammate_id` on `berth_id`, then update the `berth_role` projection to
+    match. See Documentation/team-constitution.md for the record's schema.
+
+    Requires the calling participant's own teammate identity in this team to
+    currently hold `automatic` (`read-write`) standing on `berth_id` -- the
+    same standing the record itself grants when adopted.
+
+    Returns the new record's `record_id`.
+    """
+    if mode not in ("automatic", "proposal-only"):
+        raise ValueError(f"Unknown integration mode: {mode!r}")
+    teammate_id = bytes.fromhex(teammate_id) if isinstance(teammate_id, str) else teammate_id
+    berth_id = bytes.fromhex(berth_id) if isinstance(berth_id, str) else berth_id
+
+    _team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+    author_private_key, author_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
+    author_device_key_id = key_id_from_public(author_public_key)
+
+    team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    team_db_path = team_sync_dir / "core.db"
+    ensure_team_db_schema(team_db_path)
+    engine = _sqlite_engine(team_db_path)
+    try:
+        with engine.begin() as conn:
+            if conn.execute(
+                text("SELECT 1 FROM teammate WHERE id = :teammate_id"),
+                {"teammate_id": teammate_id},
+            ).fetchone() is None:
+                raise ValueError(f"Teammate '{teammate_id.hex()}' not found")
+            if conn.execute(
+                text("SELECT 1 FROM team_app_berth WHERE id = :berth_id"),
+                {"berth_id": berth_id},
+            ).fetchone() is None:
+                raise ValueError(f"Berth '{berth_id.hex()}' not found")
+
+            author_role = _berth_role(conn, self_in_team, berth_id)
+            if author_role != "read-write":
+                raise ValueError(
+                    "Setting a teammate's integration mode requires automatic "
+                    "(read-write) standing on that berth"
+                )
+
+            snapshot = _constitution_snapshot(conn)
+            digest = _constitution_digest(snapshot)
+            now = _now_iso()
+            new_role = _role_value_for_mode(mode)
+
+            signed_fields = {
+                "record_type": "integration_mode_change",
+                "author_teammate_id": self_in_team.hex(),
+                "author_device_key_id": author_device_key_id.hex(),
+                "created_at": now,
+                "constitution_digest": digest.hex(),
+                "schema_version": 1,
+                "teammate_id": teammate_id.hex(),
+                "berth_id": berth_id.hex(),
+                "mode": mode,
+            }
+            canonical = canonical_constitution_bytes(signed_fields)
+            record_id = derive_record_id(canonical)
+            signature = sign_constitution_record(author_private_key, canonical)
+
+            conn.execute(
+                text(
+                    "INSERT INTO integration_mode_change ("
+                    "record_id, record_type, author_teammate_id, author_device_key_id, "
+                    "created_at, anchor_commit, constitution_digest, constitution_snapshot_json, "
+                    "schema_version, teammate_id, berth_id, mode, signature"
+                    ") VALUES ("
+                    ":record_id, :record_type, :author_teammate_id, :author_device_key_id, "
+                    ":created_at, :anchor_commit, :constitution_digest, :constitution_snapshot_json, "
+                    ":schema_version, :teammate_id, :berth_id, :mode, :signature"
+                    ")"
+                ),
+                {
+                    "record_id": record_id,
+                    "record_type": "integration_mode_change",
+                    "author_teammate_id": self_in_team,
+                    "author_device_key_id": author_device_key_id,
+                    "created_at": now,
+                    "anchor_commit": _team_head_commit(team_sync_dir),
+                    "constitution_digest": digest,
+                    "constitution_snapshot_json": _json_dumps_sorted(snapshot),
+                    "schema_version": 1,
+                    "teammate_id": teammate_id,
+                    "berth_id": berth_id,
+                    "mode": mode,
+                    "signature": signature,
+                },
+            )
+
+            existing_role_row = conn.execute(
+                text(
+                    "SELECT id FROM berth_role WHERE teammate_id = :teammate_id AND berth_id = :berth_id"
+                ),
+                {"teammate_id": teammate_id, "berth_id": berth_id},
+            ).fetchone()
+            if existing_role_row is None:
+                conn.execute(
+                    text(
+                        "INSERT INTO berth_role (id, teammate_id, berth_id, role) "
+                        "VALUES (:id, :teammate_id, :berth_id, :role)"
+                    ),
+                    {
+                        "id": uuid7(),
+                        "teammate_id": teammate_id,
+                        "berth_id": berth_id,
+                        "role": new_role,
+                    },
+                )
+            else:
+                conn.execute(
+                    text("UPDATE berth_role SET role = :role WHERE id = :id"),
+                    {"role": new_role, "id": existing_role_row[0]},
+                )
+    finally:
+        engine.dispose()
+
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo.stage(["core.db"])
+    repo.commit(f"Set integration mode for teammate {teammate_id.hex()} on berth {berth_id.hex()}")
+
+    return record_id
 
 
 def issue_device_link_for_teammate(root_dir, participant_hex, team_name, linked_device_public_key):
