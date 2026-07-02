@@ -3,6 +3,9 @@
 Issue #163 ("Implement the Team Constitution: signed append-only teammate history") describes what is really an epic: six or seven independently-shippable pieces plus design questions the doc explicitly leaves open.
 This branch lands the first slice (shared envelope + `integration_mode_change`), so the remaining work should be filed as sub-issues and #163 rewritten as the tracking issue.
 
+**Status: done (2026-07-01).**
+The sub-issues below were filed as #164–#169 and #163 was rewritten as the tracking issue; the drafts are kept here for the design rationale.
+
 One refinement to the split as originally sketched: `admission_proposal`'s move onto the shared envelope belongs with the endorsement/finalization generalization (they are one flow in `Documentation/team-constitution.md`), not with the mechanical migration of the other two pre-envelope record types.
 The drafts below reflect that.
 
@@ -19,12 +22,12 @@ Replace the implementation expectation with a checklist of sub-issues:
 > Implementation is split into independently-shippable slices:
 >
 > - [x] Shared signing envelope + `integration_mode_change` vertical slice (PR for the `team-constitution` branch)
-> - [ ] Admission onto the shared envelope: `admission_acceptance`, generalized `endorsement`/`finalization` (#TBD-1) — unblocks #162
-> - [ ] Migrate `key_certificate` and `teammate_berth_storage_announcement` onto the shared envelope (#TBD-2)
-> - [ ] `anchor_frontier` / `predecessor_record_id`, replacing the interim `constitution_digest` (#TBD-3)
-> - [ ] Projection rebuild: `constitution_skeleton_at` / `constitution_projection` replacing direct mutation (#TBD-4) — folds in #57
-> - [ ] `exclusion` record type (#TBD-5)
-> - [ ] `staleness_observation` + Constitution retention exemption (#TBD-6)
+> - [ ] Admission onto the shared envelope: `admission_acceptance`, generalized `endorsement`/`finalization` (#164) — unblocks #162
+> - [ ] Migrate `key_certificate` and `teammate_berth_storage_announcement` onto the shared envelope (#165)
+> - [ ] `anchor_frontier` / `predecessor_record_id`, replacing the interim `constitution_digest` (#166)
+> - [ ] Projection rebuild: `constitution_skeleton_at` / `constitution_projection` replacing direct mutation (#167) — folds in #57
+> - [ ] `exclusion` record type (#168)
+> - [ ] `staleness_observation` + Constitution retention exemption (#169)
 >
 > Deliberately not filed as implementation issues yet (design still open per the doc's "Deliberately left open" section):
 > prepared recovery (`prepared_recovery_registration` / `recovery_event` ceremony mechanics) and the PII types (`display_name_claim`, `teammate_unification_claim` commitment scheme).
@@ -34,7 +37,7 @@ Replace the implementation expectation with a checklist of sub-issues:
 
 ## Sub-issue drafts
 
-### TBD-1 — Admission onto the shared envelope: `admission_acceptance`, generalized `endorsement`/`finalization`
+### #164 — Admission onto the shared envelope: `admission_acceptance`, generalized `endorsement`/`finalization`
 
 Labels: `priority:high`, `type:task`.
 Blocks #162.
@@ -55,7 +58,7 @@ Blocks #162.
 >
 > Out of scope: `proposal_revision` (named in the doc but not fully specified), any endorsement threshold above one for non-admission actions.
 
-### TBD-2 — Migrate `key_certificate` and `teammate_berth_storage_announcement` onto the shared envelope
+### #165 — Migrate `key_certificate` and `teammate_berth_storage_announcement` onto the shared envelope
 
 Labels: `type:task`.
 
@@ -63,14 +66,14 @@ Labels: `type:task`.
 > The two pre-envelope record types adopt the shared `record_id`/`record_type`/`schema_version` columns and the `wrasse_trust.constitution` signing helper, replacing the independent reimplementations of the canonical-bytes idiom in `identity.py` and `transport.py`.
 >
 > Per the doc: `teammate_berth_storage_announcement` is not governance-bearing, so `anchor_commit`/`anchor_frontier` stay `NULL` for it.
-> `key_certificate` rows (`membership`, `device_link`, `revocation`, …) are governance-bearing and will need predecessor chains — but wiring those up is #TBD-3's job; this issue is only the envelope/helper alignment.
+> `key_certificate` rows (`membership`, `device_link`, `revocation`, …) are governance-bearing and will need predecessor chains — but wiring those up is #166's job; this issue is only the envelope/helper alignment.
 >
 > Pre-alpha stance applies: `USER_SCHEMA_VERSION` bump, no in-place migration; existing team databases are deleted and recreated.
 
-### TBD-3 — `anchor_frontier` / `predecessor_record_id`, replacing the interim `constitution_digest`
+### #166 — `anchor_frontier` / `predecessor_record_id`, replacing the interim `constitution_digest`
 
 Labels: `type:task`.
-Depends on #TBD-1 and #TBD-2.
+Depends on #164 and #165.
 
 > Part of #163.
 > The `team-constitution` branch deliberately shipped `integration_mode_change` anchored by a `constitution_digest` (live-query digest generalizing `governance_digest`) as a stepping stone, because record-to-record anchoring needs every governance-bearing type on the envelope first.
@@ -83,7 +86,7 @@ Depends on #TBD-1 and #TBD-2.
 >
 > The exact wire representation (one tip per table vs. rolling accumulator vs. Merkle) is listed under "Deliberately left open" in the doc; settling it is part of this issue's design phase.
 
-### TBD-4 — Projection rebuild: `constitution_skeleton_at` / `constitution_projection`
+### #167 — Projection rebuild: `constitution_skeleton_at` / `constitution_projection`
 
 Labels: `type:task`.
 Folds in #57.
@@ -99,7 +102,7 @@ Folds in #57.
 >
 > Both functions must be deterministic over the record tables alone: no wall-clock reasoning, no reliance on row-arrival order.
 
-### TBD-5 — `exclusion` record type
+### #168 — `exclusion` record type
 
 Labels: `type:task`.
 
@@ -107,12 +110,14 @@ Labels: `type:task`.
 > Single-signer governance record per the catalog: `excluded_teammate_id`, `reason_commitment` (signed), `reason_payload` (separable), valid when signed by a current automatic Core integrator.
 > Matches the Manager spec's existing "remove teammate" description as a unilateral, socially-adopted-or-not act.
 >
-> Note: the *shape* (commitment/payload split) is fixed by the envelope's separable-payload mechanism and is implementable now; only the commitment *construction* (salting, hash choice) is the open cryptography item.
-> If that item is still unsettled when this is picked up, land the record with a clearly-marked placeholder commitment construction behind the `wrasse_trust.constitution` helper, so the schema and authorization logic don't wait on it.
+> Note: the *shape* (commitment/payload split) is fixed by the envelope's separable-payload mechanism and is implementable now; only the commitment *construction* is open.
+> Do **not** land records carrying a placeholder commitment construction: Constitution records are never deleted, so a weak commitment over a low-entropy exclusion reason (e.g., an unsalted hash) is permanently brute-forceable from any Core snapshot — a bad placeholder is un-fixable, not temporary.
+> Preferred path: settle the construction as part of this issue — a standard salted commitment (`sha256(salt ‖ canonical payload bytes)` with a random ≥128-bit salt stored inside the separable `reason_payload` and discarded with it) is textbook and needs a brief review, not novel cryptanalysis.
+> If it truly must wait, the fallback is the schema/authorization skeleton only, with `reason_commitment` nullable and unpopulated — never a stored stand-in commitment.
 >
-> Small once #TBD-1 through #TBD-4 exist; the `integration_mode_change` slice is the template.
+> Small once #164 through #167 exist; the `integration_mode_change` slice is the template.
 
-### TBD-6 — `staleness_observation` + Constitution retention exemption
+### #169 — `staleness_observation` + Constitution retention exemption
 
 Labels: `type:task`.
 
@@ -130,11 +135,12 @@ Labels: `type:task`.
 
 - **Prepared recovery** (`prepared_recovery_registration` / `recovery_event`): the ceremony's anti-replay/rollback mechanics, private-side key format, storage, and rotation are open in `open-architecture-questions.md` (Section 5).
   File an implementation issue only once that design lands.
-- **PII types** (`display_name_claim`, `teammate_unification_claim`): the commitment scheme construction needs cryptographic analysis, tracked in `open-architecture-questions.md`.
+- **PII types** (`display_name_claim`, `teammate_unification_claim`): the commitment scheme construction needs review, tracked in `open-architecture-questions.md`.
   The envelope's signed-commitment/separable-payload split (landed in this branch's helper design) is the fixed shape they'll use.
-- **`proposal_revision`**: named in the doc under `endorsement`, columns not specified; specify it when #TBD-1's work makes it concrete.
+  The expected construction is small — a salted commitment as described under #168, not novel cryptography — so once #168 settles it, these become fileable implementation issues gated only on that decision.
+- **`proposal_revision`**: named in the doc under `endorsement`, columns not specified; specify it when #164's work makes it concrete.
 
 ## Other follow-ups from this branch
 
-- The known device-vs-teammate endorsement dedupe gap in today's `admin_approval` (`UNIQUE(proposal_id, approver_device_key_id)`) is fixed by design in #TBD-1's `endorsement` record; no separate issue needed.
-- #150 (cross-member berth storage announcement delivery test) stays its own issue; `teammate_berth_storage_announcement` is only touched mechanically by #TBD-2.
+- The known device-vs-teammate endorsement dedupe gap in today's `admin_approval` (`UNIQUE(proposal_id, approver_device_key_id)`) is fixed by design in #164's `endorsement` record; no separate issue needed.
+- #150 (cross-member berth storage announcement delivery test) stays its own issue; `teammate_berth_storage_announcement` is only touched mechanically by #165.
