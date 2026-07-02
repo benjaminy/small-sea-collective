@@ -98,7 +98,7 @@ def test_concurrent_invitations_merge(playground_dir):
     # 8. Assert: device 2's core.db has BOTH Bob and Carol admission proposals
     conn2 = sqlite3.connect(str(team_sync_2 / "core.db"))
     invitations_2 = conn2.execute(
-        "SELECT invitee_label FROM admission_proposal ORDER BY invitee_label"
+        "SELECT invitee_label_payload FROM admission_proposal ORDER BY invitee_label_payload"
     ).fetchall()
     conn2.close()
     labels_2 = {row[0] for row in invitations_2}
@@ -119,7 +119,7 @@ def test_concurrent_invitations_merge(playground_dir):
     # 10. Assert: device 1 also has both proposals
     conn1 = sqlite3.connect(str(team_sync_1 / "core.db"))
     invitations_1 = conn1.execute(
-        "SELECT invitee_label FROM admission_proposal ORDER BY invitee_label"
+        "SELECT invitee_label_payload FROM admission_proposal ORDER BY invitee_label_payload"
     ).fetchall()
     conn1.close()
     labels_1 = {row[0] for row in invitations_1}
@@ -141,53 +141,51 @@ def _create_invitation_on_device(team_sync_dir, invitee_label):
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     teammate_ids = [row[0].hex() for row in conn.execute("SELECT id FROM teammate ORDER BY id").fetchall()]
-    steward_ids = [
-        row[0].hex()
-        for row in conn.execute(
-            """
-            SELECT br.teammate_id
-            FROM berth_role br
-            JOIN team_app_berth tab ON tab.id = br.berth_id
-            JOIN app a ON a.id = tab.app_id
-            WHERE a.name = 'SmallSeaCollectiveCore' AND br.role = 'read-write'
-            ORDER BY br.teammate_id
-            """
-        ).fetchall()
-    ]
     teammate_devices: dict[str, list[str]] = {teammate_id_hex: [] for teammate_id_hex in teammate_ids}
     for teammate_id, device_key_id in conn.execute(
         "SELECT teammate_id, device_key_id FROM team_device ORDER BY teammate_id, device_key_id"
     ).fetchall():
         teammate_devices.setdefault(teammate_id.hex(), []).append(device_key_id.hex())
-    governance_snapshot = {
-        "stewards": steward_ids,
+    berth_roles = [
+        {"teammate_id": row[0].hex(), "berth_id": row[1].hex(), "role": row[2]}
+        for row in conn.execute(
+            "SELECT teammate_id, berth_id, role FROM berth_role ORDER BY teammate_id, berth_id"
+        ).fetchall()
+    ]
+    constitution_snapshot = {
         "teammates": teammate_ids,
         "teammate_devices": teammate_devices,
+        "berth_roles": berth_roles,
     }
-    governance_digest = provisioning._governance_digest(governance_snapshot)
+    constitution_digest = provisioning._constitution_digest(constitution_snapshot)
     # The team DB is scoped to one team and does not persist a team_id column.
     # For this merge test we only need a stable non-null value to exercise
     # concurrent append-only proposal rows through the sqlite merge driver.
+    # The record's signature/device-key fields are not verified here.
     pseudo_team_id = conn.execute("SELECT id FROM app LIMIT 1").fetchone()["id"]
     team_row = conn.execute("SELECT id FROM teammate ORDER BY id LIMIT 1").fetchone()
     conn.execute(
         "INSERT INTO admission_proposal ("
-        "proposal_id, nonce, team_id, inviter_teammate_id, invitee_teammate_id, "
-        "invitee_label, role, anchor_commit, governance_digest, governance_snapshot_json, "
-        "state, created_at, expires_at"
-        ") VALUES (?, ?, ?, ?, ?, ?, 'steward', ?, ?, ?, 'awaiting_invitee', ?, ?)",
+        "record_id, record_type, author_teammate_id, author_device_key_id, created_at, "
+        "anchor_commit, constitution_digest, constitution_snapshot_json, schema_version, "
+        "nonce, team_id, invitee_teammate_id, invitee_label_commitment, expires_at, "
+        "signature, invitee_label_payload, mode_plan"
+        ") VALUES (?, 'admission_proposal', ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?, ?, ?, ?)",
         (
             provisioning.uuid7(),
+            team_row["id"],
+            secrets.token_bytes(16),
+            datetime.now(timezone.utc).isoformat(),
+            head_commit,
+            constitution_digest,
+            provisioning._json_dumps_sorted(constitution_snapshot),
             secrets.token_bytes(16),
             pseudo_team_id,
-            team_row["id"],
             provisioning.uuid7(),
-            invitee_label,
-            head_commit,
-            governance_digest,
-            provisioning._json_dumps_sorted(governance_snapshot),
-            datetime.now(timezone.utc).isoformat(),
             provisioning._proposal_expiry(datetime.now(timezone.utc), 7 * 24 * 60 * 60),
+            secrets.token_bytes(64),
+            invitee_label,
+            provisioning._json_dumps_sorted(provisioning.mode_plan_for_preset("steward")),
         ),
     )
     conn.commit()

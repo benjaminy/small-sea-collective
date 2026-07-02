@@ -133,7 +133,7 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
     acceptance_b64 = bob_manager.accept_invitation(token_b64)
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
-    bob_teammate_id_hex = acceptance["acceptor_teammate_id"]
+    bob_teammate_id_hex = acceptance["author_teammate_id"]
     bob_team_token = _open_session(http, "Bob", "ProjectX")
     bob_files_berth = _session_berth_info(http, bob_team_token)["berth_id"]
     # Match Alice's stable fixture shape for Bob's own app berth.

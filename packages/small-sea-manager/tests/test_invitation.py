@@ -216,11 +216,11 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert isinstance(acceptance_b64, str)
 
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
-    bob_teammate_id_hex = acceptance["acceptor_teammate_id"]
+    bob_teammate_id_hex = acceptance["author_teammate_id"]
     assert bob_teammate_id_hex != bob_hex
     assert len(bob_teammate_id_hex) == 32
     assert acceptance["team_id"] == token_data["team_id"]
-    assert len(acceptance["acceptor_device_public_key"]) == 64
+    assert len(acceptance["invitee_device_public_key"]) == 64
     assert "acceptor_sender_key" not in acceptance
     assert "acceptor_cloud" not in acceptance
     assert "acceptor_bucket" not in acceptance
@@ -247,7 +247,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     # _push_via_hub helper ran for Bob here.
     assert len(bob_ann_rows) == 1
     bob_ann = TeammateBerthStorageAnnouncement(*bob_ann_rows[0])
-    bob_device_public_key = bytes.fromhex(acceptance["acceptor_device_public_key"])
+    bob_device_public_key = bytes.fromhex(acceptance["invitee_device_public_key"])
     assert bob_ann.signer_key_id == key_id_from_public(bob_device_public_key)
     assert verify_teammate_berth_storage_announcement_signature(
         bob_ann, bob_device_public_key
@@ -288,18 +288,18 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     bob_team_device_row = next(
         row for row in team_devices if row[0] == bytes.fromhex(bob_teammate_id_hex)
     )
-    assert bob_team_device_row[1] == bytes.fromhex(acceptance["acceptor_device_key_id"])
-    assert bob_team_device_row[2] == bytes.fromhex(acceptance["acceptor_device_public_key"])
+    assert bob_team_device_row[1] == bytes.fromhex(acceptance["author_device_key_id"])
+    assert bob_team_device_row[2] == bytes.fromhex(acceptance["invitee_device_public_key"])
 
     bob_cert_row = aconn.execute(
         "SELECT cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, "
         "issuer_teammate_id, issued_at, claims, signature "
         "FROM key_certificate WHERE subject_public_key = ?",
-        (bytes.fromhex(acceptance["acceptor_device_public_key"]),),
+        (bytes.fromhex(acceptance["invitee_device_public_key"]),),
     ).fetchone()
     assert bob_cert_row is not None
     assert bob_cert_row[1] == "membership"
-    assert bob_cert_row[3] == bytes.fromhex(acceptance["acceptor_device_public_key"])
+    assert bob_cert_row[3] == bytes.fromhex(acceptance["invitee_device_public_key"])
     assert bob_cert_row[5] == bytes.fromhex(alice_teammate_id_hex)
     assert json.loads(bob_cert_row[7])["teammate_id"] == bob_teammate_id_hex
     bob_membership_cert = provisioning._deserialize_cert(
@@ -325,7 +325,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
         team_id=bytes.fromhex(token_data["team_id"]),
         issuer_teammate_id=bytes.fromhex(alice_teammate_id_hex),
         admitted_teammate_id=bytes.fromhex(bob_teammate_id_hex),
-        subject_public_key=bytes.fromhex(acceptance["acceptor_device_public_key"]),
+        subject_public_key=bytes.fromhex(acceptance["invitee_device_public_key"]),
     )
 
     roles = aconn.execute("SELECT teammate_id, role FROM berth_role").fetchall()
@@ -373,7 +373,7 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert teams[0]["self_in_team"] == bytes.fromhex(bob_teammate_id_hex)
     alice_sender_device_key_id = key_id_from_public(alice_device_public_key)
     bob_sender_device_key_id = key_id_from_public(
-        bytes.fromhex(acceptance["acceptor_device_public_key"])
+        bytes.fromhex(acceptance["invitee_device_public_key"])
     )
 
     with pytest.raises(sqlite3.OperationalError):

@@ -398,11 +398,16 @@ class TeamManager:
     # --- Invitations ---
 
     def create_invitation(self, team_name, invitee_label=None, role="steward"):
-        """Create an invitation token for someone to join a team."""
+        """Create an invitation token for someone to join a team.
+
+        `role` is the UI preset (steward/contributor); it is translated to the
+        per-berth mode-plan expansion rule at this boundary.
+        """
         cloud = provisioning.get_cloud_storage(self.root_dir, self.participant_hex)
         return provisioning.create_invitation(
             self.root_dir, self.participant_hex, team_name, cloud,
-            invitee_label=invitee_label, role=role,
+            invitee_label=invitee_label,
+            mode_plan=provisioning.mode_plan_for_preset(role),
         )
 
     def authorize_identity_join(self, join_request_artifact_b64, *, expires_in_seconds=600):
@@ -687,9 +692,9 @@ class TeamManager:
             self.root_dir, self.participant_hex, team_name, acceptance_b64
         )
 
-    def sign_steward_approval(self, team_name, proposal_id):
-        """Record this steward's approval for a transcript-bound admission proposal."""
-        provisioning.sign_steward_approval(
+    def endorse_admission(self, team_name, proposal_id):
+        """Record this teammate's endorsement of an admission proposal."""
+        provisioning.endorse_admission(
             self.root_dir,
             self.participant_hex,
             team_name,
