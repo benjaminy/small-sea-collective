@@ -445,9 +445,11 @@ Reads `teammate` + `berth_role` from the team DB. Does not query the Hub.
 
 #### Set teammate integration mode
 
-The target operation appends a signed Core record setting the teammate's integration mode for the berth to `automatic` or `proposal-only`.
-The record identifies its causal Core anchor so historical integrator standing can be replayed.
-The current implementation instead mutates `berth_role` projection rows using the existing `read-write` and `read-only` values.
+`set_teammate_integration_mode` appends a signed `integration_mode_change` Constitution record (see `Documentation/team-constitution.md`) setting the teammate's integration mode for the berth to `automatic` or `proposal-only`, then updates the `berth_role` projection row to match (`automatic` -> `read-write`, `proposal-only` -> `read-only`).
+The calling participant's own teammate identity must currently hold `automatic` standing on the target berth.
+
+The record's anchor is a `constitution_digest` — a live-query digest over current teammate/device/berth-role state, generalizing the digest `admission_proposal` already computes for Core admins to cover every berth's mode.
+This is a Phase 1 stand-in for the schema's target `anchor_frontier` mechanism (record-to-record references, no git dependency); see `Archive/design-record-team-constitution-schema.md` for why the full mechanism isn't realized yet.
 
 The updated Core lineage becomes socially important only insofar as peers validate and adopt it.
 
