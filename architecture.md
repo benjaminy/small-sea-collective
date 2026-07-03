@@ -53,6 +53,13 @@ The current `read-write` and `read-only` schema values approximate `automatic` a
 When a protocol rule needs a replayable authority at a Core anchor, it should say **automatic Core integrator** rather than treating a Manager role name as protocol state.
 The Manager-facing `steward` preset is shorthand for automatic integration on Core, but it is not a central authority or a special key class.
 
+These terms live on two deliberately separate layers, and the distinction is a standing convention rather than loose synonymy:
+
+- **automatic Core integrator** — the *protocol* term. An anchor-relative, replayable standing a verifier evaluates by replaying accepted Core history. Protocol rules, endorsement thresholds, and validity checks use this term. "Core integrator" is an accepted short form; it always implies automatic mode, since proposal-only teammates do not integrate.
+- **`steward` / `contributor`** — *Manager-facing presets*. Convenience bundles a human picks at invitation time (`steward` = automatic everywhere; `contributor` = proposal-only on Core, automatic elsewhere). They are not protocol state and must not be evaluated as such.
+- **`automatic` / `proposal-only`** — the two *integration modes*, per teammate per berth, that the presets expand into and that the protocol actually reasons about.
+- **`read-write` / `read-only`** — the current `berth_role` projection's stand-ins for `automatic` / `proposal-only`; renaming these stored values is deferred (see #167).
+
 This two-mode model is an intentionally modest accommodation for medium-sized teams.
 As a group grows, it is natural for a smaller inner group to handle routine integration while a larger outer group mostly observes and occasionally proposes changes.
 A medium-sized team genuinely has different levels of engagement, responsibility, and accountability, and Small Sea should support that without trying to model every possible governance arrangement.
