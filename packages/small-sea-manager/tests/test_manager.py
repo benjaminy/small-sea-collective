@@ -237,7 +237,7 @@ def test_linked_device_notification_candidates_seed_backlog_and_keep_notified_ca
     assert fresh_cert.cert_id.hex() in linked_ids
 
 
-def test_manager_web_renders_admin_and_non_admin_admission_controls(playground_dir):
+def test_manager_web_renders_steward_and_non_steward_admission_controls(playground_dir):
     root = pathlib.Path(playground_dir)
     alice_cloud = root / "alice-cloud"
     bob_cloud = root / "bob-cloud"
@@ -274,8 +274,8 @@ def test_manager_web_renders_admin_and_non_admin_admission_controls(playground_d
     )
     bob_team_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
     with sqlite3.connect(str(bob_team_db)) as conn:
-        # Test-only fixture shortcut: force Bob into a non-admin local view so
-        # we can assert the UI hides admin-only controls for that viewer.
+        # Test-only fixture shortcut: force Bob into a non-steward local view so
+        # we can assert the UI hides steward-only controls for that viewer.
         conn.execute(
             "UPDATE berth_role SET role = 'read-only' WHERE teammate_id = ?",
             (bytes.fromhex(bob_self_id_hex),),

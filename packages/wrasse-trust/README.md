@@ -39,7 +39,7 @@ The design direction has shifted to a **device-only, per-team** model:
 - `device_link` certs expand an existing teammate's device set within one team
 - NoteToSelf is socially useful for bookkeeping, but it is not
   cryptographically privileged
-- "admin" remains shorthand for automatic Core integration at an accepted Core state, not a special key role
+- "steward" remains shorthand for automatic Core integration at an accepted Core state, not a special key role
 - significant teammate facts are signed append-only domain records carried by the team repository rather than inferred from Git authorship alone
 - ordinary device keys never leave their devices; separately prepared recovery capability can authorize a fresh device key through a signed, conspicuous recovery ceremony
 

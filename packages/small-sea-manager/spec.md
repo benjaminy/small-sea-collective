@@ -144,15 +144,15 @@ The distinction controls expected integration behavior rather than authorship or
 A proposal-only Core teammate may still sign a team-visible display-name proposal; a local alias remains participant-local and needs no endorsement.
 
 The current `read-write` value approximates `automatic`, and the current `read-only` value approximates `proposal-only`.
-The current Manager role names are convenience presets over those two values: `admin` selects automatic everywhere, `contributor` selects proposal-only on Core and automatic on other berths, and `observer` selects proposal-only everywhere.
+The current Manager role names are convenience presets over those two values: `steward` selects automatic everywhere, and `contributor` selects proposal-only on Core and automatic on other berths.
 They are not additional protocol categories.
-The default invitation preset remains `admin` for small teams in the current implementation.
+The default invitation preset remains `steward` for small teams in the current implementation.
 
 This is deliberately a shallow involvement model for medium-sized teams.
 It lets a smaller inner group perform routine integration while an outer group mostly observes and proposes, reflecting the different levels of engagement and accountability a medium-sized team really has.
 The target Manager model uses these two modes rather than a general group-governance toolkit; a team-configurable role scheme that maps richer roles onto integration expectations is a plausible future direction, not a current commitment.
 
-`Admin` remains useful shorthand for a teammate in automatic mode on Core.
+`Steward` remains useful shorthand for a teammate in automatic mode on Core.
 Whether a signer held that status is evaluated against the accepted Core state referenced by the signed record.
 
 > The intended Hub policy is to monitor and integrate ordinary changes only from teammates in automatic mode in its **local** Core projection.
@@ -409,7 +409,7 @@ Key rotation mechanics and the append-only revocation path are TBD pending Cuttl
 
 Creates `{TeamName}/Sync/` directory with a fresh team DB and git repo. Adds a
 Team pointer to NoteToSelf DB.
-The creator is added as the first teammate with `admin` role on all berths.
+The creator is added as the first teammate with `steward` role on all berths.
 Peers who adopt that published view treat the creator as an integrator everywhere, including Core.
 
 If a `cloud_storage` row exists for the participant, team creation auto-allocates
@@ -448,7 +448,7 @@ Reads `teammate` + `berth_role` from the team DB. Does not query the Hub.
 `set_teammate_integration_mode` appends a signed `integration_mode_change` Constitution record (see `Documentation/team-constitution.md`) setting the teammate's integration mode for the berth to `automatic` or `proposal-only`, then updates the `berth_role` projection row to match (`automatic` -> `read-write`, `proposal-only` -> `read-only`).
 The calling participant's own teammate identity must currently hold `automatic` standing on the target berth.
 
-The record's anchor is a `constitution_digest` — a live-query digest over current teammate/device/berth-role state, generalizing the digest `admission_proposal` already computes for Core admins to cover every berth's mode.
+The record's anchor is a `constitution_digest` — a live-query digest over current teammate/device/berth-role state, generalizing the digest `admission_proposal` already computes for Core stewards to cover every berth's mode.
 This is a Phase 1 stand-in for the schema's target `anchor_frontier` mechanism (record-to-record references, no git dependency); see `Archive/design-record-team-constitution-schema.md` for why the full mechanism isn't realized yet.
 
 The updated Core lineage becomes socially important only insofar as peers validate and adopt it.
@@ -486,7 +486,7 @@ Initiates an invitation proposal: allocates a fresh UUIDv7 `teammate_id` for the
 The anchor freezes the automatic Core integrator roster, membership roster, and teammate→device mapping at that snapshot.
 The target event model appends the proposal shell; the current implementation creates a mutable `admission_proposal` row.
 
-Inputs: `team_name`, optional `invitee_label`, `role` (default: admin).
+Inputs: `team_name`, optional `invitee_label`, `role` (default: steward).
 
 Token contents: proposal ID, nonce, team name, inviter teammate ID, inviter display
 name, inviter cloud endpoint (protocol + URL only — no credentials), and the
@@ -558,7 +558,7 @@ After finalization, the newly admitted teammate sets up their incoming cloud
 endpoint via the teammate-transport-configuration flow (B7) and then publishes
 their own sender key via `redistribute_sender_key(...)`.
 
-The current schema stores a mutable `admission_proposal` row plus append-only `admin_approval` rows.
+The current schema stores a mutable `admission_proposal` row plus append-only `steward_approval` rows.
 The target schema replaces mutable durable state transitions with signed append-only proposal lifecycle records and treats any status column as a projection.
 
 #### Teammate berth storage announcements
@@ -950,7 +950,7 @@ Alice (inviter)                    Bob (invitee)         Other Core integrators
   | create_invitation()                 |                      |
   |  → allocates invitee teammate_id      |                      |
   |  → anchors to team-history commit   |                      |
-  |    hash (freezes admin/teammate/      |                      |
+  |    hash (freezes steward/teammate/      |                      |
   |    device mapping at snapshot)      |                      |
   |  → publishes proposal shell to      |                      |
   |    {TeamName}/Sync/core.db            |                      |
@@ -1022,7 +1022,7 @@ The proposal records remain inspectable, and the inviter must start a new propos
 An endorsement is valid iff the signing device key appears in a `device_link` cert at the anchor that maps to a teammate in automatic mode on Core.
 Endorsements by post-anchor devices or proposal-only Core teammates are rejected; multiple device endorsements from the same teammate dedupe to one.
 
-The current implementation represents most proposal lifecycle state by mutating `admission_proposal` and uses `admin_approval` for endorsement rows.
+The current implementation represents most proposal lifecycle state by mutating `admission_proposal` and uses `steward_approval` for endorsement rows.
 The append-only target keeps the proposal, transcript, acceptance, endorsement, eligibility-loss, revocation, and finalization records independently inspectable.
 
 ---
@@ -1230,7 +1230,7 @@ CREATE TABLE IF NOT EXISTS berth_role (
 --     created_at, expires_at
 --   acceptance_transcript: proposal_id (FK), invitee_device_bootstrap_key,
 --     invitee_device_signing_key, invitee_acceptance_signature
---   admin_approval_signatures: proposal_id (FK), admin_teammate_id,
+--   steward_approval_signatures: proposal_id (FK), steward_teammate_id,
 --     approver_device_key_id, transcript_digest, signature, created_at
 -- Transport metadata (cloud endpoints etc.) is NOT part of this schema;
 -- that is configured post-admission via the B7 teammate-transport flow.

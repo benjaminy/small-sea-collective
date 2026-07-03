@@ -899,12 +899,12 @@ def _proposal_transcript_digest(payload: dict[str, str]) -> bytes:
     return _sha256_bytes(_json_bytes(payload))
 
 
-def _approval_payload(*, proposal_id: bytes, transcript_digest: bytes, admin_teammate_id: bytes) -> bytes:
+def _approval_payload(*, proposal_id: bytes, transcript_digest: bytes, steward_teammate_id: bytes) -> bytes:
     return _json_bytes(
         {
             "proposal_id": proposal_id.hex(),
             "transcript_digest": transcript_digest.hex(),
-            "admin_teammate_id": admin_teammate_id.hex(),
+            "steward_teammate_id": steward_teammate_id.hex(),
         }
     )
 
@@ -920,16 +920,16 @@ def _finalization_payload(*, proposal_id: bytes, transcript_digest: bytes, invit
 
 
 def _role_to_core_berth_role(role: str) -> str:
-    if role == "admin":
+    if role == "steward":
         return "read-write"
-    if role in {"contributor", "observer"}:
+    if role == "contributor":
         return "read-only"
     raise ValueError(f"Unknown invitation role: {role}")
 
 
 def _governance_snapshot(conn) -> dict[str, object]:
     teammate_ids = [row[0].hex() for row in conn.execute(text("SELECT id FROM teammate ORDER BY id")).fetchall()]
-    admin_ids = [
+    steward_ids = [
         row[0].hex()
         for row in conn.execute(
             text(
@@ -948,7 +948,7 @@ def _governance_snapshot(conn) -> dict[str, object]:
     ).fetchall():
         teammate_devices.setdefault(teammate_id.hex(), []).append(device_key_id.hex())
     return {
-        "admins": admin_ids,
+        "stewards": steward_ids,
         "teammates": teammate_ids,
         "teammate_devices": teammate_devices,
     }
@@ -1019,8 +1019,8 @@ def _approval_count(conn, proposal_id: bytes, transcript_digest: bytes) -> int:
     # on the sync/write-acceptance model rather than an isolated authority layer.
     row = conn.execute(
         text(
-            "SELECT COUNT(DISTINCT admin_teammate_id) "
-            "FROM admin_approval "
+            "SELECT COUNT(DISTINCT steward_teammate_id) "
+            "FROM steward_approval "
             "WHERE proposal_id = :proposal_id AND transcript_digest = :transcript_digest"
         ),
         {"proposal_id": proposal_id, "transcript_digest": transcript_digest},
@@ -1035,37 +1035,37 @@ def _proposal_has_quorum(conn, proposal_row) -> bool:
     return _approval_count(conn, proposal_row[0], transcript_digest) >= _proposal_quorum(conn)
 
 
-def _proposal_admin_device_is_valid(snapshot: dict[str, object], admin_teammate_id: bytes, approver_device_key_id: bytes) -> bool:
-    admin_teammate_id_hex = admin_teammate_id.hex()
-    if admin_teammate_id_hex not in snapshot.get("admins", []):
+def _proposal_steward_device_is_valid(snapshot: dict[str, object], steward_teammate_id: bytes, approver_device_key_id: bytes) -> bool:
+    steward_teammate_id_hex = steward_teammate_id.hex()
+    if steward_teammate_id_hex not in snapshot.get("stewards", []):
         return False
     teammate_devices = snapshot.get("teammate_devices", {})
     if not isinstance(teammate_devices, dict):
         return False
-    return approver_device_key_id.hex() in teammate_devices.get(admin_teammate_id_hex, [])
+    return approver_device_key_id.hex() in teammate_devices.get(steward_teammate_id_hex, [])
 
 
-def _insert_admin_approval(
+def _insert_steward_approval(
     conn,
     *,
     proposal_id: bytes,
-    admin_teammate_id: bytes,
+    steward_teammate_id: bytes,
     approver_device_key_id: bytes,
     signature: bytes,
     transcript_digest: bytes,
 ) -> None:
     conn.execute(
         text(
-            "INSERT OR REPLACE INTO admin_approval "
-            "(approval_id, proposal_id, admin_teammate_id, approver_device_key_id, "
+            "INSERT OR REPLACE INTO steward_approval "
+            "(approval_id, proposal_id, steward_teammate_id, approver_device_key_id, "
             "transcript_digest, signature, created_at) "
-            "VALUES (:approval_id, :proposal_id, :admin_teammate_id, :approver_device_key_id, "
+            "VALUES (:approval_id, :proposal_id, :steward_teammate_id, :approver_device_key_id, "
             ":transcript_digest, :signature, :created_at)"
         ),
         {
             "approval_id": uuid7(),
             "proposal_id": proposal_id,
-            "admin_teammate_id": admin_teammate_id,
+            "steward_teammate_id": steward_teammate_id,
             "approver_device_key_id": approver_device_key_id,
             "transcript_digest": transcript_digest,
             "signature": signature,
@@ -1618,7 +1618,7 @@ class Invitation(Base):
     nonce = Column(LargeBinary, nullable=False)
     status = Column(String, nullable=False, default="pending")
     invitee_label = Column(String)
-    role = Column(String, nullable=False, default="admin")
+    role = Column(String, nullable=False, default="steward")
     created_at = Column(String, nullable=False)
     accepted_at = Column(String)
     accepted_by = Column(LargeBinary)
@@ -3765,10 +3765,10 @@ def _role_value_for_mode(mode: str) -> str:
 
 
 def _constitution_snapshot(conn) -> dict[str, object]:
-    """Generalizes `_governance_snapshot` beyond Core admins to every berth's
+    """Generalizes `_governance_snapshot` beyond Core stewards to every berth's
     current integration mode, since Constitution record types besides
     admission anchor against the full membership/device/mode picture rather
-    than just the Core admin roster.
+    than just the Core steward roster.
     """
     teammate_ids = [
         row[0].hex() for row in conn.execute(text("SELECT id FROM teammate ORDER BY id")).fetchall()
@@ -4396,7 +4396,7 @@ def activate_app_for_team(root_dir, participant_hex, team_name, app_name):
 
 
 def create_invitation(
-    root_dir, participant_hex, team_name, inviter_cloud=None, invitee_label=None, role="admin"
+    root_dir, participant_hex, team_name, inviter_cloud=None, invitee_label=None, role="steward"
 ):
     """Create a transcript-bound admission proposal token for a team."""
     _role_to_core_berth_role(role)
@@ -4798,13 +4798,13 @@ def complete_invitation_acceptance(
                 _approval_payload(
                     proposal_id=proposal_id,
                     transcript_digest=transcript_digest,
-                    admin_teammate_id=inviter_teammate_id,
+                    steward_teammate_id=inviter_teammate_id,
                 ),
             )
-            _insert_admin_approval(
+            _insert_steward_approval(
                 conn,
                 proposal_id=proposal_id,
-                admin_teammate_id=inviter_teammate_id,
+                steward_teammate_id=inviter_teammate_id,
                 approver_device_key_id=key_id_from_public(inviter_public_key),
                 signature=approval_signature,
                 transcript_digest=transcript_digest,
@@ -4876,7 +4876,7 @@ def complete_invitation_acceptance(
     repo.commit("Recorded admission acceptance")
 
 
-def sign_admin_approval(root_dir, participant_hex, team_name, proposal_id_hex):
+def sign_steward_approval(root_dir, participant_hex, team_name, proposal_id_hex):
     root_dir = pathlib.Path(root_dir)
     proposal_id = bytes.fromhex(proposal_id_hex)
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
@@ -4895,7 +4895,7 @@ def sign_admin_approval(root_dir, participant_hex, team_name, proposal_id_hex):
         ).fetchone()
     if row is None:
         raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
-    admin_teammate_id = row[0]
+    steward_teammate_id = row[0]
     failure_reason = None
     try:
         with engine.begin() as conn:
@@ -4907,20 +4907,20 @@ def sign_admin_approval(root_dir, participant_hex, team_name, proposal_id_hex):
                 raise ValueError("Proposal does not have a recorded transcript yet")
             else:
                 snapshot = _load_governance_snapshot_json(proposal_row)
-                if not _proposal_admin_device_is_valid(snapshot, admin_teammate_id, approver_device_key_id):
-                    raise ValueError("Approver device was not linked to an admin at the proposal anchor")
+                if not _proposal_steward_device_is_valid(snapshot, steward_teammate_id, approver_device_key_id):
+                    raise ValueError("Approver device was not linked to a steward at the proposal anchor")
                 signature = _sign_bytes(
                     approver_private_key,
                     _approval_payload(
                         proposal_id=proposal_id,
                         transcript_digest=proposal_row[17],
-                        admin_teammate_id=admin_teammate_id,
+                        steward_teammate_id=steward_teammate_id,
                     ),
                 )
-                _insert_admin_approval(
+                _insert_steward_approval(
                     conn,
                     proposal_id=proposal_id,
-                    admin_teammate_id=admin_teammate_id,
+                    steward_teammate_id=steward_teammate_id,
                     approver_device_key_id=approver_device_key_id,
                     signature=signature,
                     transcript_digest=proposal_row[17],
@@ -4932,7 +4932,7 @@ def sign_admin_approval(root_dir, participant_hex, team_name, proposal_id_hex):
     repo_dir = _team_sync_dir(root_dir, participant_hex, team_name)
     repo = _Repo(repo_dir / ".git", repo_dir)
     repo.stage(["core.db"])
-    repo.commit("Recorded admin approval")
+    repo.commit("Recorded steward approval")
 
 
 def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):

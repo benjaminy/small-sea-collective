@@ -13,7 +13,7 @@ def _push_to_localfolder(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
     cod.push_to_remote(["main"])
 
 
-def _bootstrap_existing_admin_clone(
+def _bootstrap_existing_steward_clone(
     root: pathlib.Path,
     *,
     inviter_hex: str,
@@ -81,7 +81,7 @@ def _bootstrap_existing_admin_clone(
     return invitee_teammate_id.hex()
 
 
-def test_quorum_two_requires_second_admin_and_inviter_finalization(playground_dir):
+def test_quorum_two_requires_second_steward_and_inviter_finalization(playground_dir):
     root = pathlib.Path(playground_dir)
     alice_cloud = root / "alice-cloud"
     alice_cloud.mkdir()
@@ -96,7 +96,7 @@ def test_quorum_two_requires_second_admin_and_inviter_finalization(playground_di
     alice_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     _push_to_localfolder(alice_sync, alice_cloud)
 
-    _bootstrap_existing_admin_clone(
+    _bootstrap_existing_steward_clone(
         root,
         inviter_hex=alice_hex,
         invitee_hex=carol_hex,
@@ -126,7 +126,7 @@ def test_quorum_two_requires_second_admin_and_inviter_finalization(playground_di
     assert proposals[0]["status"] == "awaiting_quorum"
 
     shutil.copy2(alice_sync / "core.db", carol_sync / "core.db")
-    provisioning.sign_admin_approval(root, carol_hex, "ProjectX", proposals[0]["id"])
+    provisioning.sign_steward_approval(root, carol_hex, "ProjectX", proposals[0]["id"])
     shutil.copy2(carol_sync / "core.db", alice_sync / "core.db")
 
     provisioning.finalize_admission(root, alice_hex, "ProjectX", proposals[0]["id"])
@@ -182,7 +182,7 @@ def test_governance_drift_invalidates_proposal(playground_dir):
     assert proposals[0]["status"] == "invalidated"
 
 
-def test_observer_role_finalizes_as_read_only(playground_dir):
+def test_contributor_role_finalizes_as_read_only(playground_dir):
     root = pathlib.Path(playground_dir)
     alice_cloud = root / "alice-cloud"
     alice_cloud.mkdir()
@@ -200,7 +200,7 @@ def test_observer_role_finalizes_as_read_only(playground_dir):
         "ProjectX",
         {"protocol": "localfolder", "url": str(alice_cloud)},
         invitee_label="Bob",
-        role="observer",
+        role="contributor",
     )
     acceptance = provisioning.accept_invitation(
         root,

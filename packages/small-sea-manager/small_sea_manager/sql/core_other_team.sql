@@ -32,7 +32,7 @@ CREATE TABLE IF NOT EXISTS invitation (
     nonce BLOB NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     invitee_label TEXT,
-    role TEXT NOT NULL DEFAULT 'admin',
+    role TEXT NOT NULL DEFAULT 'steward',
     created_at TEXT NOT NULL,
     accepted_at TEXT,
     accepted_by BLOB,
@@ -53,7 +53,7 @@ CREATE TABLE IF NOT EXISTS admission_proposal (
     inviter_teammate_id BLOB NOT NULL,
     invitee_teammate_id BLOB NOT NULL,
     invitee_label TEXT,
-    role TEXT NOT NULL DEFAULT 'admin',
+    role TEXT NOT NULL DEFAULT 'steward',
     anchor_commit TEXT NOT NULL,
     governance_digest BLOB NOT NULL,
     governance_snapshot_json TEXT NOT NULL,
@@ -71,10 +71,10 @@ CREATE TABLE IF NOT EXISTS admission_proposal (
     invalid_reason TEXT
 );
 
-CREATE TABLE IF NOT EXISTS admin_approval (
+CREATE TABLE IF NOT EXISTS steward_approval (
     approval_id BLOB PRIMARY KEY,
     proposal_id BLOB NOT NULL,
-    admin_teammate_id BLOB NOT NULL,
+    steward_teammate_id BLOB NOT NULL,
     approver_device_key_id BLOB NOT NULL,
     transcript_digest BLOB NOT NULL,
     signature BLOB NOT NULL,
@@ -136,7 +136,7 @@ CREATE INDEX IF NOT EXISTS idx_teammate_berth_storage_announcement_scan
 -- for the doc's target `anchor_frontier` mechanism (see that phase's
 -- Archive/design-record for why): a live-query digest over current
 -- teammate/device/berth-role state, generalizing `admission_proposal`'s
--- existing `governance_digest` beyond just Core admins.
+-- existing `governance_digest` beyond just Core stewards.
 CREATE TABLE IF NOT EXISTS integration_mode_change (
     record_id BLOB PRIMARY KEY,
     record_type TEXT NOT NULL DEFAULT 'integration_mode_change',

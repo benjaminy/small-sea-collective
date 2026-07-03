@@ -112,7 +112,7 @@ def _linked_device_events(conn, dismissed, *, self_teammate_id_hex: str | None):
     return events
 
 
-def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, viewer_is_admin: bool):
+def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, viewer_is_steward: bool):
     proposal_rows = conn.execute(
         text(
             "SELECT proposal_id, state, invitee_label, role, created_at, finalized_at, "
@@ -158,7 +158,7 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                         invitation_id_hex=artifact_id_hex,
                         proposal_id_hex=artifact_id_hex,
                         can_dismiss=True,
-                        can_revoke=viewer_is_admin,
+                        can_revoke=viewer_is_steward,
                     )
                 )
                 continue
@@ -168,7 +168,7 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                     continue
                 quorum_row = conn.execute(
                     text(
-                        "SELECT COUNT(DISTINCT admin_teammate_id) FROM admin_approval "
+                        "SELECT COUNT(DISTINCT steward_teammate_id) FROM steward_approval "
                         "WHERE proposal_id = :proposal_id AND transcript_digest = :transcript_digest"
                     ),
                     {
@@ -181,7 +181,7 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                     provisioning._team_setting(conn, "admission_quorum", "1")
                 )
                 can_finalize = (
-                    viewer_is_admin
+                    viewer_is_steward
                     and self_teammate_id_hex is not None
                     and inviter_teammate_id is not None
                     and inviter_teammate_id.hex() == self_teammate_id_hex
@@ -195,7 +195,7 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                         title=f"Awaiting quorum for {invitee_label or 'unlabelled invitee'}",
                         summary=(
                             f"Transcript recorded for role `{role}`. "
-                            f"{quorum_count} of {quorum_target} distinct admin approvals recorded."
+                            f"{quorum_count} of {quorum_target} distinct steward approvals recorded."
                         ),
                         badge_label="awaiting quorum",
                         badge_class="badge-amber",
@@ -203,8 +203,8 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                         invitation_id_hex=artifact_id_hex,
                         proposal_id_hex=artifact_id_hex,
                         can_dismiss=True,
-                        can_revoke=viewer_is_admin,
-                        can_approve=viewer_is_admin,
+                        can_revoke=viewer_is_steward,
+                        can_approve=viewer_is_steward,
                         can_finalize=can_finalize,
                     )
                 )
@@ -229,7 +229,7 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                         invitation_id_hex=artifact_id_hex,
                         proposal_id_hex=artifact_id_hex,
                         can_dismiss=True,
-                        can_exclude=viewer_is_admin and teammate_id_hex not in {None, self_teammate_id_hex},
+                        can_exclude=viewer_is_steward and teammate_id_hex not in {None, self_teammate_id_hex},
                     )
                 )
         return events
@@ -270,13 +270,13 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                     title=f"Invitation open for {label}",
                     summary=(
                         f"Current-model invitation token created for role `{role}`. "
-                        "This is visible now; multi-admin quorum decisions remain B5."
+                        "This is visible now; multi-steward quorum decisions remain B5."
                     ),
-                    badge_label="needs attention" if viewer_is_admin else "invitation",
+                    badge_label="needs attention" if viewer_is_steward else "invitation",
                     badge_class="badge-amber",
                     invitation_id_hex=artifact_id_hex,
                     can_dismiss=True,
-                    can_revoke=viewer_is_admin,
+                    can_revoke=viewer_is_steward,
                     can_exclude=False,
                 )
             )
@@ -304,7 +304,7 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                     invitation_id_hex=artifact_id_hex,
                     can_dismiss=True,
                     can_revoke=False,
-                    can_exclude=viewer_is_admin and accepted_by_hex not in {None, self_teammate_id_hex},
+                    can_exclude=viewer_is_steward and accepted_by_hex not in {None, self_teammate_id_hex},
                 )
             )
             continue
@@ -317,7 +317,7 @@ def list_admission_events(
     team_name: str,
     *,
     self_teammate_id_hex: str | None,
-    viewer_is_admin: bool,
+    viewer_is_steward: bool,
 ) -> list[AdmissionEvent]:
     team_db_path = pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync" / "core.db"
     dismissed = provisioning.list_dismissed_admission_events(
@@ -338,7 +338,7 @@ def list_admission_events(
                     conn,
                     dismissed,
                     self_teammate_id_hex=self_teammate_id_hex,
-                    viewer_is_admin=viewer_is_admin,
+                    viewer_is_steward=viewer_is_steward,
                 )
             )
     finally:
