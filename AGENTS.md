@@ -67,7 +67,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ## Project Management Rules
 - **Do NOT auto-commit.** You may prepare commits and stage changes, but always request explicit user approval before finalizing a git commit.
 - **Micro Tests over Unit Tests.** The project refers to quick, developer-focused tests as "micro tests." Ensure you use this terminology in discussions and documentation.
-- **Pre-alpha: do not spend effort on backward compatibility.**
+- **Project status: still research. Do not spend effort on backward compatibility.**
    Prefer the cleanest design over migration shims or compatibility layers unless the user explicitly asks for them.
    Keep schema/version markers in place so future compatibility work remains possible.
 - The typical workflow for a nontrivial unit of work should be the following.

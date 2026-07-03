@@ -141,7 +141,7 @@ def _create_invitation_on_device(team_sync_dir, invitee_label):
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     teammate_ids = [row[0].hex() for row in conn.execute("SELECT id FROM teammate ORDER BY id").fetchall()]
-    admin_ids = [
+    steward_ids = [
         row[0].hex()
         for row in conn.execute(
             """
@@ -160,7 +160,7 @@ def _create_invitation_on_device(team_sync_dir, invitee_label):
     ).fetchall():
         teammate_devices.setdefault(teammate_id.hex(), []).append(device_key_id.hex())
     governance_snapshot = {
-        "admins": admin_ids,
+        "stewards": steward_ids,
         "teammates": teammate_ids,
         "teammate_devices": teammate_devices,
     }
@@ -175,7 +175,7 @@ def _create_invitation_on_device(team_sync_dir, invitee_label):
         "proposal_id, nonce, team_id, inviter_teammate_id, invitee_teammate_id, "
         "invitee_label, role, anchor_commit, governance_digest, governance_snapshot_json, "
         "state, created_at, expires_at"
-        ") VALUES (?, ?, ?, ?, ?, ?, 'admin', ?, ?, ?, 'awaiting_invitee', ?, ?)",
+        ") VALUES (?, ?, ?, ?, ?, ?, 'steward', ?, ?, ?, 'awaiting_invitee', ?, ?)",
         (
             provisioning.uuid7(),
             secrets.token_bytes(16),

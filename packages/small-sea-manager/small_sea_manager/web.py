@@ -69,7 +69,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             teammate["is_self"] = teammate["id"] == self_in_team
             roles = teammate.get("berth_roles", [])
             teammate["core_role"] = roles[0]["role"] if roles else None
-            teammate["can_remove"] = team.get("viewer_is_admin", False) and not teammate["is_self"]
+            teammate["can_remove"] = team.get("viewer_is_steward", False) and not teammate["is_self"]
             teammates.append(teammate)
         return teammates
 
@@ -82,7 +82,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "teammates": [],
                 "invitations": [],
                 "admission_events": [],
-                "viewer_is_admin": False,
+                "viewer_is_steward": False,
                 "sync_status": None,
                 "team_session_status": "none",
                 "team_session_mode_badge": None,
@@ -95,7 +95,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "teammates": _mark_teammate_fields(team),
             "invitations": team["invitations"],
             "admission_events": team["admission_events"],
-            "viewer_is_admin": team["viewer_is_admin"],
+            "viewer_is_steward": team["viewer_is_steward"],
             "sync_status": mgr.get_team_sync_status(team_name),
             "team_session_status": mgr.session_state(team_name, _ENCRYPTED),
             "team_session_mode_badge": _mode_badge(_ENCRYPTED),
@@ -122,7 +122,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "request": request,
                 "team_name": team_name,
                 "admission_events": team.get("admission_events", []),
-                "viewer_is_admin": team.get("viewer_is_admin", False),
+                "viewer_is_steward": team.get("viewer_is_steward", False),
                 "notice": notice,
                 "error": error,
             },
@@ -439,7 +439,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         request: Request,
         team_name: str,
         invitee_label: str = Form(""),
-        role: str = Form("admin"),
+        role: str = Form("steward"),
     ):
         mgr = _mgr(request)
         try:
@@ -483,8 +483,8 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     async def approve_invitation(request: Request, team_name: str, inv_id: str):
         mgr = _mgr(request)
         try:
-            mgr.sign_admin_approval(team_name, inv_id)
-            notice = "Admin approval recorded."
+            mgr.sign_steward_approval(team_name, inv_id)
+            notice = "Steward approval recorded."
             error = None
         except Exception as e:
             notice = None
@@ -660,7 +660,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "request": request,
                 "team_name": team_name,
                 "admission_events": team.get("admission_events", []),
-                "viewer_is_admin": team.get("viewer_is_admin", False),
+                "viewer_is_steward": team.get("viewer_is_steward", False),
                 "watch_delay": _watch_delay(active, hub_available=hub_available),
             },
         )

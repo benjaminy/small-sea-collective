@@ -305,7 +305,7 @@ class TeamManager:
                 "teammates": [],
                 "invitations": [],
                 "admission_events": [],
-                "viewer_is_admin": False,
+                "viewer_is_steward": False,
                 "self_in_team": None,
             }
         teammates = provisioning.list_teammates(self.root_dir, self.participant_hex, team_name)
@@ -315,13 +315,13 @@ class TeamManager:
             self.participant_hex,
             team_name,
         )
-        viewer_is_admin = False
+        viewer_is_steward = False
         if self_in_team is not None:
             for teammate in teammates:
                 if teammate["id"] != self_in_team:
                     continue
                 roles = teammate.get("berth_roles", [])
-                viewer_is_admin = any(role["role"] == "read-write" for role in roles)
+                viewer_is_steward = any(role["role"] == "read-write" for role in roles)
                 break
         return {
             "name": team_name,
@@ -333,14 +333,14 @@ class TeamManager:
                 self.participant_hex,
                 team_name,
                 self_teammate_id_hex=self_in_team,
-                viewer_is_admin=viewer_is_admin,
+                viewer_is_steward=viewer_is_steward,
             ),
-            "viewer_is_admin": viewer_is_admin,
+            "viewer_is_steward": viewer_is_steward,
             "self_in_team": self_in_team,
         }
 
     def delete_team(self, team_name):
-        """Delete a team. Must be an admin."""
+        """Delete a team. Must be a steward."""
         raise NotImplementedError("delete_team")
 
     # --- Teammates ---
@@ -350,7 +350,7 @@ class TeamManager:
         return provisioning.list_teammates(self.root_dir, self.participant_hex, team_name)
 
     def remove_teammate(self, team_name, teammate):
-        """Remove a teammate from a team. Must be an admin."""
+        """Remove a teammate from a team. Must be a steward."""
         return provisioning.remove_teammate(
             self.root_dir,
             self.participant_hex,
@@ -390,14 +390,14 @@ class TeamManager:
         )
 
     def set_teammate_role(self, team_name, teammate, role):
-        """Set a teammate's role (admin or observer)."""
-        if role not in ("admin", "observer"):
-            raise ValueError(f"Unknown role: {role}. Must be 'admin' or 'observer'.")
+        """Set a teammate's role (steward or contributor)."""
+        if role not in ("steward", "contributor"):
+            raise ValueError(f"Unknown role: {role}. Must be 'steward' or 'contributor'.")
         raise NotImplementedError("set_teammate_role")
 
     # --- Invitations ---
 
-    def create_invitation(self, team_name, invitee_label=None, role="admin"):
+    def create_invitation(self, team_name, invitee_label=None, role="steward"):
         """Create an invitation token for someone to join a team."""
         cloud = provisioning.get_cloud_storage(self.root_dir, self.participant_hex)
         return provisioning.create_invitation(
@@ -687,9 +687,9 @@ class TeamManager:
             self.root_dir, self.participant_hex, team_name, acceptance_b64
         )
 
-    def sign_admin_approval(self, team_name, proposal_id):
-        """Record this admin's approval for a transcript-bound admission proposal."""
-        provisioning.sign_admin_approval(
+    def sign_steward_approval(self, team_name, proposal_id):
+        """Record this steward's approval for a transcript-bound admission proposal."""
+        provisioning.sign_steward_approval(
             self.root_dir,
             self.participant_hex,
             team_name,

@@ -144,9 +144,9 @@ def list_teammates(ctx, team_name):
 @click.option("--label", default=None, help="Human note for who this invitation is for")
 @click.option(
     "--role",
-    default="admin",
-    type=click.Choice(["admin", "contributor", "observer"]),
-    help="Role to grant on acceptance (default: admin)",
+    default="steward",
+    type=click.Choice(["steward", "contributor"]),
+    help="Role to grant on acceptance (default: steward)",
 )
 @click.pass_context
 def invite(ctx, team_name, label, role):
@@ -217,7 +217,7 @@ def remove_teammate(ctx, team_name, teammate):
 @cli.command("set-role")
 @click.argument("team_name")
 @click.argument("teammate")
-@click.argument("role", type=click.Choice(["admin", "observer"]))
+@click.argument("role", type=click.Choice(["steward", "contributor"]))
 @click.pass_context
 def set_role(ctx, team_name, teammate, role):
     """Set a teammate's role in a team."""

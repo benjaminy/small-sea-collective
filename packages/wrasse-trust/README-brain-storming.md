@@ -184,8 +184,8 @@ Instead, the team is a derived principal represented by the history in its
 In that sense, "Accounting" is its membership and revocation history, not
 a separate secret sitting somewhere called "the Accounting private key."
 
-**There is no special "admin" key class in Small Sea.** "Admin" is shorthand for a teammate in automatic mode on Core at an accepted Core state.
-Any key can physically emit bytes shaped like a membership record, but conforming clients accept an admission only when its complete signed transcript and automatic-Core-integrator endorsements satisfy the anchor-relative Core rules.
+**There is no special "steward" key class in Small Sea.** "Steward" is Manager shorthand for automatic Core integration; protocol rules should say automatic Core integrator when they mean anchor-relative standing.
+Any key can physically emit bytes shaped like a membership record, but conforming clients accept an admission only when its complete signed transcript and automatic Core integrator endorsements satisfy the anchor-relative Core rules.
 Cryptographic validity still does not force another participant to adopt the resulting Core lineage.
 
 One consequence worth naming: two teammates who pull from disjoint sets
@@ -474,8 +474,9 @@ the cert to be meaningful to teammates verifying it.
 | `ambient_proximity` | Any team-device key, low stakes. |
 | `revocation` | A device that has a valid trust path to the thing being revoked — either a co-device of the subject (self-revoke) or an existing-teammate device of the team (membership revoke). |
 
-`Admin` is not a special key class.
-It is shorthand for a teammate in automatic mode on Core at the accepted state referenced by a record.
+`Steward` is not a special key class.
+It is Manager shorthand for automatic Core integration.
+Protocol rules should say automatic Core integrator when they mean standing at the accepted state referenced by a record.
 The cert layer provides signed identity and device relationships, while Core replay determines whether a signing device represented an eligible endorser at that anchor.
 
 This table is preliminary and will need refinement as the protocol
@@ -691,7 +692,7 @@ The likely Small Sea synthesis is:
 - device-rooted keys with no persistent per-participant key (inspired by
   Matrix/Signal, simpler than the layered alternative we previously
   considered)
-- admission and signed Core proposals as anchor-relative validity mechanisms, with "admin" left as shorthand for automatic Core integration
+- admission and signed Core proposals as anchor-relative validity mechanisms, with automatic Core integrator as the protocol term and "steward" left as Manager shorthand
 - a complete signed teammate-record lineage in every Core snapshot, carried and versioned alongside the complete Git commit DAG
 - typed certificates and delegation inspired by SPKI
 - ambient proximity trust as continuous verification (novel)
@@ -735,7 +736,7 @@ Design direction:
   may not even need to exist under device-only (see Open Questions).
 - Cross-team identity linking remains opt-in and published by the user
   into whichever team repos they choose.
-- Admin remains an integration-mode shorthand evaluated from accepted Core history; no special admin key class is introduced.
+- Steward remains Manager shorthand for automatic Core integration; protocol standing is evaluated from accepted Core history, and no special steward key class is introduced.
 - Trust anchoring is the team's first (self-issued, genesis) `membership`
   cert, reached by replaying the complete signed Core history through the
   referenced state.

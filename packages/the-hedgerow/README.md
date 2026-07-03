@@ -542,7 +542,7 @@ The first one is the gate; nothing downstream can be answered generically.
    Authoring in The Hedgerow is the consent gesture; subsequent relays are part of the medium.
    If someone copies or summarizes material from another Small Sea app into a Hedgerow post, that is a social concern and possibly a source-app concern, not a special Hedgerow import category.
    Other apps may request Hedgerow berth sessions through the normal Hub process; The Hedgerow does not need a bespoke cross-app export contract.
-   Whatever the policy, it must compose with Small Sea's existing Admin/Contributor/Observer roles, not ignore them.
+   Whatever the policy, it must compose with Small Sea's existing Steward/Contributor roles, not ignore them.
 4. **How is the path shown?**
    The Hedgerow is not the containment-focused app, but "make bridges visible" is the invariant, not "make every upstream detail visible in every context."
    Bridges *want* to be visible: being a known bridge between two communities is the social product.
@@ -581,7 +581,7 @@ The first one is the gate; nothing downstream can be answered generically.
    The stance-floor is deliberately lighter than a mandatory-note floor would be, because the single-team rule already does most of the anti-firehose work and because cricket risk dominates firehose risk in the early phase.
 9. **Can a team refuse a relay before it lands?**
    If Team B gets a post because Bob is a teammate, does it appear immediately, or does it enter a review queue?
-   Is the answer different for read-write teammates and observers?
+   Is the answer different for read-write teammates and contributors?
    Receiver-side budgets push some of this into a configurable per-edge policy.
 10. **What counts as authorship?**
     An optional relay note can change meaning dramatically.

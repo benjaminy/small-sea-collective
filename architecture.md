@@ -50,7 +50,15 @@ The endorsement threshold is always at least one automatic integrator and may be
 Both modes describe recognized teammates who may read, author, and sign data.
 The mode changes what peers are expected to integrate, not whether the teammate can produce a change.
 The current `read-write` and `read-only` schema values approximate `automatic` and `proposal-only` respectively; renaming those stored values is deferred until the proposal mechanism exists.
-Throughout Small Sea, **admin** is shorthand for a teammate in automatic mode on Core, evaluated relative to an accepted Core state; it is not a central authority or a special key class.
+When a protocol rule needs a replayable authority at a Core anchor, it should say **automatic Core integrator** rather than treating a Manager role name as protocol state.
+The Manager-facing `steward` preset is shorthand for automatic integration on Core, but it is not a central authority or a special key class.
+
+These terms live on two deliberately separate layers, and the distinction is a standing convention rather than loose synonymy:
+
+- **automatic Core integrator** — the *protocol* term. An anchor-relative, replayable standing a verifier evaluates by replaying accepted Core history. Protocol rules, endorsement thresholds, and validity checks use this term. "Core integrator" is an accepted short form; it always implies automatic mode, since proposal-only teammates do not integrate.
+- **`steward` / `contributor`** — *Manager-facing presets*. Convenience bundles a human picks at invitation time (`steward` = automatic everywhere; `contributor` = proposal-only on Core, automatic elsewhere). They are not protocol state and must not be evaluated as such.
+- **`automatic` / `proposal-only`** — the two *integration modes*, per teammate per berth, that the presets expand into and that the protocol actually reasons about.
+- **`read-write` / `read-only`** — the current `berth_role` projection's stand-ins for `automatic` / `proposal-only`; renaming these stored values is deferred (see #167).
 
 This two-mode model is an intentionally modest accommodation for medium-sized teams.
 As a group grows, it is natural for a smaller inner group to handle routine integration while a larger outer group mostly observes and occasionally proposes changes.
@@ -199,8 +207,8 @@ Small Sea uses Signal-inspired cryptographic protocols ([X3DH](https://signal.or
 - *Inviter-published finalization.* The inviter observes quorum met and publishes the signed finalization record. The invitee never publishes their own admission. `quorum = 1` is the default; the inviter's own endorsement alone meets quorum and the end-to-end flow reduces to Alice-initiates → Bob-returns-signed-transcript → Alice-endorses-and-publishes.
 - *Non-durable proposal eligibility.* Proposal records remain inspectable, but their eligibility is invalidated by any governance-state change relative to the anchor: automatic Core integrator changes, membership changes, or teammate→device mapping changes. Eligibility also expires after a per-team window. An ineligible proposal cannot be finalized and is not a durable bearer capability.
 
-There is no central membership oracle and no globally authoritative admin
-service. Each participant maintains a local clone of the team's history and
+There is no central membership oracle, no globally authoritative service, and no globally authoritative automatic Core integrator.
+Each participant maintains a local clone of the team's history and
 therefore a local view of who is in the team and whose updates should count.
 Those views can diverge. Small Sea aims for social convergence through shared
 history and sync conventions, not for a magical elimination of disagreement.
@@ -427,8 +435,8 @@ The current schema stores `read-write` for approximately **automatic** and `read
 The current Hub watcher still discovers signals from every teammate, and the proposal-discovery mechanism does not yet exist.
 Issue #162 tracks the runtime design needed before those stored values and UI labels can be renamed honestly.
 
-`Admin` remains useful shorthand for a teammate in automatic mode on Core.
-That status is evaluated relative to an accepted Core state and does not make the teammate a central authority.
+The Manager-facing `steward` preset remains useful shorthand for automatic Core integration.
+Protocol rules should still name automatic Core integrators when they mean anchor-relative standing that a verifier can replay.
 
 “Remove teammate” therefore means appending a signed exclusion fact to the local Core lineage, publishing it, and rotating keys if future readable updates should exclude that person.
 The earlier admission, device, and integration-mode records remain inspectable.

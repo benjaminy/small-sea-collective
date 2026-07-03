@@ -30,7 +30,7 @@
         </td>
         <td style="font-size:0.83rem; color:#78716c">{{ inv.created_at[:10] if inv.created_at else "—" }}</td>
         <td style="text-align:right">
-          {% if inv.status == "pending" and viewer_is_admin %}
+          {% if inv.status == "pending" and viewer_is_steward %}
           <form hx-post="/teams/{{ team_name }}/invitations/{{ inv.id }}/revoke"
                 hx-sync="#team-detail:replace"
                 hx-target="#team-detail"
@@ -39,7 +39,7 @@
             <button class="btn btn-danger" type="submit">Revoke</button>
           </form>
           {% elif inv.status == "pending" %}
-          <span class="stub-label">admin only</span>
+          <span class="stub-label">steward only</span>
           {% endif %}
         </td>
       </tr>
@@ -64,9 +64,8 @@
           hx-swap="innerHTML">
       <input type="text" name="invitee_label" placeholder="Label (who is this for?)">
       <select name="role">
-        <option value="admin">admin</option>
+        <option value="steward">steward</option>
         <option value="contributor">contributor</option>
-        <option value="observer">observer</option>
       </select>
       <button class="btn btn-secondary" type="submit">Create invitation</button>
     </form>
