@@ -152,8 +152,8 @@ This is deliberately a shallow involvement model for medium-sized teams.
 It lets a smaller inner group perform routine integration while an outer group mostly observes and proposes, reflecting the different levels of engagement and accountability a medium-sized team really has.
 The target Manager model uses these two modes rather than a general group-governance toolkit; a team-configurable role scheme that maps richer roles onto integration expectations is a plausible future direction, not a current commitment.
 
-`Steward` remains useful shorthand for a teammate in automatic mode on Core.
-Whether a signer held that status is evaluated against the accepted Core state referenced by the signed record.
+The Manager-facing `steward` preset remains useful shorthand for automatic Core integration.
+When the spec needs replayable signing authority, it uses automatic Core integrator rather than treating the preset name as protocol state.
 
 > The intended Hub policy is to monitor and integrate ordinary changes only from teammates in automatic mode in its **local** Core projection.
 > The current watcher still discovers signals from every teammate.
@@ -448,7 +448,7 @@ Reads `teammate` + `berth_role` from the team DB. Does not query the Hub.
 `set_teammate_integration_mode` appends a signed `integration_mode_change` Constitution record (see `Documentation/team-constitution.md`) setting the teammate's integration mode for the berth to `automatic` or `proposal-only`, then updates the `berth_role` projection row to match (`automatic` -> `read-write`, `proposal-only` -> `read-only`).
 The calling participant's own teammate identity must currently hold `automatic` standing on the target berth.
 
-The record's anchor is a `constitution_digest` — a live-query digest over current teammate/device/berth-role state, generalizing the digest `admission_proposal` already computes for Core stewards to cover every berth's mode.
+The record's anchor is a `constitution_digest` — a live-query digest over current teammate/device/berth-role state, generalizing the digest `admission_proposal` already computes for automatic Core integrators to cover every berth's mode.
 This is a Phase 1 stand-in for the schema's target `anchor_frontier` mechanism (record-to-record references, no git dependency); see `Archive/design-record-team-constitution-schema.md` for why the full mechanism isn't realized yet.
 
 The updated Core lineage becomes socially important only insofar as peers validate and adopt it.
@@ -950,8 +950,8 @@ Alice (inviter)                    Bob (invitee)         Other Core integrators
   | create_invitation()                 |                      |
   |  → allocates invitee teammate_id      |                      |
   |  → anchors to team-history commit   |                      |
-  |    hash (freezes steward/teammate/      |                      |
-  |    device mapping at snapshot)      |                      |
+  |    hash (freezes Core integrator/   |                      |
+  |    teammate/device mapping)         |                      |
   |  → publishes proposal shell to      |                      |
   |    {TeamName}/Sync/core.db            |                      |
   |  → commits + pushes via Hub         |                      |

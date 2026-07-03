@@ -83,8 +83,8 @@ groups since before this conversation started."
 
 - Earthstar shares are intentionally minimal — knowledge of a share secret
   equals access. Small Sea has elaborate membership protocols: Signal-style
-  X3DH/Double Ratchet certification, governance-snapshot-anchored steward
-  quorums, Steward/Contributor roles, transcript-bound admission.
+  X3DH/Double Ratchet certification, governance-snapshot-anchored automatic
+  Core integrator quorums, Steward/Contributor presets, transcript-bound admission.
   Earthstar is "bring your own group concept"; Small Sea ships a substantial
   governance structure.
 - Earthstar treats one keypair as one author across all shares; Small Sea
