@@ -182,7 +182,13 @@ def test_governance_drift_invalidates_proposal(playground_dir):
     assert proposals[0]["status"] == "invalidated"
 
 
-def test_contributor_role_finalizes_as_read_only(playground_dir):
+def test_contributor_role_finalizes_as_proposal_only_on_core(playground_dir):
+    # A contributor is proposal-only on Core (spec.md: proposal-only on Core,
+    # automatic on other berths). This asserts the Core mapping only, which the
+    # projection currently stores as `read-only`. Per-berth expansion of the
+    # preset -- automatic on non-Core berths -- is not implemented yet; admission
+    # fans the single Core mode out to every berth. That expansion is tracked in
+    # issue #164 (preset becomes per-berth integration_mode_change records).
     root = pathlib.Path(playground_dir)
     alice_cloud = root / "alice-cloud"
     alice_cloud.mkdir()
@@ -211,7 +217,12 @@ def test_contributor_role_finalizes_as_read_only(playground_dir):
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
 
     with sqlite3.connect(alice_sync / "core.db") as conn:
-        bob_role = conn.execute(
-            "SELECT role FROM berth_role br JOIN teammate m ON m.id = br.teammate_id WHERE m.display_name = 'Bob'"
+        bob_core_role = conn.execute(
+            "SELECT br.role FROM berth_role br "
+            "JOIN teammate m ON m.id = br.teammate_id "
+            "JOIN team_app_berth tab ON tab.id = br.berth_id "
+            "JOIN app a ON a.id = tab.app_id "
+            "WHERE m.display_name = 'Bob' AND a.name = 'SmallSeaCollectiveCore'"
         ).fetchone()[0]
-    assert bob_role == "read-only"
+    # `read-only` is the projection's current stand-in for `proposal-only`.
+    assert bob_core_role == "read-only"
