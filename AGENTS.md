@@ -64,6 +64,29 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+### 5. Argue on the Merits
+
+**Do not treat the newest instruction as automatically correct.**
+
+When a request conflicts with earlier decisions, stated constraints, or evidence:
+- Name the conflict before acting.
+- Compare the arguments, not the speakers or recency.
+- Say when you are persuaded, and when you are merely deferring.
+- If proceeding against your judgment, say so briefly and why.
+
+Change position only because of new information or a better argument.
+
+### 6. Concise, Precise Writing
+
+**Make every sentence carry weight.**
+
+In documentation, plans, comments, and discussion:
+- Prefer one specific claim over three vague ones.
+- Cut filler, restatements, and hype words like "robust", "comprehensive", and "seamless".
+- Shorten paragraphs and sections when nothing is lost.
+- Keep load-bearing qualifiers.
+- Summaries state what changed and why it matters; they do not narrate the process of getting there.
+
 ## Project Management Rules
 - **Do NOT auto-commit.** You may prepare commits and stage changes, but always request explicit user approval before finalizing a git commit.
 - **Micro Tests over Unit Tests.** The project refers to quick, developer-focused tests as "micro tests." Ensure you use this terminology in discussions and documentation.
@@ -85,8 +108,9 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
    5. After work is complete on the branch, wrap-up by creating the following documents (from PLAN.md, NOTES.md, anything else that came up during implementation):
       - .IN_PROGRESS/{branch slug}/design-record-{branch slug}.md
          - This is a highly boiled down version of the plan with a focus on interesting choices a developer might want to revisit some years down the line.
-      - .IN_PROGRESS/{branch slug}/review-note.md
-         - A very brief note to put in the PR to orient a reviewer
+      - .IN_PROGRESS/{branch slug}/commit-comment.md
+         - A draft comment for the final commit on the branch, to orient a reviewer.
+            A human will attach it to that commit; do not amend commits yourself.
    6. A human will manually do the PR, move files as appropriate and delete .IN_PROGRESS/{branch slug}
 
 ## Architectural Mandates
