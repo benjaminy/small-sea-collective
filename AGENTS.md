@@ -93,25 +93,11 @@ In documentation, plans, comments, and discussion:
 - **Project status: still research. Do not spend effort on backward compatibility.**
    Prefer the cleanest design over migration shims or compatibility layers unless the user explicitly asks for them.
    Keep schema/version markers in place so future compatibility work remains possible.
-- The typical workflow for a nontrivial unit of work should be the following.
-   For work that is conceptually very small in scope (cleanup, rename, etc) this ceremony can be skipped.
-   1. Make a git branch for the current task
-   2. Make a branch folder for working docs in .IN_PROGRESS/{branch slug}
-   3. In the branch folder make a PLAN.md file
-      - My boss thinks AIs are not reliable enough for serious work yet.
-         The validation part of the plan needs to be even better than would be expected on a great software engineering team.
-	 How will the implementation convince a smart skeptic that:
-         1. The goals of the branch have been accomplished
-	 2. The general integrity of the repo (low coupling, maintainability, consistency, etc) has been maintained or improved
-   4. Discuss, implement, debug, optimize
-      - If any follow-up work to this branch is discovered (updates to existing GitHub issues or new issues to create), record them in .IN_PROGRESS/{branch slug}/FOLLOW-UP.md
-   5. After work is complete on the branch, wrap-up by creating the following documents (from PLAN.md, NOTES.md, anything else that came up during implementation):
-      - .IN_PROGRESS/{branch slug}/design-record-{branch slug}.md
-         - This is a highly boiled down version of the plan with a focus on interesting choices a developer might want to revisit some years down the line.
-      - .IN_PROGRESS/{branch slug}/commit-comment.md
-         - A draft comment for the final commit on the branch, to orient a reviewer.
-            A human will attach it to that commit; do not amend commits yourself.
-   6. A human will manually do the PR, move files as appropriate and delete .IN_PROGRESS/{branch slug}
+- For a nontrivial unit of work, copy `.IN_PROGRESS/InProgressBranchTemplate/` to `.IN_PROGRESS/{branch slug}/`
+   (named after the current git branch)
+   and maintain the documents there as their embedded instructions describe.
+   For work that is conceptually very small in scope (cleanup, rename, etc) this can be skipped.
+   A human will handle the PR and clean up the branch folder after merging.
 
 ## Architectural Mandates
 - **Hub as Gateway**: In production, all Small Sea internet traffic must go through the **Hub**.
