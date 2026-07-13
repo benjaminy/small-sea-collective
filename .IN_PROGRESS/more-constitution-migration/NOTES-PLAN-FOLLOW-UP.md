@@ -1,334 +1,254 @@
 This is a living document for the branch.
 
-Branch: `more-constitution-migration` — GitHub issue #165 (part of #163).
+Branch: `more-constitution-migration` — originally GitHub issue #165, part of #163.
+
+The review-by-review discussion that produced the superseded single-lineage plan is preserved in [`Archive/branch-plan-issue-165-committee-history.md`](../../Archive/branch-plan-issue-165-committee-history.md).
+That history is evidence, not active guidance.
 
 # Notes
 
-Goal: migrate `key_certificate` and `teammate_berth_storage_announcement` onto the shared Constitution envelope
-(`record_id`/`record_type`/`schema_version` columns plus the `wrasse_trust.constitution` signing helpers),
-replacing the independent canonical-bytes reimplementations in
-`packages/wrasse-trust/wrasse_trust/identity.py` (`_canonical_cert_bytes`, `_canonical_revocation_bytes`)
-and `packages/wrasse-trust/wrasse_trust/transport.py` (`canonical_teammate_berth_storage_announcement_bytes`).
+## Architectural redirection
 
-Scope boundaries from the issue:
-- `teammate_berth_storage_announcement` is not governance-bearing: no anchor participation.
-  (The issue says the anchor fields "stay NULL"; the Decisions section below sharpens that to omitting the columns entirely — a deliberate divergence from the issue's letter, not its intent.)
-- `key_certificate` rows are governance-bearing and will need predecessor chains, but that wiring is #166.
-  This branch is only the envelope/helper alignment.
-- Pre-alpha stance: bump `USER_SCHEMA_VERSION` (currently 64 in `provisioning.py`), no in-place migration; existing team databases are deleted and recreated.
+The branch began as a representation migration for `key_certificate` and `teammate_berth_storage_announcement` onto the shared Constitution envelope.
+Before implementation, the Team Constitution model changed materially.
 
-Decisions (settled after committee review, 2026-07-08):
-- **Ordering key**: `record_id` (content hash) cannot order records, and the envelope's `created_at` is display/debug only — `team-constitution.md` forbids consulting it for validity or ordering.
-  Per that doc's *Reused as-is* section, `teammate_berth_storage_announcement` keeps `announcement_id` as a signed type-specific column (UNIQUE), selection stays descending-UUIDv7 on it, and `record_id` becomes the primary key.
-  A micro test must assert newest-valid-wins selection survives the migration.
-- **Envelope shape**: the two migrated tables adopt `record_id`/`record_type`/`schema_version`, the author/created columns, and `signature` — and **no anchor columns of any kind**.
-  Not `anchor_commit`, not #164's Phase-1 stand-in (`constitution_digest`/`constitution_snapshot_json`), and not the target `anchor_frontier` (its wire representation is explicitly unsettled in the doc).
-  Rationale: the doc scopes this migration to exactly the id/type/version columns plus the helper; propagating the interim stand-in onto tables that would never populate it entrenches the interim, and `anchor_frontier` + `predecessor_record_id` for `key_certificate` is #166's design job.
-- **Renames, full alignment**: `cert_id` → `record_id` at all call sites (no alias), `issuer_teammate_id`/`issuer_key_id`/`issued_at` → `author_teammate_id`/`author_device_key_id`/`created_at`, and on the announcement `signer_key_id`/`announced_at` → `author_device_key_id`/`created_at`, so every envelope table speaks one vocabulary.
-  `cert_type` → `record_type` (the discriminator role matches).
-  Type-specific `subject_*` columns on `key_certificate` are unchanged.
-  ("All call sites" is narrowed by the later seam decisions: see the final dataclass field list in the third-review section.)
+The Constitution is now a retained signed evidence DAG rather than one accepted governance lineage that every participant is expected eventually to share.
+Participants may accept different evidence, publish typed acknowledgments or repudiations in their own clones, apply different post-hoc analyses, and remain in an honest team split.
+The architecture does not require the DAG ever to resolve to one true state.
 
-Decisions (second committee review, 2026-07-11):
-- **Revocations fold into `key_certificate`**: `team-constitution.md` already lists `revocation` as a `key_certificate` record type ("no new table needed"), so the fold is the doc's own decision, not new design.
-  Delete `RevocationCertificate` and `_canonical_revocation_bytes`; a revocation becomes a `key_certificate` row with `record_type='revocation'`, subject = the revoked key, `reason` carried in `claims`, and a content-derived `record_id` replacing today's random `cert_id`.
-  (`reason`-in-`claims` superseded by the ninth review: revocation claims are exactly `{}`.
-  The fold stands — ninth-review debate 1 resolved in its favor.)
-  Add `REVOCATION` to `SUPPORTED_CERT_TYPES` and adapt `CertGraph` in `trust.py`, its only consumer; nothing in manager or hub issues, stores, or verifies revocations today, so the fallout is wrasse-trust-internal.
-- **Anchor-column omission is amended into the doc, same branch**: the divergence from the "stay NULL" wording cannot live only in this plan.
-  Amend `team-constitution.md` (the envelope-table note, the migration paragraph, and the *Reused as-is* entry) to say non-governance record types omit the anchor columns entirely and that `key_certificate` gains its anchor columns in #166.
-  A one-line comment on issue #165 noting the sharpening is part of the branch's deliverables (for the human to post, or with explicit approval).
-- **Verification binds `record_id` to content**: `verify_constitution_record` checks only the signature, so both migrated verification paths must also check `derive_record_id(canonical) == record_id`, matching what `verify_cert` and the #164 paths in `provisioning.py` already do.
-  Each record type gets a micro test that tampers only the stored `record_id` (the announcement path has no such check today at all — it gains one).
-- **Rename boundary at the DB/dataclass seam**: the envelope vocabulary (`record_id`, `author_teammate_id`, `author_device_key_id`, `created_at`) applies to the SQL columns and the canonical signed-field names.
-  (Canonical signed-field names for `key_certificate` later revised — see fourth review.)
-  The generic `KeyCertificate` dataclass keeps its participant vocabulary (`issuer_participant_id`, `issued_at_iso`), because pre-team certs (`team_id=None`, hierarchy self-binding) are participant-scoped, not teammate-scoped; `key_certificate_from_team_db_record` remains the one bridge between the two.
-  Whether all certificates eventually become teammate-scoped belongs to the placeholder-crypto redesign, not #165.
-- **`team_id` stays in the cert signed-field set**: today's cert signature binds `team_id` even though the DB row omits it (loaders inject it from team context), so a cert row copied into another team's database fails verification.
-  The envelope's "signed fields = columns" recipe would silently drop that binding, and post-#165 `key_certificate` has no anchor to bind team context indirectly until #166.
-  Keep `team_id` as a context-injected signed field (still not a stored column), and add a micro test that a cert copied into another team's database cannot verify.
-  (The "not a stored column" half is superseded by the sixth review; the binding itself stands.)
-  The berth announcement binds `team_id` the same way (superseding the earlier "keep existing behavior" lean, per third committee review): the signed format is being rewritten anyway, the context-injection mechanism is identical, and symmetry lets the cross-team-copy micro test be uniform across both record types.
-  Per-team-random `teammate_id` remains a lookup-failure backstop, not the binding.
+This change supersedes several premises of the previous #165 plan:
 
-Decisions (third committee review, 2026-07-11):
-- **`CertGraph` must not index revocations as positive edges**: `_build_index` in `trust.py` indexes every cert by `subject_key_id`, and `find_trust_paths` treats every indexed cert as an issuer→subject vouching edge with no type or signature check — so a folded revocation row (subject = revoked key, issuer = revoker) would *create* a trust path.
-  The adaptation must route `record_type='revocation'` rows only into `_revoked_set`, never into `_by_subject`, with a micro test asserting a revocation cannot appear in any `TrustPath.chain` and that revoking a key does not create a path from the revoker to it.
-- **Revocation authority model is deferred, explicitly**: `CertGraph` verifies nothing by design (no signature checks on certs or revocations; policy belongs to callers), nothing in manager or hub consumes it, and this layer is placeholder crypto.
-  Who may revoke which key, and when validity is evaluated, is the placeholder-crypto redesign's job — a written deferral, not an oversight.
-  #165 changes representation only.
-  Exception carried into this branch: `find_trust_paths` only honors revocation of the *requested subject* in the anchor short-circuit; a revoked non-anchor subject still gets trust paths today.
-  Add a micro test revoking the requested subject itself and fix the traversal to suppress those paths (small, behavior-preserving in spirit — tests would otherwise codify the bug).
-- **Canonical revocation mapping**: a revocation is `record_type='revocation'`, `subject_key_id`/`subject_public_key` = the revoked key (`issue_revocation` already receives the revoked `ParticipantKey`, so the public key is available), `team_id` nullable exactly like other certs, `reason` carried in `claims`.
-  (`reason` removed by the ninth review.)
-  This deletes the generic `RevocationCertificate` API rather than forking team vs. pre-team revocations.
-  Semantic shift to note: today's revocation `cert_id` is `os.urandom(16)` *inside* the signed bytes; the fold makes `record_id` content-derived and outside them, so two revocations with identical fields (including `created_at`) collide — acceptable, since the timestamp makes real collisions implausible and idempotent re-issue is harmless.
-- **Final `KeyCertificate` dataclass fields** (resolving the "all call sites" vs. seam conflict): `record_id`, `record_type`, `team_id`, `subject_key_id`, `subject_public_key`, `issuer_key_id`, `issuer_participant_id`, `issued_at_iso`, `claims`, `signature`.
-  `record_id`/`record_type` are renamed everywhere (content-derived id and type discriminator are truthful for every cert); the issuer/issued vocabulary stays on the dataclass because hierarchy certs are signed by buried/guarded participant keys, not device keys.
-  Envelope names (`author_teammate_id`, `author_device_key_id`, `created_at`) exist only as SQL columns and canonical signed-field names; the sole mapping points are `key_certificate_from_team_db_record` and the sign/verify wrappers in `identity.py`.
-  Accepted wart, named here: a hierarchy cert's canonical bytes label its buried/guarded signer `author_device_key_id` — untruthful for that record type, but per-type canonical vocabularies would break the shared-helper premise this branch exists to establish.
-  (Superseded by the fourth review: the premise claim was wrong; canonical bytes keep the `issuer_*` names.)
-- **Anchor-column omission stands**: the committee's "nullable columns are cheap" counter never names which columns — the only candidates are #164's Phase-1 stand-ins, which #166 replaces; permanently-NULL copies of an interim format are entrenched scaffolding, not uniform tooling.
-  The same-branch doc amendment (above) already owns the divergence.
+- one globally meaningful current projection;
+- one-tip-per-table constitutional frontiers;
+- inviter-published admission finalization as a globally effective transition;
+- blanket invalidation of an admission proposal after any concurrent governance change;
+- treating one unreadable independent governance leaf as invalidating every otherwise useful trust analysis;
+- assuming admission and automatic Core authority are one grant.
 
-Decisions (fourth committee review, 2026-07-11):
-- **Stored rows are team-scoped; the round-trip test is too**: any `key_certificate` row is loaded via `key_certificate_from_team_db_record` with the enclosing `team_id` injected, so only records signed under that `team_id` can live in a team DB — today's invariant for certs, now stated explicitly and extended to revocations.
-  `issue_revocation` gains a `team_id` parameter matching `issue_cert`; pre-team (`team_id=None`) revocations remain constructible but, like pre-team hierarchy certs (which travel only in ceremony payloads, per `ceremony.py`), never enter a team DB.
-  The sign→store→load→verify round-trip micro test therefore uses a team-scoped revocation, and no stored `team_id` column is added.
-  This dissolves the apparent conflict between nullable `team_id`, one revocation API, and the round-trip requirement.
-- **Cert canonical bytes keep the truthful `issuer_*` names** (supersedes the third review's accepted wart): `canonical_constitution_bytes` accepts an arbitrary signed-field dict, so per-table field names cost nothing — the shared-helper premise was never at stake.
-  This table's canonical names already diverge from its columns anyway (`team_id` is signed but not stored), so column/field-name uniformity is not a property that exists to preserve.
-  Canonical bytes for every `key_certificate` record type use `issuer_key_id`/`issuer_participant_id`/`issued_at_iso` — truthful for device-key and buried/guarded signers alike, one vocabulary, no per-type branch.
-  The envelope names (`author_teammate_id`, `author_device_key_id`, `created_at`) exist only as SQL columns, mapped at `key_certificate_from_team_db_record` and the store helper.
-  The berth announcement keeps envelope names in its canonical bytes — its signer really is a device key.
-- **`add_cert` invalidates both caches**: once revocations ride `CertGraph.certs`, `add_cert` must null `_revoked_set` as well as `_by_subject` (today it nulls only `_by_subject`; `add_revocation` is deleted along with `RevocationCertificate`).
-  Micro test: assert `is_revoked` is false, `add_cert` a revocation for that key, assert `is_revoked` flips — the construct-at-once tests never hit the stale-cache path.
-- **Announcement `team_id` injection re-affirmed**: the objection that injection leaves `record_id` under-derivable from the stored row alone is true but not decisive — that property is already gone for `key_certificate`, and every load site has team context in hand, so exempting the announcement would create a second per-table rule rather than restore a uniform one.
-  The per-team-random `teammate_id` lookup failure is a backstop, not a binding; the signed `team_id` is what makes cross-team copy rejection a guarantee.
-  (Superseded by the sixth review: `team_id` becomes stored as well as signed, on both tables.)
+The branch must finish the canonical documentation and re-plan the implementation before changing record formats or production authorization.
+Issue boundaries do not constrain that re-plan.
+The project is research and should change any affected schema or workflow required by the evidence-DAG model.
 
-Decisions (fifth committee review, 2026-07-11):
-- **The canonical-naming divergence is amended into the doc, not just decided here**: the fourth review's `issuer_*` decision stands on the merits (truthful signer names in permanent signed bytes beat key/column uniformity, and the signed-but-unstored `team_id` already breaks column↔key correspondence regardless), but as written it contradicts `team-constitution.md`'s "every envelope column" canonical recipe and the `canonical_constitution_bytes` docstring.
-  Extend the same-branch doc amendment (step 1): canonical signed-field names are defined per record type by its signing wrapper; envelope-native types use column names verbatim; the two pre-envelope types carry documented divergences (`issuer_key_id`/`issuer_participant_id`/`issued_at_iso` on `key_certificate`, context-injected non-column `team_id` on both).
-  Update the `constitution.py` docstring to match.
-  Consequence, stated plainly: generic tooling cannot reconstruct canonical bytes from a stored row plus a column list; the per-type wrappers are the contract.
-  That property was never achievable anyway — a generic verifier already needs per-type knowledge of signed vs. separable columns, and dropping the `team_id` binding to restore it would reopen cross-team copies until #166 lands an anchor.
-  (Partly superseded by the sixth review: with `team_id` stored, the announcement becomes fully envelope-native and the only remaining divergence is the cert's `issuer_*` naming; canonical bytes *are* reconstructible from a stored row plus per-type field-name mapping.)
-- **The team-scope invariant is enforced at the store boundary and restated honestly**: `_store_team_certificate` and `_insert_team_certificate_if_missing` gain a `team_id` parameter and reject `cert.team_id is None` or a mismatch with the enclosing team, with micro tests for both rejections.
-  But no store check can make "only correctly-scoped rows live in a team DB" literally true — rows also arrive via Cod Sync's file-level merge, bypassing every local store helper.
-  The invariant the fourth review claimed is therefore verification-time: a wrongly-scoped row may be present but can never verify.
-  The store check is defense against local programming errors (e.g. persisting a pre-team hierarchy cert), not the guarantee itself.
-  (Restated by the sixth review: with `team_id` stored, a wrongly-scoped row verifies as a record but is rejected by the load bridge's scope check — same choke point, same tests.)
-- **Revocation claims shape is `{"reason": <string>}`, enforced at both ends of the fold**: `issue_revocation` remains the only revocation-issuance path and keeps `reason: str` required, preserving the dedicated-field guarantee `RevocationCertificate` gave at issuance; `key_certificate_from_team_db_record` rejects a `record_type='revocation'` row whose claims lack a string `reason`, with malformed-revocation micro tests (missing key, non-string value).
-  Deeper semantic verification of revocations at consumption stays with the deferred authority-model work — `CertGraph` never checked revocation signatures or shape before the fold either, so no enforcement between issuance and load is lost.
-  (Superseded by the ninth review: `reason` violates the PII-off-chain invariant; the claims shape becomes exactly `{}`, with the both-ends enforcement pattern carried over.)
-- **Announcement verification call sites are named for the sweep**: the `team_id`-injection decision requires explicit team context at every verification site.
-  The three today: `small_sea_hub/backend.py` (`verify_teammate_berth_storage_announcement_signature` call), `wrasse_trust/transport.py` (the check inside `select_effective_teammate_berth_storage`), and `small_sea_manager/provisioning.py` (direct `canonical_..._bytes` use).
-  Step 5's sweep must change each to require `team_id` explicitly, never default it.
-  (Sixth review: the sites and the explicit-`team_id` requirement stand; the context is now compared against the stored column rather than injected into canonical bytes.
-  Seventh review: the comparison happens inside the verifier itself, via its required `expected_team_id` parameter.)
+## Durable safety invariants
 
-Decisions (sixth committee review, 2026-07-11):
-- **`team_id` becomes a signed *and stored* column on both migrated tables** (supersedes the injection decisions in the second, fourth, and fifth reviews).
-  The previous rounds argued signed-injected versus unsigned — a false binary: storing the column drops nothing, because `team_id` stays inside the signed field set, so a tampered stored value still fails signature verification.
-  What changes is where a *copied* row fails: `key_certificate_from_team_db_record` (and the announcement bridge) gain a scope check rejecting `stored team_id != enclosing team_id`, instead of relying on signature failure.
-  Named residual, accepted: the rejection is an equality check at the load bridge rather than a cryptographic failure at every verification site; acceptable because the bridge is the sole DB→dataclass path (re-confirmed in the survey) and the check is micro-tested directly.
-  (Residual superseded by the seventh review: the equality check moves into the verification wrapper as a required `expected_team_id`; the bridge check remains as defense in depth.)
-  What it buys, in foundational terms: records are self-contained — `record_id` and the signature are verifiable from the stored row alone, with no facts absent from the record — the announcement becomes fully envelope-native ("signed fields = columns" holds verbatim), and the step-1 doc amendment shrinks to the cert's `issuer_*` naming divergence only.
-  Cost, also named: the column is denormalized (identical value on every row of a team DB); accepted as the price of self-containment.
-  Mechanics: `team_id BLOB NOT NULL` on both tables; the `KeyCertificate` dataclass keeps nullable `team_id` for pre-team certs, which still never enter a team DB (the fifth review's store-boundary rejections are unchanged).
-  Micro tests: cross-team copy rejected at the bridge; tampered stored `team_id` fails signature verification; `record_id` re-derivable from the stored row alone with no external context.
-- **Loading is a per-row, non-throwing boundary in both Manager and Hub**: rows arrive via Cod Sync's file-level merge, bypassing every store check, yet both `_load_team_certificates` implementations (`provisioning.py` and `backend.py`) load the full table through the bridge, where `json.loads(claims_json)` and `parse_cert_type` already raise on garbage — so one malformed row disables trust resolution today; the hazard predates the fold, and the planned malformed-revocation rejection would have added one more throw site.
-  Fix: the loaders isolate per-row bridge failures — skip the row and log it, never raise past the row (a lightweight quarantine; no dead-letter table for placeholder crypto).
-  Failing open is safe here: a malformed revocation could never have verified anyway, and a sync-level attacker who can insert garbage can also delete rows outright; anything deeper belongs to the deferred revocation-authority model.
-  Same treatment for the announcement loaders.
-  Micro test: a table containing valid certificates plus one malformed revocation row still yields the valid certificates, and trust resolution over them succeeds.
-  (Superseded for `key_certificate` by the eighth review: unreadable cert rows fail closed; skip-and-log survives only for announcements.)
-- **Revocation claims shape is enforced at runtime, exactly, at both ends** (sharpens the fifth review's decision, which leaned on a type annotation): `issue_revocation` adds a runtime `isinstance(reason, str)` rejection — the annotation alone performs no validation — and since it constructs the claims dict itself, extra keys are impossible at issuance.
-  At load, the bridge rejects a `record_type='revocation'` row whose claims are not *exactly* `{"reason": <string>}` — extra keys rejected, not just missing/non-string `reason` — so the stated shape is the enforced shape.
-  Micro tests: `issue_revocation` with a non-string `reason` raises; the bridge rejects claims with a missing `reason`, a non-string `reason`, and an extra key (these rejections surface as skipped rows under the per-row load boundary above).
-  (Shape superseded by the ninth review — claims are exactly `{}`, no `reason` — but the enforce-the-exact-shape-at-both-ends mechanics and test pattern stand.)
+These constraints outrank issue convenience and sequencing:
 
-Decisions (seventh committee review, 2026-07-11):
-- **The per-row skip policy is scoped to unreferenced rows, and diagnostics are part of the contract**: first, a correction — nothing is erased; the row stays in the table, the loaders merely decline to load it.
-  But the sixth review's policy, read as a blanket rule, becomes wrong the moment #166 lands: a malformed row *named* by a predecessor chain or anchor frontier cannot be skipped without silently changing effective standing (a lineage looking shorter than it is, a superseded record looking current).
-  Restated: skip-and-log is the semantics for rows nothing references — which in #165 is every row, since the migrated tables carry no predecessor or anchor columns yet.
-  #166 must define referenced-row semantics separately (the referencing lineage becomes incomplete or invalid) and must not inherit skip-and-log; recorded in Follow-up so it cannot be missed.
-  Diagnostics: the skip log line carries stored `record_id` (hex), `record_type`, and the exception message — enough to find and inspect the row afterward — and the malformed-row micro test asserts the log record exists, not just that valid rows survive.
-  (Superseded by the eighth review: the "unreferenced rows" scoping was the wrong safety line for governance records — `key_certificate` fails closed now, not at #166; the diagnostics contract stands, hardened by the total formatter.)
-- **Contextual acceptance becomes a first-class verifier parameter** (supersedes the sixth review's named residual): with `team_id` stored and signed, a copied row is cryptographically self-consistent — signature and `record_id` both verify against the *stored* team — so cross-team rejection can never come from cryptography; it is inherently a context comparison, and scattering that comparison across call sites is how it gets forgotten.
-  Each migrated record type's verification wrapper gains a required `expected_team_id` parameter (no default) and fails unless the stored `team_id` equals it, alongside the signature and `derive_record_id` checks; `None` matches only `None` (pre-team certs, which never enter a team DB).
-  The three announcement call sites from the fifth review and the cert verification paths all pass their enclosing team explicitly; the sixth review's load-bridge scope check stays as defense in depth, no longer the sole line.
-  Micro test per record type: a record with a valid signature verifies under its own `team_id` and fails under a different `expected_team_id`.
-- **`record_id` becomes the full SHA-256 digest** (drops the truncation): `derive_record_id` returns `sha256(canonical)[:16]` solely to match the legacy `cert_id` convention — a compatibility rationale the pre-alpha stance explicitly disowns.
-  These ids are permanent primary keys and, after #166, predecessor/frontier references; 128 bits gives ~64-bit collision resistance, and an *authorized* signer can grind a collision by varying signed fields (e.g. `claims`) without forging anything — two records under one id is exactly the equivocation a content-addressed chain must exclude.
-  Sixteen extra bytes per row and per reference is nothing at Core-database scale.
-  Ripple, accepted: the #164 admission tables share `derive_record_id`, so their ids widen too, under the same schema bump (delete/recreate, no migration); `team-constitution.md` and the `derive_record_id` docstring drop the "matches `cert_id`" rationale in the step-1 amendment.
-  (Tenth review: the widening additionally bumps the signed `schema_version` to 2 across all envelope record types, so the derivation change is identified by the record format itself, not only by the database version.)
-  Adjacent but untouched: the `key_id` truncation in `keys.py` is placeholder crypto with its own redesign; not expanded here.
+1. Constitution evidence is append-only.
+   No production path emits a later state of a clone that deletes a Constitution object that clone already adopted.
+   This binds our implementation; it is not peer-verifiable, because never adopting and dropping after adoption produce the same observable absence.
+   No analysis may infer non-existence from a record's absence in someone else's published state.
+2. The Constitution does not have one required projection.
+   Every operational projection names its analyzer and version, evidence frontier, local acceptance inputs, and policy.
+   It records digests of the evidence closure, local inputs, and canonical result.
+   A runtime may use an ephemeral local revision for caching or display, but it may reset and is not part of the durable decision basis.
+3. Governance causal context is multi-head and record-based.
+   No timestamp, UUID order, table order, row-arrival order, or Git authorship chooses authority.
+   A named policy may resolve a conflict only on grounds justified by evidence content; naming a policy does not license a representation-derived tie-break.
+4. A named analysis is deterministic.
+   The same evidence, local inputs, and policy produce the same answer; different analyses may disagree.
+5. Authenticity never implies local effect.
+   A signature proves what a key signed, not human intent, social acceptance, real-world identity, or external agency.
+6. Missing, malformed, or unauthenticated evidence is inert.
+   It cannot create a head, suppress another record, or grant standing.
+7. Failure is branch-local when records can be separated safely.
+   An unresolved dependency fails closed for conclusions that depend on it without erasing independent accepted evidence.
+   An unreadable database container may still make the containing candidate snapshot unusable.
+8. Records are signed and verified for one exact technical origin and supported record version.
+   That origin is a replay domain and shared ancestry marker, not eternal social team identity.
+9. Exclusion and repudiation preserve confidentiality as well as projection state.
+   An accepting participant purges receiver state, rotates sender keys where needed, and excludes removed devices from redistribution.
+10. Admission, automatic Core integration, and external authority are separate claims.
+    One mistaken admission must not automatically amplify into unrestricted governance authority.
+11. Local Core adoption is the retention decision: a Constitution object adopted into a clone's live Core database, plus its declared causal closure, is non-prunable in later states produced by that clone.
+    Adoption is not acceptance and grants no local effect by itself.
+    This is not physical immortality or a claim that every clone has the same set.
+    Separable direct-identity payloads, ordinary application blobs, and fetched-but-unadopted input may leave the live-data window or remain resource-bounded.
+    Because Core is a SQLite database carried in Git, declining to adopt is an active merge operation rather than passive non-action, and parked or declined state must persist outside the live Core database to survive restart.
+12. Git repair only moves forward.
+    A new commit may contain an old state, but shared refs are not reset and history is not rebased away.
 
-Decisions (eighth committee review, 2026-07-11):
-- **Unreadable `key_certificate` rows fail closed** (supersedes the sixth review's skip-and-log for this table; the seventh review's "unreferenced" scoping dissolves): governance records change standing by existing, not by being referenced — a skipped revocation leaves a revoked key active, a skipped membership cert changes which devices are trusted.
-  Two prior justifications do not survive inspection.
-  "A malformed revocation could never have verified" is false for shape rejections: a validly *signed* revocation with an extra claims key (newer or buggy issuer) fails the exact-shape bridge check, so skip-and-log silently ignores a legitimate revocation.
-  "An attacker who can insert garbage can also delete rows" cuts both ways — deletion also un-revokes, so *neither* policy resists a sync attacker; only #166's chains/anchors detect absence.
-  The decision therefore rests on the honest-failure cases (corruption, version skew), which favor fail-closed.
-  Mechanics: the cert loaders keep the full per-row scan so every bad row is logged (with the total formatter below), then raise a single explicit trust-view-invalid error naming the unreadable rows instead of returning a partial cert set; no partial-consumption caller exists today.
-  Announcements keep skip-and-log — they confer no standing, and losing one degrades to an older announcement.
-  Cost, accepted: one corrupt row disables trust resolution for the team; for governance, a wrong trust answer is worse than no trust answer, and pre-alpha delete/recreate makes recovery cheap.
-  Residual, named: this covers rows that are present but unreadable; absent rows stay undetectable until #166.
-- **Wrappers *and* load bridges pin their `(record_type, schema_version)` pair**: the signature proves what the signer supplied, not that this implementation understands its semantics — a correctly signed version-2 record must not be interpreted under version-1 rules.
-  Each verification wrapper requires its exact `record_type` and a supported `schema_version` (currently only 1; the tenth review bumps this to 2), and the load bridges check the same pair, because `CertGraph` verifies nothing by design (third review) — a row can reach the trust graph without any wrapper running.
-  An unsupported pair is an unreadable row: fail-closed for certs, skip for announcements.
-  The two decisions compose: a validly signed future-version revocation is exactly the case where skip-and-log would silently un-revoke a key.
-  Micro tests per record type: a signed-but-unsupported `schema_version` and a signed-but-wrong `record_type` are rejected at both wrapper and bridge.
-- **Skip/fail diagnostics use a total formatter**: SQLite's type affinity does not enforce storage class (and `BLOB PRIMARY KEY` even permits NULL), so stored `record_id` can be NULL, text, or an integer, and calling `.hex()` inside the exception handler can itself raise — escaping the per-row boundary and killing the loader, the exact failure the boundary exists to prevent.
-  A small total formatter (bytes → hex; None → literal; anything else → truncated `repr`) renders `record_id` and `record_type` in every skip/fail log line.
-  Micro tests cover malformed identifier storage classes (NULL/text/integer `record_id`, non-text `record_type`), not only malformed claims.
+## Evidence classifications
 
-Decisions (ninth committee review, 2026-07-12):
-- **Confirmed standing, no re-litigation**: full SHA-256 `record_id`, stored-and-signed `team_id`, the required `expected_team_id` verifier parameter, `(record_type, schema_version)` pinning, `derive_record_id` content-address verification, fail-closed governance loading, and anchor-column omission all survive the ninth review unchanged.
-- **Revocation records carry no reason** (supersedes the fifth review's `{"reason": <string>}` shape and the sixth review's enforcement of it): `architecture.md`'s *Personal Data Is Not in the Long-Term Chain* invariant explicitly excludes "free-text reasons" from the durable governance skeleton, and it names revocation as a skeleton edge — the plan was permanently signing a free-text string into exactly the record class the invariant covers.
-  Nothing consumes `reason` (grep-confirmed: it exists only inside `identity.py`'s construction and signing; `CertGraph` never reads claims), so omission costs no protocol behavior.
-  Alternatives rejected for #165: a bounded reason *code* invents protocol semantics no consumer needs; `reason_commitment` plus separable payload matches the architecture's PII mechanism, but that commitment scheme is explicitly unsettled there ("still needs cryptographic analysis") and cannot land in this branch.
-  Mechanics: `issue_revocation` drops its `reason` parameter; revocation claims are exactly `{}`, enforced at issuance and at the load bridge in place of the reason-shape checks — the exact-shape machinery and micro-test pattern carry over with the new expected shape (bridge rejects any non-empty claims).
-  If a team ever wants a human explanation attached, it rides outside the signed record via the future PII payload mechanism, not here.
+Production loading and analysis need at least these classifications:
 
-Decisions (ninth-review debates resolved, 2026-07-12):
-- **Debate 1 resolved: the revocation fold stays in #165; a minimal revocation-semantics contract becomes a written prerequisite of #166.**
-  The committee's charge stands as fact: two trust evaluators disagree by construction — `trusted_device_keys_by_teammate` (`identity.py`) resolves membership and device-link chains but ignores revocations entirely, while `CertGraph` (`trust.py`) tracks revocations but deliberately authenticates and authorizes nothing — and the semantics are unwritten: which keys may revoke a device key; whether self-revocation is valid; whether sibling devices, recovery keys, or issuer keys may revoke; the frontier at which the revoker needs standing; future-only versus retroactive effect on anchored records; which evaluator is normative.
-  Why the fold proceeds anyway: the folded schema forecloses none of those answers — authority is verification-time policy over the free-form issuer fields, frontier standing arrives with #166's anchor columns, retroactivity is replay semantics rather than columns, and normativity is a code-structure question; the one thing #165 bakes permanently is the signed byte layout, and a missing future field lands via a `schema_version` bump the pre-alpha stance already permits.
-  The traversal fix presumes nothing new — `CertGraph` already treats every revocation row as effective — and unfolding would leave `_canonical_revocation_bytes` alive as a pre-envelope reimplementation, against the branch's stated goal.
-  The prerequisite is binding: the contract (a page answering the six questions above, not the full authority model) must be written before #166 starts — recorded in Follow-up.
-- **Debate 2 resolved: #165 relabels announcement selection honestly (doc-only); the supersedes-chain redesign is tracked as its own issue under #163.**
-  The committee's charge stands: a UUIDv7 *is* wall-clock time supplied by the authorized author, so `team-constitution.md`'s "never by wall-clock time" is misleading, and a skewed or malicious far-future `announcement_id` dominates the stream indefinitely, including after the issuing device is revoked.
-  Step 1's amendment therefore renames the mechanism author-clock last-writer-wins, drops the "never by wall-clock time" claim, and states the future-skew hazard and the recovery path (reissue with a yet-higher `announcement_id` — honest but ugly) plainly.
-  (Recovery claim corrected by the tenth review: without eligibility bounds the id space is exhaustible and the reissue path can be permanently closed; selection gains UUIDv7 well-formedness and a future-skew window.)
-  The supersedes design (a signed `supersedes_record_id`, the unique causal successor as the effective announcement, concurrent unsuperseded heads surfaced as a conflict rather than silently tie-broken) is the intended future shape, but it is new schema plus new selection logic on a single-author, non-governance record — outside #165's envelope-alignment scope.
-  Filing that issue under #163 joins the #165 comment as a human deliverable (or with explicit approval).
-  Why the residual hazard is acceptable meanwhile: a bad announcement misdirects where one teammate's own data is fetched from; it confers no standing.
+- **received input** — bytes observed from sync or another source, with no implication of authenticity, retention, or effect;
+- **verified evidence** — supported format, correct team binding and content ID, valid signature, and available structural dependencies;
+- **unresolved evidence** — structurally plausible but missing a dependency or signer interpretation;
+- **quarantined input** — malformed, wrong-team, unsupported, or invalidly signed material held outside the verified graph;
+- **parked authentic input** — verified but fetched-and-not-adopted independent input held outside the live Core database under resource policy;
+- **locally accepted evidence** — verified evidence selected as an input to one named participant analysis;
+- **locally effective projection** — a cache derived from accepted evidence plus explicit policy and acknowledgment choices.
 
-Decisions (tenth committee review, 2026-07-12):
-- **Finding 1 partially accepted: the reissue-higher recovery claim was false; selection gains eligibility bounds; the supersedes redesign stays a separate issue.**
-  Conceded, and the code makes it worse than charged: `select_effective_teammate_berth_storage` lexically sorts raw `announcement_id` bytes with no shape check at all, so `0xFF`×16 — not even a well-formed UUIDv7 — outranks every legitimate id forever, and the debate-2 recovery path did not exist as claimed.
-  Fix, in #165, as selection policy rather than signed-schema change: an announcement is eligible only if `announcement_id` is a well-formed UUIDv7 (version and variant bits) whose embedded 48-bit timestamp is at most `now` plus a future-skew allowance (a named policy constant on the order of an hour; the exact value is not load-bearing), with `now` an injectable parameter for tests.
-  Ineligibility is per-pass and non-destructive: a future-dated row regains eligibility when the clock catches up, an honest-but-skewed device degrades to its previous announcement, and nothing is deleted or quarantined.
-  This restores the reissue recovery path, because any announcement that can win selection is bounded above by `now + skew`, so a legitimate successor can always eventually outrank it (worst-case lag: the skew allowance).
-  What is *not* conceded: moving the supersedes-chain design into #165.
-  The committee's own coupling names the real terminator of a malicious *still-trusted* signer — trust removal — and the selection loop already re-evaluates trust per pass, so once the resolver honors revocations, a revoked signer's announcements drop out regardless of their timestamps; no ordering scheme substitutes for that.
-  Supersedes chains do not terminate a still-trusted attacker either (they can extend or fork the chain, and a surfaced fork at the Hub's routing layer is still denial of routing, merely visible denial), and the conflict-handling semantics — what the Hub serves while heads conflict — are their own unsettled design, wrong to rush as a rider on an envelope-alignment branch.
-  Residual after the fix, named honestly: a trusted-but-malicious signer controls routing of that one teammate's own data until trust is removed — inherent in being an authorized signer, and it confers no standing.
-- **Finding 2 rejected: the fold stays in #165; the semantics contract stays #166's opening deliverable — with the shape-neutrality reasoning now written down.**
-  Two of the committee's premises do not survive contact with the settled design.
-  The author-identity-class example: cert canonical bytes use `issuer_key_id`/`issuer_participant_id` (fourth review) — free-form and truthful for a recovery-key or any other signer class; `author_device_key_id` is only a SQL column label, renameable under delete/recreate, never part of the signed bytes.
-  The "permanent v1" premise: pre-alpha delete/recreate destroys every signed artifact at each bump, and #166 already adds signed anchor/predecessor columns to this exact record type — the next version of the revocation record is *already scheduled*, so the fold's shape is a known interim, not an accidental freeze.
-  The remaining shape-relevant question — an explicit prospective-effect boundary — cannot land well-designed in #165 by construction: a wall-clock boundary is forbidden for validity by `team-constitution.md`, so any honest boundary is anchor-shaped, and anchors are precisely what #166 introduces.
-  Settling the contract before #165 therefore inverts the dependency: its substantive questions (frontier standing, retroactive effect) need #166's anchor design as input, while blocking #165 on them keeps `_canonical_revocation_bytes` alive against the branch's stated goal.
-  Concessions, sharpened: the contract is #166's *first deliverable*, written before any #166 schema decision (Follow-up updated); the step-1 doc amendment states the folded revocation record is interim pre-anchor; and the two pure identity-class questions (recovery-key revocation, self-revocation) are recorded as shape-neutral under the `issuer_*` fields, so the deferral is auditable rather than asserted.
-- **Finding 3 accepted: digest width is part of the record format contract; the signed envelope `schema_version` bumps to 2 everywhere in this branch.**
-  `USER_SCHEMA_VERSION` is a local database artifact; the signed `schema_version` is the only format marker that travels with a record, and identical version-1 canonical bytes must not hash to two different `record_id`s depending on which implementation computed them.
-  Mechanics: every envelope record type — the four #164 admission tables, `integration_mode_change`, and the two migrating tables — signs and defaults `schema_version = 2`; the pinned `(record_type, schema_version)` checks pin 2; SQL defaults update under the same delete/recreate bump; version 1 is retired as the truncated-16-byte-id era, with no surviving records.
-  `team-constitution.md` (step 1) defines `record_id` derivation as part of the format contract: version ≥ 2 means the full SHA-256 of canonical bytes.
-  Side benefit: this rehearses the governance version-bump machinery (pinning, fail-closed rejection) while a bump is still free — before the post-deployment coordination problem the Follow-up warns about exists.
-  The migrated types enter the envelope at version 2 directly; version 1 for them denotes nothing and is rejected like any unsupported version.
+Raw row presence is never authority.
+Unknown or quarantined rows remain available for diagnostics and later re-evaluation where safe, but do not poison unrelated evidence merely by existing.
+Authenticity alone creates neither an effect nor an entitlement to adoption.
+Adoption brings a record and its declared causal closure inside that clone's non-pruning boundary.
 
-Decisions (eleventh committee review, 2026-07-12):
-- **Finding 1 (revocations effective before authority) rejected on the facts; the inertness it demands already holds and is now pinned**: the failure scenario requires a production consumer of `CertGraph`, and there is none — grep confirms `CertGraph`/`find_trust_paths`/`is_revoked` have zero call sites outside `trust.py` and its tests, and Manager and Hub resolve trust exclusively through `trusted_device_keys_by_teammate`, which never reads revocation records.
-  A folded revocation therefore cannot disable any teammate's key in any production path; revocations are already "inert until #166" in exactly the sense the finding demands, and #165 wires them into nothing new.
-  (The traversal fix expands their effect only inside the unconsumed evaluator, where leaving the bug would make the new micro tests codify it.)
-  Accepted from the finding: inertness is load-bearing and was previously unstated, so it becomes checkable — the validation story gains a grep gate (no `CertGraph`/`find_trust_paths`/`is_revoked` consumer outside `wrasse_trust.trust` and tests), and the step-1 amendment states that revocation records are inert in every production trust path until the #166 authority contract lands.
-  Also named: findings 1 and 2 of this review are jointly unsatisfiable — a revocation-aware production resolver without the authority contract *is* the unauthorized-revocation hazard finding 1 forbids.
-- **Finding 2 (announcement recovery leans on a revocation-blind resolver): fact conceded and already on record; the demanded resolver change rejected; the trust-removal claim corrected to name its real mechanism, with a pinning micro test**: making `trusted_device_keys_by_teammate` revocation-aware in #165 would let any teammate's signed revocation strip any other teammate's devices in the production path with no authority model — so the resolver stays revocation-blind until the #166 contract, per the resolved debates.
-  What the tenth review's rebuttal left loose: "until trust is removed" never named the operative mechanism.
-  Verified in code: trust removal today is cert deletion — `remove_teammate` (`provisioning.py`) deletes the teammate's membership/device-link certs, gated by Core-berth read-write role — and both selection functions re-resolve `trusted_device_keys_for_teammate` per pass and require the signer's key in the trusted set, so a removed teammate's announcements drop out on the next pass, future-dated or not.
-  Revocation *records* are enforced nowhere, before or after #165.
-  Accepted: step 3 gains a micro test pinning the terminator claim — a teammate's valid newest announcement is selected; after that teammate's certs are deleted, re-selection rejects it.
-  The step-1 residual is restated honestly: "until trust is removed" means membership-cert deletion today, which is whole-teammate; per-device revocation (one compromised device, teammate retained) has no production effect until the authority model lands — recorded in Follow-up under the two-evaluators entry.
-- **Finding 3 (no rollout rule for the moved bump) accepted: the stale Follow-up line is corrected and the flag-day rule written down**: the Follow-up still attributed the first governance `schema_version` bump to #166 after the tenth review moved it into this branch.
-  Rule for #165's bump: it is a flag day riding the `USER_SCHEMA_VERSION` delete/recreate — all participants upgrade together and recreate team databases; mixed-version synchronization is unsupported; the pinned fail-closed check is what makes a violation loud (a version-2 record halts a version-1 participant's trust resolution with an explicit error) rather than silent misinterpretation, and recovery is the same delete/recreate.
-  The Follow-up entry now addresses the *next* bumper: post-deployment, flag days stop being free and rolling upgrades need an actual plan.
-- **Format concern accepted: derivation is specified per version, not open-ended**: the step-1 amendment states that schema version **2** derives `record_id` as the full SHA-256 of canonical bytes; each future version states its own derivation rather than inheriting through a "≥ 2" clause, which would freeze the derivation against the very versioning it documents.
+Candidate Core adoption still uses staging and validation.
+The new design must decide whether a candidate database can preserve quarantined rows separately or whether SQLite/container constraints require rejecting that candidate commit while retaining it on a parked Git branch.
+The old whole-table fail-closed loader is not automatically the target answer.
 
-Decisions (twelfth committee review, 2026-07-12):
-- **Finding 1 accepted: the inertness invariant is restated as "well-formed revocations do not alter production standing"; the fail-closed availability effect is a separately named property, not an exception to it**: the eleventh review's "inert in every production trust path" was an overstatement — the grep gate proves production applies no revocation *semantics*, but revocation rows still pass through the fail-closed `_load_team_certificates` boundary, so an *unreadable* revocation (unsupported version, non-empty claims, garbage bytes) halts all trust resolution for the team.
-  That is not inertness; it is the eighth review's deliberate fail-closed policy acting on one more row type, and the two properties must not share a sentence.
-  Precise statement, with "well-formed" defined as passing the load bridge (parseable, supported `(record_type, schema_version)` pair, exactly-empty claims, scope check): a well-formed revocation row loads, is ignored by `trusted_device_keys_by_teammate`, and changes no production standing; an unreadable revocation row trips the same trust-view-invalid error as any other unreadable cert row.
-  Code fact strengthening the standing half: the resolver's indifference is structural, not incidental — `trusted_device_keys_by_teammate` filters certs to `MEMBERSHIP` and `DEVICE_LINK` types before any processing (`identity.py`), so a revocation row cannot enter either loop.
-  The new micro test (step 2) pins that filter as load-bearing: a validly signed, well-formed revocation issued by a teammate with no authority over the subject loads without error and leaves `trusted_device_keys_by_teammate` output byte-identical.
-  (Wording corrected by the thirteenth review: the record is described as a cross-teammate revocation whose authority is unevaluated, not "unauthorized".)
-  The grep gate stays as the semantic-enforcement check; the step-1 amendment and validation story adopt the restated invariant.
-- **Finding 2 accepted with one refinement: the terminator micro test is characterization of interim projection-era behavior, and only its *setup* is interim — the assertion is durable**: cert deletion (`remove_teammate` issues `DELETE FROM key_certificate`) is a temporary projection-era mechanism that directly contradicts the append-only target Constitution, and the eleventh review's "pinning" language wrongly suggested permanence.
-  Refinement over "remove or invert the test": the test's assertion — after a teammate's trust is removed, re-selection rejects their announcements — is exactly the property that must survive #166; what #166 replaces is the *arrange* step, swapping cert deletion for accepted exclusion/revocation replay.
-  So the test is labeled in-code as characterizing the interim removal mechanism, and the Follow-up records that #166 must rewrite its setup to the constitutional mechanism (keeping the assertion) rather than delete the coverage.
-  (Issue attribution corrected by the thirteenth review: the setup rewrite belongs to #167/#168, not #166.)
-  Inverting would be wrong: the post-#166 world still needs a removed teammate's announcements rejected; only the removal mechanics change.
+## Settled shared-envelope properties
 
-Decisions (thirteenth committee review, 2026-07-12):
-- **Finding 1 accepted: the resolver-indifference test drops "unauthorized"; its record is a cross-teammate revocation whose authority is unevaluated**: whether one teammate may revoke another teammate's device is among the six explicitly deferred authority questions (debate-1 resolution), and describing the test's record as "issued by a teammate with no authority over the subject" quietly answers that question in the negative.
-  The test never needed the claim: the resolver ignores every revocation — authorized, unauthorized, or undecidable — so the honest description is a well-formed cross-teammate revocation whose authority is unevaluated, asserting only that `trusted_device_keys_by_teammate` output is unchanged.
-  Wording swept through step 2's verify list and the validation story; the Follow-up's "unauthorized-revocation hazard" shorthand is restated as enforcing revocations whose authority has never been evaluated — same hazard, no policy claim smuggled in.
-- **Finding 2 accepted, verified against the tracking issue: the terminator-test setup rewrite moves from #166 to the exclusion/projection work**: #166 is scoped to `anchor_frontier`/`predecessor_record_id` only, while the parent issue #163 assigns the projection rebuild to #167 (whose text names "remove teammate" and "revoke device" as write paths becoming append-record-then-rebuild) and the `exclusion` record type to #168, which its own text sequences after #167.
-  So `remove_teammate`'s cert deletion is replaced when #168's exclusion record replays through #167's projection machinery; the setup rewrite is recorded in Follow-up as a deliverable of that work, and #166 contributes the authority contract and anchor columns, not the removal mechanism.
-  Separation kept explicit, per the finding: the rewritten setup covers whole-teammate exclusion only; a per-device analogue (one revoked device's announcements rejected while the teammate's other devices survive) becomes writable only once the #166 contract is enforced through #167's projections, and is noted in Follow-up rather than folded into the exclusion test.
+The architectural redirection does not undo these record-format decisions:
 
-Decisions (fourteenth committee review, 2026-07-13):
-- **Finding 1 accepted: #167's own text promises conversions its position in the sequence forbids; rescope rather than reorder.**
-  Verified against the live issues (bodies plus both #167 comments, which are vocabulary-only): #167 names "remove teammate" and "revoke device" as write paths becoming append-record-then-rebuild, but the record a removal would append is #168's exclusion record, and #168 sequences itself after #167 ("Small once #164 through #167 exist") — the remove-teammate conversion is unimplementable where the tracker puts it.
-  The revoke-device conversion is worse than mis-sequenced: making revocation records production-effective before the #166 authority contract is exactly the hazard this plan forbids (debate-1 resolution, thirteenth-review restatement), so it is finding 2's defect appearing concretely in #167's scope.
-  The finding's "or reorder the issues" alternative is rejected: exclusion records only take effect by replaying through #167's projection machinery, so #168-before-#167 trades one impossibility for its mirror — the dependency is mutual under the current split, which is why the split itself must change.
-  Rescoping: #167 becomes projection infrastructure plus conversion of write paths whose record types already exist (`integration_mode_change`; the #164 admission records where applicable); the remove-teammate conversion and the terminator-test setup rewrite move into #168; the revoke-device conversion leaves both issues and lands with the work that enforces the #166 contract through the projections — it needs #166's contract and anchors *and* #167's machinery, so which issue hosts it is the human's tracker call, but the gate is not negotiable.
-- **Finding 2 accepted, strengthened by a fact about this document's lifetime: the authority-contract prerequisite must live in the tracker.**
-  #166's live text is anchor/predecessor work only; the six-question revocation-semantics contract this plan declares its binding first deliverable appears nowhere in it, while #167's text simultaneously schedules revoke-device enforcement — so the tracker, read alone, permits authority-unevaluated revocations to become production-effective.
-  The Follow-up entry recording the prerequisite is not durable: this branch folder is deleted after merge (per AGENTS.md), and the step-1 amendment to `team-constitution.md` states the invariant but is not what a #167 implementer reads for scope.
-  Fix, joining the existing human deliverables: #166 gains the contract as its first deliverable and an explicit acceptance criterion (written before any #166 schema decision, per the tenth review) plus the statement that no revocation becomes production-effective anywhere until the contract exists; #167 is rescoped per finding 1 and carries the same gate; #168 gains the remove-teammate conversion and the terminator-test setup rewrite.
-- **Finding 3 accepted: step 3's verify list still attributed the setup rewrite to #166; corrected to #168's exclusion record replaying through #167's projections.**
-  The thirteenth review corrected the Follow-up but missed the step-3 echo, and the step text is what implementation transcribes into the in-code test label — the stale attribution would have shipped into the codebase.
-  Refinement while fixing it: the in-code label names the mechanism (exclusion record replayed through projections), not only issue numbers, which go stale exactly this way.
-- **Blocking framing, refined**: none of the three findings blocks #165's code steps — findings 1 and 2 are tracker-integrity defects gating the start of #167, and finding 3 gated only a test label, now corrected.
-  The tracker amendments are queued in this round anyway, because deferring them to "when #167 starts" assumes a reader this folder will no longer have.
+- `record_id` is the full SHA-256 digest of version-specific canonical signed bytes.
+- Signed `schema_version = 2` identifies the full-digest format.
+- Every team-stored envelope record carries signed `team_id BLOB NOT NULL` as the current technical-origin and replay-domain field.
+- Verification requires an explicit expected technical origin and pins `(record_type, schema_version)`.
+- Record-ID derivation is checked independently of signature verification.
+- Database bridges reject a stored team mismatch before returning a domain object.
+- `created_at` is display and diagnostic data, never authority or ordering.
+- Diagnostics use a total, bounded formatter for hostile SQLite values.
+- Existing development databases cross a pre-deployment delete-and-recreate schema boundary with no compatibility layer.
 
-Observations from initial survey:
-- The four admission tables plus `integration_mode_change` in `sql/core_other_team.sql` are the envelope precedent (from #164): `record_id BLOB PRIMARY KEY`, `record_type TEXT ... DEFAULT '<type>'`, author columns, `created_at`, `anchor_commit`, `constitution_digest`/`constitution_snapshot_json`, `schema_version INTEGER NOT NULL DEFAULT 1`, `signature`.
-- `wrasse_trust/constitution.py` provides `canonical_constitution_bytes`, `derive_record_id`, `sign_constitution_record`, `verify_constitution_record`.
-- `key_certificate` today uses `cert_id` (sha256 of canonical bytes, truncated to 16); the doc says `record_id` deliberately matches that derivation, so `derive_record_id` replaces it — still check for truncation/length differences at call sites.
-  (Superseded by the seventh review: `derive_record_id` widens to the full digest; the `identity.py` truncation sites disappear with the migration.)
-- `teammate_transport_announcement` shares the same idiom in `transport.py` but is *not* named by #165, and `team-constitution.md` counts only *three* pre-envelope reimplementations, excluding it.
-  Confirm whether it is deliberately out of scope (tracked elsewhere under #163) before touching it.
-- Consumers to sweep: `small_sea_manager/provisioning.py`, `manager.py`, `admission_events.py`, `small_sea_hub/backend.py`, `wrasse_trust/transport.py` helpers (`key_certificate_from_team_db_record`, `select_effective_teammate_berth_storage`), and `test_support.py`.
+The exact multi-head causal-context field and predecessor representation are no longer settled.
+The long-term name and derivation of the technical origin are also open; `team_id` must not be treated as stable social identity.
+Neither `key_certificate` nor `teammate_berth_storage_announcement` should gain interim single-lineage anchor columns during the envelope-only migration.
+The operational storage announcement remains outside constitutional standing.
+
+## `key_certificate` migration properties
+
+- SQL adopts shared envelope names while the domain dataclass may retain truthful issuer vocabulary behind one explicit mapping.
+- Team binding is signed and stored.
+- Pre-team certificates may exist in memory but may not enter a team database.
+- Revocations fold into the same retained record family as negative evidence and never create positive trust edges.
+- Free-text revocation reasons do not enter retained signed evidence.
+- A well-formed revocation changes no production standing until named analyses and causal semantics are implemented.
+- The old `CertGraph` remains a traversal utility, not a globally authoritative resolver.
+
+The previous requirement that any unreadable certificate invalidate the entire trust view is withdrawn pending the branch-local evidence design.
+No implementation may replace it with silent skipping that accidentally grants authority.
+
+## `teammate_berth_storage_announcement` migration properties
+
+The envelope migration preserves current operational behavior until a dedicated causal-announcement issue changes it:
+
+- The record uses the shared envelope plus its existing routing fields.
+- `record_id` becomes the primary key while signed `announcement_id` remains the unique UUIDv7 ordering key.
+- The record is operational, not constitutional standing.
+- A row is eligible only when its signature and claimed signer verify under the named local analysis.
+- An unknown signer remains inert and diagnostic until later evidence permits re-evaluation.
+- Among eligible rows, descending `announcement_id` preserves the current selection behavior for this migration slice.
+- Publication still requires a materialized local allocation and durable provider-issued locator where applicable.
+
+No raw identifier ordering should remain authoritative indefinitely.
+The dedicated follow-up owns causal successors, divergent-head handling, checkpoints, repair, and new Hub statuses.
+
+## Candidate causal-announcement follow-up
+
+The earlier candidate design remains useful but is not implemented by this branch:
+
+- Replace `announcement_id` ordering with signed, sorted, unique predecessor references.
+- Build the active structural graph only from records whose signatures and signer interpretation verify.
+- Keep unknown-signer rows quarantined outside the active graph until re-evaluation.
+- Treat a verified record that explicitly references unavailable ancestry as unresolved rather than silently bypassing the dependency.
+- Keep historical signature verification separate from current local standing.
+- Allow content-identical trusted heads to route while content-divergent trusted heads block.
+- Surface uncovered leaves from no-longer-accepted signers instead of silently choosing stale storage.
+- Permit explicit signed checkpoints for repair without erasing concurrent heads.
+- Require Manager repair to name the complete locally observed verified leaf set and a successfully materialized local allocation.
+- Ensure repair racing a concurrent publication leaves the new head visible and repeats rather than erasing it.
+- Verify the production selector against an executable bounded reference model.
+
+The evidence-DAG architecture may change the exact meanings of “trusted” and “current standing” in this candidate.
+The follow-up must name the local analysis it uses before implementation.
+
+## Questions that block production authority
+
+Before any revocation, exclusion, repudiation, admission acknowledgment, integration-mode claim, or delegation affects a production decision, the design must answer:
+
+1. What exact evidence is structurally required?
+2. Which causal context does the claim name?
+3. Which minimum dependencies must the claim's context name, and which declared closure must a visibility acknowledgment possess?
+4. Which named and versioned local analysis is being run, and what digests identify its evidence, local inputs, and canonical result?
+5. Which typed acknowledgments or policy inputs does that analysis consult?
+6. What effect is prospective, what is repudiated, and what remains available for later ratification?
+7. Which missing or malformed dependencies block only this branch, and which authentic but abusive input may be resource-bounded?
+8. Which operational side effects follow, including local suspension, key rotation, sender-key redistribution, quarantine, continuation namespace changes, and application-declared repair?
+
+A single normative resolver for all purposes is no longer a goal.
+The implementation should instead provide a shared verified evidence graph plus small named analyzers whose inputs and guarantees are explicit.
+
+## Open review threads
+
+Under active discussion; resolve before the tracker updates are posted, or record them in the relevant new issues.
+
+Resolved so far:
+
+- `team_id` is a convenience that carries no authorization weight; effectful paths consult the local analysis.
+  Now stated in architecture.md and the envelope table.
+- Resource policy is an intake-boundary rule, not a retention rule.
+  The protocol imposes no replicated quota on local authorship; every receiving clone may suspend or park any source, including claimed repair input.
+  Core intake defaults to low thresholds surfaced for human override, and a sender cannot bypass them by labeling input as repair.
+  Now stated in team-constitution.md and open-architecture-questions.md; rate-limit prior art pointers live there too.
+- Governance causal contexts name minimum dependencies; fuller frontier disclosure is deliberate, separate visibility evidence, and head gossip, receipts, and basis anchors let analyses surface selective or incompatible patterns without proving deception automatically.
+  Now stated in team-constitution.md and architecture.md; #166 draft updated.
+- Retention is clone-relative adoption: a Constitution object adopted into a clone's live Core database, plus its declared causal closure, is non-prunable in later states produced by that clone.
+  Adoption is a retention choice, not an acceptance or effect decision.
+  It is not a promise of physical survival, universal availability, or a globally complete Constitution set.
+  The retention wording sweep is done (constitution, architecture, open questions, README, cod-sync README and format-spec, Manager spec, wrasse-trust brain-storming, invariant 11 above).
+- The Constitution DAG is a hash-linked record DAG carried by Git commits, not literal Git commits.
+- The app-to-Core link remains a useful direction when treated as a signed basis claim rather than a possession or freshness proof.
+  An unfamiliar anchor signals a basis mismatch, and post-hoc analyses may surface stale, selective, incompatible, or unavailable anchors; the basis-anchor record and privacy shape remain open.
+- Durable projection identity comes from basis and result digests.
+  Any numeric local revision is ephemeral cache/display state and may reset.
+- Non-pruning binds a well-behaved implementation and is not peer-verifiable; absence is unavailability, never proof of non-existence.
+  Stated in the constitution retention section, architecture.md, open questions, cod-sync README and format-spec, and invariant 1 above.
+- Adoption inside a Git-carried SQLite database is an active merge operation, not passive non-action.
+  Declining a row means emitting a tree that omits rows a parent commit contained, which makes the merge depend on local intake state; parked/declined state must persist outside the live Core DB or the next merge re-decides it.
+  Stated in the constitution retention section and open questions; folded into N2.
+- A named policy may resolve concurrent incompatible evidence only on grounds justified by evidence content.
+  Representation-derived tie-breaks (identifier, timestamp, table order, arrival order) stay forbidden even under a named policy — closing the loophole that let single-lineage selection back in.
+- Witnessed receipt is the weakest rung and the only one no recipient can check; it is the author's client reporting on its own user, and a policy consuming receipts trusts that client.
+- The Seven Questions now include adoption, which is orthogonal to authenticity, visibility, acknowledgment, and effect.
+- The `permanent` vocabulary is gone from retention-sense prose rather than defended by a footnote; unrelated senses (Hub sessions, key hierarchies, "permanent social identity") are untouched.
+
+Still open:
+
+- The per-node acknowledgment direction: every Constitution node is acknowledged separately from repo-level merge.
+  Refined semantics: the routine ack is a lightweight **witnessed receipt** — the person had a reasonable opportunity to look — so clients must not emit one for changes fetched while the person was absent, and the earlier auto-emitted-policy-ack idea is withdrawn for this rung.
+  The ladder is: mechanical visibility attestation (device possession), witnessed receipt (human opportunity), deliberate typed positions (acceptance, objection, ratification).
+  Effect under a policy may precede witnessed receipt; "integrated, not yet reviewed" stays honest visible state.
+  Resolved: whether receipts gate anything is configurable team governance (N6 scope); policies may consume receipts and locally observed silence as effect inputs, but record meaning is fixed and the policy never proves that nobody objected.
+  Delayed or hidden evidence may change the projection and trigger repair.
+  Open mechanics: acknowledgment records themselves require no acknowledgment (regress guard); batch receipts over a named set as the volume answer; defining an explicit local cutoff without turning presence metadata or wall time into authority.
 
 # Plan
 
-Ninth-review status: both debates resolved (2026-07-12), all steps unblocked; step 1's amendment additionally relabels announcement selection per the debate-2 resolution.
-Tenth-review status: findings digested (2026-07-12) — announcement selection gains eligibility bounds (step 3), the envelope `schema_version` bumps to 2 across all record types (step 2), the revocation fold stands.
-Eleventh-review status: findings digested (2026-07-12) — production-inertness of revocations pinned (grep gate plus doc statement), trust-removal terminator micro test added (step 3), flag-day rollout rule written down (step 4 and Follow-up), per-version derivation wording fixed (step 1); the fold and the revocation-blind resolver stand.
-Twelfth-review status: findings digested (2026-07-12) — the inertness claim narrowed to "well-formed revocations do not alter production standing" with the fail-closed availability effect named separately (steps 1–2, validation story), and the terminator test relabeled as interim-mechanism characterization whose assertion survives #166 (step 3, Follow-up); the plan is considered implementable by the committee.
-Thirteenth-review status: findings digested (2026-07-12) — the indifference test's revocation relabeled cross-teammate/authority-unevaluated (step 2, validation story), and the terminator-test setup rewrite reassigned from #166 to #167/#168 after verifying the issue scoping (Follow-up); no code-facing step changes.
-Fourteenth-review status: findings digested (2026-07-13) — the #167/#168 removal-path dependency resolved by rescoping (#167 infrastructure plus existing record types only; remove-teammate conversion and the setup rewrite to #168; revoke-device conversion gated on the #166 contract), the authority contract promoted to tracker-visible acceptance criteria on #166, and step 3's stale setup-rewrite attribution corrected; the tracker amendments are human deliverables gating #167's start, and no #165 code-facing step changes beyond the step-3 label wording.
-
-1. Read `Documentation/team-constitution.md` and the #164 design record (`Archive/design-record-admission-new-constitution.md`) to pin down exact envelope semantics for non-governance records, and amend `team-constitution.md` per the anchor-omission and canonical-naming decisions above (plus the `constitution.py` docstring)
-   → verify: column list and canonical-field list for each record type (including the stored, signed `team_id` column) written down here before code changes; the doc no longer says the anchor columns "stay NULL" for the migrated tables, states that canonical signed-field names are defined per record type by its wrapper (sole divergence remaining: the cert's `issuer_*` names), defines `record_id` derivation as part of the format contract per version (version 2 = full SHA-256 digest, no "≥ 2" clause — eleventh review; version 1 retired; the "matches `cert_id`" rationale removed from doc and docstring), describes announcement selection as author-clock last-writer-wins bounded by eligibility checks (well-formed UUIDv7, future-skew window) — the "never by wall-clock time" claim removed, the residual stated plainly with its mechanism named (a still-trusted malicious signer controls routing of that teammate's own data until trust removal, which today means membership-cert deletion; well-formed revocation records do not alter production standing until #166's authority contract, while an unreadable revocation row trips the same fail-closed trust-view error as any other unreadable cert row — eleventh review as narrowed by the twelfth) — and notes the folded revocation record is interim pre-anchor, superseded by #166's version bump (tenth review).
-2. Rework `key_certificate`: envelope columns per the Decisions sections (no anchor columns, full renames, stored `team_id`), widen `derive_record_id` to the full SHA-256 digest and bump the signed `schema_version` to 2 across all envelope record types (SQL defaults, the #164 signing paths in `provisioning.py`, and the pinned checks — tenth review), replace `_canonical_cert_bytes`/`_canonical_revocation_bytes` in `identity.py` with `wrasse_trust.constitution` helpers, fold revocations into the table per the Decisions (delete `RevocationCertificate`, adapt `CertGraph`), update issuance/verification call sites, check `derive_record_id(canonical) == record_id` and `stored team_id == expected_team_id` in the verification wrapper (required parameter, no default), pin the supported `(record_type, schema_version)` pair in both the wrapper and the load bridge, enforce empty revocation claims at issuance (`issue_revocation` drops its `reason` parameter, per the ninth review), and make both `_load_team_certificates` implementations scan every row with total-formatter diagnostics and fail closed (one trust-view-invalid error after the scan) when any row is unreadable
-   → verify: micro tests for issuance, verification, tamper rejection (including a tamper of only the stored `record_id`, and of only the stored `team_id`), verifier rejection under a wrong `expected_team_id` despite a valid signature, cross-team copy rejection at the load bridge, `record_id` re-derivable from the stored row alone, store-boundary rejection of `team_id=None` and of a mismatched `team_id`, malformed-revocation rejection at the load bridge (any non-empty claims), signed-but-unsupported `schema_version` (including the retired version 1) and wrong `record_type` rejected at both wrapper and bridge, a table containing valid certificates plus one unreadable row failing closed with every bad row logged (`record_id`, `record_type`, error — including NULL/text/integer `record_id` rendered by the total formatter without a secondary exception), a team-scoped revocation sign→store→load→verify round-trip, a well-formed cross-teammate revocation — authority unevaluated, per the thirteenth review — loading without error and leaving `trusted_device_keys_by_teammate` output unchanged (pinning the resolver's type filter — twelfth review), revocations excluded from positive trust edges (no revocation in any `TrustPath.chain`, no path created revoker→revoked), revoking the requested subject suppresses its paths, and the stale-cache check (`is_revoked` flips after `add_cert` of a revocation) — all pass.
-3. Rework `teammate_berth_storage_announcement` the same way, keeping `announcement_id` as the signed UUIDv7 ordering key (UNIQUE) alongside the `record_id` primary key, with the same `derive_record_id` binding and `expected_team_id` checks in the verification wrapper, `team_id` as a stored signed column, per-row non-throwing loading, and the tenth-review eligibility bounds in `select_effective_teammate_berth_storage` (well-formed UUIDv7 with in-window timestamp, injectable `now`, named skew constant)
-   → verify: micro tests including `select_effective_teammate_berth_storage` newest-valid-wins ordering, `record_id`-tamper rejection, verifier rejection under a wrong `expected_team_id`, signed-but-unsupported `schema_version` rejection, cross-team copy rejection (mirroring the cert test), a malformed announcement row being skipped (logged via the total formatter) without disabling selection, the trust-removal terminator (a teammate's valid newest announcement is selected; after that teammate's certs are deleted, re-selection rejects it — eleventh review; labeled in-code as characterizing the interim cert-deletion mechanism, assertion durable, setup rewritten to #168's exclusion record replaying through #167's projections — twelfth review, attribution per the fourteenth; the label names the mechanism, not issue numbers), and the eligibility bounds: a non-UUIDv7 `announcement_id` (e.g. `0xFF`×16) never selected, a future-dated announcement ineligible now but eligible under an injected later `now`, a near-max UUIDv7 never eligible — all pass.
-4. Bump `USER_SCHEMA_VERSION`, delete/recreate semantics only (no migration shim); the signed `schema_version` 1→2 bump rides this as a flag day — all participants upgrade and recreate together, mixed-version sync unsupported, violations made loud by the pinned fail-closed checks (eleventh review)
-   → verify: fresh DB creation succeeds; version-mismatch path still raises the delete/recreate error.
-5. Full sweep of consumers (manager, hub, test_support) and rename fallout
-   → verify: full micro test suite passes across `small-sea-manager`, `small-sea-hub`, `wrasse-trust`.
-
-Validation story for a skeptic:
-- Goal accomplished: grep shows no remaining independent canonical-bytes construction for these two record types, revocations included — the only signing/verifying path is through `wrasse_trust.constitution`; micro tests cover sign→store→load→verify round-trips and reject tampered fields (including `record_id` itself) for both record types.
-- Repo integrity: the two migrated tables match the #164 envelope tables on every column they share (id/type/author/created/version/signature vocabulary), diverging only by carrying no anchor columns and by adding a stored `team_id` — documented decisions, not drift; no compatibility shims added; diff confined to the two record types and their direct consumers.
-- Resilience with governance kept fail-closed: a malformed announcement row (hand-corrupted in a micro test, standing in for a bad Cod Sync merge) is skipped with a log line while selection still works; an unreadable `key_certificate` row makes trust resolution fail with an explicit trust-view-invalid error rather than silently altering standing — both paths log `record_id`/`record_type` through a total formatter that cannot itself raise.
-- Well-formed revocations do not alter production standing (eleventh review, narrowed by the twelfth): grep shows no `CertGraph`/`find_trust_paths`/`is_revoked` consumer outside `wrasse_trust.trust` and tests (semantic enforcement), and a micro test shows a well-formed cross-teammate revocation, its authority unevaluated, leaves `trusted_device_keys_by_teammate` unchanged (standing enforcement); the separate, deliberate availability effect — an *unreadable* revocation row fails trust resolution closed like any other unreadable cert row — is the eighth review's policy, not a revocation semantic.
-  The authority contract remains #166's first deliverable.
+1. Rewrite canonical architecture documentation.
+   Define the retained evidence DAG, plural analyses, eventual visibility, typed acknowledgments, duration, local repudiation, team splits, authority separation, and forward-only repair.
+2. Rewrite `Documentation/team-constitution.md` as target semantics rather than a prematurely fixed one-lineage SQL schema.
+   Preserve the shared envelope properties that survive the redesign and mark multi-head context and new record families open.
+3. Align Manager, Cod Sync, README, open questions, and this branch plan.
+   Distinguish current implemented finalization/quorum behavior from target semantics.
+4. Audit the repository for stale claims about one accepted lineage, global finalization, blanket proposal invalidation, whole-view failure, and reset-based repair.
+5. Produce a new bounded state-transition model before production authority work.
+   Cover admission, typed acknowledgments, declared causal visibility, direct interaction evidence, device linking, compromised-device suspension, revocation, exclusion, repudiation, ratification, durable team continuations, concurrent histories, malformed and abusive input, and application-declared repair.
+6. Re-plan the envelope migration against the model.
+   Retain the settled format decisions only where they do not preclude multi-head evidence or branch-local analysis.
+7. Implement in coherent slices after the tracker and branch plan match the new architecture.
 
 # Follow-up
 
-- #166 owns predecessor-chain wiring for governance-bearing `key_certificate` rows; do not start it here.
-   Binding prerequisite from the debate-1 resolution, sharpened by the tenth review: the minimal revocation-semantics contract (the six questions in that decision) is #166's *first deliverable*, written before any #166 schema decision.
-   The two identity-class questions (recovery-key revocation, self-revocation) are shape-neutral under the cert's free-form `issuer_*` canonical fields; the frontier and retroactivity questions need #166's anchor design as input, which is why the contract lives there and not before #165.
-   Tracker-visible per the fourteenth review: this prerequisite becomes explicit acceptance criteria on #166 itself, not only a statement here.
-- #166 owns detecting *absent* governance records (deletion resistance via predecessor chains / anchor frontier): #165's fail-closed policy covers only rows that are present but unreadable (eighth review).
-   Announcement skip-and-log must not leak onto any governance-bearing record type.
-- The first governance `schema_version` bump (1→2) happens in #165 itself (tenth review), as a pre-deployment flag day (eleventh review): all participants upgrade and recreate team databases together, mixed-version synchronization is unsupported, and the pinned fail-closed checks make violations loud rather than silently misinterpreted.
-   Whoever bumps next, post-deployment, inherits the real coordination problem: a legitimate version-3 record bricks trust resolution on every not-yet-upgraded client — correct behavior, but it rules out soft/rolling upgrades without a plan.
-- If `teammate_transport_announcement` turns out to be an untracked leftover of the pre-envelope idiom, file or amend an issue under #163 rather than expanding this branch.
-   Its selection path (`select_effective_teammate_transport`) shares the unbounded raw-bytes ordering the tenth review fixed for berth storage; whatever issue covers it must inherit the eligibility bounds.
-- Two trust evaluators exist and neither is normative (ninth review): `trusted_device_keys_by_teammate` in `identity.py` ignores revocations entirely; `CertGraph` in `trust.py` tracks them but authenticates and authorizes nothing.
-   The revocation authority model (placeholder-crypto redesign, feeding #166) must name the normative evaluator and reconcile or retire the other, and must answer the minimal contract listed under the debate-1 resolution.
-   Until then (eleventh review): revocation records are enforced in no production path, and the only operative trust removal is whole-teammate membership-cert deletion (`remove_teammate`, Core-berth role-gated) — per-device revocation of a single compromised device has no production effect yet; making the production resolver revocation-aware before the contract exists would enforce revocations whose authority has never been evaluated — the hazard itself (thirteenth review's restatement of the "unauthorized-revocation hazard" shorthand).
-   Cert deletion is itself interim (twelfth review): it contradicts the append-only target Constitution, so the exclusion record (#168) replayed through the projection rebuild (#167) must replace it as the removal mechanism — issue attribution corrected by the thirteenth review; #166 owns the authority contract and anchor columns, not removal — and the terminator micro test's setup rewrite is a deliverable of #168 specifically (fourteenth-review rescope); the test's assertion (a removed teammate's announcements are rejected on re-selection) carries over unchanged.
-   A per-device analogue of that test (one revoked device's announcements rejected while the teammate's other devices survive) becomes writable only once the #166 contract is enforced through #167's projections; add it there, separate from the whole-teammate exclusion test.
-- Once the revocation-authority and announcement-ordering questions settle, start a small abstract state-machine specification of the Constitution: `Accept(record, context, frontier)` as the conjunction of well-formedness, supported type/version, hash validity, signature validity, team binding, and authority-at-frontier, plus a deterministic `Replay(frontier)` over accepted records.
-   Tooling order per committee: TLA+ first (replay, concurrency, forks, admission/revocation interleavings), Alloy for cheap structural counterexamples in certificate/predecessor graphs, Tamarin later for recovery and key-compromise ceremonies; Lean/Coq premature while authority and frontier semantics move.
-   Candidate invariants: equal closed frontiers replay to equal constitutional state; no record from team A accepted in team B; a revocation never creates a positive trust edge; a revoked key cannot authorize records anchored after its revocation becomes effective; missing or unreadable governance dependencies never produce a partial trust answer; admission cannot become effective without the required distinct-teammate endorsements; concurrent operational announcements never produce an unexplained arbitrary winner.
-- Tracker amendments from the fourteenth review, human deliverables alongside the #165 sharpening comment and the supersedes issue below; they gate the start of #167, though nothing in #165's code steps waits on them:
-   amend #166 (the six-question authority contract as its first deliverable and explicit acceptance criterion, plus the gate that no revocation becomes production-effective anywhere until the contract exists),
-   rescope #167 (projection infrastructure plus conversion of write paths whose record types already exist; the remove-teammate and revoke-device conversions move out, and the same revocation gate is stated),
-   and extend #168 (the remove-teammate conversion and the terminator-test setup rewrite).
-   The revoke-device conversion's eventual issue home is the human's call; its gate on the #166 contract enforced through #167's projections is not.
-- File the announcement supersedes-chain redesign (signed `supersedes_record_id`, causal successor, surfaced conflicts) as its own issue under #163 — a human deliverable alongside the #165 sharpening comment, per the debate-2 resolution.
-   Scope note from the tenth review for that issue: supersedes chains fix honest-concurrency semantics (no arbitrary tie-break, conflicts surfaced), but they do not terminate a malicious still-trusted signer — only revocation enforcement does — and the Hub's behavior while heads conflict is the unsettled part of the design.
-- Once the resolver honors revocations, the announcement eligibility bounds (UUIDv7 well-formedness, future-skew window) become defense in depth rather than the recovery guarantee; keep them.
-- Both ninth-review debates are resolved (2026-07-12), so compacting this document to four sections — objective/scope, settled record contracts, implementation plan, verification/follow-ups — is now unblocked; do it before implementation starts in earnest.
+The tracker changes below are human deliverables and require explicit approval before posting:
+
+- Amend or replace #163 and #165 so they no longer assume one accepted Constitution lineage or a single normative resolver.
+- Reframe #166 from “implement authoritative revocation” to verified evidence ingestion plus named revocation analyses.
+- Reframe #167 around evidence-graph construction, inspectable local projections, and cache provenance.
+- Require #167 projections to name an analyzer and semantic version and retain evidence, local-input, and result digests; any numeric local revision is ephemeral cache/display state.
+- Extend #168 to distinguish prospective exclusion, admission repudiation, selective ratification, key containment, and application repair.
+- Create or amend an issue for typed acknowledgment, interaction-attestation, delegation, repudiation, and ratification record families.
+- Create a generic Cod Sync forward-restoration and repair-capability issue without assigning application authorship semantics to Cod Sync, with application-specific replay follow-ups.
+- Make eventual head visibility and declared causal-closure acknowledgments production prerequisites rather than late discovery polish.
+- Create an app-to-Core basis-anchor issue that treats the anchor as a signed, inspectable claim rather than proof of possession, completeness, or freshness.
+- Create or amend an issue for technical origin, living team continuations, and post-split operational namespaces.
+- Add authentic-input resource safety and indirect-metadata minimization to the ingestion and record-family work.
+- Preserve the dedicated causal berth-storage announcement issue and require it to name the local signer/standing analysis it uses.
+- Revisit the current `steward` invitation default and any admission mode plan that grants automatic Core integration as an incidental side effect.
+
+Research should focus on narrow blocked questions rather than importing an internet-scale consensus system wholesale.
+Useful comparisons remain Keybase sigchains, Secure Scuttlebutt identity forks, Matrix room-state authorization, MLS epochs, Certificate Transparency structures, and human-readable eventually consistent repair systems.
+
+At the end of the branch, `DESIGN-RECORD.md` should record why the earlier single-lineage #165 plan was abandoned before implementation and which envelope decisions survived.
+It should not duplicate the canonical evidence-DAG architecture.

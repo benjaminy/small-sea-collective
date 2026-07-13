@@ -173,7 +173,7 @@ that always exists.
 
 For version 1, a team does not need a special shared private key.
 
-Instead, the team is a derived principal represented by the history in its
+Instead, a living team continuation is an observer-relative derived principal represented by activity and relationships in its
 `{Team}/SmallSeaCollectiveCore` berth:
 
 - who was admitted (membership certs)
@@ -181,12 +181,12 @@ Instead, the team is a derived principal represented by the history in its
 - which devices are linked to which per-team participant UUID
 - which recovery, integration-mode, proposal, and endorsement events were accepted
 
-In that sense, "Accounting" is its membership and revocation history, not
-a separate secret sitting somewhere called "the Accounting private key."
+In that sense, "Accounting" is a recognized continuation of signed activity and relationships, not a separate secret or eternal identifier called "the Accounting identity."
+A technical origin can separate its records from unrelated evidence without deciding which descendant is the real Accounting after a split.
 
-**There is no special "steward" key class in Small Sea.** "Steward" is Manager shorthand for automatic Core integration; protocol rules should say automatic Core integrator when they mean anchor-relative standing.
-Any key can physically emit bytes shaped like a membership record, but conforming clients accept an admission only when its complete signed transcript and automatic Core integrator endorsements satisfy the anchor-relative Core rules.
-Cryptographic validity still does not force another participant to adopt the resulting Core lineage.
+**There is no special "steward" key class in Small Sea.** "Steward" is Manager shorthand for automatic Core integration; protocol rules should name the versioned analysis basis when they mean causal-context-relative standing.
+Any key can physically emit bytes shaped like a membership record, but each participant's named analysis decides whether the complete signed transcript and typed acknowledgments have local effect.
+Cryptographic validity does not force another participant to recognize the resulting continuation.
 
 One consequence worth naming: two teammates who pull from disjoint sets
 of clones can have internally consistent but mutually different views of
@@ -302,14 +302,14 @@ Git provides content-addressed snapshots, transport history, and three-way mergi
 
 Certificates and other significant teammate records live in `{Team}/SmallSeaCollectiveCore` as signed append-only data.
 Admissions, device changes, recovery events, integration-mode changes, exclusions, staleness observations, proposals, and endorsements remain independently verifiable after synthesized merge commits or other repository-history manipulation.
-Each record references the causal Core state against which its signer and meaning should be evaluated.
+Each record references the minimum prior Constitution evidence its meaning requires; named analyses may also compare it with other locally held evidence.
 
-Every Core database snapshot contains the complete signed record lineage through that snapshot's state.
+Every Core database snapshot produced by a clone contains the signed evidence that clone has adopted and each record's declared causal closure.
 A verifier does not depend on old checkout blobs to answer a current trust question.
 
 Git carries and versions those database records.
-The accepted signed record lineage is the domain history; the Git commit DAG is the versioning and transport substrate around it.
-Mutable lookup tables may cache current state only when they can be rebuilt from that signed lineage.
+The locally retained evidence DAG is the domain history; the Git commit DAG is the versioning and transport substrate around it.
+Mutable lookup tables may cache a canonical state only when they identify the versioned analysis and evidence basis from which it can be rebuilt.
 
 NoteToSelf may keep local records of device enrollment and team participation for convenient inventory.
 Those local records do not replace the signed teammate facts in the relevant team Core history.
@@ -343,14 +343,13 @@ and the system should prefer a sharp break.
 acceptable for version 1. Overlapping validity windows can be added later
 without changing the cert format.
 
-## Epochs, Removal, and Splits
+## Removal, Operational Continuations, and Splits
 
 Any removal is a serious event in a decentralized system.
 
-- removing a teammate should always advance the team membership epoch and
-  rotate the content and session material that teammate could read
-- removing a device should revoke that device key and rotate anything that
-  device could read
+- accepting a teammate exclusion should rotate the content and session material
+  that teammate could read under the accepting participant's operational continuation
+- accepting a device revocation should rotate anything that device could read
 - any `device_link` certs issued by the revoked device after the last
   trusted checkpoint may need to be transitively reconsidered (standard
   revocation-with-back-dating)
@@ -365,9 +364,9 @@ continue making local progress while disconnected.
 
 The design goal is therefore not "prevent every fork." The design goal is:
 
-- make epoch changes explicit
-- detect stale branches quickly
-- reject ordinary writes from stale epochs once a newer epoch is known
+- make incompatible operational continuations explicit
+- detect previously unseen branches quickly
+- reject ordinary writes that the named local analysis no longer accepts
 - make fork resolution an explicit administrative or human action rather
   than a silent merge
 
@@ -378,10 +377,8 @@ split into two awkwardly incompatible futures. Bob cannot comfortably live
 in both without some bespoke translation layer. Small Sea does not hide
 that problem; it expects teams to resolve it socially.
 
-One candidate invariant for version 1:
-
-- membership changes and removals advance the epoch before any further
-  normal writes are accepted
+If incompatible continuations both remain active, they need distinct sender-key and routing namespaces even though they share a technical origin and historical ancestry.
+That technical separation does not decide which continuation is the real team.
 
 ## Certificates
 
@@ -395,10 +392,10 @@ Under the device-only model:
 - `self_binding`: legacy transitional type for the current
   BURIED/GUARDED/DAILY placeholder hierarchy. Goes away when that
   hierarchy does.
-- `membership`: the finalized admission transcript names the admitted
+- `membership`: the completed admission transcript names the proposed
   per-team participant UUID and founding device key.
-  The transcript is valid only with the required automatic Core integrator
-  endorsements at its Core anchor.
+  The transcript remains authentic evidence; each named analysis decides
+  whether its typed acknowledgments give it local effect.
   The first membership record is self-issued at team creation and begins
   the team's Core history.
 - `device_link`: an existing device (already speaking for UUID `U` in
@@ -439,9 +436,9 @@ readers mid-transition don't confuse themselves.
 Trust traversal must be **typed**. A valid trust path is not just "a pile
 of signatures" — it is a meaningful chain of statements.
 
-Under the device-only model, the canonical question is: "did device `K` validly speak as UUID `U` in team `T` at Core state `C`?"
-A valid answer replays the complete signed Core history from team genesis through `C`, validates the anchor-relative admission transcript and its automatic-Core-integrator endorsements, finds the founding device `K₀`, applies later valid `device_link` and revocation events, and determines whether `K` was in the resulting device set.
-Genesis anchors the history, but governance-bearing records are evaluated at their own causal Core references rather than by signature reachability alone.
+Under the device-only model, the canonical question is: "did device `K` speak as UUID `U` in the continuation recognized by analysis basis `B`?"
+A valid answer traverses the retained evidence closure named by `B`, verifies the admission transcript and typed acknowledgments under that versioned analysis, finds the founding device `K₀`, applies accepted later `device_link` and revocation evidence, and determines whether `K` was in the resulting device set.
+Genesis supplies a technical origin, but current standing comes from living evidence and the named analysis rather than root reachability alone.
 
 Other cert types compose into this graph rather than replacing it:
 
@@ -465,7 +462,7 @@ the cert to be meaningful to teammates verifying it.
 | Cert Type | Issuer Rule |
 |-----------|------------|
 | `self_binding` | Legacy placeholder. Goes away with the BURIED/GUARDED/DAILY hierarchy. |
-| `membership` | The inviter signs the candidate transcript; it constitutes an admission only with the required automatic-Core-integrator endorsements at its Core anchor. Self-issued genesis is the special team-creation case. |
+| `membership` | The inviter signs the candidate transcript; it becomes locally effective only under a named analysis that accepts the transcript and required typed acknowledgments. Self-issued genesis is the special team-creation case. |
 | `device_link` | A device that already speaks for the same UUID `U` in the same team `T`. This is what grows the equivalence class. |
 | `cross_certification` | Any team-device key, during a ceremony with another participant. |
 | `identity_link` | A team-device key in each of the two teams being linked. Published into whichever team repos the linker wants the link visible in. |
@@ -476,8 +473,8 @@ the cert to be meaningful to teammates verifying it.
 
 `Steward` is not a special key class.
 It is Manager shorthand for automatic Core integration.
-Protocol rules should say automatic Core integrator when they mean standing at the accepted state referenced by a record.
-The cert layer provides signed identity and device relationships, while Core replay determines whether a signing device represented an eligible endorser at that anchor.
+Protocol rules should say automatic Core integrator only with the versioned analysis basis under which that standing is claimed.
+The cert layer provides signed identity and device relationships, while the named Core analysis determines how a signing device is interpreted at that causal frontier.
 
 This table is preliminary and will need refinement as the protocol
 solidifies.
@@ -495,18 +492,17 @@ typed certs are the fix.
 
 ### "Is Alice on team Accounting?"
 
-Answered by replay inside the team's signed Core history:
+Answered by a named analysis over the team's signed Core evidence:
 
 1. Find Alice's per-team participant UUID `U` in this team's cert store
    (Alice's device tells the UI which UUID to ask about, since the UUID
    is opaque and per-team).
-2. Find the finalized `membership(U, founding_device=K₀, team=Accounting)`
-   transcript that admitted `U`.
-3. Replay Core through the transcript's anchor and verify that its proposal,
-   invitee acceptance, and automatic-Core-integrator endorsements satisfy the
-   admission rule at that state.
-4. Replay later signed `device_link`, recovery, and revocation records through
-   the Core state being queried.
+2. Find the completed `membership(U, founding_device=K₀, team=Accounting)`
+   transcript and the typed acknowledgments relevant to the analysis.
+3. Traverse the declared causal closure and verify that the proposal, invitee
+   acceptance, and acknowledgments satisfy the named versioned analysis.
+4. Apply later signed `device_link`, recovery, and revocation evidence accepted
+   by that analysis through the frontier being queried.
 5. To prove a *specific device* of Alice's is acting as `U`, verify that the
    resulting device set contains it and that the device's signature is valid.
 
@@ -521,9 +517,9 @@ matches the derived-principal story.
 In Small Sea v1, **the team itself does not speak.** Individual teammates
 speak; the team's "voice" is the aggregated history in its repo.
 
-Any device can emit a candidate certificate, but that fact does not make the certificate a valid admission.
-A conforming client recognizes a new teammate only through the architecture's transcript-bound, anchor-relative admission flow and its required automatic-Core-integrator endorsements.
-Whether a valid admission is adopted remains a local integration decision, so different participants may still accept different Core lineages.
+Any device can emit a candidate certificate, but that fact does not make the certificate locally effective.
+A conforming client recognizes a new teammate only through the architecture's transcript-bound evidence flow and a named analysis of its typed acknowledgments.
+Different participants may recognize different living continuations of the same shared ancestry.
 
 Future directions for contested or high-stakes team governance — quorum
 signing, tiered roles, time-locked operations with cancellation windows —
@@ -607,8 +603,8 @@ Summary of provisioning under the device-only model:
 - **Joining an existing team.** An inviter allocates the joiner's per-team
   teammate UUID and publishes an admission proposal anchored to Core.
   The joiner generates a fresh team-device key and signs the transcript.
-  The proposal becomes a valid admission only after the required automatic
-  Core integrator endorsements and inviter-published finalization.
+  The inviter publishes the completed transcript and their typed acknowledgment;
+  each participant's named analysis decides its local effect.
 - **Enrolling a second device in a team Alice is already in.** The new
   device generates its own team-device key for that team. An
   already-enrolled device of Alice's, *for that same team*, issues a
@@ -692,8 +688,8 @@ The likely Small Sea synthesis is:
 - device-rooted keys with no persistent per-participant key (inspired by
   Matrix/Signal, simpler than the layered alternative we previously
   considered)
-- admission and signed Core proposals as anchor-relative validity mechanisms, with automatic Core integrator as the protocol term and "steward" left as Manager shorthand
-- a complete signed teammate-record lineage in every Core snapshot, carried and versioned alongside the complete Git commit DAG
+- admission and signed Core proposals as causal evidence interpreted by versioned named analyses, with automatic Core integrator as an analysis-relative term and "steward" left as Manager shorthand
+- locally adopted signed evidence and its declared causal closure in every Core snapshot produced by that clone, carried and versioned alongside the complete Git commit DAG
 - typed certificates and delegation inspired by SPKI
 - ambient proximity trust as continuous verification (novel)
 - transport/session crypto kept separate in Cuttlefish, informed by MLS
@@ -736,18 +732,17 @@ Design direction:
   may not even need to exist under device-only (see Open Questions).
 - Cross-team identity linking remains opt-in and published by the user
   into whichever team repos they choose.
-- Steward remains Manager shorthand for automatic Core integration; protocol standing is evaluated from accepted Core history, and no special steward key class is introduced.
+- Steward remains current Manager shorthand for automatic Core integration; standing is evaluated from retained Core evidence plus explicit local analysis inputs, and no special steward key class is introduced.
 - Trust anchoring is the team's first (self-issued, genesis) `membership`
-  cert, reached by replaying the complete signed Core history through the
-  referenced state.
+  cert, reached by traversing the retained Constitution evidence referenced
+  by the analysis.
 - The Git commit DAG remains complete bookkeeping and merge ancestry, but it
   is not the sole storage or validity mechanism for the signed trust log.
 
 ## What Can Be Deferred Past Version 1
 
 - Post-quantum crypto (API should be agnostic; ship Ed25519/X25519 only)
-- Additional quorum and threshold governance beyond the existing
-  automatic-Core-integrator endorsement rule
+- Exact named risk/availability profiles and acknowledgment thresholds
 - Hardware attestation certs
 - Complex trust policies beyond TOFU
 - Key rotation with overlapping validity windows (hard rotation is fine)
@@ -766,9 +761,9 @@ Design direction:
   recovery authorizes a fresh device key through a separate loud event; and
   the absence of usable recovery material leads to a new teammate identity.
   The concrete recovery-key format and ceremony remain open.
-- A complete signed trust log inside every Core database snapshot, with the
-  Git commit DAG retained for bookkeeping and merge ancestry
-- Epoch transitions and stale-epoch rejection rules for removals
+- Locally adopted signed trust evidence and its declared causal closure inside every
+  Core database snapshot, with the Git commit DAG retained for bookkeeping and merge ancestry
+- Explicit operational-continuation and key-rotation rules for accepted removals and durable splits
 - A v1 UX that steers new users toward enrolling a second device early,
   because it remains the cheapest recovery path
 
@@ -800,8 +795,8 @@ Design direction:
   bind to the trust model? The invitation token likely needs to carry
   the joiner's founding device key so the admitting teammate can include
   it in the `membership` cert.
-- What exact epoch data must be committed so stale writes are
-  unambiguously detectable?
+- What signed evidence must accompany an accepted removal so that writes
+  the local analysis no longer accepts are unambiguously detectable?
 - For ambient proximity: what Bluetooth protocol? How to handle relay
   attacks? What aggregation window is meaningful? Should ambient certs
   be stored in team repos or only locally?

@@ -125,16 +125,49 @@ Stable commit identities and parent relationships remain available even when old
 That window is not a strong erasure boundary.
 It describes what the shared Cod Sync substrate keeps readily rehydratable; any teammate who has already fetched an older snapshot may retain an independent copy.
 
-Core has an additional retention invariant: every Core database snapshot includes the complete signed teammate-history chain through that snapshot.
-That history is application data in the database, not something reconstructed from Git authorship or from pruned historical checkouts.
-Because Core is expected to be small, its live-data window should be conservative.
+Core has an additional retention invariant: every current Core database snapshot produced by a clone includes the complete Constitution evidence that clone has adopted into its live database.
+That evidence is application data in the database, not something reconstructed from Git authorship or pruned historical checkouts.
+Adopted Constitution objects and their declared causal closures are non-prunable in later states produced by that clone.
+This does not guarantee that the clone or any physical copy survives.
+It is also an invariant Cod Sync asks a well-behaved clone to maintain, not one a peer can verify: an object never adopted and an object adopted and dropped are indistinguishable from outside.
+Separable PII payloads and fetched-but-unadopted parked input do not inherit that retention merely by arriving.
 
 The checkpoint rule that would permit safe window advancement past a long-unseen teammate is not yet specified.
 A signed staleness observation can warn that advancement is approaching and preserve what an observer knew, but it is not itself finality or pruning authority.
 
 Any user with write access to the cloud storage can trigger compaction. There is no admin/permission distinction at this layer.
 
-## 8. Encryption Envelope
+## 8. Forward Restoration and Replay
+
+Cod Sync never repairs a shared history with `git reset`, a backward ref move, a rebase, or a replacement root.
+Restoration is a forward operation.
+
+Given a selected old commit `B` and the current head `H`, a repair appends a new descendant `R` of `H` whose tree contains the chosen old state.
+The commits between `B` and `H` remain ancestors of `R`.
+That preserved interval is the inventory of changes overwritten by the restoration.
+
+The repair workflow may then append new commits that replay desirable intervening work.
+When an application supports replay, replay commits should retain machine-readable provenance naming the source commits, paths, records, or application operations they reproduce and the certainty that provenance provides.
+A repair manifest should distinguish:
+
+- changes intentionally omitted;
+- changes replayed without conflict;
+- mixed or causally ambiguous changes requiring human review;
+- application or external side effects that Git cannot reverse.
+
+The exact manifest format and app-facing replay interface remain open.
+Cod Sync supplies commit reachability, stable identities, and the ability to publish a forward repair series.
+It does not prove who authored a Git change, whether a replay is honest, or whether a content-level operation remains valid.
+Applications own those semantics and may offer user-directed restoration, author-asserted replay, or application-defined cryptographically attributable replay.
+
+A repair series may be prepared locally and published in one Cod Sync update so peers do not treat the temporary old-content tree as the completed repair.
+Every commit in the published series remains ordinary inspectable Git history.
+
+Core follows the same forward-only Git rule with an extra constraint.
+A Core restoration must not publish a database that omits Constitution objects that clone adopted after `B`.
+Core repair appends repudiation, reconciliation, or ratification evidence and rebuilds a named local projection while preserving the complete evidence DAG.
+
+## 9. Encryption Envelope
 
 > **Status: Placeholder** — encryption is designed for but not yet implemented.
 

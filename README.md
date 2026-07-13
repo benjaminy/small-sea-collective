@@ -97,10 +97,19 @@ This is deliberately different from local Hub authorization.
 A participant's Hub really does enforce which client software may act in which berth on that device.
 Teammate berth modes instead describe whether ordinary publications are integrated automatically or arrive only as explicit proposals.
 
-In the design Small Sea is building toward, significant teammate facts live in signed, append-only Core records so that past membership, device, and integration state remains inspectable.
-Every Core snapshot carries that complete signed history through its current state, while Git retains the complete commit DAG for bookkeeping and merge ancestry.
-Core is therefore more consequential than an ordinary app berth: a Core proposal can be valid relative to an accepted history without any central service being able to force every participant to adopt it.
-Persistent disagreement about Core history is a team fork, not an ordinary permission dispute.
+In the design Small Sea is building toward, significant teammate claims live in a retained DAG of signed Core records.
+Every Core snapshot produced by a clone carries the constitutional evidence that clone has adopted into its live database, while Git retains the complete commit DAG for bookkeeping, provenance, and repair.
+That is a local non-pruning rule, not a claim that every clone has the same evidence or that any storage copy is immortal.
+Different participants may accept different claims or apply different analyses to the same evidence.
+The Constitution does not have to resolve to one true state, and unresolved disagreement may become an honest team split.
+
+A random team identifier is a technical replay boundary, not an eternal social identity.
+After a split, multiple living continuations may share the same ancestry and friendly name without the protocol deciding which one is real.
+People recognize a continuation through renewed signed activity and relationships; if incompatible continuations both remain active, they may move into distinct cryptographic and routing namespaces.
+
+Trust and authority can accumulate through duration.
+Alice may admit Bob, Carol may initially accept Alice's judgment, and Carol may later add separate evidence after meeting Bob or comparing device-bound material in person.
+Those events remain distinct instead of being collapsed into one timeless membership fact.
 
 Devices remain cryptographically distinct even during recovery.
 A user may prepare a separate per-team recovery capability in advance, but using it is a conspicuous signed process that authorizes a fresh device key rather than copying a lost device's identity.
@@ -119,11 +128,15 @@ Within that range, medium-sized groups naturally develop different levels of eng
 Small Sea provides one modest built-in layer for that today: a smaller inner group performs routine integration while a larger outer group mostly observes and proposes.
 It deliberately does not try to encode every possible governance arrangement, and a richer team-configurable role scheme remains a possible future direction rather than a current commitment.
 
-That scale assumption changes the engineering tradeoffs. When automatic
-convergence would require complex machinery, Small Sea prefers to preserve both
-sides, make the situation visible, and let a human choose when to merge, unify,
-reject, or fork. Git branches, explicit merge moments, Manager prompts, and
-structured Hub rejections are all expressions of this principle.
+That scale assumption changes the engineering tradeoffs.
+Small Sea can afford to keep each clone's adopted constitutional evidence, use conspicuous acknowledgments, run expensive local analyses, and rely on human repair procedures that would be impractical for hundreds or thousands of teammates.
+Small size does not excuse a safety rule that already fails with two or three people, but it does let the project prefer understandable non-scalable mechanisms over internet-scale consensus machinery.
+
+When automatic convergence would require brittle machinery, Small Sea preserves both sides, makes the situation visible, and lets people merge, acknowledge, repudiate, ratify, or split.
+Git branches, forward restoration commits, Manager prompts, and structured Hub rejections are all expressions of this principle.
+
+Retained evidence also has privacy and resource costs.
+Direct identity payload can be separated and later dropped, but pseudonymous relationship metadata may remain identifying, and an authentic compromised device does not receive an unlimited right to consume every participant's storage or attention.
 
 This is not permission to lose data or silently pick winners. The system should
 be conservative: do not collapse distinct identities by friendly name, do not

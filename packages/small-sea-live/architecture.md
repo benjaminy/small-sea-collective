@@ -191,7 +191,7 @@ They are not automatically forbidden.
 The local-first boundary is:
 
 - provider failure must not destroy durable team history
-- provider failure must not break team identity or membership
+- provider failure must not destroy the technical team origin, signed continuation evidence, or the ability to evaluate local standing
 - provider failure must not prevent degraded non-live collaboration
 - the provider must be replaceable on demand — a team that wants to stop using it must be able to, without losing data, identity, or the ability to keep collaborating; provider survival is not enough, optionality is
 - providers should not see app plaintext where end-to-end encryption is practical
