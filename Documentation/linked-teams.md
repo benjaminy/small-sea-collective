@@ -2,6 +2,7 @@
 
 Status: exploratory design note.
 This is expected to become a feature, but the protocol is not settled.
+Any linked-team format is an extension over the Constitution event DAG, not part of its core envelope or verification rules.
 
 Small Sea teams are intended to stay human-sized.
 A team with several dozen people is already near the upper edge of the intended operating shape.
@@ -52,10 +53,10 @@ When Team A wants a relationship with Team B, what is "Team B"?
 
 Small Sea makes this deliberately awkward, and recent protocol work made it more so.
 A team has no central server and no single key.
-A living team continuation is recognized through signed, append-only Core evidence: admissions, device links, revocations, exclusions, integration-mode changes, acknowledgments, and activity.
-The team "does not speak"; individual teammates speak, and observers recognize a living continuation by analyzing that history.
-The evidence DAG can contain incompatible continuations.
-Different participants can hold different frontiers and apply different local analyses to them.
+A team relationship is recognized through signed Core events and local policy.
+The team "does not speak"; individual keys sign events, and people decide which histories and representatives they recognize.
+The Constitution event DAG can contain incompatible branches.
+Different participants can hold different heads and make different local choices.
 
 So "Team B" is not a single state that Team A can point at.
 It is a living, potentially divided history with no built-in spokesperson.
@@ -86,9 +87,9 @@ It is the same principle the rest of Small Sea already commits to, lifted one le
   Team A is trusting a local person, and the design should say so plainly everywhere it relies on it.
 
 The continuation problem does not disappear, but it relocates to something answerable.
-"Which Team B?" becomes "which Team B continuation does this bridge person recognize under which analysis?"
-A bridge teammate can name a definite frontier and analysis basis, so the question has a concrete, inspectable answer.
-If Team A has several bridges and they report different Team B frontiers or analyses, Team A *sees the disagreement through its own bridges* rather than discovering it by independently replaying a foreign constitution.
+"Which Team B?" becomes "which remote event head does this bridge person recognize?"
+A bridge teammate can name a definite head, so the question has a concrete, inspectable answer.
+If Team A has several bridges and they report different Team B heads, Team A *sees the disagreement through its own bridges* rather than discovering it by independently replaying a foreign constitution.
 Surfacing disagreement instead of hiding it is already the house style.
 
 ---
@@ -108,8 +109,8 @@ Key properties this draft is leaning toward:
   "Sarah is our bridge to the Design team for proposals into the Roadmap berth" is a complete, legible grant.
 - **Plural by design.**
   A single bridge is a single point of failure and a single point of trust.
-  Team A's named analysis may require acknowledgments from k-of-n bridges before giving cross-team information local effect.
-  This is an acknowledgment-threshold policy, not global finalization.
+  Team A's bridge extension may require signatures from k-of-n bridges before acting on cross-team information.
+  This is local bridge policy, not Constitution-core finalization.
   "Independent" here means distinct **Team A teammate identities**, not distinct device signatures: multiple devices of the same bridge person dedupe to one relationship source.
   (Whether the threshold should also require distinct *Team B* identities, or tolerate several Team A people bridging through the same Team B person, is left open.)
 - **Accountable.**
@@ -141,12 +142,12 @@ Be careful with the phrasing here, because it is easy to smuggle the team-princi
 Since the team does not speak, the honest claim is never "Team B did X" but "a trusted bridge attests that X holds in the Team B view they carry."
 This document calls such an artifact a **bridge-witnessed remote proposal**, and uses looser phrases like "a Team B proposal" only as defined shorthand for that — never as a claim that Team B is a principal with a voice of its own.
 Router mode does not close this gap.
-Router lets Team A independently verify Team B's signatures and history, but the strongest honest claim it buys is still person-level — "this artifact was signed by a teammate recognized under remote analysis basis B" — not "Team B did X."
+Router lets Team A independently verify Team B's signatures and history, but the strongest honest claim it buys is still person-level — "this artifact was signed by key K at remote event head H" — not "Team B did X."
 Router changes who verifies, not who speaks.
 A literal "Team B did X" would require a future team-voice model that does not yet exist.
 
 - Cheap and simple.
-- Keeps remote-signer and continuation-analysis machinery inside the bridge's own client, where the bridge is already recognized as a Team B participant under their local analysis.
+- Keeps remote-signer policy inside the bridge's own client, where the bridge already has a Team B view.
 - Explicit cost: Team A's view of Team B is mediated, and is exactly as good and as honest as its bridges.
   Requiring acknowledgments from multiple distinct bridges can mitigate that reliance, but it is not independent verification.
 
@@ -155,7 +156,7 @@ The bridge only carries Team B's signed artifacts across the boundary.
 Team A still verifies Team B's signatures and history itself.
 
 - Preserves independent verification.
-- Reintroduces the cost the witness model avoids: Team A must track enough of Team B's Core to validate signers and analyze concurrent frontiers.
+- Reintroduces the cost the witness model avoids: Team A must track enough of Team B's Core to validate signers under a chosen bridge policy.
 
 The current leaning is to default to **witness** and offer **router** as a stronger, costlier mode selected per purpose.
 Witness is the option consistent with the whole project ethos — trust runs through people, not oracles — and it is the option that actually buys the simplification.
@@ -173,11 +174,11 @@ A Team A bridge record evaluates locally and might say, in effect:
 
 ```text
 Team A designates teammate Sarah
-as a bridge to a Team B continuation (named by technical origin plus witnessed evidence)
+as a bridge to Team B (named by technical origin plus remote event head)
 for purpose P
 scoped to berth/app-subset S
 under policy R
-acknowledged under Team A analysis basis Y
+authorized under Team A bridge policy at event head Y
 ```
 
 This does not make Team B's members into Team A teammates.
@@ -198,7 +199,7 @@ It helps to split purposes by whether a bridge can carry them without sharing pl
   This supports display, discovery, or later policy without granting data access.
   *Irreducibly cross-team; a bridge can witness it without sharing any Team B content.*
 - **Proposal routing.** A bridge carries a bridge-witnessed remote proposal into a Team A berth.
-  Team A participants still decide whether to acknowledge and merge it under their local analyses.
+  Team A participants still decide whether to merge it under their local bridge policy.
   *Irreducibly cross-team; works under the witness model with no plaintext sharing.*
 - **Read sharing.** Team A grants Team B read access to a particular berth, object set, or app-defined view.
   This immediately raises key-distribution questions and is where a shared child team competes hardest.
@@ -259,7 +260,7 @@ This should be written as a chosen boundary, not left as an apparent omission, b
 ## What a Link Is Not
 
 A link is not a team merge.
-Each team continuation keeps its own Core evidence, local analyses, teammate identities, device records, storage announcements, integration modes, and recovery practices.
+Each team keeps its own Core events, teammate identities, device records, storage announcements, integration modes, and recovery practices.
 
 A link is not transitive.
 If A links to B and B links to C, that implies nothing about A and C.
@@ -302,7 +303,7 @@ schema_version: 1
 bridge_id: uuidv7
 local_team_id: team-a-id
 remote_team_origin: team-b-origin  # replay domain / shared ancestry, not living identity
-remote_frontier: [...]             # continuation evidence the designation concerns
+remote_head: ...                   # remote Constitution event head
 bridge_teammate_id: sarah          # a current Team A teammate
 purpose: proposal-routing
 mode: witness                      # witness | router
@@ -312,12 +313,12 @@ scope:
     - app-defined-kind
 policy:
   expires_at: null
-  acknowledgment_threshold: 1     # distinct bridge teammate identities consulted by this policy
+  signature_threshold: 1          # distinct bridge teammate identities required by this extension
   remote_membership_expansion: none
 local_analysis_basis: ...
 author_teammate_id: alice
 signature: ...
-acknowledgments:
+bridge_signatures:
   - ...
 ```
 
@@ -329,7 +330,7 @@ bridge_id: <the bridge record above>
 attesting_teammate_id: sarah       # the bridge, signing as a Team A teammate
 remote_origin:                     # what the bridge claims about Team B
   remote_team_origin: team-b-origin
-  remote_constitution_frontier: [...]
+  remote_constitution_head: ...
   remote_author: team-b-uuid
 payload_or_commitment: ...
 signature: ...
@@ -338,8 +339,8 @@ signature: ...
 Questions this sketch deliberately leaves open:
 
 - What is the technical `remote_team_origin` exactly — a Core genesis digest, random replay-domain UUID signed by genesis, or something else?
-- How does a bridge describe the living continuation it recognizes without pretending that origin determines which post-split descendant is the real remote team?
-- What can Team A actually check against an opaque `remote_frontier` it cannot interpret, and how does a long-lived bridge designation avoid going stale as the remote continuation advances?
+- How does a bridge describe the remote history it recognizes without pretending that technical origin selects a canonical branch?
+- What can Team A actually check against an opaque `remote_head` it cannot interpret, and how does a long-lived bridge designation avoid going stale as the remote history advances?
 - Under the witness model, does Team A store any of Team B's own signatures, or only the bridge's attestation over them?
 - Is a bridge designation append-only-amendable, a new record per change, or a normal Core proposal?
 - Can one team revoke a bridge unilaterally?
@@ -374,7 +375,7 @@ Encrypting to a Team B-published group recipient key keeps Team A from expanding
 It also means Team A trusts Team B's internal key management and exclusion practices, which needs a clear threat model.
 
 Sharing through a bridge teammate is operationally simple and socially legible, and it composes with the witness model.
-It also concentrates responsibility and exposure in specific people, which is why a local policy may require multiple distinct bridge acknowledgments.
+It also concentrates responsibility and exposure in specific people, which is why a local policy may require signatures from multiple distinct bridges.
 
 Deferring read sharing is unsatisfying, but it may be the cleanest first move.
 Recognition and witnessed routing can prove the link model before the cryptographic readability problem hardens into a bad abstraction.
@@ -388,7 +389,7 @@ Recognition and witnessed routing can prove the link model before the cryptograp
 Bridge designations and any durable link facts are governance-bearing.
 If implemented, they belong in signed, append-only Core history.
 Mutable tables may project current effective bridges and links, but the durable record should remain inspectable.
-A past question such as "why did Team A accept this proposal from Team B under this analysis?" must be answerable from retained Core evidence, including which bridge witnessed it and which participants acknowledged it.
+A past question such as "why did Team A accept this proposal from Team B?" should be answerable from the bridge extension's events, including which bridge witnessed it and which local rule allowed the merge.
 
 ### identity_link
 
@@ -405,7 +406,7 @@ A whole-team, all-apps link is likely too broad for a first version.
 
 Linked teams should not multiply the current two local teammate integration modes into a full role system.
 Witnessed proposal routing is the natural fit:
-a bridge produces a signed proposal, and local participants retain responsibility for acknowledgment and merge under their named analyses.
+a bridge produces a signed proposal, and local participants retain responsibility for merge under their bridge policy.
 
 ### Hub
 
@@ -502,11 +503,11 @@ Reference: <https://www.rfc-editor.org/rfc/rfc9420.html>
 These should stay unresolved until they are forced by a concrete design.
 
 1. Witness or router by default, and is router ever needed for the first useful version?
-2. What technical origin prevents cross-team replay, and what signed activity is required for a bridge person to vouch that one living continuation is the remote team they recognize now?
+2. What technical origin prevents cross-team replay, and what remote head or events does a bridge person vouch for?
 3. Should v1 support read sharing at all, or only recognition and witnessed proposal routing?
-4. How many bridge acknowledgments should a named local policy require for a purpose, and how are distinct people deduplicated across devices?
+4. How many bridge signatures should local bridge policy require for a purpose, and how are distinct people deduplicated across devices?
 5. When a bridge person leaves, loses a device, or is excluded, what happens to the links they carried?
-6. If Team B divides, and Team A's bridges recognize different frontiers or continuations, how does Team A present and analyze that?
+6. If Team A's bridges report different Team B heads, how does Team A present that?
 7. Should cross-team input ever be an automatic local publication, or must it always arrive as a proposal?
 8. How should a broken or revoked bridge surface?
    It should probably become a visible blocked relationship, not a silent fallback.
@@ -522,12 +523,12 @@ These should stay unresolved until they are forced by a concrete design.
 
 A deliberately narrow first version might be:
 
-- A team history has a stable technical origin, while a person vouches for a living continuation through signed activity at a named frontier.
+- A team history has a stable technical origin, while a person vouches for a particular remote head or event set.
 - A dual-member person publishes the `identity_link` that makes them a candidate bridge.
 - Team A records a unilateral, scoped bridge designation for that person to Team B.
 - A bridge carries bridge-witnessed remote proposals into a specific Team A berth under the witness model.
 - Cross-team input is never an ordinary automatic publication.
-- Team A participants acknowledge or reject those proposals under named local analyses.
+- Team A participants merge or reject those proposals under local bridge policy.
 - No bilateral link treaty is required.
 - No cross-team plaintext sharing is included yet.
 - No remote membership expansion is required.
@@ -544,7 +545,7 @@ Only after this works should the design add bilateral links, read sharing, or de
 These are warning signs that the feature is drifting away from the Small Sea model.
 
 - The link requires Team A to import Team B's whole membership roster by default.
-- A remote team continuation can gain local effect without an explicit local acknowledgment or analysis rule.
+- A remote team can gain local effect without an explicit local bridge-policy rule.
 - A team is reified as a standalone principal with its own key, instead of being reached through people.
 - A bridge becomes an unaccountable oracle whose attestations are not signed, inspectable, or revocable.
 - Link policy becomes a general-purpose role language.
@@ -563,7 +564,7 @@ The most promising shape is:
 
 > Another team is reached through the people who belong to both teams.
 > A bridge teammate is a recognized local principal who witnesses bounded facts about the remote team into local Core history.
-> The first version should support recognition and witnessed proposal routing, with multiple distinct bridge acknowledgments where the local policy warrants it.
+> The first version should support recognition and witnessed proposal routing, with multiple distinct bridge signatures where local policy warrants it.
 > Read sharing, bilateral treaties, and delegation should come later, after the bridge model is solid.
 
 This keeps team size small while making room for larger human structures.

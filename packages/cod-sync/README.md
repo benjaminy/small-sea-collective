@@ -51,12 +51,8 @@ The subset in item 2 is the repo's live-data window.
 The window is a content-retention policy, not a history-rewriting operation.
 It is also not an erasure guarantee: any teammate who has already fetched an older snapshot may keep their own copy, and Cod Sync cannot make that copy disappear.
 The window's job is to bound what the shared sync substrate keeps readily rehydratable after the team has had enough time to notice, fetch, and converge.
-Every current Core database snapshot produced by a clone must contain the complete Constitution evidence that clone has adopted into its live database.
-Cod Sync may dehydrate older application blobs, separable personal payloads, and fetched-but-unadopted parked input, but adopted Constitution objects and their declared causal closures are non-prunable in later states of that clone rather than becoming an external or checkout-dependent log.
-This is not a promise that the clone or any physical copy survives, and it is not something a peer can check: a clone that never adopted an object and one that adopted and dropped it publish the same absence.
-
-Advancing a live-data window past a quiet teammate's last known state needs more protocol design.
-Signed staleness observations in Core may provide warning and diagnostic evidence, but an observation alone is not a checkpoint and cannot authorize pruning or declare a teammate's unseen work obsolete.
+Core databases may choose a more conservative window for Constitution events, but that is a storage policy above Cod Sync and the event-envelope protocol.
+No participant may infer that a missing object never existed.
 
 ### Forward Restoration
 
@@ -68,4 +64,3 @@ Repair tooling may publish a manifest naming the clean base, pre-repair head, om
 Cod Sync does not prove authorship or replay honesty.
 Each application decides whether repair is user-directed, author-asserted, or backed by application-defined cryptographic provenance.
 The exact manifest and app-specific replay mechanisms remain design work.
-Core repair must additionally preserve every Constitution object that clone adopted, even when rebuilding a local projection to resemble an earlier interpretation.

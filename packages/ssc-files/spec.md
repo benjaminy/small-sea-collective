@@ -253,11 +253,11 @@ Those keys intentionally omit both friendly `team_name` and opaque Files
   for non-overlapping changes. Conflicts raise an untyped exception today;
   a typed `MergeConflictError` is aspirational.
 
-- **Incident repair and replay**: when accepted teammate standing is later repudiated, Files should be able to restore a selected clean tree in a new descendant commit and calculate the intervening changes that restoration overwrote.
+- **Incident repair and replay**: when local policy later stops accepting a teammate's changes, Files should be able to restore a selected clean tree in a new descendant commit and calculate the intervening changes that restoration overwrote.
   Clearly desirable changes can be replayed as new commits under user judgment.
   Files does not currently have cryptographic provenance that can reliably attribute Git changes to a teammate, so it must not present teammate-attributed, independent, or mixed classifications as proven facts.
   The old commits stay in the DAG, and any published repair manifest identifies the clean base, pre-repair head, replay sources, omissions, conflicts, and the provenance level supporting those descriptions.
   The generic manifest belongs to Cod Sync; Files owns path- and content-level replay UX.
 
-- **Team membership validation**: nothing currently checks that the local participant has standing under the named local Core analysis for the relevant team continuation.
+- **Team membership validation**: nothing currently checks that the local participant has standing under the Manager/Hub membership extension for the relevant team.
   Cryptographic readability requires Cuttlefish integration (issue 0017), but it cannot create a centrally enforced team-membership boundary.

@@ -16,9 +16,10 @@
 > Design decisions are being calved off into issues and branches as they
 > solidify. This document intentionally holds ideas that are not yet
 > coherent with each other — it is a brainstorming surface, not a spec.
-> The identity, governance, integration-mode, recovery, and retention rules in
-> [`architecture.md`](../../architecture.md#no-team-server) are canonical when
-> this note disagrees with them.
+> The Constitution core and extension boundary in
+> [`Documentation/team-constitution.md`](../../Documentation/team-constitution.md)
+> are canonical when this note disagrees with them.
+> Wrasse Trust is one extension and may evolve its trust policy independently.
 
 Wrasse Trust is the Small Sea package for identity, certification, and trust
 evaluation. It is the layer that tries to answer questions like:
@@ -173,20 +174,19 @@ that always exists.
 
 For version 1, a team does not need a special shared private key.
 
-Instead, a living team continuation is an observer-relative derived principal represented by activity and relationships in its
-`{Team}/SmallSeaCollectiveCore` berth:
+Instead, a team is a locally derived principal represented by the identity and trust events that Wrasse Trust's policy recognizes in its `{Team}/SmallSeaCollectiveCore` berth:
 
 - who was admitted (membership certs)
 - who was removed or revoked
 - which devices are linked to which per-team participant UUID
-- which recovery, integration-mode, proposal, and endorsement events were accepted
+- which recovery and admission events the current extension recognizes
 
-In that sense, "Accounting" is a recognized continuation of signed activity and relationships, not a separate secret or eternal identifier called "the Accounting identity."
-A technical origin can separate its records from unrelated evidence without deciding which descendant is the real Accounting after a split.
+In that sense, "Accounting" is not a separate shared secret called "the Accounting identity."
+A technical origin separates its Constitution events from unrelated histories but does not itself authorize a key.
 
-**There is no special "steward" key class in Small Sea.** "Steward" is Manager shorthand for automatic Core integration; protocol rules should name the versioned analysis basis when they mean causal-context-relative standing.
-Any key can physically emit bytes shaped like a membership record, but each participant's named analysis decides whether the complete signed transcript and typed acknowledgments have local effect.
-Cryptographic validity does not force another participant to recognize the resulting continuation.
+**There is no special "steward" key class in the Constitution core.**
+`Steward` is Manager shorthand used by the current admission and integration extensions.
+Any key can physically emit bytes shaped like a membership event, but Wrasse Trust's local policy decides whether that event grants standing for a purpose.
 
 One consequence worth naming: two teammates who pull from disjoint sets
 of clones can have internally consistent but mutually different views of
@@ -301,15 +301,12 @@ Trust accumulation requires signed, inspectable history.
 Git provides content-addressed snapshots, transport history, and three-way merging, but Git authorship alone does not express the domain meaning of teammate facts.
 
 Certificates and other significant teammate records live in `{Team}/SmallSeaCollectiveCore` as signed append-only data.
-Admissions, device changes, recovery events, integration-mode changes, exclusions, staleness observations, proposals, and endorsements remain independently verifiable after synthesized merge commits or other repository-history manipulation.
-Each record references the minimum prior Constitution evidence its meaning requires; named analyses may also compare it with other locally held evidence.
-
-Every Core database snapshot produced by a clone contains the signed evidence that clone has adopted and each record's declared causal closure.
-A verifier does not depend on old checkout blobs to answer a current trust question.
+The Constitution core verifies their canonical event bytes, signatures, technical origin, and parent links after synthesized Git merges.
+Wrasse Trust interprets certificate, admission, device, recovery, and revocation payloads as an extension.
 
 Git carries and versions those database records.
-The locally retained evidence DAG is the domain history; the Git commit DAG is the versioning and transport substrate around it.
-Mutable lookup tables may cache a canonical state only when they identify the versioned analysis and evidence basis from which it can be rebuilt.
+The Constitution event DAG is the signed domain history; the Git commit DAG is the versioning and transport substrate around it.
+Mutable lookup tables may cache the current Wrasse Trust policy's answers.
 
 NoteToSelf may keep local records of device enrollment and team participation for convenient inventory.
 Those local records do not replace the signed teammate facts in the relevant team Core history.
@@ -366,7 +363,7 @@ The design goal is therefore not "prevent every fork." The design goal is:
 
 - make incompatible operational continuations explicit
 - detect previously unseen branches quickly
-- reject ordinary writes that the named local analysis no longer accepts
+- reject ordinary writes that the local trust and integration policy no longer accepts
 - make fork resolution an explicit administrative or human action rather
   than a silent merge
 
@@ -394,8 +391,7 @@ Under the device-only model:
   hierarchy does.
 - `membership`: the completed admission transcript names the proposed
   per-team participant UUID and founding device key.
-  The transcript remains authentic evidence; each named analysis decides
-  whether its typed acknowledgments give it local effect.
+  Wrasse Trust's admission-extension policy decides whether the transcript has local effect.
   The first membership record is self-issued at team creation and begins
   the team's Core history.
 - `device_link`: an existing device (already speaking for UUID `U` in
@@ -436,9 +432,9 @@ readers mid-transition don't confuse themselves.
 Trust traversal must be **typed**. A valid trust path is not just "a pile
 of signatures" — it is a meaningful chain of statements.
 
-Under the device-only model, the canonical question is: "did device `K` speak as UUID `U` in the continuation recognized by analysis basis `B`?"
-A valid answer traverses the retained evidence closure named by `B`, verifies the admission transcript and typed acknowledgments under that versioned analysis, finds the founding device `K₀`, applies accepted later `device_link` and revocation evidence, and determines whether `K` was in the resulting device set.
-Genesis supplies a technical origin, but current standing comes from living evidence and the named analysis rather than root reachability alone.
+Under the device-only model, Wrasse Trust asks: "does local policy recognize device `K` as speaking for UUID `U` at this event head?"
+A valid answer verifies the core event DAG, applies the admission extension, finds the founding device `K₀`, then applies the `device_link` and revocation events recognized by that Wrasse Trust policy.
+The technical origin and root reachability alone do not grant standing.
 
 Other cert types compose into this graph rather than replacing it:
 
@@ -462,7 +458,7 @@ the cert to be meaningful to teammates verifying it.
 | Cert Type | Issuer Rule |
 |-----------|------------|
 | `self_binding` | Legacy placeholder. Goes away with the BURIED/GUARDED/DAILY hierarchy. |
-| `membership` | The inviter signs the candidate transcript; it becomes locally effective only under a named analysis that accepts the transcript and required typed acknowledgments. Self-issued genesis is the special team-creation case. |
+| `membership` | The inviter signs the candidate transcript; the local admission-extension policy decides whether it is effective. Self-issued genesis is the special team-creation case. |
 | `device_link` | A device that already speaks for the same UUID `U` in the same team `T`. This is what grows the equivalence class. |
 | `cross_certification` | Any team-device key, during a ceremony with another participant. |
 | `identity_link` | A team-device key in each of the two teams being linked. Published into whichever team repos the linker wants the link visible in. |
@@ -473,8 +469,8 @@ the cert to be meaningful to teammates verifying it.
 
 `Steward` is not a special key class.
 It is Manager shorthand for automatic Core integration.
-Protocol rules should say automatic Core integrator only with the versioned analysis basis under which that standing is claimed.
-The cert layer provides signed identity and device relationships, while the named Core analysis determines how a signing device is interpreted at that causal frontier.
+The Manager admission and integration extensions define what that preset means.
+The Constitution core does not.
 
 This table is preliminary and will need refinement as the protocol
 solidifies.
@@ -492,17 +488,14 @@ typed certs are the fix.
 
 ### "Is Alice on team Accounting?"
 
-Answered by a named analysis over the team's signed Core evidence:
+Answered by the local Wrasse Trust policy over signed Core extension events:
 
 1. Find Alice's per-team participant UUID `U` in this team's cert store
    (Alice's device tells the UI which UUID to ask about, since the UUID
    is opaque and per-team).
-2. Find the completed `membership(U, founding_device=K₀, team=Accounting)`
-   transcript and the typed acknowledgments relevant to the analysis.
-3. Traverse the declared causal closure and verify that the proposal, invitee
-   acceptance, and acknowledgments satisfy the named versioned analysis.
-4. Apply later signed `device_link`, recovery, and revocation evidence accepted
-   by that analysis through the frontier being queried.
+2. Find the completed `membership(U, founding_device=K₀, team=Accounting)` transcript.
+3. Verify its Constitution envelope and the admission-extension rules that local policy requires.
+4. Apply later signed `device_link`, recovery, and revocation events recognized through the event head being queried.
 5. To prove a *specific device* of Alice's is acting as `U`, verify that the
    resulting device set contains it and that the device's signature is valid.
 
@@ -518,8 +511,8 @@ In Small Sea v1, **the team itself does not speak.** Individual teammates
 speak; the team's "voice" is the aggregated history in its repo.
 
 Any device can emit a candidate certificate, but that fact does not make the certificate locally effective.
-A conforming client recognizes a new teammate only through the architecture's transcript-bound evidence flow and a named analysis of its typed acknowledgments.
-Different participants may recognize different living continuations of the same shared ancestry.
+A conforming client recognizes a new teammate only through the admission extension and local trust policy it implements.
+Different participants may make different choices over the same shared ancestry.
 
 Future directions for contested or high-stakes team governance — quorum
 signing, tiered roles, time-locked operations with cancellation windows —
@@ -603,8 +596,8 @@ Summary of provisioning under the device-only model:
 - **Joining an existing team.** An inviter allocates the joiner's per-team
   teammate UUID and publishes an admission proposal anchored to Core.
   The joiner generates a fresh team-device key and signs the transcript.
-  The inviter publishes the completed transcript and their typed acknowledgment;
-  each participant's named analysis decides its local effect.
+  The inviter publishes the completed transcript and endorsement;
+  the current Manager/Wrasse admission extension decides its local effect.
 - **Enrolling a second device in a team Alice is already in.** The new
   device generates its own team-device key for that team. An
   already-enrolled device of Alice's, *for that same team*, issues a
@@ -688,8 +681,8 @@ The likely Small Sea synthesis is:
 - device-rooted keys with no persistent per-participant key (inspired by
   Matrix/Signal, simpler than the layered alternative we previously
   considered)
-- admission and signed Core proposals as causal evidence interpreted by versioned named analyses, with automatic Core integrator as an analysis-relative term and "steward" left as Manager shorthand
-- locally adopted signed evidence and its declared causal closure in every Core snapshot produced by that clone, carried and versioned alongside the complete Git commit DAG
+- admission and device semantics implemented as Wrasse Trust extensions over the signed Constitution event DAG
+- `steward` left as Manager policy rather than a Constitution-core key class
 - typed certificates and delegation inspired by SPKI
 - ambient proximity trust as continuous verification (novel)
 - transport/session crypto kept separate in Cuttlefish, informed by MLS
@@ -732,17 +725,15 @@ Design direction:
   may not even need to exist under device-only (see Open Questions).
 - Cross-team identity linking remains opt-in and published by the user
   into whichever team repos they choose.
-- Steward remains current Manager shorthand for automatic Core integration; standing is evaluated from retained Core evidence plus explicit local analysis inputs, and no special steward key class is introduced.
-- Trust anchoring is the team's first (self-issued, genesis) `membership`
-  cert, reached by traversing the retained Constitution evidence referenced
-  by the analysis.
+- Steward remains current Manager shorthand for automatic Core integration, and no special steward key class is introduced.
+- Trust anchoring for the current Wrasse extension begins with the team's first self-issued genesis `membership` cert.
 - The Git commit DAG remains complete bookkeeping and merge ancestry, but it
   is not the sole storage or validity mechanism for the signed trust log.
 
 ## What Can Be Deferred Past Version 1
 
 - Post-quantum crypto (API should be agnostic; ship Ed25519/X25519 only)
-- Exact named risk/availability profiles and acknowledgment thresholds
+- Alternative admission and authorization policies
 - Hardware attestation certs
 - Complex trust policies beyond TOFU
 - Key rotation with overlapping validity windows (hard rotation is fine)
@@ -761,9 +752,8 @@ Design direction:
   recovery authorizes a fresh device key through a separate loud event; and
   the absence of usable recovery material leads to a new teammate identity.
   The concrete recovery-key format and ceremony remain open.
-- Locally adopted signed trust evidence and its declared causal closure inside every
-  Core database snapshot, with the Git commit DAG retained for bookkeeping and merge ancestry
-- Explicit operational-continuation and key-rotation rules for accepted removals and durable splits
+- Core event-envelope verification independent of Wrasse membership policy
+- Explicit key-rotation rules in the encryption and removal extensions
 - A v1 UX that steers new users toward enrolling a second device early,
   because it remains the cheapest recovery path
 
@@ -795,8 +785,8 @@ Design direction:
   bind to the trust model? The invitation token likely needs to carry
   the joiner's founding device key so the admitting teammate can include
   it in the `membership` cert.
-- What signed evidence must accompany an accepted removal so that writes
-  the local analysis no longer accepts are unambiguously detectable?
+- What signed event should the removal extension use so that writes
+  local policy no longer accepts are unambiguously detectable?
 - For ambient proximity: what Bluetooth protocol? How to handle relay
   attacks? What aggregation window is meaningful? Should ambient certs
   be stored in team repos or only locally?

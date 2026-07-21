@@ -125,15 +125,9 @@ Stable commit identities and parent relationships remain available even when old
 That window is not a strong erasure boundary.
 It describes what the shared Cod Sync substrate keeps readily rehydratable; any teammate who has already fetched an older snapshot may retain an independent copy.
 
-Core has an additional retention invariant: every current Core database snapshot produced by a clone includes the complete Constitution evidence that clone has adopted into its live database.
-That evidence is application data in the database, not something reconstructed from Git authorship or pruned historical checkouts.
-Adopted Constitution objects and their declared causal closures are non-prunable in later states produced by that clone.
-This does not guarantee that the clone or any physical copy survives.
-It is also an invariant Cod Sync asks a well-behaved clone to maintain, not one a peer can verify: an object never adopted and an object adopted and dropped are indistinguishable from outside.
-Separable PII payloads and fetched-but-unadopted parked input do not inherit that retention merely by arriving.
-
-The checkpoint rule that would permit safe window advancement past a long-unseen teammate is not yet specified.
-A signed staleness observation can warn that advancement is approaching and preserve what an observer knew, but it is not itself finality or pruning authority.
+Core and application repositories may choose different live-data windows.
+Constitution event retention is a storage-policy decision above Cod Sync and the event-envelope protocol.
+Cod Sync provides reachability and transport; it does not interpret an event as adopted, accepted, final, or safe to prune.
 
 Any user with write access to the cloud storage can trigger compaction. There is no admin/permission distinction at this layer.
 
@@ -163,9 +157,8 @@ Applications own those semantics and may offer user-directed restoration, author
 A repair series may be prepared locally and published in one Cod Sync update so peers do not treat the temporary old-content tree as the completed repair.
 Every commit in the published series remains ordinary inspectable Git history.
 
-Core follows the same forward-only Git rule with an extra constraint.
-A Core restoration must not publish a database that omits Constitution objects that clone adopted after `B`.
-Core repair appends repudiation, reconciliation, or ratification evidence and rebuilds a named local projection while preserving the complete evidence DAG.
+Core follows the same forward-only Git rule.
+Its storage implementation and event extensions define any additional retention or projection-repair constraints.
 
 ## 9. Encryption Envelope
 

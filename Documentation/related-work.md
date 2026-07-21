@@ -21,9 +21,9 @@ piece of the prior art:
 - **Per-team-scoped identity by default.** A person does not have one global
   sovereign identity; they have several, one per durable team they belong
   to. Cross-team linking is a deliberate act, not an automatic one.
-- **Team membership as the cryptographic primitive.** The team is the social
-  unit and governance unit, not a permission scope on individually-owned
-  data.
+- **Team-scoped signed history.** The team is the social unit, while a small
+  Constitution core preserves content-addressed signed events without fixing
+  one membership or governance policy.
 
 What follows is the prior art, organized by how directly each project
 contests that ground.
@@ -83,11 +83,10 @@ groups since before this conversation started."
 
 - Earthstar shares are intentionally minimal — knowledge of a share secret
   equals access.
-  Small Sea carries a retained signed Constitution evidence DAG,
-  transcript-bound admission, typed acknowledgments, local interpretations,
-  per-berth integration expectations, and Signal-style encrypted coordination.
-  Earthstar is "bring your own group concept"; Small Sea ships a substantial
-  governance structure.
+  Small Sea separates a content-addressed signed Constitution event DAG from
+  versioned identity, admission, integration, and encryption extensions.
+  Earthstar is "bring your own group concept"; Small Sea provides a small
+  interoperable history core without fixing one governance structure.
 - Earthstar treats one keypair as one author across all shares; Small Sea
   defaults to per-team-scoped identity, so the same person presents
   separately in different teams unless they deliberately link.
