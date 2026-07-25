@@ -119,6 +119,7 @@ from wrasse_trust.constitution import (
     canonical_constitution_bytes,
     derive_record_id,
     sign_constitution_record,
+    verify_constitution_record,
 )
 from wrasse_trust.identity import (
     CertType,
@@ -876,136 +877,95 @@ def _proposal_expiry(now: datetime, expiry_seconds: int) -> str:
     return datetime.fromtimestamp(now.timestamp() + expiry_seconds, timezone.utc).isoformat()
 
 
-def _proposal_transcript_payload(
+# --- Admission preset <-> mode-plan translation -------------------------------
+#
+# Presets are presentation strings translated to the per-berth expansion rule
+# at the UI boundary (see architecture.md: presets "are not protocol state").
+# The rule stores `automatic`/`proposal-only` values, not preset names, and is
+# indifferent to which berths exist at expansion time.
+_PRESET_MODE_PLANS: dict[str, dict[str, str]] = {
+    "steward": {"core_mode": "automatic", "other_mode": "automatic"},
+    "contributor": {"core_mode": "proposal-only", "other_mode": "automatic"},
+}
+
+
+def mode_plan_for_preset(preset: str) -> dict[str, str]:
+    try:
+        return dict(_PRESET_MODE_PLANS[preset])
+    except KeyError:
+        raise ValueError(f"Unknown invitation preset: {preset!r}")
+
+
+def preset_for_mode_plan(plan: dict[str, str] | None) -> str | None:
+    for preset, expansion in _PRESET_MODE_PLANS.items():
+        if plan == expansion:
+            return preset
+    return None
+
+
+def _validate_mode_plan(plan) -> None:
+    if (
+        not isinstance(plan, dict)
+        or set(plan) != {"core_mode", "other_mode"}
+        or not all(mode in ("automatic", "proposal-only") for mode in plan.values())
+    ):
+        raise ValueError(f"Invalid mode plan: {plan!r}")
+
+
+def _core_berth_id(conn) -> bytes | None:
+    row = conn.execute(
+        text(
+            "SELECT tab.id FROM team_app_berth tab "
+            "JOIN app a ON a.id = tab.app_id "
+            "WHERE a.name = 'SmallSeaCollectiveCore'"
+        )
+    ).fetchone()
+    return row[0] if row is not None else None
+
+
+# --- Constitution record envelope + admission record builders -----------------
+#
+# All four admission record types (proposal/acceptance/endorsement/finalization)
+# share this envelope prefix and go through wrasse_trust.constitution -- no
+# admission-local canonical-bytes idiom. See Documentation/team-constitution.md.
+
+
+def _record_envelope_fields(
     *,
-    proposal_id: bytes,
+    record_type: str,
+    author_teammate_id: bytes,
+    author_device_key_id: bytes,
+    created_at: str,
+    anchor_commit: str | None,
+    constitution_digest: bytes | None,
+    schema_version: int = 1,
+) -> dict:
+    return {
+        "record_type": record_type,
+        "author_teammate_id": author_teammate_id.hex(),
+        "author_device_key_id": author_device_key_id.hex(),
+        "created_at": created_at,
+        "anchor_commit": anchor_commit,
+        "constitution_digest": constitution_digest.hex() if constitution_digest is not None else None,
+        "schema_version": schema_version,
+    }
+
+
+def _acceptance_signed_fields(
+    *,
+    envelope: dict,
+    subject_record_id: bytes,
     nonce: bytes,
-    team_id: bytes,
-    invitee_teammate_id: bytes,
     invitee_device_public_key: bytes,
     invitee_bootstrap_key: bytes,
-) -> dict[str, str]:
+) -> dict:
     return {
-        "proposal_id": proposal_id.hex(),
+        **envelope,
+        "subject_record_id": subject_record_id.hex(),
         "nonce": nonce.hex(),
-        "team_id": team_id.hex(),
-        "invitee_teammate_id": invitee_teammate_id.hex(),
         "invitee_device_public_key": invitee_device_public_key.hex(),
         "invitee_bootstrap_key": invitee_bootstrap_key.hex(),
     }
-
-
-def _proposal_transcript_digest(payload: dict[str, str]) -> bytes:
-    return _sha256_bytes(_json_bytes(payload))
-
-
-def _approval_payload(*, proposal_id: bytes, transcript_digest: bytes, steward_teammate_id: bytes) -> bytes:
-    return _json_bytes(
-        {
-            "proposal_id": proposal_id.hex(),
-            "transcript_digest": transcript_digest.hex(),
-            "steward_teammate_id": steward_teammate_id.hex(),
-        }
-    )
-
-
-def _finalization_payload(*, proposal_id: bytes, transcript_digest: bytes, invitee_teammate_id: bytes) -> bytes:
-    return _json_bytes(
-        {
-            "proposal_id": proposal_id.hex(),
-            "transcript_digest": transcript_digest.hex(),
-            "invitee_teammate_id": invitee_teammate_id.hex(),
-        }
-    )
-
-
-def _role_to_core_berth_role(role: str) -> str:
-    if role == "steward":
-        return "read-write"
-    if role == "contributor":
-        return "read-only"
-    raise ValueError(f"Unknown invitation role: {role}")
-
-
-def _governance_snapshot(conn) -> dict[str, object]:
-    teammate_ids = [row[0].hex() for row in conn.execute(text("SELECT id FROM teammate ORDER BY id")).fetchall()]
-    steward_ids = [
-        row[0].hex()
-        for row in conn.execute(
-            text(
-                "SELECT br.teammate_id "
-                "FROM berth_role br "
-                "JOIN team_app_berth tab ON tab.id = br.berth_id "
-                "JOIN app a ON a.id = tab.app_id "
-                "WHERE a.name = 'SmallSeaCollectiveCore' AND br.role = 'read-write' "
-                "ORDER BY br.teammate_id"
-            )
-        ).fetchall()
-    ]
-    teammate_devices: dict[str, list[str]] = {teammate_id_hex: [] for teammate_id_hex in teammate_ids}
-    for teammate_id, device_key_id in conn.execute(
-        text("SELECT teammate_id, device_key_id FROM team_device ORDER BY teammate_id, device_key_id")
-    ).fetchall():
-        teammate_devices.setdefault(teammate_id.hex(), []).append(device_key_id.hex())
-    return {
-        "stewards": steward_ids,
-        "teammates": teammate_ids,
-        "teammate_devices": teammate_devices,
-    }
-
-
-def _governance_digest(snapshot: dict[str, object]) -> bytes:
-    return _sha256_bytes(_json_bytes(snapshot))
-
-
-def _load_admission_proposal_row(conn, proposal_id: bytes):
-    row = conn.execute(
-        text(
-            "SELECT proposal_id, nonce, team_id, inviter_teammate_id, invitee_teammate_id, "
-            "invitee_label, role, anchor_commit, governance_digest, governance_snapshot_json, "
-            "state, created_at, expires_at, acceptance_recorded_at, invitee_device_public_key, "
-            "invitee_bootstrap_key, acceptance_signature, transcript_digest, transcript_json, "
-            "finalized_at, finalization_signature, invalid_reason "
-            "FROM admission_proposal WHERE proposal_id = :proposal_id"
-        ),
-        {"proposal_id": proposal_id},
-    ).fetchone()
-    if row is None:
-        raise ValueError("Admission proposal not found")
-    return row
-
-
-def _load_governance_snapshot_json(proposal_row) -> dict[str, object]:
-    return json.loads(proposal_row[9])
-
-
-def _proposal_is_still_valid(conn, proposal_row) -> tuple[bool, str | None]:
-    state = proposal_row[10]
-    if state == "finalized":
-        return False, "Proposal is already finalized"
-    if state in {"invalidated", "expired"}:
-        return False, f"Proposal is already {state}"
-    now_iso = _now_iso()
-    if proposal_row[12] < now_iso:
-        conn.execute(
-            text(
-                "UPDATE admission_proposal SET state = 'expired', invalid_reason = 'expired' "
-                "WHERE proposal_id = :proposal_id"
-            ),
-            {"proposal_id": proposal_row[0]},
-        )
-        return False, "Proposal has expired"
-    current_snapshot = _governance_snapshot(conn)
-    if _governance_digest(current_snapshot) != proposal_row[8]:
-        conn.execute(
-            text(
-                "UPDATE admission_proposal SET state = 'invalidated', "
-                "invalid_reason = 'governance_drift' WHERE proposal_id = :proposal_id"
-            ),
-            {"proposal_id": proposal_row[0]},
-        )
-        return False, "Proposal invalidated by governance drift"
-    return True, None
 
 
 def _proposal_quorum(conn) -> int:
@@ -1013,65 +973,535 @@ def _proposal_quorum(conn) -> int:
     return quorum
 
 
-def _approval_count(conn, proposal_id: bytes, transcript_digest: bytes) -> int:
-    # Quorum counting trusts rows that made it into the shared DB. We do not
-    # re-verify signatures here on every count because this branch still relies
-    # on the sync/write-acceptance model rather than an isolated authority layer.
+def _load_proposal_row(conn, record_id: bytes):
     row = conn.execute(
         text(
-            "SELECT COUNT(DISTINCT steward_teammate_id) "
-            "FROM steward_approval "
-            "WHERE proposal_id = :proposal_id AND transcript_digest = :transcript_digest"
+            "SELECT record_id, author_teammate_id, author_device_key_id, created_at, "
+            "anchor_commit, constitution_digest, constitution_snapshot_json, nonce, team_id, "
+            "invitee_teammate_id, invitee_label_commitment, expires_at, signature, "
+            "invitee_label_payload, mode_plan "
+            "FROM admission_proposal WHERE record_id = :record_id"
         ),
-        {"proposal_id": proposal_id, "transcript_digest": transcript_digest},
+        {"record_id": record_id},
+    ).fetchone()
+    if row is None:
+        raise ValueError("Admission proposal not found")
+    return row
+
+
+def _load_acceptance_row(conn, subject_record_id: bytes):
+    return conn.execute(
+        text(
+            "SELECT record_id, record_type, author_teammate_id, author_device_key_id, "
+            "created_at, anchor_commit, constitution_digest, schema_version, subject_record_id, "
+            "nonce, invitee_device_public_key, invitee_bootstrap_key, signature "
+            "FROM admission_acceptance WHERE subject_record_id = :sid"
+        ),
+        {"sid": subject_record_id},
+    ).fetchone()
+
+
+def _acceptance_canonical_from_row(row) -> bytes:
+    envelope = {
+        "record_type": row[1],
+        "author_teammate_id": row[2].hex(),
+        "author_device_key_id": row[3].hex(),
+        "created_at": row[4],
+        "anchor_commit": row[5],
+        "constitution_digest": row[6].hex() if row[6] is not None else None,
+        "schema_version": row[7],
+    }
+    return canonical_constitution_bytes(
+        _acceptance_signed_fields(
+            envelope=envelope,
+            subject_record_id=row[8],
+            nonce=row[9],
+            invitee_device_public_key=row[10],
+            invitee_bootstrap_key=row[11],
+        )
+    )
+
+
+def _endorsement_count(conn, subject_record_id: bytes) -> int:
+    """Raw row count, for display (event feed) only. Quorum decisions must use
+    _count_valid_endorsements: merged rows are unverified until then.
+    """
+    row = conn.execute(
+        text("SELECT COUNT(*) FROM endorsement WHERE subject_record_id = :sid"),
+        {"sid": subject_record_id},
     ).fetchone()
     return int(row[0]) if row is not None else 0
 
 
-def _proposal_has_quorum(conn, proposal_row) -> bool:
-    transcript_digest = proposal_row[17]
-    if transcript_digest is None:
+# --- Decision-point record verification ----------------------------------- #
+#
+# Admission rows arrive by git merge as well as by local INSERT, so every
+# decision (endorse, finalize) re-verifies the rows it acts on instead of
+# trusting the table. This is one-hop verification: each record is checked
+# against the proposal's signed snapshot and the device keys it names, not
+# chain-followed back to the team's genesis -- that is the anchor_frontier
+# work (#166) and the projection rebuild (#167).
+
+
+def _device_public_key_for(conn, device_key_id: bytes) -> bytes | None:
+    row = conn.execute(
+        text("SELECT public_key FROM team_device WHERE device_key_id = :id"),
+        {"id": device_key_id},
+    ).fetchone()
+    return row[0] if row is not None else None
+
+
+def _proposal_canonical_from_row(row) -> bytes:
+    signed = {
+        **_record_envelope_fields(
+            record_type="admission_proposal",
+            author_teammate_id=row[1],
+            author_device_key_id=row[2],
+            created_at=row[3],
+            anchor_commit=row[4],
+            constitution_digest=row[5],
+        ),
+        "nonce": row[7].hex(),
+        "team_id": row[8].hex(),
+        "invitee_teammate_id": row[9].hex(),
+        "invitee_label_commitment": row[10].hex() if row[10] is not None else None,
+        "expires_at": row[11],
+        "mode_plan": json.loads(row[14]) if row[14] is not None else None,
+    }
+    return canonical_constitution_bytes(signed)
+
+
+def _verify_proposal_row(conn, proposal_row) -> None:
+    """Re-verify a (possibly merged) proposal row before acting on it.
+
+    The author's public key comes from the team_device projection, but the
+    binding is authenticated: the key must hash to the signed
+    author_device_key_id, so a swapped projection row cannot substitute a key.
+    The device must also belong to the claimed author teammate -- checked
+    against team_device rather than the proposal's own snapshot, which is
+    self-referential here (a forger signs whatever snapshot they like into
+    their forged row) -- so an insider cannot attribute their own signature
+    to another teammate.
+    """
+    canonical = _proposal_canonical_from_row(proposal_row)
+    if derive_record_id(canonical) != proposal_row[0]:
+        raise ValueError("Proposal record_id does not match its contents")
+    device_row = conn.execute(
+        text("SELECT public_key, teammate_id FROM team_device WHERE device_key_id = :id"),
+        {"id": proposal_row[2]},
+    ).fetchone()
+    if device_row is None or key_id_from_public(device_row[0]) != proposal_row[2]:
+        raise ValueError("Proposal author device is not a recognized team device")
+    if device_row[1] != proposal_row[1]:
+        raise ValueError("Proposal author device does not belong to the author teammate")
+    if not verify_constitution_record(device_row[0], canonical, proposal_row[12]):
+        raise ValueError("Proposal signature is invalid")
+
+
+def _verified_proposal_snapshot(proposal_row) -> dict:
+    """Parse constitution_snapshot_json only after it matches the signed digest."""
+    snapshot = json.loads(proposal_row[6])
+    if _constitution_digest(snapshot) != proposal_row[5]:
+        raise ValueError("Proposal constitution snapshot does not match its signed digest")
+    return snapshot
+
+
+def _verify_acceptance_row(acceptance_row, proposal_row) -> None:
+    """Self-certifying re-verify of a (possibly merged) acceptance row,
+    mirroring the checks complete_invitation_acceptance ran on the token."""
+    embedded_key = acceptance_row[10]
+    if key_id_from_public(embedded_key) != acceptance_row[3]:
+        raise ValueError("Acceptance author_device_key_id does not match its embedded device key")
+    canonical = _acceptance_canonical_from_row(acceptance_row)
+    if derive_record_id(canonical) != acceptance_row[0]:
+        raise ValueError("Acceptance record_id does not match its contents")
+    if not verify_constitution_record(embedded_key, canonical, acceptance_row[12]):
+        raise ValueError("Acceptance signature is invalid")
+    if acceptance_row[9] != proposal_row[7]:
+        raise ValueError("Acceptance nonce does not match proposal")
+    if acceptance_row[2] != proposal_row[9]:
+        raise ValueError("Acceptance author does not match the proposal's invitee")
+
+
+def _count_valid_endorsements(conn, proposal_row, acceptance_row) -> int:
+    """Quorum input: only endorsements that verify end-to-end count.
+
+    Per row: subject_digest must be the commitment over the recorded
+    acceptance, the endorsement must anchor at the proposal's own
+    constitution digest, the (teammate, device) pair must be an automatic
+    Core integrator in the proposal's verified snapshot, and the signature
+    must verify against the device key (bound by key id, as in
+    _verify_proposal_row). Distinct teammates, matching the UNIQUE dedupe.
+    """
+    expected_subject_digest = _sha256_bytes(_acceptance_canonical_from_row(acceptance_row))
+    snapshot = _verified_proposal_snapshot(proposal_row)
+    integrators = _snapshot_core_integrator_devices(conn, snapshot)
+    rows = conn.execute(
+        text(
+            "SELECT record_id, author_teammate_id, author_device_key_id, created_at, "
+            "anchor_commit, constitution_digest, subject_record_id, subject_digest, signature "
+            "FROM endorsement WHERE subject_record_id = :sid"
+        ),
+        {"sid": proposal_row[0]},
+    ).fetchall()
+    valid_endorsers: set[str] = set()
+    for (
+        record_id,
+        author_teammate_id,
+        author_device_key_id,
+        created_at,
+        anchor_commit,
+        constitution_digest,
+        subject_record_id,
+        subject_digest,
+        signature,
+    ) in rows:
+        if subject_digest != expected_subject_digest:
+            continue
+        if constitution_digest != proposal_row[5]:
+            continue
+        if author_device_key_id.hex() not in integrators.get(author_teammate_id.hex(), set()):
+            continue
+        public_key = _device_public_key_for(conn, author_device_key_id)
+        if public_key is None or key_id_from_public(public_key) != author_device_key_id:
+            continue
+        signed = {
+            **_record_envelope_fields(
+                record_type="endorsement",
+                author_teammate_id=author_teammate_id,
+                author_device_key_id=author_device_key_id,
+                created_at=created_at,
+                anchor_commit=anchor_commit,
+                constitution_digest=constitution_digest,
+            ),
+            "subject_record_id": subject_record_id.hex(),
+            "subject_digest": subject_digest.hex(),
+        }
+        canonical = canonical_constitution_bytes(signed)
+        if derive_record_id(canonical) != record_id:
+            continue
+        if not verify_constitution_record(public_key, canonical, signature):
+            continue
+        valid_endorsers.add(author_teammate_id.hex())
+    return len(valid_endorsers)
+
+
+def _valid_finalization_exists(conn, record_id: bytes) -> bool:
+    """True iff some finalization row for this proposal verifies one-hop.
+
+    Bare row presence must not be terminal: a forged merged finalization would
+    otherwise freeze the proposal ("already finalized") and report success in
+    the UI while no projections exist. There is no UNIQUE(subject_record_id)
+    on `finalization`, so invalid rows are simply ignored and a legitimate
+    finalization can be appended alongside them.
+
+    Checked per row: recomputed record_id, signature via the key-id-bound
+    device key, author == the proposal's author (the inviter-only finalization
+    rule), the author device linked to that teammate in the proposal's
+    digest-bound snapshot (an insider must not attribute their own signature
+    to the inviter -- and a legitimate finalizer's device is always in the
+    proposal snapshot, since any later device change drift-refuses the
+    proposal), and subject_digest == the recorded acceptance's commitment.
+    Deliberately NOT checked: constitution_digest equality with the proposal
+    (a legitimate finalization anchors the post-projection snapshot, which
+    always differs) and quorum re-count (re-validating against the current
+    mutable threshold would retroactively invalidate legitimate finalizations
+    when quorum is raised; auditing the signed endorsement_count claim is the
+    #167 replay's job).
+    """
+    rows = conn.execute(
+        text(
+            "SELECT record_id, author_teammate_id, author_device_key_id, created_at, "
+            "anchor_commit, constitution_digest, subject_record_id, subject_digest, "
+            "endorsement_count, signature "
+            "FROM finalization WHERE subject_record_id = :sid"
+        ),
+        {"sid": record_id},
+    ).fetchall()
+    if not rows:
         return False
-    return _approval_count(conn, proposal_row[0], transcript_digest) >= _proposal_quorum(conn)
-
-
-def _proposal_steward_device_is_valid(snapshot: dict[str, object], steward_teammate_id: bytes, approver_device_key_id: bytes) -> bool:
-    steward_teammate_id_hex = steward_teammate_id.hex()
-    if steward_teammate_id_hex not in snapshot.get("stewards", []):
+    proposal_row = _load_proposal_row(conn, record_id)
+    try:
+        # The proposal row itself must verify before its author/snapshot can
+        # vouch for anything: record_id is a *stored* column, so its binding
+        # to the row's content only exists where this check runs. Without it,
+        # an in-place UPDATE (same PK, swapped author, self-consistent crafted
+        # digest+snapshot) re-roots the device binding at attacker-chosen data.
+        # Degrade to False, never raise: status display must survive tampered
+        # rows, and the fall-through (drift/awaiting) refuses conservatively.
+        _verify_proposal_row(conn, proposal_row)
+        snapshot = _verified_proposal_snapshot(proposal_row)
+    except ValueError:
         return False
-    teammate_devices = snapshot.get("teammate_devices", {})
-    if not isinstance(teammate_devices, dict):
+    author_teammate_id = proposal_row[1]
+    author_devices = set(
+        snapshot.get("teammate_devices", {}).get(author_teammate_id.hex(), [])
+    )
+    acceptance_row = _load_acceptance_row(conn, record_id)
+    if acceptance_row is None:
         return False
-    return approver_device_key_id.hex() in teammate_devices.get(steward_teammate_id_hex, [])
+    expected_subject_digest = _sha256_bytes(_acceptance_canonical_from_row(acceptance_row))
+    for (
+        fin_record_id,
+        fin_author_teammate_id,
+        fin_author_device_key_id,
+        created_at,
+        anchor_commit,
+        constitution_digest,
+        subject_record_id,
+        subject_digest,
+        endorsement_count,
+        signature,
+    ) in rows:
+        if fin_author_teammate_id != author_teammate_id:
+            continue
+        if fin_author_device_key_id.hex() not in author_devices:
+            continue
+        if subject_digest != expected_subject_digest:
+            continue
+        public_key = _device_public_key_for(conn, fin_author_device_key_id)
+        if public_key is None or key_id_from_public(public_key) != fin_author_device_key_id:
+            continue
+        signed = {
+            **_record_envelope_fields(
+                record_type="finalization",
+                author_teammate_id=fin_author_teammate_id,
+                author_device_key_id=fin_author_device_key_id,
+                created_at=created_at,
+                anchor_commit=anchor_commit,
+                constitution_digest=constitution_digest,
+            ),
+            "subject_record_id": subject_record_id.hex(),
+            "subject_digest": subject_digest.hex(),
+            "endorsement_count": endorsement_count,
+        }
+        canonical = canonical_constitution_bytes(signed)
+        if derive_record_id(canonical) != fin_record_id:
+            continue
+        if not verify_constitution_record(public_key, canonical, signature):
+            continue
+        return True
+    return False
 
 
-def _insert_steward_approval(
+def _admission_status(conn, *, record_id: bytes, constitution_digest: bytes, expires_at: str) -> str:
+    """Compute a proposal's status purely from which records/projections exist.
+
+    Never mutates: expiry and governance drift produce a computed status here,
+    and a refusal (not an UPDATE) at endorsement/finalization time.
+    """
+    # Finalized must be decided before drift: a legitimate finalization changes
+    # the constitution, so the live digest never matches the proposal's again.
+    if _valid_finalization_exists(conn, record_id):
+        return "finalized"
+    if conn.execute(
+        text("SELECT 1 FROM admission_revocation WHERE subject_record_id = :id"), {"id": record_id}
+    ).fetchone() is not None:
+        return "invalidated"
+    if expires_at < _now_iso():
+        return "expired"
+    if _constitution_digest(_constitution_snapshot(conn)) != constitution_digest:
+        return "invalidated"
+    if conn.execute(
+        text("SELECT 1 FROM admission_acceptance WHERE subject_record_id = :id"), {"id": record_id}
+    ).fetchone() is not None:
+        return "awaiting_quorum"
+    return "awaiting_invitee"
+
+
+def _admission_action_block_reason(conn, proposal_row) -> str | None:
+    """Reason a pending action (endorse/finalize/accept) must be refused, or None."""
+    record_id, constitution_digest, expires_at = proposal_row[0], proposal_row[5], proposal_row[11]
+    status = _admission_status(
+        conn, record_id=record_id, constitution_digest=constitution_digest, expires_at=expires_at
+    )
+    if status == "finalized":
+        return "Proposal is already finalized"
+    if status == "expired":
+        return "Proposal has expired"
+    if status == "invalidated":
+        if conn.execute(
+            text("SELECT 1 FROM admission_revocation WHERE subject_record_id = :id"),
+            {"id": record_id},
+        ).fetchone() is not None:
+            return "Proposal has been revoked"
+        return "Proposal invalidated by governance drift"
+    return None
+
+
+def _snapshot_core_integrator_devices(conn, snapshot: dict) -> dict[str, set[str]]:
+    """Teammates who are automatic (read-write) on Core in `snapshot`, mapped to
+    their linked device key ids -- the current authority to endorse admission.
+    """
+    core_berth_id = _core_berth_id(conn)
+    core_hex = core_berth_id.hex() if core_berth_id is not None else None
+    devices = snapshot.get("teammate_devices", {})
+    integrators: dict[str, set[str]] = {}
+    for entry in snapshot.get("berth_roles", []):
+        if entry.get("berth_id") == core_hex and entry.get("role") == "read-write":
+            teammate_hex = entry.get("teammate_id")
+            integrators[teammate_hex] = set(devices.get(teammate_hex, []))
+    return integrators
+
+
+def _append_endorsement(
     conn,
     *,
-    proposal_id: bytes,
-    steward_teammate_id: bytes,
-    approver_device_key_id: bytes,
-    signature: bytes,
-    transcript_digest: bytes,
+    proposal_row,
+    endorser_teammate_id: bytes,
+    author_private_key: bytes,
+    author_public_key: bytes,
+    anchor_commit: str | None,
 ) -> None:
+    acceptance_row = _load_acceptance_row(conn, proposal_row[0])
+    if acceptance_row is None:
+        raise ValueError("Proposal does not have a recorded acceptance yet")
+    subject_digest = _sha256_bytes(_acceptance_canonical_from_row(acceptance_row))
+    author_device_key_id = key_id_from_public(author_public_key)
+    snapshot = _constitution_snapshot(conn)
+    digest = _constitution_digest(snapshot)
+    now = _now_iso()
+    envelope = _record_envelope_fields(
+        record_type="endorsement",
+        author_teammate_id=endorser_teammate_id,
+        author_device_key_id=author_device_key_id,
+        created_at=now,
+        anchor_commit=anchor_commit,
+        constitution_digest=digest,
+    )
+    signed = {
+        **envelope,
+        "subject_record_id": proposal_row[0].hex(),
+        "subject_digest": subject_digest.hex(),
+    }
+    canonical = canonical_constitution_bytes(signed)
+    record_id = derive_record_id(canonical)
+    signature = sign_constitution_record(author_private_key, canonical)
+    # OR IGNORE enforces the per-endorsing-teammate UNIQUE constraint: a steward's
+    # two linked devices, or a repeated endorsement, count once.
     conn.execute(
         text(
-            "INSERT OR REPLACE INTO steward_approval "
-            "(approval_id, proposal_id, steward_teammate_id, approver_device_key_id, "
-            "transcript_digest, signature, created_at) "
-            "VALUES (:approval_id, :proposal_id, :steward_teammate_id, :approver_device_key_id, "
-            ":transcript_digest, :signature, :created_at)"
+            "INSERT OR IGNORE INTO endorsement ("
+            "record_id, record_type, author_teammate_id, author_device_key_id, created_at, "
+            "anchor_commit, constitution_digest, constitution_snapshot_json, schema_version, "
+            "subject_record_id, subject_digest, signature) VALUES ("
+            ":record_id, 'endorsement', :author_teammate_id, :author_device_key_id, :created_at, "
+            ":anchor_commit, :constitution_digest, :constitution_snapshot_json, 1, "
+            ":subject_record_id, :subject_digest, :signature)"
         ),
         {
-            "approval_id": uuid7(),
-            "proposal_id": proposal_id,
-            "steward_teammate_id": steward_teammate_id,
-            "approver_device_key_id": approver_device_key_id,
-            "transcript_digest": transcript_digest,
+            "record_id": record_id,
+            "author_teammate_id": endorser_teammate_id,
+            "author_device_key_id": author_device_key_id,
+            "created_at": now,
+            "anchor_commit": anchor_commit,
+            "constitution_digest": digest,
+            "constitution_snapshot_json": _json_dumps_sorted(snapshot),
+            "subject_record_id": proposal_row[0],
+            "subject_digest": subject_digest,
             "signature": signature,
-            "created_at": _now_iso(),
         },
     )
+
+
+def _append_finalization(
+    conn,
+    *,
+    proposal_row,
+    finalizer_teammate_id: bytes,
+    author_private_key: bytes,
+    author_public_key: bytes,
+    anchor_commit: str | None,
+    endorsement_count: int,
+) -> None:
+    acceptance_row = _load_acceptance_row(conn, proposal_row[0])
+    if acceptance_row is None:
+        raise ValueError("Proposal does not have a recorded acceptance yet")
+    subject_digest = _sha256_bytes(_acceptance_canonical_from_row(acceptance_row))
+    author_device_key_id = key_id_from_public(author_public_key)
+    snapshot = _constitution_snapshot(conn)
+    digest = _constitution_digest(snapshot)
+    now = _now_iso()
+    envelope = _record_envelope_fields(
+        record_type="finalization",
+        author_teammate_id=finalizer_teammate_id,
+        author_device_key_id=author_device_key_id,
+        created_at=now,
+        anchor_commit=anchor_commit,
+        constitution_digest=digest,
+    )
+    signed = {
+        **envelope,
+        "subject_record_id": proposal_row[0].hex(),
+        "subject_digest": subject_digest.hex(),
+        "endorsement_count": endorsement_count,
+    }
+    canonical = canonical_constitution_bytes(signed)
+    record_id = derive_record_id(canonical)
+    signature = sign_constitution_record(author_private_key, canonical)
+    conn.execute(
+        text(
+            "INSERT INTO finalization ("
+            "record_id, record_type, author_teammate_id, author_device_key_id, created_at, "
+            "anchor_commit, constitution_digest, constitution_snapshot_json, schema_version, "
+            "subject_record_id, subject_digest, endorsement_count, signature) VALUES ("
+            ":record_id, 'finalization', :author_teammate_id, :author_device_key_id, :created_at, "
+            ":anchor_commit, :constitution_digest, :constitution_snapshot_json, 1, "
+            ":subject_record_id, :subject_digest, :endorsement_count, :signature)"
+        ),
+        {
+            "record_id": record_id,
+            "author_teammate_id": finalizer_teammate_id,
+            "author_device_key_id": author_device_key_id,
+            "created_at": now,
+            "anchor_commit": anchor_commit,
+            "constitution_digest": digest,
+            "constitution_snapshot_json": _json_dumps_sorted(snapshot),
+            "subject_record_id": proposal_row[0],
+            "subject_digest": subject_digest,
+            "endorsement_count": endorsement_count,
+            "signature": signature,
+        },
+    )
+
+
+def _expand_mode_plan_at_finalization(
+    conn,
+    *,
+    proposal_row,
+    invitee_teammate_id: bytes,
+    author_teammate_id: bytes,
+    author_private_key: bytes,
+    author_public_key: bytes,
+    anchor_commit: str | None,
+) -> None:
+    """One signed integration_mode_change per berth for the invitee, expanding
+    the proposal's signed mode_plan (core_mode for Core, other_mode elsewhere).
+    Each record also writes its berth_role projection.
+
+    No default plan: a missing or malformed plan refuses finalization rather
+    than silently granting the steward (most privileged) expansion. Callers
+    have already run _verify_proposal_row, so this only backstops it.
+    """
+    if not proposal_row[14]:
+        raise ValueError("Proposal has no mode plan")
+    plan = json.loads(proposal_row[14])
+    _validate_mode_plan(plan)
+    core_mode = plan["core_mode"]
+    other_mode = plan["other_mode"]
+    core_berth_id = _core_berth_id(conn)
+    for (berth_id,) in conn.execute(text("SELECT id FROM team_app_berth")).fetchall():
+        mode = core_mode if berth_id == core_berth_id else other_mode
+        _append_integration_mode_change(
+            conn,
+            author_teammate_id=author_teammate_id,
+            author_private_key=author_private_key,
+            author_public_key=author_public_key,
+            teammate_id=invitee_teammate_id,
+            berth_id=berth_id,
+            mode=mode,
+            anchor_commit=anchor_commit,
+        )
 
 
 def _upsert_teammate_row(
@@ -1647,7 +2077,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 62
+USER_SCHEMA_VERSION = 64
 
 
 # ---- Provisioning functions ----
@@ -3765,10 +4195,10 @@ def _role_value_for_mode(mode: str) -> str:
 
 
 def _constitution_snapshot(conn) -> dict[str, object]:
-    """Generalizes `_governance_snapshot` beyond Core stewards to every berth's
-    current integration mode, since Constitution record types besides
-    admission anchor against the full membership/device/mode picture rather
-    than just the Core steward roster.
+    """The interim anchor snapshot shared by every Constitution record type:
+    the full membership/device/berth-role picture (teammates, their devices,
+    and every berth role), not just the Core steward roster. Admission's Core
+    integrator authority is derived from its `berth_roles` entries.
     """
     teammate_ids = [
         row[0].hex() for row in conn.execute(text("SELECT id FROM teammate ORDER BY id")).fetchall()
@@ -3857,81 +4287,17 @@ def set_teammate_integration_mode(
                     "(read-write) standing on that berth"
                 )
 
-            snapshot = _constitution_snapshot(conn)
-            digest = _constitution_digest(snapshot)
-            now = _now_iso()
-            new_role = _role_value_for_mode(mode)
             anchor_commit = _team_head_commit(team_sync_dir)
-
-            signed_fields = {
-                "record_type": "integration_mode_change",
-                "author_teammate_id": self_in_team.hex(),
-                "author_device_key_id": author_device_key_id.hex(),
-                "created_at": now,
-                "anchor_commit": anchor_commit,
-                "constitution_digest": digest.hex(),
-                "schema_version": 1,
-                "teammate_id": teammate_id.hex(),
-                "berth_id": berth_id.hex(),
-                "mode": mode,
-            }
-            canonical = canonical_constitution_bytes(signed_fields)
-            record_id = derive_record_id(canonical)
-            signature = sign_constitution_record(author_private_key, canonical)
-
-            conn.execute(
-                text(
-                    "INSERT INTO integration_mode_change ("
-                    "record_id, record_type, author_teammate_id, author_device_key_id, "
-                    "created_at, anchor_commit, constitution_digest, constitution_snapshot_json, "
-                    "schema_version, teammate_id, berth_id, mode, signature"
-                    ") VALUES ("
-                    ":record_id, :record_type, :author_teammate_id, :author_device_key_id, "
-                    ":created_at, :anchor_commit, :constitution_digest, :constitution_snapshot_json, "
-                    ":schema_version, :teammate_id, :berth_id, :mode, :signature"
-                    ")"
-                ),
-                {
-                    "record_id": record_id,
-                    "record_type": "integration_mode_change",
-                    "author_teammate_id": self_in_team,
-                    "author_device_key_id": author_device_key_id,
-                    "created_at": now,
-                    "anchor_commit": anchor_commit,
-                    "constitution_digest": digest,
-                    "constitution_snapshot_json": _json_dumps_sorted(snapshot),
-                    "schema_version": 1,
-                    "teammate_id": teammate_id,
-                    "berth_id": berth_id,
-                    "mode": mode,
-                    "signature": signature,
-                },
+            record_id = _append_integration_mode_change(
+                conn,
+                author_teammate_id=self_in_team,
+                author_private_key=author_private_key,
+                author_public_key=author_public_key,
+                teammate_id=teammate_id,
+                berth_id=berth_id,
+                mode=mode,
+                anchor_commit=anchor_commit,
             )
-
-            existing_role_row = conn.execute(
-                text(
-                    "SELECT id FROM berth_role WHERE teammate_id = :teammate_id AND berth_id = :berth_id"
-                ),
-                {"teammate_id": teammate_id, "berth_id": berth_id},
-            ).fetchone()
-            if existing_role_row is None:
-                conn.execute(
-                    text(
-                        "INSERT INTO berth_role (id, teammate_id, berth_id, role) "
-                        "VALUES (:id, :teammate_id, :berth_id, :role)"
-                    ),
-                    {
-                        "id": uuid7(),
-                        "teammate_id": teammate_id,
-                        "berth_id": berth_id,
-                        "role": new_role,
-                    },
-                )
-            else:
-                conn.execute(
-                    text("UPDATE berth_role SET role = :role WHERE id = :id"),
-                    {"role": new_role, "id": existing_role_row[0]},
-                )
     finally:
         engine.dispose()
 
@@ -3939,6 +4305,102 @@ def set_teammate_integration_mode(
     repo.stage(["core.db"])
     repo.commit(f"Set integration mode for teammate {teammate_id.hex()} on berth {berth_id.hex()}")
 
+    return record_id
+
+
+def _append_integration_mode_change(
+    conn,
+    *,
+    author_teammate_id: bytes,
+    author_private_key: bytes,
+    author_public_key: bytes,
+    teammate_id: bytes,
+    berth_id: bytes,
+    mode: str,
+    anchor_commit: str | None,
+) -> bytes:
+    """Record-construction core shared by `set_teammate_integration_mode` and
+    admission finalization: build/sign the record, insert it, and update the
+    `berth_role` projection. Authorization (cert trust, author standing) is the
+    caller's responsibility.
+    """
+    if mode not in ("automatic", "proposal-only"):
+        raise ValueError(f"Unknown integration mode: {mode!r}")
+    author_device_key_id = key_id_from_public(author_public_key)
+    snapshot = _constitution_snapshot(conn)
+    digest = _constitution_digest(snapshot)
+    now = _now_iso()
+    new_role = _role_value_for_mode(mode)
+
+    signed_fields = {
+        "record_type": "integration_mode_change",
+        "author_teammate_id": author_teammate_id.hex(),
+        "author_device_key_id": author_device_key_id.hex(),
+        "created_at": now,
+        "anchor_commit": anchor_commit,
+        "constitution_digest": digest.hex(),
+        "schema_version": 1,
+        "teammate_id": teammate_id.hex(),
+        "berth_id": berth_id.hex(),
+        "mode": mode,
+    }
+    canonical = canonical_constitution_bytes(signed_fields)
+    record_id = derive_record_id(canonical)
+    signature = sign_constitution_record(author_private_key, canonical)
+
+    conn.execute(
+        text(
+            "INSERT INTO integration_mode_change ("
+            "record_id, record_type, author_teammate_id, author_device_key_id, "
+            "created_at, anchor_commit, constitution_digest, constitution_snapshot_json, "
+            "schema_version, teammate_id, berth_id, mode, signature"
+            ") VALUES ("
+            ":record_id, :record_type, :author_teammate_id, :author_device_key_id, "
+            ":created_at, :anchor_commit, :constitution_digest, :constitution_snapshot_json, "
+            ":schema_version, :teammate_id, :berth_id, :mode, :signature"
+            ")"
+        ),
+        {
+            "record_id": record_id,
+            "record_type": "integration_mode_change",
+            "author_teammate_id": author_teammate_id,
+            "author_device_key_id": author_device_key_id,
+            "created_at": now,
+            "anchor_commit": anchor_commit,
+            "constitution_digest": digest,
+            "constitution_snapshot_json": _json_dumps_sorted(snapshot),
+            "schema_version": 1,
+            "teammate_id": teammate_id,
+            "berth_id": berth_id,
+            "mode": mode,
+            "signature": signature,
+        },
+    )
+
+    existing_role_row = conn.execute(
+        text(
+            "SELECT id FROM berth_role WHERE teammate_id = :teammate_id AND berth_id = :berth_id"
+        ),
+        {"teammate_id": teammate_id, "berth_id": berth_id},
+    ).fetchone()
+    if existing_role_row is None:
+        conn.execute(
+            text(
+                "INSERT INTO berth_role (id, teammate_id, berth_id, role) "
+                "VALUES (:id, :teammate_id, :berth_id, :role)"
+            ),
+            {
+                "id": uuid7(),
+                "teammate_id": teammate_id,
+                "berth_id": berth_id,
+                "role": new_role,
+            },
+        )
+    else:
+        conn.execute(
+            text("UPDATE berth_role SET role = :role WHERE id = :id"),
+            {"role": new_role, "id": existing_role_row[0]},
+        )
     return record_id
 
 
@@ -4396,10 +4858,19 @@ def activate_app_for_team(root_dir, participant_hex, team_name, app_name):
 
 
 def create_invitation(
-    root_dir, participant_hex, team_name, inviter_cloud=None, invitee_label=None, role="steward"
+    root_dir, participant_hex, team_name, inviter_cloud=None, invitee_label=None, mode_plan=None
 ):
-    """Create a transcript-bound admission proposal token for a team."""
-    _role_to_core_berth_role(role)
+    """Create a signed append-only `admission_proposal` record and its token.
+
+    `mode_plan` is the per-berth starting-mode expansion rule
+    ({"core_mode": ..., "other_mode": ...}); callers translate the UI's
+    steward/contributor preset at the boundary. Defaults to the steward plan.
+    The plan is signed into the proposal's canonical bytes: it determines the
+    authority granted at finalization, so it must carry the inviter's signature.
+    """
+    if mode_plan is None:
+        mode_plan = mode_plan_for_preset("steward")
+    _validate_mode_plan(mode_plan)
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
 
@@ -4424,9 +4895,10 @@ def create_invitation(
     )
     if inviter_sender_key is None:
         raise ValueError(f"No sender key found for team '{team_name}'")
-    _inviter_private_key, _inviter_device_public_key = get_current_team_device_key(
+    inviter_private_key, inviter_device_public_key = get_current_team_device_key(
         root_dir, participant_hex, team_name
     )
+    inviter_device_key_id = key_id_from_public(inviter_device_public_key)
 
     inviter_core_cloud = _core_cloud_allocation_or_raise(
         root_dir, participant_hex, team_name
@@ -4438,7 +4910,6 @@ def create_invitation(
         ):
             raise ValueError("inviter_cloud does not match the Core cloud allocation")
 
-    proposal_id = uuid7()
     invitee_teammate_id = uuid7()
     nonce = secrets.token_bytes(16)
     now_dt = datetime.now(timezone.utc)
@@ -4449,36 +4920,66 @@ def create_invitation(
         if quorum < 1:
             raise ValueError("Admission quorum must be at least 1")
         anchor_commit = _team_head_commit(team_sync_dir)
-        governance_snapshot = _governance_snapshot(conn)
-        governance_digest = _governance_digest(governance_snapshot)
+        snapshot = _constitution_snapshot(conn)
+        digest = _constitution_digest(snapshot)
+        expires_at = _proposal_expiry(now_dt, expiry_seconds)
+
+        # The proposal record is signed at creation and so cannot embed the
+        # invitee's device key (it does not exist until acceptance); the
+        # separable label payload is excluded from the signed bytes (only the
+        # -- here unpopulated -- label commitment would be signed).
+        signed_fields = {
+            **_record_envelope_fields(
+                record_type="admission_proposal",
+                author_teammate_id=inviter_teammate_id,
+                author_device_key_id=inviter_device_key_id,
+                created_at=now,
+                anchor_commit=anchor_commit,
+                constitution_digest=digest,
+            ),
+            "nonce": nonce.hex(),
+            "team_id": team_id.hex(),
+            "invitee_teammate_id": invitee_teammate_id.hex(),
+            "invitee_label_commitment": None,
+            "expires_at": expires_at,
+            "mode_plan": mode_plan,
+        }
+        canonical = canonical_constitution_bytes(signed_fields)
+        proposal_id = derive_record_id(canonical)
+        signature = sign_constitution_record(inviter_private_key, canonical)
+
         conn.execute(
             text(
                 "INSERT INTO admission_proposal ("
-                "proposal_id, nonce, team_id, inviter_teammate_id, invitee_teammate_id, "
-                "invitee_label, role, anchor_commit, governance_digest, governance_snapshot_json, "
-                "state, created_at, expires_at"
+                "record_id, record_type, author_teammate_id, author_device_key_id, created_at, "
+                "anchor_commit, constitution_digest, constitution_snapshot_json, schema_version, "
+                "nonce, team_id, invitee_teammate_id, invitee_label_commitment, expires_at, "
+                "signature, invitee_label_payload, mode_plan"
                 ") VALUES ("
-                ":proposal_id, :nonce, :team_id, :inviter_teammate_id, :invitee_teammate_id, "
-                ":invitee_label, :role, :anchor_commit, :governance_digest, :governance_snapshot_json, "
-                "'awaiting_invitee', :created_at, :expires_at)"
+                ":record_id, 'admission_proposal', :author_teammate_id, :author_device_key_id, :created_at, "
+                ":anchor_commit, :constitution_digest, :constitution_snapshot_json, 1, "
+                ":nonce, :team_id, :invitee_teammate_id, NULL, :expires_at, "
+                ":signature, :invitee_label_payload, :mode_plan)"
             ),
             {
-                "proposal_id": proposal_id,
+                "record_id": proposal_id,
+                "author_teammate_id": inviter_teammate_id,
+                "author_device_key_id": inviter_device_key_id,
+                "created_at": now,
+                "anchor_commit": anchor_commit,
+                "constitution_digest": digest,
+                "constitution_snapshot_json": _json_dumps_sorted(snapshot),
                 "nonce": nonce,
                 "team_id": team_id,
-                "inviter_teammate_id": inviter_teammate_id,
                 "invitee_teammate_id": invitee_teammate_id,
-                "invitee_label": invitee_label,
-                "role": role,
-                "anchor_commit": anchor_commit,
-                "governance_digest": governance_digest,
-                "governance_snapshot_json": _json_dumps_sorted(governance_snapshot),
-                "created_at": now,
-                "expires_at": _proposal_expiry(now_dt, expiry_seconds),
+                "expires_at": expires_at,
+                "signature": signature,
+                "invitee_label_payload": invitee_label,
+                "mode_plan": _json_dumps_sorted(mode_plan),
             },
         )
 
-    # Build token with only the material the invitee needs for transcript-bound admission.
+    # Build token with only the material the invitee needs to author acceptance.
     token_data = {
         "proposal_id": proposal_id.hex(),
         "invitation_id": proposal_id.hex(),
@@ -4489,7 +4990,6 @@ def create_invitation(
         "invitee_teammate_id": invitee_teammate_id.hex(),
         "inviter_display_name": inviter_display_name,
         "invitee_label": invitee_label,
-        "role": role,
         "inviter_cloud": {
             "protocol": inviter_core_cloud["protocol"],
             "url": inviter_core_cloud["url"],
@@ -4647,32 +5147,43 @@ def accept_invitation(
     with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
         device_row = _current_device_row(conn)
         invitee_bootstrap_key = device_row[1]
-    transcript_payload = _proposal_transcript_payload(
-        proposal_id=proposal_id,
+
+    # Build the complete signed `admission_acceptance` record invitee-side. The
+    # inviter transports and inserts it verbatim after a self-certifying verify.
+    device_public_key = team_keys["device_key"].public_key
+    now = _now_iso()
+    acceptance_signed_fields = _acceptance_signed_fields(
+        envelope=_record_envelope_fields(
+            record_type="admission_acceptance",
+            author_teammate_id=acceptor_teammate_id,
+            author_device_key_id=acceptor_device_key_id,
+            created_at=now,
+            anchor_commit=None,
+            constitution_digest=None,
+        ),
+        subject_record_id=proposal_id,
         nonce=nonce,
-        team_id=team_id,
-        invitee_teammate_id=acceptor_teammate_id,
-        invitee_device_public_key=team_keys["device_key"].public_key,
+        invitee_device_public_key=device_public_key,
         invitee_bootstrap_key=invitee_bootstrap_key,
     )
-    acceptance_signature = _sign_bytes(
-        team_keys["device_private_key"],
-        _json_bytes(transcript_payload),
+    acceptance_canonical = canonical_constitution_bytes(acceptance_signed_fields)
+    acceptance_record_id = derive_record_id(acceptance_canonical)
+    acceptance_signature = sign_constitution_record(
+        team_keys["device_private_key"], acceptance_canonical
     )
 
     acceptance_data = {
-        "proposal_id": proposal_id.hex(),
-        "invitation_id": proposal_id.hex(),
+        "record_id": acceptance_record_id.hex(),
+        "record_type": "admission_acceptance",
+        "author_teammate_id": acceptor_teammate_id.hex(),
+        "author_device_key_id": acceptor_device_key_id.hex(),
+        "created_at": now,
+        "subject_record_id": proposal_id.hex(),
         "nonce": nonce.hex(),
         "team_id": team_id.hex(),
-        "invitee_teammate_id": acceptor_teammate_id.hex(),
-        "acceptor_teammate_id": acceptor_teammate_id.hex(),
-        "invitee_device_key_id": acceptor_device_key_id.hex(),
-        "acceptor_device_key_id": acceptor_device_key_id.hex(),
-        "invitee_device_public_key": team_keys["device_key"].public_key.hex(),
-        "acceptor_device_public_key": team_keys["device_key"].public_key.hex(),
+        "invitee_device_public_key": device_public_key.hex(),
         "invitee_bootstrap_key": invitee_bootstrap_key.hex(),
-        "acceptance_signature": acceptance_signature.hex(),
+        "signature": acceptance_signature.hex(),
     }
     return _tokenize(acceptance_data)
 
@@ -4680,23 +5191,59 @@ def accept_invitation(
 def complete_invitation_acceptance(
     root_dir, participant_hex, team_name, acceptance_b64
 ):
-    """Record acceptance and finalize immediately when quorum is met."""
+    """Insert the invitee's signed acceptance record, append the inviter's
+    endorsement, and finalize inline when quorum is met.
+
+    The inviter transports the invitee-authored `admission_acceptance` record
+    and inserts it verbatim after a self-certifying verify -- the invitee is
+    the author, the inviter is only the courier.
+    """
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
 
     acceptance = _untokenize(acceptance_b64)
-    proposal_id = bytes.fromhex(acceptance["proposal_id"])
+    acceptance_record_id = bytes.fromhex(acceptance["record_id"])
+    invitee_teammate_id = bytes.fromhex(acceptance["author_teammate_id"])
+    author_device_key_id = bytes.fromhex(acceptance["author_device_key_id"])
+    created_at = acceptance["created_at"]
+    proposal_id = bytes.fromhex(acceptance["subject_record_id"])
     nonce = bytes.fromhex(acceptance["nonce"])
     team_id = bytes.fromhex(acceptance["team_id"])
-    invitee_teammate_id = bytes.fromhex(acceptance["invitee_teammate_id"])
-    invitee_device_key_id = bytes.fromhex(acceptance["invitee_device_key_id"])
     invitee_device_public_key = bytes.fromhex(acceptance["invitee_device_public_key"])
     invitee_bootstrap_key = bytes.fromhex(acceptance["invitee_bootstrap_key"])
-    acceptance_signature = bytes.fromhex(acceptance["acceptance_signature"])
+    acceptance_signature = bytes.fromhex(acceptance["signature"])
+
+    # Self-certifying verify: recompute canonical bytes, verify the signature
+    # against the *embedded* device key, and require author_device_key_id to be
+    # that key's id and record_id to match the contents.
+    acceptance_signed_fields = _acceptance_signed_fields(
+        envelope=_record_envelope_fields(
+            record_type=acceptance["record_type"],
+            author_teammate_id=invitee_teammate_id,
+            author_device_key_id=author_device_key_id,
+            created_at=created_at,
+            anchor_commit=None,
+            constitution_digest=None,
+        ),
+        subject_record_id=proposal_id,
+        nonce=nonce,
+        invitee_device_public_key=invitee_device_public_key,
+        invitee_bootstrap_key=invitee_bootstrap_key,
+    )
+    acceptance_canonical = canonical_constitution_bytes(acceptance_signed_fields)
+    if key_id_from_public(invitee_device_public_key) != author_device_key_id:
+        raise ValueError("Acceptance author_device_key_id does not match its embedded device key")
+    if derive_record_id(acceptance_canonical) != acceptance_record_id:
+        raise ValueError("Acceptance record_id does not match its contents")
+    if not verify_constitution_record(
+        invitee_device_public_key, acceptance_canonical, acceptance_signature
+    ):
+        raise ValueError("Acceptance signature is invalid")
 
     team_db_path = participant_dir / team_name / "Sync" / "core.db"
     ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
+    team_sync_dir = participant_dir / team_name / "Sync"
     inviter_private_key, inviter_public_key = get_current_team_device_key(
         root_dir, participant_hex, team_name
     )
@@ -4739,155 +5286,122 @@ def complete_invitation_acceptance(
 
     failure_reason = None
     with engine.begin() as conn:
-        proposal_row = _load_admission_proposal_row(conn, proposal_id)
-        ok, reason = _proposal_is_still_valid(conn, proposal_row)
-        if not ok:
-            failure_reason = reason
-        elif proposal_row[10] != "awaiting_invitee":
-            raise ValueError(f"Proposal is not awaiting invitee acceptance (state: {proposal_row[10]})")
-        elif proposal_row[1] != nonce:
-            raise ValueError("Nonce mismatch")
-        elif proposal_row[2] != team_id:
+        proposal_row = _load_proposal_row(conn, proposal_id)
+        block_reason = _admission_action_block_reason(conn, proposal_row)
+        if block_reason is not None:
+            failure_reason = block_reason
+        elif _load_acceptance_row(conn, proposal_id) is not None:
+            raise ValueError("Proposal already has a recorded acceptance")
+        elif proposal_row[7] != nonce:
+            raise ValueError("Acceptance nonce does not match proposal")
+        elif proposal_row[8] != team_id:
             raise ValueError("Acceptance team_id does not match proposal")
-        elif proposal_row[4] != invitee_teammate_id:
+        elif proposal_row[9] != invitee_teammate_id:
             raise ValueError("Acceptance teammate_id does not match proposal")
         else:
-            transcript_payload = _proposal_transcript_payload(
-                proposal_id=proposal_id,
-                nonce=nonce,
-                team_id=team_id,
-                invitee_teammate_id=invitee_teammate_id,
-                invitee_device_public_key=invitee_device_public_key,
-                invitee_bootstrap_key=invitee_bootstrap_key,
-            )
-            if key_id_from_public(invitee_device_public_key) != invitee_device_key_id:
-                raise ValueError("Acceptance device_key_id does not match invitee public key")
-            if not _verify_signature(
-                invitee_device_public_key,
-                _json_bytes(transcript_payload),
-                acceptance_signature,
-            ):
-                raise ValueError("Acceptance signature is invalid")
-
-            transcript_digest = _proposal_transcript_digest(transcript_payload)
-            now = _now_iso()
-            quorum = _proposal_quorum(conn)
+            # The stored proposal may have been altered by a merge since
+            # creation; re-verify it before endorsing/finalizing against it
+            # (this is what binds the signed mode_plan).
+            _verify_proposal_row(conn, proposal_row)
+            anchor_commit = _team_head_commit(team_sync_dir)
             conn.execute(
                 text(
-                    "UPDATE admission_proposal SET "
-                    "state = :state, acceptance_recorded_at = :acceptance_recorded_at, "
-                    "invitee_device_public_key = :invitee_device_public_key, "
-                    "invitee_bootstrap_key = :invitee_bootstrap_key, "
-                    "acceptance_signature = :acceptance_signature, "
-                    "transcript_digest = :transcript_digest, transcript_json = :transcript_json "
-                    "WHERE proposal_id = :proposal_id"
+                    "INSERT INTO admission_acceptance ("
+                    "record_id, record_type, author_teammate_id, author_device_key_id, created_at, "
+                    "anchor_commit, constitution_digest, constitution_snapshot_json, schema_version, "
+                    "subject_record_id, nonce, invitee_device_public_key, invitee_bootstrap_key, signature"
+                    ") VALUES ("
+                    ":record_id, 'admission_acceptance', :author_teammate_id, :author_device_key_id, "
+                    ":created_at, NULL, NULL, NULL, 1, "
+                    ":subject_record_id, :nonce, :invitee_device_public_key, :invitee_bootstrap_key, :signature)"
                 ),
                 {
-                    "proposal_id": proposal_id,
-                    "state": "awaiting_quorum" if quorum > 1 else "awaiting_invitee",
-                    "acceptance_recorded_at": now,
+                    "record_id": acceptance_record_id,
+                    "author_teammate_id": invitee_teammate_id,
+                    "author_device_key_id": author_device_key_id,
+                    "created_at": created_at,
+                    "subject_record_id": proposal_id,
+                    "nonce": nonce,
                     "invitee_device_public_key": invitee_device_public_key,
                     "invitee_bootstrap_key": invitee_bootstrap_key,
-                    "acceptance_signature": acceptance_signature,
-                    "transcript_digest": transcript_digest,
-                    "transcript_json": _json_dumps_sorted(transcript_payload),
+                    "signature": acceptance_signature,
                 },
             )
-            approval_signature = _sign_bytes(
-                inviter_private_key,
-                _approval_payload(
-                    proposal_id=proposal_id,
-                    transcript_digest=transcript_digest,
-                    steward_teammate_id=inviter_teammate_id,
-                ),
-            )
-            _insert_steward_approval(
-                conn,
-                proposal_id=proposal_id,
-                steward_teammate_id=inviter_teammate_id,
-                approver_device_key_id=key_id_from_public(inviter_public_key),
-                signature=approval_signature,
-                transcript_digest=transcript_digest,
-            )
 
-            refreshed_row = _load_admission_proposal_row(conn, proposal_id)
-            if _proposal_has_quorum(conn, refreshed_row):
-                _upsert_teammate_row(conn, invitee_teammate_id, display_name=proposal_row[5])
+            # The inviter endorses the acceptance they just recorded -- but
+            # only if they are an eligible endorser (automatic Core integrator
+            # in the proposal's snapshot); an ineligible inviter must not
+            # author an endorsement that _count_valid_endorsements would
+            # rightly refuse to count.
+            snapshot = _verified_proposal_snapshot(proposal_row)
+            integrators = _snapshot_core_integrator_devices(conn, snapshot)
+            inviter_device_key_id = key_id_from_public(inviter_public_key)
+            if inviter_device_key_id.hex() in integrators.get(
+                inviter_teammate_id.hex(), set()
+            ):
+                _append_endorsement(
+                    conn,
+                    proposal_row=proposal_row,
+                    endorser_teammate_id=inviter_teammate_id,
+                    author_private_key=inviter_private_key,
+                    author_public_key=inviter_public_key,
+                    anchor_commit=anchor_commit,
+                )
+
+            acceptance_row = _load_acceptance_row(conn, proposal_id)
+            endorsement_count = _count_valid_endorsements(conn, proposal_row, acceptance_row)
+            if endorsement_count >= _proposal_quorum(conn):
+                _upsert_teammate_row(conn, invitee_teammate_id, display_name=proposal_row[13])
                 _store_team_certificate(conn, membership_cert, issuer_teammate_id=inviter_teammate_id)
                 stored_device_key_id = _upsert_team_device_row(
-                    conn,
-                    invitee_teammate_id,
-                    invitee_device_public_key,
+                    conn, invitee_teammate_id, invitee_device_public_key
                 )
-                if stored_device_key_id != invitee_device_key_id:
+                if stored_device_key_id != author_device_key_id:
                     raise ValueError("Acceptance device_key_id does not match invitee public key")
-
-                berth_rows = conn.execute(text("SELECT id FROM team_app_berth")).fetchall()
-                core_role = _role_to_core_berth_role(proposal_row[6])
-                for berth_row in berth_rows:
-                    conn.execute(
-                        text(
-                            "INSERT INTO berth_role (id, teammate_id, berth_id, role) "
-                            "VALUES (:id, :teammate_id, :berth_id, :role)"
-                        ),
-                        {
-                            "id": uuid7(),
-                            "teammate_id": invitee_teammate_id,
-                            "berth_id": berth_row[0],
-                            "role": core_role,
-                        },
-                    )
-                finalization_signature = _sign_bytes(
-                    inviter_private_key,
-                    _finalization_payload(
-                        proposal_id=proposal_id,
-                        transcript_digest=transcript_digest,
-                        invitee_teammate_id=invitee_teammate_id,
-                    ),
+                _append_finalization(
+                    conn,
+                    proposal_row=proposal_row,
+                    finalizer_teammate_id=inviter_teammate_id,
+                    author_private_key=inviter_private_key,
+                    author_public_key=inviter_public_key,
+                    anchor_commit=anchor_commit,
+                    endorsement_count=endorsement_count,
                 )
-                conn.execute(
-                    text(
-                        "UPDATE admission_proposal SET state = 'finalized', "
-                        "finalized_at = :finalized_at, finalization_signature = :finalization_signature "
-                        "WHERE proposal_id = :proposal_id"
-                    ),
-                    {
-                        "proposal_id": proposal_id,
-                        "finalized_at": now,
-                        "finalization_signature": finalization_signature,
-                    },
-                )
-            else:
-                conn.execute(
-                    text(
-                        "UPDATE admission_proposal SET state = 'awaiting_quorum' "
-                        "WHERE proposal_id = :proposal_id"
-                    ),
-                    {"proposal_id": proposal_id},
+                _expand_mode_plan_at_finalization(
+                    conn,
+                    proposal_row=proposal_row,
+                    invitee_teammate_id=invitee_teammate_id,
+                    author_teammate_id=inviter_teammate_id,
+                    author_private_key=inviter_private_key,
+                    author_public_key=inviter_public_key,
+                    anchor_commit=anchor_commit,
                 )
 
     engine.dispose()
     if failure_reason is not None:
         raise ValueError(failure_reason)
 
-    team_sync_dir = participant_dir / team_name / "Sync"
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
     repo.commit("Recorded admission acceptance")
 
 
-def sign_steward_approval(root_dir, participant_hex, team_name, proposal_id_hex):
+def endorse_admission(root_dir, participant_hex, team_name, proposal_id_hex):
+    """Append this teammate's `endorsement` of an admission proposal's acceptance.
+
+    Authorized only for a current automatic Core integrator (UI "steward") whose
+    signing device is linked, checked against the proposal's anchored snapshot.
+    """
     root_dir = pathlib.Path(root_dir)
     proposal_id = bytes.fromhex(proposal_id_hex)
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
-    approver_private_key, approver_public_key = get_current_team_device_key(
-        root_dir,
-        participant_hex,
-        team_name,
+    team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    endorser_private_key, endorser_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
     )
-    approver_device_key_id = key_id_from_public(approver_public_key)
+    endorser_device_key_id = key_id_from_public(endorser_public_key)
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         row = conn.execute(
             "SELECT self_in_team FROM team WHERE name = ?",
@@ -4895,44 +5409,46 @@ def sign_steward_approval(root_dir, participant_hex, team_name, proposal_id_hex)
         ).fetchone()
     if row is None:
         raise ValueError(f"Team '{team_name}' not found in NoteToSelf")
-    steward_teammate_id = row[0]
+    endorser_teammate_id = row[0]
     failure_reason = None
     try:
         with engine.begin() as conn:
-            proposal_row = _load_admission_proposal_row(conn, proposal_id)
-            ok, reason = _proposal_is_still_valid(conn, proposal_row)
-            if not ok:
-                failure_reason = reason
-            elif proposal_row[17] is None:
-                raise ValueError("Proposal does not have a recorded transcript yet")
+            proposal_row = _load_proposal_row(conn, proposal_id)
+            block_reason = _admission_action_block_reason(conn, proposal_row)
+            acceptance_row = _load_acceptance_row(conn, proposal_id)
+            if block_reason is not None:
+                failure_reason = block_reason
+            elif acceptance_row is None:
+                raise ValueError("Proposal does not have a recorded acceptance yet")
             else:
-                snapshot = _load_governance_snapshot_json(proposal_row)
-                if not _proposal_steward_device_is_valid(snapshot, steward_teammate_id, approver_device_key_id):
-                    raise ValueError("Approver device was not linked to a steward at the proposal anchor")
-                signature = _sign_bytes(
-                    approver_private_key,
-                    _approval_payload(
-                        proposal_id=proposal_id,
-                        transcript_digest=proposal_row[17],
-                        steward_teammate_id=steward_teammate_id,
-                    ),
-                )
-                _insert_steward_approval(
+                # Re-verify the merged rows this endorsement vouches for before
+                # signing a digest over their contents.
+                _verify_proposal_row(conn, proposal_row)
+                _verify_acceptance_row(acceptance_row, proposal_row)
+                snapshot = _verified_proposal_snapshot(proposal_row)
+                integrators = _snapshot_core_integrator_devices(conn, snapshot)
+                if endorser_device_key_id.hex() not in integrators.get(
+                    endorser_teammate_id.hex(), set()
+                ):
+                    raise ValueError(
+                        "Endorsing device was not a current automatic Core integrator "
+                        "at the proposal anchor"
+                    )
+                _append_endorsement(
                     conn,
-                    proposal_id=proposal_id,
-                    steward_teammate_id=steward_teammate_id,
-                    approver_device_key_id=approver_device_key_id,
-                    signature=signature,
-                    transcript_digest=proposal_row[17],
+                    proposal_row=proposal_row,
+                    endorser_teammate_id=endorser_teammate_id,
+                    author_private_key=endorser_private_key,
+                    author_public_key=endorser_public_key,
+                    anchor_commit=_team_head_commit(team_sync_dir),
                 )
     finally:
         engine.dispose()
     if failure_reason is not None:
         raise ValueError(failure_reason)
-    repo_dir = _team_sync_dir(root_dir, participant_hex, team_name)
-    repo = _Repo(repo_dir / ".git", repo_dir)
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
-    repo.commit("Recorded steward approval")
+    repo.commit("Recorded admission endorsement")
 
 
 def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
@@ -4941,10 +5457,9 @@ def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
+    team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
     inviter_private_key, inviter_public_key = get_current_team_device_key(
-        root_dir,
-        participant_hex,
-        team_name,
+        root_dir, participant_hex, team_name
     )
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         row = conn.execute(
@@ -4957,77 +5472,61 @@ def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
     failure_reason = None
     try:
         with engine.begin() as conn:
-            proposal_row = _load_admission_proposal_row(conn, proposal_id)
-            ok, reason = _proposal_is_still_valid(conn, proposal_row)
-            if not ok:
-                failure_reason = reason
-            elif proposal_row[3] != self_teammate_id:
+            proposal_row = _load_proposal_row(conn, proposal_id)
+            block_reason = _admission_action_block_reason(conn, proposal_row)
+            acceptance_row = _load_acceptance_row(conn, proposal_id)
+            if block_reason is not None:
+                failure_reason = block_reason
+            elif proposal_row[1] != self_teammate_id:
                 raise ValueError("Only the inviter may finalize this proposal")
-            elif proposal_row[17] is None or proposal_row[14] is None:
-                raise ValueError("Proposal transcript is incomplete")
-            elif not _proposal_has_quorum(conn, proposal_row):
-                raise ValueError("Proposal has not met quorum")
+            elif acceptance_row is None:
+                raise ValueError("Proposal does not have a recorded acceptance yet")
             else:
-                invitee_teammate_id = proposal_row[4]
-                invitee_device_public_key = proposal_row[14]
+                # Re-verify the merged rows and count only endorsements that
+                # verify end-to-end: the finalization record asserts this
+                # count, so it must not be signed over unchecked rows.
+                _verify_proposal_row(conn, proposal_row)
+                _verify_acceptance_row(acceptance_row, proposal_row)
+                endorsement_count = _count_valid_endorsements(conn, proposal_row, acceptance_row)
+                if endorsement_count < _proposal_quorum(conn):
+                    raise ValueError("Proposal has not met quorum")
+                invitee_teammate_id = proposal_row[9]
+                invitee_device_public_key = acceptance_row[10]
+                anchor_commit = _team_head_commit(team_sync_dir)
                 membership_cert = issue_membership_cert(
                     subject_key=_participant_key_from_public(invitee_device_public_key),
                     issuer_key=_participant_key_from_public(inviter_public_key),
                     issuer_private_key=inviter_private_key,
-                    team_id=proposal_row[2],
+                    team_id=proposal_row[8],
                     issuer_teammate_id=self_teammate_id,
                     admitted_teammate_id=invitee_teammate_id,
                 )
-                _upsert_teammate_row(conn, invitee_teammate_id, display_name=proposal_row[5])
+                _upsert_teammate_row(conn, invitee_teammate_id, display_name=proposal_row[13])
                 _store_team_certificate(conn, membership_cert, issuer_teammate_id=self_teammate_id)
                 _upsert_team_device_row(conn, invitee_teammate_id, invitee_device_public_key)
-                berth_rows = conn.execute(text("SELECT id FROM team_app_berth")).fetchall()
-                role = _role_to_core_berth_role(proposal_row[6])
-                for berth_row in berth_rows:
-                    existing = conn.execute(
-                        text(
-                            "SELECT 1 FROM berth_role WHERE teammate_id = :teammate_id AND berth_id = :berth_id"
-                        ),
-                        {"teammate_id": invitee_teammate_id, "berth_id": berth_row[0]},
-                    ).fetchone()
-                    if existing is None:
-                        conn.execute(
-                            text(
-                                "INSERT INTO berth_role (id, teammate_id, berth_id, role) "
-                                "VALUES (:id, :teammate_id, :berth_id, :role)"
-                            ),
-                            {
-                                "id": uuid7(),
-                                "teammate_id": invitee_teammate_id,
-                                "berth_id": berth_row[0],
-                                "role": role,
-                            },
-                        )
-                conn.execute(
-                    text(
-                        "UPDATE admission_proposal SET state = 'finalized', "
-                        "finalized_at = :finalized_at, finalization_signature = :finalization_signature "
-                        "WHERE proposal_id = :proposal_id"
-                    ),
-                    {
-                        "proposal_id": proposal_id,
-                        "finalized_at": _now_iso(),
-                        "finalization_signature": _sign_bytes(
-                            inviter_private_key,
-                            _finalization_payload(
-                                proposal_id=proposal_id,
-                                transcript_digest=proposal_row[17],
-                                invitee_teammate_id=invitee_teammate_id,
-                            ),
-                        ),
-                    },
+                _append_finalization(
+                    conn,
+                    proposal_row=proposal_row,
+                    finalizer_teammate_id=self_teammate_id,
+                    author_private_key=inviter_private_key,
+                    author_public_key=inviter_public_key,
+                    anchor_commit=anchor_commit,
+                    endorsement_count=endorsement_count,
+                )
+                _expand_mode_plan_at_finalization(
+                    conn,
+                    proposal_row=proposal_row,
+                    invitee_teammate_id=invitee_teammate_id,
+                    author_teammate_id=self_teammate_id,
+                    author_private_key=inviter_private_key,
+                    author_public_key=inviter_public_key,
+                    anchor_commit=anchor_commit,
                 )
     finally:
         engine.dispose()
     if failure_reason is not None:
         raise ValueError(failure_reason)
-    repo_dir = _team_sync_dir(root_dir, participant_hex, team_name)
-    repo = _Repo(repo_dir / ".git", repo_dir)
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
     repo.commit("Finalized admission proposal")
 
@@ -5470,7 +5969,13 @@ def remove_cloud_storage(root_dir, participant_hex, storage_id_hex):
 
 
 def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
-    """Invalidate an open admission proposal."""
+    """Record a revocation for an open admission proposal.
+
+    Revocation is a local disposition/projection, not a mutation of the
+    append-only proposal record: it inserts an `admission_revocation` row that
+    `_admission_status` reports as `invalidated`. (A signed revocation record is
+    future work -- see FOLLOW-UP.)
+    """
     root_dir = pathlib.Path(root_dir)
     team_db_path = (
         root_dir / "Participants" / participant_hex / team_name / "Sync" / "core.db"
@@ -5479,20 +5984,21 @@ def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
     ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
     with engine.begin() as conn:
-        row = conn.execute(
-            text("SELECT state FROM admission_proposal WHERE proposal_id = :id"),
-            {"id": invitation_id},
-        ).fetchone()
-        if row is None:
-            raise ValueError("Admission proposal not found")
-        if row[0] not in {"awaiting_invitee", "awaiting_quorum"}:
-            raise ValueError(f"Proposal is not revocable (state: {row[0]})")
+        proposal_row = _load_proposal_row(conn, invitation_id)
+        status = _admission_status(
+            conn,
+            record_id=invitation_id,
+            constitution_digest=proposal_row[5],
+            expires_at=proposal_row[11],
+        )
+        if status not in {"awaiting_invitee", "awaiting_quorum"}:
+            raise ValueError(f"Proposal is not revocable (status: {status})")
         conn.execute(
             text(
-                "UPDATE admission_proposal SET state = 'invalidated', invalid_reason = 'revoked' "
-                "WHERE proposal_id = :id"
+                "INSERT OR IGNORE INTO admission_revocation (subject_record_id, revoked_at) "
+                "VALUES (:id, :revoked_at)"
             ),
-            {"id": invitation_id},
+            {"id": invitation_id, "revoked_at": _now_iso()},
         )
     engine.dispose()
     team_sync_dir = root_dir / "Participants" / participant_hex / team_name / "Sync"
@@ -5592,24 +6098,34 @@ def list_invitations(root_dir, participant_hex, team_name):
     ensure_team_db_schema(team_db_path)
     engine = _sqlite_engine(team_db_path)
 
+    result = []
     with engine.begin() as conn:
         rows = conn.execute(
             text(
-                "SELECT proposal_id, state, invitee_label, role, created_at "
-                "FROM admission_proposal ORDER BY created_at DESC, proposal_id DESC"
+                "SELECT record_id, constitution_digest, expires_at, invitee_label_payload, "
+                "mode_plan, created_at "
+                "FROM admission_proposal ORDER BY created_at DESC, record_id DESC"
             )
         ).fetchall()
+        for record_id, constitution_digest, expires_at, label_payload, mode_plan, created_at in rows:
+            status = _admission_status(
+                conn,
+                record_id=record_id,
+                constitution_digest=constitution_digest,
+                expires_at=expires_at,
+            )
+            result.append(
+                {
+                    "id": record_id.hex(),
+                    "status": status,
+                    "invitee_label": label_payload,
+                    "role": preset_for_mode_plan(json.loads(mode_plan)) if mode_plan else None,
+                    "created_at": created_at,
+                }
+            )
 
-    return [
-        {
-            "id": row[0].hex(),
-            "status": row[1],
-            "invitee_label": row[2],
-            "role": row[3],
-            "created_at": row[4],
-        }
-        for row in rows
-    ]
+    engine.dispose()
+    return result
 
 
 def _admission_event_store_path(root_dir, participant_hex, team_name):

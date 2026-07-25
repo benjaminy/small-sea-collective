@@ -168,7 +168,7 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
 
     # -- Bob: read Alice's latest link via Hub and verify signature --
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
-    bob_teammate_id_hex = acceptance["acceptor_teammate_id"]
+    bob_teammate_id_hex = acceptance["author_teammate_id"]
 
     bob_team_token = _open_session(http, "Bob", "ProjectX", mode="passthrough")
     peer_remote = PeerSmallSeaRemote(

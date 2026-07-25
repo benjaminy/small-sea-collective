@@ -115,30 +115,41 @@ def _linked_device_events(conn, dismissed, *, self_teammate_id_hex: str | None):
 def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, viewer_is_steward: bool):
     proposal_rows = conn.execute(
         text(
-            "SELECT proposal_id, state, invitee_label, role, created_at, finalized_at, "
-            "invitee_teammate_id, inviter_teammate_id, transcript_digest "
-            "FROM admission_proposal "
-            "WHERE state IN ('awaiting_invitee', 'awaiting_quorum', 'finalized') "
-            "ORDER BY COALESCE(finalized_at, created_at) DESC, proposal_id DESC"
+            "SELECT record_id, author_teammate_id, invitee_teammate_id, invitee_label_payload, "
+            "mode_plan, created_at, constitution_digest, expires_at "
+            "FROM admission_proposal ORDER BY created_at DESC, record_id DESC"
         )
     ).fetchall()
 
     if proposal_rows:
         events: list[AdmissionEvent] = []
+        quorum_target = int(provisioning._team_setting(conn, "admission_quorum", "1"))
         for (
-            proposal_id,
-            state,
-            invitee_label,
-            role,
-            created_at,
-            finalized_at,
-            invitee_teammate_id,
+            record_id,
             inviter_teammate_id,
-            transcript_digest,
+            invitee_teammate_id,
+            invitee_label,
+            mode_plan_json,
+            created_at,
+            constitution_digest,
+            expires_at,
         ) in proposal_rows:
-            artifact_id_hex = proposal_id.hex()
+            # Status is a computed view over which admission records exist
+            # (see provisioning._admission_status), never a stored column.
+            status = provisioning._admission_status(
+                conn,
+                record_id=record_id,
+                constitution_digest=constitution_digest,
+                expires_at=expires_at,
+            )
+            artifact_id_hex = record_id.hex()
             teammate_id_hex = invitee_teammate_id.hex() if invitee_teammate_id is not None else None
-            if state == "awaiting_invitee":
+            role = (
+                provisioning.preset_for_mode_plan(json.loads(mode_plan_json))
+                if mode_plan_json
+                else None
+            ) or "custom"
+            if status == "awaiting_invitee":
                 event_type = AdmissionEventType.PROPOSAL_SHELL
                 if (event_type.value, artifact_id_hex) in dismissed:
                     continue
@@ -149,7 +160,7 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                         occurred_at=created_at,
                         title=f"Proposal shell open for {invitee_label or 'unlabelled invitee'}",
                         summary=(
-                            f"Transcript-bound admission proposal created for role `{role}`. "
+                            f"Admission proposal created for role `{role}`. "
                             "This shell should be visible before the invitation token is delivered."
                         ),
                         badge_label="proposal shell",
@@ -162,24 +173,11 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                     )
                 )
                 continue
-            if state == "awaiting_quorum":
+            if status == "awaiting_quorum":
                 event_type = AdmissionEventType.AWAITING_QUORUM
                 if (event_type.value, artifact_id_hex) in dismissed:
                     continue
-                quorum_row = conn.execute(
-                    text(
-                        "SELECT COUNT(DISTINCT steward_teammate_id) FROM steward_approval "
-                        "WHERE proposal_id = :proposal_id AND transcript_digest = :transcript_digest"
-                    ),
-                    {
-                        "proposal_id": proposal_id,
-                        "transcript_digest": transcript_digest,
-                    },
-                ).fetchone()
-                quorum_count = int(quorum_row[0]) if quorum_row is not None else 0
-                quorum_target = int(
-                    provisioning._team_setting(conn, "admission_quorum", "1")
-                )
+                quorum_count = provisioning._endorsement_count(conn, record_id)
                 can_finalize = (
                     viewer_is_steward
                     and self_teammate_id_hex is not None
@@ -194,8 +192,8 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                         occurred_at=created_at,
                         title=f"Awaiting quorum for {invitee_label or 'unlabelled invitee'}",
                         summary=(
-                            f"Transcript recorded for role `{role}`. "
-                            f"{quorum_count} of {quorum_target} distinct steward approvals recorded."
+                            f"Acceptance recorded for role `{role}`. "
+                            f"{quorum_count} of {quorum_target} endorsements recorded."
                         ),
                         badge_label="awaiting quorum",
                         badge_class="badge-amber",
@@ -209,18 +207,23 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                     )
                 )
                 continue
-            if state == "finalized":
+            if status == "finalized":
                 event_type = AdmissionEventType.INVITATION_FINALIZED
                 if (event_type.value, artifact_id_hex) in dismissed:
                     continue
+                fin_row = conn.execute(
+                    text("SELECT created_at FROM finalization WHERE subject_record_id = :id"),
+                    {"id": record_id},
+                ).fetchone()
+                finalized_at = fin_row[0] if fin_row is not None else created_at
                 events.append(
                     AdmissionEvent(
                         event_type=event_type,
                         artifact_id_hex=artifact_id_hex,
-                        occurred_at=finalized_at or created_at,
+                        occurred_at=finalized_at,
                         title=f"Admission finalized for {invitee_label or _teammate_label(None, teammate_id_hex)}",
                         summary=(
-                            "This transcript-bound admission has been finalized in the current team view. "
+                            "This admission has been finalized in the current team view. "
                             "Transport setup remains a separate post-admission step."
                         ),
                         badge_label="finalized",

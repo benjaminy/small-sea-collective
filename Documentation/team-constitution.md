@@ -104,9 +104,11 @@ A record whose frontier is merely no longer the *current* tip (newer records hav
 ### Generalized: the one quorum-gated flow
 
 - **`admission_proposal`** — the existing table (see `Archive/design-record-team-constitution-schema.md`), moved onto the shared envelope.
-  Type-specific columns: `nonce`, `invitee_teammate_id` (freshly allocated), `invitee_label_commitment` (signed) and `invitee_label_payload` (separable — see *PII handling* below), `invitee_device_public_key`, `expires_at`.
+  Type-specific columns: `nonce`, `invitee_teammate_id` (freshly allocated), `invitee_label_commitment` (signed) and `invitee_label_payload` (separable — see *PII handling* below), `expires_at`.
+  (`invitee_device_public_key` is not a proposal column: that key does not exist until the invitee accepts, so it lives only on `admission_acceptance`, where it serves as the self-certification key.)
   Drops `role`: admission no longer carries an integration-mode preset directly (see `integration_mode_change` below).
-  The Manager UI still offers a `steward`/`contributor` *preset* at invitation time, but it is realized as a set of `integration_mode_change` records appended alongside finalization, not a field on the proposal itself.
+  The Manager UI still offers a `steward`/`contributor` *preset* at invitation time, but the preset name is not stored on the proposal: the proposal carries only the signed per-berth expansion rule (`mode_plan`), realized as a set of `integration_mode_change` records appended alongside finalization.
+  The rule is signed because the plan is the sole input to the authority granted at finalization; an unsigned plan could be escalated undetected between creation and finalization.
   This keeps "who is admitted" and "what mode do they start in" as separately inspectable facts.
 - **`admission_acceptance`** — new, replacing the mutated acceptance columns on today's `admission_proposal` row.
   References `subject_record_id` (= `admission_proposal.record_id`), the same FK column name and target `endorsement` and `finalization` use below, so all three types that reference a proposal do so identically rather than three different ways.

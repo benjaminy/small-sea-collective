@@ -157,7 +157,7 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
 
     assert isinstance(acceptance_b64, str)
     acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
-    bob_teammate_id_hex = acceptance["acceptor_teammate_id"]
+    bob_teammate_id_hex = acceptance["author_teammate_id"]
 
     # ---- Bob: push accepted team repo via Hub ----
     bob_team_token = _open_session(http, "Bob", "ProjectX")

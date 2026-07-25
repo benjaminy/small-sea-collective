@@ -126,7 +126,7 @@ def test_quorum_two_requires_second_steward_and_inviter_finalization(playground_
     assert proposals[0]["status"] == "awaiting_quorum"
 
     shutil.copy2(alice_sync / "core.db", carol_sync / "core.db")
-    provisioning.sign_steward_approval(root, carol_hex, "ProjectX", proposals[0]["id"])
+    provisioning.endorse_admission(root, carol_hex, "ProjectX", proposals[0]["id"])
     shutil.copy2(carol_sync / "core.db", alice_sync / "core.db")
 
     provisioning.finalize_admission(root, alice_hex, "ProjectX", proposals[0]["id"])
@@ -183,12 +183,11 @@ def test_governance_drift_invalidates_proposal(playground_dir):
 
 
 def test_contributor_role_finalizes_as_proposal_only_on_core(playground_dir):
-    # A contributor is proposal-only on Core (spec.md: proposal-only on Core,
-    # automatic on other berths). This asserts the Core mapping only, which the
-    # projection currently stores as `read-only`. Per-berth expansion of the
-    # preset -- automatic on non-Core berths -- is not implemented yet; admission
-    # fans the single Core mode out to every berth. That expansion is tracked in
-    # issue #164 (preset becomes per-berth integration_mode_change records).
+    # A contributor is proposal-only on Core (architecture.md: proposal-only on
+    # Core, automatic on other berths). Finalization now expands the preset into
+    # per-berth integration_mode_change records (issue #164); the Core berth
+    # gets `core_mode` (proposal-only -> `read-only` projection). A fixture with
+    # a non-Core berth is exercised in test_admission_records.py.
     root = pathlib.Path(playground_dir)
     alice_cloud = root / "alice-cloud"
     alice_cloud.mkdir()
@@ -206,7 +205,7 @@ def test_contributor_role_finalizes_as_proposal_only_on_core(playground_dir):
         "ProjectX",
         {"protocol": "localfolder", "url": str(alice_cloud)},
         invitee_label="Bob",
-        role="contributor",
+        mode_plan=provisioning.mode_plan_for_preset("contributor"),
     )
     acceptance = provisioning.accept_invitation(
         root,

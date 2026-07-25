@@ -483,8 +483,8 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     async def approve_invitation(request: Request, team_name: str, inv_id: str):
         mgr = _mgr(request)
         try:
-            mgr.sign_steward_approval(team_name, inv_id)
-            notice = "Steward approval recorded."
+            mgr.endorse_admission(team_name, inv_id)
+            notice = "Endorsement recorded."
             error = None
         except Exception as e:
             notice = None
