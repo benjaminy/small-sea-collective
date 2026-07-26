@@ -51,8 +51,16 @@ The subset in item 2 is the repo's live-data window.
 The window is a content-retention policy, not a history-rewriting operation.
 It is also not an erasure guarantee: any teammate who has already fetched an older snapshot may keep their own copy, and Cod Sync cannot make that copy disappear.
 The window's job is to bound what the shared sync substrate keeps readily rehydratable after the team has had enough time to notice, fetch, and converge.
-Core berths should use a conservative window because Core data is normally small, and every retained Core database snapshot must contain the complete signed teammate-history chain through that snapshot.
-Cod Sync may dehydrate older application blobs, but it must not turn constitutional history into an external or checkout-dependent log.
+Core databases may choose a more conservative window for Constitution events, but that is a storage policy above Cod Sync and the event-envelope protocol.
+No participant may infer that a missing object never existed.
 
-Advancing a live-data window past a quiet teammate's last known state needs more protocol design.
-Signed staleness observations in Core may provide warning and diagnostic evidence, but an observation alone is not a checkpoint and cannot authorize pruning or declare a teammate's unseen work obsolete.
+### Forward Restoration
+
+Cod Sync never restores shared state by resetting a branch or moving a ref backward.
+A participant appends a new commit whose tree contains the selected old state, leaving every intervening commit in the DAG.
+The preserved interval identifies the changes overwritten by restoration, and later commits can replay the changes people still want.
+
+Repair tooling may publish a manifest naming the clean base, pre-repair head, omitted changes, replayed changes, and conflicts requiring human judgment.
+Cod Sync does not prove authorship or replay honesty.
+Each application decides whether repair is user-directed, author-asserted, or backed by application-defined cryptographic provenance.
+The exact manifest and app-specific replay mechanisms remain design work.

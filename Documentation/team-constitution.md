@@ -1,197 +1,220 @@
 # The Team Constitution
 
-Status: design document.
-The signed, append-only governance model this document describes is committed to in [`architecture.md`](../architecture.md#no-team-server) and its `FOLLOW-UP.md` sequencing note from the permission-vocabulary branch.
-This document is the field-level schema that turns that commitment into something implementable.
-It is not exploratory the way [`linked-teams.md`](linked-teams.md) is — it is the foundation the FOLLOW-UP note calls out as blocking mode-aware replication, prepared recovery, and retention/staleness work.
-It does not yet exist as code; no table here is live.
+Status: architectural direction, not a frozen wire format.
+The current code implements parts of an older admission design.
 
-## Core vs. the Constitution
+## Purpose
 
-**Core** is the berth — `{Team}/SmallSeaCollectiveCore` — and the SQLite database that lives there.
-The **Team Constitution** is the signed, append-only governance lineage that database carries: who is a teammate, which devices speak for them, their per-berth integration mode, and the handful of other facts whose history must remain inspectable rather than merely current.
+The Team Constitution is a decentralized, cryptographically linked DAG of signed events.
+Its job is to preserve inspectable evidence about a team without requiring a team server or one globally accepted state.
 
-Mutable tables (`teammate`, `berth_role`, `invitation`, `team_device`) are not part of the Constitution.
-They are projections: deterministically rebuildable caches of "what does the Constitution currently say," kept around because rebuilding from scratch on every read would be wasteful, not because they are themselves durable history.
+The Constitution protocol answers narrow mechanical questions:
 
-## Why admission is the one quorum-gated action
+- Are these the exact bytes identified by this event ID?
+- Did the key named by the event sign those bytes?
+- Which earlier events does this event name as parents?
+- Is the event bound to the intended technical origin?
+- Is the referenced ancestry present, or is some of it missing?
 
-Two different properties are easy to conflate here, so this document keeps them separate.
+It does not answer whether the signer was entitled to act, whether Carol has joined the team, whether Alice should merge Carol's work, or which concurrent head is canonical.
+Those are extension and local-policy questions.
 
-**Who is allowed to sign at all.** Every Constitution record is signed by a key a verifier can already check has standing — ordinarily an already-recognized teammate's device.
-Exactly one record type breaks that: `admission_acceptance` (see below), signed by the invitee's brand-new device before any `device_link` exists for it, and therefore verified against a public key the record itself supplies rather than looked up in the device graph.
-`admission_proposal` is *not* an exception on this axis — it is signed by the inviter, who is already recognized.
+This is the protocol's narrow waist.
+The design should resist adding a field or rule merely because one admission, membership, recovery, or repair policy currently wants it.
 
-**How many signers are required.** Every record type is valid the moment one currently-recognized authority signs it, except `admission_proposal`, whose finalization requires a quorum of automatic Core integrators' endorsements.
-This is a separate, tunable design choice, not a consequence of the invitee being unable to self-attest: a single recognized inviter's signature would already satisfy the "who is allowed to sign" concern above, which is exactly why `quorum = 1` (one recognized signer, no additional endorsers) is a valid and default configuration.
-Requiring *more* than one endorser is optional hardening a team can choose for a high-stakes action, independent of who is doing the signing.
+## The Core Object
 
-So there are two, independent, single-exception rules — not one action that is exceptional on both axes at once.
-This is worth naming explicitly because it would be easy to over-generalize a proposal/endorsement/quorum mechanism onto every record type when the actual invariant ("the endorsement threshold is always at least one automatic integrator") is already satisfied by "one currently-recognized signer" for every action except admission's finalization.
+The smallest plausible Constitution event contains:
 
-## The shared envelope
+| Field | Core meaning |
+|---|---|
+| protocol version | Selects the envelope encoding and cryptographic rules |
+| technical origin | Prevents an event from being replayed as an event of an unrelated team history |
+| parent event IDs | Hash links to the earlier events on which this event claims to build |
+| extension type and version | Selects semantics that the core does not interpret |
+| signer key | Identifies the key used to verify the signature |
+| payload | Opaque, bounded bytes interpreted by the extension |
+| signature | Authenticates the canonical envelope and payload |
+| event ID | Content digest of the version-defined event bytes |
 
-Every Constitution record type shares one column prefix, produced by one shared signing helper instead of the three independent reimplementations of the same idiom found in `key_certificate`, `teammate_berth_storage_announcement`, and the admission-proposal code today (see `Archive/design-record-team-constitution-schema.md` for the survey).
-Concretely:
+The wire format still needs a small threat-model review before it is frozen.
+In particular, the design must decide whether the signer key is inline or content-addressed, whether the origin is a genesis-event digest or a signed random value, and exactly which bytes the event ID covers.
+Those are core questions because independent implementations must agree on them.
 
-| Column | Type | Meaning |
-|---|---|---|
-| `record_id` | `BLOB PRIMARY KEY` | `sha256(canonical_bytes)[:16]` — content-derived, matching the existing `cert_id` convention |
-| `record_type` | `TEXT NOT NULL` | discriminator, useful for logging/tooling even though each type also has its own table |
-| `author_teammate_id` | `BLOB NOT NULL` | the teammate this record speaks for |
-| `author_device_key_id` | `BLOB NOT NULL` | the specific device key that signed |
-| `created_at` | `TEXT NOT NULL` | ISO8601, for display and debugging only — never consulted to decide validity or ordering |
-| `anchor_commit` | `TEXT` | git commit hash near authoring time — **informational only**, not what verification relies on; see *The Constitution anchor* below; `NULL` for the genesis record and for non-governance-bearing types |
-| `anchor_frontier` | `TEXT` | canonical JSON reference to prior Constitution records — **authoritative**; see below; `NULL` for the genesis record and for non-governance-bearing types |
-| `schema_version` | `INTEGER NOT NULL DEFAULT 1` | envelope/record-type format version — distinct from the whole-database `USER_SCHEMA_VERSION` |
-| `signature` | `BLOB NOT NULL` | Ed25519 signature by `author_device_key_id` over the canonical bytes of every other envelope column plus each type's *signed* type-specific columns |
+A creation time may be useful metadata, but it is not causal order or authority.
+If it appears in the signed envelope, the core verifies only that it was signed; it does not trust the clock.
 
-Not every type-specific column is signed.
-A record type may declare one or more of its type-specific columns as **separable payload**: droppable, encryptable-to-a-window, or excisable personal content that must never be required to verify the record's signature or replay its governance effect.
-Separable-payload columns are excluded from the canonical signing bytes entirely.
-Only a paired `*_commitment` column — itself an ordinary *signed* type-specific column — stands in for that content in what actually gets signed.
-This is the mechanism the *PII handling* section below depends on, not a separate rule layered on top of it; every PII-bearing type in the catalog below is written as a `*_commitment` (signed) plus a `*_payload` (separable) pair, never as one plain column.
+Parent IDs form a set whose canonical encoding is deterministic.
+An event may have multiple parents.
+That represents convergence in the graph without implying social agreement with every ancestor.
+Parents belong to the same technical origin; an extension may place cross-origin references in its opaque payload instead of merging two team DAGs at the core layer.
+No timestamp, UUID order, database row order, Git commit order, or arrival order selects a winning parent or head.
 
-Canonical bytes: the same idiom already in use, generalized.
-Build a dict of every envelope column except `record_id` and `signature`, plus every type's *signed* type-specific columns — separable-payload columns are never part of this dict — hex-encode binary fields, and serialize with `json.dumps(obj, sort_keys=True, separators=(",", ":")).encode("utf-8")`.
-`record_id` is derived from those bytes before signing; `signature` is computed over those same bytes and excluded from them, exactly like `key_certificate.cert_id` today.
+## Core Verification
 
-`key_certificate` and `teammate_berth_storage_announcement` predate this envelope.
-Bringing them onto it means adopting the shared `record_id`/`record_type`/`schema_version` columns and signing helper for consistency of tooling.
-It does not require adopting `anchor_commit`/`anchor_frontier` — those stay `NULL` for `teammate_berth_storage_announcement`, which is not governance-bearing (see *Reused as-is* below).
-This is part of the implementation work this document unblocks; it is not silently assumed to already be true.
+A core verifier performs only version-defined structural and cryptographic checks:
 
-## The Constitution anchor
+1. Decode the canonical envelope and enforce its per-event bounds.
+2. Recompute the event ID.
+3. Verify the signature with the named signer key.
+4. Verify technical-origin binding and the canonical parent set.
+5. Report which parents are present and which are missing.
+6. Reject cycles or other impossible graph structure when assembling a closure.
 
-Today's `admission_proposal` anchors to `anchor_commit` (a git commit hash) plus `governance_digest` (a hash of a live SQL query against the *current* connection at proposal-creation time).
-That pairing is admission-specific and, generalized naively, has a real problem: `architecture.md` already states that Git commit authorship is not the authority for significant teammate facts, and Core's retention section promises only a *conservative* live-data window, not infinite blob retention — so an old `anchor_commit` is not guaranteed to be checkable out forever.
-Meanwhile every Constitution record is retained forever in the live database by design (nothing is ever deleted), which means replay should never need to depend on git blob availability at all.
+An event with a bad digest, bad signature, invalid encoding, wrong technical origin, or impossible graph structure is not a Constitution event under that protocol version.
+An otherwise valid event with unavailable parents is incomplete, not forged.
+It may be stored and revisited if those parents arrive later.
 
-So the Constitution's anchor is record-based, not commit-based:
+The core does not consult a roster to verify the signature.
+It proves that a particular key signed an event.
+An extension may then decide whether that key is relevant, delegated, revoked, compromised, or unknown for its purpose.
+Keeping those questions separate avoids making one membership policy a prerequisite for parsing history.
 
-- `anchor_commit` is kept only as an informational git-commit reference for humans and debugging (roughly "authored around this point in the repo's history"). It is never consulted to decide validity.
-- `anchor_frontier` is the authoritative reference: for each governance-bearing record type the author had observed, the `record_id` of the latest record in that type's own table at authoring time (or `null` if none yet exists). Each governance-bearing table's rows additionally carry a `predecessor_record_id` (nullable, self-referential within that same table), so a tip pointer plus predecessor-chain-following fully determines that table's history up to the anchor without consulting wall-clock order, arrival order, or any other table.
+## Local Handling and Resource Safety
 
-```
-constitution_skeleton_at(frontier: dict[table_name, record_id | None]) -> {
-    teammates: [{teammate_id, admitted_at_record, excluded: bool}],
-    devices:   [{teammate_id, device_key_id, linked_at_record, revoked: bool}],
-    modes:     [{teammate_id, berth_id, mode, changed_at_record}],
-    recovery_keys: [{teammate_id, recovery_public_key, registered_at_record}],
-}
-constitution_digest_at(frontier) = sha256(canonical_json(constitution_skeleton_at(frontier)))
-```
+Core verification and local effect are separated by observable handling states.
+The state names are implementation vocabulary rather than fields in the signed envelope:
 
-Any verifier recomputes `constitution_skeleton_at` independently by chain-following each table back from its `anchor_frontier` tip, using only records already present in their own local Constitution tables — never a git checkout, never the current live head unless that happens to be what the frontier names.
-Two honest verifiers holding the same records reach the same skeleton for the same frontier.
+1. **Invalid input** fails canonical decoding, content-ID, signature, origin, parent-set, or graph checks.
+   It cannot become a Constitution head or acquire extension effect.
+2. **Ancestry-incomplete input** has a valid envelope but lacks one or more named parents.
+   It may be held for later completion, but no conclusion requiring the missing closure may use it.
+3. **Core-verified event** has a valid envelope and an available, valid same-origin parent closure.
+   This says nothing about the signer's authority or the payload's effect.
+4. **Locally active or parked event** records whether this device selected a core-verified event into its active Constitution view.
+   Parking is a local intake or operator decision, not a declaration that an authentic event is malformed.
+5. **Extension effect** is a separate decision made by an extension and local policy over an explicit active view.
 
-The exact wire representation of `anchor_frontier` (one tip per table as sketched above, versus a single rolling accumulator digest, versus a Merkle structure) is not settled by this document — the requirement fixed here is only that it be reconstructible from record-to-record references alone.
-See *Deliberately left open* below.
+An active view is ancestry-closed.
+A local integration policy assigns each newly core-verified event a handling state only after assigning states to its parents; ordering among concurrently ready events remains a local choice.
+It does not activate a received batch atomically from the batch's final tips.
+A core-verified event with any parked ancestry therefore remains parked until an explicit reconciliation selects a new active view.
+No property of a received event — including naming parked tips as parents — reactivates a parked branch; unparking is a local acceptance decision.
 
-A record whose declared frontier cannot be chain-followed to a consistent skeleton in the verifier's own tables is malformed.
-A record whose frontier is merely no longer the *current* tip (newer records have since been appended) is stale, not malformed — that is the same distinction `admission_proposal`'s existing freshness check already draws, just evaluated over the record-based frontier instead of a live SQL query.
+A receiver must bound work before an event earns any local effect.
+The core format bounds individual event and parent-set sizes; implementations must additionally bound unresolved input, closure traversal, storage, and extension execution.
+Exact budgets are local implementation or transport-profile choices rather than team policy encoded in every event.
 
-## Record catalog
+Crossing a resource limit may decline or park new input.
+Under deliberate flooding no bounded intake can be perfectly neutral between branches, so branch neutrality under exhaustion is a design intent rather than a guarantee.
+The enforceable requirement is narrower:
+resource-based parking must never be reported or treated as verification failure, and it must remain visible and reversible rather than silently promoting whichever branch fit the budget to authoritative status.
+A valid signature never creates an entitlement to storage, ancestry retrieval, forwarding, or effect.
+Unknown extensions remain mechanically verifiable, but preservation and relay are always subject to these local resource limits.
 
-### Reused as-is
+## Local Heads and Partial Views
 
-- **`key_certificate`** (`self_binding` [legacy], `membership`, `device_link`, `cross_certification`, `revocation`) — already signed, typed, and append-only.
-  `device_link` and `revocation` are how a device is linked or revoked; no new table needed.
-  The genesis, self-issued `membership` record is the Constitution's root.
-- **`teammate_berth_storage_announcement`** — already signed and append-only, selected by descending UUIDv7 `announcement_id`, never by wall-clock time.
-  Joins the shared envelope's `record_id`/`record_type`/`schema_version`/signing helper for consistency, but leaves `anchor_commit`/`anchor_frontier` `NULL`: it announces where a teammate's own data lives, not a fact about team standing, so it is not governance-bearing and nothing needs to replay a Constitution skeleton to validate it.
+Every participant may hold a different subset of the DAG and different local refs or heads into it.
+Refs are local choices, like Git branches.
+They are not consensus state.
 
-### Generalized: the one quorum-gated flow
+If Alice starts fetching and merging events or application changes from Carol, that is a fact about Alice's local behavior.
+The core protocol has neither the knowledge nor the authority to declare that Carol has thereby joined the team.
+Alice may publish a later event that names Carol's event as a parent, making the causal relationship inspectable, but even that linkage is not a built-in endorsement.
 
-- **`admission_proposal`** — the existing table (see `Archive/design-record-team-constitution-schema.md`), moved onto the shared envelope.
-  Type-specific columns: `nonce`, `invitee_teammate_id` (freshly allocated), `invitee_label_commitment` (signed) and `invitee_label_payload` (separable — see *PII handling* below), `expires_at`.
-  (`invitee_device_public_key` is not a proposal column: that key does not exist until the invitee accepts, so it lives only on `admission_acceptance`, where it serves as the self-certification key.)
-  Drops `role`: admission no longer carries an integration-mode preset directly (see `integration_mode_change` below).
-  The Manager UI still offers a `steward`/`contributor` *preset* at invitation time, but the preset name is not stored on the proposal: the proposal carries only the signed per-berth expansion rule (`mode_plan`), realized as a set of `integration_mode_change` records appended alongside finalization.
-  The rule is signed because the plan is the sole input to the authority granted at finalization; an unsigned plan could be escalated undetected between creation and finalization.
-  This keeps "who is admitted" and "what mode do they start in" as separately inspectable facts.
-- **`admission_acceptance`** — new, replacing the mutated acceptance columns on today's `admission_proposal` row.
-  References `subject_record_id` (= `admission_proposal.record_id`), the same FK column name and target `endorsement` and `finalization` use below, so all three types that reference a proposal do so identically rather than three different ways.
-  Carries the invitee's signed acceptance blob.
-  Append-only: an invitee accepting is its own record, not an update to the proposal row.
-  **This is the schema's one exception to "the signer already has standing"** (see *Why admission is the one quorum-gated action* above). The invitee's `teammate_id` was pre-allocated by the inviter and already exists, but the invitee's *device* has no `device_link` yet, so the usual verification rule (look up `author_device_key_id` in the device graph, confirm it resolves to `author_teammate_id`) does not apply. `admission_acceptance` is instead self-certifying: it carries `invitee_device_public_key` directly, and the record's signature is verified against that embedded key, not against a prior device-link cert. That key only becomes an ordinary recognized device once `finalization` succeeds.
-- **`endorsement`** — generalized from `steward_approval`.
-  References two distinct things, kept separate rather than conflated: `subject_record_id` (the FK — the `record_id` of the proposal being endorsed, e.g. `admission_proposal.record_id`) and `subject_digest` (a content-commitment over the exact reviewed payload, generalizing today's `transcript_digest`, which is computed independently of `proposal_id` and guards against the proposal's content changing out from under an endorser between review and use).
-  If a proposal's payload needs to change after endorsements exist, that is a new `proposal_revision` record referencing the original `subject_record_id` with a fresh `subject_digest` — not a mutation of the original and not something existing endorsements silently carry over. (`proposal_revision` is named here as the concept `architecture.md` already commits to; its exact columns are not fully specified in this pass.)
-  Deduplicates by `endorsing_teammate_id`, not by device — fixing the gap the survey found in today's `UNIQUE(proposal_id, approver_device_key_id)`, which dedupes by device and would currently double-count two devices of the same endorser.
-  The type is written generically so a future higher-stakes action can reuse it if the team ever configures a threshold above one for it.
-- **`finalization`** — new, small: references `subject_record_id`, records that the required endorsement count was observed and the subject is now effective.
-  Only finalization "turns on" a proposal; an unfinalized proposal, however many endorsements it has, has no effect.
+The protocol must preserve concurrency rather than manufacture a winner.
+Two events that name the same parent are ordinary sibling events.
+A later event may name both siblings as parents.
+Participants may also continue on only one sibling indefinitely.
 
-### New: single-signer governance records
+No peer can prove that another peer disclosed every event it knew about.
+The core therefore treats a parent set as the dependencies the author declared, not as a complete statement of the author's knowledge.
+Gossip, transparency checks, or receipt schemes may be useful extensions, but they are not prerequisites for a valid core event.
 
-Each of these is valid immediately when signed by the appropriate currently-recognized authority at its `anchor_frontier` — no endorsement round.
+## Extension Boundary
 
-- **`integration_mode_change`** — `teammate_id`, `berth_id`, `mode` (`automatic` | `proposal-only`, the new vocabulary directly — this is a brand-new table with nothing to stay compatible with).
-  Valid when signed by a current automatic integrator on that berth (or Core, for berths where Core itself gates mode changes).
-- **`exclusion`** — `excluded_teammate_id`, `reason_commitment` (signed), `reason_payload` (separable — see *PII handling* below).
-  Valid when signed by a current automatic Core integrator.
-  Matches the Manager spec's existing description of "remove teammate" as a unilateral, socially-adopted-or-not act.
-- **`prepared_recovery_registration`** — `teammate_id`, `recovery_public_key`.
-  Self-registered: signed by an existing device of the same teammate, publishing the public half of a recovery capability prepared and stored outside routine sync.
-  Does not itself authorize anything; see next.
-  Not yet designed: the private-side format, storage, and rotation — tracked in `Documentation/open-architecture-questions.md`, not settled here.
-- **`recovery_event`** — `teammate_id`, `new_device_public_key`, references the `prepared_recovery_registration` whose key it is signed by.
-  Its signature is verified against the *registered recovery public key*, not against "a current automatic integrator" — a distinct authority class from ordinary device signing.
-  Anti-replay/rollback fields are an open slot, not a settled design: this record type exists so downstream code has something to target, but its full ceremony (nonce scheme, expiry, single-use enforcement) is explicitly future work, cross-referenced in `open-architecture-questions.md`.
-- **`display_name_claim`** — `teammate_id`, `name_commitment` (signed — the durable, hiding commitment), `name_payload` (separable — see *PII handling* below; may be absent).
-  Self-signed.
-  The commitment scheme itself (salting, hash construction) is not chosen here; it needs the cryptographic analysis `open-architecture-questions.md` already tracks.
-  What *is* fixed now: the signature covers `name_commitment` only, never `name_payload`, so the payload can be dropped or encryption-windowed later without invalidating the record or any replay that depends on it.
-- **`teammate_unification_claim`** — comes as a linked pair of records rather than one multi-signature record: one half signed by a device of the first candidate UUID, the other half signed by a device of the second, each referencing the other's `record_id`.
-  Unification is only in effect once both halves exist, which is a simple existence check rather than a new co-signature envelope shape.
-  Each half carries `evidence_commitment` (signed) and `evidence_payload` (separable — see *PII handling* below) rather than one plain `evidence` column.
-- **`staleness_observation`** — `observing_teammate_id` (= `author_teammate_id`), `observed_teammate_id`, `observed_berth_id`, `last_observed_signal`, `local_update_counter_or_elapsed`, `warning_horizon`.
-  Self-signed testimony.
-  Explicitly not authoritative: it cannot exclude anyone, advance anyone's retention horizon, or declare finality — see `architecture.md`'s *Retention Horizons and Staleness*.
-  Different observers may disagree; that is not a malformed state.
+Extensions give payloads meaning.
+Examples may include admission, device linkage, key rotation, storage announcements, merge requests, delegation, exclusion, or recovery.
+The core protocol does not reserve those as mandatory constitutional concepts.
 
-## PII handling: the general shape
+An extension may define:
 
-Several record types above (`admission_proposal`'s invitee label, `display_name_claim`, `teammate_unification_claim`, `exclusion`) carry personal content that must not be permanent chain data, per `architecture.md`'s *Personal Data Is Not in the Long-Term Chain*.
-Each such type follows the same shape, using the envelope's signed/separable-payload split defined under *The shared envelope* above rather than a bolt-on rule:
+- its payload schema and semantic validation;
+- which signer keys it recognizes and why;
+- how it interprets ancestry and concurrency;
+- thresholds, roles, ceremonies, and user-presence requirements;
+- which local projections or caches it maintains;
+- when a Hub or application integrates data or distributes keys;
+- retention, quarantine, resource, and repair behavior beyond the core object bounds.
 
-- a `*_commitment` column — signed, so that specific record is independently tamper-evident, but **not** part of `constitution_skeleton_at`: no other record's validity ever depends on inspecting a display name, an exclusion reason, or unification evidence, so there is no governance reason to fold it into the skeleton, and every reason not to (unbounded skeleton growth over a team's lifetime for data nothing consults)
-- a `*_payload` column — separable, never signed, never part of `constitution_skeleton_at` either, and therefore droppable, encryptable-to-a-window, or physically deleted later without touching the signature or breaking replay
+Policy may be local configuration, signed events understood by an extension, or both.
+Publishing a policy event does not make it globally binding.
 
-Skeleton verification — recomputing `constitution_digest_at` to check an anchor — therefore never touches any PII-adjacent field, commitment or payload, for any record type.
-`*_commitment` is consulted only when someone wants to verify that one specific claim record's integrity, e.g. checking a later-presented payload against its own commitment — a per-record check, not a governance-replay input.
+Unknown extension types remain structurally verifiable because their payload bytes are opaque to the core.
+A store or relay may preserve and forward an unknown event, subject to local resource policy, without granting it any local effect.
+That property is central to long-term adaptability.
 
-This document fixes that shape and, for each PII-bearing type, names the specific `*_commitment`/`*_payload` column pair.
-It does not fix the commitment construction itself — that is a distinct, tracked, cryptography-review item, not a schema question.
+Extensions must not weaken core verification or reinterpret core fields.
+They also must not describe their own authorization decision as a guarantee made by the Constitution protocol.
 
-## Replay and projections
+## Security Claims
 
-```
-def constitution_skeleton_at(conn, frontier: dict[str, bytes | None] | None = None) -> ConstitutionSkeleton: ...
-def constitution_projection(conn, frontier: dict[str, bytes | None] | None = None) -> ConstitutionProjection: ...
-```
+The core DAG can provide:
 
-`frontier=None` means "replay through everything currently held locally" (the live head, from this connection's point of view); an explicit frontier replays only through the referenced tips, per *The Constitution anchor* above.
-`constitution_skeleton_at` is the governance-only replay feeding anchor digests (above).
-`constitution_projection` is the fuller rebuild that also populates the mutable convenience tables: `teammate`, `berth_role`, `invitation`, `team_device`.
-Both are deterministic functions of the Constitution's record tables and nothing else — no wall-clock reasoning, no reliance on row-arrival order.
-Manager write paths for "set integration mode," "remove teammate," "revoke device," and so on become "append the appropriate Constitution record, then rebuild the affected projections," replacing today's direct mutation of `berth_role`/`teammate`/`team_device` rows.
+- content integrity;
+- authorship by the holder of a specific signing key;
+- technical-origin replay separation;
+- inspectable declared ancestry;
+- visible concurrency when the relevant events are available;
+- deterministic handling of the same envelope bytes across implementations.
 
-Because Cod Sync already ships the whole Core SQLite file on every sync (per `architecture.md`'s retention section), "every Core snapshot contains the complete signed history through that snapshot" is automatically true once the Constitution's tables exist and are populated — there is no separate index or log table to keep in sync.
+The core DAG alone cannot provide:
 
-## Schema-change mechanics
+- proof of human intent or identity;
+- proof that a signing key was authorized for a purpose;
+- proof that an author disclosed every event they knew;
+- prevention of equivocation by an authentic key;
+- agreement on membership, authority, policy, or a canonical head;
+- confidentiality from an admitted endpoint that chooses to disclose plaintext;
+- availability of events that every holder deletes or withholds;
+- unlimited protection from storage, bandwidth, or computation exhaustion;
+- safe automatic action by an extension with a bad policy.
 
-No migration system exists in this codebase, and this is a pre-alpha project that deliberately avoids compatibility shims.
-Landing this schema in code means new `CREATE TABLE IF NOT EXISTS` statements in `core_other_team.sql`, a bump to `USER_SCHEMA_VERSION`, and the projection rebuild replacing direct mutation in the affected Manager operations — not a migration path from the current mutable rows.
-Any existing team database created before that point is pre-alpha data; per the project's own stance, it is expected to be deleted and recreated, not migrated.
+These are not gaps to fill by default in the core.
+They are boundaries that let each extension state and test the security properties its actions require.
+An extension that releases fresh key material, for example, needs a stronger and more explicit authorization policy than an extension that merely displays an unfamiliar signed event.
 
-## Deliberately left open
+## Relationship to Git and Core
 
-- The PII commitment scheme (`Documentation/open-architecture-questions.md`, Section on personal data)
-- The recovery ceremony's anti-replay/rollback mechanics (`open-architecture-questions.md`, Section 5)
-- The staleness-to-checkpoint rule (`architecture.md`'s *Retention Horizons and Staleness*; `open-architecture-questions.md`, Section 4)
-- Whether any action beyond admission ever needs a configurable endorsement threshold above one, and if so whether it reuses `endorsement`/`finalization` as written here or needs its own shape
-- Aligning `key_certificate` and `teammate_berth_storage_announcement` onto the shared envelope (adding `record_id`/`record_type`/`schema_version` and the signing helper) is implementation work this document motivates but does not schedule
-- The exact wire representation of `anchor_frontier` and `predecessor_record_id` — one tip per table plus per-table hash-linked predecessors is the sketch here, but a rolling accumulator or Merkle structure may be cheaper; either must satisfy the same requirement (reconstructible from record references alone, no git or wall-clock dependency)
-- `proposal_revision`'s exact shape (referenced under `endorsement` above) is named but not fully specified in this pass
+Git carries database snapshots and application histories, while Constitution events carry domain signatures.
+Git commit authorship is not Constitution-event authorship.
+Synthesized Git merges must not alter an event's bytes, ID, signature, or parent links.
+
+`{Team}/SmallSeaCollectiveCore` is the berth and database in which the current implementation stores Constitution events and related projections.
+The event DAG is the protocol artifact.
+The SQL layout, Git merge driver, local refs, indexes, projections, and UI are implementations around it.
+
+The protocol does not require every clone to retain the same event set forever.
+Implementations should be explicit about what they advertise, retain, park, or garbage-collect, and nobody may infer that an absent event never existed.
+Stronger retention promises can be specified by a storage or governance extension after their cost is understood.
+
+The application-facing basis described in [`architecture.md`](../architecture.md#constitution-bases) is an unsigned bookmark carried with the application data that cites it.
+It is not Constitution event history and does not require a replicated Core registry or a separate retention promise.
+Carrying the basis guarantees that the cited origin and tip set remain identifiable with the application record.
+It does not guarantee that every event in the named closure remains available forever.
+
+## Current Implementation
+
+The shared signed envelope exists only in partial form.
+Several current record families look up signer standing through mutable membership tables, and the current admission implementation contains proposal anchors, endorsement thresholds, and an inviter-published `finalization` record.
+Those are current application-policy choices, not settled core protocol rules.
+
+The envelope migration should proceed only on properties needed by the narrow core: canonical bytes, full content digests, exact version and type pinning, origin binding, signature verification, parent references where the core format adopts them, and hostile-input-safe parsing.
+It should not add admission thresholds, effective-membership rules, one accepted frontier, analyzer taxonomies, receipt families, or projection-provenance schemes to the core envelope.
+
+## Open Core Questions
+
+Only questions that independent core implementations must answer belong here:
+
+- What exact canonical encoding and domain separator are used?
+- Which digest and signature algorithms does the first version require?
+- Is the signer public key inline or referenced by a content ID?
+- Is technical origin derived from a genesis event or carried as a signed random value?
+- Does an origin have exactly one parentless genesis event, and how is that rule verified?
+- What are the maximum envelope, parent-set, extension-type, and payload sizes?
+- Does the event ID cover the signature, or only the canonical signed body?
+- What minimal negotiation or rejection behavior is required for an unknown protocol version?
+- How are events and missing parents requested without confusing transport with acceptance?
+
+Admission policy, committee thresholds, roles, repudiation, ratification, dormancy, living team identity, external agency, and application repair are deliberately absent from this list.
+They may become extensions when a concrete use case carries enough weight to justify them.

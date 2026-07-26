@@ -123,44 +123,41 @@ Stores the shared state for one team. All teammates maintain their own copy; cha
 Manager-local admission prompt dismissals are stored in a per-team sidecar DB outside `Sync/`, keyed by `(event_type, artifact_id)`, so ignored prompts persist across restarts without becoming synced team state.
 
 The current schema stores mutable teammate projections.
-The target model instead makes significant teammate facts part of the signed, append-only **Team Constitution** — see [`Documentation/team-constitution.md`](../../Documentation/team-constitution.md) for the field-level schema — including admission, device changes, prepared recovery and recovery use, display-name and teammate-unification claims, integration-mode changes, exclusions, storage announcements, staleness observations, proposals, and endorsements.
-Projection tables may remain for efficient UI and policy queries, but they must be rebuildable from the accepted signed Constitution lineage rather than serving as the only durable history.
-For records that carry personally identifying content — display-name and identity claims especially — only the governance fact and a commitment to that content are durable; the personal content itself is separable payload that may be excised or encryption-windowed, per [`architecture.md`](../../architecture.md#personal-data-is-not-in-the-long-term-chain).
-Every Core database snapshot carries that complete signed lineage through the snapshot's state.
-The Manager must not require an old Git checkout to explain a current teammate, device, or governance decision.
+The target Core also stores signed **Team Constitution** events — see [`Documentation/team-constitution.md`](../../Documentation/team-constitution.md).
+The core event DAG provides content integrity, signatures, technical-origin binding, and parent links.
+Manager extensions interpret admission, device, integration-mode, and routing payloads and may maintain mutable tables for their local product policy.
+Those tables are not Constitution-core consensus state.
 
 
 ---
 
 ## Per-Berth Integration Modes
 
-The conceptual model has only two per-berth teammate modes:
+The current Manager/Hub policy has two per-berth teammate modes:
 
-- **automatic** — peers monitor this teammate's ordinary berth publications and integrate every valid change by default
-- **proposal-only** — peers do not monitor this teammate's ordinary berth publications; the teammate submits signed proposals that require endorsement by at least one automatic integrator and by any higher threshold configured for the berth or event type
+- **automatic** — the local policy monitors this teammate's ordinary berth publications and integrates eligible changes by default
+- **proposal-only** — the local policy does not monitor ordinary publications from this teammate; the teammate submits signed proposals
 
-Both modes describe recognized teammates who may receive readable updates, author changes, and sign records.
 The distinction controls expected integration behavior rather than authorship or cryptographic capability.
-A proposal-only Core teammate may still sign a team-visible display-name proposal; a local alias remains participant-local and needs no endorsement.
 
 The current `read-write` value approximates `automatic`, and the current `read-only` value approximates `proposal-only`.
 The current Manager role names are convenience presets over those two values: `steward` selects automatic everywhere, and `contributor` selects proposal-only on Core and automatic on other berths.
-They are not additional protocol categories.
-The default invitation preset remains `steward` for small teams in the current implementation.
+They are product categories, not Constitution-core concepts.
+The default invitation preset remains `steward` in the current implementation.
 
 This is deliberately a shallow involvement model for medium-sized teams.
 It lets a smaller inner group perform routine integration while an outer group mostly observes and proposes, reflecting the different levels of engagement and accountability a medium-sized team really has.
 The target Manager model uses these two modes rather than a general group-governance toolkit; a team-configurable role scheme that maps richer roles onto integration expectations is a plausible future direction, not a current commitment.
 
-The Manager-facing `steward` preset remains useful shorthand for automatic Core integration.
-When the spec needs replayable signing authority, it uses automatic Core integrator rather than treating the preset name as protocol state.
+The Manager-facing `steward` preset remains current UI shorthand for automatic Core integration.
+The admission and integration extensions, rather than the Constitution core, define how that role is authorized.
 
-> The intended Hub policy is to monitor and integrate ordinary changes only from teammates in automatic mode in its **local** Core projection.
+> The intended Hub policy is to monitor and integrate ordinary changes only from teammates in automatic mode in its local Manager projection.
 > The current watcher still discovers signals from every teammate.
 > Strict mode-aware replication depends on separating ordinary publication discovery from the merge-request discovery path explored in issue #162.
 
-Different participants can temporarily hold different Core projections.
-Persistent incompatible Core lineages represent a team fork rather than routine app-data divergence.
+Different participants may make different local integration choices.
+The Constitution core preserves concurrent heads and does not resolve those choices by identifier or arrival order.
 
 ---
 
@@ -441,38 +438,30 @@ Removes the Team pointer from NoteToSelf DB. Deletes the `{TeamName}/Sync/` dire
 
 #### List teammates
 
-Reads `teammate` + `berth_role` from the team DB. Does not query the Hub.
+Reads the current `teammate` + `berth_role` product projection.
+Does not query the Hub.
 
 #### Set teammate integration mode
 
-`set_teammate_integration_mode` appends a signed `integration_mode_change` Constitution record (see `Documentation/team-constitution.md`) setting the teammate's integration mode for the berth to `automatic` or `proposal-only`, then updates the `berth_role` projection row to match (`automatic` -> `read-write`, `proposal-only` -> `read-only`).
-The calling participant's own teammate identity must currently hold `automatic` standing on the target berth.
+`set_teammate_integration_mode` appends a signed `integration_mode_change` extension event and updates the local product projection.
+The `berth_role` cache maps `automatic` to `read-write` and `proposal-only` to `read-only` in the current schema.
+The current extension authorizes the operation through the Manager's existing teammate and berth-role projection.
 
-The record's anchor is a `constitution_digest` — a live-query digest over current teammate/device/berth-role state, generalizing the digest `admission_proposal` already computes for automatic Core integrators to cover every berth's mode.
-This is a Phase 1 stand-in for the schema's target `anchor_frontier` mechanism (record-to-record references, no git dependency); see `Archive/design-record-team-constitution-schema.md` for why the full mechanism isn't realized yet.
-
-The updated Core lineage becomes socially important only insofar as peers validate and adopt it.
+The current record's anchor is a `constitution_digest` over a live teammate/device/berth-role query.
+That is transitional implementation state.
+The core event format will eventually replace this with parent event IDs, but the integration extension still owns its authorization semantics.
 
 #### Remove teammate
 
-The target operation appends a signed exclusion record and preserves all earlier teammate, device, display-name, unification, storage-announcement, and integration-mode records.
-It triggers key rotation so peers adopting the updated lineage can stop giving the excluded teammate future readable updates.
-The current implementation still deletes mutable projection rows and must move to the append-only model in later implementation work.
-
-An exclusion cannot change another participant's clone by fiat.
-Other teammates may adopt the Core lineage, reject it, or publish a conflicting lineage.
-Long-lived disagreement constitutes a team fork whose incompatible futures require explicit human resolution or translation.
+The current implementation deletes mutable projection rows.
+A future removal extension must define its own signed event, local containment, key rotation, concurrency, and repair policy.
+The Constitution core will preserve the event and its ancestry but will not define when removal becomes effective.
 
 #### Record teammate-clone staleness — candidate flow
 
-Manager may eventually append a signed Core observation that the local participant has not seen a particular teammate's berth clone advance since a named state, despite a stated amount of local time or number of accepted updates passing.
-The record should identify the observer, observed teammate and berth, last observed head or signal, and objective counters where available.
-It may also warn that the observer expects their live-data window to advance past that state soon.
-
-This record is evidence for humans and future checkpoint logic.
-It does not exclude the quiet teammate, advance anyone's retention horizon, authorize pruning, or make a Core lineage final.
-Manager should surface conflicting observations honestly because different participants may have seen different publication histories.
-Core's live-data window should be conservative by default because Core data is normally small.
+Manager may eventually record or display that a teammate's berth clone has not advanced since a named state.
+Checkpoint and pruning behavior belongs to the relevant storage policy.
+It is not part of the Constitution core.
 
 ---
 
@@ -482,30 +471,28 @@ See §Invitation Protocol for the full step-by-step.
 
 #### Create invitation
 
-Initiates an invitation proposal: allocates a fresh UUIDv7 `teammate_id` for the prospective invitee, anchors the proposal to the current team-history commit hash, records a proposal shell in team DB, commits and pushes, and returns a proposal token for out-of-band delivery to the invitee.
-The anchor freezes the automatic Core integrator roster, membership roster, and teammate→device mapping at that snapshot.
-The target event model appends the proposal shell; the current implementation creates a mutable `admission_proposal` row.
+Initiates an invitation proposal: allocates a fresh UUIDv7 `teammate_id` for the prospective invitee, records the inviter's signed proposal in team DB, commits and pushes, and returns a proposal token for out-of-band delivery to the invitee.
+The current implementation uses a team-history commit hash plus a governance digest as a single-snapshot anchor.
+The future core event envelope uses parent event IDs; the admission extension decides what those parents mean for proposal eligibility.
 
-Inputs: `team_name`, optional `invitee_label`, `role` (default: steward).
+Current inputs: `team_name`, optional `invitee_label`, `role` (default: steward).
 
 Token contents: proposal ID, nonce, team name, inviter teammate ID, inviter display
 name, inviter cloud endpoint (protocol + URL only — no credentials), and the
 pre-allocated invitee `teammate_id`. Privacy is provided by E2E encryption
 (issue #0008), not by access control.
 
-The proposal shell is visible to all automatic Core integrators in the frozen governance set as soon as it is pushed — before the invitee is contacted.
+The proposal shell can become visible to other participants as soon as it is pushed — before the invitee is contacted.
 
 #### List invitations
 
 Reads the invitation projection from team DB.
-The target projection includes proposal, revision, acceptance, endorsement, revocation, expiry, and finalization events without deleting historical states.
 Does not query the Hub.
 
 #### Revoke invitation
 
-The target operation appends a signed revocation record.
-The proposal and its existing responses remain inspectable, but it can no longer be finalized along that accepted lineage.
 The current implementation mutates the proposal's state projection.
+A future admission-extension event may represent withdrawal without making withdrawal a core event type.
 
 #### Accept invitation (invitee side)
 
@@ -536,30 +523,32 @@ If the invitee has no `cloud_storage` row, admission proceeds without an
 allocation, leaving the team in the same repairable storage-missing state as
 no-cloud team creation.
 
-#### Finalize invitation (inviter side)
+#### Complete invitation transcript (inviter side)
 
 Takes the invitee's out-of-band acceptance blob. The inviter:
 
 1. Verifies the acceptance blob (signature valid, binds to the correct
    `teammate_id` and proposal nonce).
-2. Assembles the full admission transcript: proposal ID/nonce, team-history
-   anchor reference, frozen-governance-state digest (covers automatic Core
-   integrator roster, membership roster, and teammate→device mapping at the anchor), inviter/
-   finalizer `teammate_id`, pre-allocated invitee `teammate_id`, and the invitee's
-   signed acceptance blob carrying the invitee's concrete device keys.
+2. Assembles the full admission transcript: exact team, proposal ID and nonce,
+   signed proposal anchor, inviter `teammate_id`, pre-allocated invitee
+   `teammate_id`, proposed initial effects, and the invitee's signed acceptance
+   carrying the concrete device keys.
+   The current implementation represents the anchor with a team-history commit
+   and frozen-governance-state digest.
    Transport metadata is explicitly excluded from the transcript.
-3. Signs an endorsement over the transcript, counting as one toward quorum, and publishes the signed transcript and endorsement records.
-4. For `quorum > 1`, waits for other automatic Core integrators' endorsement signatures to accrue in team DB.
-   Each endorsement is valid iff its signing key appears in a `device_link` cert at the anchor that maps to a teammate in automatic mode on Core.
-   Quorum counts distinct endorsing teammates over valid endorsement records; multiple device signatures from the same teammate dedupe to one endorsement.
-5. Upon observing quorum met, signs and publishes the finalization record, then commits.
+3. Signs and publishes the completed transcript and inviter endorsement.
+4. Commits and pushes that evidence.
+5. Allows other current Core integrators to endorse it under the configured admission policy.
 
-After finalization, the newly admitted teammate sets up their incoming cloud
+The current admission extension counts anchor-relative endorsements toward a configured quorum and publishes a `finalization` record.
+That is Manager policy, not a Constitution-core membership decision.
+
+After the inviter publishes the completed transcript, the prospective teammate may set up their incoming cloud
 endpoint via the teammate-transport-configuration flow (B7) and then publishes
 their own sender key via `redistribute_sender_key(...)`.
+Whether a peer accepts those publications or distributes future key material depends on that peer's admission and encryption policy.
 
 The current schema stores a mutable `admission_proposal` row plus append-only `steward_approval` rows.
-The target schema replaces mutable durable state transitions with signed append-only proposal lifecycle records and treats any status column as a projection.
 
 #### Teammate berth storage announcements
 
@@ -936,13 +925,29 @@ The out-of-sync state is a two-part story:
 
 > For testing, sync can be triggered immediately without user interaction via a config flag or test fixture.
 
+### Incident repair — target flow
+
+Manager never repairs a shared Cod Sync history with `git reset`, a backward ref move, or a rebase.
+For an application berth, Manager may help coordinate a forward restoration commit whose parent is the current head and whose tree contains a selected earlier state.
+The affected application owns semantic validation, attribution, and replay.
+
+Applications may expose different repair levels: user-directed restoration only, replay based on author-asserted provenance, or replay backed by application-defined cryptographic provenance.
+Manager presents only the certainty the application can support.
+A published repair manifest may name the clean base, pre-repair head, source commits or operations for replayed work, omissions, conflicts, and external side effects that Git cannot reverse without claiming that Cod Sync itself proved authorship.
+
+Core repair follows the same forward-only Git rule.
+The Core storage implementation and each event extension define any stronger event-retention or projection-repair requirements.
+The exact generic manifest schema and app-specific replay APIs remain open.
+
 ---
 
-## Invitation Protocol (detailed)
+## Invitation Protocol (current implementation)
 
 Invitation data is exchanged out-of-band. Hub API calls handle all cloud I/O.
 The inviter orchestrates the entire flow; the invitee never writes to the
 shared team DB.
+This section records the implemented proposal/endorsement/finalization workflow so code and tests remain explainable during the research rewrite.
+Its finalization and proposal-staleness rules belong to the current admission extension, not to the Constitution core.
 
 ```
 Alice (inviter)                    Bob (invitee)         Other Core integrators
@@ -1012,18 +1017,20 @@ transcript.
 unsigned requests). Privacy is provided by E2E encryption (issue #0008), not
 by access control. Credentials are never transmitted in tokens.
 
-**Quorum at default (`quorum = 1`):** Other-integrator endorsement is skipped.
-The inviter proceeds directly from publishing the transcript and their own endorsement to publishing finalization.
+**Current quorum at default (`quorum = 1`):** Other-integrator endorsement is skipped.
+The implementation proceeds directly from the inviter's endorsement to publishing `finalization`.
+Other extensions and local policies are not required to interpret it as a global membership transition.
 
-**Proposal eligibility:** If the automatic Core integrator roster, membership roster, or teammate→device mapping changes relative to the anchor before finalization, the proposal becomes ineligible and cannot be finalized.
+**Current proposal eligibility:** If the automatic Core integrator roster, membership roster, or teammate→device mapping changes relative to the anchor before finalization, the implementation makes the proposal ineligible.
 The proposal records remain inspectable, and the inviter must start a new proposal from the updated state.
+The admission extension may revisit this rule without changing the Constitution core.
 
 **Teammate/device bridge for endorsements:** Each endorsement signature is validated against the teammate→device mapping frozen at the anchor.
 An endorsement is valid iff the signing device key appears in a `device_link` cert at the anchor that maps to a teammate in automatic mode on Core.
 Endorsements by post-anchor devices or proposal-only Core teammates are rejected; multiple device endorsements from the same teammate dedupe to one.
 
 The current implementation represents most proposal lifecycle state by mutating `admission_proposal` and uses `steward_approval` for endorsement rows.
-The append-only target keeps the proposal, transcript, acceptance, endorsement, eligibility-loss, revocation, and finalization records independently inspectable.
+Future admission-extension versions may represent more of that lifecycle as signed events.
 
 ---
 
@@ -1073,7 +1080,8 @@ Each device generates its own key pair on first run.
 - **Devices with a hardware secure enclave:** Keys are protected by the enclave. (Implementation TBD.)
 - **Devices without a secure enclave:** Keys are stored in `FakeEnclave/` using password-derived encryption. The Manager should display a one-time warning that the device has no hardware enclave — but this warning should not be intrusive or repeat on every launch, since the user cannot change the hardware.
 
-Key transfer between devices (e.g. sharing session keys or identity keys when linking a new device) follows the DAILY / GUARDED / BURIED protection levels defined in Cuttlefish. Details TBD pending Cuttlefish integration.
+Operational device private keys are never transferred between devices.
+Session-state handoff, OS-backed key storage, user-presence requirements, and separately prepared recovery capability remain distinct mechanisms whose details are pending Cuttlefish integration.
 
 ---
 
@@ -1187,10 +1195,9 @@ CREATE TABLE IF NOT EXISTS team_device_key_secret (
 
 ### Team schema (`sql/core_other_team.sql`)
 
-The SQL below documents the current mutable projection schema.
-It does not yet include the target signed append-only teammate-event history described above.
-Future schema work should add that durable event source and make projection rows rebuildable without retaining compatibility shims for the pre-alpha mutable model.
-That source must retain the complete signed history inside every Core database snapshot, including prepared-recovery and recovery-use records and any teammate-clone staleness observations.
+The SQL below documents an abbreviated current mutable projection schema.
+It does not yet express the target Constitution core event store described above.
+Future schema work should add canonical signed event objects and parent links without baking Manager policy into the envelope.
 
 ```sql
 PRAGMA foreign_keys = ON;
@@ -1222,16 +1229,8 @@ CREATE TABLE IF NOT EXISTS berth_role (
     FOREIGN KEY (berth_id)  REFERENCES team_app_berth(id)  ON DELETE CASCADE
 );
 
--- [SCHEMA TBD — to be defined in B5]
--- Target fields (from accepted model):
---   proposal table: proposal_id, nonce, team_history_anchor (commit hash),
---     frozen_governance_digest, inviter_teammate_id (= finalizer_teammate_id),
---     pre_allocated_invitee_teammate_id, role, invitee_label, state,
---     created_at, expires_at
---   acceptance_transcript: proposal_id (FK), invitee_device_bootstrap_key,
---     invitee_device_signing_key, invitee_acceptance_signature
---   steward_approval_signatures: proposal_id (FK), steward_teammate_id,
---     approver_device_key_id, transcript_digest, signature, created_at
+-- [CONSTITUTION EVENT STORE TBD]
+-- Admission remains an extension over canonical signed events.
 -- Transport metadata (cloud endpoints etc.) is NOT part of this schema;
 -- that is configured post-admission via the B7 teammate-transport flow.
 
@@ -1280,4 +1279,7 @@ CREATE TABLE IF NOT EXISTS device_prekey_bundle (
 | **`app_unification` tables** | Not yet in the SQL schema. The accepted app identity model preserves duplicate friendly names with random local app IDs; a future branch should add explicit app-unification tables for typo, rebrand, collision, and same-app race repair. |
 | **App-owned materialization** | Per-app personal or team-scoped local state belongs under each app's own storage. Manager records registration/activation state but does not create `NoteToSelf/{AppName}/` stubs. |
 | **Sync mailbox API** | Hub needs a mailbox abstraction to notify the Manager (and other apps) when incoming changes arrive from the internet. Shape TBD. |
+| **Constitution event store** | Manager and Hub need canonical event encoding, signature verification independent of membership policy, parent links, missing-parent handling, and extension dispatch. |
+| **Admission policy** | The current quorum/finalization extension needs a separate threat model and may evolve without changing the core event format. |
+| **Authentic-input resource safety** | Local storage and computation limits are needed for keys that produce many well-formed events; a valid signature must not imply unlimited retention or effect. |
 | **Credential storage** | Credentials now live in the device-local NoteToSelf DB, but they are still plaintext SQLite fields. Future work should move them behind OS keychain / vault references. |

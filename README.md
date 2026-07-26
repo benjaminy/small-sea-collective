@@ -97,14 +97,14 @@ This is deliberately different from local Hub authorization.
 A participant's Hub really does enforce which client software may act in which berth on that device.
 Teammate berth modes instead describe whether ordinary publications are integrated automatically or arrive only as explicit proposals.
 
-In the design Small Sea is building toward, significant teammate facts live in signed, append-only Core records so that past membership, device, and integration state remains inspectable.
-Every Core snapshot carries that complete signed history through its current state, while Git retains the complete commit DAG for bookkeeping and merge ancestry.
-Core is therefore more consequential than an ordinary app berth: a Core proposal can be valid relative to an accepted history without any central service being able to force every participant to adopt it.
-Persistent disagreement about Core history is a team fork, not an ordinary permission dispute.
+In the design Small Sea is building toward, the Team Constitution is a content-addressed DAG of signed events.
+Its small core verifies event bytes, signatures, technical-origin binding, and parent links.
+It does not decide whether a signer is a teammate, which head is canonical, or whether Alice should merge Carol's work.
+Admission, roles, thresholds, key distribution, recovery, projections, and repair are versioned extensions and local policy above that core.
 
-Devices remain cryptographically distinct even during recovery.
-A user may prepare a separate per-team recovery capability in advance, but using it is a conspicuous signed process that authorizes a fresh device key rather than copying a lost device's identity.
-Without an enrolled sibling or prepared recovery, recovery means joining again under a new teammate identity and rebuilding connections.
+This boundary is intentional.
+The DAG provides durable cryptographic evidence without turning today's governance design into tomorrow's protocol constraint.
+Different participants may retain different events and make different local choices, and the protocol does not fabricate one global answer.
 
 ### Human-Scale Local-First
 
@@ -115,15 +115,15 @@ teams. How those teams might recognize and cooperate with each other without
 merging is an exploratory direction described in
 [`Documentation/linked-teams.md`](Documentation/linked-teams.md).
 
-Within that range, medium-sized groups naturally develop different levels of engagement, responsibility, and accountability.
-Small Sea provides one modest built-in layer for that today: a smaller inner group performs routine integration while a larger outer group mostly observes and proposes.
-It deliberately does not try to encode every possible governance arrangement, and a richer team-configurable role scheme remains a possible future direction rather than a current commitment.
+That scale assumption changes the engineering tradeoffs.
+Small Sea can rely on human inspection and repair procedures that would be impractical for hundreds or thousands of teammates.
+Small size does not excuse a safety rule that already fails with two or three people, but it does let the project prefer understandable non-scalable mechanisms over internet-scale consensus machinery.
 
-That scale assumption changes the engineering tradeoffs. When automatic
-convergence would require complex machinery, Small Sea prefers to preserve both
-sides, make the situation visible, and let a human choose when to merge, unify,
-reject, or fork. Git branches, explicit merge moments, Manager prompts, and
-structured Hub rejections are all expressions of this principle.
+When automatic convergence would require brittle machinery, Small Sea preserves both sides, makes the situation visible, and lets people decide what to merge.
+Git branches, forward restoration commits, Manager prompts, and structured Hub rejections are all expressions of this principle.
+
+Signed evidence still has privacy and resource costs.
+Storage, retention, and application extensions must budget for those costs rather than assuming every authentic event deserves unlimited replication or effect.
 
 This is not permission to lose data or silently pick winners. The system should
 be conservative: do not collapse distinct identities by friendly name, do not

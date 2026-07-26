@@ -1,6 +1,7 @@
 # Wrasse Trust — shared signing envelope for Team Constitution records
 #
-# See Documentation/team-constitution.md for the schema this implements.
+# This is a transitional helper for the older record shape, not an
+# implementation of the event DAG targeted by Documentation/team-constitution.md.
 # `identity.py` (key_certificate) and `transport.py`
 # (teammate_berth_storage_announcement) each independently reimplement the
 # same canonical-JSON-then-sign idiom; this module is the shared version new

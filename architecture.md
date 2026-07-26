@@ -4,15 +4,18 @@ Small Sea Collective is a framework for building collaborative team applications
 
 ## Core Concepts
 
-- **Team**: The primary unit of collaboration. In Small Sea, teams are decentralized; there is no central registry.
+- **Team**: The primary unit of collaboration.
+  A technical origin separates one Constitution event DAG from unrelated histories.
+  The identifier does not itself grant authority or settle social identity.
 - **Application (App)**: A way to organize resources like storage, notifications, and identity. Apps are not specific client software but logical groupings of resources.
-- **Berth**: The intersection of a specific **Team** and a specific **App**. It is the fundamental unit of resource allocation, local client authorization, cryptographic readability, and teammate integration mode.
+- **Berth**: The intersection of a specific team scope and a specific **App**.
+  It is the fundamental unit of resource allocation, local client authorization, cryptographic readability, and teammate integration mode.
 - **Client**: Any software (GUI, CLI, agent) that accesses resources through the Small Sea Hub.
 - **Hub**: By default, a local service that mediates all access to general-purpose cloud services.
   It acts as a security gateway and protocol translator.
   Experimental deployment shapes are discussed under "Hub Deployment Shapes."
 
-A berth is globally `Team x App`; a participant is not a third berth
+A berth is technically `team scope x App`; a participant is not a third berth
 coordinate. A participant is the local holder of access to berths through
 identity and team membership. From inside a specific app, the app coordinate is
 already fixed, so local materialization usually projects to a participant
@@ -29,163 +32,116 @@ Small Sea has no central team service that can grant or deny a teammate's writes
 Each teammate publishes their own history, and each participant independently decides which histories to watch, fetch, and integrate into their local clones.
 The same teammate update may therefore be integrated by Alice, rejected by Bob, and not yet observed by Carol.
 
-This section is the canonical source for Small Sea's teammate identity, governance, and integration model.
-Package-level specifications may describe their mechanisms and current implementation gaps, but they should defer to these semantics rather than inventing parallel policy.
+Git-style local choice is intentional.
+Fetching a history, retaining an event, moving a local head, merging a branch, recognizing a teammate, and distributing future key material are different actions.
+The core Constitution protocol does not combine them into one membership transition.
 
-Four questions are easy to blur together:
-
-- **Recognition** asks whether a signature can be traced through the accepted teammate and device history at the state the record references.
-- **Readability** concerns which teammates receive the key material needed to interpret future berth updates.
-- **Integration mode** determines whether a teammate's ordinary berth publications are accepted automatically or only through explicit proposals.
-- **Replication and discovery** concern how publications and proposals are noticed and fetched.
-
-Only integration mode is a per-berth teammate category in this model:
-
-- **Automatic** means peers following the policy are expected to monitor the teammate's ordinary berth publications and integrate every valid change by default.
-- **Proposal-only** means peers are not expected to monitor ordinary berth publications from that teammate.
-  The teammate may instead sign a change proposal, which becomes eligible for integration after endorsement by the berth's required number of automatic integrators.
-
-The endorsement threshold is always at least one automatic integrator and may be higher for a berth or event type such as Core admission.
-
-Both modes describe recognized teammates who may read, author, and sign data.
-The mode changes what peers are expected to integrate, not whether the teammate can produce a change.
-The current `read-write` and `read-only` schema values approximate `automatic` and `proposal-only` respectively; renaming those stored values is deferred until the proposal mechanism exists.
-When a protocol rule needs a replayable authority at a Core anchor, it should say **automatic Core integrator** rather than treating a Manager role name as protocol state.
-The Manager-facing `steward` preset is shorthand for automatic integration on Core, but it is not a central authority or a special key class.
-
-These terms live on two deliberately separate layers, and the distinction is a standing convention rather than loose synonymy:
-
-- **automatic Core integrator** — the *protocol* term. An anchor-relative, replayable standing a verifier evaluates by replaying accepted Core history. Protocol rules, endorsement thresholds, and validity checks use this term. "Core integrator" is an accepted short form; it always implies automatic mode, since proposal-only teammates do not integrate.
-- **`steward` / `contributor`** — *Manager-facing presets*. Convenience bundles a human picks at invitation time (`steward` = automatic everywhere; `contributor` = proposal-only on Core, automatic elsewhere). They are not protocol state and must not be evaluated as such.
-- **`automatic` / `proposal-only`** — the two *integration modes*, per teammate per berth, that the presets expand into and that the protocol actually reasons about.
-- **`read-write` / `read-only`** — the current `berth_role` projection's stand-ins for `automatic` / `proposal-only`; renaming these stored values is deferred (see #167).
-
-This two-mode model is an intentionally modest accommodation for medium-sized teams.
-As a group grows, it is natural for a smaller inner group to handle routine integration while a larger outer group mostly observes and occasionally proposes changes.
-A medium-sized team genuinely has different levels of engagement, responsibility, and accountability, and Small Sea should support that without trying to model every possible governance arrangement.
-Automatic and proposal-only are the two built-in modes in the canonical model, not a claim that two modes are all a team could ever want.
-A richer, team-configurable scheme — where a team defines its own roles and specifies which kinds of changes each role is expected to integrate from which others — is a plausible future direction that is deliberately left undesigned for now.
-A separate scaling axis — letting larger structures emerge as graphs of cooperating small teams rather than one large team — is explored in [`Documentation/linked-teams.md`](Documentation/linked-teams.md); it is exploratory and not part of the canonical model yet.
-
-Replication is mostly a consequence of integration intent, but it is not identical to it.
-A lightweight proposal-discovery path must remain observable even when peers do not monitor the proposer's ordinary berth publications.
+The Manager currently offers `steward` and `contributor` presets and stores `read-write` and `read-only` berth roles.
+Those are current product policy, not protocol vocabulary.
+Likewise, automatic integration, proposal-only integration, endorsement thresholds, and admission finalization may be useful policies without becoming core rules.
 
 Local Hub authorization is different and real.
 A participant's Hub enforces which client software may act in which berth on that device, protects provider credentials, and mediates Small Sea internet traffic.
 Authorization language in this document refers to an enforced local boundary unless a passage explicitly says otherwise.
 
-### Signed, Append-Only Teammate History
+### Signed Constitutional Event DAG
 
-This signed, append-only lineage is named the **Team Constitution**, distinct from Core, which is the berth and database that carries it.
-[`Documentation/team-constitution.md`](Documentation/team-constitution.md) is the field-level schema for it: the shared record envelope, the anchor mechanism, and the record catalog.
+The signed event DAG carried by Core is named the **Team Constitution**.
+It is distinct from Core, which is the berth and database carrying that evidence.
+[`Documentation/team-constitution.md`](Documentation/team-constitution.md) defines the narrow core protocol and its extension boundary.
 
-The target model stores significant teammate information as signed, append-only domain records in Core.
-Admissions, device links and revocations, prepared recovery and recovery use, display-name and teammate-unification claims, berth integration-mode changes, exclusions, storage announcements, staleness observations, proposals, and endorsements append new facts rather than overwriting or deleting old ones.
-Mutable tables and UI models may serve as rebuildable projections, but they are not the durable source of teammate history.
-Where such a record carries personally identifying content — most clearly a display name or an identity claim — only the governance fact and a commitment to that content are durable chain data; the personal content itself is separable payload, as described under *Personal Data Is Not in the Long-Term Chain* below.
+The Constitution core is a content-addressed DAG of signed event envelopes.
+It verifies canonical bytes, content IDs, signatures, technical-origin binding, and declared parent links.
+It does not interpret an event as admission, authority, acceptance, exclusion, or consensus.
+Those meanings belong to versioned extensions and local policy.
 
-Each durable record identifies its author and carries a signature over canonical domain bytes.
-Governance-bearing records also reference the causal Core state against which they should be evaluated.
-Governance state is derived by replaying an accepted causal lineage, not by trusting wall-clock timestamps or whichever row happened to arrive last.
-Operational announcement streams may define narrower domain-specific projection rules, but arrival order is never authority.
-Historical questions such as “which devices could speak for this teammate?” or “who could endorse a Core proposal?” are answered at the record's referenced state.
+Each participant may hold a different subset of events and different local heads.
+Concurrent descendants are ordinary.
+No identifier, timestamp, database order, Git order, or arrival order chooses a canonical head.
+A later event may name multiple parents without implying that every ancestor is socially accepted.
 
 Git remains the snapshot, transport, versioning, and three-way-merge framework.
-The application database carries signatures for facts whose domain meaning must survive rebases, synthesized merge commits, and later history inspection.
-Git provenance and signed domain provenance complement one another; Git commit authorship alone is not the authority for significant teammate facts.
+Constitution events carry domain signatures whose meaning survives synthesized Git merges.
+Git authorship is not Constitution-event authorship, and a Git merge must not rewrite signed event bytes or parent links.
+The Constitution is thus a signed event DAG carried inside the Git commit DAG that transports it, but the two are independent: their parent links are unrelated, and the transport layer is built to converge while the Constitution deliberately preserves concurrent heads.
 
-Every Core database snapshot contains the complete signed teammate-history chain through that snapshot's state.
-Current trust decisions must therefore be explainable from the current database without checking out discarded historical blobs or consulting a separate log service.
-These cryptographically significant records are expected to be small and infrequent.
-As a working assumption, a small-to-medium team generates on the order of a few hundred bytes of constitutional history per day — tens to hundreds of kilobytes per year, and perhaps a few megabytes over a team's lifetime — so retaining the complete chain is cheap at the expected scale.
-Growth remains worth measuring, but it is not a reason to make constitutional history depend on Git object retention.
+The core makes narrow security claims: integrity, authorship by a key, replay separation, and declared ancestry.
+It does not prove human intent, key authority, complete disclosure, membership, consensus, availability, or the safety of an extension's automatic behavior.
 
-The chain carries governance facts, not personal data.
-See *Personal Data Is Not in the Long-Term Chain* below for what is deliberately kept out of the permanent chain, and how content that must later be withheld or excised is handled without breaking that chain.
+Extensions may define admission, device recovery, key distribution, integration modes, projections, retention, and repair.
+They may disagree and evolve independently so long as they preserve core objects and do not weaken core verification.
+An unknown extension event remains structurally verifiable and eligible for relay under local resource policy without acquiring local effect.
 
-The Git commit DAG is also retained in full.
-Cod Sync may compact its transport chain and may eventually dehydrate old bulk file contents, but it does not replace old commits with a fresh snapshot history or rebase away commit identities.
-The intended shape is that Git commit metadata, stable commit IDs, and parent relationships remain available indefinitely, while the object data needed to rehydrate older snapshots may be dropped after a live-data window long enough for the team to notice, fetch, and converge.
-That window is deliberately not precise yet, and it should be understood as a content-retention practice rather than an erasure guarantee.
-Any teammate who has seen a snapshot may keep their own copy of it outside Cod Sync's retention policy.
+### Constitution Bases
 
-A proposal preserves the proposer's signature over its exact payload and each automatic integrator's endorsement of that proposal digest.
-If review or conflict resolution changes the payload, the result is a new proposal revision requiring fresh signatures rather than a silent mutation attributed to the original proposer.
+The core verifies events; it does not tell an application how to interpret them.
+The generic application contract therefore offers a small opaque bookmark for the Constitution view currently active on this device.
+The bookmark carries no roster, role, threshold, or other team-policy result.
 
-### Personal Data Is Not in the Long-Term Chain
+**Basis object.**
+A **basis** is an unsigned canonical object containing a basis-format version, the technical origin, and the minimal set of active tip event IDs.
+Any tip already reachable from another tip is omitted.
+The Manager computes the basis from its active local Constitution heads after core verification.
+Selecting those heads is a local storage and integration choice; the basis describes that choice without declaring it socially correct.
 
-The signed, append-only Core chain is deliberately limited to a governance *skeleton*: per-team participant UUIDs, device public keys, the edges among them (admission, device link, revocation, exclusion, integration-mode change, endorsement), the endorsement thresholds, and the Core anchors those records reference.
-Governance replay branches only on that skeleton.
-Personally identifying information — display names, identity material attached at admission, free-text reasons, and similar human-readable labels — is intentionally not part of the durable governance skeleton.
-The system can try to keep that content outside the always-retained Core event stream and outside non-dehydratable Git objects, but it cannot promise that no copy exists once a teammate has received a snapshot.
+The active view, not the stored event set, is what a basis represents.
+Two devices holding identical events produce different bases if one has parked a sibling the other selected.
+Multiple tips are ordinary, and an application does not wait for the Constitution to acquire one head before asking for a basis.
 
-This is a deliberate invariant, not an oversight.
-Three reasons make it load-bearing:
+Manager's integration policy bounds the number of active tips.
+It assigns each newly core-verified event a local handling state only after assigning states to that event's parents; ordering among concurrently ready events remains a local choice.
+An arriving batch is not activated atomically from its final tips.
+When activating another branch would exceed that bound, Manager parks the branch and any later event whose ancestry includes it.
+Consequently, a batch containing more concurrent branches than the bound parks at least one branch before a descendant merge is considered.
+No received event reactivates parked ancestry — not even a multi-parent event that would bring the tip count back under the bound, because a flooding device can publish its own merge.
+Unparking is a local acceptance decision:
+a device that never parked the branches integrates such a merge as an ordinary collapse of its active parents, while a device that parked them surfaces the merge through the Hub as a proposed reconciliation to accept into a new bounded active view.
+Recovery from a compromised device usually needs no unparking at all:
+the team removes the device on a surviving branch and continues, and the parked flood stays parked under ordinary local resource budgets.
+Parking remains visible and reversible without being reported as verification failure, and Manager makes it observable to the Hub so the Hub can notify the user.
 
-- A complete append-only governance log cannot be selectively erased without breaking replay, so anything that may later have to be withheld, encrypted, or excised from the ordinary retained dataset must not live in the permanent chain.
-- Real-world identity is observer-relative: the chain can attest what a UUID *did*, but who that UUID *is* belongs to each participant's own knowledge, which is expected to accrete through interaction over time rather than being fixed by a one-time record.
-- Keeping personal data out of the permanent skeleton is what lets pseudonymous participation be the safe default rather than a conspicuous opt-out.
+The basis operation remains total over the bounded active view and never refuses or truncates that view.
+This policy bound limits bases produced locally, while the basis format fixes a maximum tip count that recipients enforce on untrusted bookmarks.
+Because the canonical object is a format version, one origin, and fixed-size tip IDs, the tip limit also determines a maximum encoded size.
+A recipient rejects input exceeding the maximum encoded size before canonical decoding.
+During decoding it rejects an over-limit tip count before allocating or consuming the tip entries.
+Either violation makes the whole basis malformed; a recipient never partially accepts a basis.
+The policy may use a lower active-tip bound but must not exceed the format's tip limit.
 
-When a team does want identity material attached to a membership change, the intended design has it ride *outside* the skeleton as inert payload.
-The mechanism is not yet settled — the commitment scheme in particular still needs cryptographic analysis — but it must satisfy these properties:
+A **basis ID** is a full content digest over a domain-separated canonical basis object.
+It gives the bookmark a stable identity for comparison, indexing, and deduplication.
+It is not a promise that the basis object can be fetched from a separate registry.
 
-- The chain stores only a hiding commitment to the payload, so the permanent commitment does not leak low-entropy content such as a name. A bare `hash(name)` is not hiding for low-entropy input, so the commitment must be salted or otherwise randomized.
-- Signatures cover the commitment, never the raw payload, so the payload can be encrypted to a current-membership window or dropped entirely without invalidating any signature or any governance replay.
-- Governance never reads the payload. Validity is decided from the skeleton alone, so a participant who cannot read the payload — a future member, or anyone after the payload is excised — replays to the identical result.
+**Application flow.**
+An application asks the Hub for the current basis within its existing team-scoped session.
+The Hub exposes the client-facing operation, while Manager-owned Core access computes the object.
+The application receives the canonical basis as opaque bytes and embeds those exact bytes in the application data that cites it.
+The application does not parse the tip set or run Constitution policy.
 
-The consequence is explicit and accepted: once such a payload is excised, there is no way to recover what it was from the retained record alone.
-The permanent record then proves only that the signers committed to and approved *some* payload with the recorded commitment, bound to a specific UUID's membership change.
-If someone later presents a candidate payload and the commitment opening, the record may verify that candidate, but forensic reconstruction of the payload's content does not survive its excision.
-The exact commitment scheme, the optional encryption-window key schedule, and the interaction-based identity-confidence model are mechanism details tracked in [`Documentation/open-architecture-questions.md`](Documentation/open-architecture-questions.md).
+Carrying the bookmark with its citation keeps the contract self-contained.
+No replicated basis registry, retention rule, or cache-coordination protocol is required.
+An application may deduplicate repeated basis objects internally using the basis ID, but that is an application storage choice rather than part of the Constitution contract.
 
-### Device Identity and Recovery
+**Meaning and limits.**
+A basis is unsigned and has no author.
+An application event that embeds one claims only that the event was made against that view.
+The application event's own signature, when it has one, authenticates the claim; the basis itself asserts nothing.
 
-Each enrolled device has its own team-device key and one device must never impersonate another.
-Ordinary device enrollment therefore creates and links a fresh key; it does not copy an existing device's operational private key.
+A basis names a view, not the moment of use.
+The active view may advance between issuance and use, and keeping those acceptably close is the application's responsibility.
+The Hub operation may later offer freshness checking, but the generic contract does not require it.
 
-A participant may prepare separate per-team recovery keys and supporting data in advance and keep them in user-controlled backup storage.
-Recovery material is not an ordinary device identity and is not distributed through routine Small Sea sync.
-Using it authorizes a fresh device key for the existing teammate identity through a separate, conspicuous recovery ceremony recorded in signed Core history.
-That ceremony must be designed to make replay and rollback visible, retire or rotate used recovery capability where appropriate, and let peers distinguish recovery from routine device linking.
+A recipient can always inspect the bookmark carried by an application record, but may lack part of the named event closure.
+That makes the basis incomplete locally rather than false and does not permit substituting the recipient's current view or a policy projection that happens to produce the same answer.
+The basis also names only the view selected for a decision, not everything its author knew or could have fetched.
+No participant can prove that another disclosed every concurrent event it had observed.
 
-If no usable recovery material or already-enrolled sibling device exists, recovery falls into the deliberately painful tier-two case.
-The person creates a new per-team teammate identity and rebuilds their connections through fresh admission rather than pretending to have recovered an old device or identity.
-The exact backup format and recovery protocol remain implementation work, but these identity invariants are not deferred.
+The basis reveals its technical origin and tip set to every holder of the application data that carries it.
+Those tips can be joined with the Constitution DAG to infer the roster, recovery, or other personal events selected by that view.
+This disclosure follows the application data; there is no separate team-wide registry of historical view selections.
 
-### Core as Constitutional History
-
-An accepted Core lineage is the shared referent against which teammate recognition, device standing, integration modes, and proposal endorsements are evaluated.
-A claim such as “Alice is a Core integrator” is therefore incomplete without the Core state at which it is evaluated.
-
-Core validity and Core acceptance remain distinct.
-A proposal can be replayably valid relative to its anchor because its authors and endorsers satisfy the rules recorded there.
-That validity does not let anyone change another participant's clone by fiat.
-The admission ceremony and future merge-request machinery replace a central server as validity mechanisms; social adoption and merging still produce convergence.
-
-Ordinary app-berth divergence can be routine and healthy.
-Persistent incompatible Core lineages disagree about the team's constitution and should be surfaced as an explicit team fork.
-Append-only storage preserves every side of such a fork; it does not pretend the disagreement has disappeared.
-
-Forking is a failure mode to understand, not a collaboration feature to optimize for.
-The common case should remain convergence on one accepted Core lineage.
-
-### Retention Horizons and Staleness
-
-Keeping the Git commit DAG does not require keeping every historical bulk blob immediately rehydratable.
-A live-data window may bound the content needed to reconstruct recent states while preserving commit identities and the complete signed constitutional log carried by every Core snapshot.
-Core data is generally small, so its live-data window should default to a conservative horizon with little pressure to prune aggressively.
-
-Occasionally a recognized teammate may be quiet or unable to publish for a long time while the rest of the team continues moving.
-A useful candidate record is a signed Core staleness observation such as: “Alice has not observed Bob's berth clone advance since this head, for this much local time or this many accepted updates, and expects the live-data window to advance past it soon.”
-The record should identify the observer, the teammate and berth observed, the last observed state, and objective counters or references where available.
-
-A staleness observation is evidence and warning, not a command, exclusion, or unilateral declaration of finality.
-Different teammates may have different observations because they have seen different network and clone states.
-Recording those observations could make a later reconvergence attempt easier to diagnose and give a quiet teammate time to catch up before older bulk data is pruned.
-It cannot itself advance another participant's retention horizon or recreate data that has already been discarded.
-
-Any rule that turns a retention horizon into an accepted checkpoint needs an explicit signed protocol and validation rule.
-Until that rule exists, implementations should preserve and surface late or divergent history rather than silently treating staleness as consent to abandon it.
+Policy-specific evaluators, recorded local inputs, joins, time attestations, cross-team compositions, and event-retention promises are separate extension or application designs.
+They can later consume the same canonical basis object without changing this application contract.
 
 ## Technical Pillars
 
@@ -194,24 +150,16 @@ Small Sea uses Signal-inspired cryptographic protocols ([X3DH](https://signal.or
 
 **Read access is endpoint-trust-scoped.** Any admitted party — teammate or sibling device — can in principle proxy plaintext or hand over receiver state to anyone they choose. The protocol cannot prevent this; it relies on the social commitment of admitted parties rather than a cryptographic enforcement boundary.
 
-**Key rotation serves two purposes: exclusion and hygiene.** Exclusion handles removal and post-admission objections, both via the same rotate-with-exclusion primitive. Hygiene is routine and semantically neutral. Rotation is never used to admit a new party.
+**Membership and device management are extensions over the Constitution DAG.**
+The current Manager implements one inviter-orchestrated, transcript-bound admission policy and one sibling-device linking policy.
+Their roles, thresholds, finalization rules, rotation behavior, and recovery ceremonies are not core Constitution semantics.
+An extension that distributes future key material must define and verify the authorization policy for that irreversible action.
 
-**Linked-device admission is a unilateral identity-owner act.** An existing sibling device bootstraps the new device by handing off current team state and the sibling's snapshot of peer sender keys. The sibling issues a `device_link` cert over the new device's concrete public keys and publishes it to the team DB. Other teammates observe the new device via the published cert; objection is handled post-hoc by exclusion. The new device's access is join-time-forward: it reads from what the sibling held at bootstrap time and does not receive historical ciphertext encrypted before the cert was published.
-
-**Teammate admission is an inviter-orchestrated, transcript-bound, Core-integrator-quorum flow.**
-
-- *Governance-snapshot anchor.* Every proposal is anchored to a verifiable team-history reference (the team's `Sync/core.db` commit hash). The anchor freezes the automatic Core integrator roster, membership roster, and teammate→device mapping. Every participant can independently replay team history to the anchor and verify the frozen state.
-- *Proposal shell published at initiation.* The inviter allocates a fresh UUIDv7 `teammate_id` for the invitee and publishes a proposal shell to team DB before the invitee is contacted. Other automatic Core integrators in the frozen governance set see the proposal immediately and can withhold endorsement or object before the invitee has invested any effort.
-- *Transcript binding.* The invitee generates fresh keys and signs an acceptance blob binding to the inviter-allocated `teammate_id`. The inviter assembles the full admission transcript over the invitee's concrete device keys and the allocated `teammate_id`. Transport metadata (cloud endpoints) is explicitly excluded from the immutable transcript; post-admission transport setup is a separate flow.
-- *Teammate/device endorsement bridge.* Each endorsement is a teammate-scoped decision executed by a device-key signature. An endorsement is valid iff the signing key appears in a `device_link` cert at the anchor that maps to a teammate in automatic mode on Core. This bridge is a step-by-step derivation any verifier can replay: cert chain at the anchor → device key → teammate ID → Core integration mode. Endorsements from devices linked after the anchor, or from proposal-only Core teammates at the anchor, are rejected. Multiple device endorsements from the same teammate dedupe to one.
-- *Inviter-published finalization.* The inviter observes quorum met and publishes the signed finalization record. The invitee never publishes their own admission. `quorum = 1` is the default; the inviter's own endorsement alone meets quorum and the end-to-end flow reduces to Alice-initiates → Bob-returns-signed-transcript → Alice-endorses-and-publishes.
-- *Non-durable proposal eligibility.* Proposal records remain inspectable, but their eligibility is invalidated by any governance-state change relative to the anchor: automatic Core integrator changes, membership changes, or teammate→device mapping changes. Eligibility also expires after a per-team window. An ineligible proposal cannot be finalized and is not a durable bearer capability.
-
-There is no central membership oracle, no globally authoritative service, and no globally authoritative automatic Core integrator.
+There is no central membership oracle or globally authoritative service.
 Each participant maintains a local clone of the team's history and
 therefore a local view of who is in the team and whose updates should count.
-Those views can diverge. Small Sea aims for social convergence through shared
-history and sync conventions, not for a magical elimination of disagreement.
+Those views can diverge.
+The Constitution preserves evidence of that history; extensions and people decide what to do with it.
 
 The same distinction applies to devices: joining an existing **identity**
 through NoteToSelf is not the same thing as joining every **team** known to
@@ -220,7 +168,8 @@ about Alice's teams from NoteToSelf, and then join only some subset of those
 teams later.
 
 ### 2. Snapshot-Based 3-Way Merge (Git)
-The baseline synchronization method is snapshot-based 3-way merge, utilizing `git`. While slower than CRDTs, it provides strong consistency for full-environment snapshots and allows for easier adaptation of existing software. 
+The baseline synchronization method is snapshot-based 3-way merge, utilizing `git`.
+While slower than CRDTs, it preserves causal history and provides a practical basis for explicit human repair and adaptation of existing software.
 
 ### 3. Cod Sync
 "Cod Sync" is the specific protocol used to sync git repositories over cloud storage. It encodes changes as a chain of git bundles uploaded to each user's cloud storage location. Teammates poll or receive notifications to pull and merge these bundles.
@@ -235,6 +184,16 @@ returns one. Team-visible peer routing is teammate-plus-berth scoped, because
 different teammates may store their clones of the same berth in different
 providers or accounts.
 
+Cod Sync never repairs shared Git history by resetting a branch or moving a ref backward.
+When a participant wants to restore an older application state, they append a new commit whose tree contains that state.
+The old commits remain ancestors of the repair commit, so the system can calculate which intervening changes were overwritten and publish later replay commits for the changes people still want.
+A repair series may be staged locally and published together, but every published operation advances history.
+Cod Sync does not determine who authored the overwritten changes or whether replay is honest.
+Applications own those semantics and may offer anything from user-directed restoration to cryptographically attributable replay.
+
+Core uses the same forward-only Git rule.
+Any stronger event-retention or projection-repair rule belongs to the Constitution storage implementation or to an extension, not to the event envelope.
+
 ## Design Principles & Constraints
 
 ### Human-Scale Coordination
@@ -243,6 +202,9 @@ Small Sea optimizes first for small teams and human-paced collaboration, not for
 large-scale, low-latency consensus. Several dozen teammates should be treated
 as a soft upper bound for a single team; larger communities should usually be
 modeled as multiple related teams.
+
+Small team size does not make partitions, equivocation, compromised devices, flooding, or ambiguous authority disappear.
+It does make human inspection and reconciliation practical when an extension cannot resolve a conflict safely.
 
 This scale assumption is an architectural constraint. When a conflict,
 identity collision, or ambiguous sync result cannot be resolved simply and
@@ -404,8 +366,9 @@ surface ambiguity rather than choose a row implicitly.
 
 Registration and activation authorize a berth; they do not make the Manager the
 owner of an app's working tree. App data materialization is app-owned. The
-Manager writes Core registration state, and the Hub reads that Core state by
-framework contract, but arbitrary app homes are not Hub-readable databases.
+Manager owns Core registration state, and the Hub obtains the framework state
+it needs through a Manager-owned boundary.
+Arbitrary app homes are not Hub-readable databases.
 
 ### Security: PIN-Based Access
 
@@ -420,10 +383,11 @@ This is a locally enforced client-to-Hub authorization boundary, not a team-wide
 
 ## Per-Berth Integration Modes
 
-The two integration modes — **automatic** and **proposal-only** — are defined under [No Team Server](#no-team-server) above, which is the canonical source.
-This section elaborates what counts as a valid change under them, how authorship relates to integration, and how the current schema and removal flow approximate the model.
+The current Manager/Hub policy uses two integration modes: **automatic** and **proposal-only**.
+They are an extension above the Constitution core.
 
-“Valid” still requires a recognized signer at the referenced state, the correct team and berth, a valid signature and causal base, app-specific structural validation, and any special domain rules.
+Structural ingestion still requires the correct team and berth, a valid signature and causal base, app-specific validation, and any special domain rules.
+The Manager/Hub extension decides whether the signer is recognized and the change has local effect.
 Automatic integration is not permission to accept malformed or semantically invalid data.
 
 Both modes may receive readable updates and author signed changes.
@@ -435,18 +399,12 @@ The current schema stores `read-write` for approximately **automatic** and `read
 The current Hub watcher still discovers signals from every teammate, and the proposal-discovery mechanism does not yet exist.
 Issue #162 tracks the runtime design needed before those stored values and UI labels can be renamed honestly.
 
-The Manager-facing `steward` preset remains useful shorthand for automatic Core integration.
-Protocol rules should still name automatic Core integrators when they mean anchor-relative standing that a verifier can replay.
+The Manager-facing `steward` preset remains current shorthand for automatic Core integration.
+It is not a Constitution-core key class.
 
-“Remove teammate” therefore means appending a signed exclusion fact to the local Core lineage, publishing it, and rotating keys if future readable updates should exclude that person.
-The earlier admission, device, and integration-mode records remain inspectable.
-Other teammates may adopt that lineage, reject it, or race it with a conflicting lineage of their own.
-
-Because Small Sea uses git history, maintaining a persistent split gets awkward
-quickly. If Alice removes Carol and Carol removes Alice, the team has
-effectively forked into two incompatible futures. Bob cannot comfortably remain
-in both branches without some explicit translation layer. In practice, Small
-Sea depends on social convergence to avoid or resolve such forks.
+“Remove teammate” is also Manager/Hub and encryption-extension policy.
+The Constitution core can carry a signed event for that extension, but it does not decide when removal takes effect or which keys rotate.
+Conflicting removal events remain concurrent evidence until local policy or people resolve them.
 
 ## Components
 
@@ -455,8 +413,8 @@ Sea depends on social convergence to avoid or resolve such forks.
 - **[Wrasse Trust](packages/wrasse-trust/README.md)**: Identity and trust layer. Provides key hierarchies, certificates, ceremonies, revocations, and trust-chain evaluation for the web-of-trust model.
 - **[Cod Sync](packages/cod-sync/README.md)**: Git-based synchronization protocol. Encodes deltas as a chain of git bundles uploaded to cloud storage.
 - **[splice-merge](packages/splice-merge/README.md)**: Library for merging concurrent changes and resolving conflicts when automatic merging is not possible.
-- **[Small Sea Client](packages/small-sea-client/README.md)**: Utility library for applications communicating with the Hub. Manages sessions and common workflows.
-- **[Small Sea Manager](packages/small-sea-manager/README.md)**: The essential built-in application. Manages team membership, devices, cloud storage accounts, invitations, and the SmallSeaCollectiveCore database.
+- **[Small Sea Client](packages/small-sea-client/small_sea_client/)**: Utility library for applications communicating with the Hub. Manages sessions and common workflows.
+- **[Small Sea Manager](packages/small-sea-manager/spec.md)**: The essential built-in application. Manages team membership, devices, cloud storage accounts, invitations, and the SmallSeaCollectiveCore database.
 - **[Small Sea Collective Files](packages/ssc-files/README.md)**: Example application — team file sharing built on Small Sea.
 
 ## Typical Application Flow

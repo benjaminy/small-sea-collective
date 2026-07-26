@@ -39,15 +39,15 @@ The design direction has shifted to a **device-only, per-team** model:
 - `device_link` certs expand an existing teammate's device set within one team
 - NoteToSelf is socially useful for bookkeeping, but it is not
   cryptographically privileged
-- "steward" remains Manager shorthand for automatic Core integration; protocol rules should say automatic Core integrator when they mean anchor-relative standing, not a special key role
+- "steward" remains Manager shorthand for automatic Core integration in the current Manager/Wrasse policy, not a Constitution-core key role
 - significant teammate facts are signed append-only domain records carried by the team repository rather than inferred from Git authorship alone
 - ordinary device keys never leave their devices; separately prepared recovery capability can authorize a fresh device key through a signed, conspicuous recovery ceremony
 
 This direction is simpler, preserves per-team isolation more honestly,
 and avoids syncing wrapped higher-level private keys around the system during ordinary operation.
 
-The identity, admission, integration-mode, recovery, and history-retention rules in [`architecture.md`](../../architecture.md#no-team-server) are canonical.
-Wrasse defines cryptographic mechanisms that satisfy those rules; it does not independently decide who counts as a Core integrator or when an admission is acceptable.
+The Constitution envelope and extension boundary in [`Documentation/team-constitution.md`](../../Documentation/team-constitution.md) are the canonical core direction.
+Current identity, admission, integration-mode, and recovery behavior is Manager/Wrasse extension policy documented in the relevant package specs; Wrasse does not promote those choices into core verification rules.
 
 ## What Is Implemented Today
 

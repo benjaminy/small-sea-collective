@@ -40,7 +40,10 @@ are expected to be a legitimate reader; it does not prevent an admitted party
 from relaying plaintext or receiver state to others. Read access is therefore
 endpoint-trust-scoped.
 
-**Admission flows determine who holds sender key state.**
+**The admission and encryption extensions determine where a participant distributes sender key state.**
+The current `team_id` is a technical replay and storage domain, not proof of one permanent social team identity.
+If a durable team split produces multiple active continuations with incompatible recipient sets, those continuations need distinct group and sender-key namespaces even though they share constitutional ancestry.
+Choosing those namespaces is operational containment, not a judgment about which continuation is the real team.
 
 *Linked-device admission* is a unilateral identity-owner act: the existing
 sibling runs a bootstrap flow, hands the new device its snapshot of peer sender
@@ -48,24 +51,23 @@ keys (giving join-time-forward access across all senders the sibling held), and
 publishes a `device_link` cert. No per-sender redistribution ceremony is
 required.
 
-*Teammate admission* is an inviter-orchestrated Core-integrator-quorum flow.
+*Teammate admission* is an inviter-orchestrated, transcript-bound evidence flow.
 Key facts for Cuttlefish consumers:
 
 - The **inviter allocates the invitee's `teammate_id`** at proposal creation.
   The invitee binds to it in their signed acceptance blob but does not choose it.
-- Every proposal is anchored to a **team-history commit hash** that freezes the automatic Core integrator roster, membership roster, and teammate→device mapping at that snapshot.
-- The **proposal shell is published before the invitee is contacted**, giving other automatic Core integrators in the frozen governance set early visibility to endorse or withhold.
+- The **proposal shell is published before the invitee is contacted**.
 - The **admission transcript** binds the invitee's concrete device keys and the pre-allocated `teammate_id`.
   Transport metadata is explicitly excluded; post-admission transport setup is a separate flow.
-- The **inviter observes quorum met and publishes finalization**.
-  The invitee never publishes their own admission.
-- Endorsements are validated via the **teammate/device bridge**: an endorsement is valid iff the signing device key appears in a `device_link` cert at the anchor that maps to a teammate in automatic mode on Core.
+- The **inviter publishes the completed transcript and endorsement**.
+- The current Manager admission extension decides which endorsements are sufficient before distributing future key material.
 
-Proposal, acceptance, endorsement, eligibility-loss, and finalization facts remain signed and inspectable in the target append-only Core history.
-Cuttlefish supplies signatures and encrypted coordination; it does not infer those domain facts from Git commit authorship.
+The future Constitution envelope can carry the admission extension's signed events without interpreting them as membership.
+Cuttlefish supplies signatures and encrypted coordination; it does not define admission policy or infer domain facts from Git commit authorship.
 
-**Rotation serves exclusion and hygiene only; it is never used to admit a new
-party.** See `architecture.md` §1 for the full model.
+**Rotation serves containment and hygiene only; it is never used to admit a new
+party or erase earlier disclosure.** See `architecture.md` §1 for the full
+model.
 
 The Hub's crypto surface stays narrow:
 

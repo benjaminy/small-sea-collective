@@ -398,7 +398,7 @@ That distinction gives three load-bearing principles.
    Subsequent relays are part of the social object the author signed up for.
 
 3. **Bridge certifications reveal exactly carriers and bridges — and nothing else.**
-   When Bob carries a post from Team A to Team B, the social object that needs to be authenticatable is "Bob, who really is a teammate of both, really did decide to bridge this."
+   When Bob carries a post from Team A to Team B, the social object that needs to be authenticatable is "Bob signed this bridge act, and each side's local bridge policy recognizes him for this purpose."
    Everything beyond that is bystander information that should not leak through the certification: who else is in Team A, what Team A's membership looked like before or after the relay, when Carol joined, how big the team is.
    This principle constrains the data model now, even before fancier cryptography is in play.
 
@@ -412,7 +412,8 @@ The path-certification principle rules out several tempting data-model shapes:
 - **Merkle membership proofs in their naive form.**
   An inclusion proof for Bob exposes tree structure; depth implies size; comparing proofs across relays leaks membership rotation over time.
   Better: anonymous-credential-shaped primitives (BBS+, Idemix, accumulator-based membership).
-  The team authority issues Bob a per-team credential once; Bob presents it as proof against the team's public key; the *list* of teammates is never part of any proof.
+  Issuing such a credential against a team-level public key would require an explicitly delegated issuer or a future threshold team-voice model that Small Sea does not currently have.
+  Any candidate proof must name the technical origin, relevant event head, and bridge policy under which the issuer and Bob were recognized without exposing the whole teammate list.
 - **Carrier history baked into the certification.**
   The Q7 "Bob's last five carries into us" context is a *receiver-side* computation over relays the receiver already has — not a packet attached to each new relay.
   If it were attached, downstream receivers could profile arbitrary upstream carriers and teams they have no business knowing about.
@@ -425,18 +426,12 @@ The path-certification principle rules out several tempting data-model shapes:
 
 ### Hedgerow-facing team names
 
-Source and destination team identity has to be visible enough for receivers
-to understand the bridge.
-But the canonical internal team name may itself reveal more than the bridge
-requires: "Cancer Support Group," "Union Organizing Committee," or "Lincoln
-Elementary IEP Dispute Group" carry more private context than "Caregivers
-Circle," "Local Tenant Organizers," or "Neighborhood Parents."
+Source and destination technical origins and living-continuation context have to be visible enough for receivers to understand the bridge and the basis on which its participants were recognized.
+But the internal team name may itself reveal more than the bridge requires: "Cancer Support Group," "Union Organizing Committee," or "Lincoln Elementary IEP Dispute Group" carry more private context than "Caregivers Circle," "Local Tenant Organizers," or "Neighborhood Parents."
 
-The likely middle ground is an optional **Hedgerow-facing team name** or
-profile.
+The likely middle ground is an optional **Hedgerow-facing team name** or profile.
 It is not anonymity and not a secret relay route.
-The team still has to be a real certifying context, and carriers are still
-accountable for bridges.
+The profile still has to name an accountable continuation and standing basis, and carriers are still accountable for bridges.
 But the rendered name can be chosen for this semi-public medium instead of
 blindly exposing the internal Small Sea team label.
 The product norm should be contextual disclosure: discreet enough to avoid
@@ -445,16 +440,13 @@ unnecessary leakage, honest enough that recipients can evaluate the bridge.
 ### Hedgerow-facing person profiles
 
 The same contextual-disclosure idea probably applies to people.
-When Alice authors or Bob carries, the receiving team needs a stable,
-accountable identity for the act.
+When Alice authors or Bob carries, the receiving team needs an accountable signer and standing basis for the act.
 It does not necessarily need every piece of identity the source team knows:
 legal name, family relationship, workplace role, email address, internal
 nickname, or the sensitive reason Alice belongs to a team.
 
-The likely shape is an optional **Hedgerow-facing person profile**: display
-name, avatar, short bio, and possibly per-team presentation choices.
-It is still tied to a real signer and membership proof; it is not an
-anonymous handle that lets a carrier dodge responsibility.
+The likely shape is an optional **Hedgerow-facing person profile**: display name, avatar, short bio, and possibly per-team presentation choices.
+It is still tied to an accountable signer and an explicit standing basis for the relevant continuation; it is not an anonymous handle that lets a carrier dodge responsibility.
 But it lets participants choose what human-readable information crosses the
 hedgerow with them, within policy limits.
 Some teams or niches may require stronger disclosure before a post can be
@@ -610,24 +602,25 @@ This is intentionally provisional.
 The unique data type is the relay; the thing carried is a Hedgerow post.
 
 - `relay`: the central object.
-  Signer, signer's source-team membership at signing time, signer's destination-team membership at signing time, post reference, source path hash, destination team berth, carrier stance, optional relay note, optional carry-session reference for local fan-out detection, timestamp, and signature.
-- `post`: Hedgerow-native authored content with an origin team context, author signature, optional body/attachments/references, and Hedgerow-facing author/team profile references.
+  Signer, the source and destination event heads used by local bridge policy, post reference, source path hash, destination team berth, carrier stance, optional relay note, optional carry-session reference for local fan-out detection, timestamp, and signature.
+  The third principle applies to standing references, not only to membership proofs.
+  Raw reusable policy-basis digests would reveal correlation and changes across Bob's relays, so a future design must either document that limited leak or use scoped, blinded, or unlinkable presentations.
+  This sketch does not choose that cryptographic mechanism yet.
+- `post`: Hedgerow-native authored content with an origin and continuation context, author signature, optional body/attachments/references, and Hedgerow-facing author/team profile references.
 - `hedgerow_team_profile`: optional team presentation metadata for this
   semi-public medium: Hedgerow-facing name, short description, and maybe
   display image.
-  This is not the canonical team identity; it is the name/profile rendered
-  in paths and feed cards when policy permits.
+  This is neither the technical team origin nor Constitution-core authority; it is the name/profile rendered in paths and feed cards when policy permits.
 - `hedgerow_person_profile`: optional participant presentation metadata for
   this semi-public medium: display name, avatar, short bio, and maybe
   per-team presentation preferences.
-  This is not a substitute for the signing key or membership proof; it is
-  the human-readable identity rendered for authors and carriers.
+  This is not a substitute for the signing key or continuation-scoped standing proof; it is the human-readable identity rendered for authors and carriers.
 - `path`: ordered relay entries, each signed by the relay actor and verifiable against the previous path hash.
 - `local_moderation`: team-local hide, pin, annotate, quarantine, or block decisions.
   These are not global truth.
 - `receipt`: local record that a team saw a post/path, useful for dedupe and future sync.
 
-The important design constraint is that app-visible session and team identity must come through the Hub API, not direct reads from Manager databases.
+The important design constraint is that app-visible session scope, technical team identifiers, and presentation metadata must come through the Hub API, not direct reads from Manager databases.
 
 ## Possible First Slice
 
