@@ -423,78 +423,19 @@ If bridges and links become a Manager feature, other apps should observe link-de
 
 ## Related Work to Learn From
 
-### SPKI/SDSI
+The mechanism comparisons that used to live here moved to
+[`instructive-protocol-analysis.md`](instructive-protocol-analysis.md), because each one stays true whether or not linked teams ships.
+SPKI/SDSI, Macaroons, Tahoe-LAFS, and TUF are treated there under *Design Vocabularies*;
+Keybase teams, Matrix restricted rooms, and MLS are folded into their respective entries;
+Radicle is covered in [`related-work.md`](related-work.md);
+Secure Scuttlebutt and AT Protocol are queued there for mechanism-level entries.
 
-SPKI/SDSI is a strong conceptual ancestor for decentralized authorization.
-It has signed delegation, *local names*, threshold subjects, validity conditions, and no need for a single global naming authority.
-The local-names idea is especially apt here: Team A's name for Team B is really Team A's name for the people it reaches Team B through.
+Two readings are specific enough to bridges to keep here:
 
-Reference: <https://www.rfc-editor.org/rfc/rfc2693.html>
-
-### Keybase Teams
-
-Keybase teams use signed chains for team operations, subteams, membership, and key rotation.
-The useful lesson is that team membership and key-management facts can be represented as inspectable signed history.
-The caution is that subteam hierarchies can become organization machinery.
-Small Sea wants signed team relationships without making hierarchy the default answer.
-
-Reference: <https://book.keybase.io/docs/teams/sigchain>
-
-### Matrix Rooms and Restricted Rooms
-
-Matrix has concrete machinery where membership in one room can affect eligibility to join another room.
-That resembles one possible linked-team purpose: "membership over there satisfies a condition over here."
-The caution is complexity.
-Small Sea should learn from the shape without inheriting full federated room-state authorization.
-
-Reference: <https://spec.matrix.org/latest/client-server-api/#restricted-rooms>
-
-### Tahoe-LAFS
-
-Tahoe-LAFS is useful for thinking about capability-shaped access.
-Read and write authority can be represented by cryptographic capabilities rather than centralized accounts.
-The caution is that bearer capabilities are socially blunt.
-Small Sea likely needs signed constitutional grants and auditable bridge history, not only possession of a string.
-
-Reference: <https://tahoe-lafs.readthedocs.io/en/latest/architecture.html>
-
-### Macaroons
-
-Macaroons are useful for caveated delegation.
-A grant can be attenuated with conditions such as scope, time, or additional checks.
-That maps naturally to bridge policies, even if Small Sea's durable authority should be signed Core history rather than opaque bearer tokens alone.
-
-Reference: <https://research.google/pubs/macaroons-cookies-with-contextual-caveats-for-decentralized-authorization-in-the-cloud/>
-
-### Secure Scuttlebutt
-
-Secure Scuttlebutt is relevant for subjective replication.
-Participants choose whom to follow and replicate based on local social trust rather than a central server.
-That follow-the-people model is close to the bridge idea: you replicate across a boundary because a person you trust sits on it.
-
-Reference: <https://ssbc.github.io/scuttlebutt-protocol-guide/>
-
-### Radicle
-
-Radicle is relevant because it is Git-native, peer-to-peer, and collaboration artifacts such as issues and patches are replicated as part of the collaboration substrate.
-Small Sea can learn from proposal and review artifacts that do not require a central project server.
-
-Reference: <https://radicle.xyz/>
-
-### AT Protocol
-
-AT Protocol is useful for its separation of personal data repositories, identity, routing, indexing, and application views.
-It is less directly about private team governance, but it is a good reference for separating durable signed data from discovery and service roles.
-
-Reference: <https://atproto.com/guides/overview>
-
-### MLS
-
-Messaging Layer Security is relevant to group key management, especially if read sharing eventually requires efficient encryption across changing membership.
-It should not be mistaken for a governance system.
-Small Sea would still need to define how team Core history authorizes any MLS-like group changes.
-
-Reference: <https://www.rfc-editor.org/rfc/rfc9420.html>
+- **Local names are the right frame for a link.** Team A's name for Team B is really Team A's name for the people it reaches Team B through.
+  A link is not a claim about Team B; it is a claim about a path.
+- **Bridges are follow-the-people replication.** Secure Scuttlebutt replicates along a social graph rather than from a server.
+  A bridge is the same idea drawn across a team boundary: you replicate across it because a person you trust sits on it.
 
 ---
 

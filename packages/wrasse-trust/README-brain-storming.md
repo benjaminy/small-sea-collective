@@ -655,32 +655,19 @@ policy is a layer on top.
 
 Wrasse Trust should invent as little as possible.
 
-Systems that seem especially relevant:
-
-- **Matrix cross-signing** for device-rooted trust and the user-signing /
-  self-signing split. Matrix has the closest ancestor to our
-  `device_link` cert.
-- **Keybase sigchains** and per-user keys for append-only signed state
-  and rotating operational keys. Keybase's admin-chain-not-shared-key
-  model for teams is directly relevant.
-- **OpenPGP** for person-to-person certifications and introducer-style
-  trust. Note: PGP's untyped web-of-trust is a cautionary tale — typed
-  certs are the fix.
-- **TUF** for offline roots, delegated online roles, thresholds, and
-  expiration. TUF's threshold model is relevant for future team
-  governance.
-- **MLS** for epoch and update language in the messaging layer
-  (Cuttlefish concern, not Wrasse Trust).
-- **SPKI/SDSI** for typed authorization and delegation edges rather than
-  a strict X.509-style hierarchy. This is the closest conceptual
-  ancestor to Wrasse Trust's cert model.
+The comparisons themselves live in
+[`Documentation/instructive-protocol-analysis.md`](../../Documentation/instructive-protocol-analysis.md):
+Matrix cross-signing, Keybase sigchains, MLS, SPKI/SDSI, TUF, and the
+queued OpenPGP entry.
 
 The likely Small Sea synthesis is:
 
 - per-team identities with optional cross-team linking (novel)
 - device-rooted keys with no persistent per-participant key (inspired by
-  Matrix/Signal, simpler than the layered alternative we previously
-  considered)
+  Matrix's signed-device graph, but stricter than Matrix's key custody and
+  simpler than the layered alternative we previously considered — Matrix
+  may share per-user cross-signing private keys between devices, while
+  Signal linked devices receive shared account identity key material)
 - admission and device semantics implemented as Wrasse Trust extensions over the signed Constitution event DAG
 - `steward` left as Manager policy rather than a Constitution-core key class
 - typed certificates and delegation inspired by SPKI
