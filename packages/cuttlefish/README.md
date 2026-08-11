@@ -34,6 +34,14 @@ Small Sea follows Signal-style layering:
 - Double Ratchet provides forward secrecy and post-compromise recovery
 - Sender Keys make team broadcast efficient
 
+**AEAD associated data must be constructible before decryption.**
+Every associated-data input must come from protocol constants, receiver-held state, or cleartext envelope
+fields that the authenticated construction binds.
+An arbitrary value available only inside the ciphertext cannot be used to open that ciphertext.
+Protocol versions may be associated data when the receiver independently knows the version it accepts;
+single-version code should use one shared expected-version constant and reject other versions explicitly.
+A cleartext version selector for simultaneous versions must itself be bound into the authenticated construction.
+
 **Sender key state is a protocol-layer access convention, not a cryptographic
 enforcement boundary.** Distributing a sender key to a party signals that they
 are expected to be a legitimate reader; it does not prevent an admitted party

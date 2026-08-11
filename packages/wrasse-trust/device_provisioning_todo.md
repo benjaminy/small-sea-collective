@@ -43,19 +43,11 @@ representative of a participant's team-membership identity. It must answer:
 
 ## How Other Systems Do This
 
-**Signal:** New device scans QR code from existing device. Existing device
-transfers identity key material to new device via encrypted channel. Simple and
-effective, but tightly coupled to phone-number identity.
-
-**Matrix:** New device generates its own keys. Existing device cross-signs the
-new device's key using the self-signing key (SSK). The SSK is derived from the
-master signing key (MSK). Device verification can happen via QR code scan or
-emoji comparison.
-
-**Keybase:** New device is "provisioned" by an existing device (or paper key).
-The provisioning device adds a signed link to the user's sigchain declaring the
-new device. The new device generates its own per-device key (and receives the
-per-user key, encrypted to its device key).
+Moved to [`Documentation/instructive-protocol-analysis.md`](../../Documentation/instructive-protocol-analysis.md).
+Signal, Matrix, and Keybase device provisioning are compared there, along with
+the two key-custody questions that separate them: whether the device generates
+its own operational key, and whether a per-person identity, certification, or
+decryption secret must also reach it.
 
 ## Proposed Flow for Small Sea
 

@@ -88,8 +88,11 @@ from small_sea_note_to_self.db import (
     set_note_to_self_adopted_count,
 )
 from small_sea_note_to_self.bootstrap import (
+    JOIN_REQUEST_ARTIFACT_VERSION,
     JoinRequestArtifact,
+    SIGNED_WELCOME_BUNDLE_VERSION,
     SignedWelcomeBundle,
+    WELCOME_BUNDLE_VERSION,
     WelcomeBundle,
     deserialize_signed_welcome_bundle_plaintext,
     deserialize_join_request_artifact,
@@ -261,7 +264,8 @@ def _current_device_row(conn):
             ud.bootstrap_encryption_key,
             ud.signing_key,
             ndks.encryption_private_key_ref,
-            ndks.signing_private_key_ref
+            ndks.signing_private_key_ref,
+            ud.label
         FROM user_device ud
         JOIN local.note_to_self_device_key_secret ndks
           ON ndks.device_id = ud.id
@@ -2083,8 +2087,19 @@ USER_SCHEMA_VERSION = 64
 # ---- Provisioning functions ----
 
 
-def create_new_participant(root_dir, nickname, device=None):
-    """Create a new participant: directory layout, user DB, git repo."""
+def _validate_device_label(device_label):
+    if device_label is not None and not isinstance(device_label, str):
+        raise ValueError("device_label must be a string or null")
+
+
+def create_new_participant(root_dir, nickname, device_label=None):
+    """Create a new participant: directory layout, user DB, git repo.
+
+    ``device_label`` is this participant's own name for the device being set up.
+    It stays in shared NoteToSelf, is never shown to teammates, and is left NULL
+    when omitted rather than guessed from the nickname or the host.
+    """
+    _validate_device_label(device_label)
     root_dir = pathlib.Path(root_dir)
     ident = uuid7()
     ident_dir = root_dir / "Participants" / ident.hex()
@@ -2096,14 +2111,11 @@ def create_new_participant(root_dir, nickname, device=None):
     except Exception as exn:
         print(f"makedirs failed :( {ident_dir}")
 
-    if device is None:
-        device = "42"
-
-    _initialize_user_db(root_dir, ident, nickname, device)
+    _initialize_user_db(root_dir, ident, nickname, device_label)
     return ident.hex()
 
 
-def _initialize_user_db(root_dir, ident, nickname, device):
+def _initialize_user_db(root_dir, ident, nickname, device_label):
     root_dir = pathlib.Path(root_dir)
     shared_db_path = note_to_self_sync_db_path(root_dir, ident.hex())
     local_db_path = device_local_db_path(root_dir, ident.hex())
@@ -2119,10 +2131,10 @@ def _initialize_user_db(root_dir, ident, nickname, device):
             )
             conn.execute(
                 """
-                INSERT INTO user_device (id, bootstrap_encryption_key, signing_key)
-                VALUES (?, ?, ?)
+                INSERT INTO user_device (id, bootstrap_encryption_key, signing_key, label)
+                VALUES (?, ?, ?, ?)
                 """,
-                (device_id, encryption_public_key_bytes, signing_public_key_bytes),
+                (device_id, encryption_public_key_bytes, signing_public_key_bytes, device_label),
             )
             team_id = uuid7()
             conn.execute(
@@ -2168,8 +2180,14 @@ def _initialize_user_db(root_dir, ident, nickname, device):
     nts_repo.commit("Welcome to Small Sea Collective")
 
 
-def create_identity_join_request(root_dir):
-    """Create a persisted public join request artifact for a blank installation."""
+def create_identity_join_request(root_dir, *, device_label=None):
+    """Create a persisted public join request artifact for a blank installation.
+
+    ``device_label`` is this device's own label for itself. It travels in the
+    public artifact so the authorizing device records the label the joiner chose
+    rather than one picked on the joiner's behalf.
+    """
+    _validate_device_label(device_label)
     root_dir = pathlib.Path(root_dir)
     device_id = uuid7()
     encryption_private_key_bytes, encryption_public_key_bytes = generate_bootstrap_keypair()
@@ -2180,10 +2198,11 @@ def create_identity_join_request(root_dir):
     _write_local_secret(pending_signing_key_path, signing_private_key_bytes)
 
     artifact = JoinRequestArtifact(
-        version=1,
+        version=JOIN_REQUEST_ARTIFACT_VERSION,
         device_id_hex=device_id.hex(),
         device_encryption_public_key_hex=encryption_public_key_bytes.hex(),
         device_signing_public_key_hex=signing_public_key_bytes.hex(),
+        device_label=device_label,
     )
     auth_string = join_request_auth_string(artifact)
     _persist_pending_join_state(
@@ -2232,23 +2251,28 @@ def authorize_identity_join(
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         authorizing_device = _current_device_row(conn)
         existing = conn.execute(
-            "SELECT bootstrap_encryption_key, signing_key FROM user_device WHERE id = ?",
+            "SELECT bootstrap_encryption_key, signing_key, label FROM user_device WHERE id = ?",
             (device_id,),
         ).fetchone()
         if existing is None:
             conn.execute(
                 """
-                INSERT INTO user_device (id, bootstrap_encryption_key, signing_key)
-                VALUES (?, ?, ?)
+                INSERT INTO user_device (id, bootstrap_encryption_key, signing_key, label)
+                VALUES (?, ?, ?, ?)
                 """,
-                (device_id, encryption_public_key, signing_public_key),
+                (device_id, encryption_public_key, signing_public_key, artifact.device_label),
             )
             conn.commit()
             inserted_user_device = True
         elif existing[0] != encryption_public_key or existing[1] != signing_public_key:
             raise ValueError("A device with that ID is already registered with different keys")
+        elif existing[2] != artifact.device_label:
+            # Reissuing a welcome bundle is idempotent; relabelling a device is a
+            # separate operation and must not ride along on a bootstrap retry.
+            raise ValueError("A device with that ID is already registered with a different label")
         authorizing_device_id = authorizing_device[0]
         authorizing_signing_private_key = _read_local_secret(pathlib.Path(authorizing_device[4]))
+        authorizing_device_label = authorizing_device[5]
 
     if remote_descriptor is None:
         remote_descriptor = _single_note_to_self_remote_descriptor(root_dir, participant_hex)
@@ -2263,7 +2287,7 @@ def authorize_identity_join(
     now = datetime.now(timezone.utc)
     expires = now.timestamp() + expires_in_seconds
     bundle = WelcomeBundle(
-        version=1,
+        version=WELCOME_BUNDLE_VERSION,
         participant_hex=participant_hex,
         joining_device_id_hex=artifact.device_id_hex,
         joining_device_public_key_hex=artifact.device_encryption_public_key_hex,
@@ -2271,19 +2295,19 @@ def authorize_identity_join(
         remote_descriptor=remote_descriptor,
         issued_at=now.isoformat(),
         expires_at=datetime.fromtimestamp(expires, timezone.utc).isoformat(),
-        authorizing_device_label=get_nickname(root_dir, participant_hex),
+        authorizing_device_label=authorizing_device_label,
     )
     bundle_plaintext = serialize_welcome_bundle_plaintext(bundle)
     signature = sign_welcome_bundle(authorizing_signing_private_key, bundle_plaintext)
     signed_bundle = SignedWelcomeBundle(
-        version=1,
+        version=SIGNED_WELCOME_BUNDLE_VERSION,
         bundle=bundle,
         authorizing_device_id_hex=authorizing_device_id.hex(),
         signature_hex=signature.hex(),
     )
     aad = welcome_bundle_aad(
         joining_device_id_hex=bundle.joining_device_id_hex,
-        version=bundle.version,
+        version=WELCOME_BUNDLE_VERSION,
     )
     sealed = seal_welcome_bundle(
         encryption_public_key,
@@ -2315,7 +2339,7 @@ def prepare_identity_bootstrap(root_dir, welcome_bundle_b64):
     sealed_bundle = base64.b64decode(welcome_bundle_b64.encode("ascii"))
     aad = welcome_bundle_aad(
         joining_device_id_hex=pending_artifact.device_id_hex,
-        version=1,
+        version=WELCOME_BUNDLE_VERSION,
     )
     plaintext = open_welcome_bundle(
         pending_encryption_private_key_bytes,

@@ -5,7 +5,7 @@ from pathlib import Path
 
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
-SHARED_SCHEMA_VERSION = 57
+SHARED_SCHEMA_VERSION = 58
 LOCAL_SCHEMA_VERSION = 10
 
 

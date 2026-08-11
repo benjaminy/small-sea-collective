@@ -209,6 +209,34 @@ Identity join:
    against the pulled `user_device` signer key, and blocks further use if
    that verification fails.
 
+The two human comparisons have different jobs.
+The first authentication string lets the existing device verify the public join request before admitting it.
+The second confirmation string covers the join artifact, signed welcome-bundle plaintext, and signature;
+comparing it with the existing device's value confirms that both devices hold the same join transcript.
+The post-fetch signature alone proves only that the bundle was signed by a device key listed in the fetched
+NoteToSelf database, because the bundle itself supplied the remote descriptor selecting that database.
+The current API returns the second confirmation string after local setup, fetch, and signature verification;
+it does not record whether the human comparison occurred or matched.
+The comparison, or an equivalently authenticated bundle-delivery channel, supplies evidence that the fetched
+identity is the one associated with the intended authorizing device rather than a self-consistent substitute.
+That is device-local ceremony evidence, not team standing or a global trusted-installation verdict.
+Manager should expose the evidence state separately from policy; the default handling of unconfirmed and mismatched
+states is a local product decision.
+
+The default Manager policy is conservative.
+Before authorizer binding is confirmed, it may decrypt, create isolated local bootstrap state, fetch NoteToSelf,
+verify the bundle, and display the identity and comparison evidence needed to finish the ceremony.
+Ordinary use of that identity, remote mutations, team joins, and key distribution wait for a matching comparison or
+an equivalently authenticated delivery result.
+A mismatch remains visible and does not become a match through policy.
+
+The research UI exposes one conspicuous, device-local dangerous override that permits ordinary actions despite an
+unconfirmed or mismatched authorizer binding.
+The override preserves and displays the underlying evidence state and does not bypass parsing, AEAD, signature, or
+artifact-version verification.
+It exists to make research and testing possible, not as a second trust mechanism.
+The exact persisted status shape and mismatch cleanup remain implementation decisions.
+
 After identity join, the new device knows about the participant's devices,
 teams, and apps through NoteToSelf, but it does **not** automatically join
 every team.

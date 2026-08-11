@@ -1,3 +1,4 @@
+import dataclasses
 import pathlib
 import sqlite3
 import time
@@ -5,7 +6,9 @@ import json
 import base64
 
 import cod_sync.protocol as CodSync
+import pytest
 import small_sea_hub.backend as SmallSea
+from cryptography.exceptions import InvalidTag
 from cuttlefish import generate_bootstrap_signing_keypair, open_welcome_bundle, seal_welcome_bundle
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
@@ -18,7 +21,10 @@ from small_sea_manager.provisioning import (
     create_new_participant,
 )
 from small_sea_note_to_self.bootstrap import (
+    JOIN_REQUEST_ARTIFACT_VERSION,
+    SIGNED_WELCOME_BUNDLE_VERSION,
     SignedWelcomeBundle,
+    WELCOME_BUNDLE_VERSION,
     deserialize_join_request_artifact,
     deserialize_signed_welcome_bundle_plaintext,
     serialize_signed_welcome_bundle_plaintext,
@@ -36,13 +42,13 @@ def _pending_join_state(root_dir):
     return json.loads((pathlib.Path(root_dir) / ".small-sea-manager" / "pending_identity_join.json").read_text())
 
 
-def _rewrite_welcome_bundle(root_dir, welcome_bundle_b64, mutate):
+def _rewrite_welcome_bundle(root_dir, welcome_bundle_b64, mutate, *, reseal_aad_version=None):
     state = _pending_join_state(root_dir)
     artifact = deserialize_join_request_artifact(state["join_request_artifact"])
     private_key = pathlib.Path(state["encryption_private_key_ref"]).read_bytes()
     aad = welcome_bundle_aad(
         joining_device_id_hex=artifact.device_id_hex,
-        version=1,
+        version=WELCOME_BUNDLE_VERSION,
     )
     plaintext = open_welcome_bundle(
         private_key,
@@ -51,6 +57,11 @@ def _rewrite_welcome_bundle(root_dir, welcome_bundle_b64, mutate):
     )
     signed_bundle = deserialize_signed_welcome_bundle_plaintext(plaintext)
     mutated = mutate(signed_bundle)
+    if reseal_aad_version is not None:
+        aad = welcome_bundle_aad(
+            joining_device_id_hex=artifact.device_id_hex,
+            version=reseal_aad_version,
+        )
     sealed = seal_welcome_bundle(
         bytes.fromhex(artifact.device_encryption_public_key_hex),
         serialize_signed_welcome_bundle_plaintext(mutated),
@@ -59,13 +70,19 @@ def _rewrite_welcome_bundle(root_dir, welcome_bundle_b64, mutate):
     return base64.b64encode(sealed).decode("ascii")
 
 
+def _rewrite_join_request_version(join_request_artifact_b64, version):
+    payload = json.loads(base64.b64decode(join_request_artifact_b64.encode("ascii")).decode("utf-8"))
+    payload["version"] = version
+    return base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+
+
 def _open_signed_welcome_bundle(root_dir, welcome_bundle_b64):
     state = _pending_join_state(root_dir)
     artifact = deserialize_join_request_artifact(state["join_request_artifact"])
     private_key = pathlib.Path(state["encryption_private_key_ref"]).read_bytes()
     aad = welcome_bundle_aad(
         joining_device_id_hex=artifact.device_id_hex,
-        version=1,
+        version=WELCOME_BUNDLE_VERSION,
     )
     plaintext = open_welcome_bundle(
         private_key,
@@ -227,6 +244,129 @@ def test_identity_bootstrap_rejects_unknown_signer_and_blocks_installation(playg
         assert False, "Expected blocked install to refuse TeamManager initialization"
     except ValueError as exn:
         assert "blocked" in str(exn).lower()
+
+
+def _localfolder_participant(workspace):
+    root1 = workspace / "install-a"
+    root2 = workspace / "install-b"
+    cloud_dir = workspace / "cloud"
+    root1.mkdir()
+    root2.mkdir()
+    cloud_dir.mkdir()
+
+    alice_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
+    return root1, root2, alice_hex
+
+
+def test_authorize_rejects_unsupported_join_request_version_before_admitting(playground_dir):
+    """An unsupported join request is refused with no device admitted and no commit."""
+    root1, root2, alice_hex = _localfolder_participant(pathlib.Path(playground_dir))
+
+    join_request = create_identity_join_request(root2)
+    bumped = _rewrite_join_request_version(
+        join_request["join_request_artifact"],
+        JOIN_REQUEST_ARTIFACT_VERSION + 1,
+    )
+
+    shared1 = note_to_self_sync_db_path(root1, alice_hex)
+    sync_dir = root1 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
+    head_before = CodSync.gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
+
+    alice_manager = TeamManager(root1, alice_hex)
+    try:
+        alice_manager.authorize_identity_join(bumped)
+        assert False, "Expected unsupported join request version to be rejected"
+    except ValueError as exn:
+        assert "join request artifact" in str(exn)
+
+    assert _count_rows(shared1, "SELECT COUNT(*) FROM user_device") == 1
+    head_after = CodSync.gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
+    assert head_after == head_before
+
+
+def test_bootstrap_rejects_unsupported_payload_version_after_decryption(playground_dir):
+    """A well-sealed bundle claiming an unsupported payload version is still refused.
+
+    The AAD binds the expected version, so this reseals under the expected AAD and
+    lies inside the ciphertext. Only the post-decrypt check catches that.
+    """
+    root1, root2, alice_hex = _localfolder_participant(pathlib.Path(playground_dir))
+
+    join_request = create_identity_join_request(root2)
+    alice_manager = TeamManager(root1, alice_hex)
+    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+
+    bumped_payload = _rewrite_welcome_bundle(
+        root2,
+        welcome["welcome_bundle"],
+        lambda signed: SignedWelcomeBundle(
+            version=signed.version,
+            bundle=dataclasses.replace(signed.bundle, version=WELCOME_BUNDLE_VERSION + 1),
+            authorizing_device_id_hex=signed.authorizing_device_id_hex,
+            signature_hex=signed.signature_hex,
+        ),
+    )
+
+    try:
+        bootstrap_existing_identity(root2, bumped_payload)
+        assert False, "Expected unsupported welcome bundle version to be rejected"
+    except ValueError as exn:
+        assert "welcome bundle" in str(exn)
+
+    assert not (root2 / "Participants" / alice_hex).exists()
+
+
+def test_bootstrap_rejects_unsupported_signed_wrapper_version(playground_dir):
+    root1, root2, alice_hex = _localfolder_participant(pathlib.Path(playground_dir))
+
+    join_request = create_identity_join_request(root2)
+    alice_manager = TeamManager(root1, alice_hex)
+    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+
+    bumped_wrapper = _rewrite_welcome_bundle(
+        root2,
+        welcome["welcome_bundle"],
+        lambda signed: SignedWelcomeBundle(
+            version=SIGNED_WELCOME_BUNDLE_VERSION + 1,
+            bundle=signed.bundle,
+            authorizing_device_id_hex=signed.authorizing_device_id_hex,
+            signature_hex=signed.signature_hex,
+        ),
+    )
+
+    try:
+        bootstrap_existing_identity(root2, bumped_wrapper)
+        assert False, "Expected unsupported signed wrapper version to be rejected"
+    except ValueError as exn:
+        assert "signed welcome bundle" in str(exn)
+
+    assert not (root2 / "Participants" / alice_hex).exists()
+
+
+def test_welcome_bundle_aad_binds_the_expected_payload_version(playground_dir):
+    """A bundle sealed under a different payload version will not open at all.
+
+    This is what makes the expected version legitimate associated data: the receiver
+    supplies it from a constant rather than learning it from the ciphertext.
+    """
+    root1, root2, alice_hex = _localfolder_participant(pathlib.Path(playground_dir))
+
+    join_request = create_identity_join_request(root2)
+    alice_manager = TeamManager(root1, alice_hex)
+    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+
+    wrong_aad = _rewrite_welcome_bundle(
+        root2,
+        welcome["welcome_bundle"],
+        lambda signed: signed,
+        reseal_aad_version=WELCOME_BUNDLE_VERSION + 1,
+    )
+
+    with pytest.raises(InvalidTag):
+        bootstrap_existing_identity(root2, wrong_aad)
+
+    assert not (root2 / "Participants" / alice_hex).exists()
 
 
 def test_identity_bootstrap_rejects_wrong_known_signing_key(playground_dir):

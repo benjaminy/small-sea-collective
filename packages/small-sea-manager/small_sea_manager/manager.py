@@ -27,9 +27,9 @@ class AppSightingsRefresh(list):
         self.cleanup_warning = cleanup_warning
 
 
-def create_identity_join_request(root_dir):
+def create_identity_join_request(root_dir, *, device_label=None):
     """Create a public join-request artifact for a blank installation."""
-    return provisioning.create_identity_join_request(root_dir)
+    return provisioning.create_identity_join_request(root_dir, device_label=device_label)
 
 
 def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=11437, _http_client=None):

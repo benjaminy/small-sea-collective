@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from cryptography.exceptions import InvalidTag
 
@@ -40,6 +42,24 @@ def test_welcome_bundle_rejects_tampering():
 
     with pytest.raises((InvalidTag, ValueError)):
         open_welcome_bundle(recipient_private, bytes(sealed), associated_data=b"ctx")
+
+
+def test_welcome_bundle_rejects_unsupported_envelope_version():
+    """The envelope version selects the sealed format and is checked before decryption.
+
+    It is independent of the artifact versions carried inside the plaintext, which
+    the NoteToSelf bootstrap module checks after decryption.
+    """
+    recipient_private, recipient_public = generate_bootstrap_keypair()
+    sealed = seal_welcome_bundle(recipient_public, b"payload", associated_data=b"ctx")
+    envelope = json.loads(sealed.decode("utf-8"))
+    envelope["version"] += 1
+    bumped = json.dumps(envelope).encode("utf-8")
+
+    with pytest.raises(ValueError) as exc_info:
+        open_welcome_bundle(recipient_private, bumped, associated_data=b"ctx")
+
+    assert "envelope version" in str(exc_info.value)
 
 
 def test_welcome_bundle_signature_round_trip():

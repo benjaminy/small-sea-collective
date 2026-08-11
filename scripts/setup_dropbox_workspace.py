@@ -59,7 +59,9 @@ def _create_and_auth(workspace: Path, nickname: str, app_key: str, app_secret: s
     Returns (participant_hex, access_token).
     """
     print(f"\nCreating participant {nickname}...")
-    participant_hex = create_new_participant(workspace, nickname)
+    participant_hex = create_new_participant(
+        workspace, nickname, device_label="Dropbox test device"
+    )
     print(f"  {nickname}: {participant_hex[:16]}...")
 
     print(f"Dropbox auth for {nickname} — opening browser...")
