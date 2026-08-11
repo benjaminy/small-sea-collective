@@ -13,7 +13,7 @@ from typing import Any
 # wrapper fields. Neither has anything to do with the encryption-envelope version
 # in cuttlefish, which selects the sealed-envelope format instead.
 JOIN_REQUEST_ARTIFACT_VERSION = 2
-WELCOME_BUNDLE_VERSION = 1
+WELCOME_BUNDLE_VERSION = 2
 SIGNED_WELCOME_BUNDLE_VERSION = 1
 
 
@@ -45,7 +45,13 @@ class WelcomeBundle:
     remote_descriptor: dict[str, Any]
     issued_at: str
     expires_at: str
-    authorizing_device_label: str
+    # The authorizing device's own label for itself, absent when it has none.
+    # Never falls back to the participant's name: the joiner is checking which
+    # device authorized the link, and a person's name cannot answer that.
+    authorizing_device_label: str | None
+
+    def __post_init__(self) -> None:
+        _require_optional_string("authorizing_device_label", self.authorizing_device_label)
 
 
 @dataclass(frozen=True)

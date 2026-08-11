@@ -264,7 +264,8 @@ def _current_device_row(conn):
             ud.bootstrap_encryption_key,
             ud.signing_key,
             ndks.encryption_private_key_ref,
-            ndks.signing_private_key_ref
+            ndks.signing_private_key_ref,
+            ud.label
         FROM user_device ud
         JOIN local.note_to_self_device_key_secret ndks
           ON ndks.device_id = ud.id
@@ -2271,6 +2272,7 @@ def authorize_identity_join(
             raise ValueError("A device with that ID is already registered with a different label")
         authorizing_device_id = authorizing_device[0]
         authorizing_signing_private_key = _read_local_secret(pathlib.Path(authorizing_device[4]))
+        authorizing_device_label = authorizing_device[5]
 
     if remote_descriptor is None:
         remote_descriptor = _single_note_to_self_remote_descriptor(root_dir, participant_hex)
@@ -2293,7 +2295,7 @@ def authorize_identity_join(
         remote_descriptor=remote_descriptor,
         issued_at=now.isoformat(),
         expires_at=datetime.fromtimestamp(expires, timezone.utc).isoformat(),
-        authorizing_device_label=get_nickname(root_dir, participant_hex),
+        authorizing_device_label=authorizing_device_label,
     )
     bundle_plaintext = serialize_welcome_bundle_plaintext(bundle)
     signature = sign_welcome_bundle(authorizing_signing_private_key, bundle_plaintext)

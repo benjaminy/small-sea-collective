@@ -11,6 +11,7 @@ import sqlite3
 
 import cod_sync.protocol as CodSync
 import pytest
+from cuttlefish import open_welcome_bundle
 from sandbox.workspace import SandboxWorkspace
 from small_sea_manager.manager import (
     TeamManager,
@@ -21,6 +22,13 @@ from small_sea_manager.provisioning import (
     add_cloud_storage,
     create_new_participant,
     create_team,
+)
+from small_sea_note_to_self.bootstrap import (
+    WELCOME_BUNDLE_VERSION,
+    deserialize_join_request_artifact,
+    deserialize_signed_welcome_bundle_plaintext,
+    serialize_welcome_bundle_plaintext,
+    welcome_bundle_aad,
 )
 from small_sea_note_to_self.db import note_to_self_sync_db_path
 
@@ -37,6 +45,22 @@ def _label_by_device_id(root_dir, participant_hex, device_id_hex):
             (bytes.fromhex(device_id_hex),),
         ).fetchone()
     return row if row is None else row[0]
+
+
+def _open_signed_welcome_bundle(root_dir, welcome_bundle_b64):
+    state = json.loads(
+        (pathlib.Path(root_dir) / ".small-sea-manager" / "pending_identity_join.json").read_text()
+    )
+    artifact = deserialize_join_request_artifact(state["join_request_artifact"])
+    plaintext = open_welcome_bundle(
+        pathlib.Path(state["encryption_private_key_ref"]).read_bytes(),
+        base64.b64decode(welcome_bundle_b64.encode("ascii")),
+        associated_data=welcome_bundle_aad(
+            joining_device_id_hex=artifact.device_id_hex,
+            version=WELCOME_BUNDLE_VERSION,
+        ),
+    )
+    return deserialize_signed_welcome_bundle_plaintext(plaintext)
 
 
 def _rewrite_join_request_label(join_request_artifact_b64, label):
@@ -196,6 +220,56 @@ def test_relabelling_an_admitted_device_is_refused(playground_dir):
         alice_manager.authorize_identity_join(relabelled)
 
     assert _device_labels(root1, alice_hex) == ["Alice's laptop", "Alice's phone"]
+
+
+def test_welcome_bundle_carries_the_authorizing_devices_own_label(playground_dir):
+    root1, root2, alice_hex = _two_installs(
+        pathlib.Path(playground_dir), authorizer_label="Authorizer laptop"
+    )
+
+    join_request = create_identity_join_request(root2, device_label="Joiner phone")
+    alice_manager = TeamManager(root1, alice_hex)
+    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    bootstrap = bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+
+    assert bootstrap["authorizing_device_label"] == "Authorizer laptop"
+
+
+def test_unlabelled_authorizer_does_not_send_the_participant_nickname(playground_dir):
+    """The defect this branch exists to fix.
+
+    The joiner reads this field to check *which device* authorized the link. Sending
+    the person's name there answers a different question while looking like an answer.
+    """
+    root1, root2, alice_hex = _two_installs(
+        pathlib.Path(playground_dir), authorizer_label=None
+    )
+
+    join_request = create_identity_join_request(root2, device_label="Joiner phone")
+    alice_manager = TeamManager(root1, alice_hex)
+    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    bootstrap = bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+
+    assert bootstrap["authorizing_device_label"] is None
+    assert bootstrap["authorizing_device_label"] != "Alice"
+    # The nickname still travels, in the field that is actually about the participant.
+    assert bootstrap["identity_label"] == "Alice"
+
+
+def test_authorizing_device_label_stays_present_in_the_signed_bytes(playground_dir):
+    """A null value, not a dropped key: omitting it would change canonicalization."""
+    root1, root2, alice_hex = _two_installs(
+        pathlib.Path(playground_dir), authorizer_label=None
+    )
+
+    join_request = create_identity_join_request(root2)
+    alice_manager = TeamManager(root1, alice_hex)
+    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+
+    signed = _open_signed_welcome_bundle(root2, welcome["welcome_bundle"])
+    payload = json.loads(serialize_welcome_bundle_plaintext(signed.bundle).decode("utf-8"))
+    assert "authorizing_device_label" in payload
+    assert payload["authorizing_device_label"] is None
 
 
 def test_sandbox_tooling_labels_the_device_it_creates(playground_dir):

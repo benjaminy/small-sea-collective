@@ -268,6 +268,14 @@ The two riskier fields land as written "not yet" decisions.
    → verify: micro test over the device-link bundle showing that with a labeled authorizing device the bundle
       carries that label, and with an unlabeled one it does *not* silently carry the participant nickname.
       This is the test that proves the specific defect is gone, so it should fail against current `main`.
+   (Done. `WELCOME_BUNDLE_VERSION` is 2; `SIGNED_WELCOME_BUNDLE_VERSION` stays 1.
+   `ud.label` was appended last to `_current_device_row`; all five call sites read only positions 0, 1, and 4,
+   so none of them moved.
+   Restoring the old `get_nickname` expression fails all three new tests, each showing `'Alice'` where a device
+   label belongs — the defect is now pinned rather than merely fixed.
+   `authorizing_device_label` is validated as optional-string at the wire boundary, matching the pattern the
+   join-request label already uses.
+   The nickname still travels in `identity_label`, which is the field that is genuinely about the participant.)
 
 8. **Confirm nothing regressed.**
    Run the full micro test suites for `small-sea-manager` and `small-sea-note-to-self`.
@@ -275,6 +283,14 @@ The two riskier fields land as written "not yet" decisions.
    run a targeted Hub micro test only if an implementation change touches that path.
    → verify: green, and every changed production line belongs to the NoteToSelf schema/version,
       the two device-creation paths, enforced bootstrap versions, or their documentation.
+   (Done. 389 passed, 3 skipped across `small-sea-note-to-self`, `small-sea-manager`, `cuttlefish`,
+   `small-sea-hub`, `ssc-files`, and `cod-sync`.
+   `small-sea-hub`'s `test_notifications.py` is excluded because its fixture needs a Docker `ntfy` container;
+   it errors at setup on a machine without the daemon and is untouched by this branch.
+   No targeted Hub test was needed: the Hub's own modules never query `user_device`, so the label reaches no
+   app-facing identity surface. The `label` matches in `backend.py` are `invitee_label` from the team DB.
+   Production changes are confined to four files: the NoteToSelf schema, version constant, and bootstrap
+   artifacts; `provisioning.py`; the one-line `manager.py` wrapper; and the two dev-tooling callers.)
 
 Integrity argument for a skeptic: the branch adds one nullable column, corrects one already-wrong value,
 and makes existing artifact-version markers effective.
