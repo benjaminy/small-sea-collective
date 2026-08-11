@@ -195,6 +195,15 @@ The two riskier fields land as written "not yet" decisions.
    Keep the outer encryption-envelope version separate.
    → verify: the current end-to-end device-link micro test passes; unsupported join-request, welcome-bundle,
       and signed-wrapper versions are rejected; and the outer-envelope version test remains independent.
+   (Done.
+   `JOIN_REQUEST_ARTIFACT_VERSION`, `WELCOME_BUNDLE_VERSION`, and `SIGNED_WELCOME_BUNDLE_VERSION` live in
+   `small_sea_note_to_self/bootstrap.py`, and enforcement sits in the three deserializers so no caller can skip it.
+   Rejection happens before the artifact's other fields are read, because a future version may change which fields exist.
+   Nine of the new micro tests fail when the check is disabled, including the three end-to-end ones:
+   an unsupported join request no longer admits a device or produces a commit, and unsupported payload and wrapper
+   versions no longer complete a bootstrap.
+   `test_welcome_bundle_aad_binds_the_expected_payload_version` is the exception — it guards the existing AAD binding
+   rather than proving a defect fixed, and passes either way.)
 
 4. **Add `user_device.label` to the shared NoteToSelf schema.**
    Add a nullable `TEXT` column to `small_sea_note_to_self/sql/shared_schema.sql`,
@@ -202,6 +211,12 @@ The two riskier fields land as written "not yet" decisions.
    `USER_SCHEMA_VERSION` governs team DBs and must not change for this NoteToSelf-only schema edit.
    → verify: a `small-sea-note-to-self` micro test asserts that a fresh shared DB has the column and that
       `PRAGMA user_version` matches the bumped `SHARED_SCHEMA_VERSION`.
+   (Done.
+   `SHARED_SCHEMA_VERSION` 57 → 58; `USER_SCHEMA_VERSION` stays 64.
+   Every existing `user_device` query names its columns, so nothing had to change to tolerate the new one.
+   A second micro test covers what the bump actually buys: a stale shared DB at the previous version is refused
+   with the "no migrations" error rather than silently adopted.
+   The Manager's dead `core_note_to_self_schema.sql` mirror was left to drift further, per the removal follow-up below.)
 
 5. **Populate the initial participant device label.**
    Replace the currently unused `device` argument to `create_new_participant` / `_initialize_user_db`
@@ -282,6 +297,11 @@ Documentation ownership is split deliberately.
    `Nickname`, `Team`, `App`, `TeamAppBerth`, `CloudStorage`, `BerthCloudAllocation`,
    `NotificationService`, `Invitation`, `TeamDevice`, `TeamDeviceKey`).
    The Hub does not import them; it defines its own duplicates.
+- **New issue: the linked-team bootstrap bundle carries no version field.**
+   Found while enforcing versions on the identity-bootstrap artifacts.
+   The `response_body` assembled in `_start_linked_team_bootstrap` has no version marker at all,
+   so it cannot be version-gated the way the join request and welcome bundle now are.
+   Its associated data binds `{bootstrap_id, team_id}` and does not name a payload contract.
 - **New issue: the Hub reads the Core DB directly.** `backend.py:410-418` opens the participant's
    NoteToSelf `core.db` and queries it through Hub-local ORM models mirroring the Manager's schema.
    AGENTS.md says only `small-sea-manager` may do that.

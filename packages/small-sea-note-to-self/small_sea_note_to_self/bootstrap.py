@@ -7,6 +7,16 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 
+# The artifact version each of these contracts is produced at and accepted at.
+# Each artifact versions its own serialized contract: WELCOME_BUNDLE_VERSION covers
+# the signed bundle fields, SIGNED_WELCOME_BUNDLE_VERSION covers only the outer
+# wrapper fields. Neither has anything to do with the encryption-envelope version
+# in cuttlefish, which selects the sealed-envelope format instead.
+JOIN_REQUEST_ARTIFACT_VERSION = 1
+WELCOME_BUNDLE_VERSION = 1
+SIGNED_WELCOME_BUNDLE_VERSION = 1
+
+
 @dataclass(frozen=True)
 class JoinRequestArtifact:
     version: int
@@ -40,6 +50,19 @@ def _canonical_json(data: dict[str, Any]) -> bytes:
     return json.dumps(data, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
+def _require_version(label: str, payload: Any, supported: int) -> None:
+    """Reject an artifact whose declared version this build does not implement.
+
+    Called before the payload's other fields are read, because a future version
+    is free to change which fields exist.
+    """
+    version = payload.get("version") if isinstance(payload, dict) else None
+    if version != supported:
+        raise ValueError(
+            f"Unsupported {label} version: {version!r} (this installation supports {supported})"
+        )
+
+
 def canonical_join_request_artifact_bytes(artifact: JoinRequestArtifact) -> bytes:
     return _canonical_json(asdict(artifact))
 
@@ -54,6 +77,7 @@ def serialize_join_request_artifact(artifact: JoinRequestArtifact) -> str:
 
 def deserialize_join_request_artifact(encoded: str) -> JoinRequestArtifact:
     payload = json.loads(base64.b64decode(encoded.encode("ascii")).decode("utf-8"))
+    _require_version("join request artifact", payload, JOIN_REQUEST_ARTIFACT_VERSION)
     return JoinRequestArtifact(**payload)
 
 
@@ -77,9 +101,13 @@ def serialize_welcome_bundle_plaintext(bundle: WelcomeBundle) -> bytes:
     return canonical_welcome_bundle_bytes(bundle)
 
 
-def deserialize_welcome_bundle_plaintext(data: bytes) -> WelcomeBundle:
-    payload = json.loads(data.decode("utf-8"))
+def _welcome_bundle_from_payload(payload: Any) -> WelcomeBundle:
+    _require_version("welcome bundle", payload, WELCOME_BUNDLE_VERSION)
     return WelcomeBundle(**payload)
+
+
+def deserialize_welcome_bundle_plaintext(data: bytes) -> WelcomeBundle:
+    return _welcome_bundle_from_payload(json.loads(data.decode("utf-8")))
 
 
 def serialize_signed_welcome_bundle_plaintext(bundle: SignedWelcomeBundle) -> bytes:
@@ -94,9 +122,10 @@ def serialize_signed_welcome_bundle_plaintext(bundle: SignedWelcomeBundle) -> by
 
 def deserialize_signed_welcome_bundle_plaintext(data: bytes) -> SignedWelcomeBundle:
     payload = json.loads(data.decode("utf-8"))
+    _require_version("signed welcome bundle", payload, SIGNED_WELCOME_BUNDLE_VERSION)
     return SignedWelcomeBundle(
         version=payload["version"],
-        bundle=WelcomeBundle(**payload["bundle"]),
+        bundle=_welcome_bundle_from_payload(payload["bundle"]),
         authorizing_device_id_hex=payload["authorizing_device_id_hex"],
         signature_hex=payload["signature_hex"],
     )

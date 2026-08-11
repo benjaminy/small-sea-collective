@@ -88,8 +88,11 @@ from small_sea_note_to_self.db import (
     set_note_to_self_adopted_count,
 )
 from small_sea_note_to_self.bootstrap import (
+    JOIN_REQUEST_ARTIFACT_VERSION,
     JoinRequestArtifact,
+    SIGNED_WELCOME_BUNDLE_VERSION,
     SignedWelcomeBundle,
+    WELCOME_BUNDLE_VERSION,
     WelcomeBundle,
     deserialize_signed_welcome_bundle_plaintext,
     deserialize_join_request_artifact,
@@ -2180,7 +2183,7 @@ def create_identity_join_request(root_dir):
     _write_local_secret(pending_signing_key_path, signing_private_key_bytes)
 
     artifact = JoinRequestArtifact(
-        version=1,
+        version=JOIN_REQUEST_ARTIFACT_VERSION,
         device_id_hex=device_id.hex(),
         device_encryption_public_key_hex=encryption_public_key_bytes.hex(),
         device_signing_public_key_hex=signing_public_key_bytes.hex(),
@@ -2263,7 +2266,7 @@ def authorize_identity_join(
     now = datetime.now(timezone.utc)
     expires = now.timestamp() + expires_in_seconds
     bundle = WelcomeBundle(
-        version=1,
+        version=WELCOME_BUNDLE_VERSION,
         participant_hex=participant_hex,
         joining_device_id_hex=artifact.device_id_hex,
         joining_device_public_key_hex=artifact.device_encryption_public_key_hex,
@@ -2276,14 +2279,14 @@ def authorize_identity_join(
     bundle_plaintext = serialize_welcome_bundle_plaintext(bundle)
     signature = sign_welcome_bundle(authorizing_signing_private_key, bundle_plaintext)
     signed_bundle = SignedWelcomeBundle(
-        version=1,
+        version=SIGNED_WELCOME_BUNDLE_VERSION,
         bundle=bundle,
         authorizing_device_id_hex=authorizing_device_id.hex(),
         signature_hex=signature.hex(),
     )
     aad = welcome_bundle_aad(
         joining_device_id_hex=bundle.joining_device_id_hex,
-        version=bundle.version,
+        version=WELCOME_BUNDLE_VERSION,
     )
     sealed = seal_welcome_bundle(
         encryption_public_key,
@@ -2315,7 +2318,7 @@ def prepare_identity_bootstrap(root_dir, welcome_bundle_b64):
     sealed_bundle = base64.b64decode(welcome_bundle_b64.encode("ascii"))
     aad = welcome_bundle_aad(
         joining_device_id_hex=pending_artifact.device_id_hex,
-        version=1,
+        version=WELCOME_BUNDLE_VERSION,
     )
     plaintext = open_welcome_bundle(
         pending_encryption_private_key_bytes,
