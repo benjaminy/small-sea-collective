@@ -177,7 +177,9 @@ class SandboxWorkspace:
         """Create a new participant. Cloud storage must be configured separately."""
         hub_port = self._next_hub_port()
         manager_port = self._next_manager_port()
-        participant_hex = create_new_participant(self.workspace_dir, nickname)
+        participant_hex = create_new_participant(
+            self.workspace_dir, nickname, device_label="Sandbox device"
+        )
         p = ParticipantConfig(
             hex=participant_hex,
             nickname=nickname,

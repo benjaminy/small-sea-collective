@@ -227,6 +227,13 @@ The two riskier fields land as written "not yet" decisions.
    No new label-editing UI is in scope.
    → verify: Manager micro tests show that an initial label round-trips and omission leaves `NULL`,
       and a sandbox workspace built by the dev tooling has a non-null label on its initial device.
+   (Done, in `packages/small-sea-manager/tests/test_device_label.py`.
+   The vestigial `device="42"` default is gone; every caller in the repo passed only `(root_dir, nickname)`,
+   so no call site had to change except the two dev-tooling ones.
+   A fourth test asserts `team_device` has no `label` column, guarding the alternative the design record rejects.
+   It is scoped to that one table on purpose: the team schema already carries `invitee_label_commitment`
+   and `invitee_label_payload`, so a repo-wide "no column named label" assertion would be both wrong and brittle.
+   The sandbox assertion imports `sandbox.workspace` from `devtools`, which the uv workspace already makes importable.)
 
 6. **Carry the joining device's self-assigned label through the link request.**
    Add optional `device_label` input to `create_identity_join_request` and its Manager wrapper.

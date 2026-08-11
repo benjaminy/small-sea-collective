@@ -2086,8 +2086,13 @@ USER_SCHEMA_VERSION = 64
 # ---- Provisioning functions ----
 
 
-def create_new_participant(root_dir, nickname, device=None):
-    """Create a new participant: directory layout, user DB, git repo."""
+def create_new_participant(root_dir, nickname, device_label=None):
+    """Create a new participant: directory layout, user DB, git repo.
+
+    ``device_label`` is this participant's own name for the device being set up.
+    It stays in shared NoteToSelf, is never shown to teammates, and is left NULL
+    when omitted rather than guessed from the nickname or the host.
+    """
     root_dir = pathlib.Path(root_dir)
     ident = uuid7()
     ident_dir = root_dir / "Participants" / ident.hex()
@@ -2099,14 +2104,11 @@ def create_new_participant(root_dir, nickname, device=None):
     except Exception as exn:
         print(f"makedirs failed :( {ident_dir}")
 
-    if device is None:
-        device = "42"
-
-    _initialize_user_db(root_dir, ident, nickname, device)
+    _initialize_user_db(root_dir, ident, nickname, device_label)
     return ident.hex()
 
 
-def _initialize_user_db(root_dir, ident, nickname, device):
+def _initialize_user_db(root_dir, ident, nickname, device_label):
     root_dir = pathlib.Path(root_dir)
     shared_db_path = note_to_self_sync_db_path(root_dir, ident.hex())
     local_db_path = device_local_db_path(root_dir, ident.hex())
@@ -2122,10 +2124,10 @@ def _initialize_user_db(root_dir, ident, nickname, device):
             )
             conn.execute(
                 """
-                INSERT INTO user_device (id, bootstrap_encryption_key, signing_key)
-                VALUES (?, ?, ?)
+                INSERT INTO user_device (id, bootstrap_encryption_key, signing_key, label)
+                VALUES (?, ?, ?, ?)
                 """,
-                (device_id, encryption_public_key_bytes, signing_public_key_bytes),
+                (device_id, encryption_public_key_bytes, signing_public_key_bytes, device_label),
             )
             team_id = uuid7()
             conn.execute(
