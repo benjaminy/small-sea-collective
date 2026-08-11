@@ -172,6 +172,9 @@ The `NoteToSelf-SmallSeaCollectiveCore` berth (the Core berth) holds personal ke
 - How should Manager explain that recovery without prepared material requires a new teammate UUID and rebuilding connections?
 - How does an X3DH prekey bundle get published so that people inviting you can discover it? Is it in your public S3, and what signs it?
 - How should Manager verify and display real human intent when a device signature alone may reflect malware, token theft, or an ambiguous user interaction?
+- Does a concrete cross-participant UI need teammate-visible device labels, rather than stable device-key identifiers and a device count?
+  If so, the signed record should carry a label commitment beside a separately encrypted payload, following the existing admission-label pattern.
+- What observer-local device-liveness product is needed, and which device or Hub owns its evidence, retention, aggregation, and UI?
 - What local policy should the first admission extension use before integrating a new teammate or distributing future key material?
 - Which extension, if any, should represent scoped authority outside Small Sea?
 

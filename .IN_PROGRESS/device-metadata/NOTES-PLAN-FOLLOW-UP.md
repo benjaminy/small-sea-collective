@@ -78,47 +78,56 @@ and the accumulated history is a durable per-device activity timeline.
 The existing precedent to copy is `unknown_app_sighting(first_seen_at, last_seen_at, seen_count)` in the Hub-local schema.
 The observation's natural source is where sync actually happens, so the Hub is the more likely owner of the two.
 
-### The welcome-bundle AAD binds a version the receiver cannot read yet
+### The welcome-bundle payload version is duplicated rather than unavailable
 
 Found while checking what a `WelcomeBundle` version bump would cost.
 
-`welcome_bundle_aad` (note_to_self/bootstrap.py:66) binds `WelcomeBundle.version` into the AEAD associated data.
-But that version exists only inside the sealed plaintext, so the receiver needs it before it can decrypt.
-`prepare_identity_bootstrap` therefore hardcodes `version=1` (provisioning.py:2318).
-Any bump of `WelcomeBundle.version` without editing that literal makes every device link fail to decrypt.
+`welcome_bundle_aad` (note_to_self/bootstrap.py:66) binds `WelcomeBundle.version` into the AEAD associated data,
+while `prepare_identity_bootstrap` supplies a separate hardcoded `version=1` (provisioning.py:2318).
+The receiver does not need to discover that value inside the ciphertext: in the current single-version protocol,
+it independently knows the one payload version it supports.
+The defect is that the expected version is duplicated and never validated after decryption.
 
-The rule the other AAD sites already follow is that associated data may only contain values
-the receiver holds independently of the ciphertext.
+The general rule is that every associated-data input must be constructible before decryption from protocol
+constants, receiver-held state, or cleartext envelope fields bound by the authenticated construction.
 `_start_linked_team_bootstrap` binds `{bootstrap_id, team_id}` (provisioning.py:2702), both known out of band.
 `joining_device_id_hex` qualifies too — the joiner reads it from its own pending artifact.
-`version` is the only input that does not.
+The expected payload-version constant qualifies for the same reason.
 
-Pre-decrypt version checking is already handled one layer down, correctly:
-`seal_welcome_bundle` emits a cleartext envelope `version` (cuttlefish/bootstrap.py:94)
-that `open_welcome_bundle` validates before decrypting (:110).
-That envelope version is a separate number from the payload version and is the one doing domain separation.
+The three version mechanisms are separate:
+`_WELCOME_BUNDLE_INFO` is the HKDF domain-separation label;
+the cleartext envelope version selects the outer encryption-envelope format;
+and `WelcomeBundle.version` selects the signed payload contract.
+The envelope version does not replace or authenticate the payload version.
 
-The AAD binding was never providing sender authentication here in any case.
+The AAD does not provide sender authentication here.
 The seal is anonymous public-key encryption and the joining device's public key is published in the join request,
 so anyone can produce a well-formed sealed bundle.
-Sender authentication comes from the Ed25519 signature, which is not verified until `finalize_identity_bootstrap`,
-because the signer's public key lives in the NoteToSelf DB that gets fetched between the two steps.
+The Ed25519 signature is not verified until `finalize_identity_bootstrap`, because the signer's public key
+lives in the NoteToSelf DB fetched between the two steps.
+That proves the bundle was signed by a key in the fetched database, but the remote descriptor selecting that
+database came from the same bundle.
+The comparison of the second confirmation string with the existing device's value is what binds the flow to
+the intended participant and authorizing device when the bundle transport does not already provide equivalent
+authentication.
+That comparison produces local ceremony evidence; it does not grant team standing or establish a global trust fact.
 
-Ruling: remove `version` from the AAD.
-The payload version stays in the signed plaintext, where the signature covers it.
+Ruling: keep the expected payload version in AAD, replace the duplicated literals with one shared constant,
+and reject unsupported artifact versions explicitly.
+If simultaneous payload versions are supported later, carrying a cleartext payload-version selector in the
+outer envelope and authenticating it is a separate compatibility design.
 
 ### Three definitions of `user_device`, two of them dead
 
-- `small_sea_note_to_self/sql/shared_schema.sql` — live, the one this branch changes.
-- `small-sea-manager/sql/core_note_to_self_schema.sql` — dead and already drifted to `user_device(id, key)`.
+- `packages/small-sea-note-to-self/small_sea_note_to_self/sql/shared_schema.sql` — live, the one this branch changes.
+- `packages/small-sea-manager/small_sea_manager/sql/core_note_to_self_schema.sql` — dead and already drifted to `user_device(id, key)`.
    Its only initializer, `_initialize_core_note_to_self_schema` (provisioning.py:2512), raises `NotImplementedError`.
 - `class UserDevice(Base)` (provisioning.py:1975) — unreferenced repo-wide.
 
 The whole Manager SQLAlchemy model block is dead; the Hub defines its own duplicate models (backend.py:156)
 rather than importing the Manager's.
-This branch removes only the two mirrors of `user_device`, which are the ones that would silently drift
-once the column lands.
-The rest of the dead block is an unrelated cleanup.
+Both mirrors are pre-existing dead code and cannot affect the live schema change.
+Removing them belongs with the broader dead-code cleanup rather than this branch.
 
 ### Note, not scope
 
@@ -129,6 +138,28 @@ Flagging it; not touching it on this branch.
 The Hub reads the participant's NoteToSelf Core DB directly through its own ORM models (backend.py:410-418),
 which conflicts with the Manager-database-exclusivity mandate in AGENTS.md.
 Flagging it; not touching it on this branch.
+
+### Remaining decisions
+
+The security property is settled: signature verification proves internal consistency with the fetched NoteToSelf
+database, while the second comparison or an equivalently authenticated delivery binds that identity to the
+authorizing device the user intended.
+That result should be exposed as local ceremony evidence rather than collapsed into a universal trusted/untrusted bit.
+The default Manager policy is conservative: it may stage isolated local state, fetch, verify, and present the evidence,
+but ordinary identity use, remote mutations, team joins, and key distribution require a match or equivalently
+authenticated delivery.
+A simple, conspicuous, device-local dangerous override permits ordinary actions in an unconfirmed or mismatched
+state for research and testing.
+It must preserve the actual evidence state and may not bypass parsing, AEAD, signature, or artifact-version checks.
+What remains is implementation scope: the persisted status shape, confirmation input, mismatch cleanup, and whether
+that work belongs on this branch or in a follow-up.
+
+Two product designs are explicitly deferred rather than blocking this branch:
+
+- **Future multi-version negotiation.** The current branch can use one expected payload-version constant.
+  Supporting old and new payload versions simultaneously would require a clear pre-decrypt selector and downgrade policy.
+- **Deferred metadata products.** Teammate-visible labels remain deferred until a concrete UI requires them,
+  and peer liveness still needs an owner, observation source, retention policy, and UI before implementation.
 
 # Plan
 
@@ -145,7 +176,8 @@ The two riskier fields land as written "not yet" decisions.
    (Already done, recorded above.)
 
 2. **Record the placement decision durably.**
-   Add the ruling — device metadata is participant-tier, not team-tier, and why — to `architecture.md`
+   Add the field-specific ruling — own-device labels are participant-tier, cryptographic standing is team-tier,
+   and observed liveness is local — to `architecture.md`
    near §Database Access, which already owns the tier boundaries.
    Keep it to the ruling: §Database Access is currently three sentences and the tier table would swamp it.
    Put the tier table, the `user_device.label` schema, and the creation/link behavior in
@@ -155,29 +187,23 @@ The two riskier fields land as written "not yet" decisions.
    → verify: a reader who has not seen this branch can answer "where does a device nickname go, and why not the team DB?"
       from the committed docs alone, and the Manager spec agrees with the implemented schema and bootstrap contract.
 
-3. **Remove `version` from the welcome-bundle AAD.**
-   Drop the `version` parameter from `welcome_bundle_aad` and delete the hardcoded `version=1`
-   at the joiner's unseal site (provisioning.py:2318).
-   The payload version stays inside the signed plaintext; the cleartext envelope version
-   keeps doing pre-decrypt domain separation.
-   This must precede steps 7 and 8, which bump `WelcomeBundle.version`.
-   → verify: an end-to-end device-link micro test still passes, and a second test bumping the bundle version
-      shows the link still succeeds — which it cannot do against current `main`.
+3. **Centralize and enforce bootstrap artifact versions.**
+   Define one supported-version constant for each versioned artifact and use the expected welcome-bundle
+   version on both sides of `welcome_bundle_aad`.
+   Validate `JoinRequestArtifact.version` before admission side effects and validate decrypted
+   `WelcomeBundle.version` and `SignedWelcomeBundle.version` before using their fields.
+   Keep the outer encryption-envelope version separate.
+   → verify: the current end-to-end device-link micro test passes; unsupported join-request, welcome-bundle,
+      and signed-wrapper versions are rejected; and the outer-envelope version test remains independent.
 
-4. **Delete the two dead `user_device` mirrors.**
-   Remove `small-sea-manager/sql/core_note_to_self_schema.sql` and its dead initializer
-   `_initialize_core_note_to_self_schema`, and remove `class UserDevice(Base)`.
-   Leave the rest of the dead Manager ORM block alone.
-   → verify: `grep -rn "user_device"` finds exactly one schema definition, the live one; suites stay green.
-
-5. **Add `user_device.label` to the shared NoteToSelf schema.**
+4. **Add `user_device.label` to the shared NoteToSelf schema.**
    Add a nullable `TEXT` column to `small_sea_note_to_self/sql/shared_schema.sql`,
    bump `SHARED_SCHEMA_VERSION`, and do not add a migration.
    `USER_SCHEMA_VERSION` governs team DBs and must not change for this NoteToSelf-only schema edit.
    → verify: a `small-sea-note-to-self` micro test asserts that a fresh shared DB has the column and that
       `PRAGMA user_version` matches the bumped `SHARED_SCHEMA_VERSION`.
 
-6. **Populate the initial participant device label.**
+5. **Populate the initial participant device label.**
    Replace the currently unused `device` argument to `create_new_participant` / `_initialize_user_db`
    with an explicit optional `device_label`, and write it at the initial `user_device` insert.
    Keep omission as `NULL`; do not derive a label from the participant nickname or host environment.
@@ -187,7 +213,7 @@ The two riskier fields land as written "not yet" decisions.
    → verify: Manager micro tests show that an initial label round-trips and omission leaves `NULL`,
       and a sandbox workspace built by the dev tooling has a non-null label on its initial device.
 
-7. **Carry the joining device's self-assigned label through the link request.**
+6. **Carry the joining device's self-assigned label through the link request.**
    Add optional `device_label` input to `create_identity_join_request` and its Manager wrapper.
    Add that value to `JoinRequestArtifact` and advance the artifact from version 1 to version 2.
    At authorization, write the artifact's label at the second `user_device` insert.
@@ -201,44 +227,41 @@ The two riskier fields land as written "not yet" decisions.
       Binding into the authentication string is structural — `canonical_join_request_artifact_bytes`
       hashes `asdict`, so any new field is covered — so assert it, but do not count it as evidence.
 
-8. **Fix `authorizing_device_label`** to read the authorizing device's own label,
+7. **Fix `authorizing_device_label`** to read the authorizing device's own label,
    falling back to `null` rather than to the participant nickname.
    The field stays present in the signed bytes with a `null` value; omitting the key would change
    canonicalization and the signature shape.
    Reading the label means adding `ud.label` to `_current_device_row` (provisioning.py:256).
-   Append it last: five call sites index that row positionally and read `device_row[4]`
-   as `signing_private_key_ref` (2251, 2532, 2872, 4471, 5148).
-   Make `WelcomeBundle.authorizing_device_label` optional and advance `WelcomeBundle` and
-   `SignedWelcomeBundle` from version 1 to version 2 so the signed wire contract records the changed
-   field semantics.
+   Append it last because five call sites index that row positionally (2251, 2532, 2872, 4471, 5148),
+   including two that read position 4 as `signing_private_key_ref`.
+   Make `WelcomeBundle.authorizing_device_label` optional and advance `WelcomeBundle` from version 1 to
+   version 2 so the signed payload contract records the changed field semantics.
+   Keep `SignedWelcomeBundle.version` unchanged because its wrapper contract does not change.
    → verify: micro test over the device-link bundle showing that with a labeled authorizing device the bundle
       carries that label, and with an unlabeled one it does *not* silently carry the participant nickname.
       This is the test that proves the specific defect is gone, so it should fail against current `main`.
 
-9. **Confirm nothing regressed.**
+8. **Confirm nothing regressed.**
    Run the full micro test suites for `small-sea-manager` and `small-sea-note-to-self`.
    The label must not be added to Hub `/session/info` or another app-facing identity surface;
    run a targeted Hub micro test only if an implementation change touches that path.
    → verify: green, and every changed production line belongs to the NoteToSelf schema/version,
-      the two device-creation paths, the versioned bootstrap artifacts, the AAD fix,
-      the deleted mirrors, or their documentation.
+      the two device-creation paths, enforced bootstrap versions, or their documentation.
 
 Integrity argument for a skeptic: the branch adds one nullable column, corrects one already-wrong value,
-removes one input from an AEAD binding, and deletes two dead schema mirrors.
+and makes existing artifact-version markers effective.
 There is no new table, team-synced metadata, app-facing identity field, or trust-path change — verification still goes through
 `key_certificate` traversal and never reads a label.
 The reviewable claim is narrow: does the repo now contain a written answer to #57's device-metadata question,
 and is the one implemented field confined to the participant's own sync tier?
 
-The version bumps in steps 7 and 8 buy nothing that is checked today; both deserializers are bare
-`Artifact(**payload)` and no code reads a `version` field.
-They are kept deliberately, as practice for maintaining version markers, per the AGENTS.md rule about
-keeping schema/version markers in place.
-Step 3 is what makes that practice safe rather than a trap.
+The existing artifact-version markers are not consistently checked today.
+Step 3 turns them into enforced protocol boundaries rather than inert documentation.
 
 Documentation ownership is split deliberately.
 `architecture.md` owns the tier boundary and privacy/durability ruling;
 `packages/small-sea-manager/spec.md` owns the tier table, the concrete field, and bootstrap behavior;
+`packages/cuttlefish/README.md` owns the project-wide AEAD associated-data construction rule;
 `Documentation/open-architecture-questions.md` owns only the deferred teammate-visible-label question.
 
 # Follow-up
@@ -248,13 +271,16 @@ Documentation ownership is split deliberately.
 - **New issue: teammate-visible device labels, deferred.** Record the "not yet" ruling and the condition for
    revisiting: a concrete UI need that `device_key_id` plus a device count cannot serve.
    Should reference the `invitee_label_commitment`/`invitee_label_payload` pattern as the required shape.
-- **New issue: peer device liveness observations.**
-   Hub-local `first_seen/last_seen/seen_count` per observed `device_key_id`, sourced from Cod Sync bundle arrivals.
-   Blocked on nothing; just not this branch.
+- **New issue: peer device liveness observations.** Decide the owner, evidence source, retention, aggregation,
+   and UI for observer-local liveness.
+   The strongest existing precedent is Hub-local `first_seen/last_seen/seen_count` per observed `device_key_id`,
+   sourced from Cod Sync bundle arrivals, but that is still a product design rather than a team fact.
 - **Consider on #57's remaining thread**: whether `team_device.created_at` should stay a synced wall-clock string.
-- **New issue: the Manager's SQLAlchemy model block is dead.** After this branch removes `UserDevice`,
-   the remaining models (`Nickname`, `Team`, `App`, `TeamAppBerth`, `CloudStorage`, `BerthCloudAllocation`,
-   `NotificationService`, `Invitation`, `TeamDevice`, `TeamDeviceKey`) are still unreferenced.
+- **New issue: the Manager's dead NoteToSelf schema mirrors.** Remove
+   `packages/small-sea-manager/small_sea_manager/sql/core_note_to_self_schema.sql`,
+   `_initialize_core_note_to_self_schema`, and the unreferenced SQLAlchemy model block (`UserDevice`,
+   `Nickname`, `Team`, `App`, `TeamAppBerth`, `CloudStorage`, `BerthCloudAllocation`,
+   `NotificationService`, `Invitation`, `TeamDevice`, `TeamDeviceKey`).
    The Hub does not import them; it defines its own duplicates.
 - **New issue: the Hub reads the Core DB directly.** `backend.py:410-418` opens the participant's
    NoteToSelf `core.db` and queries it through Hub-local ORM models mirroring the Manager's schema.

@@ -125,7 +125,8 @@ That does not hide all service metadata, but it separates "may perform this grou
 This is a real answer to a question Small Sea will face: how much can an untrusted intermediary usefully enforce?
 
 **Device linking, and the correction it forces.**
-The new device scans a QR code from an existing device, and the existing device transfers account identity key material over the resulting encrypted provisioning channel.
+The new device displays a QR code, the existing registered phone scans it,
+and the existing device transfers account identity key material over the resulting encrypted provisioning channel.
 The UX is excellent and worth copying.
 The key-custody model is not what Small Sea wants — see the cross-cutting finding above.
 Signal usernames reduce phone-number disclosure, but account registration remains phone-number anchored.

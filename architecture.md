@@ -351,6 +351,12 @@ list rather than being quietly inherited.
 **Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager.
 The NoteToSelf-SmallSeaCollectiveCore berth specifically (the one holding device and identity state) is referred to as the **Core berth**. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
 
+Device-related fields are placed by authority and lifecycle rather than collected into one device record.
+The signed history associating a device key with a teammate is durable team state.
+A participant's labels for their own devices belong in shared NoteToSelf state and do not affect trust.
+Last-seen, reachability, and sync success are observations owned by the observing device or Hub, not team facts.
+Peer storage routing is teammate-and-berth state rather than an intrinsic property of the announcing device.
+
 ### App Bootstrap
 Apps may request Hub sessions, but they do not register themselves. If an app
 asks for a session before the participant or team has provisioned the relevant
