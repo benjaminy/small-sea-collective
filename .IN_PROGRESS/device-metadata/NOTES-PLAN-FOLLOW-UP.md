@@ -248,6 +248,12 @@ The two riskier fields land as written "not yet" decisions.
       chosen locally.
       Binding into the authentication string is structural — `canonical_join_request_artifact_bytes`
       hashes `asdict`, so any new field is covered — so assert it, but do not count it as evidence.
+   (Done. `JOIN_REQUEST_ARTIFACT_VERSION` is now 2, the first bump the step 3 enforcement makes meaningful.
+   The joiner's clone gets the label through the ordinary NoteToSelf fetch, so only the authorizer writes it.
+   Sabotaging the authorizer to write the participant nickname instead of the artifact's label — the same
+   shape as the step 7 defect — fails all five new Manager tests.
+   A differing label on a retry is refused rather than silently applied, so relabelling stays a separate
+   operation that this branch does not implement.)
 
 7. **Fix `authorizing_device_label`** to read the authorizing device's own label,
    falling back to `null` rather than to the participant nickname.

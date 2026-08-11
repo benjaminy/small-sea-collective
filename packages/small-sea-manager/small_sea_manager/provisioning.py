@@ -2086,6 +2086,11 @@ USER_SCHEMA_VERSION = 64
 # ---- Provisioning functions ----
 
 
+def _validate_device_label(device_label):
+    if device_label is not None and not isinstance(device_label, str):
+        raise ValueError("device_label must be a string or null")
+
+
 def create_new_participant(root_dir, nickname, device_label=None):
     """Create a new participant: directory layout, user DB, git repo.
 
@@ -2093,6 +2098,7 @@ def create_new_participant(root_dir, nickname, device_label=None):
     It stays in shared NoteToSelf, is never shown to teammates, and is left NULL
     when omitted rather than guessed from the nickname or the host.
     """
+    _validate_device_label(device_label)
     root_dir = pathlib.Path(root_dir)
     ident = uuid7()
     ident_dir = root_dir / "Participants" / ident.hex()
@@ -2173,8 +2179,14 @@ def _initialize_user_db(root_dir, ident, nickname, device_label):
     nts_repo.commit("Welcome to Small Sea Collective")
 
 
-def create_identity_join_request(root_dir):
-    """Create a persisted public join request artifact for a blank installation."""
+def create_identity_join_request(root_dir, *, device_label=None):
+    """Create a persisted public join request artifact for a blank installation.
+
+    ``device_label`` is this device's own label for itself. It travels in the
+    public artifact so the authorizing device records the label the joiner chose
+    rather than one picked on the joiner's behalf.
+    """
+    _validate_device_label(device_label)
     root_dir = pathlib.Path(root_dir)
     device_id = uuid7()
     encryption_private_key_bytes, encryption_public_key_bytes = generate_bootstrap_keypair()
@@ -2189,6 +2201,7 @@ def create_identity_join_request(root_dir):
         device_id_hex=device_id.hex(),
         device_encryption_public_key_hex=encryption_public_key_bytes.hex(),
         device_signing_public_key_hex=signing_public_key_bytes.hex(),
+        device_label=device_label,
     )
     auth_string = join_request_auth_string(artifact)
     _persist_pending_join_state(
@@ -2237,21 +2250,25 @@ def authorize_identity_join(
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         authorizing_device = _current_device_row(conn)
         existing = conn.execute(
-            "SELECT bootstrap_encryption_key, signing_key FROM user_device WHERE id = ?",
+            "SELECT bootstrap_encryption_key, signing_key, label FROM user_device WHERE id = ?",
             (device_id,),
         ).fetchone()
         if existing is None:
             conn.execute(
                 """
-                INSERT INTO user_device (id, bootstrap_encryption_key, signing_key)
-                VALUES (?, ?, ?)
+                INSERT INTO user_device (id, bootstrap_encryption_key, signing_key, label)
+                VALUES (?, ?, ?, ?)
                 """,
-                (device_id, encryption_public_key, signing_public_key),
+                (device_id, encryption_public_key, signing_public_key, artifact.device_label),
             )
             conn.commit()
             inserted_user_device = True
         elif existing[0] != encryption_public_key or existing[1] != signing_public_key:
             raise ValueError("A device with that ID is already registered with different keys")
+        elif existing[2] != artifact.device_label:
+            # Reissuing a welcome bundle is idempotent; relabelling a device is a
+            # separate operation and must not ride along on a bootstrap retry.
+            raise ValueError("A device with that ID is already registered with a different label")
         authorizing_device_id = authorizing_device[0]
         authorizing_signing_private_key = _read_local_secret(pathlib.Path(authorizing_device[4]))
 

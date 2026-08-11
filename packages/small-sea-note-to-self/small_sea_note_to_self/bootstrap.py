@@ -12,9 +12,14 @@ from typing import Any
 # the signed bundle fields, SIGNED_WELCOME_BUNDLE_VERSION covers only the outer
 # wrapper fields. Neither has anything to do with the encryption-envelope version
 # in cuttlefish, which selects the sealed-envelope format instead.
-JOIN_REQUEST_ARTIFACT_VERSION = 1
+JOIN_REQUEST_ARTIFACT_VERSION = 2
 WELCOME_BUNDLE_VERSION = 1
 SIGNED_WELCOME_BUNDLE_VERSION = 1
+
+
+def _require_optional_string(label: str, value: Any) -> None:
+    if value is not None and not isinstance(value, str):
+        raise ValueError(f"{label} must be a string or null")
 
 
 @dataclass(frozen=True)
@@ -23,6 +28,11 @@ class JoinRequestArtifact:
     device_id_hex: str
     device_encryption_public_key_hex: str
     device_signing_public_key_hex: str
+    # The joining device's own label for itself, chosen before it has an identity.
+    device_label: str | None
+
+    def __post_init__(self) -> None:
+        _require_optional_string("device_label", self.device_label)
 
 
 @dataclass(frozen=True)
@@ -57,7 +67,7 @@ def _require_version(label: str, payload: Any, supported: int) -> None:
     is free to change which fields exist.
     """
     version = payload.get("version") if isinstance(payload, dict) else None
-    if version != supported:
+    if type(version) is not int or version != supported:
         raise ValueError(
             f"Unsupported {label} version: {version!r} (this installation supports {supported})"
         )

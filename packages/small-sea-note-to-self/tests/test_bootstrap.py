@@ -14,6 +14,7 @@ from small_sea_note_to_self.bootstrap import (
     deserialize_join_request_artifact,
     deserialize_signed_welcome_bundle_plaintext,
     deserialize_welcome_bundle_plaintext,
+    join_request_auth_string,
     serialize_join_request_artifact,
     serialize_signed_welcome_bundle_plaintext,
     serialize_welcome_bundle_plaintext,
@@ -27,6 +28,7 @@ def _artifact(**overrides):
             device_id_hex="aa" * 16,
             device_encryption_public_key_hex="bb" * 32,
             device_signing_public_key_hex="cc" * 32,
+            device_label="Alice's phone",
         ),
         **overrides,
     )
@@ -67,6 +69,37 @@ def test_join_request_artifact_round_trip():
     assert deserialize_join_request_artifact(
         serialize_join_request_artifact(artifact)
     ) == artifact
+
+
+def test_join_request_artifact_round_trips_an_absent_device_label():
+    artifact = _artifact(device_label=None)
+
+    restored = deserialize_join_request_artifact(serialize_join_request_artifact(artifact))
+
+    assert restored == artifact
+    assert restored.device_label is None
+
+
+def test_join_request_artifact_rejects_a_non_string_device_label():
+    payload = json.loads(
+        base64.b64decode(serialize_join_request_artifact(_artifact())).decode("utf-8")
+    )
+    payload["device_label"] = 42
+    encoded = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+
+    with pytest.raises(ValueError, match="device_label"):
+        deserialize_join_request_artifact(encoded)
+
+
+def test_device_label_is_covered_by_the_authentication_string():
+    """Structural, since the digest is over asdict of the whole artifact.
+
+    Asserted so a future hand-written canonicalization cannot silently drop the field,
+    but this is not independent evidence that the label is bound.
+    """
+    assert join_request_auth_string(_artifact(device_label="Alice's phone")) != (
+        join_request_auth_string(_artifact(device_label="Alice's laptop"))
+    )
 
 
 def test_welcome_bundle_round_trip():
@@ -130,6 +163,30 @@ def test_unsupported_nested_bundle_version_is_rejected_through_the_wrapper():
         deserialize_signed_welcome_bundle_plaintext(plaintext)
 
     assert "welcome bundle" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("plaintext", "deserialize"),
+    [
+        (
+            serialize_join_request_artifact(
+                _artifact(version=float(JOIN_REQUEST_ARTIFACT_VERSION))
+            ),
+            deserialize_join_request_artifact,
+        ),
+        (
+            serialize_welcome_bundle_plaintext(_bundle(version=True)),
+            deserialize_welcome_bundle_plaintext,
+        ),
+        (
+            serialize_signed_welcome_bundle_plaintext(_signed(version=True)),
+            deserialize_signed_welcome_bundle_plaintext,
+        ),
+    ],
+)
+def test_non_integer_versions_are_rejected(plaintext, deserialize):
+    with pytest.raises(ValueError, match="version"):
+        deserialize(plaintext)
 
 
 def test_missing_version_is_rejected_before_other_fields_are_read():
