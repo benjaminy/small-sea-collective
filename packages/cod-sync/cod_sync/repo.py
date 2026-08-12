@@ -191,6 +191,49 @@ class Repo:
         self._run_wt(["commit", "-m", message], method_name="commit")
         return self.head()
 
+    def work_tree_paths_differ_from_head(self, paths: List[str]) -> bool:
+        """Return True if work-tree content at paths differs from HEAD.
+
+        Compares the work tree, not the index, so an unstaged modification at
+        one of the named paths counts as a difference. Changes outside paths
+        are ignored, staged or not.
+
+        Requires HEAD to resolve; `git diff HEAD` is fatal in a repo with no
+        commits, so callers must check has_commits() first.
+        """
+        paths = list(paths)
+        if not paths:
+            raise ValueError("paths must contain at least one path")
+        check = self._run_wt(
+            ["diff", "--quiet", "HEAD", "--"] + paths,
+            raise_on_error=False,
+            method_name="work_tree_paths_differ_from_head",
+        )
+        return check.returncode != 0
+
+    def commit_paths(self, paths: List[str], message: str) -> Optional[str]:
+        """Commit work-tree content at paths. Returns the new SHA, or None if no-op.
+
+        This is not commit() with a filter: commit() commits the index, while
+        this commits work-tree content at the named paths (`git commit -- <paths>`)
+        and ignores unrelated index state. Unrelated staged entries are neither
+        committed nor unstaged.
+
+        The no-op decision delegates to work_tree_paths_differ_from_head, so it
+        inherits that method's precondition: the named paths must already be
+        tracked. For an untracked path the check reports nothing to do while
+        the commit itself would error.
+        """
+        paths = list(paths)
+        if not paths:
+            raise ValueError("paths must contain at least one path")
+        if not self.work_tree_paths_differ_from_head(paths):
+            return None
+        self._run_wt(
+            ["commit", "-m", message, "--"] + paths, method_name="commit_paths"
+        )
+        return self.head()
+
     def checkout_head(self):
         """Refresh work tree to HEAD (git checkout HEAD -- .)."""
         self._run_wt(["checkout", "HEAD", "--", "."], method_name="checkout_head")

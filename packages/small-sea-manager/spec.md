@@ -947,9 +947,15 @@ The out-of-sync state is a two-part story:
 
 1. **Incoming:** The Hub monitors teammates' cloud locations in the background. When new data arrives, the Hub places a notification in its mailbox for the Manager (and other apps) to consume. The Manager should surface this to the user.
 
-2. **Outgoing:** The Manager tracks whether local commits have been pushed. If there are unpushed commits, the Manager should surface increasingly noticeable reminders.
+2. **Outgoing:** The Manager tracks whether completed Manager-owned Core state has been published.
+That covers both unpublished commits and completed mutations still sitting uncommitted in the team `core.db`; a mutation that has finished is outstanding whether or not anything committed it.
+Other work-tree state under `Sync/` is not Manager-owned publication state and does not count.
+If anything is outstanding, the Manager should surface increasingly noticeable reminders.
+This outgoing state is tracked independently of the incoming state above; neither is derived from the other.
 
-**Push (user-initiated):** Opens a Hub session for the relevant berth (e.g. `{Team}/SmallSeaCollectiveCore`), triggers a Cod Sync push via the Hub. The Hub handles the actual cloud I/O.
+**Push (user-initiated):** Commits outstanding Manager-owned `core.db` state, opens a Hub session for the relevant berth (e.g. `{Team}/SmallSeaCollectiveCore`), then triggers a Cod Sync push via the Hub.
+The Hub handles the actual cloud I/O.
+Preparing `core.db` is purely local, so a publication with nothing new to send is reported as such without opening a session.
 
 > For testing, sync can be triggered immediately without user interaction via a config flag or test fixture.
 
