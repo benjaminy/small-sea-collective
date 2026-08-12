@@ -195,6 +195,9 @@ class TeamManager:
         Stages and commits any outstanding changes to core.db before pushing
         so that NoteToSelf mutations (e.g. new team rows from create_team) are
         included in the push without requiring callers to commit explicitly.
+
+        Unlike push_team, this still commits the whole index. The analogous
+        path-scoping change belongs with the NoteToSelf multi-device work.
         """
         session = self._open_note_to_self_session(mode="passthrough")
         berth_id, adopted = self._ensure_note_to_self_adopted_count(session)
@@ -642,49 +645,99 @@ class TeamManager:
     def _team_repo_dir(self, team_name: str) -> pathlib.Path:
         return self.root_dir / "Participants" / self.participant_hex / team_name / "Sync"
 
-    def _git_head(self, repo_dir: pathlib.Path) -> Optional[str]:
-        return _Repo(repo_dir / ".git", repo_dir).head()
+    def _team_repo(self, team_name: str) -> _Repo:
+        repo_dir = self._team_repo_dir(team_name)
+        return _Repo(repo_dir / ".git", repo_dir)
 
     def _push_status_file(self, team_name: str) -> pathlib.Path:
         # Stored alongside (not inside) the Sync git repo to avoid polluting it.
         return self.root_dir / "Participants" / self.participant_hex / team_name / ".ss_last_push"
 
-    def get_team_sync_status(self, team_name: str) -> str:
-        """Return 'synced', 'needs_push', or 'never_pushed'."""
-        repo_dir = self._team_repo_dir(team_name)
-        current_head = self._git_head(repo_dir)
-        if current_head is None:
-            return "never_pushed"
+    def _last_published_head(self, team_name: str) -> Optional[str]:
         status_file = self._push_status_file(team_name)
         if not status_file.exists():
+            return None
+        return status_file.read_text().strip() or None
+
+    def get_team_sync_status(self, team_name: str) -> str:
+        """Return 'synced', 'needs_push', or 'never_pushed'.
+
+        Reports Manager-owned outgoing state only. Incoming state (hinted,
+        fetched, parked, conflicted) is tracked separately.
+
+        'never_pushed' means this installation has no successful-publication
+        marker, including after a failed first attempt. After a successful
+        publication, 'needs_push' covers both an unpublished commit and
+        completed but uncommitted Manager-owned Core state. Anything else under
+        Sync/ — staged, modified, or untracked — is not Manager-owned
+        publication state and does not affect the answer.
+        """
+        repo = self._team_repo(team_name)
+        # Must precede any HEAD-relative check: `git diff HEAD` is fatal in a
+        # repo with no commits.
+        if repo.head() is None:
             return "never_pushed"
-        last_pushed = status_file.read_text().strip()
-        return "synced" if current_head == last_pushed else "needs_push"
+        last_pushed = self._last_published_head(team_name)
+        if last_pushed is None:
+            return "never_pushed"
+        if repo.head() != last_pushed:
+            return "needs_push"
+        # Same read-only check the publication commit uses, so status and
+        # publication can never disagree about what is outstanding.
+        if repo.work_tree_paths_differ_from_head(["core.db"]):
+            return "needs_push"
+        return "synced"
 
-    def push_team(self, team_name):
-        """Push the team's Sync repo to the participant's cloud bucket.
+    def push_team(self, team_name) -> str:
+        """Publish the team's completed Core state to the participant's cloud.
 
-        Opens a Hub session internally — works in auto-approve mode without a
-        PIN provider.  Raises RuntimeError on CAS conflict (cloud is ahead;
-        pull from peers first).
+        Commits outstanding `core.db` work first, so a Manager mutation that
+        commits nothing itself cannot stay outside the published chain. Uses a
+        path-scoped commit rather than push_note_to_self's whole-index
+        stage+commit, which would also publish whatever else already sits in
+        the index. Unifying the two idioms is follow-up work.
+
+        Returns 'published', or 'already_published' when this installation's
+        marker already confirms the current HEAD. Opens a Hub session
+        internally — works in auto-approve mode without a PIN provider.
+        Raises RuntimeError on CAS conflict.
         """
         from cod_sync.protocol import CasConflictError
 
+        repo_dir = self._team_repo_dir(team_name)
+        repo = self._team_repo(team_name)
+        repo.commit_paths(["core.db"], "Update team Core")
+        # Capture the head being published before the remote operation, so the
+        # marker names the exact state Cod Sync was handed.
+        intended_head = repo.head()
+
+        # Preparing core.db is purely local, so decide this before opening a
+        # session: a no-op publication must not prompt for a PIN. A missing
+        # marker does not prove the remote lacks this head, so publication is
+        # still attempted in that case.
+        if intended_head is not None and self._last_published_head(team_name) == intended_head:
+            return "already_published"
+
         session = self._get_or_open_session(team_name)
         session.ensure_cloud_ready()
-        repo_dir = self._team_repo_dir(team_name)
-        remote = SmallSeaRemote(session.token, base_url=self.client._base_url)
+        remote = SmallSeaRemote(
+            session.token,
+            base_url=self.client._base_url,
+            client=self.client._http_client,
+        )
         cs = CodSync("origin", repo_dir=repo_dir)
         cs.remote = remote
         try:
             cs.push_to_remote(["main"])
-        except CasConflictError:
+        except CasConflictError as exc:
             raise RuntimeError(
-                "Push conflict — cloud is ahead of local. Pull from peers first."
-            )
-        head = self._git_head(repo_dir)
-        if head:
-            self._push_status_file(team_name).write_text(head)
+                "Publication conflict — this participant's published Core chain "
+                "changed since this installation last observed it. The local "
+                "commit remains unpublished."
+            ) from exc
+        if intended_head:
+            self._push_status_file(team_name).write_text(intended_head)
+        return "published"
 
     def complete_invitation_acceptance(self, team_name, acceptance_b64):
         """Record invitee acceptance and finalize when quorum is met."""

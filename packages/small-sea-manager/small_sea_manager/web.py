@@ -419,8 +419,12 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     async def push_team(request: Request, team_name: str):
         mgr = _mgr(request)
         try:
-            mgr.push_team(team_name)
-            notice = "Pushed to cloud."
+            outcome = mgr.push_team(team_name)
+            notice = (
+                "Already published."
+                if outcome == "already_published"
+                else "Pushed to cloud."
+            )
             error = None
         except Exception as e:
             notice = None

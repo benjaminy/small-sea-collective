@@ -138,6 +138,106 @@ def test_commit_returns_none_when_nothing_staged(scratch_dir):
 
 
 # ---------------------------------------------------------------------------
+# commit_paths / work_tree_paths_differ_from_head
+# ---------------------------------------------------------------------------
+
+
+def _index_entry(repo_dir, path):
+    """Return the raw `git ls-files -s` line for path, or None if unstaged."""
+    result = subprocess.run(
+        ["git", "-C", str(repo_dir), "ls-files", "-s", "--", path],
+        capture_output=True, text=True, check=True,
+    )
+    return result.stdout.strip() or None
+
+
+def _commit_paths_fixture(scratch_dir):
+    """A repo with a committed core.db and an unrelated tracked file."""
+    work = pathlib.Path(scratch_dir) / "work"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+    (work / "core.db").write_text("v1\n")
+    (work / "other.txt").write_text("other v1\n")
+    repo.stage(["core.db", "other.txt"])
+    repo.commit("base")
+    return work, repo
+
+
+def test_commit_paths_commits_named_path_and_leaves_unrelated_staged(scratch_dir):
+    work, repo = _commit_paths_fixture(scratch_dir)
+
+    (work / "core.db").write_text("v2\n")
+    (work / "other.txt").write_text("other v2\n")
+    repo.stage(["other.txt"])
+    staged_before = _index_entry(work, "other.txt")
+
+    base = repo.head()
+    sha = repo.commit_paths(["core.db"], "Update core")
+
+    assert sha is not None and sha != base
+    # The unrelated staged entry is untouched: still staged, byte-identical.
+    assert _index_entry(work, "other.txt") == staged_before
+    # ... and it is not part of the commit.
+    changed = subprocess.run(
+        ["git", "-C", str(work), "show", "--name-only", "--format=", sha],
+        capture_output=True, text=True, check=True,
+    ).stdout.split()
+    assert changed == ["core.db"]
+
+
+def test_commit_paths_is_no_op_when_named_path_matches_head(scratch_dir):
+    work, repo = _commit_paths_fixture(scratch_dir)
+
+    # Only the unrelated path changed, and it is staged.
+    (work / "other.txt").write_text("other v2\n")
+    repo.stage(["other.txt"])
+    staged_before = _index_entry(work, "other.txt")
+
+    base = repo.head()
+    assert repo.work_tree_paths_differ_from_head(["core.db"]) is False
+    assert repo.commit_paths(["core.db"], "Update core") is None
+    assert repo.head() == base
+    assert _index_entry(work, "other.txt") == staged_before
+
+
+def test_commit_paths_commits_unstaged_work_tree_change(scratch_dir):
+    work, repo = _commit_paths_fixture(scratch_dir)
+
+    # Modified but never staged — `diff --cached` would call this a no-op.
+    (work / "core.db").write_text("v2\n")
+
+    base = repo.head()
+    assert repo.work_tree_paths_differ_from_head(["core.db"]) is True
+    sha = repo.commit_paths(["core.db"], "Update core")
+
+    assert sha is not None and sha != base
+    committed = subprocess.run(
+        ["git", "-C", str(work), "show", f"{sha}:core.db"],
+        capture_output=True, text=True, check=True,
+    ).stdout
+    assert committed == "v2\n"
+
+
+def test_path_scoped_operations_reject_empty_paths(scratch_dir):
+    work, repo = _commit_paths_fixture(scratch_dir)
+
+    (work / "core.db").write_text("v2\n")
+    (work / "other.txt").write_text("other v2\n")
+    repo.stage(["other.txt"])
+    staged_before = _index_entry(work, "other.txt")
+    base = repo.head()
+
+    with pytest.raises(ValueError, match="at least one path"):
+        repo.work_tree_paths_differ_from_head([])
+    with pytest.raises(ValueError, match="at least one path"):
+        repo.commit_paths([], "Must not commit the index")
+
+    assert repo.head() == base
+    assert _index_entry(work, "other.txt") == staged_before
+    assert repo.work_tree_paths_differ_from_head(["core.db"]) is True
+
+
+# ---------------------------------------------------------------------------
 # status
 # ---------------------------------------------------------------------------
 

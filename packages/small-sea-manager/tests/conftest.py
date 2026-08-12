@@ -3,6 +3,7 @@
 import os
 import pathlib
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -38,6 +39,25 @@ def playground_dir():
         print(f"Temp directory disappeared ({dir_name})")
 
 
+def _free_ports(count):
+    """Reserve distinct ephemeral TCP ports and return their numbers.
+
+    All sockets stay bound until every port has been selected, so the returned
+    ports cannot collide with each other. They are closed before MinIO binds,
+    so allocation against other processes remains advisory.
+    """
+    sockets = []
+    try:
+        for _ in range(count):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sockets.append(sock)
+            sock.bind(("127.0.0.1", 0))
+        return [sock.getsockname()[1] for sock in sockets]
+    finally:
+        for sock in sockets:
+            sock.close()
+
+
 @pytest.fixture(scope="session")
 def minio_server_gen():
     servers = []
@@ -50,6 +70,12 @@ def minio_server_gen():
         env = os.environ.copy()
         env["MINIO_ROOT_USER"] = "minioadmin"
         env["MINIO_ROOT_PASSWORD"] = "minioadmin"
+        if port is None:
+            # Two distinctly allocated ports: deriving the console port as
+            # port + 1 collides with the next server's API port.
+            port, console_port = _free_ports(2)
+        else:
+            console_port = port + 1
         proc = subprocess.Popen(
             [
                 "minio",
@@ -58,7 +84,7 @@ def minio_server_gen():
                 "--address",
                 f":{port}",
                 "--console-address",
-                f":{port + 1}",
+                f":{console_port}",
             ],
             env=env,
         )
