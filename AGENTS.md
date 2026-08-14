@@ -91,6 +91,8 @@ In documentation, plans, comments, and discussion:
 - **Do NOT auto-commit.** You may prepare commits and stage changes, but always request explicit user approval before finalizing a git commit.
 - **Micro Tests over Unit Tests.** The project refers to quick, developer-focused tests as "micro tests." Ensure you use this terminology in discussions and documentation.
 - **Project status: still research. Do not spend effort on backward compatibility.**
+   There is currently little value in maintaining legacy anything in this project.
+   The quality and completeness of existing code is highly variable; decisions about whether to follow in the footsteps of repo precedent or correct old hacks / mistakes need to be make on a case-by-case basis.
    Prefer the cleanest design over migration shims or compatibility layers unless the user explicitly asks for them.
    Keep schema/version markers in place so future compatibility work remains possible.
 - For a nontrivial unit of work, copy `.IN_PROGRESS/InProgressBranchTemplate/` to `.IN_PROGRESS/{branch slug}/`
