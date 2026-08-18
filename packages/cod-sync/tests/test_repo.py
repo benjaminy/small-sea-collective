@@ -1,11 +1,21 @@
 """Micro tests for cod_sync.repo.Repo."""
 
+import io
 import pathlib
 import subprocess
 
 import pytest
 
-from cod_sync.repo import ConflictError, NoWorkTreeError, Repo
+from cod_sync.repo import (
+    REF_ADVANCE_ATTEMPTS,
+    BundleFormatError,
+    ConflictError,
+    NoWorkTreeError,
+    RefAdvanceContendedError,
+    RefDivergedError,
+    Repo,
+    RepoError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -456,3 +466,553 @@ def test_with_work_tree(scratch_dir):
     repo_wt.stage(["f.txt"])
     repo_wt.commit("msg")
     assert repo_wt.head() is not None
+
+
+# ---------------------------------------------------------------------------
+# Bundle helpers
+# ---------------------------------------------------------------------------
+
+
+def _commit(repo, work, name, text):
+    """Write and commit one file; return the new head SHA."""
+    (pathlib.Path(work) / name).write_text(text)
+    repo.stage([name])
+    return repo.commit(f"add {name}")
+
+
+@pytest.fixture
+def chain(scratch_dir):
+    """A repo with three commits on main, plus their SHAs.
+
+    Returns (repo, work, [sha1, sha2, sha3]).
+    """
+    work = pathlib.Path(scratch_dir) / "chain"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+    shas = [
+        _commit(repo, work, "a.txt", "alpha\n"),
+        _commit(repo, work, "b.txt", "beta\n"),
+        _commit(repo, work, "c.txt", "gamma\n"),
+    ]
+    return repo, work, shas
+
+
+def test_create_bundle_full_has_no_prerequisites(scratch_dir, chain):
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "full.bundle"
+    repo.create_bundle(path, ["main"])
+
+    assert repo.bundle_prerequisites(path) == set()
+    assert repo.bundle_heads(path) == {"refs/heads/main": shas[-1]}
+
+
+def test_create_bundle_incremental_exposes_its_prerequisite(scratch_dir, chain):
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "incr.bundle"
+    repo.create_bundle(path, [f"^{shas[0]}", "main"])
+
+    assert repo.bundle_prerequisites(path) == {shas[0]}
+    assert repo.bundle_heads(path) == {"refs/heads/main": shas[-1]}
+
+
+def test_create_bundle_rejects_empty_range(scratch_dir, chain):
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "empty.bundle"
+    with pytest.raises(RepoError):
+        repo.create_bundle(path, [f"^{shas[-1]}", "main"])
+
+
+def test_bundle_prerequisites_reads_v3_capability_line(scratch_dir, chain):
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "v3.bundle"
+    subprocess.run(
+        ["git", "--git-dir", str(repo.git_dir), "bundle", "create",
+         "--version=3", str(path), f"^{shas[0]}", "main"],
+        check=True, capture_output=True,
+    )
+    with open(path, "rb") as handle:
+        header = handle.read(4096)
+    assert header.startswith(b"# v3 git bundle\n")
+    assert b"\n@" in header
+
+    assert repo.bundle_prerequisites(path) == {shas[0]}
+
+
+@pytest.mark.parametrize(
+    "capability",
+    [b"@bad_key=value", b"@bad key=value", b"@valid=bad\x00value"],
+)
+def test_bundle_prerequisites_rejects_malformed_v3_capability(
+    scratch_dir, chain, capability
+):
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "malformed-v3.bundle"
+    path.write_bytes(
+        b"# v3 git bundle\n"
+        + capability
+        + b"\n"
+        + f"{shas[-1]} refs/heads/main\n\nPACK".encode()
+    )
+
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(path)
+
+
+def test_bundle_prerequisites_stops_reading_at_header(
+    scratch_dir, chain, monkeypatch
+):
+    repo, _work, shas = chain
+    header = (
+        f"# v2 git bundle\n-{shas[0]} base\n"
+        f"{shas[-1]} refs/heads/main\n\n"
+    ).encode()
+
+    class TrackingBytesIO(io.BytesIO):
+        def __exit__(self, *args):
+            self.position_at_close = self.tell()
+            return super().__exit__(*args)
+
+    stream = TrackingBytesIO(header + b"PACK" + b"x" * 65536)
+
+    def fake_open(_path, mode, **_kwargs):
+        assert mode == "rb"
+        return stream
+
+    monkeypatch.setattr("builtins.open", fake_open)
+
+    assert repo.bundle_prerequisites("tracked.bundle") == {shas[0]}
+    assert stream.position_at_close == len(header)
+
+
+def test_bundle_prerequisites_tolerates_spaces_in_commit_subject(scratch_dir):
+    work = pathlib.Path(scratch_dir) / "spacey"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+    (work / "a.txt").write_text("alpha\n")
+    repo.stage(["a.txt"])
+    repo.commit("a subject with several spaces in it")
+    base = repo.head()
+    _commit(repo, work, "b.txt", "beta\n")
+
+    path = pathlib.Path(scratch_dir) / "spacey.bundle"
+    repo.create_bundle(path, [f"^{base}", "main"])
+    assert repo.bundle_prerequisites(path) == {base}
+
+
+def test_bundle_prerequisites_readable_when_prerequisite_is_absent(scratch_dir, chain):
+    """The backward-walk case: verify fails, but the header still parses."""
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "incr.bundle"
+    repo.create_bundle(path, [f"^{shas[1]}", "main"])
+
+    other = Repo.init(pathlib.Path(scratch_dir) / "other.git")
+    assert other.has_commit(shas[1]) is False
+    assert other.bundle_prerequisites(path) == {shas[1]}
+    with pytest.raises(RepoError):
+        other.verify_bundle(path)
+
+
+def test_bundle_prerequisites_rejects_unrecognized_signature(scratch_dir, chain):
+    repo, _work, _shas = chain
+    path = pathlib.Path(scratch_dir) / "bogus.bundle"
+    path.write_bytes(b"# v9 git bundle\ndeadbeef refs/heads/main\n\nPACK")
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(path)
+
+
+def test_bundle_prerequisites_rejects_an_empty_header(scratch_dir, chain):
+    repo, _work, _shas = chain
+    path = pathlib.Path(scratch_dir) / "blank.bundle"
+    path.write_bytes(b"\n# v2 git bundle\n\nPACK")
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(path)
+
+
+def test_bundle_prerequisites_rejects_truncated_header(scratch_dir, chain):
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "trunc.bundle"
+    path.write_bytes(f"# v2 git bundle\n{shas[-1]} refs/heads/main\n".encode())
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(path)
+
+
+def test_bundle_prerequisites_rejects_out_of_order_lines(scratch_dir, chain):
+    repo, _work, shas = chain
+    good = pathlib.Path(scratch_dir) / "good.bundle"
+    repo.create_bundle(good, [f"^{shas[0]}", "main"])
+
+    # Prerequisite after an advertised ref.
+    reordered = pathlib.Path(scratch_dir) / "reordered.bundle"
+    reordered.write_bytes(
+        f"# v2 git bundle\n{shas[-1]} refs/heads/main\n-{shas[0]} a\n\nPACK".encode()
+    )
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(reordered)
+
+    # Capability line in a v2 bundle.
+    capability_in_v2 = pathlib.Path(scratch_dir) / "cap2.bundle"
+    capability_in_v2.write_bytes(
+        f"# v2 git bundle\n@object-format=sha1\n{shas[-1]} refs/heads/main\n\nPACK".encode()
+    )
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(capability_in_v2)
+
+    # Capability line after the bundle's contents.
+    late_capability = pathlib.Path(scratch_dir) / "cap3.bundle"
+    late_capability.write_bytes(
+        f"# v3 git bundle\n{shas[-1]} refs/heads/main\n@object-format=sha1\n\nPACK".encode()
+    )
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(late_capability)
+
+
+def test_bundle_prerequisites_rejects_malformed_lines(scratch_dir, chain):
+    repo, _work, shas = chain
+
+    no_refs = pathlib.Path(scratch_dir) / "norefs.bundle"
+    no_refs.write_bytes(f"# v2 git bundle\n-{shas[0]} a\n\nPACK".encode())
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(no_refs)
+
+    bad_prereq = pathlib.Path(scratch_dir) / "badprereq.bundle"
+    bad_prereq.write_bytes(
+        f"# v2 git bundle\n-notasha subject\n{shas[-1]} refs/heads/main\n\nPACK".encode()
+    )
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(bad_prereq)
+
+    missing_prereq_comment = (
+        pathlib.Path(scratch_dir) / "missing-prereq-comment.bundle"
+    )
+    missing_prereq_comment.write_bytes(
+        f"# v2 git bundle\n-{shas[0]}\n{shas[-1]} refs/heads/main\n\nPACK".encode()
+    )
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(missing_prereq_comment)
+
+    bad_ref = pathlib.Path(scratch_dir) / "badref.bundle"
+    bad_ref.write_bytes(b"# v2 git bundle\nrefs/heads/main\n\nPACK")
+    with pytest.raises(BundleFormatError):
+        repo.bundle_prerequisites(bad_ref)
+
+
+def test_verify_bundle_fails_when_prerequisite_missing(scratch_dir, chain):
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "incr.bundle"
+    repo.create_bundle(path, [f"^{shas[0]}", "main"])
+
+    repo.verify_bundle(path)  # prerequisite present here
+
+    other = Repo.init(pathlib.Path(scratch_dir) / "bare.git")
+    with pytest.raises(RepoError):
+        other.verify_bundle(path)
+
+
+def test_import_bundle_creates_no_ref(scratch_dir, chain):
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "full.bundle"
+    repo.create_bundle(path, ["main"])
+
+    other = Repo.init(pathlib.Path(scratch_dir) / "other.git")
+    refs_before = _for_each_ref(other)
+
+    advertised = other.import_bundle(path)
+
+    assert advertised == {"refs/heads/main": shas[-1]}
+    assert other.has_commit(shas[-1]) is True
+    assert _for_each_ref(other) == refs_before
+    assert not (other.git_dir / "FETCH_HEAD").exists()
+
+
+def test_import_bundle_fails_on_missing_prerequisite(scratch_dir, chain):
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "incr.bundle"
+    repo.create_bundle(path, [f"^{shas[0]}", "main"])
+
+    other = Repo.init(pathlib.Path(scratch_dir) / "other.git")
+    with pytest.raises(RepoError):
+        other.import_bundle(path)
+
+
+def _for_each_ref(repo):
+    result = subprocess.run(
+        ["git", "--git-dir", str(repo.git_dir), "for-each-ref",
+         "--format=%(refname) %(objectname)"],
+        capture_output=True, text=True, check=True,
+    )
+    return sorted(result.stdout.splitlines())
+
+
+# ---------------------------------------------------------------------------
+# has_commit / merge_base
+# ---------------------------------------------------------------------------
+
+
+def test_has_commit(scratch_dir, chain):
+    repo, _work, shas = chain
+    assert repo.has_commit(shas[0]) is True
+    assert repo.has_commit("0" * 40) is False
+
+
+def test_merge_base(scratch_dir):
+    work = pathlib.Path(scratch_dir) / "diverge"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+    base = _commit(repo, work, "a.txt", "alpha\n")
+    left = _commit(repo, work, "b.txt", "beta\n")
+
+    repo.checkout_branch("side", start_point=base)
+    right = _commit(repo, work, "c.txt", "gamma\n")
+
+    assert repo.merge_base(left, right) == base
+    assert repo.merge_base(base, left) == base
+
+
+def test_merge_base_returns_none_for_unrelated_histories(scratch_dir, chain):
+    repo, work, shas = chain
+    subprocess.run(
+        ["git", "-C", str(work), "checkout", "--orphan", "unrelated"],
+        check=True, capture_output=True,
+    )
+    subprocess.run(["git", "-C", str(work), "rm", "-rf", "."], check=True, capture_output=True)
+    orphan = _commit(repo, work, "z.txt", "zeta\n")
+
+    assert repo.merge_base(shas[-1], orphan) is None
+
+
+# ---------------------------------------------------------------------------
+# advance_ref
+# ---------------------------------------------------------------------------
+
+PIN = "refs/pins/cloud"
+
+
+def test_advance_ref_creates_absent_ref(scratch_dir, chain):
+    repo, _work, shas = chain
+    result = repo.advance_ref(PIN, shas[0])
+
+    assert result.disposition == "created"
+    assert result.previous_sha is None
+    assert result.current_sha == shas[0]
+    assert repo.resolve_ref(PIN) == shas[0]
+
+
+def test_advance_ref_advances_forward(scratch_dir, chain):
+    repo, _work, shas = chain
+    repo.advance_ref(PIN, shas[0])
+
+    result = repo.advance_ref(PIN, shas[2])
+
+    assert result.disposition == "advanced"
+    assert result.previous_sha == shas[0]
+    assert result.current_sha == shas[2]
+    assert repo.resolve_ref(PIN) == shas[2]
+
+
+def test_advance_ref_equal_is_unchanged(scratch_dir, chain):
+    repo, _work, shas = chain
+    repo.advance_ref(PIN, shas[1])
+
+    result = repo.advance_ref(PIN, shas[1])
+
+    assert result.disposition == "unchanged"
+    assert result.previous_sha == shas[1]
+    assert repo.resolve_ref(PIN) == shas[1]
+
+
+def test_advance_ref_retains_newer_pin_on_stale_update(scratch_dir, chain):
+    repo, _work, shas = chain
+    repo.advance_ref(PIN, shas[2])
+
+    result = repo.advance_ref(PIN, shas[0])
+
+    assert result.disposition == "stale"
+    assert result.previous_sha == shas[2]
+    assert result.current_sha == shas[2]
+    assert repo.resolve_ref(PIN) == shas[2]
+
+
+def test_advance_ref_rejects_divergence(scratch_dir):
+    work = pathlib.Path(scratch_dir) / "diverge"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+    base = _commit(repo, work, "a.txt", "alpha\n")
+    left = _commit(repo, work, "b.txt", "beta\n")
+    repo.checkout_branch("side", start_point=base)
+    right = _commit(repo, work, "c.txt", "gamma\n")
+
+    repo.advance_ref(PIN, left)
+    with pytest.raises(RefDivergedError) as excinfo:
+        repo.advance_ref(PIN, right)
+
+    assert excinfo.value.current_sha == left
+    assert excinfo.value.new_sha == right
+    assert repo.resolve_ref(PIN) == left
+
+
+def test_advance_ref_rejects_the_null_object_id(scratch_dir, chain):
+    """Git reads the null id as a delete, which would report a write that never happened."""
+    repo, _work, shas = chain
+    null_sha = "0" * 40
+
+    with pytest.raises(RepoError):
+        repo.advance_ref("refs/pins/absent", null_sha)
+    assert repo.resolve_ref("refs/pins/absent") is None
+
+    repo.advance_ref(PIN, shas[0])
+    with pytest.raises(RepoError) as excinfo:
+        repo.advance_ref(PIN, null_sha)
+    assert not isinstance(excinfo.value, RefDivergedError)
+    assert repo.resolve_ref(PIN) == shas[0]
+
+
+def test_advance_ref_loses_out_of_order_race_then_rereads(scratch_dir, chain, monkeypatch):
+    """A concurrent writer wins between the read and the compare-and-swap."""
+    repo, _work, shas = chain
+    repo.advance_ref(PIN, shas[0])
+
+    real_run = repo._run
+    raced = []
+
+    def racing_run(extra_args, raise_on_error=True):
+        if extra_args[0] == "update-ref" and not raced:
+            raced.append(True)
+            # Another writer moves the pin past the value we are about to set.
+            subprocess.run(
+                ["git", "--git-dir", str(repo.git_dir), "update-ref", PIN, shas[2]],
+                check=True, capture_output=True,
+            )
+        return real_run(extra_args, raise_on_error=raise_on_error)
+
+    monkeypatch.setattr(repo, "_run", racing_run)
+    result = repo.advance_ref(PIN, shas[1])
+
+    assert raced == [True]
+    # The reread sees the newer value and keeps it.
+    assert result.disposition == "stale"
+    assert repo.resolve_ref(PIN) == shas[2]
+
+
+def test_advance_ref_retries_failed_update_while_ref_is_unchanged(
+    scratch_dir, chain, monkeypatch
+):
+    """A live lock can make update-ref fail before its writer moves the ref."""
+    repo, _work, shas = chain
+    repo.advance_ref(PIN, shas[0])
+
+    real_run = repo._run
+    attempts = []
+
+    def locked_once(extra_args, raise_on_error=True):
+        if extra_args[0] == "update-ref":
+            attempts.append(extra_args)
+            if len(attempts) == 1:
+                return subprocess.CompletedProcess(
+                    extra_args, 128, "", "cannot lock ref: lock is held"
+                )
+        return real_run(extra_args, raise_on_error=raise_on_error)
+
+    monkeypatch.setattr(repo, "_run", locked_once)
+    result = repo.advance_ref(PIN, shas[1])
+
+    assert len(attempts) == 2
+    assert result.disposition == "advanced"
+    assert repo.resolve_ref(PIN) == shas[1]
+
+
+def test_advance_ref_stops_after_bounded_contention(scratch_dir, monkeypatch):
+    """A competing writer wins every attempt, so contention is the answer."""
+    work = pathlib.Path(scratch_dir) / "busy"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+    shas = [
+        _commit(repo, work, f"f{i}.txt", f"line {i}\n")
+        for i in range(REF_ADVANCE_ATTEMPTS + 2)
+    ]
+    repo.advance_ref(PIN, shas[0])
+
+    real_run = repo._run
+    contender = iter(shas[1:])
+    attempts = []
+
+    def racing_run(extra_args, raise_on_error=True):
+        if extra_args[0] == "update-ref":
+            attempts.append(extra_args)
+            subprocess.run(
+                ["git", "--git-dir", str(repo.git_dir), "update-ref", PIN, next(contender)],
+                check=True, capture_output=True,
+            )
+        return real_run(extra_args, raise_on_error=raise_on_error)
+
+    monkeypatch.setattr(repo, "_run", racing_run)
+    with pytest.raises(RefAdvanceContendedError) as excinfo:
+        repo.advance_ref(PIN, shas[-1])
+
+    assert excinfo.value.attempts == REF_ADVANCE_ATTEMPTS
+    assert len(attempts) == REF_ADVANCE_ATTEMPTS
+    # Every attempt lost to the competing writer; none of them wrote.
+    assert repo.resolve_ref(PIN) == shas[REF_ADVANCE_ATTEMPTS]
+
+
+def test_advance_ref_classifies_the_ref_after_final_race(scratch_dir, monkeypatch):
+    """The final losing CAS still rereads a value with a definite disposition."""
+    work = pathlib.Path(scratch_dir) / "final-race"
+    work.mkdir()
+    repo = _make_normal_repo(work)
+    shas = [
+        _commit(repo, work, f"f{i}.txt", f"line {i}\n")
+        for i in range(REF_ADVANCE_ATTEMPTS + 1)
+    ]
+    repo.advance_ref(PIN, shas[0])
+
+    real_run = repo._run
+    contender = iter(shas[1:])
+
+    def racing_run(extra_args, raise_on_error=True):
+        if extra_args[0] == "update-ref":
+            subprocess.run(
+                [
+                    "git",
+                    "--git-dir",
+                    str(repo.git_dir),
+                    "update-ref",
+                    PIN,
+                    next(contender),
+                ],
+                check=True,
+                capture_output=True,
+            )
+        return real_run(extra_args, raise_on_error=raise_on_error)
+
+    monkeypatch.setattr(repo, "_run", racing_run)
+    result = repo.advance_ref(PIN, shas[-1])
+
+    assert result.disposition == "unchanged"
+    assert repo.resolve_ref(PIN) == shas[-1]
+
+
+def test_advance_ref_reports_a_hard_failure_as_repo_error(scratch_dir, chain):
+    repo, _work, shas = chain
+    with pytest.raises(RepoError) as excinfo:
+        repo.advance_ref("not a valid ref name", shas[0])
+
+    assert not isinstance(excinfo.value, RefAdvanceContendedError)
+
+
+# ---------------------------------------------------------------------------
+# Error wrapping for the new mutating operations
+# ---------------------------------------------------------------------------
+
+
+def test_new_git_failures_are_wrapped_as_repo_error(scratch_dir, chain):
+    repo, _work, _shas = chain
+    missing = pathlib.Path(scratch_dir) / "nope.bundle"
+
+    with pytest.raises(RepoError):
+        repo.create_bundle(missing, ["no-such-ref"])
+    with pytest.raises(RepoError):
+        repo.verify_bundle(missing)
+    with pytest.raises(RepoError):
+        repo.bundle_heads(missing)
+    with pytest.raises(RepoError):
+        repo.import_bundle(missing)

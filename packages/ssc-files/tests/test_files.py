@@ -825,7 +825,7 @@ def test_niche_conflict_paths_stale_and_cached(playground_dir):
     git_dir = _niche_git_dir(playground_dir, TEAM, "cptest")
 
     # Grab a valid commit SHA to use as a synthetic MERGE_HEAD
-    from cod_sync.protocol import gitCmd
+    from cod_sync.git import gitCmd
     sha = gitCmd(["--git-dir", str(git_dir), "rev-parse", "HEAD"]).stdout.strip()
 
     # Sub-case A — CACHED, no MERGE_HEAD: remove_checkout → []

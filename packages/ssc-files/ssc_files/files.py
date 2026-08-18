@@ -25,7 +25,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import cod_sync.protocol as CS
-from cod_sync.protocol import gitCmd
+from cod_sync.git import gitCmd
 
 
 class NicheResidency(enum.Enum):

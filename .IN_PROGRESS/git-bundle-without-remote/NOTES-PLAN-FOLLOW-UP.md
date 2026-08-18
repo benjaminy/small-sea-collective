@@ -191,27 +191,14 @@ This cryptographic property does not create a version-1 compatibility obligation
 Production stores continue to send every Small Sea network request through the Hub.
 The local-folder store performs local filesystem I/O, and the direct-S3 implementations remain testing infrastructure rather than production exceptions to the gateway rule.
 
-### Human intervention and bounded unattended work
+### Bounded unattended work is deferred
 
-Local-first operation makes pausing the safe default when a fetch is unexpectedly expensive.
-Cod Sync does not try to infer whether a long chain is legitimate, learn a per-store limit, or decide that an old clone should continue automatically.
-It performs a bounded amount of unattended work and raises `SyncInterventionRequiredError` before starting the next known-over-budget step,
-or immediately after detecting an unknowable-in-advance byte overrun and before inspecting or importing it.
-The error reports the active `SyncBudget`, operation, links traversed, link and bundle bytes transferred, last validated link, and next action requested.
+This branch does not add resource-policy limits to otherwise valid publication or fetch work.
+That policy and its intervention vocabulary are tracked in #189 so the format, store, coordinator, and caller transition can land without a second orthogonal test matrix.
+Cod Sync still rejects malformed or contradictory data and terminates cyclic traversal in this branch; it does not yet pause a valid operation because its link count or byte volume is unexpectedly large.
 
-The caller owns the human conversation.
-Continuing means retrying with an explicitly larger budget; it does not disable structural, ancestry, or bundle validation.
-The default budget uses named conservative policy constants rather than a value derived from compaction or chain age, and tests inject small budgets to exercise every boundary.
-These are unattended-work limits, not a perfect hard resource sandbox.
-Where a store cannot know an object's size before materializing it, it checks the byte limit immediately after download and before inspection or import.
-A future streaming Hub/store contract can enforce a hard pre-download byte ceiling without changing the intervention model.
-Malformed or contradictory data is a validation failure that must not continue, and transport failure is separately retryable;
-only input that is valid so far but exceeds unattended policy uses the larger-budget path.
-
-Pausing is safe only because operations stop at explicit boundaries.
-Fetch may leave imported but unreachable Git objects, but it moves no ref until the requested publication validates.
-Publication may leave a write-once bundle or archived link orphaned, but it does not move `latest-link.yaml` until the final conditional write.
-If that final network response is lost, `PublicationOutcomeUnknownError` tells the caller to reread the store rather than retrying blindly.
+Issue #189 will add finite named defaults, progress diagnostics, and explicit larger-budget continuation without weakening structural, ancestry, or bundle validation.
+Streaming transport and a hard pre-download byte ceiling remain distinct because the current Hub JSON/base64 path may materialize an object before Cod Sync can inspect its size.
 
 ### Divergence
 
@@ -347,7 +334,7 @@ Minor and patch evolution may add ignorable data inside `extensions`; a change t
     It is outside every work tree and is cleaned on ordinary success and failure.
     This overrides `ssc_files._bundle_tmp_dir`, which deliberately put scratch under `$GIT_DIR`.
     Both locations satisfy #185's clean-work-tree preflight, but the OS temporary directory is outside folder-syncing applications and is eligible for platform cleanup after a process crash.
-    The accepted cost is that `TMPDIR` may be size-limited; resource-budget exhaustion pauses safely rather than falling back to repository scratch.
+    The accepted cost is that `TMPDIR` may be size-limited; insufficient temporary storage fails the operation rather than falling back to repository scratch.
 12. **A non-empty store may only move forward.**
     Before ordinary publication the stored `main` head must exist locally and be an ancestor of local `refs/heads/main`.
     Otherwise publication stops without uploading a bundle or link or moving `latest-link`.
@@ -375,15 +362,10 @@ Minor and patch evolution may add ignorable data inside `extensions`; a change t
 17. **Chain traversal rejects malformed structure.**
     It keeps a visited-link set and rejects cycles, missing predecessors, archived links whose self-ID does not match the requested UID,
     malformed `previous` values, inconsistent predecessor heads, version regression, head mismatch, and prerequisite mismatch.
-18. **Unattended sync work is bounded.**
-    `SyncBudget` carries named limits for link traversal, link bytes, bundle count, individual bundle bytes, cumulative downloaded bytes, and cumulative publication upload bytes.
-    Defaults are conservative application policy rather than format validity or an inferred property of chain age.
-    Crossing a limit raises `SyncInterventionRequiredError` with progress diagnostics and moves no ref.
-    A caller may retry with an explicitly larger budget; no learned limit, persistent exception, or validation bypass is introduced.
-19. **Caller adoption moves atomically with fetch validation.**
+18. **Caller adoption moves atomically with fetch validation.**
     The old fetch returns an unvalidated link-declared SHA, so callers do not switch to that return value in a separately green intermediate unit.
     Fetch validation, caller migration to `Repo.merge` or `Repo.checkout_branch`, and deletion of tracking-ref consumers land together.
-20. **Delete the broken CLI.**
+19. **Delete the broken CLI.**
     `cod_sync/cli.py` and its `[project.scripts]` entry have no working or non-CLI contract worth retaining in this research project.
 
 ## Behavior a caller can observe change
@@ -399,7 +381,6 @@ These are the differences a caller or a person can see, and each one has a row i
 - An already-current fetch downloads and validates the latest bundle, but does not walk predecessors or import objects.
 - A stale out-of-order fetch leaves a newer pin in place, while a divergent pin pauses for integration.
 - An exact missing store object remains distinct from authorization, transport, provider, and malformed-response failures.
-- An operation that exceeds its unattended budget pauses with progress diagnostics and can be retried with an explicitly larger budget.
 - A version-2 link has one implicit `main` head instead of declaring every local branch.
 - `ssc-files` no longer creates `$GIT_DIR/codsync-bundle-tmp`, and no operation creates `.codsync-bundle-tmp/` in a work tree.
 - Invitation acceptance no longer changes the process working directory.
@@ -411,6 +392,9 @@ The repository is green after each unit.
 The format, store, constructor, publication, fetch, caller-adoption, and obsolete-method changes form one coordinator unit.
 Splitting that transition into separately green compatibility stages would either keep two storage/format models alive or make callers merge the old fetch's unvalidated link-declared SHA.
 Neither intermediate is worth creating.
+The Hub/adapter absence vocabulary and broken CLI deletion also remain in unit 2.
+Both could be independently green, but separate prerequisite branches would add sequencing and bookkeeping without reducing the coordinator transition's core risk.
+Resource budgeting is different: it adds an orthogonal policy and test matrix, so #189 carries it after this branch.
 Where a micro test exposes a current defect, add the test and the fix in the same unit, confirming first that the test fails against the old behavior.
 
 1. **Establish the one-way Git dependency and complete the Repo plumbing.**
@@ -432,13 +416,18 @@ Where a micro test exposes a current defect, add the test and the fix in the sam
    It resolves the current value, compares ancestry, and uses `git update-ref <name> <new> <old>` so a concurrent writer cannot win between inspection and update.
    It rereads after a raced forward advance, returns `stale` without writing when the current value already descends from `new_sha`,
    raises `RefDivergedError` on divergence, and raises `RefAdvanceContendedError` after a small fixed number of consecutive CAS losses.
+   A failed update whose reread is unchanged may be a live ref lock rather than a hard failure, so retry it within the same bound.
+   After the attempt bound, classify the final observed ref before reporting an error.
+   If no disposition applies, preserve any unexplained unchanged-ref failure as `RepoError`; only pure observed CAS losses become `RefAdvanceContendedError`.
 
    Verify with micro tests in `packages/cod-sync/tests/test_repo.py`: a full bundle with no prerequisites,
-   an incremental bundle whose header exposes its exact prerequisite, a v3 bundle with a capability line,
+   an incremental bundle whose header exposes its exact prerequisite, a v3 bundle with a capability line and malformed capability rejection,
+   a reader that stops at the header's blank line without consuming pack bytes,
    a prerequisite whose commit subject contains spaces, a truncated or unrecognized header rejected rather than skipped,
    a prerequisite read from a bundle whose prerequisite commit is absent locally, a missing-prerequisite verification failure,
    an import that creates no ref, a merge base for divergent heads, pin creation, forward advancement, equal no-op, stale retention,
-   divergent rejection, an out-of-order CAS race, bounded repeated contention, and error wrapping for each mutating operation.
+   divergent rejection, an out-of-order CAS race, a transient unchanged-ref failure, final-reread classification,
+   bounded repeated contention, and error wrapping for each mutating operation.
 
 2. **Replace the format, stores, coordinator, and callers as one coherent unit.**
 
@@ -459,8 +448,8 @@ Where a micro test exposes a current defect, add the test and the fix in the sam
      and change construction to `CodSync(repo, store)` everywhere.
    - Store methods exchange opaque bytes, file paths, ETags, and typed transport results; only `format.py` sees YAML.
    - Split readable and writable protocols so proxy stores do not advertise publication methods that only raise `NotImplementedError`.
-   - Rename the public operations to `publish(..., budget=DEFAULT_SYNC_BUDGET) -> PublishResult`
-     and `fetch(pin_to_ref=None, budget=DEFAULT_SYNC_BUDGET) -> FetchResult`.
+   - Rename the public operations to `publish() -> PublishResult`
+     and `fetch(pin_to_ref=None) -> FetchResult`.
    - Remove the unused branch arguments and use `NoPublishedHeadError` for an empty store.
    - Delete `clone_from_remote`; cold-start callers use `Repo.init`, `fetch`, and `Repo.checkout_branch(result.observed_head)`.
    - Remove both cwd-dependent construction sites and the `os.chdir` in invitation acceptance.
@@ -489,7 +478,6 @@ Where a micro test exposes a current defect, add the test and the fix in the sam
    - Unchanged validated head: return `PublishResult(head=local_head, changed=False, link_uid=current_link_uid)` without uploading or notifying.
    - Changed non-empty store: require the validated stored head locally and `is_ancestor(stored_head, refs/heads/main)`, then create `^<stored-head> main`.
    - Inspect the created bundle and require its advertised main head and actual prerequisite set to match the link before uploading.
-   - Check the bundle plus both link writes against the cumulative publication byte budget before any upload.
    - Return `PublishResult(changed=True)` independently of the store transport's internal return value.
    - Raise the typed integration-required error before any upload when the stored head is missing or is not an ancestor.
 
@@ -511,15 +499,6 @@ Where a micro test exposes a current defect, add the test and the fix in the sam
      inconsistent predecessor heads, and link/bundle metadata mismatches.
    - Download each required bundle once, to a unique path inside one operation-scoped `TemporaryDirectory`.
    - Compare both the bundle heads and actual prerequisite set with the link before importing anything.
-
-   Sync budget:
-   - Count links before following the next predecessor and bundles before requesting the next download.
-   - Check link bytes, individual bundle bytes, cumulative download bytes, and publication upload bytes.
-     Use store metadata when available and the completed temporary file otherwise, before bundle inspection, import, or upload.
-   - On any limit, raise `SyncInterventionRequiredError` containing the active `SyncBudget`, operation, progress counters, last validated link,
-     next requested UID or upload, and whether the received input has remained structurally consistent so far.
-   - Move no ref on intervention.
-     Retrying with a caller-supplied larger budget starts a new idempotent resolution; there is no persistent exception or automatic learning.
 
    Import and pin:
    - Process oldest to newest; verify each bundle once its prerequisites are present, then `bundle unbundle`.
@@ -551,8 +530,7 @@ Where a micro test exposes a current defect, add the test and the fix in the sam
    an already-current fetch that still catches a latest bundle mismatch, an already-satisfied prerequisite,
    a prerequisite reached by walking back across two missing links, one download per bundle, head mismatch,
    actual-prerequisite mismatch including a hidden extra prerequisite, forward/equal/stale/divergent pin cases,
-   link-count and byte-budget intervention with no ref movement, explicit larger-budget continuation, and every malformed-chain case.
-   Verify publication budget handling with an oversized created bundle that pauses before the first store write and succeeds under an explicit larger budget.
+   and every malformed-chain case.
    Run the affected package suites after the targeted micro tests.
 
 3. **Update the documentation that is actually wrong.**
@@ -560,7 +538,7 @@ Where a micro test exposes a current defect, add the test and the fix in the sam
    `packages/cod-sync/README.md` needs no rewrite of its basic model, but its compaction section should state that compaction preserves forward Git ancestry.
    Update `packages/cod-sync/Documentation/format-spec.md` to version 2 semantics: one predecessor for the supported major,
    random identity for every real link, `previous: null` for the initial link, one implicit `main` head and bundle, create-only/write-once storage,
-   typed pause behavior, and the distinction between strict top-level structure and additive `extensions`.
+   and the distinction between strict top-level structure and additive `extensions`.
    Do not speculate about how a later major encodes multiple parents or pending contributions.
    `packages/ssc-files/spec.md:230` describes `push_niche`; update it for the new return value.
    `packages/cod-sync/Documentation/design.md` is a one-line stub; writing a real design document is out of scope for this branch and belongs in Follow-up.
@@ -583,7 +561,6 @@ The branch is complete when these properties have direct witnesses.
 | An already-current fetch still validates the publication | Seed the declared commit locally and doctor the latest bundle; fetch rejects the mismatch rather than returning or moving the pin |
 | Store absence is not a transport diagnosis | Provider-adapter and Hub-endpoint micro tests prove that only an exact missing object becomes 404; Hub-backed store tests distinguish that response from authentication, authorization, provider, malformed-response, and network failures |
 | Ambiguous final publication is not blindly retried | Fake a final head write that succeeds remotely but loses its response; publication raises `PublicationOutcomeUnknownError`, and rereading reveals the winning link |
-| Excess unattended work pauses safely | Inject small link, bundle, download-byte, and publication-byte limits; each raises `SyncInterventionRequiredError` with operation and counters, moves no ref or store head, and completes only after an explicit larger-budget retry |
 | No Cod Sync scratch path appears under a work tree or `$GIT_DIR` | Shared assertion used by publication, fetch, and cold-start success and forced-failure tests |
 | No synthetic remote, tracking ref, `FETCH_HEAD`, or temporary tag | Compare remotes and refs against the operation's explicit allowed delta: none for publish, an optional pin for fetch, and `refs/heads/main` for cold-start checkout |
 | Importing a head creates no durable ref except an explicit pin | Fetch with and without `pin_to_ref`; compare full `for-each-ref` output |
@@ -599,10 +576,9 @@ The branch is complete when these properties have direct witnesses.
 | Hub-backed and local-folder stores keep their gateway and local-only rules | Existing `test_smallsea_remote.py`, `test_hub_sync.py`, and `test_cas_behavior.py`, updated for the byte-oriented contract and stronger CAS semantics |
 | Signed-link bytes and verification still round-trip | Existing `test_signed_bundles.py`, updated for the main-only declaration and new API |
 
-Six load-bearing fixtures do not exist in any form today: a chain longer than two links,
+Five load-bearing fixtures do not exist in any form today: a chain longer than two links,
 a fetch that walks backward across more than one missing link, a bundle whose actual prerequisites disagree with its link,
-a store wrapper that counts reads and bytes, two writers that race on an observed empty store,
-and an injectable `SyncBudget` small enough to exercise intervention without large test artifacts.
+a store wrapper that counts reads, and two writers that race on an observed empty store.
 Building them is part of units 1 and 2, not a bonus.
 
 Repo integrity, beyond the behavior table:
@@ -618,7 +594,8 @@ Repo integrity, beyond the behavior table:
 
 # Follow-up
 
-- Edit #187: remove the "fall back to a full main bundle when the prerequisite is absent" scope bullet and record the expanded format, store, first-publication, and intervention boundaries implemented here.
+- Implement #189 after this branch to bound unattended Cod Sync work with finite default budgets, progress diagnostics, and explicit larger-budget continuation.
+- Edit #187: remove the "fall back to a full main bundle when the prerequisite is absent" scope bullet and record the expanded format, store, and first-publication boundaries implemented here.
 - Open an issue for verifying link signatures on the fetch path, or wherever the right layer turns out to be.
   Signing exists and verification exists; nothing connects them outside tests.
 - Open an issue for caller-level publication integration policy above Cod Sync:
@@ -631,7 +608,7 @@ Repo integrity, beyond the behavior table:
   Until that exists, an already-current fetch and an unchanged publication download and validate the latest bundle rather than confusing local object possession with publication validity.
   The cache key must identify content, not merely trust a random UID.
 - Open an issue for streaming bundle transport and a hard pre-download byte ceiling.
-  This branch bounds unattended work and checks bytes before import, but the current Hub JSON/base64 path may materialize an object before its size is known locally.
+  #189 deliberately provides unattended-work policy rather than a hard resource sandbox; the current Hub JSON/base64 path may materialize an object before its size is known locally.
 - Open an issue for pending contribution pointers: a device that loses the head-link race advertises its unmerged bundle
   so that a device in a better position can absorb it, instead of the losing device being the only one able to get unstuck.
   The motivating case is a heterogeneous fleet — a phone can publish and lose but may never have the work tree or the attention to merge — rather than retry latency.
@@ -646,7 +623,7 @@ Repo integrity, beyond the behavior table:
     It asserts that commits are not yet in the head; it does not assert that anyone intends to finish.
     Any promise of intent drags in leases, expiry, and liveness detection.
   - Pointer growth needs its own cap and eviction rule.
-    The sync budget added here bounds unattended work but does not decide which durable offers may be discarded.
+    The sync budget planned in #189 bounds unattended work but does not decide which durable offers may be discarded.
   - It depends on link signature verification.
     A pointer instructs other devices to download and merge a bundle, so shipping it while nothing verifies authorship is the wrong order.
   - Weigh the alternative before designing the mechanism: per-device chains that readers merge, which is what `PeerSmallSeaStore`,

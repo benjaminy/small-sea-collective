@@ -9,9 +9,9 @@ import tomllib
 from dataclasses import dataclass
 from typing import Callable, Optional
 
+from cod_sync.git import GitCmdFailed
 from cod_sync.protocol import (
     CasConflictError,
-    GitCmdFailed,
     PeerSmallSeaRemote,
     SmallSeaRemote,
 )
