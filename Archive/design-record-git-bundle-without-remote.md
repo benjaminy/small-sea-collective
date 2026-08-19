@@ -21,7 +21,7 @@ divergence is the ordinary outcome whenever a second device publishes between th
 Cod Sync raises and does not resolve it.
 Resolution needs a fetch, a merge, a work tree, and a retry across a new CAS window,
 and Cod Sync may be running against a repository with no work tree at all.
-How much of that should happen without asking is a per-caller question.
+How much of that should happen without asking is a per-caller question, tracked in #191.
 The user-visible result is a publication that fails and stays failed until someone pulls.
 That is the intended trade: loud and stuck beats quiet and wrong.
 
@@ -55,4 +55,4 @@ and that the promised ancestry holds.
 It proves nothing about who wrote a commit or whether a fetched history should have local effect.
 Links are signed and signatures can be verified, but no production path calls the verifier;
 tightening structural validation here must not be read as having closed that gap.
-Follow-up carries it.
+#190 carries it.
