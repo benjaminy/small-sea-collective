@@ -12,7 +12,8 @@ import sqlite3
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.protocol import CasConflictError, CodSync, SmallSeaRemote
+from cod_sync.protocol import CodSync
+from cod_sync.store import CasConflictError, SmallSeaStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app as hub_app
@@ -119,14 +120,12 @@ class _HubEnv:
         dest = self.root / dest_name
         dest.mkdir(parents=True)
         repo = Repo.init(dest / ".git").with_work_tree(dest)
-        cs = CodSync("origin", repo_dir=dest)
-        cs.remote = SmallSeaRemote(
+        store = SmallSeaStore(
             _open_session(self.http, _TEAM), base_url=_HUB_URL, client=self.http
         )
-        sha = cs.fetch_from_remote(["main"])
-        assert sha is not None, "nothing published to the remote"
-        repo.checkout_branch("main", start_point=sha)
-        return dest, sha
+        result = CodSync(repo, store).fetch()
+        repo.checkout_branch("main", start_point=result.observed_head)
+        return dest, result.observed_head
 
 
 def _open_session(http, team, mode="encrypted"):
@@ -231,7 +230,7 @@ def test_push_failure_leaves_marker_intact_and_work_preserved(env, monkeypatch):
     def _boom(*_args, **_kwargs):
         raise RuntimeError("injected transport failure")
 
-    monkeypatch.setattr(SmallSeaRemote, "upload_latest_link", _boom)
+    monkeypatch.setattr(SmallSeaStore, "put_latest_link", _boom)
 
     with pytest.raises(RuntimeError, match="injected transport failure"):
         env.manager.push_team(_TEAM)
@@ -303,7 +302,7 @@ def test_cas_conflict_reports_own_chain_and_preserves_local_commit(env, monkeypa
     def _conflict(*_args, **_kwargs):
         raise CasConflictError("etag mismatch")
 
-    monkeypatch.setattr(SmallSeaRemote, "upload_latest_link", _conflict)
+    monkeypatch.setattr(SmallSeaStore, "put_latest_link", _conflict)
 
     with pytest.raises(RuntimeError) as excinfo:
         env.manager.push_team(_TEAM)

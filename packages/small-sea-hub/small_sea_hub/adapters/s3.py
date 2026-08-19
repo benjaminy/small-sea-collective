@@ -4,7 +4,12 @@ from typing import Optional
 from botocore.exceptions import ClientError
 
 from .base import SmallSeaStorageAdapter
-from small_sea_hub.cloud_errors import MaterializationOutcome
+from small_sea_hub.cloud_errors import (
+    MaterializationOutcome,
+    absent,
+    cas_conflict,
+    provider_failure,
+)
 
 
 class SmallSeaS3Adapter(SmallSeaStorageAdapter):
@@ -40,13 +45,19 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
             return MaterializationOutcome("failed", self.bucket_name)
         return MaterializationOutcome("materialized", self.bucket_name)
 
+    #: Codes S3 uses for "this exact key is not there".
+    ABSENT_CODES = ("NoSuchKey", "404", "NotFound")
+
     def download(self, path: str):
         try:
             response = self.s3.get_object(Bucket=self.bucket_name, Key=path)
             return True, response["Body"].read(), response["ETag"].strip('"')
         except ClientError as exn:
             error_code = exn.response["Error"]["Code"]
-            return False, None, f"Download failed: {error_code}"
+            detail = f"Download failed: {error_code}"
+            if error_code in self.ABSENT_CODES:
+                return False, None, absent(detail)
+            return False, None, provider_failure(detail)
 
     def _upload(
         self,
@@ -83,9 +94,10 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
             return True, new_etag, "Object updated successfully"
         except ClientError as exn:
             error_code = exn.response["Error"]["Code"]
-            if error_code == "PreconditionFailed":
-                if expected_etag is None:
-                    return False, None, "Object already exists"
-                else:
-                    return False, None, "ETag mismatch - object was modified"
+            if error_code in ("PreconditionFailed", "ConditionalRequestConflict"):
+                return False, None, cas_conflict(
+                    "Object already exists"
+                    if expected_etag == "*"
+                    else "ETag mismatch - object was modified"
+                )
             return False, None, f"Operation failed: {exn}"

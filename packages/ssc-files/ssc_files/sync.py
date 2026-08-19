@@ -9,11 +9,11 @@ import tomllib
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from cod_sync.git import GitCmdFailed
-from cod_sync.protocol import (
+from cod_sync.protocol import PublicationIntegrationRequiredError
+from cod_sync.store import (
     CasConflictError,
-    PeerSmallSeaRemote,
-    SmallSeaRemote,
+    PeerSmallSeaStore,
+    SmallSeaStore,
 )
 from small_sea_client.client import SmallSeaClient, SmallSeaError, SmallSeaSession
 
@@ -419,24 +419,24 @@ def _remote_kwargs(session: SmallSeaSession) -> dict:
     }
 
 
-def make_registry_remote(session: SmallSeaSession) -> SmallSeaRemote:
-    return SmallSeaRemote(
+def make_registry_remote(session: SmallSeaSession) -> SmallSeaStore:
+    return SmallSeaStore(
         session.token,
         path_prefix=registry_path_prefix(),
         **_remote_kwargs(session),
     )
 
 
-def make_niche_remote(niche_name: str, session: SmallSeaSession) -> SmallSeaRemote:
-    return SmallSeaRemote(
+def make_niche_remote(niche_name: str, session: SmallSeaSession) -> SmallSeaStore:
+    return SmallSeaStore(
         session.token,
         path_prefix=niche_path_prefix(niche_name),
         **_remote_kwargs(session),
     )
 
 
-def make_peer_registry_remote(teammate_id: str, session: SmallSeaSession) -> PeerSmallSeaRemote:
-    return PeerSmallSeaRemote(
+def make_peer_registry_remote(teammate_id: str, session: SmallSeaSession) -> PeerSmallSeaStore:
+    return PeerSmallSeaStore(
         session.token,
         teammate_id,
         path_prefix=registry_path_prefix(),
@@ -448,8 +448,8 @@ def make_peer_niche_remote(
     niche_name: str,
     teammate_id: str,
     session: SmallSeaSession,
-) -> PeerSmallSeaRemote:
-    return PeerSmallSeaRemote(
+) -> PeerSmallSeaStore:
+    return PeerSmallSeaStore(
         session.token,
         teammate_id,
         path_prefix=niche_path_prefix(niche_name),
@@ -471,7 +471,7 @@ def push_via_hub(
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
     session.ensure_cloud_ready()
     try:
-        files.push_niche(
+        niche_result = files.push_niche(
             files_root,
             participant_hex,
             context,
@@ -482,23 +482,24 @@ def push_via_hub(
         raise PushConflictError(
             "Push conflict: cloud is ahead of local state. Pull from a teammate first."
         ) from exc
-    except GitCmdFailed as exc:
-        if "Refusing to create empty bundle" in exc.err:
-            raise NothingToPushError(
-                f"No new commits to push for niche {niche_name!r}."
-            ) from exc
-        raise
-
-    try:
-        files.push_registry(
-            files_root,
-            participant_hex,
-            context,
-            make_registry_remote(session),
+    except PublicationIntegrationRequiredError as exc:
+        raise PushConflictError(
+            "Push conflict: the cloud holds commits this device does not have. "
+            "Pull from a teammate first."
+        ) from exc
+    if not niche_result.changed:
+        raise NothingToPushError(
+            f"No new commits to push for niche {niche_name!r}."
         )
-    except GitCmdFailed as exc:
-        if "Refusing to create empty bundle" not in exc.err:
-            raise
+
+    # An unchanged registry is an ordinary outcome here: the niche moved but
+    # the set of niches did not.
+    files.push_registry(
+        files_root,
+        participant_hex,
+        context,
+        make_registry_remote(session),
+    )
 
 
 def pull_via_hub(

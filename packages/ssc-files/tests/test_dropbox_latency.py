@@ -470,13 +470,13 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     reg_pfx = f"files/{team}/registry/"
     niche_pfx = f"files/{team}/niches/{NICHE}/"
 
-    reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
-    reg_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=reg_pfx)
-    niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
-    niche_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=niche_pfx)
-    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=reg_pfx)
-    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=niche_pfx)
-    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
+    reg_remote0 = CS.SmallSeaStore(tok0, base_url=ep0, path_prefix=reg_pfx)
+    reg_remote1 = CS.SmallSeaStore(tok1, base_url=ep1, path_prefix=reg_pfx)
+    niche_remote0 = CS.SmallSeaStore(tok0, base_url=ep0, path_prefix=niche_pfx)
+    niche_remote1 = CS.SmallSeaStore(tok1, base_url=ep1, path_prefix=niche_pfx)
+    p1_reads_p0_reg = CS.PeerSmallSeaStore(tok1, p0_teammate_id, base_url=ep1, path_prefix=reg_pfx)
+    p1_reads_p0_niche = CS.PeerSmallSeaStore(tok1, p0_teammate_id, base_url=ep1, path_prefix=niche_pfx)
+    p0_reads_p1_niche = CS.PeerSmallSeaStore(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
 
     # p0 creates niche and makes an initial commit so p1 has something to clone
     create_niche(files0, p0_hex, team, NICHE)
@@ -565,12 +565,12 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     reg_pfx = f"files/{team}/registry-push/"
     niche_pfx = f"files/{team}/niches/{niche_name}/"
 
-    reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
-    niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
-    niche_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=niche_pfx)
-    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=reg_pfx)
-    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=niche_pfx)
-    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
+    reg_remote0 = CS.SmallSeaStore(tok0, base_url=ep0, path_prefix=reg_pfx)
+    niche_remote0 = CS.SmallSeaStore(tok0, base_url=ep0, path_prefix=niche_pfx)
+    niche_remote1 = CS.SmallSeaStore(tok1, base_url=ep1, path_prefix=niche_pfx)
+    p1_reads_p0_reg = CS.PeerSmallSeaStore(tok1, p0_teammate_id, base_url=ep1, path_prefix=reg_pfx)
+    p1_reads_p0_niche = CS.PeerSmallSeaStore(tok1, p0_teammate_id, base_url=ep1, path_prefix=niche_pfx)
+    p0_reads_p1_niche = CS.PeerSmallSeaStore(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
 
     # p0 creates niche, makes initial commit, pushes
     create_niche(files0, p0_hex, team, niche_name)
@@ -660,12 +660,12 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     reg_pfx = f"files/{team}/registry-ntfy/"
     niche_pfx = f"files/{team}/niches/{niche_name}/"
 
-    reg_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=reg_pfx)
-    niche_remote0 = CS.SmallSeaRemote(tok0, base_url=ep0, path_prefix=niche_pfx)
-    niche_remote1 = CS.SmallSeaRemote(tok1, base_url=ep1, path_prefix=niche_pfx)
-    p1_reads_p0_reg = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=reg_pfx)
-    p1_reads_p0_niche = CS.PeerSmallSeaRemote(tok1, p0_teammate_id, base_url=ep1, path_prefix=niche_pfx)
-    p0_reads_p1_niche = CS.PeerSmallSeaRemote(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
+    reg_remote0 = CS.SmallSeaStore(tok0, base_url=ep0, path_prefix=reg_pfx)
+    niche_remote0 = CS.SmallSeaStore(tok0, base_url=ep0, path_prefix=niche_pfx)
+    niche_remote1 = CS.SmallSeaStore(tok1, base_url=ep1, path_prefix=niche_pfx)
+    p1_reads_p0_reg = CS.PeerSmallSeaStore(tok1, p0_teammate_id, base_url=ep1, path_prefix=reg_pfx)
+    p1_reads_p0_niche = CS.PeerSmallSeaStore(tok1, p0_teammate_id, base_url=ep1, path_prefix=niche_pfx)
+    p0_reads_p1_niche = CS.PeerSmallSeaStore(tok0, p1_teammate_id, base_url=ep0, path_prefix=niche_pfx)
 
     create_niche(files0, p0_hex, team, niche_name)
     co0 = tmp_path / "checkout-p0"

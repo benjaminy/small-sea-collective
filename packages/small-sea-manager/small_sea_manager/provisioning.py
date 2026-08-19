@@ -43,6 +43,7 @@ def _sqlite_engine(db_path) -> object:
     return engine
 
 import cod_sync.protocol as CodSync
+import cod_sync.store as CodStore
 from cod_sync.repo import Repo as _Repo
 from cuttlefish import (
     generate_bootstrap_keypair,
@@ -1954,20 +1955,19 @@ def _push_note_to_self_to_local_remote(root_dir, participant_hex: str, remote_de
         )
     remote_path = remote_descriptor["url"]
     repo_dir = pathlib.Path(root_dir) / "Participants" / participant_hex / "NoteToSelf" / "Sync"
-    cod = CodSync.CodSync("identity-bootstrap", repo_dir=repo_dir)
-    cod.remote = CodSync.LocalFolderRemote(remote_path)
-    if cod.remote.path is None:
-        raise ValueError(f"Invalid localfolder remote path: {remote_path}")
-    cod.push_to_remote(["main"])
+    store = _store_from_descriptor(remote_descriptor)
+    return CodSync.CodSync(_Repo(repo_dir / ".git", repo_dir), store).publish()
 
 
-def _remote_from_descriptor(remote_descriptor: dict):
+def _store_from_descriptor(remote_descriptor: dict):
     protocol = remote_descriptor["protocol"]
     if protocol == "localfolder":
-        remote = CodSync.LocalFolderRemote(remote_descriptor["url"])
-        if remote.path is None:
-            raise ValueError(f"Invalid localfolder remote path: {remote_descriptor['url']}")
-        return remote
+        try:
+            return CodStore.LocalFolderStore(remote_descriptor["url"])
+        except CodStore.StoreError as exc:
+            raise ValueError(
+                f"Invalid localfolder remote path: {remote_descriptor['url']}"
+            ) from exc
     raise NotImplementedError(
         f"Unsupported NoteToSelf bootstrap remote protocol: {protocol}"
     )
@@ -2463,12 +2463,10 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
     prepared = prepare_identity_bootstrap(root_dir, welcome_bundle_b64)
     bundle = prepared["bundle"]
     sync_dir = pathlib.Path(prepared["sync_dir"])
-    cod = CodSync.CodSync("bootstrap-identity", repo_dir=sync_dir)
-    cod.remote = _remote_from_descriptor(bundle.remote_descriptor)
-    fetched_sha = cod.fetch_from_remote(["main"])
-    if fetched_sha is None:
-        raise RuntimeError("Failed to fetch NoteToSelf during identity bootstrap")
-    _Repo(sync_dir / ".git", sync_dir).checkout_branch("main", start_point=fetched_sha)
+    store = _store_from_descriptor(bundle.remote_descriptor)
+    repo = _Repo(sync_dir / ".git", sync_dir)
+    result = CodSync.CodSync(repo, store).fetch()
+    repo.checkout_branch("main", start_point=result.observed_head)
     return finalize_identity_bootstrap(root_dir, prepared)
 
 
@@ -5034,7 +5032,7 @@ def accept_invitation(
     root_dir,
     acceptor_participant_hex,
     token_b64,
-    inviter_remote,
+    inviter_store,
     acceptor_remote=None,
     acceptor_teammate_id=None,
 ):
@@ -5071,27 +5069,21 @@ def accept_invitation(
     os.makedirs(team_sync_dir, exist_ok=False)
 
     # --- Clone the team repo from inviter's cloud ---
-    # Use git init + fetch_from_remote + checkout rather than clone_from_remote,
-    # so this works when the workspace lives inside an existing git repo.
+    # init + fetch + checkout: every path is named explicitly, so this works
+    # when the workspace lives inside an existing git repo and needs no cwd.
 
     repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
 
-    saved_cwd = os.getcwd()
-    os.chdir(team_sync_dir)
     try:
-        cod = CodSync.CodSync("inviter")
-        cod.remote = inviter_remote
-        result = cod.fetch_from_remote(["main"])
-        if result is None:
-            inviter_url = (
-                f"{inviter_cloud['protocol']}://{inviter_cloud['url']}/{inviter_bucket}"
-            )
-            raise RuntimeError(
-                f"Failed to fetch team repo from inviter's cloud (code {result}; {inviter_url})"
-            )
-        repo.checkout_branch("main", start_point=result)
-    finally:
-        os.chdir(saved_cwd)
+        result = CodSync.CodSync(repo, inviter_store).fetch()
+    except CodSync.NoPublishedHeadError as exc:
+        inviter_url = (
+            f"{inviter_cloud['protocol']}://{inviter_cloud['url']}/{inviter_bucket}"
+        )
+        raise RuntimeError(
+            f"The inviter's cloud publishes no team repo ({inviter_url})"
+        ) from exc
+    repo.checkout_branch("main", start_point=result.observed_head)
 
     # --- Install sqlite merge driver ---
     _install_sqlite_merge_driver(team_sync_dir)

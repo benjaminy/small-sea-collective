@@ -87,19 +87,33 @@ def test_upload_if_match_fails_with_stale_etag(minio):
     # etag1 is now stale
     ok, etag_out, msg = adapter.upload_if_match("file.txt", b"conflict", etag1)
     assert not ok
-    assert "mismatch" in msg.lower() or "failed" in msg.lower()
+    assert msg.cas_conflict
+    assert "mismatch" in str(msg).lower()
 
     # Content should be unchanged
     ok, data, _ = adapter.download("file.txt")
     assert data == b"someone else wrote this"
 
 
-def test_download_missing_key(minio):
+def test_download_missing_key_reports_absence(minio):
+    """Only a provider-confirmed missing object may be read as absence."""
     adapter = make_adapter(minio, "test-missing-key")
 
-    ok, data, msg = adapter.download("does-not-exist.txt")
+    ok, data, failure = adapter.download("does-not-exist.txt")
     assert not ok
     assert data is None
+    assert failure.absent
+
+
+def test_a_failed_download_is_not_absence(minio):
+    """A bucket that is not there is a read that failed, not an empty object."""
+    adapter = make_adapter(minio, "test-absent-vs-failed")
+    adapter.bucket_name = "no-such-bucket-at-all"
+
+    ok, data, failure = adapter.download("anything.txt")
+    assert not ok
+    assert data is None
+    assert not failure.absent
 
 
 def test_multiple_keys(minio):

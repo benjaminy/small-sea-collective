@@ -15,6 +15,10 @@ import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 import cod_sync.protocol as CS
+from cod_sync.format import decode_link
+from cod_sync.repo import Repo
+from cod_sync.store import SmallSeaStore
+from cod_sync.git import gitCmd
 
 
 MINIO_PORT = 9500
@@ -23,16 +27,17 @@ HUB_PORT = 11500
 
 def working_tree_files(repo_dir):
     """Return {path: content} for all git-tracked files."""
-    result = CS.gitCmd(["-C", str(repo_dir), "ls-files"])
+    result = gitCmd(["-C", str(repo_dir), "ls-files"])
     files = {}
     for name in result.stdout.strip().splitlines():
         files[name] = (pathlib.Path(repo_dir) / name).read_text()
     return files
 
 
-def make_cod_sync(repo_dir, remote_name):
-    """Create a CodSync wired to a specific repo directory."""
-    return CS.CodSync(remote_name, repo_dir=repo_dir)
+def make_repo(repo_dir):
+    """Wrap a conventional repository directory."""
+    repo_dir = pathlib.Path(repo_dir)
+    return Repo(repo_dir / ".git", repo_dir)
 
 
 @pytest.fixture(scope="module")
@@ -125,44 +130,30 @@ def test_push_clone_roundtrip_subprocess(hub_env):
         bob_repo.mkdir()
 
         # ---- Alice: init repo, commit files ----
-        CS.gitCmd(["init", "-b", "main", str(alice_repo)])
-        CS.gitCmd(["-C", str(alice_repo), "config", "user.email", "alice@test"])
-        CS.gitCmd(["-C", str(alice_repo), "config", "user.name", "Alice"])
+        gitCmd(["init", "-b", "main", str(alice_repo)])
+        gitCmd(["-C", str(alice_repo), "config", "user.email", "alice@test"])
+        gitCmd(["-C", str(alice_repo), "config", "user.name", "Alice"])
 
         (alice_repo / "README.md").write_text("# Hub Roundtrip\n")
         (alice_repo / "notes.txt").write_text("testing through the hub\n")
-        CS.gitCmd(["-C", str(alice_repo), "add", "-A"])
-        CS.gitCmd(["-C", str(alice_repo), "commit", "-m", "initial commit"])
+        gitCmd(["-C", str(alice_repo), "add", "-A"])
+        gitCmd(["-C", str(alice_repo), "commit", "-m", "initial commit"])
 
-        # ---- Alice: push via SmallSeaRemote (real HTTP) ----
-        alice_remote = CS.SmallSeaRemote(session_hex, base_url=hub_endpoint)
-        alice_cod = make_cod_sync(alice_repo, "hub-pub")
-        alice_cod.remote = alice_remote
-        alice_cod.push_to_remote(["main"])
+        # ---- Alice: publish via SmallSeaStore (real HTTP) ----
+        alice_store = SmallSeaStore(session_hex, base_url=hub_endpoint)
+        published = CS.CodSync(make_repo(alice_repo), alice_store).publish()
+        assert published.changed is True
 
-        # ---- Bob: clone via SmallSeaRemote (real HTTP) ----
-        bob_remote = CS.SmallSeaRemote(session_hex, base_url=hub_endpoint)
-        latest = bob_remote.get_latest_link()
-        assert latest is not None
+        latest = decode_link(alice_store.get_latest_link()[0])
+        assert latest.previous is None
+        assert latest.head == published.head
 
-        link, _etag = latest
-        [link_ids, branches, bundles, supp] = link
-        assert link_ids[0] == "initial-snapshot"
-        assert len(bundles) == 1
-
-        bundle_uid = bundles[0][0]
-        with tempfile.TemporaryDirectory() as td:
-            bundle_path = f"{td}/clone.bundle"
-            bob_remote.download_bundle(bundle_uid, bundle_path)
-            CS.gitCmd(["clone", bundle_path, str(bob_repo / "checkout")])
-
-        # Move contents up (clone creates a subdir)
-        checkout = bob_repo / "checkout"
-        for item in checkout.iterdir():
-            shutil.move(str(item), str(bob_repo / item.name))
-        checkout.rmdir()
-
-        CS.gitCmd(["-C", str(bob_repo), "checkout", "main"])
+        # ---- Bob: cold-start fetch via SmallSeaStore (real HTTP) ----
+        bob_store = SmallSeaStore(session_hex, base_url=hub_endpoint)
+        gitCmd(["init", "-b", "main", str(bob_repo)])
+        bob = make_repo(bob_repo)
+        result = CS.CodSync(bob, bob_store).fetch()
+        bob.checkout_branch("main", result.observed_head)
 
         # ---- Verify working trees match ----
         alice_files = working_tree_files(alice_repo)

@@ -18,6 +18,7 @@ from small_sea_hub.backend import (
     SmallSeaAppBootstrapRequiredExn,
     SmallSeaBackend,
     SmallSeaNotFoundExn,
+    SmallSeaSessionNotFoundExn,
 )
 from small_sea_hub.cloud_errors import CloudStorageRequiredExn
 from small_sea_hub.config import Settings
@@ -580,6 +581,11 @@ async def not_found_handler(request: Request, exc: SmallSeaNotFoundExn):
     return JSONResponse(status_code=404, content={"detail": str(exc)})
 
 
+@app.exception_handler(SmallSeaSessionNotFoundExn)
+async def session_not_found_handler(request: Request, exc: SmallSeaSessionNotFoundExn):
+    return JSONResponse(status_code=401, content={"detail": str(exc)})
+
+
 @app.get("/", response_class=HTMLResponse)
 async def hub_status(request: Request):
     backend = app.state.backend
@@ -912,6 +918,26 @@ def _cloud_storage_required_response(exn: CloudStorageRequiredExn):
     )
 
 
+def _download_failure_response(path: str, failure):
+    """Turn a download failure into a response that preserves what it was.
+
+    Only a provider-confirmed absent object becomes 404. Everything else is a
+    failed read whose object may well exist, so it gets a distinct status: a
+    client that treated it as absence would conclude a chain is empty when the
+    provider was merely unreachable.
+    """
+    if getattr(failure, "absent", False):
+        raise HTTPException(status_code=404, detail=str(failure))
+    return JSONResponse(
+        status_code=502,
+        content={
+            "error": "cloud_provider_failure",
+            "path": path,
+            "detail": str(failure),
+        },
+    )
+
+
 class CloudUploadReq(pydantic.BaseModel):
     path: str
     data: str  # base64-encoded
@@ -934,11 +960,12 @@ async def upload_to_cloud(
     except CloudStorageRequiredExn as exn:
         return _cloud_storage_required_response(exn)
     if not ok:
-        if msg == "CAS_CONFLICT":
-            raise HTTPException(
-                status_code=409, detail="CAS conflict: file was modified concurrently"
+        if getattr(msg, "cas_conflict", False):
+            return JSONResponse(
+                status_code=409,
+                content={"error": "cas_conflict", "detail": str(msg)},
             )
-        raise HTTPException(status_code=500, detail=msg)
+        raise HTTPException(status_code=500, detail=str(msg))
     if req.notify:
         _logger = getattr(app.state, "logger", None)
         try:
@@ -974,7 +1001,7 @@ async def download_from_cloud(path: str, session_hex: str = Depends(_require_ses
     except CloudStorageRequiredExn as exn:
         return _cloud_storage_required_response(exn)
     if not ok:
-        raise HTTPException(status_code=404, detail=etag)
+        return _download_failure_response(path, etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
 
 
@@ -999,9 +1026,17 @@ async def download_peer_cloud_file(
     import base64
 
     small_sea = app.state.backend
-    ok, data, etag = small_sea.download_from_peer(session_hex, teammate_id, path)
+    try:
+        ok, data, etag = small_sea.download_from_peer(session_hex, teammate_id, path)
+    except SmallSeaNotFoundExn as exn:
+        # No known storage for this peer is a routing gap, not an absent
+        # object: the peer may well have published.
+        return JSONResponse(
+            status_code=409,
+            content={"error": "peer_storage_unknown", "detail": str(exn)},
+        )
     if not ok:
-        raise HTTPException(status_code=404, detail=etag)
+        return _download_failure_response(path, etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
 
 
@@ -1025,7 +1060,7 @@ async def proxy_cloud_file(
     small_sea = app.state.backend
     ok, data, etag = small_sea.proxy_cloud_file(session_hex, protocol, url, bucket, path)
     if not ok:
-        raise HTTPException(status_code=404, detail=etag)
+        return _download_failure_response(path, etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
 
 
@@ -1038,7 +1073,7 @@ async def bootstrap_cloud_file(
 
     ok, data, etag = app.state.backend.bootstrap_cloud_file(session_hex, path)
     if not ok:
-        raise HTTPException(status_code=404, detail=etag)
+        return _download_failure_response(path, etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
 
 

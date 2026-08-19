@@ -320,3 +320,56 @@ def test_refresh_does_not_sync_device_local_state(playground_dir, minio_server_g
     }
     leaked = local_only_tables & tables
     assert not leaked, f"Device-local tables leaked into shared NoteToSelf: {leaked}"
+
+
+MINIO_PORT_NOOP_PUBLISH = 19734
+
+
+def test_unchanged_note_to_self_publication_invents_no_signal(playground_dir, minio_server_gen):
+    """A no-op publication uploads nothing, so it notifies nobody.
+
+    The adopted baseline tracks notifications this device has caught up with.
+    Advancing it after a publication that never happened would make the next
+    real push look already-adopted and be skipped.
+    """
+    minio = minio_server_gen(port=MINIO_PORT_NOOP_PUBLISH)
+    root = pathlib.Path(playground_dir) / "install"
+    root.mkdir()
+
+    alice_hex = create_new_participant(root, "Alice")
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
+    app.state.backend = backend
+    http = TestClient(app)
+
+    nts_token = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
+    cloud_storage_id = backend.add_cloud_location(
+        nts_token, "s3", minio["endpoint"],
+        access_key=minio["access_key"], secret_key=minio["secret_key"],
+    )
+    nts_session = backend._lookup_session(nts_token)
+    berth_id = nts_session.berth_id
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        root, alice_hex, berth_id, cloud_storage_id
+    )
+
+    manager = TeamManager(root, alice_hex, _http_client=http)
+    manager.create_team("SharedProject")
+    manager.push_note_to_self()
+    after_real_push = Provisioning.get_note_to_self_adopted_signal_count(
+        root, alice_hex, berth_id
+    )
+
+    # Nothing changed locally, so this publication is a no-op.
+    manager.push_note_to_self()
+    assert (
+        Provisioning.get_note_to_self_adopted_signal_count(root, alice_hex, berth_id)
+        == after_real_push
+    )
+
+    # A genuine change advances it again.
+    manager.create_team("SecondProject")
+    manager.push_note_to_self()
+    assert (
+        Provisioning.get_note_to_self_adopted_signal_count(root, alice_hex, berth_id)
+        == after_real_push + 1
+    )

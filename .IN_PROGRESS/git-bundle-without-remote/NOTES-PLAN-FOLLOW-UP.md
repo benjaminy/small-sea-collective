@@ -272,7 +272,8 @@ extensions: {}
 
 The first link has `previous: null`.
 Its bundle is full and has no Git prerequisite.
-An incremental bundle's sole actual Git prerequisite must equal `previous.head`, and the archived link named by `previous.link_id` must declare that same head.
+An incremental bundle must include `previous.head` among its actual Git prerequisites.
+Any extra prerequisite must be an ancestor of `previous.head`, and the archived link named by `previous.link_id` must declare that head.
 `head` always means `main`; version 2 has no branch or bundle collection whose extra entries would be ignored.
 
 The canonical signed value is this mapping with only `extensions.signatures` removed.
@@ -312,6 +313,12 @@ Minor and patch evolution may add ignorable data inside `extensions`; a change t
    Writable stores create the bundle and archived link without replacement, then create or compare-and-swap `latest-link.yaml` atomically.
    Before a later publication names the current link as its predecessor, the current archived link must exist and byte-match `latest-link.yaml`.
    `LocalFolderStore` obeys the same ordering and CAS semantics as Hub-backed storage rather than serving as a weaker approximation.
+
+   *Amended after review.*
+   Google Drive file names are not unique, so the current lookup-then-create adapter cannot make first publication atomic.
+   Keep the adapter functional for testing, but classify it as non-conforming and unsafe for real writable Cod Sync data.
+   S3, Dropbox, and `LocalFolderStore` remain the conforming writable implementations.
+   A provider-ID-keyed Google Drive design is follow-up work; this branch adds no runtime gate or capability abstraction.
 7. **Fetching moves no implicit ref.**
    No remote, remote-tracking ref, `FETCH_HEAD`, or temporary tag is created.
    `fetch` returns a `FetchResult` and moves only an explicitly requested pin, after the requested publication validates.
@@ -323,7 +330,20 @@ Minor and patch evolution may add ignorable data inside `extensions`; a change t
 9. **Link metadata must match both parts of the bundle header.**
    The advertised `refs/heads/main` must equal the link's declared `main` head.
    An initial bundle must have no actual Git prerequisites.
-   An incremental bundle's actual prerequisite set must exactly equal the prerequisite declared by its link.
+   An incremental bundle must build on the prerequisite its link declares, and may need no others outside that history.
+
+   *Amended during unit 2.*
+   The original rule said an incremental bundle's actual prerequisite set must **exactly equal** the declared one.
+   That is unimplementable.
+   `git bundle create ^<stored-head> main` records a prerequisite for every boundary commit,
+   so merging a branch rooted before the stored head yields two or more prerequisites for a perfectly ordinary publication.
+   Merging a teammate's parked ref and then publishing is a core Small Sea workflow, and exact equality forbids it outright.
+   The implemented rule keeps the property the strict version was reaching for:
+   the declared predecessor must be among the actual prerequisites, and every extra prerequisite must be an ancestor of it,
+   so anyone who can satisfy the declared prerequisite can satisfy the whole bundle.
+   A prerequisite outside that history is a hidden dependency and the chain is rejected before any ref moves.
+   The ancestry check runs wherever the objects are present, and a bundle that reaches import unsatisfiable
+   is reported as a typed chain error rather than a bare `git bundle verify` failure.
 10. **Every newly observed store head is validated as a publication.**
     Local possession of the declared commit is not proof that this store's bundle advertises it.
     Fetch always downloads and inspects the latest link's bundle before returning or moving a pin, even when the declared head already exists locally.

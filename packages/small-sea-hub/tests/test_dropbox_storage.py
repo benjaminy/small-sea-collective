@@ -51,6 +51,27 @@ def test_download_not_found():
     ok, data, msg = adapter.download("missing.txt")
     assert not ok
     assert data is None
+    assert msg.absent
+
+
+@respx.mock
+def test_download_restricted_content_is_not_absence():
+    adapter = make_adapter()
+
+    respx.post(f"{DROPBOX_CONTENT}/files/download").mock(
+        return_value=httpx.Response(
+            409,
+            json={
+                "error_summary": "path/restricted_content/...",
+                "error": {".tag": "path", "path": {".tag": "restricted_content"}},
+            },
+        )
+    )
+
+    ok, data, failure = adapter.download("restricted.txt")
+    assert not ok
+    assert data is None
+    assert not failure.absent
 
 
 # ---- Upload overwrite ----
@@ -122,7 +143,8 @@ def test_upload_fresh_already_exists():
 
     ok, rev, msg = adapter.upload_fresh("existing.txt", b"nope")
     assert not ok
-    assert "already exists" in msg.lower()
+    assert msg.cas_conflict
+    assert "already exists" in str(msg).lower()
 
 
 # ---- Upload if-match (rev-based conditional write) ----
@@ -167,4 +189,5 @@ def test_upload_if_match_conflict():
 
     ok, rev, msg = adapter.upload_if_match("file.txt", b"conflict", "old-rev")
     assert not ok
-    assert "mismatch" in msg.lower()
+    assert msg.cas_conflict
+    assert "mismatch" in str(msg).lower()

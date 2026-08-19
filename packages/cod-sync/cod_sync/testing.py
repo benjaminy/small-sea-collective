@@ -1,32 +1,78 @@
-"""Test-only infrastructure for Cod Sync. Not for production use.
+"""Test-only stores that talk to S3 directly. Not for production use.
 
-S3Remote: authenticated S3/MinIO remote that bypasses the Hub. Use only in
-tests that need direct S3 access (e.g. the acceptor writing to their own bucket).
+Production Small Sea traffic goes through the Hub; these exist so tests can
+stand up a store without one, and so an acceptor's view of a public bucket can
+be modeled without credentials.
 
-PublicS3Remote: anonymous read-only remote for a publicly-readable S3 bucket.
-Models the inviter's bucket as seen by the acceptor — no credentials needed
-because the bucket is public (content privacy is provided by E2E encryption,
-not bucket ACLs). Production code should use SmallSeaRemote (Hub-backed).
+S3Store: authenticated S3/MinIO access, used where a test needs to write.
+PublicS3Store: anonymous read-only access to a publicly-readable bucket, which
+is how the inviter's bucket looks to an acceptor. Content privacy comes from
+end-to-end encryption, not bucket ACLs.
+
+Both obey the same create-only and compare-and-swap contract as the Hub-backed
+stores. A testing store that accepted an etag without enforcing it would make
+the tests that use it prove nothing.
 """
 
-import io
+from typing import Optional, Tuple
 
-import yaml
+from cod_sync.store import (
+    CREATE_ONLY,
+    LATEST_LINK_PATH,
+    CasConflictError,
+    ObjectNotFoundError,
+    StoreProviderError,
+    bundle_path,
+    link_path,
+)
 
-from cod_sync.protocol import CodSyncRemote
+
+def _is_absence(exn) -> bool:
+    """True when a botocore error means this exact key does not exist."""
+    from botocore.exceptions import ClientError
+
+    if not isinstance(exn, ClientError):
+        return False
+    code = exn.response["Error"]["Code"]
+    return code in ("NoSuchKey", "404", "NotFound")
 
 
-class S3Remote(CodSyncRemote):
-    """S3-backed cloud storage remote (works with MinIO or AWS S3).
+class _S3StoreBase:
+    def __init__(self, bucket_name):
+        self.bucket_name = bucket_name
+        self.s3 = None  # set by subclasses
 
-    Test-only. Production cloud access should go through the Hub.
-    """
+    def _get(self, key: str) -> Tuple[bytes, Optional[str]]:
+        from botocore.exceptions import ClientError
+
+        try:
+            response = self.s3.get_object(Bucket=self.bucket_name, Key=key)
+        except ClientError as exn:
+            if _is_absence(exn):
+                raise ObjectNotFoundError(key) from exn
+            raise StoreProviderError(f"reading {key} failed: {exn}") from exn
+        return response["Body"].read(), response.get("ETag", "").strip('"') or None
+
+    def get_latest_link(self) -> Tuple[bytes, Optional[str]]:
+        return self._get(LATEST_LINK_PATH)
+
+    def get_link(self, link_uid: str) -> bytes:
+        return self._get(link_path(link_uid))[0]
+
+    def download_bundle(self, bundle_uid: str, local_path) -> None:
+        data, _etag = self._get(bundle_path(bundle_uid))
+        with open(local_path, "wb") as handle:
+            handle.write(data)
+
+
+class S3Store(_S3StoreBase):
+    """S3-backed store (works with MinIO or AWS S3). Test-only."""
 
     def __init__(self, endpoint_url, bucket_name, access_key, secret_key):
         import boto3
         from botocore.config import Config
 
-        self.bucket_name = bucket_name
+        super().__init__(bucket_name)
         self.s3 = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
@@ -35,69 +81,47 @@ class S3Remote(CodSyncRemote):
             config=Config(signature_version="s3v4"),
             region_name="us-east-1",
         )
-        # Ensure bucket exists
         try:
             self.s3.head_bucket(Bucket=bucket_name)
         except Exception:
             self.s3.create_bucket(Bucket=bucket_name)
 
-    def upload_latest_link(
-        self, link_uid, blob, bundle_uid, local_bundle_path, expected_etag=None
-    ):
-        # expected_etag is accepted for interface compatibility but not enforced.
-        # 1. Upload bundle
-        self.s3.upload_file(
-            local_bundle_path, self.bucket_name, f"B-{bundle_uid}.bundle"
-        )
+    def _put(self, key: str, data: bytes, expected_etag: Optional[str]) -> Optional[str]:
+        from botocore.exceptions import ClientError
 
-        # 2. Serialize link YAML
-        link_yaml = yaml.dump(blob, default_flow_style=False).encode("utf-8")
-
-        # 3. Upload latest-link.yaml and L-{link_uid}.yaml
-        self.s3.put_object(
-            Bucket=self.bucket_name, Key="latest-link.yaml", Body=link_yaml
-        )
-        self.s3.put_object(
-            Bucket=self.bucket_name, Key=f"L-{link_uid}.yaml", Body=link_yaml
-        )
-
-    def get_link(self, uid):
-        if uid == "latest-link":
-            key = "latest-link.yaml"
-        else:
-            key = f"L-{uid}.yaml"
-
+        kwargs = {"Bucket": self.bucket_name, "Key": key, "Body": data}
+        if expected_etag == CREATE_ONLY:
+            kwargs["IfNoneMatch"] = CREATE_ONLY
+        elif expected_etag is not None:
+            kwargs["IfMatch"] = expected_etag
         try:
-            resp = self.s3.get_object(Bucket=self.bucket_name, Key=key)
-            link = self.read_link_blob(io.BytesIO(resp["Body"].read()))
-            if uid == "latest-link":
-                etag = resp.get("ETag")
-                return (link, etag)
-            return link
-        except self.s3.exceptions.NoSuchKey:
-            return None
-        except Exception as e:
-            if "NoSuchKey" in str(e) or "Not Found" in str(e):
-                return None
-            raise
+            response = self.s3.put_object(**kwargs)
+        except ClientError as exn:
+            code = exn.response["Error"]["Code"]
+            if code in ("PreconditionFailed", "ConditionalRequestConflict"):
+                raise CasConflictError(f"{key}: {code}") from exn
+            raise StoreProviderError(f"writing {key} failed: {exn}") from exn
+        return response.get("ETag", "").strip('"') or None
 
-    def get_latest_link(self):
-        return self.get_link("latest-link")
+    def put_bundle(self, bundle_uid: str, local_path) -> None:
+        with open(local_path, "rb") as handle:
+            self._put(bundle_path(bundle_uid), handle.read(), CREATE_ONLY)
 
-    def download_bundle(self, bundle_uid, local_bundle_path):
-        self.s3.download_file(
-            self.bucket_name, f"B-{bundle_uid}.bundle", local_bundle_path
+    def put_link(self, link_uid: str, data: bytes) -> None:
+        self._put(link_path(link_uid), data, CREATE_ONLY)
+
+    def put_latest_link(
+        self, data: bytes, expected_etag: Optional[str], link_uid: Optional[str] = None
+    ) -> Optional[str]:
+        return self._put(
+            LATEST_LINK_PATH, data, CREATE_ONLY if expected_etag is None else expected_etag
         )
 
 
-class PublicS3Remote(CodSyncRemote):
-    """Anonymous read-only remote for a publicly-readable S3/MinIO bucket.
-
-    Models the inviter's bucket as seen by an acceptor who has no credentials.
-    Write operations raise NotImplementedError.
+class PublicS3Store(_S3StoreBase):
+    """Anonymous read-only store for a publicly-readable S3/MinIO bucket.
 
     To make a MinIO bucket publicly readable:
-        import json
         s3.put_bucket_policy(Bucket=bucket, Policy=json.dumps({
             "Version": "2012-10-17",
             "Statement": [{"Effect": "Allow", "Principal": "*",
@@ -111,39 +135,10 @@ class PublicS3Remote(CodSyncRemote):
         from botocore import UNSIGNED
         from botocore.config import Config
 
-        self.bucket_name = bucket_name
+        super().__init__(bucket_name)
         self.s3 = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
             config=Config(signature_version=UNSIGNED),
             region_name="us-east-1",
-        )
-
-    def upload_latest_link(self, *args, **kwargs):
-        raise NotImplementedError("PublicS3Remote is read-only")
-
-    def get_link(self, uid):
-        if uid == "latest-link":
-            key = "latest-link.yaml"
-        else:
-            key = f"L-{uid}.yaml"
-
-        try:
-            resp = self.s3.get_object(Bucket=self.bucket_name, Key=key)
-            link = self.read_link_blob(io.BytesIO(resp["Body"].read()))
-            if uid == "latest-link":
-                etag = resp.get("ETag")
-                return (link, etag)
-            return link
-        except Exception as e:
-            if "NoSuchKey" in str(e) or "Not Found" in str(e):
-                return None
-            raise
-
-    def get_latest_link(self):
-        return self.get_link("latest-link")
-
-    def download_bundle(self, bundle_uid, local_bundle_path):
-        self.s3.download_file(
-            self.bucket_name, f"B-{bundle_uid}.bundle", local_bundle_path
         )

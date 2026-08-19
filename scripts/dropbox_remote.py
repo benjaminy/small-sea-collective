@@ -1,24 +1,32 @@
-"""Minimal Dropbox CodSync remote for bootstrapping test workspaces.
+"""Minimal direct-to-Dropbox Cod Sync store for bootstrapping test workspaces.
 
-Used by setup_dropbox_workspace.py to push/pull git objects directly to Dropbox
-without going through the Hub. Not for production use.
+Used by setup_dropbox_workspace.py to move bundles and links straight to
+Dropbox without a Hub. Not for production use — production traffic goes
+through the Hub.
 """
 
-import io
 import json
 
 import httpx
-import yaml
-from cod_sync.protocol import CodSyncRemote
+
+from cod_sync.store import (
+    CREATE_ONLY,
+    LATEST_LINK_PATH,
+    CasConflictError,
+    ObjectNotFoundError,
+    StoreProviderError,
+    bundle_path,
+    link_path,
+)
 
 DROPBOX_CONTENT = "https://content.dropboxapi.com/2"
 
 
-class DropboxCodSyncRemote(CodSyncRemote):
-    """Direct Dropbox remote — wraps the Dropbox API for CodSync push/pull.
+class DropboxCodSyncStore:
+    """Direct Dropbox store for Cod Sync publish and fetch.
 
-    folder_prefix: e.g. "ss-{teammate_id_hex[:16]}" — all paths are stored under
-        this folder inside the app's Dropbox folder.
+    folder_prefix: e.g. "ss-{teammate_id_hex[:16]}" — every path is stored
+        under this folder inside the app's Dropbox folder.
     """
 
     def __init__(self, access_token: str, folder_prefix: str = ""):
@@ -36,8 +44,10 @@ class DropboxCodSyncRemote(CodSyncRemote):
             h.update(extra)
         return h
 
-    def _upload(self, path: str, data: bytes, expected_etag=None) -> str:
-        if expected_etag is None:
+    def _upload(self, path: str, data: bytes, expected_etag) -> str:
+        if expected_etag == CREATE_ONLY:
+            mode = {".tag": "add"}
+        elif expected_etag is None:
             mode = {".tag": "overwrite"}
         else:
             mode = {".tag": "update", "update": expected_etag}
@@ -60,7 +70,12 @@ class DropboxCodSyncRemote(CodSyncRemote):
             content=data,
             timeout=60,
         )
-        resp.raise_for_status()
+        # Dropbox reports a rejected write conflict as 409, whether the target
+        # already existed or the rev no longer matches.
+        if resp.status_code == 409:
+            raise CasConflictError(f"{path}: {resp.text}")
+        if resp.status_code != 200:
+            raise StoreProviderError(f"writing {path} failed: HTTP {resp.status_code}")
         return resp.json().get("rev", "")
 
     def _download(self, path: str):
@@ -71,38 +86,31 @@ class DropboxCodSyncRemote(CodSyncRemote):
             timeout=60,
         )
         if resp.status_code == 409:
-            return None, None
-        resp.raise_for_status()
+            raise ObjectNotFoundError(path)
+        if resp.status_code != 200:
+            raise StoreProviderError(f"reading {path} failed: HTTP {resp.status_code}")
         result = json.loads(resp.headers.get("Dropbox-API-Result", "{}"))
-        rev = result.get("rev", "")
-        return resp.content, rev
-
-    def upload_latest_link(
-        self, link_uid, blob, bundle_uid, local_bundle_path, expected_etag=None
-    ):
-        with open(local_bundle_path, "rb") as f:
-            bundle_bytes = f.read()
-        self._upload(f"B-{bundle_uid}.bundle", bundle_bytes)
-        link_yaml = yaml.dump(blob, default_flow_style=False).encode("utf-8")
-        self._upload(f"L-{link_uid}.yaml", link_yaml)
-        self._upload("latest-link.yaml", link_yaml, expected_etag=expected_etag)
+        return resp.content, result.get("rev", "")
 
     def get_latest_link(self):
-        data, etag = self._download("latest-link.yaml")
-        if data is None:
-            return None
-        link = self.read_link_blob(io.BytesIO(data))
-        return (link, etag)
+        return self._download(LATEST_LINK_PATH)
 
-    def get_link(self, uid):
-        data, _ = self._download(f"L-{uid}.yaml")
-        if data is None:
-            return None
-        return self.read_link_blob(io.BytesIO(data))
+    def get_link(self, link_uid: str) -> bytes:
+        return self._download(link_path(link_uid))[0]
 
-    def download_bundle(self, bundle_uid, local_bundle_path):
-        data, _ = self._download(f"B-{bundle_uid}.bundle")
-        if data is None:
-            raise RuntimeError(f"Failed to download bundle B-{bundle_uid}.bundle")
-        with open(local_bundle_path, "wb") as f:
-            f.write(data)
+    def download_bundle(self, bundle_uid: str, local_path) -> None:
+        data, _rev = self._download(bundle_path(bundle_uid))
+        with open(local_path, "wb") as handle:
+            handle.write(data)
+
+    def put_bundle(self, bundle_uid: str, local_path) -> None:
+        with open(local_path, "rb") as handle:
+            self._upload(bundle_path(bundle_uid), handle.read(), CREATE_ONLY)
+
+    def put_link(self, link_uid: str, data: bytes) -> None:
+        self._upload(link_path(link_uid), data, CREATE_ONLY)
+
+    def put_latest_link(self, data: bytes, expected_etag, link_uid=None):
+        return self._upload(
+            LATEST_LINK_PATH, data, CREATE_ONLY if expected_etag is None else expected_etag
+        )

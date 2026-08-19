@@ -12,7 +12,7 @@ import boto3
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-from small_sea_hub.cloud_errors import MaterializationOutcome
+from small_sea_hub.cloud_errors import MaterializationOutcome, cas_conflict
 from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
@@ -206,6 +206,36 @@ def test_upload_and_download(test_env):
 
     raw = _read_bucket_object(minio, bucket_name, "greeting.txt")
     assert raw == new_content
+
+
+def test_upload_cas_failure_returns_a_structured_conflict(test_env, monkeypatch):
+    client = test_env["client"]
+    session_hex = _open_session(client)
+    monkeypatch.setattr(
+        test_env["backend"],
+        "upload_to_cloud",
+        lambda *args, **kwargs: (
+            False,
+            None,
+            cas_conflict("ETag mismatch - object was modified"),
+        ),
+    )
+
+    resp = client.post(
+        "/cloud_file",
+        json={
+            "path": "latest-link.yaml",
+            "data": base64.b64encode(b"link").decode(),
+            "expected_etag": "stale",
+        },
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json() == {
+        "error": "cas_conflict",
+        "detail": "ETag mismatch - object was modified",
+    }
 
 
 def test_non_files_team_path_uses_encryption(test_env):
@@ -759,3 +789,61 @@ def test_no_cloud_team_creation_leaves_storage_missing(test_env):
     )
 
     _assert_cloud_storage_required(resp, "cloud_location_missing")
+
+
+def test_only_a_confirmed_missing_object_is_404(test_env):
+    """Cod Sync reads 404 as "the store is empty", so nothing else may be one.
+
+    A provider read that failed leaves the object's existence unknown; a client
+    that took that for absence would conclude a published chain never existed.
+    """
+    client = test_env["client"]
+    minio = test_env["minio"]
+    playground_dir = test_env["playground_dir"]
+
+    session_hex = _open_session(client)
+    storage_id = _register_cloud(test_env["backend"], session_hex, minio)
+    ss_session = test_env["backend"]._lookup_session(session_hex)
+    allocation = Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+    )
+    _create_bucket(minio, allocation["location"])
+    auth = {"Authorization": f"Bearer {session_hex}"}
+    publish_storage_announcement_for_session(test_env["backend"], session_hex)
+
+    # An object that is genuinely not there.
+    resp = client.get("/cloud_file", params={"path": "no-such-object"}, headers=auth)
+    assert resp.status_code == 404
+
+    # The same request against a bucket the provider cannot serve.
+    backend = test_env["backend"]
+    real_adapter = backend._make_materialized_storage_adapter
+
+    def broken_bucket(*args, **kwargs):
+        adapter = real_adapter(*args, **kwargs)
+        adapter.bucket_name = "no-such-bucket-anywhere"
+        return adapter
+
+    backend._make_materialized_storage_adapter = broken_bucket
+    try:
+        resp = client.get(
+            "/cloud_file", params={"path": "no-such-object"}, headers=auth
+        )
+    finally:
+        backend._make_materialized_storage_adapter = real_adapter
+
+    assert resp.status_code != 404
+    assert resp.json()["error"] == "cloud_provider_failure"
+
+
+def test_an_unauthenticated_download_is_not_absence(test_env):
+    client = test_env["client"]
+    resp = client.get(
+        "/cloud_file",
+        params={"path": "anything"},
+        headers={"Authorization": "Bearer " + "00" * 16},
+    )
+    assert resp.status_code != 404

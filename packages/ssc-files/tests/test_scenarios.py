@@ -17,8 +17,7 @@ import os
 import pathlib
 
 import pytest
-from cod_sync.protocol import LocalFolderRemote
-
+from cod_sync.store import LocalFolderStore
 from ssc_files.files import (
     FilesMaterializationContext,
     add_checkout,
@@ -58,11 +57,11 @@ def setup_participant(playground, name, participant_hex):
 
 
 def do_push(root, participant_hex, cloud):
-    push_niche(str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderRemote(str(cloud)))
+    push_niche(str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderStore(str(cloud)))
 
 
 def do_pull(root, participant_hex, cloud):
-    pull_niche(str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderRemote(str(cloud)))
+    pull_niche(str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderStore(str(cloud)))
 
 
 def write(checkout, filename, content):

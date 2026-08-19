@@ -133,21 +133,21 @@ Any data stored in S3 using the current chain-of-deltas format becomes a migrati
 
 These questions were worked through in detail and are now captured in the [Cod Sync format spec](../packages/cod-sync/Documentation/format-spec.md):
 
-- **Concurrency control**: CAS (compare-and-swap) via conditional writes on `latest-link.yaml`. Failed CAS means pull, merge, retry. Implemented in the Hub's storage adapters and threaded through `SmallSeaRemote` and `LocalFolderRemote`.
-- **Versioning**: Per-link semver in `supp_data.cod_version`. Major bump = breaking (reader refuses), minor/patch = additive. Version numbers are monotonically non-decreasing forward through the chain.
+- **Concurrency control**: CAS (compare-and-swap) via conditional writes on `latest-link.yaml`. Failed CAS means pull, merge, retry. Implemented in the Hub's storage adapters and threaded through `SmallSeaStore` and `LocalFolderStore`. A failed CAS is reported, not resolved: Cod Sync does not fetch, merge, or retry on the caller's behalf.
+- **Versioning**: Per-link semver in the link's `version` key. Major bump = breaking (reader refuses), minor/patch = additive. Version numbers are monotonically non-decreasing forward through the chain.
 - **Encryption**: Link blobs and git bundles encrypted as separate files (allows chain traversal without downloading full bundles). Cipher and key exchange TBD.
-- **GC / compaction**: Chain compaction (collapse to fresh initial-snapshot) handles both garbage collection and format migration. Any user with write access can trigger it.
+- **GC / compaction**: Chain compaction (collapse to a fresh full snapshot that still contains the published head) handles both garbage collection and format migration. Any user with write access can trigger it.
 - **History retention**: Compaction does not rebase or replace the Git commit DAG.
   Objects may eventually dehydrate beyond a live-data window according to application and storage policy.
   The Constitution event envelope does not itself impose a global or clone-local retention promise.
   The window is not an erasure guarantee; teammates may keep independent copies of snapshots they already fetched.
 - **Forward restoration**: Shared repair never resets a branch or moves a ref backward.
   A new descendant commit may contain an old tree, after which desired intervening changes are replayed as new commits with provenance.
-- **Hub owns cloud interaction**: S3Remote to be eliminated; all cloud access goes through the Hub.
+- **Hub owns cloud interaction**: the direct-provider stores are test-only; all production cloud access goes through the Hub.
 
 ### Remaining Open Items
 
-- **S3Remote elimination**: Requires reworking the invitation flow. Inviter's cloud data is assumed globally readable (security comes from E2E encryption, not access control). Invitation tokens may include time-limited read paths.
+- **Direct-provider store elimination**: Requires reworking the invitation flow. Inviter's cloud data is assumed globally readable (security comes from E2E encryption, not access control). Invitation tokens may include time-limited read paths.
 - **Encryption details**: Cipher selection, key exchange protocol, and the bootstrapping flow for new teammates joining a chain are all TBD.
 - **Staleness and checkpoints**: Storage and application policies may need warnings or checkpoints before historical blobs dehydrate.
   Do not add them to the Constitution core unless interoperability requires a new core object rule.
@@ -232,5 +232,5 @@ and `packages/small-sea-manager/spec.md` for the full descriptions.
 1. ~~Hub ↔ Small Sea Manager DB contract~~ — mostly resolved; see settled decisions in Section 2. Remaining: monitoring API shape, `/cloud_locations` removal, Hub `open_session` update
 2. ~~Session lifecycle~~ — mostly resolved; see settled decisions in Section 3. Remaining: expiry policy, session management UI
 3. ~~Encryption layer interface~~ — mostly resolved; see settled decisions in Section 1. Remaining: key storage format, key backup/recovery, Cod Sync encryption wiring
-4. ~~Cod Sync chain format~~ — mostly resolved; see [format spec](../packages/cod-sync/Documentation/format-spec.md). Remaining: encryption details, S3Remote elimination
+4. ~~Cod Sync chain format~~ — mostly resolved; see [format spec](../packages/cod-sync/Documentation/format-spec.md). Remaining: encryption details, direct-provider store elimination
 5. Identity model — most complex; can be stubbed a while longer

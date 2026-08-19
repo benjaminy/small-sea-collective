@@ -5,7 +5,8 @@ from pathlib import Path
 from fastapi.testclient import TestClient
 
 import small_sea_hub.backend as SmallSea
-from cod_sync.protocol import LocalFolderRemote
+from cod_sync.store import LocalFolderStore
+from cod_sync.repo import Repo
 from small_sea_hub.server import app, _register_session_peers, _run_runtime_reconciliation_for_session
 from small_sea_manager import admission_events as AdmissionEvents
 from small_sea_manager import provisioning
@@ -74,9 +75,8 @@ def _add_same_teammate_linked_device_bundle(root: Path, participant_hex: str, te
 def _push_to_localfolder(repo_dir: Path, cloud_dir: Path):
     import cod_sync.protocol as CS
 
-    cod = CS.CodSync("origin", repo_dir=repo_dir)
-    cod.remote = CS.LocalFolderRemote(str(cloud_dir))
-    cod.push_to_remote(["main"])
+    cod = CS.CodSync(Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir)))
+    cod.publish()
 
 
 def _create_shared_team_with_bob(root: Path):
@@ -107,7 +107,7 @@ def _create_shared_team_with_bob(root: Path):
         root,
         bob_hex,
         token_b64,
-        inviter_remote=LocalFolderRemote(str(alice_cloud)),
+        inviter_store=LocalFolderStore(str(alice_cloud)),
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", bob_acceptance)
     return alice_hex, bob_hex

@@ -1094,7 +1094,7 @@ Existing device                    New device
 ```
 
 The currently implemented proof path is S3/MinIO through Hub-owned transport,
-with `LocalFolderRemote` retained as a local-only fallback for tests and
+with `LocalFolderStore` retained as a local-only fallback for tests and
 simple setups. Real OAuth provider bootstrap remains follow-up work.
 
 ### Secondary flow (oops unification)

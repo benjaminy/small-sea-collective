@@ -9,9 +9,6 @@ dependencies = [
     "requests>=2.32.5",
 ]
 
-[project.scripts]
-cod-sync = "cod_sync.cli:main"
-
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

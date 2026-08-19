@@ -2,9 +2,9 @@ import logging
 import pathlib
 from typing import Optional
 
-import cod_sync.protocol as CodSyncProtocol
 from cod_sync.repo import Repo as _Repo
-from cod_sync.protocol import BootstrapProxyRemote, CodSync, SmallSeaRemote
+from cod_sync.protocol import CodSync
+from cod_sync.store import BootstrapProxyStore, SmallSeaStore
 from small_sea_client.client import SmallSeaClient, SmallSeaHubUnavailable
 from small_sea_manager import admission_events
 from small_sea_manager import provisioning
@@ -40,8 +40,7 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=11437, _h
 
     remote = bundle.remote_descriptor
     if remote["protocol"] == "localfolder":
-        cod = CodSync("bootstrap-identity", repo_dir=sync_dir)
-        cod.remote = provisioning._remote_from_descriptor(remote)
+        store = provisioning._store_from_descriptor(remote)
     else:
         client = SmallSeaClient(port=hub_port, _http_client=_http_client)
         bootstrap_token = client.create_bootstrap_session(
@@ -50,17 +49,15 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=11437, _h
             bucket=remote["bucket"],
             expires_at=bundle.expires_at,
         )
-        cod = CodSync("bootstrap-identity", repo_dir=sync_dir)
-        cod.remote = BootstrapProxyRemote(
+        store = BootstrapProxyStore(
             bootstrap_token,
             base_url=client._base_url,
             client=_http_client,
         )
 
-    fetched_sha = cod.fetch_from_remote(["main"])
-    if fetched_sha is None:
-        raise RuntimeError("Failed to fetch NoteToSelf during identity bootstrap")
-    _Repo(sync_dir / ".git", sync_dir).checkout_branch("main", start_point=fetched_sha)
+    repo = _Repo(sync_dir / ".git", sync_dir)
+    result = CodSync(repo, store).fetch()
+    repo.checkout_branch("main", start_point=result.observed_head)
     return provisioning.finalize_identity_bootstrap(root_dir, prepared)
 
 
@@ -207,10 +204,14 @@ class TeamManager:
         nts_repo = _Repo(repo_dir / ".git", repo_dir)
         nts_repo.stage(["core.db"])
         nts_repo.commit("Update NoteToSelf")
-        remote = SmallSeaRemote(session.token, base_url=self.client._base_url, client=self.client._http_client)
-        cs = CodSync("origin", repo_dir=repo_dir)
-        cs.remote = remote
-        cs.push_to_remote(["main"])
+        store = SmallSeaStore(
+            session.token, base_url=self.client._base_url, client=self.client._http_client
+        )
+        result = CodSync(_Repo(repo_dir / ".git", repo_dir), store).publish()
+        if not result.changed:
+            # A no-op publication sends no Hub notification, so there is no new
+            # self-signal for the adopted baseline to catch up to.
+            return
         provisioning.set_note_to_self_adopted_signal_count(
             self.root_dir,
             self.participant_hex,
@@ -223,11 +224,11 @@ class TeamManager:
         session = self._open_note_to_self_session(mode="passthrough")
         berth_id, adopted = self._ensure_note_to_self_adopted_count(session)
         repo_dir = self._note_to_self_repo_dir()
-        remote = SmallSeaRemote(
+        store = SmallSeaStore(
             session.token, base_url=self.client._base_url, client=self.client._http_client
         )
-        cs = CodSync("origin", repo_dir=repo_dir)
-        cs.remote = remote
+        repo = _Repo(repo_dir / ".git", repo_dir)
+        cs = CodSync(repo, store)
         # Snapshot the berth counter BEFORE the fetch so the adopted baseline
         # only advances to state we've actually incorporated. Reading the counter
         # after the merge could observe a later push (counter N+1 or N+2) that
@@ -235,12 +236,11 @@ class TeamManager:
         # skipped on the next watch/refresh cycle.
         pre_fetch_snapshot = session.watch_notifications({}, timeout=0, known_self_count=adopted)
         pre_fetch_count = int(pre_fetch_snapshot.get("self_updated_count") or adopted)
-        fetched_sha = cs.fetch_from_remote(["main"])
-        if fetched_sha is None:
-            raise RuntimeError("Failed to fetch NoteToSelf from remote")
-        merge_result = cs.merge_from_remote(["main"])
-        if merge_result != 0:
-            raise RuntimeError(f"Failed to adopt refreshed NoteToSelf (merge exit {merge_result})")
+        result = cs.fetch()
+        if repo.has_commits():
+            repo.merge(result.observed_head)
+        else:
+            repo.checkout_branch("main", start_point=result.observed_head)
         provisioning.set_note_to_self_adopted_signal_count(
             self.root_dir,
             self.participant_hex,
@@ -604,7 +604,7 @@ class TeamManager:
         """
         import base64 as _b64
         import json as _json
-        from cod_sync.protocol import ExplicitProxyRemote
+        from cod_sync.store import ExplicitProxyStore
 
         token = _json.loads(_b64.b64decode(token_b64))
         inviter_cloud = token["inviter_cloud"]
@@ -626,7 +626,7 @@ class TeamManager:
         # The acceptor doesn't have a team session yet — NoteToSelf provides auth.
         nts_session = self._get_or_open_session("NoteToSelf", mode="passthrough")
         http = self.client._http_client  # None in production; injected TestClient in tests
-        proxy_remote = ExplicitProxyRemote(
+        proxy_store = ExplicitProxyStore(
             nts_session.token,
             inviter_cloud["protocol"],
             inviter_cloud["url"],
@@ -639,7 +639,7 @@ class TeamManager:
         # Clone + local DB writes. No cloud push happens here.
         return provisioning.accept_invitation(
             self.root_dir, self.participant_hex, token_b64,
-            inviter_remote=proxy_remote,
+            inviter_store=proxy_store,
         )
 
     def _team_repo_dir(self, team_name: str) -> pathlib.Path:
@@ -702,7 +702,7 @@ class TeamManager:
         internally — works in auto-approve mode without a PIN provider.
         Raises RuntimeError on CAS conflict.
         """
-        from cod_sync.protocol import CasConflictError
+        from cod_sync.store import CasConflictError
 
         repo_dir = self._team_repo_dir(team_name)
         repo = self._team_repo(team_name)
@@ -720,24 +720,24 @@ class TeamManager:
 
         session = self._get_or_open_session(team_name)
         session.ensure_cloud_ready()
-        remote = SmallSeaRemote(
+        store = SmallSeaStore(
             session.token,
             base_url=self.client._base_url,
             client=self.client._http_client,
         )
-        cs = CodSync("origin", repo_dir=repo_dir)
-        cs.remote = remote
         try:
-            cs.push_to_remote(["main"])
+            result = CodSync(_Repo(repo_dir / ".git", repo_dir), store).publish()
         except CasConflictError as exc:
             raise RuntimeError(
                 "Publication conflict — this participant's published Core chain "
                 "changed since this installation last observed it. The local "
                 "commit remains unpublished."
             ) from exc
+        # Either outcome means the cloud now holds this head, so the marker is
+        # written for both; only a genuine upload reports "published".
         if intended_head:
             self._push_status_file(team_name).write_text(intended_head)
-        return "published"
+        return "published" if result.changed else "already_published"
 
     def complete_invitation_acceptance(self, team_name, acceptance_b64):
         """Record invitee acceptance and finalize when quorum is met."""

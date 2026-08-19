@@ -37,6 +37,8 @@ from small_sea_hub.cloud_errors import (
     CloudStorageRequiredExn,
     CloudUserActionRequiredExn,
     MaterializationOutcome,
+    absent,
+    provider_failure,
 )
 from small_sea_hub.crypto import (commit_encrypted_upload,
                                   decrypt_group_payload,
@@ -50,6 +52,17 @@ from wrasse_trust.transport import (
     select_effective_teammate_berth_storage,
     verify_teammate_berth_storage_announcement_signature,
 )
+
+
+#: S3 error codes that mean this exact key is not there, as opposed to a read
+#: that failed for some other reason and leaves existence unknown.
+_S3_ABSENT_CODES = ("NoSuchKey", "404", "NotFound")
+
+
+def _classify_s3_download_error(code: str, detail: str):
+    if code in _S3_ABSENT_CODES:
+        return absent(detail)
+    return provider_failure(detail)
 
 
 class SmallSeaBackendExn(Exception):
@@ -71,6 +84,15 @@ class FutureHubDatabaseVersionError(SmallSeaBackendExn):
 
 class SmallSeaNotFoundExn(SmallSeaBackendExn):
     pass
+
+
+class SmallSeaSessionNotFoundExn(SmallSeaNotFoundExn):
+    """The bearer token names no session.
+
+    Its own class because it is an authentication failure wherever it happens.
+    Reporting it as a missing resource would let a client that reads 404 as
+    "this object does not exist" mistake an expired session for empty storage.
+    """
 
 
 class SmallSeaAppBootstrapRequiredExn(SmallSeaBackendExn):
@@ -933,7 +955,7 @@ class SmallSeaBackend:
                 .first()
             )
         if ss_session is None:
-            raise SmallSeaNotFoundExn(f"Session not found: {session_hex[:8]}")
+            raise SmallSeaSessionNotFoundExn(f"Session not found: {session_hex[:8]}")
         ss_session.participant_path = (
             self.root_dir / "Participants" / ss_session.participant_id.hex()
         )
@@ -1529,7 +1551,9 @@ class SmallSeaBackend:
                 return True, data_bytes, etag
             except ClientError as e:
                 code = e.response["Error"]["Code"]
-                return False, None, f"Proxy download failed: {code}"
+                return False, None, _classify_s3_download_error(
+                    code, f"Proxy download failed: {code}"
+                )
 
         elif protocol == "dropbox":
             cloud = self._get_cloud_link(ss_session)
@@ -1565,7 +1589,9 @@ class SmallSeaBackend:
             return True, data_bytes, etag
         except ClientError as e:
             code = e.response["Error"]["Code"]
-            return False, None, f"Bootstrap download failed: {code}"
+            return False, None, _classify_s3_download_error(
+                code, f"Bootstrap download failed: {code}"
+            )
 
     def _download_peer_file(self, session_hex, teammate_id_hex, path):
         """Core of download_from_peer, factored out for reuse."""
@@ -1610,7 +1636,9 @@ class SmallSeaBackend:
                 return True, data_bytes, etag
             except ClientError as e:
                 code = e.response["Error"]["Code"]
-                return False, None, f"Peer download failed: {code}"
+                return False, None, _classify_s3_download_error(
+                    code, f"Peer download failed: {code}"
+                )
 
         elif protocol == "dropbox":
             # Use own Dropbox credentials to access the shared account,

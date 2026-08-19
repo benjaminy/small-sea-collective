@@ -59,12 +59,13 @@ def _push_team_repo_via_hub(http, session_hex, repo_dir):
     assert resp.status_code == 200, resp.text
     publish_storage_announcement_for_session(app.state.backend, session_hex)
 
-    from cod_sync.protocol import CodSync, SmallSeaRemote
-
-    remote = SmallSeaRemote(session_hex, base_url="http://testserver", client=http)
-    cs = CodSync("origin", repo_dir=pathlib.Path(repo_dir))
-    cs.remote = remote
-    cs.push_to_remote(["main"])
+    from cod_sync.protocol import CodSync
+    from cod_sync.repo import Repo
+    from cod_sync.store import SmallSeaStore
+    remote = SmallSeaStore(session_hex, base_url="http://testserver", client=http)
+    repo_path = pathlib.Path(repo_dir)
+    cs = CodSync(Repo(repo_path / ".git", repo_path), remote)
+    cs.publish()
 
 
 def _free_port():
@@ -667,3 +668,82 @@ def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monke
 
     assert exc_info.value.scope == "niche"
     assert "shared.txt" in exc_info.value.paths
+
+
+def test_push_with_no_new_commits_reports_nothing_to_push(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    """The typed no-op has to surface as the app's existing vocabulary.
+
+    Before this branch the signal was a string match on git's "Refusing to
+    create empty bundle", and nothing tested that it still reached the caller.
+    """
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
+    root = env["root"]
+    http = env["http"]
+
+    alice_files_root = str(root / "files-alice")
+    files.init_files(alice_files_root, env["alice_hex"])
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
+    login = sync.login_team(
+        alice_files_root, "ProjectX", env["alice_hex"], _http_client=http,
+        pin_reader=lambda _: "",
+    )
+    context = files.materialization_context_from_session_info(login.session_info)
+
+    checkout = root / "alice-checkout"
+    files.create_niche(alice_files_root, env["alice_hex"], context, "docs")
+    files.add_checkout(alice_files_root, env["alice_hex"], context, "docs", str(checkout))
+    (checkout / "notes.txt").write_text("v1\n")
+    files.publish(
+        alice_files_root, env["alice_hex"], context, "docs", str(checkout), message="init"
+    )
+
+    sync.push_via_hub(
+        alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
+    )
+
+    # Second push: the niche is unchanged, and the registry is unchanged too —
+    # which is a success, not a failure worth reporting.
+    with pytest.raises(sync.NothingToPushError):
+        sync.push_via_hub(
+            alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
+        )
+
+
+def test_push_succeeds_when_only_the_registry_is_unchanged(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
+    root = env["root"]
+    http = env["http"]
+
+    alice_files_root = str(root / "files-alice")
+    files.init_files(alice_files_root, env["alice_hex"])
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
+    login = sync.login_team(
+        alice_files_root, "ProjectX", env["alice_hex"], _http_client=http,
+        pin_reader=lambda _: "",
+    )
+    context = files.materialization_context_from_session_info(login.session_info)
+
+    checkout = root / "alice-checkout"
+    files.create_niche(alice_files_root, env["alice_hex"], context, "docs")
+    files.add_checkout(alice_files_root, env["alice_hex"], context, "docs", str(checkout))
+    (checkout / "notes.txt").write_text("v1\n")
+    files.publish(
+        alice_files_root, env["alice_hex"], context, "docs", str(checkout), message="init"
+    )
+    sync.push_via_hub(
+        alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
+    )
+
+    # New niche content, same set of niches: the registry no-op must not turn a
+    # real push into a failure.
+    (checkout / "notes.txt").write_text("v2\n")
+    files.publish(
+        alice_files_root, env["alice_hex"], context, "docs", str(checkout), message="update"
+    )
+    sync.push_via_hub(
+        alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
+    )

@@ -144,7 +144,6 @@ macOS, `%APPDATA%\SmallSea\Files` on Windows).
           niches/
             {niche_name}/
               git/            ← niche bare git repo (shared)
-                codsync-bundle-tmp/
 ```
 
 The absence of a `checkout/` directory under `niches/{niche_name}/` is
@@ -227,12 +226,12 @@ Those keys intentionally omit both friendly `team_name` and opaque Files
 
 | Operation | Description |
 |-----------|-------------|
-| `push_niche` | Push a niche to a cloud remote via Cod Sync. |
+| `push_niche` | Publish a niche to a cloud store via Cod Sync. Returns the `PublishResult`; `changed=False` means the store already held this head and nothing was uploaded. |
 | `pull_niche` | Fetch from a cloud remote and merge into the local niche repo. Requires a clean checkout if one is attached; refreshes it after merge. |
 | `fetch_niche` | Fetch from a peer and park the ref locally without merging. No checkout required. |
 | `merge_niche` | Merge a previously parked peer ref. Requires a clean attached checkout. |
 | `repair_niche` (target) | Append a forward restoration commit containing a selected earlier tree, then optionally replay chosen intervening work as new commits without resetting the shared branch. Files must describe what provenance, if any, supports the replay. |
-| `push_registry` | Push the niche registry to a cloud remote. |
+| `push_registry` | Publish the niche registry to a cloud store. Returns the `PublishResult`, on the same terms as `push_niche`. |
 | `pull_registry` | Pull the niche registry from a cloud remote and merge. |
 
 ---

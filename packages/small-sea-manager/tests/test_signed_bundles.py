@@ -5,10 +5,14 @@ import sqlite3
 
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.protocol import (
-    CodSync, PeerSmallSeaRemote, SmallSeaRemote,
-    canonical_link_bytes, verify_link_signature,
+from cod_sync.format import (
+    canonical_link_bytes,
+    decode_link,
+    verify_link_signature,
 )
+from cod_sync.protocol import CodSync
+from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
+from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager
@@ -43,15 +47,15 @@ def _open_session(http, nickname, team, mode="encrypted"):
 
 
 def _push_via_hub(http, session_hex, repo_dir, **push_kwargs):
-    """Push a team repo to cloud via Hub using SmallSeaRemote."""
+    """Push a team repo to cloud via Hub using SmallSeaStore."""
     auth = {"Authorization": f"Bearer {session_hex}"}
     resp = http.post("/cloud/setup", headers=auth)
     assert resp.status_code == 200, resp.text
     publish_storage_announcement_for_session(app.state.backend, session_hex)
-    remote = SmallSeaRemote(session_hex, base_url="http://testserver", client=http)
-    cs = CodSync("origin", repo_dir=pathlib.Path(repo_dir))
-    cs.remote = remote
-    cs.push_to_remote(["main"], **push_kwargs)
+    remote = SmallSeaStore(session_hex, base_url="http://testserver", client=http)
+    repo_path = pathlib.Path(repo_dir)
+    cs = CodSync(Repo(repo_path / ".git", repo_path), remote)
+    cs.publish(**push_kwargs)
 
 
 def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
@@ -171,18 +175,15 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     bob_teammate_id_hex = acceptance["author_teammate_id"]
 
     bob_team_token = _open_session(http, "Bob", "ProjectX", mode="passthrough")
-    peer_remote = PeerSmallSeaRemote(
+    peer_remote = PeerSmallSeaStore(
         bob_team_token, alice_teammate_id_hex,
         base_url="http://testserver", client=http,
     )
-    result = peer_remote.get_latest_link()
-    assert result is not None
-    link, _etag = result
-    [link_ids, branches, bundles, supp_data] = link
+    link = decode_link(peer_remote.get_latest_link()[0])
 
-    assert "signatures" in supp_data
-    assert alice_teammate_id_hex in supp_data["signatures"]
-    alice_signature = supp_data["signatures"][alice_teammate_id_hex]
+    assert "signatures" in link.extensions
+    assert alice_teammate_id_hex in link.extensions["signatures"]
+    alice_signature = link.extensions["signatures"][alice_teammate_id_hex]
     assert alice_signature["device_public_key"] == alice_pub.hex()
     sig_b64 = alice_signature["signature"]
 
@@ -195,8 +196,9 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     ).fetchone()[0]
     bconn.close()
 
-    canonical = canonical_link_bytes(link_ids, branches, bundles, supp_data)
-    assert verify_link_signature(alice_pub_from_bob, sig_b64, canonical)
+    assert verify_link_signature(
+        alice_pub_from_bob, sig_b64, canonical_link_bytes(link)
+    )
 
     # --- Verify Bob's public key is in Alice's team DB (from acceptance token) ---
     aconn = sqlite3.connect(str(alice_team_db))

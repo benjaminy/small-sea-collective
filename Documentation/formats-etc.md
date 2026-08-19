@@ -9,23 +9,20 @@ smallsea://app/alice/supernotes
 smallsea://app-team/alice/supernotes/friends
 
 
-            #         - - uid for this link
-            #           - uid for prev link -or- "initial-snapshot"
-            #           - uid for link before that, etc
-            #         - *** branches ***
-            #         - - - random id for latest bundle
-            #             - - branch name
-            #               - sha before
-            #             - - branch name
-            #               - sha before
-            #           - - random id for prev bundle
-            #             - - branch name
-            #               - sha before
-            #             - - branch name
-            #               - sha before
-            #           - - random id for bundle before that, etc
-            #         - { k/v s }
-                   
+Link file shape (version 2, see `packages/cod-sync/Documentation/format-spec.md`):
+
+```yaml
+version: 2.0.0
+link_id: 0123456789abcdef
+head: <main commit object id>
+bundle_id: fedcba9876543210
+previous:
+  link_id: 1111111111111111
+  head: <previous main commit object id>
+extensions: {}
+```
+
+The first link in a chain has `previous: null`.
 
 # Class Diagram: Software Architecture
 
@@ -33,114 +30,90 @@ We'll create a visual representation of the main software components and their r
 
 ## Classes
 
-1. **Cod Sync**
-   - Manages remote operations for different types of remotes (Google Drive, etc)
+1. **CodSync** (`cod_sync/protocol.py`)
+   - Coordinates publication and fetch. Executes no Git command and parses no YAML itself.
+   - Constructed as `CodSync(repo, store)`.
    - Methods:
-     - `add_remote()`
-     - `remove_remote()`
-     - `initialize_existing_remote()`
-     - `push_to_remote()`
-     - `build_link_blob()`
-     - `clone_from_remote()`
-     - `fetch_from_remote()`
-     - `merge_from_remote()`
-     - `get_branches()`
-     - `token_hex()`
-     - `change_to_root_git_dir()`
-     - `bundle_tmp()`
-     - `gitCmd()`
+     - `publish() -> PublishResult`
+     - `fetch(pin_to_ref=None) -> FetchResult`
 
-2. **GitCmdFailed**
-   - Exception class for handling errors in Git commands
+2. **Repo** (`cod_sync/repo.py`)
+   - Owns every Git operation, including bundle creation, inspection, import, and forward-only ref movement.
 
-3. **CodSyncRemote**
-   - Abstract base class for different types of remotes
-   - Methods:
-     - `init()`
-     - `read_link_blob()`
-     - `upload_latest_link()`
-     - `get_link()`
-     - `get_latest_link()`
-     - `download_bundle()`
+3. **Link / BundleDescriptor** (`cod_sync/format.py`)
+   - The version-2 link model and its wire codec, plus canonical signing.
+   - Functions: `encode_link()`, `decode_link()`, `canonical_link_bytes()`, `sign_link()`, `verify_link_signature()`.
 
-4. **SmallSeaRemote**
-   - Implements remote operations for Small Sea
-   - Inherits from CodSyncRemote
+4. **ReadableBundleStore / WritableBundleStore** (`cod_sync/store.py`)
+   - Opaque byte transport. Reads report exact absence separately from every other failure.
+   - Read methods: `get_latest_link()`, `get_link(uid)`, `download_bundle(uid, path)`.
+   - Write methods: `put_bundle(uid, path)`, `put_link(uid, data)`, `put_latest_link(data, expected_etag)`.
 
-5. **LocalFolderRemote**
-   - Implements local folder remote operations
-   - Inherits from CodSyncRemote
+5. **Store implementations**
+   - `LocalFolderStore`; the Hub-backed `SmallSeaStore`, `PeerSmallSeaStore`, `ExplicitProxyStore`, and `BootstrapProxyStore`.
+   - `S3Store` and `PublicS3Store` in `cod_sync/testing.py` are test infrastructure, not production transports.
 
-6. **SmallSea**
-   - Main application class that interacts with Cod Sync
-   - Methods:
-     - `token_hex()`
-     - Interaction with Cod Sync for remote operations
+6. **GitCmdFailed** (`cod_sync/git.py`)
+   - The low-level Git failure; `Repo` wraps it as `RepoError` and its subclasses.
 
 ## Relationships
 
-- **Cod Sync** is used by **SmallSea**
-- **CodSyncRemote** is extended by both **SmallSeaRemote** and **LocalFolderRemote**
-
-The UML diagram will visually represent these relationships with arrows showing inheritance and method calls.
+The module dependency graph runs one way: `git.py` <- `repo.py` <- `protocol.py`,
+with `protocol.py` also depending on `format.py` and `store.py`, which do not depend on each other.
 
 ### Class Diagram (Mermaid Syntax)
 
 ```mermaid
 classDiagram
 
-    class Cod Sync {
-        +String remote_name
-        +method add_remote(url, dotdotdot)
-        +method remove_remote(dotdotdot)
-        +method initialize_existing_remote()
-        +method push_to_remote(branches)
-        +method build_link_blob(new_link_uid, prev_link_uid, bundle_uid, prerequisites)
-        +method clone_from_remote(url)
-        +method fetch_from_remote(branches)
-        +method fetch_chain(link, branches, doing_clone)
-        +method merge_from_remote(branches)
-        +method get_branches()
-        +method get_branch_head_sha(branch)
-        +method token_hex(num_bytes)
-        +method change_to_root_git_dir()
-        +method bundle_tmp()
-        +method gitCmd(git_params, raise_on_error)
+    class CodSync {
+        +Repo repo
+        +ReadableBundleStore store
+        +publish(signing_key, teammate_id, device_public_key) PublishResult
+        +fetch(pin_to_ref) FetchResult
     }
 
-    class GitCmdFailed {
-        +String message
-        +method __init__(message)
+    class Repo {
+        +create_bundle(path, rev_args)
+        +verify_bundle(path)
+        +bundle_heads(path)
+        +bundle_prerequisites(path)
+        +import_bundle(path)
+        +advance_ref(ref_name, new_sha) RefAdvanceResult
+        +is_ancestor(maybe_ancestor, descendant)
+        +merge(ref)
     }
 
-    abstract class CodSyncRemote {
-        +static method init(url)
-        +method read_link_blob(yaml_strm)
-        +method upload_latest_link(link_uid, blob, bundle_uid, local_bundle_path)
-        +method get_link(uid)
-        +method get_latest_link()
-        +method download_bundle(bundle_uid, local_bundle_path)
+    class Link {
+        +String link_id
+        +String head
+        +String bundle_id
+        +Predecessor previous
+        +String version
+        +Mapping extensions
     }
 
-    class SmallSeaRemote extends CodSyncRemote {
-        +method upload_latest_link(...)
-        +method get_link(...)
-        +method get_latest_link()
-        +method download_bundle(...)
+    class ReadableBundleStore {
+        <<interface>>
+        +get_latest_link() bytes_and_etag
+        +get_link(link_uid) bytes
+        +download_bundle(bundle_uid, local_path)
     }
 
-    class LocalFolderRemote extends CodSyncRemote {
-        #local folder operations
+    class WritableBundleStore {
+        <<interface>>
+        +put_bundle(bundle_uid, local_path)
+        +put_link(link_uid, data)
+        +put_latest_link(data, expected_etag) etag
     }
 
-    class SmallSea {
-        +String root_dir
-        +method __init__(root_dir)
-        +method main(cmd, more_args)
-        +method token_hex(num_bytes)
-        +method interact_with_cod_sync()
-    }
-
-    Cod Sync --> SmallSea: Uses "API"
-    CodSyncRemote --> SmallSeaRemote: Extends
-    CodSyncRemote --> LocalFolderRemote: Extends
+    CodSync --> Repo : all Git work
+    CodSync --> Link : encode/decode
+    CodSync --> ReadableBundleStore : bytes
+    ReadableBundleStore <|-- WritableBundleStore
+    ReadableBundleStore <|.. LocalFolderStore
+    ReadableBundleStore <|.. SmallSeaStore
+    ReadableBundleStore <|.. PeerSmallSeaStore
+    ReadableBundleStore <|.. ExplicitProxyStore
+    ReadableBundleStore <|.. BootstrapProxyStore
+```

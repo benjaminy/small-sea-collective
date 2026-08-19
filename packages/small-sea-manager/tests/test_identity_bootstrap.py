@@ -6,6 +6,7 @@ import json
 import base64
 
 import cod_sync.protocol as CodSync
+from cod_sync.git import gitCmd
 import pytest
 import small_sea_hub.backend as SmallSea
 from cryptography.exceptions import InvalidTag
@@ -271,7 +272,7 @@ def test_authorize_rejects_unsupported_join_request_version_before_admitting(pla
 
     shared1 = note_to_self_sync_db_path(root1, alice_hex)
     sync_dir = root1 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
-    head_before = CodSync.gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
+    head_before = gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
 
     alice_manager = TeamManager(root1, alice_hex)
     try:
@@ -281,7 +282,7 @@ def test_authorize_rejects_unsupported_join_request_version_before_admitting(pla
         assert "join request artifact" in str(exn)
 
     assert _count_rows(shared1, "SELECT COUNT(*) FROM user_device") == 1
-    head_after = CodSync.gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
+    head_after = gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
     assert head_after == head_before
 
 
@@ -396,8 +397,8 @@ def test_identity_bootstrap_rejects_wrong_known_signing_key(playground_dir):
         conn.commit()
 
     repo_dir = root1 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
-    CodSync.gitCmd(["-C", str(repo_dir), "add", "core.db"])
-    CodSync.gitCmd(["-C", str(repo_dir), "commit", "-m", "Rotate signer for test"])
+    gitCmd(["-C", str(repo_dir), "add", "core.db"])
+    gitCmd(["-C", str(repo_dir), "commit", "-m", "Rotate signer for test"])
     _push_note_to_self_to_local_remote(
         root1,
         alice_hex,
@@ -467,7 +468,7 @@ def test_identity_bootstrap_via_hub_bootstrap_transport(playground_dir, minio_se
     assert _count_rows(shared2, "SELECT COUNT(*) FROM user_device") == 2
 
     sync_dir = root2 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
-    head = CodSync.gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
+    head = gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
     assert head
 
 

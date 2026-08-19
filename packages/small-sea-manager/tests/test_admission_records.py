@@ -10,7 +10,7 @@ row. The tamper tests at the bottom cover the 2026-07-04 committee findings:
 the signed mode_plan cannot be escalated or dropped, and forged
 endorsement/acceptance/snapshot rows are refused at decision points.
 
-Runs entirely over LocalFolderRemote -- no MinIO or Hub.
+Runs entirely over LocalFolderStore -- no MinIO or Hub.
 """
 
 import base64
@@ -20,6 +20,8 @@ import shutil
 import sqlite3
 
 import cod_sync.protocol as CS
+from cod_sync.repo import Repo
+from cod_sync.store import LocalFolderStore
 import pytest
 
 import small_sea_manager.provisioning as provisioning
@@ -33,9 +35,8 @@ from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_pu
 
 
 def _push(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
-    cod = CS.CodSync("origin", repo_dir=repo_dir)
-    cod.remote = CS.LocalFolderRemote(str(cloud_dir))
-    cod.push_to_remote(["main"])
+    cod = CS.CodSync(Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir)))
+    cod.publish()
 
 
 def _setup_team(root: pathlib.Path, *, quorum: int | None = None):
@@ -62,7 +63,7 @@ def _admit(root, alice_hex, invitee_hex, cloud, *, mode_plan=None, label="Bob"):
     )
     _push(root / "Participants" / alice_hex / "ProjectX" / "Sync", cloud)
     acceptance = provisioning.accept_invitation(
-        root, invitee_hex, token, inviter_remote=CS.LocalFolderRemote(str(cloud))
+        root, invitee_hex, token, inviter_store=LocalFolderStore(str(cloud))
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     return json.loads(base64.b64decode(acceptance).decode())
@@ -239,7 +240,7 @@ def _make_proposal_and_accept(root, alice_hex, bob_hex, cloud):
     )
     _push(root / "Participants" / alice_hex / "ProjectX" / "Sync", cloud)
     acceptance_b64 = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_remote=CS.LocalFolderRemote(str(cloud))
+        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
     )
     return json.loads(base64.b64decode(acceptance_b64).decode())
 
@@ -379,7 +380,7 @@ def test_one_steward_two_devices_endorse_once(playground_dir):
     )
     _push(alice_sync, cloud)
     acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_remote=CS.LocalFolderRemote(str(cloud))
+        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
 
@@ -424,7 +425,7 @@ def test_expired_proposal_refuses_endorsement_without_mutation(playground_dir):
     )
     _push(alice_sync, cloud)
     acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_remote=CS.LocalFolderRemote(str(cloud))
+        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
 
@@ -466,7 +467,7 @@ def test_tampered_mode_plan_blocks_completion(playground_dir):
     )
     _push(alice_sync, cloud)
     acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_remote=CS.LocalFolderRemote(str(cloud))
+        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
     )
 
     # Escalate the stored plan to the steward expansion, as a malicious merge
@@ -514,7 +515,7 @@ def test_forged_endorsements_do_not_count_toward_quorum(playground_dir):
     )
     _push(alice_sync, cloud)
     acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_remote=CS.LocalFolderRemote(str(cloud))
+        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposals = provisioning.list_invitations(root, alice_hex, "ProjectX")
@@ -612,7 +613,7 @@ def test_tampered_snapshot_json_is_rejected_against_signed_digest(playground_dir
     )
     _push(alice_sync, cloud)
     acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_remote=CS.LocalFolderRemote(str(cloud))
+        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposal_hex = provisioning.list_invitations(root, alice_hex, "ProjectX")[0]["id"]
@@ -655,7 +656,7 @@ def test_tampered_acceptance_row_is_rejected_at_finalization(playground_dir):
     )
     _push(alice_sync, cloud)
     acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_remote=CS.LocalFolderRemote(str(cloud))
+        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposal_hex = provisioning.list_invitations(root, alice_hex, "ProjectX")[0]["id"]
@@ -698,7 +699,7 @@ def test_forged_finalization_rows_are_ignored_and_do_not_block(playground_dir):
     )
     _push(alice_sync, cloud)
     acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_remote=CS.LocalFolderRemote(str(cloud))
+        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposals = provisioning.list_invitations(root, alice_hex, "ProjectX")
@@ -976,7 +977,7 @@ def test_tampered_proposal_author_does_not_enable_finalization(playground_dir):
     )
     _push(alice_sync, cloud)
     acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_remote=CS.LocalFolderRemote(str(cloud))
+        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposals = provisioning.list_invitations(root, alice_hex, "ProjectX")

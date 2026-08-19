@@ -36,6 +36,10 @@ Every once in a while (exact schedule TBD), a chain compaction can be run:
 This is conceptually pretty simple.
 It could be fairly expensive, but there's no need to do it frequently.
 
+Compaction preserves forward Git ancestry: the fresh snapshot must contain the head the chain already published.
+A snapshot that did not would replace the chain rather than compact it, and publication refuses that case —
+a store may only ever move forward.
+
 Compacting the uploaded bundle chain is not a rebase and does not replace the repository's history with a new root commit.
 The complete Git commit DAG and stable commit identities remain available for bookkeeping and merge ancestry even when older transport links are removed.
 

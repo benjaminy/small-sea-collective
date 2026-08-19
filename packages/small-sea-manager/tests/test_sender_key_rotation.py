@@ -29,6 +29,7 @@ from small_sea_note_to_self.sender_keys import (
 from sqlalchemy import create_engine, text
 from wrasse_trust.identity import issue_membership_cert
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_public
+from cod_sync.git import gitCmd
 
 
 def _copy_team_baseline(
@@ -550,13 +551,13 @@ def test_parallel_device_prekey_bundle_rows_merge(playground_dir):
         )
         conn.commit()
 
-    provisioning.CodSync.gitCmd(["-C", str(repo_a), "add", "core.db"])
-    provisioning.CodSync.gitCmd(["-C", str(repo_a), "commit", "-m", "Publish row A"])
-    provisioning.CodSync.gitCmd(["-C", str(repo_b), "add", "core.db"])
-    provisioning.CodSync.gitCmd(["-C", str(repo_b), "commit", "-m", "Publish row B"])
-    provisioning.CodSync.gitCmd(["-C", str(repo_a), "remote", "add", "other", str(repo_b)])
-    provisioning.CodSync.gitCmd(["-C", str(repo_a), "fetch", "other"])
-    provisioning.CodSync.gitCmd(["-C", str(repo_a), "merge", "--no-edit", "other/main"])
+    gitCmd(["-C", str(repo_a), "add", "core.db"])
+    gitCmd(["-C", str(repo_a), "commit", "-m", "Publish row A"])
+    gitCmd(["-C", str(repo_b), "add", "core.db"])
+    gitCmd(["-C", str(repo_b), "commit", "-m", "Publish row B"])
+    gitCmd(["-C", str(repo_a), "remote", "add", "other", str(repo_b)])
+    gitCmd(["-C", str(repo_a), "fetch", "other"])
+    gitCmd(["-C", str(repo_a), "merge", "--no-edit", "other/main"])
 
     with sqlite3.connect(team_db_a) as conn:
         rows = conn.execute(

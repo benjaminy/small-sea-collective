@@ -3,14 +3,15 @@ import shutil
 import sqlite3
 
 import cod_sync.protocol as CS
+from cod_sync.repo import Repo
+from cod_sync.store import LocalFolderStore
 
 import small_sea_manager.provisioning as provisioning
 
 
 def _push_to_localfolder(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
-    cod = CS.CodSync("origin", repo_dir=repo_dir)
-    cod.remote = CS.LocalFolderRemote(str(cloud_dir))
-    cod.push_to_remote(["main"])
+    cod = CS.CodSync(Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir)))
+    cod.publish()
 
 
 def _bootstrap_existing_steward_clone(
@@ -118,7 +119,7 @@ def test_quorum_two_requires_second_steward_and_inviter_finalization(playground_
         root,
         bob_hex,
         token,
-        inviter_remote=CS.LocalFolderRemote(str(alice_cloud)),
+        inviter_store=LocalFolderStore(str(alice_cloud)),
     )
 
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
@@ -161,7 +162,7 @@ def test_governance_drift_invalidates_proposal(playground_dir):
         root,
         bob_hex,
         token,
-        inviter_remote=CS.LocalFolderRemote(str(alice_cloud)),
+        inviter_store=LocalFolderStore(str(alice_cloud)),
     )
 
     with sqlite3.connect(alice_sync / "core.db") as conn:
@@ -211,7 +212,7 @@ def test_contributor_role_finalizes_as_proposal_only_on_core(playground_dir):
         root,
         bob_hex,
         token,
-        inviter_remote=CS.LocalFolderRemote(str(alice_cloud)),
+        inviter_store=LocalFolderStore(str(alice_cloud)),
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
 

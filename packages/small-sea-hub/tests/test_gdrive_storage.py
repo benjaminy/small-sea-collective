@@ -136,7 +136,8 @@ def test_upload_fresh_already_exists():
 
     ok, etag, msg = adapter.upload_fresh("existing.txt", b"nope")
     assert not ok
-    assert "already exists" in msg.lower()
+    assert msg.cas_conflict
+    assert "already exists" in str(msg).lower()
 
 
 # ---- Upload if-match ----
@@ -171,7 +172,8 @@ def test_upload_if_match_stale_etag():
 
     ok, etag, msg = adapter.upload_if_match("file.txt", b"conflict", "old-etag")
     assert not ok
-    assert "mismatch" in msg.lower()
+    assert msg.cas_conflict
+    assert "mismatch" in str(msg).lower()
 
 
 # ---- Path metadata persistence ----

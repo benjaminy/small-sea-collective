@@ -24,16 +24,24 @@ from sqlalchemy.orm import Session
 
 import small_sea_manager.provisioning as Provisioning
 import cod_sync.protocol as CS
+from cod_sync.repo import Repo
+from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
+from cod_sync.git import gitCmd
 
 
 MINIO_PORT = 9600
 HUB_PORT = 11600
 
 
+def _repo(repo_dir):
+    repo_dir = pathlib.Path(repo_dir)
+    return Repo(repo_dir / ".git", repo_dir)
+
+
 def _git(args, repo_dir=None):
     """Run a git command, optionally scoped to repo_dir."""
     prefix = ["-C", str(repo_dir)] if repo_dir else []
-    return CS.gitCmd(prefix + args)
+    return gitCmd(prefix + args)
 
 
 @pytest.fixture(scope="module")
@@ -187,27 +195,23 @@ def test_push_and_pull_via_hub(sync_env):
         )
         assert resp.status_code == 200, resp.text
 
-        # ---- Alice: push via SmallSeaRemote ----
-        alice_remote = CS.SmallSeaRemote(alice_token, base_url=hub_endpoint)
-        alice_cod = CS.CodSync("origin", repo_dir=alice_repo)
-        alice_cod.remote = alice_remote
-        alice_cod.push_to_remote(["main"])
+        # ---- Alice: publish via SmallSeaStore ----
+        alice_store = SmallSeaStore(alice_token, base_url=hub_endpoint)
+        CS.CodSync(_repo(alice_repo), alice_store).publish()
 
         # ---- Bob: fetch via peer proxy ----
-        bob_remote = CS.PeerSmallSeaRemote(
+        bob_store = PeerSmallSeaStore(
             bob_token, alice_teammate_id_hex, base_url=hub_endpoint
         )
-        bob_cod = CS.CodSync("peer", repo_dir=bob_repo)
-        bob_cod.remote = bob_remote
 
-        # Init Bob's repo so fetch/merge has somewhere to land.
+        # Init Bob's repo so fetch/adopt has somewhere to land.
         _git(["init", "-b", "main", str(bob_repo)])
         _git(["config", "user.email", "bob@test"], repo_dir=bob_repo)
         _git(["config", "user.name", "Bob"], repo_dir=bob_repo)
 
-        bob_cod.fetch_from_remote(["main"])
-        exit_code = bob_cod.merge_from_remote(["main"])
-        assert exit_code == 0, "Merge failed"
+        bob = _repo(bob_repo)
+        result = CS.CodSync(bob, bob_store).fetch()
+        bob.checkout_branch("main", result.observed_head)
 
         # ---- Verify ----
         assert (bob_repo / "data.txt").exists()

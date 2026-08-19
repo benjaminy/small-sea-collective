@@ -1,22 +1,21 @@
-# Test push/clone roundtrip through SmallSeaRemote backed by the hub.
+# Publish and fetch through SmallSeaStore, backed by the Hub.
 #
-# Uses FastAPI TestClient (in-process) with a real MinIO server for S3 storage.
-# Exercises: SmallSeaRemote.upload_latest_link, get_latest_link, get_link,
-#            download_bundle via hub's /cloud_file endpoints.
+# Uses FastAPI TestClient (in-process) with a real MinIO server for S3 storage,
+# so the gateway rule holds: every byte moves through /cloud_file.
 
 import pathlib
-import shutil
-import tempfile
 
 import boto3
-import cod_sync.protocol as CS
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 from botocore.config import Config as BotoConfig
+from cod_sync_test_helpers import commit_file, make_cod_sync, make_repo, working_tree_files
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
-from test_clone_from_local_bundle import make_cod_sync, working_tree_files
+
+from cod_sync.format import decode_link
+from cod_sync.store import ObjectNotFoundError, SmallSeaStore
 
 MINIO_PORT = 9400
 
@@ -90,63 +89,58 @@ def hub_env(playground_dir, minio):
     }
 
 
-def test_push_clone_roundtrip_via_hub(hub_env, scratch_dir):
+def test_publish_and_fetch_roundtrip_via_hub(hub_env, scratch_dir):
     client = hub_env["client"]
     session_hex = hub_env["session_hex"]
-
     scratch = pathlib.Path(scratch_dir)
-    alice_repo = scratch / "alice-repo"
-    bob_repo = scratch / "bob-repo"
-    alice_repo.mkdir()
-    bob_repo.mkdir()
 
-    # ---- Alice: init repo, commit files ----
-    CS.gitCmd(["init", "-b", "main", str(alice_repo)])
-    CS.gitCmd(["-C", str(alice_repo), "config", "user.email", "alice@test"])
-    CS.gitCmd(["-C", str(alice_repo), "config", "user.name", "Alice"])
+    # ---- Alice: commit and publish through the Hub ----
+    alice = make_repo(scratch / "alice", "alice")
+    commit_file(alice, "README.md", "# Hub Roundtrip\n")
+    commit_file(alice, "notes.txt", "testing through the hub\n")
 
-    (alice_repo / "README.md").write_text("# Hub Roundtrip\n")
-    (alice_repo / "notes.txt").write_text("testing through the hub\n")
-    CS.gitCmd(["-C", str(alice_repo), "add", "-A"])
-    CS.gitCmd(["-C", str(alice_repo), "commit", "-m", "initial commit"])
+    alice_store = SmallSeaStore(session_hex, client=client)
+    published = make_cod_sync(alice, alice_store).publish()
+    assert published.changed is True
 
-    # ---- Alice: push via SmallSeaRemote ----
-    alice_remote = CS.SmallSeaRemote(session_hex, client=client)
-    alice_cod = make_cod_sync(alice_repo, "hub-pub")
-    alice_cod.remote = alice_remote
-    alice_cod.push_to_remote(["main"])
+    link = decode_link(alice_store.get_latest_link()[0])
+    assert link.previous is None
+    assert link.head == published.head
+    assert link.version == "2.0.0"
 
-    # ---- Bob: clone via SmallSeaRemote ----
-    bob_remote = CS.SmallSeaRemote(session_hex, client=client)
-    result = bob_remote.get_latest_link()
-    assert result is not None
-    latest, etag = result
-    assert etag is not None
+    # ---- Bob: cold-start fetch through the same Hub endpoints ----
+    bob = make_repo(scratch / "bob", "bob")
+    result = make_cod_sync(bob, SmallSeaStore(session_hex, client=client)).fetch()
+    bob.checkout_branch("main", result.observed_head)
 
-    [link_ids, branches, bundles, supp] = latest
-    assert link_ids[0] == "initial-snapshot"
-    assert len(bundles) == 1
-    assert supp["cod_version"] == "1.0.0"
+    assert working_tree_files(bob) == working_tree_files(alice)
 
-    bundle_uid = bundles[0][0]
-    with tempfile.TemporaryDirectory() as td:
-        bundle_path = f"{td}/clone.bundle"
-        bob_remote.download_bundle(bundle_uid, bundle_path)
-        CS.gitCmd(["clone", bundle_path, str(bob_repo / "checkout")])
 
-    # Move contents up (clone creates a subdir)
-    checkout = bob_repo / "checkout"
-    for item in checkout.iterdir():
-        shutil.move(str(item), str(bob_repo / item.name))
-    checkout.rmdir()
+def test_incremental_publication_via_hub(hub_env, scratch_dir):
+    client = hub_env["client"]
+    session_hex = hub_env["session_hex"]
+    scratch = pathlib.Path(scratch_dir)
 
-    CS.gitCmd(["-C", str(bob_repo), "checkout", "main"])
+    alice = make_repo(scratch / "alice", "alice")
+    commit_file(alice, "a.txt", "one\n")
+    store = SmallSeaStore(session_hex, client=client)
+    first = make_cod_sync(alice, store).publish()
 
-    # ---- Verify working trees match ----
-    alice_files = working_tree_files(alice_repo)
-    bob_files = working_tree_files(bob_repo)
+    commit_file(alice, "b.txt", "two\n")
+    second = make_cod_sync(alice, store).publish()
+    assert second.changed is True
 
-    assert alice_files == bob_files
-    assert "README.md" in alice_files
-    assert "notes.txt" in alice_files
-    assert alice_files["README.md"] == "# Hub Roundtrip\n"
+    link = decode_link(store.get_latest_link()[0])
+    assert link.previous.link_id == first.link_uid
+    assert link.previous.head == first.head
+
+    # Publishing the same head again changes nothing in the cloud.
+    unchanged = make_cod_sync(alice, store).publish()
+    assert unchanged.changed is False
+    assert unchanged.link_uid == second.link_uid
+
+
+def test_an_empty_bucket_reports_absence_not_a_transport_failure(hub_env):
+    store = SmallSeaStore(hub_env["session_hex"], client=hub_env["client"])
+    with pytest.raises(ObjectNotFoundError):
+        store.get_latest_link()

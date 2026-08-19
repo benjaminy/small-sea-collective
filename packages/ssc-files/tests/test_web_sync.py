@@ -49,12 +49,13 @@ def _push_team_repo_via_hub(http, session_hex, repo_dir):
     assert resp.status_code == 200, resp.text
     publish_storage_announcement_for_session(app.state.backend, session_hex)
 
-    from cod_sync.protocol import CodSync, SmallSeaRemote
-
-    remote = SmallSeaRemote(session_hex, base_url="http://testserver", client=http)
-    cs = CodSync("origin", repo_dir=pathlib.Path(repo_dir))
-    cs.remote = remote
-    cs.push_to_remote(["main"])
+    from cod_sync.protocol import CodSync
+    from cod_sync.repo import Repo
+    from cod_sync.store import SmallSeaStore
+    remote = SmallSeaStore(session_hex, base_url="http://testserver", client=http)
+    repo_path = pathlib.Path(repo_dir)
+    cs = CodSync(Repo(repo_path / ".git", repo_path), remote)
+    cs.publish()
 
 
 def _session_berth_info(http, session_hex):

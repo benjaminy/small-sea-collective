@@ -1,913 +1,601 @@
-# Cod Sync
+"""Cod Sync: publishing and fetching a `main` history through a bundle store.
 
-import base64
-import hashlib
-import io
+This module coordinates. It executes no Git command and parses no YAML: repo.py
+owns the repository, store.py owns byte transport, and format.py owns the link
+codec. What is left here is the decision-making, which is entirely about what
+must be proved before anything durable moves.
+
+What Cod Sync proves
+    A bundle advertises the head its link declares, the bundle's actual Git
+    prerequisites are covered by the predecessor its link declares, and the
+    resulting commit graph has the promised ancestry.
+
+What Cod Sync does not prove
+    Authorship, membership, complete disclosure, or that a fetched history
+    should have any local effect. Fetching stays separate from merging:
+    `fetch` moves no ref except an explicitly requested forward-only pin.
+"""
+
 import logging
-import os
-import pathlib
-import secrets
-import shutil
-import subprocess
-import sys
 import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Set
 
-import requests
-import yaml
-
-from cod_sync.git import GitCmdFailed, gitCmd
-
-program_title = "Cod Sync protocol Git remote helper work-a-like"
+from cod_sync.format import (
+    COD_SYNC_VERSION,
+    BundleDescriptor,
+    Link,
+    Predecessor,
+    decode_link,
+    encode_link,
+    new_uid,
+    parse_version,
+    signed_link,
+)
+from cod_sync.repo import RefDivergedError, Repo
+from cod_sync.store import ObjectNotFoundError
 
 logger = logging.getLogger("cod_sync")
 
-COD_SYNC_VERSION = "1.0.0"
+#: The one ref Cod Sync transports.
+MAIN_REF = "refs/heads/main"
 
 
-# --- Link signing and verification ---
+class CodSyncError(Exception):
+    """Base class for coordinator failures."""
 
 
-def canonical_link_bytes(link_ids, branches, bundles, supplement):
-    """Produce the canonical byte string that is signed for a link.
+class NoPublishedHeadError(CodSyncError):
+    """The store holds no chain, so there is nothing to fetch."""
 
-    Covers link_ids, branches, bundles, and supplement (excluding the
-    'signatures' key if present). Deterministic YAML serialization.
 
-    Normalizes bundle prerequisites to flat list form (the wire format)
-    since read_link_blob converts them to dicts.
+class NoLocalHeadError(CodSyncError):
+    """The local repository has no `main` to publish."""
+
+
+class ChainError(CodSyncError):
+    """The store's chain is malformed, inconsistent, or contradicts a bundle.
+
+    Carries whatever identifiers the operation had reached, because a rejected
+    chain is only actionable if the report says which objects disagreed.
     """
-    supp_without_sigs = {k: v for k, v in supplement.items() if k != "signatures"}
-    # Normalize: read_link_blob converts prerequisites from list to dict;
-    # canonical form always uses the flat list.
-    normalized_bundles = []
-    for bundle in bundles:
-        prereqs = bundle[1]
-        if isinstance(prereqs, dict):
-            flat = []
-            for k, v in sorted(prereqs.items()):
-                flat.extend([k, v])
-            normalized_bundles.append([bundle[0], flat])
-        else:
-            normalized_bundles.append(bundle)
-    signable = [link_ids, branches, normalized_bundles, supp_without_sigs]
-    return yaml.dump(signable, default_flow_style=False, sort_keys=True).encode("utf-8")
+
+    def __init__(
+        self,
+        message: str,
+        link_uid: Optional[str] = None,
+        bundle_uid: Optional[str] = None,
+        declared_head: Optional[str] = None,
+        advertised_head: Optional[str] = None,
+        declared_prerequisites: Optional[Set[str]] = None,
+        actual_prerequisites: Optional[Set[str]] = None,
+    ):
+        details = [
+            f"link={link_uid}" if link_uid else None,
+            f"bundle={bundle_uid}" if bundle_uid else None,
+            f"declared_head={declared_head}" if declared_head else None,
+            f"advertised_head={advertised_head}" if advertised_head else None,
+            (
+                f"declared_prerequisites={sorted(declared_prerequisites)}"
+                if declared_prerequisites is not None
+                else None
+            ),
+            (
+                f"actual_prerequisites={sorted(actual_prerequisites)}"
+                if actual_prerequisites is not None
+                else None
+            ),
+        ]
+        suffix = ", ".join(d for d in details if d)
+        super().__init__(f"{message} ({suffix})" if suffix else message)
+        self.link_uid = link_uid
+        self.bundle_uid = bundle_uid
+        self.declared_head = declared_head
+        self.advertised_head = advertised_head
+        self.declared_prerequisites = declared_prerequisites
+        self.actual_prerequisites = actual_prerequisites
 
 
-def sign_link(private_key_bytes, canonical_bytes):
-    """Sign canonical link bytes with an Ed25519 private key.
+class PublicationIntegrationRequiredError(CodSyncError):
+    """The store's head is not an ancestor of local `main`.
 
-    private_key_bytes: 32-byte Ed25519 private key (raw format).
-    Returns a base64-encoded signature string.
+    Cod Sync cannot choose the integration: it may be running against a
+    repository with no work tree, and dropping the stored head would discard
+    another device's or teammate's commits. Nothing is uploaded and the store's
+    head is untouched. A caller with a work tree and a policy decides what to
+    do next.
     """
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-    key = Ed25519PrivateKey.from_private_bytes(private_key_bytes)
-    signature = key.sign(canonical_bytes)
-    return base64.b64encode(signature).decode()
+    def __init__(
+        self,
+        message: str,
+        stored_head: str,
+        local_head: str,
+        link_uid: str,
+        merge_base: Optional[str] = None,
+    ):
+        super().__init__(
+            f"{message} (stored_head={stored_head}, local_head={local_head}, "
+            f"link={link_uid}, merge_base={merge_base})"
+        )
+        self.stored_head = stored_head
+        self.local_head = local_head
+        self.link_uid = link_uid
+        self.merge_base = merge_base
 
 
-def verify_link_signature(public_key_bytes, signature_b64, canonical_bytes):
-    """Verify an Ed25519 signature on canonical link bytes.
+class PinIntegrationRequiredError(CodSyncError):
+    """The requested pin has diverged from the head just fetched.
 
-    public_key_bytes: 32-byte Ed25519 public key (raw format).
-    signature_b64: base64-encoded signature string.
-    Returns True if valid, False otherwise.
+    The pin is left exactly where it was.
     """
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-    from cryptography.exceptions import InvalidSignature
 
-    key = Ed25519PublicKey.from_public_bytes(public_key_bytes)
-    signature = base64.b64decode(signature_b64)
-    try:
-        key.verify(signature, canonical_bytes)
-        return True
-    except InvalidSignature:
-        return False
+    def __init__(self, ref_name: str, current_sha: str, observed_head: str, link_uid: str):
+        super().__init__(
+            f"{ref_name} at {current_sha} has diverged from fetched head "
+            f"{observed_head} (link={link_uid})"
+        )
+        self.ref_name = ref_name
+        self.current_sha = current_sha
+        self.observed_head = observed_head
+        self.link_uid = link_uid
 
 
-class CasConflictError(Exception):
-    """Raised when a compare-and-swap write fails due to a concurrent update."""
+@dataclass(frozen=True)
+class PublishResult:
+    """The outcome of a publication.
 
-    pass
+    changed=False is an ordinary success: the store already held this head, so
+    nothing was uploaded and no notification was sent.
+    """
+
+    head: str
+    changed: bool
+    link_uid: str
+
+
+@dataclass(frozen=True)
+class FetchResult:
+    """The outcome of a fetch.
+
+    observed_head is the validated head the store publishes. pinned_head is
+    where the requested pin ended up, which is not always observed_head: an
+    out-of-order fetch whose observation is older than the pin reports
+    disposition "stale" and leaves the newer pin alone.
+    """
+
+    observed_head: str
+    link_uid: str
+    pinned_head: Optional[str] = None
+    pin_disposition: Optional[str] = None
+    links_read: int = 0
+    bundles_downloaded: int = 0
+
+
+@dataclass(frozen=True)
+class _ChainEntry:
+    """A link and the local bundle path holding its validated contents."""
+
+    link: Link
+    bundle_path: Path
+    descriptor: BundleDescriptor
 
 
 class CodSync:
+    """Publish and fetch one repository's `main` through one store."""
 
-    def __init__(self, remote_name, bundle_tmp_dir=None, repo_dir=None):
-        self.remote_name = remote_name
-        self.url = None
-        self._repo_dir = str(repo_dir) if repo_dir is not None else None
-        if self._repo_dir is not None:
-            _rd = self._repo_dir
-            self.gitCmd = lambda params, raise_on_error=True: gitCmd(["-C", _rd] + params, raise_on_error=raise_on_error)
-        else:
-            self.gitCmd = gitCmd
-        self._bundle_tmp_dir = bundle_tmp_dir
+    def __init__(self, repo: Repo, store):
+        self.repo = repo
+        self.store = store
 
-    def add_remote(self, url, dotdotdot):
-        """Add a Cod Sync remote
+    # ------------------------------------------------------------------ #
+    # Publication
+    # ------------------------------------------------------------------ #
 
-        :param remote: The nickname for the remote
-        :param url: The URL for the remote. (This should not include 'codsync:')
+    def publish(
+        self, signing_key=None, teammate_id=None, device_public_key=None
+    ) -> PublishResult:
+        """Extend the store's chain with local `main`.
 
-        Currently the only supported URL schema is file://
-        In the fullness of time the idea is to support googledrive: , etc
-
-        This function adds 2 remotes to the underlying repo:
-        - One with the actual remote URL
-          - This one is never directly `git fetch`d or `git push`d or whatever
-        - One with a temp bundle name
-          - When pulling from a remote, the bundle is copied here and `git fetch`d
+        An empty store gets a full snapshot under a create-only write. A store
+        whose head equals local `main` is left alone. Any other store head must
+        exist locally and be an ancestor of local `main`, or publication stops
+        before uploading anything.
         """
+        local_head = self.repo.resolve_ref(MAIN_REF)
+        if local_head is None:
+            raise NoLocalHeadError(f"{MAIN_REF} does not resolve; nothing to publish")
 
-        self.gitCmd(["remote", "add", self.remote_name, f"codsync:{url}"])
-        logger.debug(f"Added remote '{self.remote_name}' ({url})")
+        try:
+            latest_bytes, etag = self.store.get_latest_link()
+        except ObjectNotFoundError:
+            latest_bytes, etag = None, None
 
-        [bundle_remote, path] = self.bundle_tmp()
-        self.gitCmd(["remote", "add", bundle_remote, f"{path}/fetch.bundle"])
-        logger.debug(f"Added remote '{bundle_remote}' ({path})")
+        with tempfile.TemporaryDirectory(prefix="cod-sync-publish-") as work_dir:
+            work = Path(work_dir)
+            if latest_bytes is None:
+                return self._publish_initial(
+                    local_head, work, signing_key, teammate_id, device_public_key
+                )
+            return self._publish_onto(
+                latest_bytes,
+                etag,
+                local_head,
+                work,
+                signing_key,
+                teammate_id,
+                device_public_key,
+            )
 
-    def remove_remote(self, dotdotdot):
-        """Remove a Cod Sync remote"""
+    def _publish_initial(
+        self, local_head, work: Path, signing_key, teammate_id, device_public_key
+    ) -> PublishResult:
+        link = Link(
+            link_id=new_uid(),
+            head=local_head,
+            bundle_id=new_uid(),
+            previous=None,
+        )
+        bundle_path = work / f"{link.bundle_id}.bundle"
+        self.repo.create_bundle(bundle_path, [MAIN_REF])
+        self._require_bundle_matches(link, bundle_path)
+        self._upload(link, bundle_path, expected_etag=None,
+                     signing_key=signing_key, teammate_id=teammate_id,
+                     device_public_key=device_public_key)
+        return PublishResult(head=local_head, changed=True, link_uid=link.link_id)
 
-        result1 = self.gitCmd(["remote", "remove", self.remote_name], False)
-        if result1.returncode == 0:
-            logger.debug(f"Removed remote '{self.remote_name}'")
+    def _publish_onto(
+        self,
+        latest_bytes: bytes,
+        etag: Optional[str],
+        local_head: str,
+        work: Path,
+        signing_key,
+        teammate_id,
+        device_public_key,
+    ) -> PublishResult:
+        stored = decode_link(latest_bytes)
+        if parse_version(COD_SYNC_VERSION) < stored.version_tuple:
+            raise ChainError(
+                f"the store's head is version {stored.version} and this writer "
+                f"would regress it to {COD_SYNC_VERSION}",
+                link_uid=stored.link_id,
+            )
 
-        [bundle_remote, _] = self.bundle_tmp()
-        result2 = self.gitCmd(["remote", "remove", bundle_remote])
-        if result2.returncode == 0:
-            logger.debug(f"Removed remote '{bundle_remote}'")
+        # The archived copy is what a successor's predecessor pointer resolves
+        # to, so a chain must not be extended through a link nobody can reread.
+        try:
+            archived = self.store.get_link(stored.link_id)
+        except ObjectNotFoundError as exc:
+            raise ChainError(
+                "the store's head has no archived copy to point back at",
+                link_uid=stored.link_id,
+            ) from exc
+        if archived != latest_bytes:
+            raise ChainError(
+                "the store's head and its archived copy differ",
+                link_uid=stored.link_id,
+            )
 
-        if result1.returncode != 0:
-            return result1.returncode
+        stored_bundle = work / f"{stored.bundle_id}.bundle"
+        self.store.download_bundle(stored.bundle_id, stored_bundle)
+        self._require_bundle_matches(stored, stored_bundle)
+        self._verify_stored_bundle(stored, stored_bundle)
 
-        if result2.returncode != 0:
-            return result2.returncode
+        if stored.head == local_head:
+            return PublishResult(
+                head=local_head, changed=False, link_uid=stored.link_id
+            )
 
-        return 0
+        if not self.repo.has_commit(stored.head):
+            raise PublicationIntegrationRequiredError(
+                "the store's head is not present locally",
+                stored_head=stored.head,
+                local_head=local_head,
+                link_uid=stored.link_id,
+            )
+        if not self.repo.is_ancestor(stored.head, MAIN_REF):
+            raise PublicationIntegrationRequiredError(
+                "the store's head is not an ancestor of local main",
+                stored_head=stored.head,
+                local_head=local_head,
+                link_uid=stored.link_id,
+                merge_base=self.repo.merge_base(stored.head, local_head),
+            )
 
-    def initialize_existing_remote(self):
-        """git remote get-url `remote_name`
-        with some error checking. Plus strip the 'codsync:' prefix,
+        link = Link(
+            link_id=new_uid(),
+            head=local_head,
+            bundle_id=new_uid(),
+            previous=Predecessor(link_id=stored.link_id, head=stored.head),
+        )
+        bundle_path = work / f"{link.bundle_id}.bundle"
+        self.repo.create_bundle(bundle_path, [f"^{stored.head}", MAIN_REF])
+        self._require_bundle_matches(link, bundle_path)
+        self._upload(link, bundle_path, expected_etag=etag,
+                     signing_key=signing_key, teammate_id=teammate_id,
+                     device_public_key=device_public_key)
+        return PublishResult(head=local_head, changed=True, link_uid=link.link_id)
+
+    def _upload(
+        self, link: Link, bundle_path: Path, expected_etag: Optional[str],
+        signing_key, teammate_id, device_public_key,
+    ):
+        """Write the bundle, then the archived link, then the head.
+
+        The head write is the serialization point, so it goes last: a
+        publication that loses the race leaves only unreferenced write-once
+        objects rather than a chain pointing at something nobody uploaded.
         """
-        self.url = None
-        result = self.gitCmd(["remote", "get-url", self.remote_name], False)
-        if result.returncode != 0:
-            return
-
-        remote_url = result.stdout.strip()
-
-        if not remote_url.startswith("codsync:"):
-            logger.warning(f"Wrong remote protocol '{remote_url}' ({program_title})")
-            return
-
-        # Strip 'codsync:'
-        self.url = remote_url[8:]
-
-    def push_to_remote(self, branches, signing_key=None, teammate_id=None, device_public_key=None):
-        logger.debug(f"push_to_remote {self.remote_name} {branches}")
-
-        bundle_uid = CodSync.token_hex(8)
-        [_, path_tmp] = self.bundle_tmp()
-        os.makedirs(path_tmp, exist_ok=True)
-        bundle_path_tmp = f"{path_tmp}/B-{bundle_uid}.bundle"
-
-        result = self.remote.get_latest_link()
-        if result is None:
-            latest_link = None
-            etag = None
-        else:
-            latest_link, etag = result
-
-        if latest_link is None:
-            link_uid = "initial-snapshot"
-            link_uid_prev = "initial-snapshot"
-            prerequisites = {"main": "initial-snapshot"}
-            bundle_spec = "main"
-            #     return 0
-
-        else:
-            [link_ids, branches, bundles, supp_data] = latest_link
-            link_uid = CodSync.token_hex(8)
-            link_uid_prev = link_ids[0]
-            assert len(branches) == 1
-            assert len(link_ids) > 0
-            branch = branches[0]
-            assert branch[0] == "main"
-            prerequisites = {"main": branch[1]}
-            tag = f"codsync_temp_tag_{'main'}"
-            tag_result = self.gitCmd(["tag", tag, branch[1]], raise_on_error=False)
-            if tag_result.returncode != 0:
-                # Remote SHA not present locally (e.g. fresh clone pushing to existing bucket).
-                # Fall back to initial-snapshot: send full history.
-                latest_link = None
-                link_uid = "initial-snapshot"
-                link_uid_prev = "initial-snapshot"
-                prerequisites = {"main": "initial-snapshot"}
-                bundle_spec = "main"
-            else:
-                bundle_spec = f"{tag}..main"
-
-        self.gitCmd(["bundle", "create", bundle_path_tmp, bundle_spec])
-
-        if latest_link is not None:
-            self.gitCmd(["tag", "-d", tag])
-
-        blob = self.build_link_blob(
-            link_uid, link_uid_prev, bundle_uid, prerequisites,
-            signing_key=signing_key, teammate_id=teammate_id, device_public_key=device_public_key,
-        )
-        logger.debug(f"pushing link {link_uid} bundle {bundle_path_tmp}")
-        return self.remote.upload_latest_link(
-            link_uid, blob, bundle_uid, bundle_path_tmp, expected_etag=etag
-        )
-
-    def build_link_blob(self, new_link_uid, prev_link_uid, bundle_uid, prerequisites,
-                        signing_key=None, teammate_id=None, device_public_key=None):
-        link_ids = [new_link_uid, prev_link_uid]
-        branch_names = self.get_branches()
-        branches = []
-        for branch in branch_names:
-            branches.append([branch, self.get_branch_head_sha(branch)])
-        logger.debug(f"branches {branches}")
-        bundles = [[bundle_uid, ["main", prerequisites["main"]]]]
-        supplement = {"cod_version": COD_SYNC_VERSION}
-
         if signing_key is not None and teammate_id is not None:
-            signable = canonical_link_bytes(link_ids, branches, bundles, supplement)
-            signature = sign_link(signing_key, signable)
-            if device_public_key is None:
-                raise ValueError("device_public_key is required when signing a link")
-            if isinstance(device_public_key, bytes):
-                device_public_key = device_public_key.hex()
-            supplement["signatures"] = {
-                teammate_id: {
-                    "device_public_key": device_public_key,
-                    "signature": signature,
-                }
-            }
+            link = signed_link(link, signing_key, teammate_id, device_public_key)
+        blob = encode_link(link)
+        self.store.put_bundle(link.bundle_id, bundle_path)
+        self.store.put_link(link.link_id, blob)
+        self.store.put_latest_link(blob, expected_etag, link_uid=link.link_id)
 
-        return [link_ids, branches, bundles, supplement]
+    # ------------------------------------------------------------------ #
+    # Fetch
+    # ------------------------------------------------------------------ #
 
-    def clone_from_remote(self, url, remote=None):
-        logger.debug(f"clone_from_remote {self.remote_name} {url}")
+    def fetch(self, pin_to_ref: Optional[str] = None) -> FetchResult:
+        """Import the store's published `main` history.
 
-        git_cmd = ["git", "rev-parse", "--show-toplevel"]
-        result = subprocess.run(git_cmd, capture_output=True, text=True, cwd=self._repo_dir)
-        if result.returncode == 0:
-            target = self._repo_dir or os.getcwd()
-            logger.warning(
-                f"clone_from_remote: already in a repo '{target}' '{result.stdout.strip()}'"
-            )
-            return -1
+        Creates no remote, remote-tracking ref, FETCH_HEAD, or temporary tag.
+        The only durable ref that can move is pin_to_ref, and only forward.
+        """
+        try:
+            latest_bytes, _etag = self.store.get_latest_link()
+        except ObjectNotFoundError as exc:
+            raise NoPublishedHeadError("the store publishes no head") from exc
 
-        if remote is not None:
-            self.remote = remote
-        else:
-            self.remote = CodSyncRemote.init(url)
-        result = self.remote.get_latest_link()
-        if result is None:
-            latest_link = None
-        else:
-            latest_link, _etag = result
-        if latest_link == None:
-            logger.warning("clone_from_remote: no latest link found")
-            return -1
+        latest = decode_link(latest_bytes)
 
-        # Walk back through the link chain to collect all links from initial to latest
-        chain = [latest_link]
-        current = latest_link
-        while current[0][0] != "initial-snapshot":
-            prev_link_uid = current[0][1]
-            prev_link = self.remote.get_link(prev_link_uid)
-            if prev_link is None:
-                logger.warning(f"clone_from_remote: broken chain at {prev_link_uid}")
-                return -1
-            chain.append(prev_link)
-            current = prev_link
+        with tempfile.TemporaryDirectory(prefix="cod-sync-fetch-") as work_dir:
+            work = Path(work_dir)
+            chain, links_read, downloads = self._resolve(latest, work)
+            for entry in chain:
+                self._import(entry)
+            observed_head = latest.head
 
-        # chain is [latest, ..., initial] — reverse to get [initial, ..., latest]
-        chain.reverse()
-
-        # Clone from the initial snapshot bundle
-        initial_link = chain[0]
-        if len(initial_link[2]) != 1:
-            logger.warning(f"clone_from_remote: unexpected initial link bundles {initial_link[2]}")
-            return -1
-        initial_bundle_uid = initial_link[2][0][0]
-
-        with tempfile.TemporaryDirectory() as bundle_temp_dir:
-            bundle_path = f"{bundle_temp_dir}/clone.bundle"
-            self.remote.download_bundle(initial_bundle_uid, bundle_path)
-            self.gitCmd(["clone", bundle_path, "."])
-
-        self.gitCmd(["checkout", "main"])
-
-        self.add_remote(url, [])
-
-        # Apply remaining incremental bundles
-        for link in chain[1:]:
-            result = self.fetch_chain(link, ["main"], True)
-            if result != 0:
-                return result
-
-            [tmp_remote, _] = self.bundle_tmp()
-            self.gitCmd(["merge", f"{tmp_remote}/main"])
-
-        logger.info(f"clone_from_remote: done")
-        return 0
-
-    def fetch_from_remote(self, branches, pin_to_ref=None):
-        logger.debug(f"fetch_from_remote {self.remote_name} {branches}")
-        result = self.remote.get_latest_link()
-        if result is None:
-            latest_link = None
-        else:
-            latest_link, _etag = result
-
-        if latest_link == None:
-            logger.warning(f"fetch_from_remote: no latest link found")
-            return None
-
-        result = self.fetch_chain(latest_link, branches, False)
-        if result != 0:
-            return None
-
-        branch_name = branches[0]
-        fetched_sha = self._link_branch_sha(latest_link, branch_name)
-        if fetched_sha is None:
-            return None
-
+        pinned_head = None
+        disposition = None
         if pin_to_ref is not None:
-            self.gitCmd(["update-ref", pin_to_ref, fetched_sha])
-
-        return fetched_sha
-
-    def fetch_chain(self, link, branches, doing_clone):
-        [link_ids, branches, bundles, supp_data] = link
-
-        if len(bundles) != 1:
-            logger.warning(f"fetch_chain: unexpected bundle count {bundles}")
-            return -1
-
-        bundle = bundles[0]
-        bundle_uid = bundle[0]
-        bundle_prereqs = bundle[1]
-        if len(bundle_prereqs) != 1 or "main" not in bundle_prereqs.keys():
-            logger.warning(f"fetch_chain: unexpected bundle prerequisites {bundles}")
-            return -1
-
-        prereq = bundle_prereqs["main"]
-        if prereq == "initial-snapshot":
-            logger.debug("fetch_chain: initial snapshot")
-        else:
-            if doing_clone:
-                follow_chain = True
-            else:
-                result = self.gitCmd(["cat-file", "-t", prereq], False)
-                follow_chain = result.stdout.strip() != "commit"
-
-            if follow_chain:
-                next_link = self.remote.get_link(link_ids[1])
-                result = self.fetch_chain(next_link, branches, doing_clone)
-                if result != 0:
-                    return result
-
-        [tmp_remote, path_tmp] = self.bundle_tmp()
-        os.makedirs(path_tmp, exist_ok=True)
-
-        bundle_path = f"{path_tmp}/fetch.bundle"
-        self.remote.download_bundle(bundle_uid, bundle_path)
-
-        self.gitCmd(["bundle", "verify", bundle_path])
-        self._ensure_bundle_remote()
-        self.gitCmd(["fetch", tmp_remote])
-
-        return 0
-
-    def _link_branch_sha(self, link, branch_name):
-        _link_ids, branches, _bundles, _supp_data = link
-        for branch, sha in branches:
-            if branch == branch_name:
-                return sha
-        logger.warning(f"_link_branch_sha: branch not found in link: {branch_name}")
-        return None
-
-    def merge_from_remote(self, branches):
-        logger.debug(f"merge_from_remote {self.remote_name} {branches}")
-        branch = branches[0]
-
-        [tmp_remote, _] = self.bundle_tmp()
-
-        head_result = self.gitCmd(["rev-parse", "--verify", "HEAD"], raise_on_error=False)
-        if head_result.returncode != 0:
-            # Fresh repos created with `git init -b main` have an unborn branch,
-            # so there is nothing for `git merge` to merge into yet. In that
-            # case, adopt the fetched branch as the initial local branch.
-            result = self.gitCmd(
-                ["checkout", "-B", branch, f"{tmp_remote}/{branch}"],
-                raise_on_error=False,
-            )
-            return result.returncode
-
-        result = self.gitCmd(["merge", f"{tmp_remote}/{branch}"], raise_on_error=False)
-        return result.returncode
-
-    def merge_from_ref(self, ref_name):
-        logger.debug(f"merge_from_ref {self.remote_name} {ref_name}")
-        result = self.gitCmd(["merge", ref_name], raise_on_error=False)
-        return result.returncode
-
-    def get_branches(self):
-        """git for-each-ref --format=%(refname:short) refs/heads/
-        with error checking
-        """
-        result = self.gitCmd(
-            ["for-each-ref", "--format=%(refname:short)", "refs/heads/"], False
-        )
-        # cwd=repo_path,
-
-        if result.returncode == 0:
-            return result.stdout.splitlines()
-
-        return []
-
-    def get_branch_head_sha(self, branch):
-        logger.debug(f"get_branch_head_sha {branch}")
-        result = self.gitCmd(["rev-parse", f"refs/heads/{branch}"], False)
-        # cwd=repo_path,
-
-        if result.returncode == 0:
-            return result.stdout.strip()
-
-        return "0xdeadbeef"
-
-    def token_hex(num_bytes):
-        return "".join(f"{b:02x}" for b in secrets.token_bytes(num_bytes))
-
-    def change_to_root_git_dir(self):
-        """cd $( git rev-parse --show-toplevel )
-        with some error checking
-        """
-        result = self.gitCmd(["rev-parse", "--show-toplevel"])
-        git_dir = result.stdout.strip()
-        os.chdir(git_dir)
-        if pathlib.Path(git_dir).resolve() == pathlib.Path(os.getcwd()).resolve():
-            return 0
-        logger.warning(
-            f"change_to_root_git_dir: unexpected chdir result {result.stdout} {os.getcwd()}"
-        )
-        return -1
-
-    def _ensure_bundle_remote(self):
-        [bundle_remote, path] = self.bundle_tmp()
-        result = self.gitCmd(["remote", "get-url", bundle_remote], raise_on_error=False)
-        if result.returncode != 0:
-            os.makedirs(path, exist_ok=True)
-            self.gitCmd(["remote", "add", bundle_remote, f"{path}/fetch.bundle"])
-
-    def bundle_tmp(self):
-        if self._bundle_tmp_dir is not None:
-            base = str(self._bundle_tmp_dir)
-        elif self._repo_dir is not None:
-            base = str(pathlib.Path(self._repo_dir) / ".codsync-bundle-tmp")
-        else:
-            base = f"./.codsync-bundle-tmp"
-        return [
-            f"{self.remote_name}-codsync-bundle-tmp",
-            f"{base}/{self.remote_name}",
-        ]
-
-
-class CodSyncRemote:
-    """Abstract class for different kinds of remotes (Google Drive, etc)"""
-
-    @staticmethod
-    def init(url):
-        smallsea_prefix = "smallsea://"
-        if url.startswith("file://"):
-            return LocalFolderRemote(url[7:].strip())
-        if url.startswith(smallsea_prefix):
-            remainder = url[len(smallsea_prefix) :].strip()
-            # remainder is host:port/SESSION_HEX
-            slash_pos = remainder.find("/")
-            if slash_pos < 0:
-                raise ValueError(
-                    f"Invalid smallsea URL, expected smallsea://host:port/SESSION_HEX, got '{url}'"
-                )
-            host_port = remainder[:slash_pos]
-            session_hex = remainder[slash_pos + 1 :]
-            return SmallSeaRemote(session_hex, base_url=f"http://{host_port}")
-
-        raise NotImplementedError(f"Unsupported Cod Sync cloud protocol. '{url}'")
-
-    def read_link_blob(self, yaml_strm):
-        parsed_data = yaml.load(yaml_strm, Loader=yaml.FullLoader)
-        link_ids = parsed_data[0]
-        branches = parsed_data[1]
-        bundles = parsed_data[2]
-        for bundle in bundles:
-            ps = bundle[1]
-            bundle[1] = dict([(ps[i], ps[i + 1]) for i in range(0, len(ps), 2)])
-        if len(parsed_data) > 3:
-            supp_data = parsed_data[3]
-        else:
-            supp_data = {}
-
-        # Version compatibility check
-        link_version = supp_data.get("cod_version", "0.0.0")
-        link_major = int(link_version.split(".")[0])
-        reader_major = int(COD_SYNC_VERSION.split(".")[0])
-        if link_major > reader_major:
-            raise ValueError(
-                f"Link format version {link_version} is incompatible with this reader "
-                f"(supports up to major version {reader_major}). Please upgrade Cod Sync."
-            )
-
-        return [link_ids, branches, bundles, supp_data]
-
-
-class LocalFolderRemote(CodSyncRemote):
-    """Mostly for debugging purposes. Pretend a local folder is a cloud location."""
-
-    def __init__(self, path):
-        self.path = None
-
-        if not os.path.isdir(path):
-            logger.warning(f"LocalFolderRemote: not a directory '{path}'")
-            return -1
-
-        self.path = path
-
-    @staticmethod
-    def _file_etag(path):
-        """Compute an etag (MD5 hex digest) for a file's content."""
-        h = hashlib.md5()
-        with open(path, "rb") as f:
-            for chunk in iter(lambda: f.read(8192), b""):
-                h.update(chunk)
-        return h.hexdigest()
-
-    def upload_latest_link(
-        self, link_uid, blob, bundle_uid, local_bundle_path, expected_etag=None
-    ):
-        path_bundle = f"{self.path}{os.path.sep}B-{bundle_uid}.bundle"
-        shutil.copy(local_bundle_path, path_bundle)
-
-        path_latest = f"{self.path}{os.path.sep}latest-link.yaml"
-
-        # CAS check for latest-link.yaml
-        if expected_etag is not None:
-            if not os.path.exists(path_latest):
-                raise CasConflictError(
-                    "expected existing file but latest-link.yaml does not exist"
-                )
-            current_etag = self._file_etag(path_latest)
-            if current_etag != expected_etag:
-                raise CasConflictError(
-                    f"CAS conflict on latest-link.yaml: expected etag {expected_etag}, got {current_etag}"
-                )
-        elif os.path.exists(path_latest) and expected_etag is None:
-            # First push should not have an etag; subsequent pushes should.
-            # We allow None for backward compat but the caller should pass etags.
-            pass
-
-        with open(path_latest, "w", encoding="utf-8") as link_strm:
-            yaml.dump(blob, link_strm, default_flow_style=False)
-
-        path_uid = f"{self.path}{os.path.sep}L-{link_uid}.yaml"
-        with open(path_uid, "w", encoding="utf-8") as link_strm:
-            yaml.dump(blob, link_strm, default_flow_style=False)
-
-    def get_link(self, uid):
-        if uid == "latest-link":
-            path_link = f"{self.path}{os.path.sep}latest-link.yaml"
-        else:
-            path_link = f"{self.path}{os.path.sep}L-{uid}.yaml"
-
-        if not os.path.exists(path_link):
-            logger.debug(f"LocalFolderRemote.get_link: not found {path_link}")
-            return None
-
-        with open(path_link, "r") as link_file_strm:
-            link = self.read_link_blob(link_file_strm)
-
-        if uid == "latest-link":
-            etag = self._file_etag(path_link)
-            return (link, etag)
-        return link
-
-    def get_latest_link(self):
-        return self.get_link("latest-link")
-
-    def download_bundle(self, bundle_uid, local_bundle_path):
-        path_bundle = f"{self.path}{os.path.sep}B-{bundle_uid}.bundle"
-        shutil.copy(path_bundle, local_bundle_path)
-
-
-class SmallSeaRemote(CodSyncRemote):
-    """Hub-backed cloud storage remote.
-
-    Talks to the hub's POST /cloud_file and GET /cloud_file endpoints.
-
-    path_prefix is prepended to every cloud path, allowing multiple
-    CodSync repos to coexist in the same bucket without namespace collision.
-    For example, path_prefix="files/registry/" puts registry bundles under
-    that prefix while signals.yaml and team-sync data stay at the root.
-    """
-
-    def __init__(self, session_hex, base_url="http://localhost:11437", client=None,
-                 path_prefix=""):
-        self.session_hex = session_hex
-        self._auth = {"Authorization": f"Bearer {session_hex}"}
-        self._path_prefix = path_prefix
-
-        if client is not None:
-            self._post = client.post
-            self._get = client.get
-        else:
-            self._post = lambda path, **kw: requests.post(f"{base_url}{path}", **kw)
-            self._get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
-
-    def _upload(self, cloud_path, data_bytes, expected_etag=None, notify=False):
-        payload = {
-            "path": self._path_prefix + cloud_path,
-            "data": base64.b64encode(data_bytes).decode(),
-        }
-        if expected_etag is not None:
-            payload["expected_etag"] = expected_etag
-        if notify:
-            payload["notify"] = True
-        resp = self._post("/cloud_file", json=payload, headers=self._auth)
-        if resp.status_code == 409:
-            raise CasConflictError(f"CAS conflict uploading {cloud_path}")
-        if resp.status_code != 200:
             try:
-                detail = resp.json().get("detail", resp.text)
-            except Exception:
-                detail = resp.text
-            raise RuntimeError(
-                f"cloud upload failed ({resp.status_code}): {detail}"
+                advance = self.repo.advance_ref(pin_to_ref, observed_head)
+            except RefDivergedError as exc:
+                raise PinIntegrationRequiredError(
+                    pin_to_ref, exc.current_sha, observed_head, latest.link_id
+                ) from exc
+            pinned_head = advance.current_sha
+            disposition = advance.disposition
+
+        return FetchResult(
+            observed_head=observed_head,
+            link_uid=latest.link_id,
+            pinned_head=pinned_head,
+            pin_disposition=disposition,
+            links_read=links_read,
+            bundles_downloaded=downloads,
+        )
+
+    def _resolve(self, latest: Link, work: Path):
+        """Walk newest to oldest until the chain reaches local history.
+
+        Returns the entries still needing import, oldest first, along with how
+        many links were read and how many bundles were downloaded. Every bundle
+        is downloaded once, to its own path.
+        """
+        entry = self._download_and_check(latest, work)
+        links_read = 1
+        downloads = 1
+
+        # A head already present locally still has to be validated as a
+        # publication, but once it is, there is nothing left to walk or import.
+        if self._already_satisfied(entry):
+            return [], links_read, downloads
+
+        pending: List[_ChainEntry] = [entry]
+        visited = {latest.link_id}
+        current = latest
+        while current.previous is not None and not self.repo.has_commit(
+            current.previous.head
+        ):
+            previous_uid = current.previous.link_id
+            if previous_uid in visited:
+                raise ChainError(
+                    "the chain revisits a link it already read",
+                    link_uid=previous_uid,
+                )
+            visited.add(previous_uid)
+            try:
+                previous_bytes = self.store.get_link(previous_uid)
+            except ObjectNotFoundError as exc:
+                raise ChainError(
+                    "the chain names a predecessor the store does not hold",
+                    link_uid=previous_uid,
+                ) from exc
+            previous = decode_link(previous_bytes)
+            links_read += 1
+            self._require_predecessor_consistent(current, previous)
+            pending.append(self._download_and_check(previous, work))
+            downloads += 1
+            current = previous
+
+        pending.reverse()
+        return pending, links_read, downloads
+
+    def _download_and_check(self, link: Link, work: Path) -> _ChainEntry:
+        bundle_path = work / f"{link.bundle_id}.bundle"
+        self.store.download_bundle(link.bundle_id, bundle_path)
+        descriptor = self._require_bundle_matches(link, bundle_path)
+        return _ChainEntry(link=link, bundle_path=bundle_path, descriptor=descriptor)
+
+    def _already_satisfied(self, entry: _ChainEntry) -> bool:
+        """True when the validated latest bundle needs no import."""
+        link = entry.link
+        if not self.repo.has_commit(link.head):
+            return False
+        if any(
+            not self.repo.has_commit(sha) for sha in entry.descriptor.prerequisites
+        ):
+            return False
+        self.repo.verify_bundle(entry.bundle_path)
+        self._require_ancestry(link, entry.descriptor)
+        return True
+
+    def _import(self, entry: _ChainEntry):
+        link = entry.link
+        # The walk stops at the declared predecessor, so a bundle that needs
+        # anything outside that history arrives here unsatisfiable. Say so,
+        # rather than letting `bundle verify` report it as a bare git failure.
+        missing = {
+            sha for sha in entry.descriptor.prerequisites if not self.repo.has_commit(sha)
+        }
+        if missing:
+            raise ChainError(
+                "the bundle needs prerequisites the chain never published",
+                link_uid=link.link_id,
+                bundle_uid=link.bundle_id,
+                declared_head=link.head,
+                declared_prerequisites=(
+                    set() if link.previous is None else {link.previous.head}
+                ),
+                actual_prerequisites=set(entry.descriptor.prerequisites),
             )
-        return resp
-
-    def _download(self, cloud_path):
-        resp = self._get(
-            "/cloud_file",
-            params={"path": self._path_prefix + cloud_path},
-            headers=self._auth,
-        )
-        if resp.status_code != 200:
-            return (None, None)
-        body = resp.json()
-        data = base64.b64decode(body["data"])
-        etag = body.get("etag")
-        return (data, etag)
-
-    def upload_latest_link(
-        self, link_uid, blob, bundle_uid, local_bundle_path, expected_etag=None
-    ):
-        # 1. Upload bundle
-        with open(local_bundle_path, "rb") as f:
-            bundle_bytes = f.read()
-        self._upload(f"B-{bundle_uid}.bundle", bundle_bytes)
-
-        # 2. Serialize link YAML
-        link_yaml = yaml.dump(blob, default_flow_style=False).encode("utf-8")
-
-        # 3. Upload L-{link_uid}.yaml, then latest-link.yaml with notify=True
-        #    notify signals the Hub to bump signals.yaml after this write.
-        self._upload(f"L-{link_uid}.yaml", link_yaml)
-        self._upload("latest-link.yaml", link_yaml, expected_etag=expected_etag, notify=True)
-
-    def get_link(self, uid):
-        if uid == "latest-link":
-            cloud_path = "latest-link.yaml"
-        else:
-            cloud_path = f"L-{uid}.yaml"
-
-        data, etag = self._download(cloud_path)
-        if data is None:
-            return None
-
-        link = self.read_link_blob(io.BytesIO(data))
-
-        if uid == "latest-link":
-            return (link, etag)
-        return link
-
-    def get_latest_link(self):
-        return self.get_link("latest-link")
-
-    def download_bundle(self, bundle_uid, local_bundle_path):
-        data, _ = self._download(f"B-{bundle_uid}.bundle")
-        if data is None:
-            raise RuntimeError(f"Failed to download bundle B-{bundle_uid}.bundle")
-        with open(local_bundle_path, "wb") as f:
-            f.write(data)
-
-
-class PeerSmallSeaRemote(CodSyncRemote):
-    """Read-only remote that fetches a peer's cloud files via the Hub proxy endpoint.
-
-    The Hub authenticates the session, looks up the peer's cloud URL, and proxies
-    the data back — so the client never talks directly to cloud storage.
-
-    path_prefix is prepended to every cloud path, matching the prefix used
-    when the peer pushed the content via SmallSeaRemote.
-    """
-
-    def __init__(self, session_hex, teammate_id_hex, base_url="http://localhost:11437",
-                 client=None, path_prefix=""):
-        self.session_hex = session_hex
-        self.teammate_id_hex = teammate_id_hex
-        self._auth = {"Authorization": f"Bearer {session_hex}"}
-        self._path_prefix = path_prefix
-
-        if client is not None:
-            self._get = client.get
-        else:
-            self._get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
-
-    def _download(self, cloud_path):
-        resp = self._get(
-            "/peer_cloud_file",
-            params={"teammate_id": self.teammate_id_hex, "path": self._path_prefix + cloud_path},
-            headers=self._auth,
-        )
-        if resp.status_code != 200:
-            return (None, None)
-        body = resp.json()
-        data = base64.b64decode(body["data"])
-        etag = body.get("etag")
-        return (data, etag)
-
-    def upload_latest_link(self, *args, **kwargs):
-        raise NotImplementedError("PeerSmallSeaRemote is read-only")
-
-    def get_link(self, uid):
-        if uid == "latest-link":
-            cloud_path = "latest-link.yaml"
-        else:
-            cloud_path = f"L-{uid}.yaml"
-
-        data, etag = self._download(cloud_path)
-        if data is None:
-            return None
-
-        link = self.read_link_blob(io.BytesIO(data))
-
-        if uid == "latest-link":
-            return (link, etag)
-        return link
-
-    def get_latest_link(self):
-        return self.get_link("latest-link")
-
-    def download_bundle(self, bundle_uid, local_bundle_path):
-        data, _ = self._download(f"B-{bundle_uid}.bundle")
-        if data is None:
-            raise RuntimeError(f"Failed to download bundle B-{bundle_uid}.bundle from peer")
-        with open(local_bundle_path, "wb") as f:
-            f.write(data)
-
-
-class ExplicitProxyRemote(CodSyncRemote):
-    """Read-only remote that fetches cloud files via the Hub's /cloud_proxy endpoint.
-
-    Passes explicit cloud coordinates (protocol, url, bucket) rather than looking
-    them up from a peer row. Used during invitation acceptance to clone the
-    inviter's team repo before any peer relationship exists.
-
-    Requires a NoteToSelf session token.
-    """
-
-    def __init__(self, session_hex, protocol, url, bucket,
-                 base_url="http://localhost:11437", client=None,
-                 download_transform=None):
-        self.session_hex = session_hex
-        self._auth = {"Authorization": f"Bearer {session_hex}"}
-        self._protocol = protocol
-        self._url = url
-        self._bucket = bucket
-        self._download_transform = download_transform
-
-        if client is not None:
-            self._get = client.get
-        else:
-            self._get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
-
-    def _download(self, cloud_path):
-        resp = self._get(
-            "/cloud_proxy",
-            params={
-                "protocol": self._protocol,
-                "url": self._url,
-                "bucket": self._bucket,
-                "path": cloud_path,
-            },
-            headers=self._auth,
-        )
-        if resp.status_code != 200:
-            return (None, None)
-        body = resp.json()
-        data = base64.b64decode(body["data"])
-        if self._download_transform is not None:
-            data = self._download_transform(data)
-        etag = body.get("etag")
-        return (data, etag)
-
-    def upload_latest_link(self, *args, **kwargs):
-        raise NotImplementedError("ExplicitProxyRemote is read-only")
-
-    def get_link(self, uid):
-        if uid == "latest-link":
-            cloud_path = "latest-link.yaml"
-        else:
-            cloud_path = f"L-{uid}.yaml"
-
-        data, etag = self._download(cloud_path)
-        if data is None:
-            return None
-
-        link = self.read_link_blob(io.BytesIO(data))
-
-        if uid == "latest-link":
-            return (link, etag)
-        return link
-
-    def get_latest_link(self):
-        return self.get_link("latest-link")
-
-    def download_bundle(self, bundle_uid, local_bundle_path):
-        data, _ = self._download(f"B-{bundle_uid}.bundle")
-        if data is None:
-            raise RuntimeError(f"Failed to download bundle B-{bundle_uid}.bundle via proxy")
-        with open(local_bundle_path, "wb") as f:
-            f.write(data)
-
-
-class BootstrapProxyRemote(CodSyncRemote):
-    """Read-only remote for bootstrap-scoped Hub transport.
-
-    Uses a bootstrap-scoped bearer token and can only download from the cloud
-    descriptor bound to that token by the Hub.
-    """
-
-    def __init__(self, session_hex, base_url="http://localhost:11437", client=None):
-        self.session_hex = session_hex
-        self._auth = {"Authorization": f"Bearer {session_hex}"}
-
-        if client is not None:
-            self._get = client.get
-        else:
-            self._get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
-
-    def _download(self, cloud_path):
-        resp = self._get(
-            "/bootstrap/cloud_file",
-            params={"path": cloud_path},
-            headers=self._auth,
-        )
-        if resp.status_code != 200:
-            return (None, None)
-        body = resp.json()
-        data = base64.b64decode(body["data"])
-        etag = body.get("etag")
-        return (data, etag)
-
-    def upload_latest_link(self, *args, **kwargs):
-        raise NotImplementedError("BootstrapProxyRemote is read-only")
-
-    def get_link(self, uid):
-        if uid == "latest-link":
-            cloud_path = "latest-link.yaml"
-        else:
-            cloud_path = f"L-{uid}.yaml"
-
-        data, etag = self._download(cloud_path)
-        if data is None:
-            return None
-
-        link = self.read_link_blob(io.BytesIO(data))
-
-        if uid == "latest-link":
-            return (link, etag)
-        return link
-
-    def get_latest_link(self):
-        return self.get_link("latest-link")
-
-    def download_bundle(self, bundle_uid, local_bundle_path):
-        data, _ = self._download(f"B-{bundle_uid}.bundle")
-        if data is None:
-            raise RuntimeError(
-                f"Failed to download bundle B-{bundle_uid}.bundle via bootstrap proxy"
+        self.repo.verify_bundle(entry.bundle_path)
+        self.repo.import_bundle(entry.bundle_path)
+        if not self.repo.has_commit(link.head):
+            raise ChainError(
+                "importing the bundle did not produce its declared head",
+                link_uid=link.link_id,
+                bundle_uid=link.bundle_id,
+                declared_head=link.head,
             )
-        with open(local_bundle_path, "wb") as f:
-            f.write(data)
+        self._require_ancestry(link, entry.descriptor)
 
+    # ------------------------------------------------------------------ #
+    # Shared validation
+    # ------------------------------------------------------------------ #
 
-if __name__ == "__main__":
-    logger.error("This file contains no main")
+    def _require_bundle_matches(self, link: Link, bundle_path) -> BundleDescriptor:
+        """Check a bundle's own header against the link that advertises it."""
+        heads: Dict[str, str] = self.repo.bundle_heads(bundle_path)
+        prerequisites = frozenset(self.repo.bundle_prerequisites(bundle_path))
+        descriptor = BundleDescriptor(
+            head=heads.get(MAIN_REF), prerequisites=prerequisites
+        )
+
+        if set(heads) != {MAIN_REF}:
+            raise ChainError(
+                f"the bundle advertises {sorted(heads)} instead of only {MAIN_REF}",
+                link_uid=link.link_id,
+                bundle_uid=link.bundle_id,
+                declared_head=link.head,
+            )
+        if descriptor.head != link.head:
+            raise ChainError(
+                "the bundle advertises a different head than its link declares",
+                link_uid=link.link_id,
+                bundle_uid=link.bundle_id,
+                declared_head=link.head,
+                advertised_head=descriptor.head,
+            )
+        declared = set() if link.previous is None else {link.previous.head}
+        # An initial bundle is a full snapshot, so any prerequisite at all
+        # means it silently depends on history nobody published.
+        if link.previous is None:
+            if prerequisites:
+                raise ChainError(
+                    "an initial bundle declares no predecessor but needs prerequisites",
+                    link_uid=link.link_id,
+                    bundle_uid=link.bundle_id,
+                    declared_head=link.head,
+                    declared_prerequisites=declared,
+                    actual_prerequisites=set(prerequisites),
+                )
+        elif link.previous.head not in prerequisites:
+            raise ChainError(
+                "the bundle does not build on the predecessor its link declares",
+                link_uid=link.link_id,
+                bundle_uid=link.bundle_id,
+                declared_head=link.head,
+                declared_prerequisites=declared,
+                actual_prerequisites=set(prerequisites),
+            )
+        return descriptor
+
+    def _require_ancestry(self, link: Link, descriptor: BundleDescriptor):
+        """Check the graph claims that only hold once the objects are present.
+
+        A merge pulls in commits whose parents sit behind the predecessor, so
+        git legitimately records more than one prerequisite. Extra ones are
+        acceptable exactly when the declared predecessor already contains them:
+        then anyone who can satisfy the declared prerequisite can satisfy the
+        bundle. An extra outside that history is a hidden dependency.
+        """
+        if link.previous is None:
+            return
+        for sha in descriptor.prerequisites - {link.previous.head}:
+            if not self.repo.is_ancestor(sha, link.previous.head):
+                raise ChainError(
+                    "the bundle needs a prerequisite outside its declared predecessor",
+                    link_uid=link.link_id,
+                    bundle_uid=link.bundle_id,
+                    declared_head=link.head,
+                    declared_prerequisites={link.previous.head},
+                    actual_prerequisites=set(descriptor.prerequisites),
+                )
+        if self.repo.has_commit(link.head) and not self.repo.is_ancestor(
+            link.previous.head, link.head
+        ):
+            raise ChainError(
+                "the declared head does not descend from its declared prerequisite",
+                link_uid=link.link_id,
+                bundle_uid=link.bundle_id,
+                declared_head=link.head,
+                declared_prerequisites={link.previous.head},
+            )
+
+    def _verify_stored_bundle(self, link: Link, bundle_path):
+        """Verify a stored publication before reporting success or extending it."""
+        descriptor = BundleDescriptor(
+            head=link.head,
+            prerequisites=frozenset(self.repo.bundle_prerequisites(bundle_path)),
+        )
+        if any(not self.repo.has_commit(sha) for sha in descriptor.prerequisites):
+            raise ChainError(
+                "the stored bundle has unavailable prerequisites",
+                link_uid=link.link_id,
+                bundle_uid=link.bundle_id,
+                declared_head=link.head,
+                declared_prerequisites=(
+                    set() if link.previous is None else {link.previous.head}
+                ),
+                actual_prerequisites=set(descriptor.prerequisites),
+            )
+        self.repo.verify_bundle(bundle_path)
+        self._require_ancestry(link, descriptor)
+
+    @staticmethod
+    def _require_predecessor_consistent(child: Link, parent: Link):
+        """Check an archived link against the pointer that led to it."""
+        expected = child.previous
+        if parent.link_id != expected.link_id:
+            raise ChainError(
+                "the archived link's own id does not match the id it was read under",
+                link_uid=expected.link_id,
+            )
+        if parent.head != expected.head:
+            raise ChainError(
+                "the predecessor publishes a different head than its successor claims",
+                link_uid=parent.link_id,
+                declared_head=expected.head,
+                advertised_head=parent.head,
+            )
+        if parent.version_tuple > child.version_tuple:
+            raise ChainError(
+                f"the chain regresses from version {parent.version} to {child.version}",
+                link_uid=parent.link_id,
+            )

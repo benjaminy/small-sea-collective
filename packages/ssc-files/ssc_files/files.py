@@ -26,6 +26,7 @@ from datetime import datetime, timezone
 
 import cod_sync.protocol as CS
 from cod_sync.git import gitCmd
+from cod_sync.repo import Repo, RepoError
 
 
 class NicheResidency(enum.Enum):
@@ -309,11 +310,6 @@ def _registry_checkout_dir(files_root, context):
 def _niche_git_dir(files_root, context, niche_name):
     return _team_dir(files_root, context) / "niches" / niche_name / "git"
 
-
-
-def _bundle_tmp_dir(git_dir):
-    """Bundle temp files live inside the git dir, off all work trees."""
-    return pathlib.Path(git_dir) / "codsync-bundle-tmp"
 
 
 # ---------------------------------------------------------------------------
@@ -656,59 +652,44 @@ def _ensure_registry(files_root, participant_hex, context):
 # ---------------------------------------------------------------------------
 
 def _cod_push(git_dir, remote):
-    """Push git_dir to remote via Cod Sync bundle transfer."""
-    cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir), repo_dir=git_dir)
-    cod.remote = remote
-    cod.push_to_remote(["main"])
+    """Publish git_dir to remote via Cod Sync bundle transfer."""
+    return CS.CodSync(Repo(git_dir), remote).publish()
 
 
 def _cod_pull(git_dir, checkout, remote):
-    """Fetch from remote and merge into the user checkout.
+    """Fetch from remote and merge the observed head into the user checkout.
 
-    Uses repo_dir=git_dir for fetch (no work tree needed). The merge step
-    uses explicit --git-dir/--work-tree flags; remotes set up on git_dir
-    during fetch are visible here.
+    The fetch itself needs no work tree and moves no ref; the merge names the
+    fetched SHA explicitly.
     """
-    btd = _bundle_tmp_dir(git_dir)
-    cod_fetch = CS.CodSync("cloud", bundle_tmp_dir=btd, repo_dir=git_dir)
-    cod_fetch.remote = remote
+    result = CS.CodSync(Repo(git_dir), remote).fetch()
 
-    fetch_result = cod_fetch.fetch_from_remote(["main"])
-    if fetch_result is None:
-        raise RuntimeError("pull failed: could not fetch from remote")
-
-    tmp_remote = "cloud-codsync-bundle-tmp"
-    git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
+    repo = Repo(git_dir, work_tree=checkout)
     head_result = gitCmd(
         ["--git-dir", str(git_dir), "rev-parse", "--verify", "HEAD"],
         raise_on_error=False,
     )
-    if head_result.returncode != 0:
-        # Unborn branch — adopt fetched branch as initial local branch.
-        result = gitCmd(
-            git_prefix + ["checkout", "-B", "main", f"{tmp_remote}/main"],
-            raise_on_error=False,
-        )
-        exit_code = result.returncode
-    else:
-        result = gitCmd(
-            git_prefix + ["merge", f"{tmp_remote}/main"],
-            raise_on_error=False,
-        )
-        exit_code = result.returncode
-    if exit_code != 0:
-        raise MergeConflictError(_conflict_paths(git_dir, checkout))
+    try:
+        if head_result.returncode != 0:
+            # Unborn branch — adopt the fetched head as the initial local branch.
+            repo.checkout_branch("main", result.observed_head)
+        else:
+            repo.merge(result.observed_head)
+    except RepoError as exc:
+        raise MergeConflictError(_conflict_paths(git_dir, checkout)) from exc
+    return result
 
 
 def _cod_fetch(git_dir, remote, pin_to_ref):
-    """Fetch from remote and optionally pin the result to a local ref.
+    """Fetch from remote and pin the result to a local ref.
 
     Operates on git_dir directly — no work tree needed for fetch operations.
     Safe to call when no checkout is registered (CACHED state).
     """
-    cod = CS.CodSync("cloud", bundle_tmp_dir=_bundle_tmp_dir(git_dir), repo_dir=git_dir)
-    cod.remote = remote
-    return cod.fetch_from_remote(["main"], pin_to_ref=pin_to_ref)
+    result = CS.CodSync(Repo(git_dir), remote).fetch(pin_to_ref=pin_to_ref)
+    # The pin may be newer than this observation if a later fetch already
+    # landed, and callers must record what is actually parked.
+    return result.pinned_head
 
 
 def _cod_merge_ref(git_dir, checkout, ref_name):
@@ -947,7 +928,7 @@ def push_registry(files_root, participant_hex, context, remote):
     context = _validate_context(participant_hex, context)
     _ensure_registry(files_root, participant_hex, context)
     git_dir = _registry_git_dir(files_root, context)
-    _cod_push(git_dir, remote)
+    return _cod_push(git_dir, remote)
 
 
 def pull_registry(files_root, participant_hex, context, remote):
@@ -999,7 +980,7 @@ def push_niche(files_root, participant_hex, context, niche_name, remote):
     """Push a niche to cloud storage via Cod Sync."""
     context = _validate_context(participant_hex, context)
     git_dir = _niche_git_dir(files_root, context, niche_name)
-    _cod_push(git_dir, remote)
+    return _cod_push(git_dir, remote)
 
 
 def _require_clean_checkout(files_root, participant_hex, context, niche_name):

@@ -10,6 +10,7 @@ import pathlib
 import sqlite3
 
 import cod_sync.protocol as CodSync
+from cod_sync.git import gitCmd
 import pytest
 from cuttlefish import open_welcome_bundle
 from sandbox.workspace import SandboxWorkspace
@@ -196,12 +197,12 @@ def test_reauthorizing_the_same_request_adds_no_row_and_no_commit(playground_dir
     alice_manager.authorize_identity_join(join_request["join_request_artifact"])
 
     sync_dir = root1 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
-    head_before = CodSync.gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
+    head_before = gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
 
     alice_manager.authorize_identity_join(join_request["join_request_artifact"])
 
     assert _device_labels(root1, alice_hex) == ["Alice's laptop", "Alice's phone"]
-    head_after = CodSync.gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
+    head_after = gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
     assert head_after == head_before
 
 

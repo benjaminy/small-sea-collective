@@ -198,6 +198,10 @@ The Hub refreshes the access token transparently before each operation and
 persists the new token back to local `cloud_storage_credential`.
 The current `cloud_storage.path_metadata` field is adapter cache state, not a
 berth storage location.
+The adapter is experimental and does not satisfy writable Cod Sync's atomic
+create-only contract because Google Drive file names are not unique.
+It remains useful for functional testing, but must not hold real Cod Sync data
+until publication is keyed by a provider-enforced unique file ID.
 
 **Dropbox** (`protocol = "dropbox"`): OAuth2.
 Same token refresh pattern as Google Drive. The berth allocation `location`

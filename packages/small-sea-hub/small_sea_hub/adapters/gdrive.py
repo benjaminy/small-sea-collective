@@ -4,7 +4,12 @@ from typing import Optional
 import httpx
 
 from .base import SmallSeaStorageAdapter
-from small_sea_hub.cloud_errors import MaterializationOutcome
+from small_sea_hub.cloud_errors import (
+    MaterializationOutcome,
+    absent,
+    cas_conflict,
+    provider_failure,
+)
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
 DRIVE_UPLOAD = "https://www.googleapis.com/upload/drive/v3"
@@ -16,6 +21,12 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
     Files are stored in the app-specific hidden folder, invisible to the user.
     Google Drive is ID-based, so we maintain a path→file_id mapping persisted
     as JSON in CloudStorage.path_metadata.
+
+    This adapter is experimental and does not satisfy writable Cod Sync's
+    atomic create-only contract. Drive file names are not unique, so two
+    concurrent first publications can both pass the name lookup and create a
+    file. Keep it available for functional testing, but do not use it for real
+    Cod Sync data until publication is keyed by a provider-enforced unique ID.
     """
 
     def __init__(
@@ -68,7 +79,7 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
     def download(self, path: str):
         file_id = self._find_file_id(path)
         if file_id is None:
-            return False, None, "File not found"
+            return False, None, absent("File not found")
 
         resp = httpx.get(
             f"{DRIVE_API}/files/{file_id}",
@@ -77,8 +88,11 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
         )
         if resp.status_code == 404:
             self.path_ids.pop(path, None)
-            return False, None, "File not found"
-        resp.raise_for_status()
+            return False, None, absent("File not found")
+        if resp.status_code != 200:
+            return False, None, provider_failure(
+                f"Download failed: HTTP {resp.status_code}"
+            )
 
         etag = resp.headers.get("ETag", "").strip('"')
         return True, resp.content, etag
@@ -95,7 +109,7 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
         if expected_etag == "*":
             # upload_fresh — must not already exist
             if file_id is not None:
-                return False, None, "File already exists"
+                return False, None, cas_conflict("File already exists")
             return self._create_file(path, data, content_type)
 
         if file_id is None:
@@ -115,7 +129,7 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
         )
 
         if resp.status_code == 412:
-            return False, None, "ETag mismatch - object was modified"
+            return False, None, cas_conflict("ETag mismatch - object was modified")
 
         resp.raise_for_status()
         body = resp.json()

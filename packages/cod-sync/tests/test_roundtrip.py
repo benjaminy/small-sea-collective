@@ -1,123 +1,88 @@
-# Test a full roundtrip through the Cod Sync bundle protocol:
-#
-# 1. Alice publishes, Bob clones (reuses test_clone_from_local_bundle setup)
-# 2. Bob modifies, adds, and deletes files, then commits
-# 3. Bob publishes an incremental bundle to his publication dir
-# 4. Alice adds Bob's publication as a remote, fetches, and merges
-# 5. Verify the two working trees match
-#
-# Exercises: push_to_remote (incremental), fetch_from_remote, merge_from_remote,
-# add_remote, fetch_chain (following prerequisite links)
+"""End-to-end round trips through the bundle protocol.
+
+Two people, two stores, and no synthetic remotes anywhere: what a caller
+actually does is init, fetch, adopt the observed head, commit, publish.
+"""
 
 import pathlib
 
-import cod_sync.protocol as CS
-from test_clone_from_local_bundle import (make_cod_sync, make_file_remote,
-                                          working_tree_files)
+from cod_sync_test_helpers import (
+    all_refs,
+    assert_no_scratch,
+    commit_file,
+    make_cod_sync,
+    make_repo,
+    make_store,
+    working_tree_files,
+)
+
+from cod_sync.store import LocalFolderStore
 
 
-def test_roundtrip(scratch_dir):
+def test_cold_start_then_incremental_round_trip(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    alice_clone = scratch / "alice-clone"
-    bob_clone = scratch / "bob-clone"
     alice_pub = scratch / "alice-publication"
     bob_pub = scratch / "bob-publication"
 
-    for d in [alice_clone, bob_clone, alice_pub, bob_pub]:
-        d.mkdir()
+    # ---- Alice publishes two heads ----
+    alice = make_repo(scratch / "alice", "alice")
+    commit_file(alice, "README.md", "# My Project\n")
+    commit_file(alice, "notes.txt", "remember to buy milk\n")
+    alice_store = make_store(alice_pub)
+    make_cod_sync(alice, alice_store).publish()
 
-    # ---- Setup: Alice publishes, Bob clones (same as clone test) ----
-    CS.gitCmd(["init", "-b", "main", str(alice_clone)])
-    CS.gitCmd(["-C", str(alice_clone), "config", "user.email", "alice@test"])
-    CS.gitCmd(["-C", str(alice_clone), "config", "user.name", "Alice"])
+    commit_file(alice, "plan.txt", "step 1: profit\n")
+    second = make_cod_sync(alice, alice_store).publish()
+    assert second.changed is True
 
-    (alice_clone / "README.md").write_text("# My Project\n")
-    (alice_clone / "notes.txt").write_text("remember to buy milk\n")
-    (alice_clone / "plan.txt").write_text("step 1: profit\n")
-    CS.gitCmd(["-C", str(alice_clone), "add", "-A"])
-    CS.gitCmd(["-C", str(alice_clone), "commit", "-m", "initial commit"])
+    # ---- Bob cold-starts: init, fetch, check out the observed head ----
+    bob = make_repo(scratch / "bob", "bob")
+    result = make_cod_sync(bob, LocalFolderStore(str(alice_pub))).fetch()
+    bob.checkout_branch("main", result.observed_head)
+    assert working_tree_files(bob) == working_tree_files(alice)
 
-    alice_remote = make_file_remote(alice_pub)
-    alice_cod = make_cod_sync(alice_clone, "alice-pub")
-    alice_cod.remote = alice_remote
-    alice_cod.push_to_remote(["main"])
+    # ---- Bob modifies, adds, and deletes, then publishes to his own store ----
+    (bob.work_tree / "README.md").write_text("# My Project\n\nUpdated by Bob.\n")
+    (bob.work_tree / "notes.txt").unlink()
+    (bob.work_tree / "todo.txt").write_text("- write tests\n- ship it\n")
+    bob.stage(None)
+    bob.commit("Bob's changes")
 
-    bob_cod = make_cod_sync(bob_clone, "alice")
-    bob_cod.clone_from_remote(f"file://{alice_pub}")
-    CS.gitCmd(["-C", str(bob_clone), "config", "user.email", "bob@test"])
-    CS.gitCmd(["-C", str(bob_clone), "config", "user.name", "Bob"])
-
-    # ---- 1. Bob makes changes: modify, add, delete ----
-    (bob_clone / "README.md").write_text("# My Project\n\nUpdated by Bob.\n")
-    (bob_clone / "notes.txt").unlink()
-    (bob_clone / "todo.txt").write_text("- write tests\n- ship it\n")
-    CS.gitCmd(["-C", str(bob_clone), "add", "-A"])
-    CS.gitCmd(["-C", str(bob_clone), "commit", "-m", "Bob's changes"])
-
-    # ---- 2. Bob publishes an incremental bundle ----
-    bob_remote = make_file_remote(bob_pub)
-    bob_cod = make_cod_sync(bob_clone, "bob-pub")
-    bob_cod.remote = bob_remote
-    bob_cod.push_to_remote(["main"])
-
-    # Verify Bob's publication has a link and bundle
-    assert (bob_pub / "latest-link.yaml").exists()
+    bob_store = make_store(bob_pub)
+    make_cod_sync(bob, bob_store).publish()
     assert len(list(bob_pub.glob("B-*.bundle"))) == 1
 
-    # ---- 3. Alice fetches and merges Bob's changes via a parked ref ----
-    alice_cod = make_cod_sync(alice_clone, "bob")
-    alice_cod.remote = CS.LocalFolderRemote(str(bob_pub))
-    alice_cod.add_remote(f"file://{bob_pub}", [])
-    parked_ref = "refs/peers/bob/main"
-    fetched_sha = alice_cod.fetch_from_remote(["main"], pin_to_ref=parked_ref)
-    parked_sha = CS.gitCmd(["-C", str(alice_clone), "rev-parse", parked_ref]).stdout.strip()
-    assert fetched_sha == parked_sha
-    alice_cod.merge_from_ref(parked_ref)
+    # ---- Alice parks Bob's head on a peer ref, then merges it explicitly ----
+    parked = "refs/peers/bob/main"
+    fetched = make_cod_sync(alice, LocalFolderStore(str(bob_pub))).fetch(
+        pin_to_ref=parked
+    )
+    assert alice.resolve_ref(parked) == fetched.observed_head
+    alice.merge(parked)
 
-    # ---- 4. Verify the two working trees match ----
-    alice_files = working_tree_files(alice_clone)
-    bob_files = working_tree_files(bob_clone)
-
-    assert alice_files == bob_files
-    assert "README.md" in alice_files
+    alice_files = working_tree_files(alice)
+    assert alice_files == working_tree_files(bob)
     assert "todo.txt" in alice_files
-    assert "plan.txt" in alice_files
     assert "notes.txt" not in alice_files
     assert "Updated by Bob." in alice_files["README.md"]
+    assert_no_scratch(alice)
+    assert_no_scratch(bob)
 
 
-def test_merge_from_remote_bootstraps_unborn_branch(scratch_dir):
+def test_an_unborn_branch_adopts_the_fetched_head(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    alice_clone = scratch / "alice-clone"
-    bob_clone = scratch / "bob-clone"
     alice_pub = scratch / "alice-publication"
 
-    for d in [alice_clone, bob_clone, alice_pub]:
-        d.mkdir()
+    alice = make_repo(scratch / "alice", "alice")
+    commit_file(alice, "README.md", "# My Project\n")
+    commit_file(alice, "data.txt", "Hello from Alice!\n")
+    make_cod_sync(alice, make_store(alice_pub)).publish()
 
-    CS.gitCmd(["init", "-b", "main", str(alice_clone)])
-    CS.gitCmd(["-C", str(alice_clone), "config", "user.email", "alice@test"])
-    CS.gitCmd(["-C", str(alice_clone), "config", "user.name", "Alice"])
-    (alice_clone / "README.md").write_text("# My Project\n")
-    (alice_clone / "data.txt").write_text("Hello from Alice!\n")
-    CS.gitCmd(["-C", str(alice_clone), "add", "-A"])
-    CS.gitCmd(["-C", str(alice_clone), "commit", "-m", "initial commit"])
+    bob = make_repo(scratch / "bob", "bob")
+    assert not bob.has_commits()
 
-    alice_remote = make_file_remote(alice_pub)
-    alice_cod = make_cod_sync(alice_clone, "alice-pub")
-    alice_cod.remote = alice_remote
-    alice_cod.push_to_remote(["main"])
+    result = make_cod_sync(bob, LocalFolderStore(str(alice_pub))).fetch()
+    bob.checkout_branch("main", result.observed_head)
 
-    CS.gitCmd(["init", "-b", "main", str(bob_clone)])
-    CS.gitCmd(["-C", str(bob_clone), "config", "user.email", "bob@test"])
-    CS.gitCmd(["-C", str(bob_clone), "config", "user.name", "Bob"])
-
-    bob_cod = make_cod_sync(bob_clone, "alice")
-    bob_cod.remote = CS.LocalFolderRemote(str(alice_pub))
-    fetched_sha = bob_cod.fetch_from_remote(["main"])
-    assert fetched_sha
-
-    exit_code = bob_cod.merge_from_remote(["main"])
-    assert exit_code == 0
-
-    assert working_tree_files(alice_clone) == working_tree_files(bob_clone)
+    assert working_tree_files(alice) == working_tree_files(bob)
+    assert set(all_refs(bob)) == {"refs/heads/main"}

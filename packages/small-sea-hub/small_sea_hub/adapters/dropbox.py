@@ -4,6 +4,7 @@ from typing import Optional
 import httpx
 
 from .base import SmallSeaStorageAdapter
+from small_sea_hub.cloud_errors import absent, cas_conflict, provider_failure
 
 DROPBOX_CONTENT = "https://content.dropboxapi.com/2"
 
@@ -39,9 +40,21 @@ class SmallSeaDropboxAdapter(SmallSeaStorageAdapter):
         )
 
         if resp.status_code == 409:
-            return False, None, "File not found"
+            try:
+                body = resp.json()
+                error = body.get("error", {})
+                path_error = error.get("path", {}) if error.get(".tag") == "path" else {}
+                detail = body.get("error_summary", "Download failed: HTTP 409")
+            except (TypeError, ValueError):
+                return False, None, provider_failure("Download failed: HTTP 409")
+            if path_error.get(".tag") == "not_found":
+                return False, None, absent(detail)
+            return False, None, provider_failure(detail)
 
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            return False, None, provider_failure(
+                f"Download failed: HTTP {resp.status_code}"
+            )
 
         # Dropbox returns file metadata in the Dropbox-API-Result header
         result_header = resp.headers.get("Dropbox-API-Result", "{}")
@@ -88,11 +101,13 @@ class SmallSeaDropboxAdapter(SmallSeaStorageAdapter):
             body = resp.json()
             error_tag = body.get("error", {}).get(".tag", "")
             if error_tag == "path" and expected_etag == "*":
-                return False, None, "File already exists"
+                return False, None, cas_conflict("File already exists")
             if error_tag == "path":
                 reason = body.get("error", {}).get("reason", {}).get(".tag", "")
                 if reason == "conflict":
-                    return False, None, "ETag mismatch - object was modified"
+                    return False, None, cas_conflict(
+                        "ETag mismatch - object was modified"
+                    )
             return False, None, f"Upload failed: {body.get('error_summary', 'unknown')}"
 
         resp.raise_for_status()

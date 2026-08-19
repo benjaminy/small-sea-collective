@@ -3,6 +3,7 @@ import pathlib
 
 import pytest
 
+from cod_sync.protocol import NoPublishedHeadError
 from ssc_files.files import (
     DirtyCheckoutError,
     DuplicateCheckoutError,
@@ -330,7 +331,7 @@ PARTICIPANT_B = "bb" * 16
 
 def _two_files_setup(playground_dir):
     """Set up alice (PARTICIPANT) and bob (PARTICIPANT_B) filess sharing a niche."""
-    from cod_sync.protocol import LocalFolderRemote
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import (
         fetch_niche,
         push_niche,
@@ -348,12 +349,12 @@ def _two_files_setup(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "shared", LocalFolderRemote(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "shared", LocalFolderStore(str(cloud)))
 
     # Bob gets an empty files and fetches from alice
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, LocalFolderStore(str(cloud)))
 
     bob_co = playground / "checkout-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", str(bob_co))
@@ -363,7 +364,7 @@ def _two_files_setup(playground_dir):
 
 def test_merge_without_checkout_raises(playground_dir):
     """merge_niche raises NoCheckoutError when no checkout is attached."""
-    from cod_sync.protocol import LocalFolderRemote
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import fetch_niche, push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -376,11 +377,11 @@ def test_merge_without_checkout_raises(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "stuff", LocalFolderRemote(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "stuff", LocalFolderStore(str(cloud)))
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT, LocalFolderStore(str(cloud)))
 
     # Bob has a fetched ref but no checkout — merge must fail clearly
     with pytest.raises(NoCheckoutError):
@@ -567,7 +568,7 @@ PARTICIPANT_C = "cc" * 16
 
 def _full_sync_setup(playground_dir):
     """Alice creates + publishes + pushes a niche. Returns (playground, cloud, bob_root)."""
-    from cod_sync.protocol import LocalFolderRemote
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -580,7 +581,7 @@ def _full_sync_setup(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "sync", LocalFolderRemote(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "sync", LocalFolderStore(str(cloud)))
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
@@ -590,13 +591,13 @@ def _full_sync_setup(playground_dir):
 
 def test_no_transit_dir_ever_created(playground_dir):
     """No transit/ directory is created anywhere in the files tree across the full lifecycle."""
-    from cod_sync.protocol import LocalFolderRemote
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import push_niche
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     # Bob: fetch → add_checkout → merge
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
     merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT)
@@ -610,12 +611,11 @@ def test_no_transit_dir_ever_created(playground_dir):
 
 def test_fetch_without_checkout_pins_ref(playground_dir):
     """fetch_niche on a CACHED niche (no checkout) pins the parked ref to the expected SHA."""
-    from cod_sync.protocol import LocalFolderRemote
-
+    from cod_sync.store import LocalFolderStore
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     fetched_sha = fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderRemote(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud))
     )
 
     assert fetched_sha is not None
@@ -631,12 +631,12 @@ def test_fetch_without_checkout_pins_ref(playground_dir):
 
 def test_peer_update_status_cached_resolve_ref_path(playground_dir):
     """peer_update_status reports a valid parked_sha and ready_to_merge=True for a CACHED niche."""
-    from cod_sync.protocol import LocalFolderRemote
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import peer_update_status
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
     fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderRemote(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud))
     )
 
     status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "sync", PARTICIPANT)
@@ -647,7 +647,7 @@ def test_peer_update_status_cached_resolve_ref_path(playground_dir):
 
 def test_peer_update_status_cached_is_ancestor_path(playground_dir):
     """peer_update_status exercises _is_ancestor for a CACHED niche with local commit history."""
-    from cod_sync.protocol import LocalFolderRemote
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import peer_update_status, push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -661,12 +661,12 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
     publish(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co), message="A")
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderRemote(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)))
 
     # Bob: fetch A, add checkout, merge A (creates local HEAD at A), then unregister checkout
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud)))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
     merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT)
@@ -676,11 +676,11 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
     # Alice: commit B, push
     (alice_co / "b.txt").write_text("b\n")
     publish(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co), message="B")
-    push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderRemote(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)))
 
     # Bob: fetch B — parked_sha is B, HEAD is A, so _is_ancestor is exercised
     sha_B = fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderRemote(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud))
     )
     status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "history", PARTICIPANT)
     assert status_info["parked_sha"] == sha_B
@@ -699,7 +699,7 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
 
 def test_initial_history_pull(playground_dir):
     """pull_niche on a fresh local git dir (no prior commits) populates the checkout."""
-    from cod_sync.protocol import LocalFolderRemote
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import pull_niche
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
@@ -712,7 +712,7 @@ def test_initial_history_pull(playground_dir):
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
 
-    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderRemote(str(cloud)))
+    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(cloud)))
 
     assert (bob_co / "file.txt").exists()
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -720,12 +720,11 @@ def test_initial_history_pull(playground_dir):
 
 def test_initial_history_merge(playground_dir):
     """fetch_niche + add_checkout + merge_niche on a fresh git dir populates the checkout."""
-    from cod_sync.protocol import LocalFolderRemote
-
+    from cod_sync.store import LocalFolderStore
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderRemote(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud))
     )
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
@@ -737,7 +736,7 @@ def test_initial_history_merge(playground_dir):
 
 def test_merge_conflict_paths_in_user_checkout(playground_dir):
     """niche_conflict_paths returns conflicted filenames after a merge conflict."""
-    from cod_sync.protocol import LocalFolderRemote
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import MergeConflictError, niche_conflict_paths, push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -752,11 +751,11 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderRemote(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)))
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co))
     merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT)
@@ -764,12 +763,12 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
     # Both Alice and Bob modify the same file divergently and push/re-fetch
     (alice_co / "shared.txt").write_text("alice edit\n")
     publish(playground_dir, PARTICIPANT, TEAM, "conflict", str(alice_co), message="alice")
-    push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderRemote(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)))
 
     (bob_co / "shared.txt").write_text("bob edit\n")
     publish(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co), message="bob")
 
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderRemote(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)))
 
     with pytest.raises(MergeConflictError):
         merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT)
@@ -780,26 +779,26 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
 
 def test_stale_bundle_guard(playground_dir):
     """pull_niche raises RuntimeError when the remote has no content, leaving the checkout unchanged."""
-    from cod_sync.protocol import LocalFolderRemote
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import pull_niche
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
-    # Bob: initial pull succeeds — seeds cloud-codsync-bundle-tmp/main in git config
+    # Bob: initial pull succeeds
     from ssc_files.files import _niche_git_dir, _init_git_dir
     git_dir = _niche_git_dir(str(bob_root), _team_for(PARTICIPANT_B), "sync")
     git_dir.mkdir(parents=True)
     _init_git_dir(git_dir)
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
-    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderRemote(str(cloud)))
+    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(cloud)))
     assert (bob_co / "file.txt").read_text() == "v1\n"
 
-    # Now point pull at an empty remote — fetch_from_remote returns None
+    # Now point pull at an empty store, which publishes no head at all.
     empty_cloud = playground / "cloud-empty"
     empty_cloud.mkdir()
-    with pytest.raises(RuntimeError, match="could not fetch from remote"):
-        pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderRemote(str(empty_cloud)))
+    with pytest.raises(NoPublishedHeadError):
+        pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(empty_cloud)))
 
     # Checkout is unchanged
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -854,7 +853,7 @@ def test_niche_conflict_paths_stale_and_cached(playground_dir):
 def test_cwd_preserved_across_files_operations(playground_dir):
     """os.getcwd() is identical before and after every files operation that touches git."""
     import os
-    from cod_sync.protocol import LocalFolderRemote
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import (
         merge_registry,
         push_niche,
@@ -877,16 +876,16 @@ def test_cwd_preserved_across_files_operations(playground_dir):
 
     cwd_before = os.getcwd()
 
-    push_niche(playground_dir, PARTICIPANT, TEAM, "cwdtest", LocalFolderRemote(str(cloud_niche)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "cwdtest", LocalFolderStore(str(cloud_niche)))
     assert os.getcwd() == cwd_before
 
-    push_registry(playground_dir, PARTICIPANT, TEAM, LocalFolderRemote(str(cloud_reg)))
+    push_registry(playground_dir, PARTICIPANT, TEAM, LocalFolderStore(str(cloud_reg)))
     assert os.getcwd() == cwd_before
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
 
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT, LocalFolderRemote(str(cloud_niche)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT, LocalFolderStore(str(cloud_niche)))
     assert os.getcwd() == cwd_before
 
     bob_co = playground / "co-bob"
@@ -903,19 +902,19 @@ def test_cwd_preserved_across_files_operations(playground_dir):
     _init_git_dir(git_dir2)
     bob2_co = playground / "co-bob2"
     add_checkout(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", str(bob2_co))
-    pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderRemote(str(cloud_niche)))
+    pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderStore(str(cloud_niche)))
     assert os.getcwd() == cwd_before
 
     # merge_registry (covers _cod_merge_ref via registry path)
     from ssc_files.files import fetch_registry
-    fetch_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, LocalFolderRemote(str(cloud_reg)))
+    fetch_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, LocalFolderStore(str(cloud_reg)))
     assert os.getcwd() == cwd_before
     merge_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT)
     assert os.getcwd() == cwd_before
 
-    # Failure path: pull_niche on empty remote raises but leaves CWD unchanged
+    # Failure path: pull_niche on an empty store raises but leaves CWD unchanged
     empty_cloud = playground / "cloud-empty"
     empty_cloud.mkdir()
-    with pytest.raises(RuntimeError, match="could not fetch from remote"):
-        pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderRemote(str(empty_cloud)))
+    with pytest.raises(NoPublishedHeadError):
+        pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderStore(str(empty_cloud)))
     assert os.getcwd() == cwd_before

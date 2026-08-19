@@ -3,6 +3,8 @@ import sqlite3
 from types import SimpleNamespace
 
 import cod_sync.protocol as CS
+from cod_sync.repo import Repo
+from cod_sync.store import LocalFolderStore
 from fastapi.testclient import TestClient
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
@@ -75,9 +77,8 @@ def test_manager_web_pin_flow_updates_cached_session_state(playground_dir, monke
 
 
 def _push_to_localfolder(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
-    cod = CS.CodSync("origin", repo_dir=repo_dir)
-    cod.remote = CS.LocalFolderRemote(str(cloud_dir))
-    cod.push_to_remote(["main"])
+    cod = CS.CodSync(Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir)))
+    cod.publish()
 
 
 def _create_shared_team_with_bob(root: pathlib.Path):
@@ -108,7 +109,7 @@ def _create_shared_team_with_bob(root: pathlib.Path):
         root,
         bob_hex,
         token_b64,
-        inviter_remote=CS.LocalFolderRemote(str(alice_cloud)),
+        inviter_store=LocalFolderStore(str(alice_cloud)),
     )
     Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", bob_acceptance)
     return alice_hex, bob_hex
@@ -266,7 +267,7 @@ def test_manager_web_renders_steward_and_non_steward_admission_controls(playgrou
         root,
         bob_hex,
         token_b64,
-        inviter_remote=CS.LocalFolderRemote(str(alice_cloud)),
+        inviter_store=LocalFolderStore(str(alice_cloud)),
     )
 
     bob_self_id_hex = next(

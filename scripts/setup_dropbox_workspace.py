@@ -31,8 +31,9 @@ if str(_scripts) not in sys.path:
     sys.path.insert(0, str(_scripts))
 
 import cod_sync.protocol as CodSync
+from cod_sync.repo import Repo
 import setup_dropbox_auth as _auth
-from dropbox_remote import DropboxCodSyncRemote
+from dropbox_remote import DropboxCodSyncStore
 from small_sea_manager.manager import TeamManager
 from small_sea_manager.provisioning import (
     accept_invitation,
@@ -88,17 +89,11 @@ def _create_and_auth(workspace: Path, nickname: str, app_key: str, app_secret: s
     return participant_hex, tokens["access_token"]
 
 
-def _push_team_repo(workspace: Path, participant_hex: str, team_name: str, dropbox_remote):
-    """Push the team's Sync repo to Dropbox."""
+def _push_team_repo(workspace: Path, participant_hex: str, team_name: str, dropbox_store):
+    """Publish the team's Sync repo to Dropbox."""
     sync_dir = workspace / "Participants" / participant_hex / team_name / "Sync"
-    saved_cwd = os.getcwd()
-    os.chdir(sync_dir)
-    try:
-        cod = CodSync.CodSync("cloud")
-        cod.remote = dropbox_remote
-        cod.push_to_remote(["main"])
-    finally:
-        os.chdir(saved_cwd)
+    repo = Repo(sync_dir / ".git", sync_dir)
+    return CodSync.CodSync(repo, dropbox_store).publish()
 
 
 def _setup_team(
@@ -114,7 +109,7 @@ def _setup_team(
     alice_bucket = f"ss-{alice_teammate_id_hex[:16]}"
     print(f"  Alice teammate_id: {alice_teammate_id_hex[:16]}... bucket: {alice_bucket}")
 
-    alice_remote = DropboxCodSyncRemote(alice_access_token, folder_prefix=alice_bucket)
+    alice_remote = DropboxCodSyncStore(alice_access_token, folder_prefix=alice_bucket)
 
     print("  Alice pushing initial team repo to Dropbox...")
     _push_team_repo(workspace, alice_hex, _TEAM_NAME, alice_remote)
@@ -143,13 +138,13 @@ def _setup_team(
     print(f"  Bob teammate_id: {bob_teammate_id.hex()[:16]}... bucket: {bob_bucket}")
 
     # Bob reads from Alice's folder using his own token; writes to his own folder.
-    inviter_remote = DropboxCodSyncRemote(bob_access_token, folder_prefix=alice_bucket)
-    bob_remote = DropboxCodSyncRemote(bob_access_token, folder_prefix=bob_bucket)
+    inviter_store = DropboxCodSyncStore(bob_access_token, folder_prefix=alice_bucket)
+    bob_remote = DropboxCodSyncStore(bob_access_token, folder_prefix=bob_bucket)
 
     print("  Bob accepting invitation (clone + push)...")
     acceptance_b64 = accept_invitation(
         workspace, bob_hex, token_b64,
-        inviter_remote=inviter_remote,
+        inviter_store=inviter_store,
         acceptor_remote=bob_remote,
         acceptor_teammate_id=bob_teammate_id,
     )

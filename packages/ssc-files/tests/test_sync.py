@@ -1,7 +1,7 @@
 import pathlib
 
 import pytest
-from cod_sync.protocol import LocalFolderRemote
+from cod_sync.store import LocalFolderStore
 from ssc_files import sync
 from ssc_files.files import (
     NicheResidency,
@@ -38,7 +38,7 @@ def test_sync_niche_between_devices(playground_dir):
     (pathlib.Path(checkout_a) / "beach.jpg").write_bytes(b"fake-beach-data")
     publish(root_a, PARTICIPANT, TEAM, "photos", checkout_a, message="add photos")
 
-    push_niche(root_a, PARTICIPANT, TEAM, "photos", LocalFolderRemote(str(cloud_dir)))
+    push_niche(root_a, PARTICIPANT, TEAM, "photos", LocalFolderStore(str(cloud_dir)))
 
     # --- Device B: join flow: fetch → attach checkout → merge ---
     root_b = str(playground / "device-b")
@@ -46,7 +46,7 @@ def test_sync_niche_between_devices(playground_dir):
     materialize_team(root_b, TEAM)
     checkout_b = str(playground / "checkout-b" / "photos")
 
-    fetch_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, LocalFolderRemote(str(cloud_dir)))
+    fetch_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, LocalFolderStore(str(cloud_dir)))
     add_checkout(root_b, PARTICIPANT, TEAM, "photos", checkout_b)
     merge_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT)
 
