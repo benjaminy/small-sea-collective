@@ -2,6 +2,38 @@
 
 As an AI agent working in this repository, you must follow these rules to maintain project integrity and follow existing conventions.
 
+## Project Phase: Research, Not Production
+
+**This is a research project, not a deployed product.**
+There is no installed user base, production data, or service availability to preserve.
+Do not expand current work to satisfy hypothetical operational constraints as though the project were already deployed.
+
+The long-term goal is still to deploy Small Sea.
+Actively identify designs that could fail under adversarial inputs, partial failure, concurrency, migration, or real-world operations.
+Those observations are valuable even when they should not be implemented now.
+A production risk can be important without belonging in the current change.
+Do not treat missing production hardening as a blocker unless it invalidates the current research, violates an architectural mandate, or endangers developer data, credentials, or research integrity.
+
+**Default to deferring deployment hardening.**
+When a safety mechanism matters before deployment but not to the current research, treat a focused GitHub issue as its normal home.
+Do not ignore the risk, and do not implement it opportunistically.
+
+Use this decision rule:
+
+- Implement what is needed to answer the current research question, preserve the intended architecture, or satisfy the user's explicit scope.
+- Do not add compatibility layers, rollout machinery, migration paths, defensive complexity, or operational recovery systems solely for a hypothetical deployment.
+- Surface important deferred safety or production-hardening work clearly and capture it for later without expanding the current change.
+- Implement a production-oriented safeguard now only when the user requests it, it is necessary to validate the current research, or postponing it would endanger developer data, credentials, or the integrity of research results.
+
+Existing code and documentation vary widely in maturity and quality.
+Treat repository precedent as evidence, not authority.
+Before following an existing pattern, judge whether it expresses the intended design or is a research-stage shortcut or mistake that should be corrected.
+If that distinction matters and the repository does not resolve it, ask a human rather than silently copying or correcting the pattern.
+
+Prefer clean designs over compatibility with existing research artifacts unless the user explicitly asks otherwise.
+Keep schema/version markers in place so future compatibility work remains possible.
+The production architectural mandates below define the intended destination; they do not imply that every production mechanism must be built during the research phase.
+
 ## General Guidelines
 
 Behavioral guidelines to reduce common LLM coding mistakes.
@@ -90,11 +122,6 @@ In documentation, plans, comments, and discussion:
 ## Project Management Rules
 - **Do NOT auto-commit.** You may prepare commits and stage changes, but always request explicit user approval before finalizing a git commit.
 - **Micro Tests over Unit Tests.** The project refers to quick, developer-focused tests as "micro tests." Ensure you use this terminology in discussions and documentation.
-- **Project status: still research. Do not spend effort on backward compatibility.**
-   There is currently little value in maintaining legacy anything in this project.
-   The quality and completeness of existing code is highly variable; decisions about whether to follow in the footsteps of repo precedent or correct old hacks / mistakes need to be make on a case-by-case basis.
-   Prefer the cleanest design over migration shims or compatibility layers unless the user explicitly asks for them.
-   Keep schema/version markers in place so future compatibility work remains possible.
 - For a nontrivial unit of work, copy `.IN_PROGRESS/InProgressBranchTemplate/` to `.IN_PROGRESS/{branch slug}/`
    (named after the current git branch)
    and maintain the documents there as their embedded instructions describe.
