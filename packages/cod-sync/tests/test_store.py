@@ -128,6 +128,100 @@ def test_head_replacement_leaves_no_partial_file(store):
     assert leftovers == []
 
 
+def test_initial_head_is_never_visible_half_written(store, monkeypatch):
+    """A reader sees exact absence or a whole head, never staging bytes.
+
+    provisioning builds this store directly for the identity bootstrap, so a
+    partially visible NoteToSelf head is developer data at risk rather than
+    test-fixture untidiness.
+    """
+    import os
+
+    seen = []
+    real_link = os.link
+
+    def watch(source, target):
+        # At the instant before the name exists, the store must hold nothing.
+        seen.append(pathlib.Path(target).exists())
+        return real_link(source, target)
+
+    monkeypatch.setattr(os, "link", watch)
+    store.put_latest_link(b"a complete first head", expected_etag=None)
+
+    assert seen == [False]
+    assert store.get_latest_link()[0] == b"a complete first head"
+    assert [p.name for p in pathlib.Path(store.path).glob(".latest-link-*")] == []
+
+
+def test_a_failed_initial_head_write_leaves_exact_absence(store, monkeypatch):
+    import os
+
+    def fail(source, target):
+        raise OSError("no space left on device")
+
+    monkeypatch.setattr(os, "link", fail)
+    with pytest.raises(StoreProviderError) as exc:
+        store.put_latest_link(b"one", expected_etag=None)
+
+    assert exc.value.write_closed is True
+    with pytest.raises(ObjectNotFoundError):
+        store.get_latest_link()
+    assert [p.name for p in pathlib.Path(store.path).glob(".latest-link-*")] == []
+
+
+def test_initial_head_setup_failure_is_closed(store, monkeypatch):
+    def fail(*args, **kwargs):
+        raise OSError("cannot create a staging file")
+
+    monkeypatch.setattr("cod_sync.store.tempfile.mkstemp", fail)
+    with pytest.raises(StoreProviderError) as exc:
+        store.put_latest_link(b"one", expected_etag=None)
+
+    assert exc.value.write_closed is True
+    with pytest.raises(ObjectNotFoundError):
+        store.get_latest_link()
+
+
+def test_staging_cleanup_failure_does_not_hide_an_installed_head(
+    store, monkeypatch
+):
+    import os
+
+    def fail(path):
+        raise OSError("cannot remove staging name")
+
+    monkeypatch.setattr(os, "unlink", fail)
+    etag = store.put_latest_link(b"one", expected_etag=None)
+
+    assert etag
+    assert store.get_latest_link()[0] == b"one"
+
+
+def test_a_returned_local_head_write_failure_is_closed(store, monkeypatch):
+    """A synchronous call leaves no request that can take effect later.
+
+    Cod Sync reasons against the store protocol, so conclusiveness has to
+    arrive as a typed marker on the failure rather than as a store identity it
+    is not allowed to inspect.
+    """
+    import os
+
+    store.put_latest_link(b"one", expected_etag=None)
+    _data, etag = store.get_latest_link()
+
+    def fail(source, target):
+        raise OSError("disk went away")
+
+    monkeypatch.setattr(os, "replace", fail)
+    with pytest.raises(StoreProviderError) as exc:
+        store.put_latest_link(b"two", expected_etag=etag)
+
+    assert exc.value.write_closed is True
+    assert store.get_latest_link()[0] == b"one"
+    assert CasConflictError.write_closed is True
+    assert StoreProviderError("plain").write_closed is False
+
+
 # ------------------------------------------------------- Hub status mapping #
 
 

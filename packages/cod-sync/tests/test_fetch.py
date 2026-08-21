@@ -45,7 +45,7 @@ def build_chain(scratch, length):
     heads = []
     for index in range(length):
         commit_file(repo, f"file{index}.txt", f"content {index}\n")
-        heads.append(make_cod_sync(repo, store).publish().head)
+        heads.append(make_cod_sync(repo, store).publish().observed_head)
     return repo, publication, heads
 
 
@@ -89,7 +89,7 @@ def test_incremental_fetch_adds_only_the_new_head(scratch_dir):
     make_cod_sync(bob, store_at(publication)).fetch()
 
     commit_file(alice, "later.txt", "later\n")
-    second = make_cod_sync(alice, store_at(publication)).publish().head
+    second = make_cod_sync(alice, store_at(publication)).publish().observed_head
 
     counting = CountingStore(store_at(publication))
     result = make_cod_sync(bob, counting).fetch()
@@ -136,7 +136,7 @@ def test_a_walk_crosses_more_than_one_missing_link(scratch_dir):
     # Three more publications land while Bob is away.
     for index in (1, 2, 3):
         commit_file(alice, f"away{index}.txt", f"away {index}\n")
-        heads.append(make_cod_sync(alice, store_at(publication)).publish().head)
+        heads.append(make_cod_sync(alice, store_at(publication)).publish().observed_head)
 
     counting = CountingStore(store_at(publication))
     result = make_cod_sync(bob, counting).fetch()
@@ -220,7 +220,7 @@ def test_a_pin_advances_forward(scratch_dir):
     make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
 
     commit_file(alice, "next.txt", "next\n")
-    second = make_cod_sync(alice, store_at(publication)).publish().head
+    second = make_cod_sync(alice, store_at(publication)).publish().observed_head
     result = make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
 
     assert result.pin_disposition == "advanced"
@@ -481,6 +481,6 @@ def test_a_published_merge_round_trips(scratch_dir):
     merged = make_cod_sync(alice, store_at(publication)).publish()
 
     result = make_cod_sync(bob, store_at(publication)).fetch()
-    assert result.observed_head == merged.head
+    assert result.observed_head == merged.observed_head
     bob.checkout_branch("main", result.observed_head)
     assert working_tree_files(bob) == working_tree_files(alice)

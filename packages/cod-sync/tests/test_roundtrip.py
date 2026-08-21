@@ -33,7 +33,7 @@ def test_cold_start_then_incremental_round_trip(scratch_dir):
 
     commit_file(alice, "plan.txt", "step 1: profit\n")
     second = make_cod_sync(alice, alice_store).publish()
-    assert second.changed is True
+    assert second.disposition == "published"
 
     # ---- Bob cold-starts: init, fetch, check out the observed head ----
     bob = make_repo(scratch / "bob", "bob")
