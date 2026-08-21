@@ -12,7 +12,12 @@ import sqlite3
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.protocol import CodSync, PublicationRetryableError
+from cod_sync.protocol import (
+    CodSync,
+    PublicationIntegrationRequiredError,
+    PublicationOutcomeUnresolvedError,
+    PublicationRetryableError,
+)
 from cod_sync.store import CasConflictError, SmallSeaStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
@@ -345,6 +350,69 @@ def test_push_route_reports_already_published_on_second_push(env):
     assert second.status_code == 200, second.text
     assert "Already published." in second.text
     assert "Pushed to cloud." not in second.text
+
+
+def test_push_route_offers_no_integration_action_manager_does_not_have(env, monkeypatch):
+    """Divergence is reported without pointing at an operation that does not exist.
+
+    Manager gains an integration operation in #185 and #48. Until then the
+    route says what happened and what is preserved, and names no action.
+    """
+    env.announce_storage()
+    env.manager.push_team(_TEAM)
+    marker_before = env.marker.read_bytes()
+    Provisioning.set_team_admission_policy(env.root, env.alice_hex, _TEAM, quorum=2)
+
+    def _diverged(self, *_args, **_kwargs):
+        raise PublicationIntegrationRequiredError(
+            "the store's head diverges from local main",
+            attempted_head=env.repo.head(),
+            observed_head="cc" * 20,
+            merge_base="dd" * 20,
+            parked_ref="refs/cod-sync/parked/whatever",
+        )
+
+    monkeypatch.setattr(CodSync, "publish", _diverged)
+
+    web = create_app(env.root, env.alice_hex)
+    web.state.manager = env.manager
+    client = TestClient(web)
+    resp = client.post(f"/teams/{_TEAM}/push")
+
+    assert resp.status_code == 200, resp.text
+    assert "holds changes this installation does not have" in resp.text
+    assert "Both histories are kept locally" in resp.text
+    for absent in ("merge", "Merge", "pull", "Pull", "attempted_head"):
+        assert absent not in resp.text
+    assert env.marker.read_bytes() == marker_before
+
+
+def test_push_route_does_not_claim_local_status_settles_an_unknown_outcome(
+    env, monkeypatch
+):
+    env.announce_storage()
+    env.manager.push_team(_TEAM)
+    marker_before = env.marker.read_bytes()
+    Provisioning.set_team_admission_policy(env.root, env.alice_hex, _TEAM, quorum=2)
+
+    def _unresolved(self, *_args, **_kwargs):
+        raise PublicationOutcomeUnresolvedError(
+            "the head write may still take effect",
+            attempted_head=env.repo.head(),
+        )
+
+    monkeypatch.setattr(CodSync, "publish", _unresolved)
+
+    web = create_app(env.root, env.alice_hex)
+    web.state.manager = env.manager
+    resp = TestClient(web).post(f"/teams/{_TEAM}/push")
+
+    assert resp.status_code == 200, resp.text
+    assert "The local commit is preserved" in resp.text
+    assert "A later push will observe the cloud state afresh" in resp.text
+    assert "sync status" not in resp.text
+    assert env.marker.read_bytes() == marker_before
+    assert env.manager.get_team_sync_status(_TEAM) == "needs_push"
 
 
 # ---------------------------------------------------------------------------

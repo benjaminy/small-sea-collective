@@ -226,13 +226,16 @@ Those keys intentionally omit both friendly `team_name` and opaque Files
 
 | Operation | Description |
 |-----------|-------------|
-| `push_niche` | Publish a niche to a cloud store via Cod Sync. Returns the `PublishResult`; `changed=False` means the store already held this head and nothing was uploaded. |
+| `push_niche` | Publish a niche to a cloud store via Cod Sync. Returns the `PublishResult`; disposition `already_present` means the store already held this head or a descendant of it and nothing was uploaded. A publication that needs attention raises its typed Cod Sync error, and a divergent stored head is parked locally first. |
 | `pull_niche` | Fetch from a cloud remote and merge into the local niche repo. Requires a clean checkout if one is attached; refreshes it after merge. |
 | `fetch_niche` | Fetch from a peer and park the ref locally without merging. No checkout required. |
 | `merge_niche` | Merge a previously parked peer ref. Requires a clean attached checkout. |
+| `merge_self_niche` | Merge every outstanding head Cod Sync parked from this participant's own niche chain, published by another of their devices. Purely local, and requires a clean attached checkout. |
 | `repair_niche` (target) | Append a forward restoration commit containing a selected earlier tree, then optionally replay chosen intervening work as new commits without resetting the shared branch. Files must describe what provenance, if any, supports the replay. |
 | `push_registry` | Publish the niche registry to a cloud store. Returns the `PublishResult`, on the same terms as `push_niche`. |
 | `pull_registry` | Pull the niche registry from a cloud remote and merge. |
+| `merge_self_registry` | The registry counterpart of `merge_self_niche`. |
+| `self_conflict_status` | Report the parked self-store heads a self merge would integrate now, read from the refs rather than from a publication result. |
 
 ---
 

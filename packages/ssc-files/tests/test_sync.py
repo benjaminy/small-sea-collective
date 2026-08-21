@@ -212,6 +212,80 @@ def test_merge_self_integrates_a_parked_sibling_device_head(playground_dir):
     assert not again.merged_anything
 
 
+def test_self_conflict_status_tracks_what_merge_self_would_integrate(playground_dir):
+    """A surface can offer the integration only while something is outstanding.
+
+    The status is read from the parked refs, not from the publication result,
+    so it is still true in the process that renders the page after the one
+    that pushed.
+    """
+    env = _two_device_conflict(playground_dir)
+    assert not sync.self_conflict_status(
+        env["root_b"], PARTICIPANT, TEAM, "notes"
+    ).outstanding
+
+    failure = _diverge(env, a_text="from A\n", b_text="from B\n")
+
+    status = sync.self_conflict_status(env["root_b"], PARTICIPANT, TEAM, "notes")
+    assert status.outstanding
+    assert status.niche_shas == [failure.observed_head]
+
+    sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    assert not sync.self_conflict_status(
+        env["root_b"], PARTICIPANT, TEAM, "notes"
+    ).outstanding
+
+
+def test_web_offers_and_runs_the_self_store_merge(playground_dir, monkeypatch):
+    """The web surface's only self-store action is one that exists.
+
+    A refused push names no CLI command in the browser; it points at the
+    Merge Changes button the same page renders, and that button runs the
+    local integration without contacting the Hub.
+    """
+    from fastapi.testclient import TestClient
+    from ssc_files.web import create_app
+
+    monkeypatch.setenv(
+        "SMALL_SEA_FILES_CONFIG", str(pathlib.Path(playground_dir) / "files.toml")
+    )
+    env = _two_device_conflict(playground_dir)
+    failure = _diverge(env, a_text="from A\n", b_text="from B\n")
+
+    def _refused_push(*_args, **_kwargs):
+        raise sync.PushConflictError(
+            "niche",
+            failure,
+            f"`ssc-files merge --from-self {TEAM.team_name} notes`",
+        )
+
+    class _NoHubClient:
+        def get(self, *_args, **_kwargs):
+            raise AssertionError("the local self merge contacted the Hub")
+
+    monkeypatch.setattr(sync, "push_via_hub", _refused_push)
+
+    client = TestClient(
+        create_app(env["root_b"], PARTICIPANT, _http_client=_NoHubClient())
+    )
+    refused = client.post(f"/teams/{TEAM.team_name}/niches/notes/push")
+    assert refused.status_code == 200
+    assert "Merge Changes" in refused.text
+    assert "ssc-files merge" not in refused.text
+
+    # A cached session makes peer rendering eligible to use the Hub. The
+    # local merge response must defer that separate refresh instead.
+    sync.store_session_token(TEAM.team_name, "cached-token")
+
+    merged = client.post(f"/teams/{TEAM.team_name}/niches/notes/merge-self")
+    assert merged.status_code == 200
+    assert "Push again to publish the result." in merged.text
+    assert (env["checkout_b"] / "a.txt").read_text() == "from A\n"
+
+    # Nothing is outstanding now, so the action is no longer offered.
+    assert "Merge Changes" not in merged.text
+
+
 def test_merge_self_leaves_an_already_integrated_parked_ref_alone(playground_dir):
     """Two parked refs, one already absorbed: only the outstanding one merges.
 
@@ -297,6 +371,9 @@ def test_merge_self_merges_a_descendant_before_its_parked_ancestor(playground_di
     _git(git_dir, "update-ref", "refs/cod-sync/parked/z", second.observed_head)
     _git(git_dir, "update-ref", "-d", parked_ref_name(first.observed_link_uid))
     _git(git_dir, "update-ref", "-d", parked_ref_name(second.observed_link_uid))
+
+    status = sync.self_conflict_status(env["root_b"], PARTICIPANT, TEAM, "notes")
+    assert status.niche_shas == [second.observed_head]
 
     result = sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
 

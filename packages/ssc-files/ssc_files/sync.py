@@ -65,6 +65,9 @@ class PublicationError(FilesSyncError):
     def __init__(self, message: str, scope: str, publication: PublicationFailedError):
         self.scope = scope
         self.publication = publication
+        # The sentence a surface shows a person, without the Cod Sync
+        # diagnostics that belong in a terminal or a log.
+        self.user_message = f"{scope} push: {message}"
         super().__init__(f"{scope} push: {message} ({publication})")
 
 
@@ -200,6 +203,21 @@ class SelfMergeResult:
 
     @property
     def merged_anything(self) -> bool:
+        return bool(self.registry_shas or self.niche_shas)
+
+
+@dataclass
+class SelfConflictStatus:
+    """Parked self-store heads a `merge --from-self` run would integrate now.
+
+    Read from the parked refs rather than from a publication result, so a
+    surface still offers the integration in a later process.
+    """
+    registry_shas: list[str]
+    niche_shas: list[str]
+
+    @property
+    def outstanding(self) -> bool:
         return bool(self.registry_shas or self.niche_shas)
 
 
@@ -787,6 +805,26 @@ def merge_self(
         raise StaleCheckoutError(exc.team_name, exc.niche_name, exc.checkout_path) from exc
 
     return SelfMergeResult(registry_shas=registry_shas, niche_shas=niche_shas)
+
+
+def self_conflict_status(
+    files_root: str,
+    participant_hex: str,
+    context,
+    niche_name: str,
+) -> SelfConflictStatus:
+    """Report whether this niche has a competing self-store head to integrate.
+
+    Purely local: parked refs are what a refused publication left behind, so
+    this asks the repositories, not the Hub.
+    """
+    status = files.self_conflict_status(
+        files_root, participant_hex, context, niche_name
+    )
+    return SelfConflictStatus(
+        registry_shas=status["registry_shas"],
+        niche_shas=status["niche_shas"],
+    )
 
 
 def peer_update_status(

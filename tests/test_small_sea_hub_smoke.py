@@ -142,11 +142,11 @@ def test_push_clone_roundtrip_subprocess(hub_env):
         # ---- Alice: publish via SmallSeaStore (real HTTP) ----
         alice_store = SmallSeaStore(session_hex, base_url=hub_endpoint)
         published = CS.CodSync(make_repo(alice_repo), alice_store).publish()
-        assert published.changed is True
+        assert published.disposition == "published"
 
         latest = decode_link(alice_store.get_latest_link()[0])
         assert latest.previous is None
-        assert latest.head == published.head
+        assert latest.head == published.attempted_head
 
         # ---- Bob: cold-start fetch via SmallSeaStore (real HTTP) ----
         bob_store = SmallSeaStore(session_hex, base_url=hub_endpoint)

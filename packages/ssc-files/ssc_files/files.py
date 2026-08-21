@@ -652,16 +652,8 @@ def _outstanding_parked_refs(git_dir):
     return outstanding
 
 
-def _merge_parked_self_refs(git_dir, checkout):
-    """Merge every outstanding parked self-store ref into checkout.
-
-    Returns the SHAs actually merged, in merge order, and an empty list when
-    nothing is outstanding. Ancestors of another outstanding parked head are
-    omitted before merging: the descendant already contains them, while an
-    arbitrary ref-name order could make the ancestor create a conflict that
-    merging the descendant directly avoids. Ancestry is still retested before
-    each merge because one incomparable merge can absorb another ref.
-    """
+def _parked_self_refs_to_merge(git_dir):
+    """Return the unique maximal parked refs a self merge would integrate."""
     outstanding = _outstanding_parked_refs(git_dir)
     maximal = []
     seen_shas = set()
@@ -675,6 +667,20 @@ def _merge_parked_self_refs(git_dir, checkout):
         ):
             continue
         maximal.append((ref, sha))
+    return maximal
+
+
+def _merge_parked_self_refs(git_dir, checkout):
+    """Merge every outstanding parked self-store ref into checkout.
+
+    Returns the SHAs actually merged, in merge order, and an empty list when
+    nothing is outstanding. Ancestors of another outstanding parked head are
+    omitted before merging: the descendant already contains them, while an
+    arbitrary ref-name order could make the ancestor create a conflict that
+    merging the descendant directly avoids. Ancestry is still retested before
+    each merge because one incomparable merge can absorb another ref.
+    """
+    maximal = _parked_self_refs_to_merge(git_dir)
 
     merged = []
     for ref, sha in maximal:
@@ -1153,6 +1159,28 @@ def merge_niche(files_root, participant_hex, context, niche_name, teammate_id):
         files_root, participant_hex, context, "niche", niche_name, teammate_id, parked_sha
     )
     return parked_sha
+
+
+def self_conflict_status(files_root, participant_hex, context, niche_name):
+    """Return the outstanding parked self-store heads for one niche and its registry.
+
+    Reads exactly what merge_self_* would integrate, so a surface can offer the
+    integration only when there is something to integrate. Parked refs are
+    durable, so this survives the process that published.
+    """
+    context = _validate_context(participant_hex, context)
+    _ensure_registry(files_root, participant_hex, context)
+    registry_git_dir = _registry_git_dir(files_root, context)
+    registry_shas = [
+        sha for _ref, sha in _parked_self_refs_to_merge(registry_git_dir)
+    ]
+    niche_git_dir = _niche_git_dir(files_root, context, niche_name)
+    niche_shas = (
+        [sha for _ref, sha in _parked_self_refs_to_merge(niche_git_dir)]
+        if niche_git_dir.exists()
+        else []
+    )
+    return {"registry_shas": registry_shas, "niche_shas": niche_shas}
 
 
 def merge_self_niche(files_root, participant_hex, context, niche_name):

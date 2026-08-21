@@ -133,7 +133,7 @@ Any data stored in S3 using the current chain-of-deltas format becomes a migrati
 
 These questions were worked through in detail and are now captured in the [Cod Sync format spec](../packages/cod-sync/Documentation/format-spec.md):
 
-- **Concurrency control**: CAS (compare-and-swap) via conditional writes on `latest-link.yaml`. Failed CAS means pull, merge, retry. Implemented in the Hub's storage adapters and threaded through `SmallSeaStore` and `LocalFolderStore`. A failed CAS is reported, not resolved: Cod Sync does not fetch, merge, or retry on the caller's behalf.
+- **Concurrency control**: CAS (compare-and-swap) via conditional writes on `latest-link.yaml`. Implemented in the Hub's storage adapters and threaded through `SmallSeaStore` and `LocalFolderStore`. One publication gets a fixed envelope: at most one head write and at most two validated observation passes, which may fetch chain objects so that the stored head can be compared locally. Cod Sync still does not merge and does not retry; it reports one of five terminal results and stops at the application boundary, and the caller no longer rereads on its behalf.
 - **Versioning**: Per-link semver in the link's `version` key. Major bump = breaking (reader refuses), minor/patch = additive. Version numbers are monotonically non-decreasing forward through the chain.
 - **Encryption**: Link blobs and git bundles encrypted as separate files (allows chain traversal without downloading full bundles). Cipher and key exchange TBD.
 - **GC / compaction**: Chain compaction (collapse to a fresh full snapshot that still contains the published head) handles both garbage collection and format migration. Any user with write access can trigger it.

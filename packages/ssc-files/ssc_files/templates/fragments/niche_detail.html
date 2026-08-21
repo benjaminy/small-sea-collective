@@ -25,14 +25,38 @@
       <button class="btn btn-primary" type="submit">Push</button>
     </form>
   </div>
+  {% if self_conflict and self_conflict.outstanding %}
+  <div style="border:1px solid #d6d3d1; border-radius:0.75rem; padding:0.75rem; margin-bottom:0.75rem">
+    <div style="font-weight:600; margin-bottom:0.5rem">Your other devices</div>
+    <p class="notice notice-err" style="margin-bottom:0.5rem; font-size:0.88rem">
+      Your cloud chain holds commits this device does not have
+      ({% for sha in self_conflict.niche_shas + self_conflict.registry_shas %}{{ sha[:8] }}{{ ", " if not loop.last }}{% endfor %}).
+      Merge them here, then push again.
+    </p>
+    <form hx-post="/teams/{{ team_name }}/niches/{{ niche_name }}/merge-self"
+          hx-target="#niche-detail"
+          hx-swap="innerHTML">
+      <button class="btn btn-primary" type="submit">
+        Merge Changes
+      </button>
+    </form>
+  </div>
+  {% endif %}
   <div id="peer-panel-{{ team_name | replace(' ', '-') | replace('/', '-') }}-{{ niche_name | replace(' ', '-') | replace('/', '-') }}"
        hx-get="/teams/{{ team_name }}/niches/{{ niche_name }}/peer_panel"
        hx-trigger="every 20s[document.visibilityState === 'visible']"
        hx-swap="innerHTML">
+    {% if peers is not none %}
     {% include "fragments/peer_panel.html" %}
+    {% elif team_session_status == "active" %}
+    <p style="color:#78716c; font-size:0.88rem; margin-bottom:0.75rem">
+      Teammate status refreshes separately.
+    </p>
+    {% endif %}
   </div>
   <p style="color:#78716c; font-size:0.88rem">
-    Push, fetch, and merge go through the Hub using this team session.
+    Push, fetch, and teammate merges go through the Hub using this team session.
+    Merging your own devices' parked changes is local.
   </p>
 </div>
 

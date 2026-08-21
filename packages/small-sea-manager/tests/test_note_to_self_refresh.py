@@ -444,8 +444,17 @@ def test_divergent_note_to_self_push_reports_integration_required(
     repo_b = _note_to_self_repo(root_b, alice_hex)
     # Bootstrap leaves device B on its own commit, but still on A's history.
     assert repo_b.is_ancestor(shared_head, repo_b.head())
-    adopted_before = Provisioning.get_note_to_self_adopted_signal_count(
-        root_b, alice_hex, berth_id_b
+    # push_note_to_self seeds an absent adopted-count row from the Hub's current
+    # self-signal count, which device A's pushes have already advanced. Seed it
+    # here so the post-push assertion has a baseline that does not depend on how
+    # many of A's signals this Hub has recorded.
+    assert (
+        Provisioning.get_note_to_self_adopted_signal_count(root_b, alice_hex, berth_id_b)
+        is None
+    )
+    adopted_before = 0
+    Provisioning.set_note_to_self_adopted_signal_count(
+        root_b, alice_hex, berth_id_b, adopted_before
     )
 
     # Device B commits its own team without refreshing first.
@@ -471,8 +480,8 @@ def test_divergent_note_to_self_push_reports_integration_required(
 
     # Divergence changes nothing device-local.
     assert repo_b.head() == local_head
-    # push_note_to_self ensures the adopted-count row exists before publishing;
-    # a publication that never landed must not advance it past that baseline.
-    assert Provisioning.get_note_to_self_adopted_signal_count(
-        root_b, alice_hex, berth_id_b
-    ) == (adopted_before or 0)
+    # A publication that never landed must not advance the adopted baseline.
+    assert (
+        Provisioning.get_note_to_self_adopted_signal_count(root_b, alice_hex, berth_id_b)
+        == adopted_before
+    )
