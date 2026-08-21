@@ -8,6 +8,11 @@ import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 from botocore.config import Config as BotoConfig
+from cod_sync.protocol import (
+    PublicationIntegrationRequiredError,
+    PublicationOutcomeUnresolvedError,
+    PublicationRetryableError,
+)
 from click.testing import CliRunner
 from fastapi.testclient import TestClient
 from ssc_files import sync, files
@@ -709,6 +714,142 @@ def test_push_with_no_new_commits_reports_nothing_to_push(
         sync.push_via_hub(
             alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
         )
+
+
+def test_push_preserves_every_typed_publication_state(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    """Each attention state reaches the user surface as a Files sync error.
+
+    A typed Cod Sync error escaping push_via_hub would leave the CLI and the
+    web handler with a traceback, since both catch FilesSyncError. The
+    translation keeps the typed publication so the surface can report its
+    evidence instead of a store message.
+    """
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
+    root = env["root"]
+    http = env["http"]
+
+    alice_files_root = str(root / "files-alice")
+    files.init_files(alice_files_root, env["alice_hex"])
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
+    login = sync.login_team(
+        alice_files_root, "ProjectX", env["alice_hex"], _http_client=http,
+        pin_reader=lambda _: "",
+    )
+    context = files.materialization_context_from_session_info(login.session_info)
+
+    checkout = root / "alice-checkout"
+    files.create_niche(alice_files_root, env["alice_hex"], context, "docs")
+    files.add_checkout(alice_files_root, env["alice_hex"], context, "docs", str(checkout))
+    (checkout / "notes.txt").write_text("v1\n")
+    files.publish(
+        alice_files_root, env["alice_hex"], context, "docs", str(checkout), message="init"
+    )
+
+    cases = [
+        (PublicationRetryableError, sync.PushRetryableError),
+        (PublicationIntegrationRequiredError, sync.PushConflictError),
+        (PublicationOutcomeUnresolvedError, sync.PushOutcomeUnresolvedError),
+    ]
+    for publication_error, expected in cases:
+        def _fail(*_args, **_kwargs):
+            raise publication_error("injected", attempted_head="0" * 40)
+
+        monkeypatch.setattr(files, "push_niche", _fail)
+        with pytest.raises(expected) as excinfo:
+            sync.push_via_hub(
+                alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
+            )
+        raised = excinfo.value
+        assert isinstance(raised, sync.FilesSyncError)
+        assert raised.scope == "niche"
+        assert isinstance(raised.publication, publication_error)
+        assert raised.publication.attempted_head == "0" * 40
+        if expected is sync.PushRetryableError:
+            assert "can no longer change the cloud head" in str(raised)
+            assert "no cloud change was made" not in str(raised)
+
+    unresolved = PublicationOutcomeUnresolvedError(
+        "injected registry outcome", attempted_head="0" * 40
+    )
+    registry_error = sync.PushOutcomeUnresolvedError("registry", unresolved)
+    assert "check the registry before pushing again" in str(registry_error)
+    assert registry_error.publication is unresolved
+
+    # The conflict names the self-store integration, not a teammate pull.
+    def _diverged(*_args, **_kwargs):
+        raise PublicationIntegrationRequiredError("injected", attempted_head="0" * 40)
+
+    monkeypatch.setattr(files, "push_niche", _diverged)
+    with pytest.raises(sync.PushConflictError) as excinfo:
+        sync.push_via_hub(
+            alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
+        )
+    assert "merge --from-self ProjectX docs" in str(excinfo.value)
+    assert "teammate" not in str(excinfo.value)
+
+
+def test_push_repairs_a_registry_left_unpublished_by_an_earlier_failure(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    """An already-present niche must not block the registry publication.
+
+    The niche and the registry are two publications, so a push that moves the
+    niche and then fails on the registry leaves the registry outstanding. The
+    next push finds the niche already present, and that is exactly the case
+    where the registry still needs publishing.
+    """
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
+    root = env["root"]
+    http = env["http"]
+
+    alice_files_root = str(root / "files-alice")
+    files.init_files(alice_files_root, env["alice_hex"])
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
+    login = sync.login_team(
+        alice_files_root, "ProjectX", env["alice_hex"], _http_client=http,
+        pin_reader=lambda _: "",
+    )
+    context = files.materialization_context_from_session_info(login.session_info)
+
+    checkout = root / "alice-checkout"
+    files.create_niche(alice_files_root, env["alice_hex"], context, "docs")
+    files.add_checkout(alice_files_root, env["alice_hex"], context, "docs", str(checkout))
+    (checkout / "notes.txt").write_text("v1\n")
+    files.publish(
+        alice_files_root, env["alice_hex"], context, "docs", str(checkout), message="init"
+    )
+
+    real_push_registry = files.push_registry
+
+    def _registry_transport_failure(*_args, **_kwargs):
+        raise PublicationRetryableError(
+            "injected registry transport failure",
+            attempted_head="0" * 40,
+        )
+
+    monkeypatch.setattr(files, "push_registry", _registry_transport_failure)
+    with pytest.raises(sync.PushRetryableError) as excinfo:
+        sync.push_via_hub(
+            alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
+        )
+    assert excinfo.value.scope == "registry"
+
+    monkeypatch.setattr(files, "push_registry", real_push_registry)
+    # The niche is already present now, and the registry is not.
+    sync.push_via_hub(
+        alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
+    )
+
+    session = sync.get_team_session("ProjectX", _http_client=http)
+    repaired = files.push_registry(
+        alice_files_root,
+        env["alice_hex"],
+        context,
+        sync.make_registry_remote(session),
+    )
+    assert repaired.disposition == "already_present"
 
 
 def test_push_succeeds_when_only_the_registry_is_unchanged(

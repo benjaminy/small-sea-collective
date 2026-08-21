@@ -406,12 +406,10 @@ The verb is settled; naming the ref is not.
 `merge --from-teammate` needs no stored state, because `merge_registry` and `merge_niche` derive the ref from the argument the user typed (`files.py:963`, `files.py:1062`).
 `--from-self` has no such derivation, which is the open decision below.
 
-## Open decision
-
-### How the self-store integration operation finds its parked ref
+## Settled: how the self-store integration operation finds its parked ref
 
 Parking solves the evidence problem and leaves the discovery problem open.
-Step 3 cannot be implemented until this is settled.
+Settled for step 3: scan the parked namespace.
 
 A peer ref name is derivable from what the user types: `_peer_ref_name(teammate_id)` is `refs/peers/{teammate_id}/main` (`files.py:618-619`).
 A parked ref is `refs/cod-sync/parked/{observed_link_uid}`, and that UID exists only on a result object in a process that has already exited, which is the argument for parking in the first place.
@@ -435,9 +433,12 @@ Three candidates.
 - Name parked refs by chain and recency rather than by link UID, keeping the UID ref as a second archival ref.
    Makes the name derivable, at the cost of the property that one conflict never replaces the only ref for an earlier one.
 
-The scan looks right for this branch.
+The scan is what step 3 implements.
 It introduces no state that can drift from the refs, it reuses an ancestry test the peer path already trusts, and its weakness is a research-phase non-issue: parked refs accumulate slowly and the scan is local.
 The second candidate is what to reach for if the operation later needs to record a decision that a merge test cannot re-derive.
+
+`_merge_parked_self_refs` first omits parked heads that are ancestors of another outstanding parked head, so random link-UID order cannot force an unnecessary intermediate merge or conflict.
+It still retests ancestry before each merge, because an earlier merge in the same run can already have absorbed another incomparable ref.
 
 ## Implementation hazards
 

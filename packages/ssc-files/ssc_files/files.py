@@ -619,6 +619,72 @@ def _peer_ref_name(teammate_id, branch="main"):
     return f"refs/peers/{teammate_id}/{branch}"
 
 
+def _outstanding_parked_refs(git_dir):
+    """Return (ref, sha) for Cod Sync parked refs not yet contained in HEAD.
+
+    Cod Sync parks a competing self-store head at
+    refs/cod-sync/parked/{link_uid} on whichever observation pass sees it, and
+    the publishing process exits without reporting the UID anywhere durable.
+    The integration operation therefore scans the namespace instead of looking
+    a name up. Parked refs are immutable and are never swept (#11, #12), so the
+    ancestry test is what separates an outstanding conflict from one an earlier
+    merge already absorbed.
+
+    Sorted by ref name for a deterministic integration order.
+    """
+    result = gitCmd(
+        [
+            "--git-dir", str(git_dir), "for-each-ref",
+            "--format=%(refname)", f"{CS.PARKED_REF_PREFIX}/",
+        ],
+        raise_on_error=False,
+    )
+    if result.returncode != 0:
+        return []
+    outstanding = []
+    for ref in sorted(line.strip() for line in result.stdout.splitlines() if line.strip()):
+        sha = _resolve_ref(git_dir, ref)
+        if sha is None:
+            continue
+        if _has_commits(git_dir) and _is_ancestor(git_dir, sha, "HEAD"):
+            continue
+        outstanding.append((ref, sha))
+    return outstanding
+
+
+def _merge_parked_self_refs(git_dir, checkout):
+    """Merge every outstanding parked self-store ref into checkout.
+
+    Returns the SHAs actually merged, in merge order, and an empty list when
+    nothing is outstanding. Ancestors of another outstanding parked head are
+    omitted before merging: the descendant already contains them, while an
+    arbitrary ref-name order could make the ancestor create a conflict that
+    merging the descendant directly avoids. Ancestry is still retested before
+    each merge because one incomparable merge can absorb another ref.
+    """
+    outstanding = _outstanding_parked_refs(git_dir)
+    maximal = []
+    seen_shas = set()
+    for ref, sha in outstanding:
+        if sha in seen_shas:
+            continue
+        seen_shas.add(sha)
+        if any(
+            other_sha != sha and _is_ancestor(git_dir, sha, other_sha)
+            for _, other_sha in outstanding
+        ):
+            continue
+        maximal.append((ref, sha))
+
+    merged = []
+    for ref, sha in maximal:
+        if _has_commits(git_dir) and _is_ancestor(git_dir, sha, "HEAD"):
+            continue
+        _cod_merge_ref(git_dir, checkout, ref)
+        merged.append(sha)
+    return merged
+
+
 # ---------------------------------------------------------------------------
 # Registry helpers (internal)
 # ---------------------------------------------------------------------------
@@ -976,6 +1042,20 @@ def merge_registry(files_root, participant_hex, context, teammate_id):
     return parked_sha
 
 
+def merge_self_registry(files_root, participant_hex, context):
+    """Integrate parked self-store registry heads into the registry checkout.
+
+    A parked head came from this participant's own registry chain, written by
+    another of their devices. Returns the SHAs merged; an empty list means
+    nothing was outstanding.
+    """
+    context = _validate_context(participant_hex, context)
+    _ensure_registry(files_root, participant_hex, context)
+    git_dir = _registry_git_dir(files_root, context)
+    checkout = _registry_checkout_dir(files_root, context)
+    return _merge_parked_self_refs(git_dir, checkout)
+
+
 def push_niche(files_root, participant_hex, context, niche_name, remote):
     """Push a niche to cloud storage via Cod Sync."""
     context = _validate_context(participant_hex, context)
@@ -987,8 +1067,8 @@ def _require_clean_checkout(files_root, participant_hex, context, niche_name):
     """Verify a checkout is attached, exists on disk, and is clean.
 
     Returns the checkout path. Raises NoCheckoutError, StaleCheckoutError, or
-    DirtyCheckoutError as appropriate. Called by pull_niche and merge_niche
-    before any merge step that writes into the user checkout.
+    DirtyCheckoutError as appropriate. Called before any merge step that
+    writes into the user checkout.
     """
     context = _validate_context(participant_hex, context)
     git_dir = _niche_git_dir(files_root, context, niche_name)
@@ -1073,6 +1153,19 @@ def merge_niche(files_root, participant_hex, context, niche_name, teammate_id):
         files_root, participant_hex, context, "niche", niche_name, teammate_id, parked_sha
     )
     return parked_sha
+
+
+def merge_self_niche(files_root, participant_hex, context, niche_name):
+    """Integrate parked self-store niche heads into the user checkout.
+
+    Same checkout contract as merge_niche: a CACHED niche with no checkout, a
+    checkout whose directory is gone, and a dirty checkout each raise before
+    any merge writes into the user's files.
+    """
+    context = _validate_context(participant_hex, context)
+    git_dir = _niche_git_dir(files_root, context, niche_name)
+    checkout = _require_clean_checkout(files_root, participant_hex, context, niche_name)
+    return _merge_parked_self_refs(git_dir, checkout)
 
 
 def registry_conflict_paths(files_root, participant_hex, context):

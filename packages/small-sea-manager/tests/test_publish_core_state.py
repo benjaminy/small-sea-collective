@@ -12,7 +12,7 @@ import sqlite3
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.protocol import CodSync
+from cod_sync.protocol import CodSync, PublicationRetryableError
 from cod_sync.store import CasConflictError, SmallSeaStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
@@ -183,7 +183,7 @@ def test_push_team_publishes_uncommitted_core_mutation(env):
 # ---------------------------------------------------------------------------
 
 
-def test_second_push_is_already_published_and_opens_no_session(env, monkeypatch):
+def test_second_push_is_already_present_and_opens_no_session(env, monkeypatch):
     env.announce_storage()
     assert env.manager.push_team(_TEAM) == "published"
 
@@ -198,7 +198,7 @@ def test_second_push_is_already_published_and_opens_no_session(env, monkeypatch)
         lambda *a, **kw: (opened.append(a), real_open(*a, **kw))[1],
     )
 
-    assert env.manager.push_team(_TEAM) == "already_published"
+    assert env.manager.push_team(_TEAM) == "already_present"
     assert opened == [], "no-op publication must not open a Hub session"
     # No empty commit, and no bundle attempt that Git would reject.
     assert env.repo.head() == head_after_first
@@ -291,11 +291,19 @@ def test_initial_session_failure_remains_never_pushed(playground_dir, monkeypatc
 # ---------------------------------------------------------------------------
 
 
-def test_cas_conflict_reports_own_chain_and_preserves_local_commit(env, monkeypatch):
+def test_cas_conflict_reports_the_typed_state_and_preserves_local_commit(env, monkeypatch):
+    """A refused head write reaches the caller as Cod Sync's typed result.
+
+    The stored chain still holds the head this attempt built on, so the
+    attempted state is a descendant of it and nothing needs integrating: the
+    invocation is retryable, and push_team neither translates it into a
+    hand-written message nor touches the marker.
+    """
     env.announce_storage()
     env.manager.push_team(_TEAM)
     marker_before = env.marker.read_bytes()
     head_before = env.repo.head()
+    published_head = marker_before.decode().strip()
 
     Provisioning.set_team_admission_policy(env.root, env.alice_hex, _TEAM, quorum=2)
 
@@ -304,13 +312,14 @@ def test_cas_conflict_reports_own_chain_and_preserves_local_commit(env, monkeypa
 
     monkeypatch.setattr(SmallSeaStore, "put_latest_link", _conflict)
 
-    with pytest.raises(RuntimeError) as excinfo:
+    with pytest.raises(PublicationRetryableError) as excinfo:
         env.manager.push_team(_TEAM)
 
-    assert isinstance(excinfo.value.__cause__, CasConflictError)
-    message = str(excinfo.value)
-    assert "published Core chain" in message
-    assert "remains unpublished" in message
+    failure = excinfo.value
+    assert isinstance(failure.cause, CasConflictError)
+    assert failure.attempted_head == env.repo.head()
+    assert failure.predecessor_head == published_head
+    assert failure.observed_head == published_head
 
     assert env.marker.read_bytes() == marker_before
     assert env.repo.head() != head_before

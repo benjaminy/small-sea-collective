@@ -177,28 +177,41 @@ def fetch_cmd(team_name, niche_name, from_teammate, files_root, participant, hub
 @cli.command("merge")
 @click.argument("team_name")
 @click.argument("niche_name")
-@click.option("--from-teammate", "from_teammate", required=True, help="Peer teammate ID hex")
+@click.option("--from-teammate", "from_teammate", default=None, help="Peer teammate ID hex")
+@click.option(
+    "--from-self", "from_self", is_flag=True,
+    help="Integrate this participant's own competing cloud head, parked by a refused push",
+)
 @click.option("--files-root", default=None, help="Override files root from config")
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
-def merge_cmd(team_name, niche_name, from_teammate, files_root, participant, hub_port):
-    """Merge previously fetched peer updates into the attached checkout.
+def merge_cmd(team_name, niche_name, from_teammate, from_self, files_root, participant, hub_port):
+    """Merge previously fetched updates into the attached checkout.
+
+    Exactly one source is required. --from-teammate integrates a peer's
+    fetched content; --from-self integrates a competing head published by
+    another of your own devices, which a refused push parked locally.
 
     Requires a clean checkout. If the niche has no checkout yet, run
     'checkout' first to attach one.
     """
+    if bool(from_teammate) == bool(from_self):
+        _die("Specify exactly one of --from-teammate or --from-self.")
     files_root, participant, hub_port = _resolve_sync(files_root, participant, hub_port)
     try:
         files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
-        sync.merge_via_hub(
-            files_root,
-            participant,
-            team_name,
-            niche_name,
-            from_teammate,
-            hub_port=hub_port,
-        )
+        if from_self:
+            self_result = sync.merge_self(files_root, participant, team_name, niche_name)
+        else:
+            sync.merge_via_hub(
+                files_root,
+                participant,
+                team_name,
+                niche_name,
+                from_teammate,
+                hub_port=hub_port,
+            )
     except sync.DirtyCheckoutError as exc:
         click.echo("Merge blocked: checkout has uncommitted changes.", err=True)
         if exc.paths:
@@ -220,7 +233,16 @@ def merge_cmd(team_name, niche_name, from_teammate, files_root, participant, hub
     except (sync.FilesSyncError, OSError) as exc:
         _die(str(exc))
 
-    click.echo(f"Merged updates from {from_teammate} into '{niche_name}'.")
+    if not from_self:
+        click.echo(f"Merged updates from {from_teammate} into '{niche_name}'.")
+    elif self_result.merged_anything:
+        merged = len(self_result.registry_shas) + len(self_result.niche_shas)
+        click.echo(
+            f"Merged {merged} parked change(s) from your own cloud chain into "
+            f"'{niche_name}'. Push again to publish the result."
+        )
+    else:
+        click.echo(f"No parked changes from your own cloud chain for '{niche_name}'.")
 
 
 @cli.command("pull")
