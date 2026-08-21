@@ -8,6 +8,7 @@ Work-tree-requiring methods raise NoWorkTreeError in that mode.
 """
 
 import pathlib
+import tempfile
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Union
 
@@ -334,6 +335,40 @@ class Repo:
     def create_bundle(self, path: Union[str, pathlib.Path], rev_args: List[str]):
         """Write a bundle at path covering rev_args (e.g. ["^<sha>", "main"])."""
         self._run(["bundle", "create", str(path)] + list(rev_args))
+
+    def create_bundle_from_head(
+        self,
+        path: Union[str, pathlib.Path],
+        head: str,
+        predecessor_head: Optional[str] = None,
+    ):
+        """Write a main bundle pinned to head rather than the mutable main ref.
+
+        Git bundles advertise refs, not arbitrary object IDs. Use an
+        invocation-local shared clone so refs/heads/main can name the captured
+        commit without moving any ref in the application repository.
+        """
+        with tempfile.TemporaryDirectory(prefix="cod-sync-bundle-repo-") as temp_dir:
+            snapshot_path = pathlib.Path(temp_dir) / "repo.git"
+            try:
+                _gitCmd(
+                    [
+                        "clone",
+                        "--shared",
+                        "--bare",
+                        str(self.git_dir.resolve()),
+                        str(snapshot_path),
+                    ]
+                )
+            except GitCmdFailed as exc:
+                raise RepoError(str(exc), cause=exc) from exc
+
+            snapshot = Repo(snapshot_path)
+            snapshot._run(["update-ref", "refs/heads/main", head])
+            rev_args = ["refs/heads/main"]
+            if predecessor_head is not None:
+                rev_args.insert(0, f"^{predecessor_head}")
+            snapshot.create_bundle(path, rev_args)
 
     def verify_bundle(self, path: Union[str, pathlib.Path]):
         """Check that the bundle at path is valid and its prerequisites are present."""

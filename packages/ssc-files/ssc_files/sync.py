@@ -9,12 +9,13 @@ import tomllib
 from dataclasses import dataclass
 from typing import Callable, Optional
 
-from cod_sync.protocol import PublicationIntegrationRequiredError
-from cod_sync.store import (
-    CasConflictError,
-    PeerSmallSeaStore,
-    SmallSeaStore,
+from cod_sync.protocol import (
+    PublicationFailedError,
+    PublicationIntegrationRequiredError,
+    PublicationOutcomeUnresolvedError,
+    PublicationRetryableError,
 )
+from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
 from small_sea_client.client import SmallSeaClient, SmallSeaError, SmallSeaSession
 
 from ssc_files import files
@@ -53,8 +54,61 @@ class AmbiguousTeamNameError(FilesSyncError):
     """
 
 
-class PushConflictError(FilesSyncError):
-    """The user's cloud bucket has moved ahead of local state."""
+class PublicationError(FilesSyncError):
+    """A Cod Sync publication that did not finish unattended.
+
+    ``publication`` is the typed Cod Sync error, which carries the heads,
+    etags, and write phase that describe what actually happened. Callers and
+    surfaces read those fields; nothing here parses a store message.
+    """
+
+    def __init__(self, message: str, scope: str, publication: PublicationFailedError):
+        self.scope = scope
+        self.publication = publication
+        # The sentence a surface shows a person, without the Cod Sync
+        # diagnostics that belong in a terminal or a log.
+        self.user_message = f"{scope} push: {message}"
+        super().__init__(f"{scope} push: {message} ({publication})")
+
+
+class PushRetryableError(PublicationError):
+    """The attempt is closed, so a new push may be attempted.
+
+    Nothing is retried here. A later push observes the stored chain afresh.
+    """
+
+    def __init__(self, scope: str, publication: PublicationFailedError):
+        super().__init__(
+            "this attempt can no longer change the cloud head; push again",
+            scope,
+            publication,
+        )
+
+
+class PushConflictError(PublicationError):
+    """The cloud holds commits this device's history does not contain.
+
+    The competing state is parked locally, so the fix is a self-store
+    integration, not a teammate pull.
+    """
+
+    def __init__(self, scope: str, publication: PublicationFailedError, hint: str):
+        super().__init__(
+            f"the cloud holds commits this device does not have; run {hint}",
+            scope,
+            publication,
+        )
+
+
+class PushOutcomeUnresolvedError(PublicationError):
+    """The push may or may not have moved the cloud head."""
+
+    def __init__(self, scope: str, publication: PublicationFailedError):
+        super().__init__(
+            f"the cloud state could not be proven; check the {scope} before pushing again",
+            scope,
+            publication,
+        )
 
 
 class NothingToPushError(FilesSyncError):
@@ -135,6 +189,36 @@ class MergeResult:
     teammate_id: str
     registry_sha: str | None
     niche_sha: str | None
+
+
+@dataclass
+class SelfMergeResult:
+    """Parked self-store heads integrated by one `merge --from-self` run.
+
+    Empty lists mean nothing was outstanding — either no publication ever
+    observed a competing head, or an earlier run already integrated them.
+    """
+    registry_shas: list[str]
+    niche_shas: list[str]
+
+    @property
+    def merged_anything(self) -> bool:
+        return bool(self.registry_shas or self.niche_shas)
+
+
+@dataclass
+class SelfConflictStatus:
+    """Parked self-store heads a `merge --from-self` run would integrate now.
+
+    Read from the parked refs rather than from a publication result, so a
+    surface still offers the integration in a later process.
+    """
+    registry_shas: list[str]
+    niche_shas: list[str]
+
+    @property
+    def outstanding(self) -> bool:
+        return bool(self.registry_shas or self.niche_shas)
 
 
 @dataclass
@@ -466,40 +550,62 @@ def push_via_hub(
     hub_port: int = SmallSeaClient.DEFAULT_PORT,
     _http_client=None,
 ) -> None:
-    """Push a niche and its registry through the Hub using a cached session."""
+    """Push a niche and its registry through the Hub using a cached session.
+
+    These are two independent publications. An already-present niche does not
+    prove the registry is published — an earlier push could have moved the
+    niche and then failed on the registry — so the registry is published
+    whenever the niche publication finished, and "nothing to push" is decided
+    afterwards from both results.
+    """
     context = resolve_team_context(files_root, participant_hex, team_name)
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
     session.ensure_cloud_ready()
-    try:
-        niche_result = files.push_niche(
+    merge_hint = f"`ssc-files merge --from-self {team_name} {niche_name}`"
+    niche_result = _publish(
+        "niche",
+        merge_hint,
+        lambda: files.push_niche(
             files_root,
             participant_hex,
             context,
             niche_name,
             make_niche_remote(niche_name, session),
-        )
-    except CasConflictError as exc:
-        raise PushConflictError(
-            "Push conflict: cloud is ahead of local state. Pull from a teammate first."
-        ) from exc
-    except PublicationIntegrationRequiredError as exc:
-        raise PushConflictError(
-            "Push conflict: the cloud holds commits this device does not have. "
-            "Pull from a teammate first."
-        ) from exc
-    if not niche_result.changed:
+        ),
+    )
+    registry_result = _publish(
+        "registry",
+        merge_hint,
+        lambda: files.push_registry(
+            files_root,
+            participant_hex,
+            context,
+            make_registry_remote(session),
+        ),
+    )
+    if (
+        niche_result.disposition == "already_present"
+        and registry_result.disposition == "already_present"
+    ):
         raise NothingToPushError(
             f"No new commits to push for niche {niche_name!r}."
         )
 
-    # An unchanged registry is an ordinary outcome here: the niche moved but
-    # the set of niches did not.
-    files.push_registry(
-        files_root,
-        participant_hex,
-        context,
-        make_registry_remote(session),
-    )
+
+def _publish(scope: str, merge_hint: str, publish: Callable):
+    """Run one Cod Sync publication and translate its three attention states.
+
+    Cod Sync makes at most one head write and observes at most twice; a failed
+    publication is never retried here.
+    """
+    try:
+        return publish()
+    except PublicationIntegrationRequiredError as exc:
+        raise PushConflictError(scope, exc, merge_hint) from exc
+    except PublicationOutcomeUnresolvedError as exc:
+        raise PushOutcomeUnresolvedError(scope, exc) from exc
+    except PublicationRetryableError as exc:
+        raise PushRetryableError(scope, exc) from exc
 
 
 def pull_via_hub(
@@ -650,6 +756,74 @@ def merge_via_hub(
         teammate_id=from_teammate_id,
         registry_sha=registry_sha,
         niche_sha=niche_sha,
+    )
+
+
+def merge_self(
+    files_root: str,
+    participant_hex: str,
+    team_name: str,
+    niche_name: str,
+) -> SelfMergeResult:
+    """Integrate parked heads from this participant's own cloud chains.
+
+    Cod Sync parks a competing self-store head during publication, so this
+    operation is purely local: it merges what is already validated and stored,
+    and never contacts the Hub. The person publishes again afterwards.
+
+    Preflights the niche checkout before merging anything, for the same reason
+    merge_via_hub does: a blocked niche merge must not leave the registry
+    already integrated.
+    """
+    context = resolve_team_context(files_root, participant_hex, team_name)
+
+    try:
+        files._require_clean_checkout(files_root, participant_hex, context, niche_name)
+    except files.DirtyCheckoutError as exc:
+        raise DirtyCheckoutError(exc.paths) from exc
+    except files.NoCheckoutError as exc:
+        raise NoCheckoutError(exc.team_name, exc.niche_name, exc.residency) from exc
+    except files.StaleCheckoutError as exc:
+        raise StaleCheckoutError(exc.team_name, exc.niche_name, exc.checkout_path) from exc
+
+    try:
+        registry_shas = files.merge_self_registry(files_root, participant_hex, context)
+    except files.MergeConflictError as exc:
+        raise PullConflictError("registry", exc.paths) from exc
+
+    try:
+        niche_shas = files.merge_self_niche(
+            files_root, participant_hex, context, niche_name
+        )
+    except files.MergeConflictError as exc:
+        raise PullConflictError("niche", exc.paths) from exc
+    except files.DirtyCheckoutError as exc:
+        raise DirtyCheckoutError(exc.paths) from exc
+    except files.NoCheckoutError as exc:
+        raise NoCheckoutError(exc.team_name, exc.niche_name, exc.residency) from exc
+    except files.StaleCheckoutError as exc:
+        raise StaleCheckoutError(exc.team_name, exc.niche_name, exc.checkout_path) from exc
+
+    return SelfMergeResult(registry_shas=registry_shas, niche_shas=niche_shas)
+
+
+def self_conflict_status(
+    files_root: str,
+    participant_hex: str,
+    context,
+    niche_name: str,
+) -> SelfConflictStatus:
+    """Report whether this niche has a competing self-store head to integrate.
+
+    Purely local: parked refs are what a refused publication left behind, so
+    this asks the repositories, not the Hub.
+    """
+    status = files.self_conflict_status(
+        files_root, participant_hex, context, niche_name
+    )
+    return SelfConflictStatus(
+        registry_shas=status["registry_shas"],
+        niche_shas=status["niche_shas"],
     )
 
 

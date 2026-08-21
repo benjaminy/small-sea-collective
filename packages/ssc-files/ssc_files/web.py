@@ -115,6 +115,41 @@ def create_app(
             },
         )
 
+    def _merge_error_message(exc: "sync.FilesSyncError") -> str:
+        """One phrasing for the preflight both merge sources share.
+
+        `merge --from-teammate` and `merge --from-self` differ only in which
+        parked ref they integrate, so a blocked checkout or an unresolved
+        conflict reads the same either way.
+        """
+        if isinstance(exc, sync.DirtyCheckoutError):
+            path_list = ", ".join(exc.paths) if exc.paths else "unknown files"
+            return (
+                f"Merge blocked: checkout has uncommitted changes ({path_list}). "
+                "Publish or discard them before merging."
+            )
+        if isinstance(exc, sync.StaleCheckoutError):
+            return (
+                f"Merge blocked: registered checkout '{exc.checkout_path}' no longer exists. "
+                "Remove the stale registration and re-attach at the correct path."
+            )
+        if isinstance(exc, sync.NoCheckoutError):
+            from ssc_files.files import NicheResidency
+            if exc.residency is NicheResidency.REMOTE_ONLY:
+                return (
+                    "Merge blocked: the niche has no local data yet. "
+                    "Fetch from a teammate first, then attach a checkout."
+                )
+            return "Merge blocked: no checkout is attached. Attach a checkout location first."
+        if isinstance(exc, sync.PullConflictError):
+            if exc.paths:
+                return (
+                    f"Merge left unresolved conflicts in the {exc.scope}: "
+                    + ", ".join(exc.paths)
+                )
+            return f"Merge left unresolved conflicts in the {exc.scope}."
+        return str(exc)
+
     def _niche_detail_response(
         request: Request,
         team_name: str,
@@ -123,11 +158,12 @@ def create_app(
         sync_notice: str | None = None,
         sync_error: str | None = None,
         from_teammate_id: str = "",
+        load_peers: bool = True,
     ):
         vr, ph = _vr(request), _ph(request)
         context = _team_context(request, team_name)
         team_session_status = _session_state(request, team_name)
-        peers = _build_peers(request, team_name, niche_name)
+        peers = _build_peers(request, team_name, niche_name) if load_peers else None
         checkout = files.get_checkout(vr, ph, context, niche_name)
         checkout_status = (
             files.status(vr, ph, context, niche_name, checkout)
@@ -135,6 +171,10 @@ def create_app(
             else []
         )
         commits = files.log(vr, ph, context, niche_name)
+        try:
+            self_conflict = sync.self_conflict_status(vr, ph, context, niche_name)
+        except sync.FilesSyncError:
+            self_conflict = None
         return templates.TemplateResponse(
             "fragments/niche_detail.html",
             {
@@ -144,6 +184,7 @@ def create_app(
                 "checkout": checkout,
                 "checkout_status": checkout_status,
                 "commits": commits,
+                "self_conflict": self_conflict,
                 "sync_notice": sync_notice,
                 "sync_error": sync_error,
                 "from_teammate_id": from_teammate_id,
@@ -354,6 +395,15 @@ def create_app(
             )
             notice = "Pushed niche and registry through the Hub."
             error = None
+        except sync.PushConflictError as exc:
+            notice = None
+            error = (
+                f"Push refused: the cloud {exc.scope} holds commits this device does "
+                "not have. Use Merge Changes below to integrate them, then push again."
+            )
+        except sync.PublicationError as exc:
+            notice = None
+            error = exc.user_message
         except sync.FilesSyncError as exc:
             notice = None
             error = str(exc)
@@ -418,6 +468,39 @@ def create_app(
         )
 
     @app.post(
+        "/teams/{team_name}/niches/{niche_name}/merge-self", response_class=HTMLResponse
+    )
+    async def merge_self_sync(request: Request, team_name: str, niche_name: str):
+        """Integrate a competing head published by another of this user's devices.
+
+        Purely local: the head was already validated and parked by the refused
+        push, so this contacts no Hub and no teammate. The person pushes again
+        afterwards.
+        """
+        vr, ph = _vr(request), _ph(request)
+        try:
+            result = sync.merge_self(vr, ph, team_name, niche_name)
+            merged = len(result.registry_shas) + len(result.niche_shas)
+            notice = (
+                f"Merged {merged} parked change(s) from your own cloud chain. "
+                "Push again to publish the result."
+                if result.merged_anything
+                else "No parked changes from your own cloud chain remain."
+            )
+            error = None
+        except sync.FilesSyncError as exc:
+            notice = None
+            error = _merge_error_message(exc)
+        return _niche_detail_response(
+            request,
+            team_name,
+            niche_name,
+            sync_notice=notice,
+            sync_error=error,
+            load_peers=False,
+        )
+
+    @app.post(
         "/teams/{team_name}/niches/{niche_name}/merge", response_class=HTMLResponse
     )
     async def merge_sync(
@@ -445,41 +528,9 @@ def create_app(
             )
             notice = f"Merged parked changes from {teammate_id}."
             error = None
-        except sync.DirtyCheckoutError as exc:
-            notice = None
-            path_list = ", ".join(exc.paths) if exc.paths else "unknown files"
-            error = (
-                f"Merge blocked: checkout has uncommitted changes ({path_list}). "
-                "Publish or discard them before merging."
-            )
-        except sync.StaleCheckoutError as exc:
-            notice = None
-            error = (
-                f"Merge blocked: registered checkout '{exc.checkout_path}' no longer exists. "
-                "Remove the stale registration and re-attach at the correct path."
-            )
-        except sync.NoCheckoutError as exc:
-            notice = None
-            from ssc_files.files import NicheResidency
-            if exc.residency is NicheResidency.REMOTE_ONLY:
-                error = (
-                    "Merge blocked: the niche has no local data yet. "
-                    "Fetch from a teammate first, then attach a checkout."
-                )
-            else:
-                error = "Merge blocked: no checkout is attached. Attach a checkout location first."
-        except sync.PullConflictError as exc:
-            notice = None
-            if exc.paths:
-                error = (
-                    f"Merge left unresolved conflicts in the {exc.scope}: "
-                    + ", ".join(exc.paths)
-                )
-            else:
-                error = f"Merge left unresolved conflicts in the {exc.scope}."
         except sync.FilesSyncError as exc:
             notice = None
-            error = str(exc)
+            error = _merge_error_message(exc)
         return _niche_detail_response(
             request,
             team_name,

@@ -13,8 +13,11 @@ real cloud backend (Hub's storage adapter does not support localfolder).
 import pathlib
 import sqlite3
 
+import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
+from cod_sync.protocol import PublicationIntegrationRequiredError, parked_ref_name
+from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
 from small_sea_manager.manager import (
@@ -27,6 +30,11 @@ from small_sea_note_to_self.db import device_local_db_path, note_to_self_sync_db
 
 MINIO_PORT_DISCOVERY = 19730
 MINIO_PORT_LOCAL_STATE = 19732
+
+
+def _note_to_self_repo(root, participant_hex):
+    repo_dir = pathlib.Path(root) / "Participants" / participant_hex / "NoteToSelf" / "Sync"
+    return Repo(repo_dir / ".git", repo_dir)
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -372,4 +380,108 @@ def test_unchanged_note_to_self_publication_invents_no_signal(playground_dir, mi
     assert (
         Provisioning.get_note_to_self_adopted_signal_count(root, alice_hex, berth_id)
         == after_real_push + 1
+    )
+
+
+MINIO_PORT_DIVERGENT_PUBLISH = 19736
+
+
+def test_divergent_note_to_self_push_reports_integration_required(
+    playground_dir, minio_server_gen
+):
+    """Two real installations of one identity witness publication divergence.
+
+    Device B bootstraps, device A publishes a team B has not seen, and B then
+    commits its own team without refreshing. B's push is not behind the cloud
+    head and cannot replace it, so Cod Sync parks the observed head and hands
+    the choice to the application. Nothing device-local moves: B keeps its own
+    commit, and its adopted signal count stays where it was.
+    """
+    minio = minio_server_gen(port=MINIO_PORT_DIVERGENT_PUBLISH)
+    workspace = pathlib.Path(playground_dir)
+    root_a = workspace / "install-a"
+    root_b = workspace / "install-b"
+    root_a.mkdir()
+    root_b.mkdir()
+
+    alice_hex = create_new_participant(root_a, "Alice")
+    backend_a = SmallSea.SmallSeaBackend(root_dir=str(root_a), auto_approve_sessions=True)
+    app.state.backend = backend_a
+    http_a = TestClient(app)
+
+    nts_token_a = _open_session(http_a, "Alice", "NoteToSelf", mode="passthrough")
+    cloud_storage_id = backend_a.add_cloud_location(
+        nts_token_a, "s3", minio["endpoint"],
+        access_key=minio["access_key"], secret_key=minio["secret_key"],
+    )
+    nts_session_a = backend_a._lookup_session(nts_token_a)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        root_a, alice_hex, nts_session_a.berth_id, cloud_storage_id
+    )
+
+    manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
+    manager_a.create_team("SharedProject")
+    manager_a.push_note_to_self()
+    shared_head = _note_to_self_repo(root_a, alice_hex).head()
+
+    join_request = create_identity_join_request(root_b)
+    welcome = manager_a.authorize_identity_join(join_request["join_request_artifact"])
+    bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    _wire_device_b_credentials(root_b, alice_hex, minio)
+
+    # Device A publishes a team device B has not seen.
+    manager_a.create_team("OnlyOnA")
+    manager_a.push_note_to_self()
+    cloud_head = _note_to_self_repo(root_a, alice_hex).head()
+
+    backend_b = SmallSea.SmallSeaBackend(root_dir=str(root_b), auto_approve_sessions=True)
+    app.state.backend = backend_b
+    http_b = TestClient(app)
+    nts_token_b = _open_session(http_b, "Alice", "NoteToSelf", mode="passthrough")
+    berth_id_b = backend_b._lookup_session(nts_token_b).berth_id
+
+    manager_b = TeamManager(root_b, alice_hex, _http_client=http_b)
+    repo_b = _note_to_self_repo(root_b, alice_hex)
+    # Bootstrap leaves device B on its own commit, but still on A's history.
+    assert repo_b.is_ancestor(shared_head, repo_b.head())
+    # push_note_to_self seeds an absent adopted-count row from the Hub's current
+    # self-signal count, which device A's pushes have already advanced. Seed it
+    # here so the post-push assertion has a baseline that does not depend on how
+    # many of A's signals this Hub has recorded.
+    assert (
+        Provisioning.get_note_to_self_adopted_signal_count(root_b, alice_hex, berth_id_b)
+        is None
+    )
+    adopted_before = 0
+    Provisioning.set_note_to_self_adopted_signal_count(
+        root_b, alice_hex, berth_id_b, adopted_before
+    )
+
+    # Device B commits its own team without refreshing first.
+    manager_b.create_team("OnlyOnB")
+    with pytest.raises(PublicationIntegrationRequiredError) as excinfo:
+        manager_b.push_note_to_self()
+
+    failure = excinfo.value
+    local_head = repo_b.head()
+    assert failure.attempted_head == local_head
+    assert failure.observed_head == cloud_head
+    # Divergence, not a fast-forward in either direction: the reported base is
+    # a common ancestor and neither head reaches the other.
+    assert repo_b.is_ancestor(failure.merge_base, local_head)
+    assert repo_b.is_ancestor(failure.merge_base, cloud_head)
+    assert not repo_b.is_ancestor(local_head, cloud_head)
+    assert not repo_b.is_ancestor(cloud_head, local_head)
+
+    # The competing head survives the process that observed it.
+    parked = parked_ref_name(failure.observed_link_uid)
+    assert failure.parked_ref == parked
+    assert _note_to_self_repo(root_b, alice_hex).resolve_ref(parked) == cloud_head
+
+    # Divergence changes nothing device-local.
+    assert repo_b.head() == local_head
+    # A publication that never landed must not advance the adopted baseline.
+    assert (
+        Provisioning.get_note_to_self_adopted_signal_count(root_b, alice_hex, berth_id_b)
+        == adopted_before
     )

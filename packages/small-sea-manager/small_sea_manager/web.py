@@ -8,6 +8,11 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
+from cod_sync.protocol import (
+    PublicationIntegrationRequiredError,
+    PublicationOutcomeUnresolvedError,
+    PublicationRetryableError,
+)
 from small_sea_manager.manager import TeamManager, _CORE_APP
 
 _template_dir = pathlib.Path(__file__).parent / "templates"
@@ -422,10 +427,33 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             outcome = mgr.push_team(team_name)
             notice = (
                 "Already published."
-                if outcome == "already_published"
+                if outcome == "already_present"
                 else "Pushed to cloud."
             )
             error = None
+        except PublicationIntegrationRequiredError:
+            # Manager has no integration operation yet (#185, #48), so this
+            # says what is true and offers no action that does not exist. The
+            # competing head is parked, so nothing is lost by waiting.
+            notice = None
+            error = (
+                "Push refused: your cloud Core chain holds changes this installation "
+                "does not have. Both histories are kept locally; this installation "
+                "cannot combine them yet. The local commit remains unpublished."
+            )
+        except PublicationOutcomeUnresolvedError:
+            notice = None
+            error = (
+                "Push outcome unknown: the cloud head may or may not have moved. "
+                "The local commit is preserved. A later push will observe the cloud "
+                "state afresh before attempting another write."
+            )
+        except PublicationRetryableError:
+            notice = None
+            error = (
+                "Push did not finish, but this attempt can no longer change the "
+                "cloud head. Push again."
+            )
         except Exception as e:
             notice = None
             error = str(e)

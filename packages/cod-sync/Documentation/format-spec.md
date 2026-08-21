@@ -106,26 +106,54 @@ A publication that loses the race leaves only unreferenced write-once objects.
 
 ### Forward-Only Publication
 
-Before extending an existing chain, the stored head must exist locally and be an ancestor of local `refs/heads/main`.
+Before extending an existing chain, the stored head must be an ancestor of local `refs/heads/main`.
+A stored head that is not present locally is fetched through the ordinary chain walk first, because the comparison needs the commit.
+That import moves no application ref, no `main`, and no work tree.
 Otherwise publication stops before uploading anything and reports that integration is required.
 A full snapshot is valid only for an empty store, or for compaction that preserves forward Git ancestry.
 
-Publishing when the stored head already equals local `main` is a successful no-op:
+Publishing when the stored head already equals local `main`, or already descends from it, is a successful no-op:
 nothing is uploaded, the head and its etag are untouched, and no notification is sent.
 
 ### Conflict Handling
 
-A failed CAS write means someone else published between the read and the write.
-Resolution needs a fetch, a merge, a work tree, and a retry across a new CAS window, and how much of that
-should happen without asking is a per-caller question. Cod Sync therefore reports the conflict and stops;
-it does not fetch, merge, or retry on its own.
+One publication gets a fixed envelope: at most one head write, and at most two validated observation passes.
+An observation pass may fetch and import chain objects, because comparing the stored head to the attempted one needs that commit locally.
+Within that envelope Cod Sync neither merges nor retries, and it stops at the application boundary.
 
-A final head write whose response is lost is reported as an unknown outcome rather than a conflict,
-because a blind retry could overwrite a competing publication that actually won. The caller rereads instead.
+The first pass runs before any upload and can end the invocation on its own.
+A failed head write buys the second pass, which settles two separate questions:
+what the stored history now holds, and whether this invocation's write can still take effect.
+The caller does not reread on Cod Sync's behalf; it reads the terminal result.
+
+A publication has five terminal meanings.
+
+| Result | Meaning |
+| --- | --- |
+| `published` | This invocation's head write was acknowledged. |
+| `already_present` | The validated stored head equals or descends from the attempted head, and no head write is open. |
+| `retryable` | This invocation's head write was never issued or is closed, and nothing observed needs application integration first. |
+| `integration_required` | The validated stored head and the attempted head diverge, and no head write is open. |
+| `outcome_unresolved` | This invocation's head write is still open, so it may yet move the stored head whatever the pass observed. |
+
+A head write whose response is lost is `outcome_unresolved` rather than a conflict,
+because a blind retry could overwrite a competing publication that actually won.
+
+Whenever a pass observes a divergent stored head, that head is preserved at an immutable ref
+under `refs/cod-sync/parked/{observed_link_uid}` before Cod Sync stops.
+The publishing process exits with only a result to show for the conflict,
+so a later, separate integration operation finds the competing state as a ref rather than refetching and re-deciding it.
+Choosing the integration is the application's, not Cod Sync's: the repository may have no work tree,
+and discarding the stored head would discard another device's or teammate's commits.
 
 ### ETag Semantics
 
 - The Hub returns an etag on every download and upload of `latest-link.yaml`.
+- The etag is both the condition on a head write and the evidence that settles a lost one:
+   an observation pass whose etag still equals the one the write was conditioned on leaves that write open,
+   and a differing etag proves the condition is spent and the write closed.
+   A non-empty chain whose head arrives without a comparable etag therefore supports neither a conditional write nor settlement,
+   and publication refuses it before uploading anything.
 - For `LocalFolderStore` (testing), the etag is the MD5 hex digest of the file content, and its compare-and-replace happens in one locked critical section.
 - For conforming cloud backends (S3 and Dropbox), the etag comes from the storage provider's native conditional-write support.
 - Google Drive can conditionally update a known file ID, but its current name-based first creation is not atomic and does not satisfy this contract.
@@ -138,8 +166,10 @@ because a blind retry could overwrite a competing publication that actually won.
 2. Empty store: create a full snapshot of `main` and a link with `previous: null`, then write all three objects.
 3. Non-empty store: decode the head strictly, confirm its archived copy byte-matches it, and download and inspect its bundle.
    The bundle's advertised head and prerequisites must agree with the link before the chain is extended.
-4. If the stored head equals local `main`, stop and report an unchanged success.
-5. Otherwise apply the forward-only rule, create `^<stored-head> refs/heads/main`, inspect the created bundle against the new link, and write.
+4. If the stored head equals or descends from local `main`, stop and report `already_present`.
+5. If it diverges, park it and report `integration_required`; no object is uploaded.
+6. Otherwise apply the forward-only rule, create `^<stored-head> refs/heads/main`, inspect the created bundle against the new link, and write.
+7. If the head write fails or its response is lost, observe once more and report `retryable`, `integration_required`, or `outcome_unresolved` from what that pass proves about the stored head and about the write's condition.
 
 ### Fetch
 

@@ -6,6 +6,7 @@ import json
 import base64
 
 import cod_sync.protocol as CodSync
+from cod_sync.store import LocalFolderStore, StoreProviderError
 from cod_sync.git import gitCmd
 import pytest
 import small_sea_hub.backend as SmallSea
@@ -174,6 +175,42 @@ def test_localfolder_identity_bootstrap_roundtrip(playground_dir):
         ).fetchone()
     assert team_device_row is not None
     assert team_device_row[0] == joined_device_id
+
+
+def test_localfolder_identity_bootstrap_preserves_an_unresolved_push(
+    playground_dir, monkeypatch
+):
+    workspace = pathlib.Path(playground_dir)
+    root = workspace / "install"
+    cloud_dir = workspace / "cloud"
+    root.mkdir()
+    cloud_dir.mkdir()
+
+    participant_hex = create_new_participant(root, "Alice")
+    descriptor = {
+        "protocol": "localfolder",
+        "url": str(cloud_dir),
+    }
+    inner = LocalFolderStore(str(cloud_dir))
+
+    class InconclusiveHeadStore:
+        def __getattr__(self, name):
+            return getattr(inner, name)
+
+        def put_latest_link(self, data, expected_etag, link_uid=None):
+            raise StoreProviderError("the head write may still take effect")
+
+    monkeypatch.setattr(
+        "small_sea_manager.provisioning._store_from_descriptor",
+        lambda _descriptor: InconclusiveHeadStore(),
+    )
+
+    with pytest.raises(CodSync.PublicationOutcomeUnresolvedError) as exc:
+        _push_note_to_self_to_local_remote(root, participant_hex, descriptor)
+
+    assert isinstance(exc.value.cause, StoreProviderError)
+    assert exc.value.write_phase == "head"
+    assert exc.value.observed_absent is True
 
 
 def test_identity_bootstrap_bundle_expiry_and_reissue(playground_dir):

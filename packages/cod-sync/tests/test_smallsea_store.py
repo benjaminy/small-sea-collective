@@ -101,11 +101,11 @@ def test_publish_and_fetch_roundtrip_via_hub(hub_env, scratch_dir):
 
     alice_store = SmallSeaStore(session_hex, client=client)
     published = make_cod_sync(alice, alice_store).publish()
-    assert published.changed is True
+    assert published.disposition == "published"
 
     link = decode_link(alice_store.get_latest_link()[0])
     assert link.previous is None
-    assert link.head == published.head
+    assert link.head == published.observed_head
     assert link.version == "2.0.0"
 
     # ---- Bob: cold-start fetch through the same Hub endpoints ----
@@ -128,16 +128,16 @@ def test_incremental_publication_via_hub(hub_env, scratch_dir):
 
     commit_file(alice, "b.txt", "two\n")
     second = make_cod_sync(alice, store).publish()
-    assert second.changed is True
+    assert second.disposition == "published"
 
     link = decode_link(store.get_latest_link()[0])
-    assert link.previous.link_id == first.link_uid
-    assert link.previous.head == first.head
+    assert link.previous.link_id == first.observed_link_uid
+    assert link.previous.head == first.observed_head
 
     # Publishing the same head again changes nothing in the cloud.
     unchanged = make_cod_sync(alice, store).publish()
-    assert unchanged.changed is False
-    assert unchanged.link_uid == second.link_uid
+    assert unchanged.disposition == "already_present"
+    assert unchanged.observed_link_uid == second.observed_link_uid
 
 
 def test_an_empty_bucket_reports_absence_not_a_transport_failure(hub_env):

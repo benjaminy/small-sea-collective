@@ -51,7 +51,17 @@ def bundle_path(bundle_uid: str) -> str:
 
 
 class StoreError(Exception):
-    """Base class for every store failure."""
+    """Base class for every store failure.
+
+    write_closed is the store's proof that a failed write has no request that
+    can still take effect. It says nothing about whether the write was applied
+    before it failed; a caller that needs that reads the store's current state.
+    A store that can report "never applied" from the transport sets this too,
+    because a write that was never applied can no longer be applied either.
+    """
+
+    #: Set on a failure the store proves cannot take effect later.
+    write_closed = False
 
 
 class ObjectNotFoundError(StoreError):
@@ -90,7 +100,12 @@ class MalformedStoreResponseError(StoreError):
 
 
 class CasConflictError(StoreError):
-    """A create-only or compare-and-swap write lost to a concurrent writer."""
+    """A create-only or compare-and-swap write lost to a concurrent writer.
+
+    Losing the condition is proof the write will not take effect later.
+    """
+
+    write_closed = True
 
 
 class PublicationOutcomeUnknownError(StoreError):
@@ -156,9 +171,14 @@ class WritableBundleStore(ReadableBundleStore, Protocol):
 class LocalFolderStore:
     """A local directory pretending to be cloud storage.
 
-    Holds the same create-only, write-once, and atomic-CAS contract as the
-    Hub-backed stores rather than approximating it, so tests that use it are
-    testing the real rules.
+    The head is atomically visible: a reader sees exactly the previous head or
+    exactly a complete new one, whichever write mode installed it. Bundles and
+    archived links are create-only and write-once but not atomically visible,
+    which is harmless because a write-once object is unreachable until the head
+    naming it lands, and the head is written last.
+
+    A returned head-write failure is closed: the call is synchronous, so it
+    leaves no request that could take effect after it returns.
     """
 
     def __init__(self, path):
@@ -223,12 +243,51 @@ class LocalFolderStore:
     def put_link(self, link_uid: str, data: bytes) -> None:
         self._create_only(link_path(link_uid), data)
 
-    def put_latest_link(
-        self, data: bytes, expected_etag: Optional[str], link_uid: Optional[str] = None
-    ) -> Optional[str]:
-        if expected_etag is None:
-            return self._create_only(LATEST_LINK_PATH, data)
+    def _stage_head(self, data: bytes) -> str:
+        """Write a complete head under a name no reader looks at."""
+        handle, temp_name = tempfile.mkstemp(dir=self.path, prefix=".latest-link-")
+        try:
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(data)
+                stream.flush()
+                os.fsync(stream.fileno())
+        except OSError as exc:
+            self._discard_staged_head(temp_name)
+            raise StoreProviderError(
+                f"staging {LATEST_LINK_PATH} failed: {exc}"
+            ) from exc
+        return temp_name
 
+    @staticmethod
+    def _discard_staged_head(temp_name: str) -> None:
+        """Remove staging residue without hiding the head write's outcome."""
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.warning("removing staged head %s failed: %s", temp_name, exc)
+
+    def _create_head(self, data: bytes) -> str:
+        """Install the first head, or lose to whoever already installed one.
+
+        The bytes are complete before the name exists, and the name appears in
+        one link operation, so a reader sees exact absence or a whole head.
+        """
+        temp_name = self._stage_head(data)
+        try:
+            os.link(temp_name, self._full(LATEST_LINK_PATH))
+        except FileExistsError as exc:
+            raise CasConflictError(f"{LATEST_LINK_PATH} already exists") from exc
+        except OSError as exc:
+            raise StoreProviderError(
+                f"creating {LATEST_LINK_PATH} failed: {exc}"
+            ) from exc
+        finally:
+            self._discard_staged_head(temp_name)
+        return self._etag_bytes(data)
+
+    def _replace_head(self, data: bytes, expected_etag: str) -> str:
         # Compare and replace under one lock so a concurrent publisher cannot
         # slip between reading the current etag and installing the new head.
         target = self._full(LATEST_LINK_PATH)
@@ -247,21 +306,34 @@ class LocalFolderStore:
                     raise CasConflictError(
                         f"{LATEST_LINK_PATH} is at etag {current_etag}, expected {expected_etag}"
                     )
-                handle, temp_name = tempfile.mkstemp(dir=self.path, prefix=".latest-link-")
+                temp_name = self._stage_head(data)
                 try:
-                    with os.fdopen(handle, "wb") as stream:
-                        stream.write(data)
-                        stream.flush()
-                        os.fsync(stream.fileno())
                     os.replace(temp_name, target)
                 except OSError as exc:
-                    os.unlink(temp_name)
+                    self._discard_staged_head(temp_name)
                     raise StoreProviderError(
                         f"replacing {LATEST_LINK_PATH} failed: {exc}"
                     ) from exc
             finally:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         return self._etag_bytes(data)
+
+    def put_latest_link(
+        self, data: bytes, expected_etag: Optional[str], link_uid: Optional[str] = None
+    ) -> Optional[str]:
+        try:
+            if expected_etag is None:
+                return self._create_head(data)
+            return self._replace_head(data, expected_etag)
+        except StoreError as exc:
+            exc.write_closed = True
+            raise
+        except OSError as exc:
+            failure = StoreProviderError(
+                f"writing {LATEST_LINK_PATH} failed: {exc}"
+            )
+            failure.write_closed = True
+            raise failure from exc
 
 
 # ---------------------------------------------------------------------- #

@@ -208,9 +208,11 @@ class TeamManager:
             session.token, base_url=self.client._base_url, client=self.client._http_client
         )
         result = CodSync(_Repo(repo_dir / ".git", repo_dir), store).publish()
-        if not result.changed:
-            # A no-op publication sends no Hub notification, so there is no new
-            # self-signal for the adopted baseline to catch up to.
+        if result.disposition != "published":
+            # already_present sends no Hub notification, so there is no new
+            # self-signal for the adopted baseline to catch up to. That holds
+            # whether the stored head equals this one or already descends from
+            # it: the incoming gap is refresh_note_to_self's business.
             return
         provisioning.set_note_to_self_adopted_signal_count(
             self.root_dir,
@@ -697,13 +699,12 @@ class TeamManager:
         stage+commit, which would also publish whatever else already sits in
         the index. Unifying the two idioms is follow-up work.
 
-        Returns 'published', or 'already_published' when this installation's
-        marker already confirms the current HEAD. Opens a Hub session
-        internally — works in auto-approve mode without a PIN provider.
-        Raises RuntimeError on CAS conflict.
+        Returns Cod Sync's disposition, 'published' or 'already_present'; the
+        latter also covers this installation's marker already confirming the
+        current HEAD. Opens a Hub session internally — works in auto-approve
+        mode without a PIN provider. The three publication states that need
+        attention propagate as their typed Cod Sync errors.
         """
-        from cod_sync.store import CasConflictError
-
         repo_dir = self._team_repo_dir(team_name)
         repo = self._team_repo(team_name)
         repo.commit_paths(["core.db"], "Update team Core")
@@ -716,7 +717,7 @@ class TeamManager:
         # marker does not prove the remote lacks this head, so publication is
         # still attempted in that case.
         if intended_head is not None and self._last_published_head(team_name) == intended_head:
-            return "already_published"
+            return "already_present"
 
         session = self._get_or_open_session(team_name)
         session.ensure_cloud_ready()
@@ -725,19 +726,14 @@ class TeamManager:
             base_url=self.client._base_url,
             client=self.client._http_client,
         )
-        try:
-            result = CodSync(_Repo(repo_dir / ".git", repo_dir), store).publish()
-        except CasConflictError as exc:
-            raise RuntimeError(
-                "Publication conflict — this participant's published Core chain "
-                "changed since this installation last observed it. The local "
-                "commit remains unpublished."
-            ) from exc
-        # Either outcome means the cloud now holds this head, so the marker is
-        # written for both; only a genuine upload reports "published".
+        result = CodSync(_Repo(repo_dir / ".git", repo_dir), store).publish()
+        # Both ordinary dispositions mean the cloud holds this head — under
+        # already_present it may hold a descendant of it — so the marker is
+        # written for both. Every other disposition raised before this point
+        # and left the marker alone.
         if intended_head:
             self._push_status_file(team_name).write_text(intended_head)
-        return "published" if result.changed else "already_published"
+        return result.disposition
 
     def complete_invitation_acceptance(self, team_name, acceptance_b64):
         """Record invitee acceptance and finalize when quorum is met."""

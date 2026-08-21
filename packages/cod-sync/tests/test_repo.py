@@ -515,6 +515,17 @@ def test_create_bundle_incremental_exposes_its_prerequisite(scratch_dir, chain):
     assert repo.bundle_heads(path) == {"refs/heads/main": shas[-1]}
 
 
+def test_create_bundle_from_head_ignores_the_current_main(scratch_dir, chain):
+    repo, _work, shas = chain
+    path = pathlib.Path(scratch_dir) / "fixed.bundle"
+
+    repo.create_bundle_from_head(path, shas[1], predecessor_head=shas[0])
+
+    assert repo.bundle_prerequisites(path) == {shas[0]}
+    assert repo.bundle_heads(path) == {"refs/heads/main": shas[1]}
+    assert repo.resolve_ref("refs/heads/main") == shas[2]
+
+
 def test_create_bundle_rejects_empty_range(scratch_dir, chain):
     repo, _work, shas = chain
     path = pathlib.Path(scratch_dir) / "empty.bundle"
