@@ -450,7 +450,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             )
         except PublicationRetryableError:
             notice = None
-            error = "Push failed and changed nothing in the cloud. Push again."
+            error = (
+                "Push did not finish, but this attempt can no longer change the "
+                "cloud head. Push again."
+            )
         except Exception as e:
             notice = None
             error = str(e)

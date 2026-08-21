@@ -415,6 +415,33 @@ def test_push_route_does_not_claim_local_status_settles_an_unknown_outcome(
     assert env.manager.get_team_sync_status(_TEAM) == "needs_push"
 
 
+def test_push_route_does_not_claim_a_retryable_write_changed_nothing(
+    env, monkeypatch
+):
+    """Closed means the attempt is over, not necessarily that it never applied."""
+    env.announce_storage()
+    env.manager.push_team(_TEAM)
+    marker_before = env.marker.read_bytes()
+    Provisioning.set_team_admission_policy(env.root, env.alice_hex, _TEAM, quorum=2)
+
+    def _retryable(self, *_args, **_kwargs):
+        raise PublicationRetryableError(
+            "the head write is closed and left nothing to integrate",
+            attempted_head=env.repo.head(),
+        )
+
+    monkeypatch.setattr(CodSync, "publish", _retryable)
+
+    web = create_app(env.root, env.alice_hex)
+    web.state.manager = env.manager
+    resp = TestClient(web).post(f"/teams/{_TEAM}/push")
+
+    assert resp.status_code == 200, resp.text
+    assert "this attempt can no longer change the cloud head" in resp.text
+    assert "changed nothing in the cloud" not in resp.text
+    assert env.marker.read_bytes() == marker_before
+
+
 # ---------------------------------------------------------------------------
 # Step 7: outgoing sync status
 # ---------------------------------------------------------------------------

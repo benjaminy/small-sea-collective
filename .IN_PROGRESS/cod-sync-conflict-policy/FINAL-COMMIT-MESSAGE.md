@@ -1,6 +1,7 @@
-Before merging upstream, the branch should be condensed down to a small number of tidy, coherent commits.
-The last commit in the branch should carry a message that briefly summarizes what the branch is about.
-It is not a complete design record or catalog of anything.
-It should be at most a couple of paragraphs.
-This file is a place to draft that message.
-A human will condense the commits and attach the message; do not amend commits yourself.
+Define bounded Cod Sync publication settlement and caller recovery
+
+Freeze one attempted head per publication, limit settlement to one head write and two validated observations, and surface typed published, already-present, retryable, integration-required, and unresolved outcomes.
+Use etags as settlement evidence, make local head visibility atomic, and park divergent heads without changing application state.
+
+Translate the result contract through Manager and `ssc-files`, including explicit restart-safe `ssc-files` integration for a participant's own competing registry and niche heads.
+Document the remaining Manager, Hub outcome-classification, storage-etag, and response-loss work as focused follow-ups.

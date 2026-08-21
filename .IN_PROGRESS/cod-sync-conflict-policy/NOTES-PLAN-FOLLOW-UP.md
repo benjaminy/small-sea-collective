@@ -483,6 +483,9 @@ It still retests ancestry before each merge, because an earlier merge in the sam
 
 ## Plan
 
+Status: complete on 2026-08-21.
+The full local suite passed, the final Manager wording micro-test passed, and `git diff --check` was clean.
+
 1. Implement the one-write, two-pass result boundary in Cod Sync.
    → verify: frozen `attempted_head`; a micro test for each cell of the settlement matrix, covering a descendant that is not yet local, `observed_head == predecessor_head` with the etag both unchanged and changed, a strict ancestor under a conclusive and an inconclusive failure, create-only absence and create-only contention, confirmed absence after a later-chain attempt, an unreadable observation under both failure classes, an observation whose etag is `None` and one whose etag is `""`, containment under both a closed and an open write, divergence under both a closed and an open write, and an applied-but-unacknowledged head write; a non-empty chain whose head carries no comparable etag raises before any upload; the counting wrapper shows at most one head write and at most two passes on every path.
    Repair `LocalFolderStore` initial-head publication first.
@@ -520,12 +523,17 @@ The branch is complete when these properties have direct witnesses.
 | Checkout assumptions are explicit | Attached-clean, attached-dirty, stale, absent, and CACHED niche states exercise the selected application policy. |
 | Documentation matches behavior | Durable docs describe the one-write, two-pass boundary, no internal retry, the Cod Sync-owned parked namespace, and the etag's settlement role. |
 
-# Follow-up
+# Follow-up filing record
 
-The proposals below are drafts only.
-No GitHub issue has been edited or filed from this branch yet.
+Filed on 2026-08-21.
+Issue #191 now records the implemented scope, exclusions, validation, and concrete follow-ups.
+Focused follow-up comments were added to #189, #185, #35, #48, #135, #196, #190, and #193.
+New issues #198, #199, and #200 were filed.
+The bounded automatic-retry proposal remains intentionally unfiled until tests or real use show that a fresh publication invocation is materially painful.
 
-## Edit issue #191 before implementation
+The detailed rationale below remains as the branch record behind those filings.
+
+## Issue #191 implementation update
 
 Clarify that "finite mechanical settlement" means at most one head write and at most two validated observation passes, and that a pass may import through the existing fetch path.
 State that containment of `attempted_head` in the validated observed Git history is sufficient for ordinary success only when no head write remains open; initial-pass containment meets that condition because no write was attempted.
@@ -539,7 +547,7 @@ Note that #191 refuses to build on a non-empty chain whose head arrives without 
 Include the `LocalFolderStore` initial-head atomicity repair because that store is both the settlement contract witness and the store identity bootstrap actually publishes through.
 Note that the repair covers the head only, and that local head-write conclusiveness needs a typed carrier on the store exception rather than knowledge of which concrete store is in use.
 
-## Proposed edits to existing issues
+## Existing issue follow-ups
 
 - **#189 — Bound unattended Cod Sync work with SyncBudget.**
    Keep it deferred and independent of #191.
@@ -571,9 +579,9 @@ Note that the repair covers the head only, and that local head-write conclusiven
    No issue edit is required: its existing concurrent-publication validation already owns the behavior.
    Record here why that constraint is now load-bearing for correctness rather than only for #196: after `outcome_unresolved`, an open head write can reference the very bundle and link the sweep would call orphaned.
 
-## New issues to file
+## New issue decisions
 
-### Add bounded automatic retry for proven Cod Sync publication races
+### Not filed: add bounded automatic retry for proven Cod Sync publication races
 
 File only when tests or real use show that asking for a new publication invocation is materially painful.
 
@@ -588,7 +596,7 @@ Scope:
 
 Validation must inject repeated known races, prove termination, prove that an open write is never retried, and keep all network behavior local.
 
-### Distinguish never-applied and unknown conditional writes at the Hub/store boundary
+### Filed as #198: distinguish never-applied and unknown conditional writes at the Hub/store boundary
 
 The S3 adapter catches only `ClientError`, so a provider timeout after a conditional PUT can become a generic HTTP 500 and `StoreProviderError`.
 Give the Hub/store boundary an explicit uncertain-write outcome for timeouts and other failures that do not prove refusal, and a `never_applied` outcome for failures that prove the request never reached the provider.
@@ -601,7 +609,7 @@ A `never_applied` classification closes the write by itself, which converts `out
 The later invocation still performs its own initial observation before writing.
 That is worth doing before deployment and is not worth doing to unblock #191.
 
-### Enforce the `latest-link.yaml` etag contract at the Hub storage boundary
+### Filed as #199: enforce the `latest-link.yaml` etag contract at the Hub storage boundary
 
 The format specification requires an etag on every `latest-link.yaml` download and upload and already declares Google Drive non-conforming (`format-spec.md:126-131`).
 Nothing enforces that.
@@ -612,7 +620,7 @@ Either make the adapter satisfy the contract or refuse to materialize a berth cl
 #191 does not depend on this.
 It refuses to build on an incomparable etag and says why, which is the honest behavior whether or not the berth layer is ever fixed.
 
-### Add Hub-layer response-loss fault injection across encryption and notification
+### Filed as #200: add Hub-layer response-loss fault injection across encryption and notification
 
 `prepare_encrypted_upload` and `commit_encrypted_upload` straddle the storage adapter, while Cod Sync-level fakes sit above both.
 The signal bump occurs later still, after the adapter reports success.
