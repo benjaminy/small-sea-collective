@@ -524,7 +524,11 @@ A future admission-extension event may represent withdrawal without making withd
 
 #### Accept invitation (invitee side)
 
-Takes an out-of-band proposal token. All cloud I/O goes through the Hub:
+Joining is a two-phase local ceremony. The provisioning step is entirely local
+and one-shot; route preparation is a separate, retryable Manager step.
+
+Phase 1, `provisioning.accept_invitation(...)`. All cloud I/O goes through the
+Hub:
 
 1. Opens a NoteToSelf Hub session, calls `GET /cloud_proxy` to download the
    inviter's team bundle chain. The Hub proxies the bytes — the Manager never
@@ -534,22 +538,184 @@ Takes an out-of-band proposal token. All cloud I/O goes through the Hub:
 3. Generates a fresh team device keypair (bootstrap-encryption key + signing
    key).
 4. Signs an acceptance blob binding to the inviter-allocated `teammate_id` and
-   the proposal ID/nonce. Cloud endpoints are **not** included in the
-   acceptance blob — transport is configured post-admission (B7 scope).
+   the proposal ID/nonce. Cloud endpoints are **not** included in the signed
+   fields of the acceptance blob. A signed storage route may be carried
+   *beside* it in the courier token; see "First-contact route delivery" below.
+5. Persists the signed acceptance to the device-local
+   `admission_acceptance_artifact` table.
 
-Returns the signed acceptance blob for out-of-band delivery back to the
-inviter. The invitee does **not** write any rows to the shared team DB at this
-stage. The invitee never publishes their own admission.
+The invitee does **not** write any rows to the shared team DB at this stage,
+and publishes no storage announcement. The invitee never publishes their own
+admission.
 
-If the invitee has a `cloud_storage` row configured, admission also allocates
+If the invitee has a `cloud_storage` row configured, acceptance also allocates
 the invitee's own Core berth against the invitee's own cloud account, with a
 fresh Manager-generated location.
 The invitee does not inherit the inviter's naming or location — that would
 collide on globally-namespaced providers and would re-introduce identity-
 formula coupling.
-If the invitee has no `cloud_storage` row, admission proceeds without an
+If the invitee has no `cloud_storage` row, acceptance proceeds without an
 allocation, leaving the team in the same repairable storage-missing state as
-no-cloud team creation.
+no-cloud team creation. Adding cloud storage afterwards and retrying route
+preparation reaches a route without a second local join.
+
+`provisioning.accept_invitation(...)` also returns the signed acceptance token.
+That return is a **test-only escape hatch**: it bypasses the export gate, so a
+direct caller can obtain a route-less acceptance without marking it exported,
+leaving the stored artifact replaceable by a differently signed acceptance for
+a proposal whose bytes may already be circulating. `TeamManager` is the only
+production producer of a courier token.
+
+Phase 2, `TeamManager.prepare_team_route(team_name)`. Over the completed local
+join, Manager ensures a Core allocation exists, opens an encrypted team Hub
+session, calls `/cloud/setup`, rereads the allocation after any provider
+locator writeback, publishes a signed announcement over the final locator,
+commits that row, and reads the full stored row back. Retryable: every expected
+failure names its own reason and leaves the local join intact.
+
+Manager performs no provider I/O unless the exact current join has an eligible
+acceptance artifact to export after success.
+
+`TeamManager.accept_invitation(...)` runs both phases and returns a join-state
+report rather than a token:
+
+| Field | Values |
+|-------|--------|
+| `join` | `complete` once the local work has landed, else `absent` |
+| `admission` | `finalized` or `pending` |
+| `route` | `ready` or `pending` |
+| `route_reason` | when preparation was attempted but the route is not ready: `hub_session_unavailable`, `storage_not_configured`, `user_action_required`, `materialization_failed`, `allocation_conflict`, or `route_preparation_error` — all retryable; `null` when preparation was skipped because the acceptance artifact is missing or stale |
+| `acceptance` | `exportable` or `withheld` |
+| `acceptance_reason` | when withheld: `route_pending`, `artifact_missing`, or `artifact_stale` |
+
+Route and acceptance reasons are independent: a route may be ready while the
+local acceptance artifact is absent or stale, and an artifact may be valid
+while provider setup is pending. An artifact persistence failure or a forbidden
+post-export replacement is a local workflow error, never
+`route_preparation_error`.
+
+None of these values describes external reachability.
+
+##### Derived join state
+
+Join, admission, and route state are derived, not stored. No status column is
+added.
+
+- clone, NoteToSelf `team` row, and team device key exist: local join complete
+- no membership cert for this participant's `self_in_team` and current team
+  device key: admission pending
+- a Core allocation with no `teammate_berth_storage_announcement` signed by this
+  device for the Core berth: route pending — the same query the Hub's
+  `_require_own_storage_announcement` runs, so route readiness and the Hub's
+  own-storage gate cannot disagree
+
+Nothing reads `admission_proposal`. Invitation creation commits the proposal but
+never pushes it, so whether the invitee's clone holds their own proposal is
+incidental, and depending on it would strand an invitee whose inviter forgot to
+push.
+
+##### The device-local acceptance artifact
+
+`created_at` is covered by the acceptance signature, so re-signing would mint a
+different `record_id` on every export and could put two valid acceptances for
+one proposal into circulation. The signed bytes are therefore persisted once,
+in the device-local DB, keyed by `(team_id, proposal_id)`: local-only,
+non-syncing, the right scope for an installation-bound ceremony artifact. The
+row stores `nonce`, `author_teammate_id`, `author_device_key_id`,
+`acceptance_record_id`, the exact base acceptance token, and nullable
+`first_exported_at`.
+
+The row is not evidence that the join still exists. Eligibility requires the
+artifact's team, author teammate, and author device key to match the derived
+join exactly; `proposal_id` and `nonce` are the artifact's own stored copies,
+which is what binds the exported bytes to the record they were signed over.
+Lookup never falls back to another row by team name or insertion order, and
+more than one match makes both ineligible.
+
+Persisting the same artifact again is a no-op. A differently signed artifact may
+replace a never-exported row — deliberate local cleanup makes a join retryable —
+but never one that has been exported. Once exported it may be re-exported
+indefinitely.
+
+Physical deletion is not required for correctness: once the local state no
+longer describes that pending join, the row is inert under the eligibility
+checks. Retirement after finalization, expiry, or explicit abandonment is
+follow-up work.
+
+The clone, Git, NoteToSelf, key-file, and device-local writes are not one
+transaction. An artifact persistence failure is a surfaced local
+acceptance-preparation failure and is never reported as route-pending or
+exportable.
+
+##### The export gate
+
+`TeamManager.export_admission_acceptance(team_name)` returns the courier token,
+and withholds it whenever the route is not ready — no exception. Every pending
+reason, including no Hub session, no cloud storage configured, provider down,
+and user action required, withholds the token and is retried.
+
+The invitee therefore never spends the proposal on a route-less token. What
+remains unrepairable is only a sidecar stripped or corrupted in transit.
+
+Export sets `first_exported_at` before returning the first token. The marker
+prevents replacement, not recovery of the same bytes after an output failure.
+
+Membership with no storage of one's own is a separate design question, not a
+degraded case of this one: such a member could not push at all, because
+`upload_to_cloud` gates on the own-storage announcement. The gate defers to that
+question rather than inventing a warning-gated half-answer.
+
+#### First-contact route delivery
+
+A valid teammate-berth storage announcement is the sole source of peer storage
+routing, which makes first contact circular: fetching the invitee's Core chain
+to obtain their announcement requires already knowing the invitee's storage.
+The acceptance courier breaks that cycle.
+
+The courier token wraps the stored acceptance verbatim and attaches the
+invitee's currently selected signed Core route beside it:
+
+```
+{ "envelope": "invitation_acceptance_courier",
+  "admission_acceptance": "<the stored base acceptance token>",
+  "route": { announcement_id, teammate_id, berth_id, protocol, url,
+             location, announced_at, signer_key_id, signature } | null }
+```
+
+The route is never part of the acceptance's signed fields. Admission is an
+immutable membership fact; storage announcements are replaceable routing
+claims. Keeping them separate leaves the acceptance's canonical bytes and
+`record_id` untouched, so a later route change changes the sidecar only, and
+repeated exports with no intervening route change are byte-identical.
+
+The sidecar is read back from the invitee's own DB by the publish result's
+`announcement_id` and never reconstructed or re-signed: the publish result is
+not a full row (its no-op branch omits `announced_at`, and neither branch
+returns `signature`), and its no-op branch can name another device's
+`signer_key_id`. Manager asserts on read-back that the signer is the current
+team device key, and refuses to export rather than attach a row the inviter
+would reject.
+
+A `teammate_berth_storage_announcement` is a signed **route selection**: it says
+the teammate selected one locator for one berth. It does not promise the
+provider object stays reachable or peer-readable, and `status == "announced"`
+reports that the reader holds a selected valid announcement, not that the route
+is available now. Every reader must handle every provider error when it
+attempts I/O.
+
+Because the sidecar is not bound to the acceptance, a courier can strip it, and
+a courier holding several valid announcements from that key could replay an
+older invitee-authored route. An optional signed manifest would add nothing: a
+courier can strip the manifest and the sidecar together. Only a mandatory
+association would prove whether the invitee sent a route, and that would make
+route presence part of the acceptance protocol. For now, stripping and stale
+valid replay are surfaced denial-of-service risks; the stronger association and
+a repair path are follow-up work.
+
+The vestigial `invitation.acceptor_protocol`, `acceptor_url`, and
+`acceptor_device_key_id` columns are the fossil of the pre-announcement
+first-contact route channel. The sidecar supersedes them; removing them is
+separate cleanup.
 
 #### Complete invitation transcript (inviter side)
 
@@ -577,6 +743,60 @@ their own sender key via `redistribute_sender_key(...)`.
 Whether a peer accepts those publications or distributes future key material depends on that peer's admission and encryption policy.
 
 The current schema stores a mutable `admission_proposal` row plus append-only `steward_approval` rows.
+
+##### Importing the couriered route
+
+Completion returns `{"route_delivery", "route_reason", "admission"}`, where
+`route_delivery` is `imported`, `missing`, `invalid`, or `conflict`, and
+`admission` is `finalized` or `pending`.
+
+Verification is acceptance-scoped, not a general importer. The acceptable
+signer is the key the self-certifying acceptance has just proved the invitee
+holds, bound to the inviter's proposal — not a caller-supplied key and not the
+local trust view. The helper requires
+`signer_key_id == key_id_from_public(invitee_device_public_key)`, binds
+`teammate_id` to the acceptance's author, binds `berth_id` to the unique Core
+berth, and verifies the signature. A future general route importer must instead
+derive acceptable keys from the current local trust view; keeping the two apart
+avoids creating an accidental routing trust path.
+
+Only Core counts as first-contact evidence. Invitation acceptance allocates only
+`SmallSeaCollectiveCore`, and Core routing is what unblocks later sync of
+announcements for other berths, so merely requiring the berth to exist could
+accept a correctly signed non-Core route while leaving the cycle unresolved.
+
+**No route-sidecar failure aborts admission.** The admission record is
+independently self-certifying, so a malformed, wrongly signed, wrong-teammate,
+wrong-berth, ambiguously resolved, or colliding sidecar completes the otherwise
+valid admission and inserts no row. That includes an ambiguous or absent
+inviter-side Core berth, whose resolution raises. A malformed outer token or an
+invalid base acceptance stays fatal, because there is no independently usable
+admission record in that case.
+
+The verified row is inserted in the same transaction that records the
+acceptance, in the branch that records it — not merely inside the transaction:
+the `block_reason` path writes nothing and raises afterwards, so a row inserted
+there would persist against a refused admission.
+
+Insertion happens even when quorum has not finalized admission. Selection
+treats a row whose signer is not yet trusted as inert, so a pending row routes
+nothing; finalization issues the membership cert that activates it, without
+rewriting the row. The tradeoff is explicit: the pending invitee's locator
+becomes visible to the existing team, and an abandoned proposal leaves one inert
+row that may sync forever.
+
+Idempotency spans the local insert and later Git merge. An existing
+byte-identical row under the same `announcement_id` is a no-op; a different row
+under that ID is `conflict` and does not raise. The merge driver likewise treats
+byte-identical inserts of one primary key as redundant rather than a conflict —
+after this flow every routed invitation produces exactly that case — while
+keeping its warning for genuinely divergent rows.
+
+If admission completes with no sidecar, the inviter cannot learn the route
+through sync, because that is the first-contact cycle this mechanism exists to
+break. The export gate removes every cause the invitee controls; a later
+delivery artifact and a receiving path based on the current trusted-key view
+remain follow-up work.
 
 #### Teammate berth storage announcements
 
@@ -868,9 +1088,24 @@ sufficient.
 
 The announcement belongs in the relevant team Core DB for team berths. For
 NoteToSelf berths, the same concept may live in `NoteToSelf/Sync/core.db`.
-An announcement is published only after the Hub has successfully materialized
-the corresponding location and any provider-issued final locator has been
-durably recorded.
+A teammate berth storage announcement is a signed selection of a route for one
+teammate and berth.
+Manager signs only a final locator: one the provider will not rewrite.
+As an issuer-side publication discipline, that means publishing only after Hub
+has successfully materialized the selected location once and any
+provider-issued final locator has been durably recorded.
+That readiness check prevents publication of an unresolved route; it is not a
+certificate of current or future reachability.
+Readers must handle all provider failures when they attempt I/O.
+
+Materialization is how a publisher learns the final locator today, not an
+independent requirement. A signature over a provisional locator would hand peers
+a stale route and stop matching the owner's own allocation, failing the Hub's
+next own-storage check.
+
+Publication is Manager's, after Hub materialization. Provisioning's acceptance
+step performs no invitee-storage materialization and no pre-materialization
+route publication.
 
 Selection mirrors the current transport-announcement rule: sort
 `announcement_id` descending and choose the first valid row for

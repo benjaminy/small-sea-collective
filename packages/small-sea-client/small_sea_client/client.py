@@ -20,6 +20,19 @@ class SmallSeaConflict(SmallSeaError):
     """Conditional upload failed: file was modified concurrently (CAS conflict)."""
 
 
+class SmallSeaCloudStorageRequired(SmallSeaConflict):
+    """The Hub refused a cloud operation and named which precondition failed.
+
+    Callers that only care that the operation conflicted keep working through
+    the `SmallSeaConflict` base; callers that must tell "no storage configured"
+    from "the provider needs the user" read `reason`.
+    """
+
+    def __init__(self, reason: str, detail: str):
+        self.reason = reason
+        super().__init__(detail)
+
+
 class SmallSeaAppBootstrapRequired(SmallSeaError):
     """Manager action is required before this app can open a Hub session."""
 
@@ -61,6 +74,14 @@ def _check_response(resp: httpx.Response) -> None:
         )
     if resp.status_code == 404:
         raise SmallSeaNotFound(detail)
+    if (
+        resp.status_code == 409
+        and isinstance(body, dict)
+        and body.get("error") == "cloud_storage_required"
+    ):
+        raise SmallSeaCloudStorageRequired(
+            str(body.get("reason", "cloud_storage_required")), detail
+        )
     if resp.status_code == 409:
         raise SmallSeaConflict(detail)
     raise SmallSeaError(f"HTTP {resp.status_code}: {detail}")

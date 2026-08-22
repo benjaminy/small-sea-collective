@@ -5,12 +5,27 @@ from typing import Optional
 from cod_sync.repo import Repo as _Repo
 from cod_sync.protocol import CodSync
 from cod_sync.store import BootstrapProxyStore, SmallSeaStore
-from small_sea_client.client import SmallSeaClient, SmallSeaHubUnavailable
+from small_sea_client.client import (
+    SmallSeaClient,
+    SmallSeaCloudStorageRequired,
+    SmallSeaError,
+    SmallSeaHubUnavailable,
+)
 from small_sea_manager import admission_events
 from small_sea_manager import provisioning
 
 _CORE_APP = "SmallSeaCollectiveCore"
 _LOG = logging.getLogger(__name__)
+
+#: Hub `cloud_storage_required` reasons, mapped to the route reasons the join
+#: report speaks. Every one of them is retryable.
+_ROUTE_REASON_BY_CLOUD_REASON = {
+    "cloud_location_missing": "storage_not_configured",
+    "cloud_credentials_missing": "storage_not_configured",
+    "cloud_user_action_required": "user_action_required",
+    "cloud_materialization_failed": "materialization_failed",
+    "cloud_allocation_conflict": "allocation_conflict",
+}
 
 
 class AppSightingsRefresh(list):
@@ -597,11 +612,14 @@ class TeamManager:
         )
 
     def accept_invitation(self, token_b64):
-        """Accept an invitation token (acceptor side). Returns an acceptance token.
+        """Accept an invitation token (acceptor side). Returns a join-state report.
 
-        Opens a NoteToSelf Hub session to proxy the inviter's cloud for cloning.
-        The push to the acceptor's own cloud is a separate step — call push_team()
-        after establishing a team session via the UI.
+        Opens a NoteToSelf Hub session to proxy the inviter's cloud for cloning,
+        then attempts route preparation. Joining is a two-phase local ceremony:
+        all the local work lands here, and the route may stay pending until the
+        Hub and the provider are available. Call prepare_team_route() to retry
+        and export_admission_acceptance() to get the courier token once the
+        route is ready.
         The Hub is never bypassed — all cloud I/O goes through it.
         """
         import base64 as _b64
@@ -638,11 +656,199 @@ class TeamManager:
             download_transform=_decrypt_payload,
         )
 
-        # Clone + local DB writes. No cloud push happens here.
-        return provisioning.accept_invitation(
+        # Clone + local DB writes. No cloud push and no route publication
+        # happen here; the low-level token return is deliberately discarded so
+        # only the export gate can produce a courier token.
+        provisioning.accept_invitation(
             self.root_dir, self.participant_hex, token_b64,
             inviter_store=proxy_store,
         )
+        return self.prepare_team_route(token["team_name"])
+
+    # ------------------------------------------------------------------ #
+    # Route preparation and acceptance export
+    # ------------------------------------------------------------------ #
+
+    def _report(self, state, *, route_reason) -> dict:
+        """Build the join-state report over derived state.
+
+        Route and acceptance reasons stay independent: a route may be ready
+        while the local acceptance artifact is absent or stale, and an artifact
+        may be valid while provider setup is still pending.
+        """
+        _artifact, artifact_reason = provisioning.eligible_acceptance_artifact(
+            self.root_dir, self.participant_hex, state
+        )
+        route = state["route"]
+        if artifact_reason is not None:
+            acceptance_reason = artifact_reason
+        elif route != "ready":
+            acceptance_reason = "route_pending"
+        else:
+            acceptance_reason = None
+        return {
+            "join": "complete" if state["join"] == "complete" else "absent",
+            "admission": state["admission"],
+            "route": route,
+            "route_reason": None if route == "ready" else route_reason,
+            "acceptance": "withheld" if acceptance_reason else "exportable",
+            "acceptance_reason": acceptance_reason,
+        }
+
+    def _commit_prepared_route(self, team_name, state) -> dict | None:
+        """Commit a ready route, returning a retryable failure report if needed."""
+        try:
+            self._team_repo(team_name).commit_paths(
+                ["core.db"], "Announce berth storage"
+            )
+        except Exception:
+            _LOG.exception("Committing a team storage route failed")
+            pending_state = dict(state)
+            pending_state["route"] = "pending"
+            return self._report(
+                pending_state, route_reason="route_preparation_error"
+            )
+        return None
+
+    def prepare_team_route(self, team_name) -> dict:
+        """Publish this participant's Core storage route, and report join state.
+
+        Retryable: every failure below leaves the completed local join intact
+        and names a reason the caller can act on and try again. Provider I/O is
+        skipped entirely unless this exact join has an eligible acceptance
+        artifact to export once the route lands.
+        """
+        state = provisioning.derive_team_join_state(
+            self.root_dir, self.participant_hex, team_name
+        )
+        if state["join"] != "complete":
+            raise ValueError(f"Team '{team_name}' has no local join to prepare")
+
+        artifact, artifact_reason = provisioning.eligible_acceptance_artifact(
+            self.root_dir, self.participant_hex, state
+        )
+        if artifact is None:
+            # An acceptance-state failure, not a route failure: nothing to
+            # export after success, so no provider is contacted.
+            return self._report(state, route_reason=None)
+
+        if state["route"] == "ready":
+            commit_failure = self._commit_prepared_route(team_name, state)
+            if commit_failure is not None:
+                return commit_failure
+            return self._report(state, route_reason=None)
+
+        berth_id = state["core_berth_id"]
+        if berth_id is None:
+            return self._report(state, route_reason="storage_not_configured")
+
+        # Allocate rather than only reading what acceptance left behind, so an
+        # invitee who adds cloud storage afterwards retries into a route.
+        allocation = provisioning._auto_allocate_berth_cloud_if_available(
+            self.root_dir, self.participant_hex, berth_id
+        )
+        if allocation is None:
+            return self._report(state, route_reason="storage_not_configured")
+
+        try:
+            session = self._get_or_open_session(team_name)
+        except (SmallSeaHubUnavailable, SmallSeaError):
+            return self._report(state, route_reason="hub_session_unavailable")
+
+        try:
+            session.ensure_cloud_ready()
+        except SmallSeaCloudStorageRequired as exc:
+            return self._report(
+                state,
+                route_reason=_ROUTE_REASON_BY_CLOUD_REASON.get(
+                    exc.reason, "route_preparation_error"
+                ),
+            )
+        except SmallSeaHubUnavailable:
+            return self._report(state, route_reason="hub_session_unavailable")
+        except Exception:
+            _LOG.exception("Cloud setup failed while preparing a team route")
+            return self._report(state, route_reason="route_preparation_error")
+
+        try:
+            # Reread after materialization: the provider may have written back
+            # a final locator, and only that one may be signed.
+            allocation = provisioning.get_berth_cloud_allocation_for_berth(
+                self.root_dir, self.participant_hex, berth_id
+            )
+            if allocation is None:
+                return self._report(state, route_reason="storage_not_configured")
+            published = provisioning.publish_teammate_berth_storage_announcement(
+                self.root_dir,
+                self.participant_hex,
+                team_name,
+                state["self_in_team"],
+                berth_id,
+                allocation,
+            )
+            announcement = provisioning.read_teammate_berth_storage_announcement(
+                self.root_dir,
+                self.participant_hex,
+                team_name,
+                bytes.fromhex(published["announcement_id_hex"]),
+            )
+        except Exception:
+            _LOG.exception("Publishing a team storage route failed")
+            return self._report(state, route_reason="route_preparation_error")
+
+        if announcement is None or announcement.signer_key_id != state["device_key_id"]:
+            # The selected row may be an older one signed by another device.
+            # Attaching it would reach the inviter and fail their signer check.
+            _LOG.error(
+                "Read-back storage announcement is missing or signed by another device"
+            )
+            return self._report(state, route_reason="route_preparation_error")
+
+        commit_failure = self._commit_prepared_route(team_name, state)
+        if commit_failure is not None:
+            return commit_failure
+        state = provisioning.derive_team_join_state(
+            self.root_dir, self.participant_hex, team_name
+        )
+        return self._report(state, route_reason=None)
+
+    def export_admission_acceptance(self, team_name) -> dict:
+        """Return the courier token for a prepared join, or say why it is withheld.
+
+        The gate has no exception: an acceptance with no route is never handed
+        out, so the invitee never spends the proposal on a token the inviter
+        cannot route back to.
+        """
+        state = provisioning.derive_team_join_state(
+            self.root_dir, self.participant_hex, team_name
+        )
+        report = self._report(state, route_reason=None)
+        report["acceptance_token"] = None
+        if report["acceptance"] != "exportable":
+            return report
+
+        commit_failure = self._commit_prepared_route(team_name, state)
+        if commit_failure is not None:
+            commit_failure["acceptance_token"] = None
+            return commit_failure
+
+        artifact, _reason = provisioning.eligible_acceptance_artifact(
+            self.root_dir, self.participant_hex, state
+        )
+        announcement = provisioning.selected_own_berth_storage_announcement(
+            self.root_dir,
+            self.participant_hex,
+            team_name,
+            state,
+        )
+        acceptance_token = provisioning.export_admission_acceptance(
+            self.root_dir, self.participant_hex, artifact
+        )
+        report["acceptance_token"] = provisioning.build_acceptance_courier_token(
+            acceptance_token,
+            provisioning.serialize_berth_storage_announcement(announcement),
+        )
+        return report
 
     def _team_repo_dir(self, team_name: str) -> pathlib.Path:
         return self.root_dir / "Participants" / self.participant_hex / team_name / "Sync"
@@ -735,9 +941,13 @@ class TeamManager:
             self._push_status_file(team_name).write_text(intended_head)
         return result.disposition
 
-    def complete_invitation_acceptance(self, team_name, acceptance_b64):
-        """Record invitee acceptance and finalize when quorum is met."""
-        provisioning.complete_invitation_acceptance(
+    def complete_invitation_acceptance(self, team_name, acceptance_b64) -> dict:
+        """Record invitee acceptance and finalize when quorum is met.
+
+        Returns provisioning's route-delivery and admission report so callers
+        can tell the inviter whether a route arrived with the acceptance.
+        """
+        return provisioning.complete_invitation_acceptance(
             self.root_dir, self.participant_hex, team_name, acceptance_b64
         )
 

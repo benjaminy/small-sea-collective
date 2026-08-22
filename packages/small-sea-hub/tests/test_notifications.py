@@ -9,7 +9,10 @@ from cod_sync.store import SmallSeaStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_manager.manager import TeamManager
-from test_support import publish_storage_announcement_for_session
+from test_support import (
+    accept_and_export,
+    publish_storage_announcement_for_session,
+)
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -132,7 +135,7 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
 
     # -- Bob: accept via Manager --
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
-    acceptance_b64 = bob_manager.accept_invitation(token)
+    acceptance_b64 = accept_and_export(bob_manager, token)
 
     # -- Alice: complete acceptance --
     Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)

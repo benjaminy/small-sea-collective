@@ -41,3 +41,41 @@ def publish_storage_announcement_for_session(backend, session_hex) -> dict | Non
         ss_session.berth_id,
         allocation,
     )
+
+
+def acceptance_record_from_courier(courier_b64: str) -> dict:
+    """Decode the `admission_acceptance` record out of a courier token."""
+    import base64
+    import json
+
+    payload = json.loads(base64.b64decode(courier_b64).decode())
+    if payload.get("envelope") != provisioning.ACCEPTANCE_COURIER_ENVELOPE:
+        return payload
+    return json.loads(base64.b64decode(payload["admission_acceptance"]).decode())
+
+
+def route_sidecar_from_courier(courier_b64: str) -> dict | None:
+    """Decode the route attached beside the acceptance, if any."""
+    import base64
+    import json
+
+    payload = json.loads(base64.b64decode(courier_b64).decode())
+    return payload.get("route")
+
+
+def accept_and_export(manager, token_b64: str) -> str:
+    """Accept an invitation and export the courier token in one step.
+
+    Asserts the route landed, so a test that means to exercise the happy path
+    fails at the point the route went pending rather than later.
+    """
+    import base64
+    import json
+
+    team_name = json.loads(base64.b64decode(token_b64).decode())["team_name"]
+    report = manager.accept_invitation(token_b64)
+    assert report["route"] == "ready", report
+    assert report["acceptance"] == "exportable", report
+    exported = manager.export_admission_acceptance(team_name)
+    assert exported["acceptance_token"] is not None, exported
+    return exported["acceptance_token"]

@@ -139,11 +139,18 @@ def reconcile_deltas(ours_delta, theirs_delta):
         new_updates = {}
 
         for key, row in t_ops.get("inserts", {}).items():
-            if key in o_ops.get("inserts", {}):
-                print(
-                    f"warning: insert/insert conflict in {table_name}, keeping ours",
-                    file=sys.stderr,
-                )
+            ours = o_ops.get("inserts", {})
+            if key in ours:
+                # Both sides inserting the identical row is ordinary, not a
+                # conflict: a signed row can reach one peer by courier and the
+                # other through its author's own history. Rows are plain dicts
+                # here and `sqlite_to_json` renders BLOBs as {"__blob__": hex},
+                # so equality compares the stored bytes.
+                if ours[key] != row:
+                    print(
+                        f"warning: insert/insert conflict in {table_name}, keeping ours",
+                        file=sys.stderr,
+                    )
             else:
                 new_inserts[key] = row
 
