@@ -335,3 +335,31 @@ def test_admission_watch_endpoint_stays_fast_when_hub_wait_succeeds(playground_d
     response = client.get("/teams/ProjectX/admission-events/watch")
     assert response.status_code == 200
     assert 'load delay:0.2s' in response.text
+
+
+def test_cloud_storage_listing_survives_the_device_local_credential_join(playground_dir):
+    """Regression: `ORDER BY rowid` was ambiguous once the query joined
+    `local.cloud_storage_credential`, so the whole panel — provider list and
+    add-provider form alike — failed with OperationalError."""
+    root = pathlib.Path(playground_dir)
+    participant_hex = Provisioning.create_new_participant(root, "alice")
+    Provisioning.add_cloud_storage(
+        root,
+        participant_hex,
+        protocol="s3",
+        url="http://localhost:9000",
+        access_key="alice-key",
+        secret_key="alice-secret",
+    )
+
+    providers = Provisioning.list_cloud_storage(root, participant_hex)
+    assert [(p["protocol"], p["url"], p["access_key"]) for p in providers] == [
+        ("s3", "http://localhost:9000", "alice-key")
+    ]
+
+    client = TestClient(create_app(root, participant_hex))
+    response = client.get("/cloud-storage")
+    assert response.status_code == 200
+    assert "http://localhost:9000" in response.text
+    assert "Add S3 / MinIO provider" in response.text
+    assert "alice-secret" not in response.text

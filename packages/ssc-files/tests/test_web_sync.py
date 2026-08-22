@@ -1,5 +1,3 @@
-import base64
-import json
 import pathlib
 import socket
 
@@ -11,7 +9,11 @@ from ssc_files import sync, files
 from ssc_files.web import create_app
 from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager, _CORE_APP
-from test_support import publish_storage_announcement_for_session
+from test_support import (
+    accept_and_export,
+    acceptance_record_from_courier,
+    publish_storage_announcement_for_session,
+)
 
 
 def _free_port():
@@ -132,8 +134,8 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
     _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync)
 
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
-    acceptance_b64 = bob_manager.accept_invitation(token_b64)
-    acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
+    acceptance_b64 = accept_and_export(bob_manager, token_b64)
+    acceptance = acceptance_record_from_courier(acceptance_b64)
     bob_teammate_id_hex = acceptance["author_teammate_id"]
     bob_team_token = _open_session(http, "Bob", "ProjectX")
     bob_files_berth = _session_berth_info(http, bob_team_token)["berth_id"]

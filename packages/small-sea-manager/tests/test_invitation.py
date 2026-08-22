@@ -22,7 +22,12 @@ from small_sea_manager.provisioning import (
     get_current_team_device_key,
     list_invitations,
 )
-from test_support import publish_storage_announcement_for_session
+from test_support import (
+    accept_and_export,
+    acceptance_record_from_courier,
+    publish_storage_announcement_for_session,
+    route_sidecar_from_courier,
+)
 from wrasse_trust.identity import verify_membership_cert
 from wrasse_trust.keys import key_id_from_public
 from wrasse_trust.transport import (
@@ -212,12 +217,15 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     _push_via_hub(http, alice_team_token, alice_team_sync)
 
     # -- Bob: accept via Manager --
+    # Route preparation materializes Bob's Core bucket through his Hub and
+    # applies the public-read policy itself (SmallSeaS3Adapter.materialize), so
+    # no _make_bucket_public call for Bob and no _push_via_hub helper runs here.
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
-    acceptance_b64 = bob_manager.accept_invitation(token)
+    acceptance_b64 = accept_and_export(bob_manager, token)
 
     assert isinstance(acceptance_b64, str)
 
-    acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
+    acceptance = acceptance_record_from_courier(acceptance_b64)
     bob_teammate_id_hex = acceptance["author_teammate_id"]
     assert bob_teammate_id_hex != bob_hex
     assert len(bob_teammate_id_hex) == 32
@@ -241,12 +249,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
         ).fetchall()
     assert bob_teammate_rows == []
 
-    # accept_invitation auto-published Bob's own berth storage announcement,
-    # signed with Bob's freshly generated team device key. This is the invitee
-    # production publishing wired for issue #138: previously accept_invitation
-    # discarded the allocation and published nothing, so the invitee's storage
-    # was discoverable through no channel at all. No manual publish call and no
-    # _push_via_hub helper ran for Bob here.
+    # Manager route preparation published Bob's own berth storage announcement
+    # after Hub materialization, signed with Bob's freshly generated team
+    # device key, and attached the stored row to the courier token.
     assert len(bob_ann_rows) == 1
     bob_ann = TeammateBerthStorageAnnouncement(*bob_ann_rows[0])
     bob_device_public_key = bytes.fromhex(acceptance["invitee_device_public_key"])
@@ -262,8 +267,30 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert bob_ann.url == bob_allocation["url"]
     assert bob_ann.location == bob_allocation["location"]
 
+    # The sidecar is the stored row, field for field -- never re-signed.
+    sidecar = route_sidecar_from_courier(acceptance_b64)
+    assert sidecar == provisioning.serialize_berth_storage_announcement(bob_ann)
+
     # -- Alice: complete the acceptance --
-    complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
+    completion = complete_invitation_acceptance(
+        root, alice_hex, "ProjectX", acceptance_b64
+    )
+    assert completion == {
+        "route_delivery": "imported",
+        "route_reason": None,
+        "admission": "finalized",
+    }
+
+    # Alice's inserted row is byte-identical to Bob's.
+    aconn = sqlite3.connect(str(root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"))
+    alice_bob_ann_rows = aconn.execute(
+        "SELECT announcement_id, teammate_id, berth_id, protocol, url, location, "
+        "announced_at, signer_key_id, signature "
+        "FROM teammate_berth_storage_announcement WHERE teammate_id = ?",
+        (bytes.fromhex(bob_teammate_id_hex),),
+    ).fetchall()
+    aconn.close()
+    assert alice_bob_ann_rows == bob_ann_rows
 
     # --- Verify Alice's invitation is accepted ---
     invitations = list_invitations(root, alice_hex, "ProjectX")
@@ -442,6 +469,21 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     assert result.returncode == 0
     assert "Created admission proposal" in result.stdout
 
+    # --- The delivery witness: Alice routes to Bob's storage on first contact ---
+    #
+    # No sync delivered Bob's announcement to Alice and no manual routing
+    # fixture ran: the only path the route took is the acceptance courier.
+    # Passthrough sessions and a runtime artifact keep this about routing --
+    # Alice holds no receiver record for Bob yet, and upload_runtime_artifact
+    # skips the own-announcement gate.
+    backend.upload_runtime_artifact(bob_team_token, "witness.txt", b"hello from Bob")
+    alice_team_passthrough = _open_session(http, "Alice", "ProjectX", mode="passthrough")
+    ok, data, _etag = backend.download_runtime_artifact_from_peer(
+        alice_team_passthrough, bob_teammate_id_hex, "witness.txt"
+    )
+    assert ok, data
+    assert data == b"hello from Bob"
+
 
 def test_double_accept_rejected(playground_dir, minio_server_gen):
     """Second acceptance of the same invitation should fail."""
@@ -502,7 +544,7 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
 
     # -- Bob: accept --
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
-    acceptance_b64 = bob_manager.accept_invitation(token)
+    acceptance_b64 = accept_and_export(bob_manager, token)
 
     # -- Alice: complete Bob's acceptance and re-push so Carol can clone the latest --
     complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
@@ -510,7 +552,7 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
 
     # -- Carol: accept the same token (provisioning succeeds, completion fails) --
     carol_manager = TeamManager(root, carol_hex, _http_client=http)
-    carol_acceptance_b64 = carol_manager.accept_invitation(token)
+    carol_acceptance_b64 = accept_and_export(carol_manager, token)
 
     with pytest.raises(ValueError, match="already finalized"):
         complete_invitation_acceptance(root, alice_hex, "ProjectX", carol_acceptance_b64)

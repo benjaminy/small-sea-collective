@@ -18,6 +18,7 @@ from .bootstrap import (
     welcome_bundle_aad,
 )
 from .db import (
+    AcceptanceArtifactAlreadyExportedError,
     FutureNoteToSelfDatabaseVersionError,
     LOCAL_DB_FILENAME,
     LOCAL_SCHEMA_VERSION,
@@ -25,15 +26,19 @@ from .db import (
     SHARED_SCHEMA_VERSION,
     attached_note_to_self_connection,
     device_local_db_path,
+    list_admission_acceptance_artifacts,
     get_note_to_self_adopted_count,
     initialize_bootstrap_local_state,
     initialize_shared_db,
+    mark_admission_acceptance_artifact_exported,
     note_to_self_sync_db_path,
+    save_admission_acceptance_artifact,
     set_note_to_self_adopted_count,
 )
 from .ids import uuid7
 
 __all__ = [
+    "AcceptanceArtifactAlreadyExportedError",
     "LOCAL_DB_FILENAME",
     "LOCAL_SCHEMA_VERSION",
     "FutureNoteToSelfDatabaseVersionError",
@@ -52,11 +57,14 @@ __all__ = [
     "deserialize_signed_welcome_bundle_plaintext",
     "deserialize_welcome_bundle_plaintext",
     "device_local_db_path",
+    "list_admission_acceptance_artifacts",
     "get_note_to_self_adopted_count",
     "initialize_bootstrap_local_state",
     "initialize_shared_db",
     "join_request_auth_string",
+    "mark_admission_acceptance_artifact_exported",
     "note_to_self_sync_db_path",
+    "save_admission_acceptance_artifact",
     "set_note_to_self_adopted_count",
     "serialize_join_request_artifact",
     "serialize_signed_welcome_bundle_plaintext",

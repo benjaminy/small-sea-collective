@@ -256,9 +256,24 @@ conditional on the allocation still matching the materialization request. If a
 conditional update loses a local race, the Hub re-reads and proceeds if
 possible, or returns `cloud_allocation_conflict`.
 
-Peer-visible storage announcements must be published only after the
-corresponding location is successfully materialized and any provider-issued
-final locator has been durably recorded.
+A teammate berth storage announcement is a signed selection of a route for one
+teammate and berth.
+Manager signs only a final locator: one the provider will not rewrite.
+As an issuer-side publication discipline, that means publishing only after Hub
+has successfully materialized the selected location once and any
+provider-issued final locator has been durably recorded.
+That readiness check prevents publication of an unresolved route; it is not a
+certificate of current or future reachability.
+Readers must handle all provider failures when they attempt I/O.
+
+The publisher is Manager, not the Hub: the Hub performs provider I/O and any
+narrow locator writeback, and Manager remains the only component that reads or
+writes the team Core DB.
+
+`POST /cloud/setup` is deliberately ungated — `materialize_for_session` does not
+require an own-storage announcement — so an invitee can materialize their Core
+location before they have any route to announce. That carve-out is what makes
+first-contact route preparation possible.
 
 Materialization outcomes:
 
@@ -299,6 +314,16 @@ Remote reads from another device of the same teammate use the announcement path,
 not this device's local allocation. This device's local allocation describes
 where this device writes. A sibling device may have written the same berth to a
 different location.
+
+#### First contact
+
+Peer routing is circular on first contact: fetching a new teammate's Core chain
+to obtain their announcement requires already knowing their storage. Nothing in
+the Hub resolves that. The invitee's Core route reaches the inviter through the
+acceptance courier, and the inviter's Manager inserts it as an ordinary row; see
+the Manager spec's "First-contact route delivery". The Hub gains no new routing
+authority and no new trust path from it: a couriered row activates through the
+same membership-cert trust as any other announcement.
 
 ### Concurrency
 

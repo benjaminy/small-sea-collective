@@ -1,17 +1,39 @@
+
 {% if error %}
 <p class="notice notice-err">{{ error }}</p>
 {% endif %}
 
-{% if acceptance_token %}
+{% if report %}
 <div style="border:1px solid #d6d3d1; border-radius:4px; padding:0.75rem; background:#fafaf9">
+  {% if acceptance_token %}
   <p class="token-instruction"><strong>Accepted.</strong> Send this token back to the inviter:</p>
   <div class="token-box">{{ acceptance_token }}</div>
   <p class="token-instruction" style="color:#78716c">
     The inviter pastes this into the "Complete acceptance" form in their team's Teammates section.
+    It carries your storage route, which passed setup before it was attached.
     Once they complete it, you will both be synced up.
   </p>
+  {% else %}
+  <p class="token-instruction">
+    <strong>You have joined {{ team_name }} locally.</strong>
+    Your acceptance token is not ready to send yet.
+  </p>
+  {% if report.route_reason %}
+  <p class="token-instruction" style="color:#78716c">
+    Storage route pending ({{ report.route_reason }}).
+    {{ route_help.get(report.route_reason, "Retry.") }}
+  </p>
+  {% else %}
+  <p class="token-instruction" style="color:#78716c">
+    Acceptance withheld ({{ report.acceptance_reason }}).
+  </p>
+  {% endif %}
+  <button hx-post="/teams/{{ team_name }}/prepare-route"
+          hx-target="#accept-invitation-result"
+          hx-swap="innerHTML">Retry</button>
+  {% endif %}
   <p class="token-instruction" style="color:#78716c; margin-top:0.5rem;">
-    The new team now appears in the sidebar. Open it to request a session, then push to cloud.
+    The team appears in the sidebar. Open it to request a session, then push to cloud.
   </p>
 </div>
 

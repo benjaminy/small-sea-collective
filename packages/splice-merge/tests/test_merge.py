@@ -295,3 +295,94 @@ def test_merge_non_id_primary_key_rows():
         device_key_ids = {row["device_key_id"] for row in bundle_rows}
         assert (b"a" * 16).hex().upper() in device_key_ids
         assert (b"b" * 16).hex().upper() in device_key_ids
+
+
+def _insert_announcement(db_path, *, announcement_id, location, signature):
+    conn = sqlite3.connect(str(db_path))
+    conn.execute(
+        "INSERT INTO teammate_berth_storage_announcement "
+        "(announcement_id, teammate_id, berth_id, protocol, url, location, "
+        "announced_at, signer_key_id, signature) "
+        "VALUES (?, ?, ?, 's3', 'http://example', ?, '2026-01-01', ?, ?)",
+        (
+            announcement_id,
+            b"\x01" * 16,
+            b"\x02" * 16,
+            location,
+            b"\x03" * 16,
+            signature,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_identical_insert_from_both_sides_is_not_a_conflict(capsys):
+    """A signed row can arrive by courier and again through its author's history.
+
+    After issue #183 every routed invitation produces exactly this case: the
+    invitee commits the announcement and the inviter inserts the couriered copy.
+    """
+    announcement_id = b"\x20" * 16
+    with tempfile.TemporaryDirectory() as tmp:
+        ancestor = _make_db(tmp, "ancestor.db", teammates=[b"\x01" * 16])
+
+        ours_db = pathlib.Path(tmp) / "ours.db"
+        theirs_db = pathlib.Path(tmp) / "theirs.db"
+        shutil.copy(ancestor, str(ours_db))
+        shutil.copy(ancestor, str(theirs_db))
+        for db in (ours_db, theirs_db):
+            _insert_announcement(
+                db,
+                announcement_id=announcement_id,
+                location="bucket-a",
+                signature=b"\xee" * 64,
+            )
+
+        a_json = sqlite_to_json(ancestor)
+        cleaned = reconcile_deltas(
+            compute_delta(a_json, sqlite_to_json(str(ours_db))),
+            compute_delta(a_json, sqlite_to_json(str(theirs_db))),
+        )
+        apply_delta(str(ours_db), cleaned)
+
+        assert "insert/insert conflict" not in capsys.readouterr().err
+        rows = _query_table(str(ours_db), "teammate_berth_storage_announcement")
+        assert len(rows) == 1
+        assert rows[0]["location"] == "bucket-a"
+        assert rows[0]["signature"] == b"\xee" * 64
+
+
+def test_divergent_insert_under_one_id_still_warns_and_keeps_ours(capsys):
+    announcement_id = b"\x20" * 16
+    with tempfile.TemporaryDirectory() as tmp:
+        ancestor = _make_db(tmp, "ancestor.db", teammates=[b"\x01" * 16])
+
+        ours_db = pathlib.Path(tmp) / "ours.db"
+        theirs_db = pathlib.Path(tmp) / "theirs.db"
+        shutil.copy(ancestor, str(ours_db))
+        shutil.copy(ancestor, str(theirs_db))
+        _insert_announcement(
+            ours_db,
+            announcement_id=announcement_id,
+            location="bucket-a",
+            signature=b"\xee" * 64,
+        )
+        _insert_announcement(
+            theirs_db,
+            announcement_id=announcement_id,
+            location="bucket-b",
+            signature=b"\xff" * 64,
+        )
+
+        a_json = sqlite_to_json(ancestor)
+        cleaned = reconcile_deltas(
+            compute_delta(a_json, sqlite_to_json(str(ours_db))),
+            compute_delta(a_json, sqlite_to_json(str(theirs_db))),
+        )
+        apply_delta(str(ours_db), cleaned)
+
+        assert "insert/insert conflict" in capsys.readouterr().err
+        rows = _query_table(str(ours_db), "teammate_berth_storage_announcement")
+        assert len(rows) == 1
+        assert rows[0]["location"] == "bucket-a"

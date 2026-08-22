@@ -6,7 +6,7 @@ from pathlib import Path
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
 SHARED_SCHEMA_VERSION = 58
-LOCAL_SCHEMA_VERSION = 10
+LOCAL_SCHEMA_VERSION = 11
 
 
 class FutureNoteToSelfDatabaseVersionError(Exception):
@@ -178,5 +178,139 @@ def set_note_to_self_adopted_count(
             (berth_id, int(count), datetime.now(timezone.utc).isoformat()),
         )
         conn.commit()
+    finally:
+        conn.close()
+
+
+class AcceptanceArtifactAlreadyExportedError(Exception):
+    """A differently signed acceptance may not replace one already exported.
+
+    The exported bytes may already be in circulation with the inviter, so a
+    second signed acceptance for the same proposal must never supersede them.
+    """
+
+    def __init__(self, team_id: bytes, proposal_id: bytes):
+        super().__init__(
+            "An exported admission acceptance already exists for proposal "
+            f"{proposal_id.hex()} in team {team_id.hex()}"
+        )
+
+
+_ACCEPTANCE_ARTIFACT_COLUMNS = (
+    "team_id",
+    "proposal_id",
+    "nonce",
+    "author_teammate_id",
+    "author_device_key_id",
+    "acceptance_record_id",
+    "acceptance_token",
+    "created_at",
+    "first_exported_at",
+)
+
+
+def _local_connection(root_dir: str | Path, participant_hex: str) -> sqlite3.Connection:
+    local_db = device_local_db_path(root_dir, participant_hex)
+    initialize_device_local_db(local_db)
+    return sqlite3.connect(local_db)
+
+
+def list_admission_acceptance_artifacts(
+    root_dir: str | Path,
+    participant_hex: str,
+    team_id: bytes,
+) -> list[dict]:
+    """Return every stored acceptance artifact for one team.
+
+    Callers decide which (if any) is eligible by matching it against the
+    current derived join; this reader never picks for them.
+    """
+    conn = _local_connection(root_dir, participant_hex)
+    try:
+        rows = conn.execute(
+            f"SELECT {', '.join(_ACCEPTANCE_ARTIFACT_COLUMNS)} "
+            "FROM admission_acceptance_artifact WHERE team_id = ?",
+            (team_id,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return [dict(zip(_ACCEPTANCE_ARTIFACT_COLUMNS, row)) for row in rows]
+
+
+def save_admission_acceptance_artifact(
+    root_dir: str | Path,
+    participant_hex: str,
+    *,
+    team_id: bytes,
+    proposal_id: bytes,
+    nonce: bytes,
+    author_teammate_id: bytes,
+    author_device_key_id: bytes,
+    acceptance_record_id: bytes,
+    acceptance_token: str,
+) -> None:
+    """Persist the signed base acceptance for one pending join.
+
+    Writing the identical artifact again is a no-op. A differently signed
+    artifact may replace a never-exported row -- deliberate local cleanup makes
+    a join retryable -- but never one that has been exported.
+    """
+    conn = _local_connection(root_dir, participant_hex)
+    try:
+        with conn:
+            existing = conn.execute(
+                "SELECT acceptance_token, first_exported_at "
+                "FROM admission_acceptance_artifact "
+                "WHERE team_id = ? AND proposal_id = ?",
+                (team_id, proposal_id),
+            ).fetchone()
+            if existing is not None:
+                if existing[0] == acceptance_token:
+                    return
+                if existing[1] is not None:
+                    raise AcceptanceArtifactAlreadyExportedError(team_id, proposal_id)
+            conn.execute(
+                "INSERT INTO admission_acceptance_artifact ("
+                "team_id, proposal_id, nonce, author_teammate_id, author_device_key_id, "
+                "acceptance_record_id, acceptance_token, created_at, first_exported_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL) "
+                "ON CONFLICT(team_id, proposal_id) DO UPDATE SET "
+                "nonce = excluded.nonce, "
+                "author_teammate_id = excluded.author_teammate_id, "
+                "author_device_key_id = excluded.author_device_key_id, "
+                "acceptance_record_id = excluded.acceptance_record_id, "
+                "acceptance_token = excluded.acceptance_token, "
+                "created_at = excluded.created_at",
+                (
+                    team_id,
+                    proposal_id,
+                    nonce,
+                    author_teammate_id,
+                    author_device_key_id,
+                    acceptance_record_id,
+                    acceptance_token,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+    finally:
+        conn.close()
+
+
+def mark_admission_acceptance_artifact_exported(
+    root_dir: str | Path,
+    participant_hex: str,
+    team_id: bytes,
+    proposal_id: bytes,
+) -> None:
+    """Stamp the first export. Later exports of the same bytes leave it alone."""
+    conn = _local_connection(root_dir, participant_hex)
+    try:
+        with conn:
+            conn.execute(
+                "UPDATE admission_acceptance_artifact "
+                "SET first_exported_at = ? "
+                "WHERE team_id = ? AND proposal_id = ? AND first_exported_at IS NULL",
+                (datetime.now(timezone.utc).isoformat(), team_id, proposal_id),
+            )
     finally:
         conn.close()

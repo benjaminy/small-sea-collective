@@ -140,3 +140,21 @@ CREATE TABLE IF NOT EXISTS runtime_reconciliation_state (
     last_sender_chain_id BLOB,
     updated_at TEXT NOT NULL
 );
+
+-- The invitee's signed `admission_acceptance` for one pending join. Immutable
+-- once exported: `created_at` is inside the signature, so re-signing would mint
+-- a different `record_id` and could put two valid acceptances for one proposal
+-- into circulation. Device-local because it is an installation-bound ceremony
+-- artifact, not a team fact.
+CREATE TABLE IF NOT EXISTS admission_acceptance_artifact (
+    team_id BLOB NOT NULL,
+    proposal_id BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    author_teammate_id BLOB NOT NULL,
+    author_device_key_id BLOB NOT NULL,
+    acceptance_record_id BLOB NOT NULL,
+    acceptance_token TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    first_exported_at TEXT,
+    PRIMARY KEY (team_id, proposal_id)
+);

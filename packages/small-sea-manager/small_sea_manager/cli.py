@@ -1,5 +1,6 @@
 """Click CLI for the Small Sea Manager."""
 
+import base64
 import json
 import pathlib
 import sys
@@ -171,14 +172,77 @@ def list_invitations(ctx, team_name):
         click.echo(f"  {inv['id'][:12]}…  {inv['status']}  {label}  ({inv.get('role', '?')})")
 
 
+_ROUTE_HELP = {
+    "storage_not_configured": "Add cloud storage, then retry.",
+    "hub_session_unavailable": "Open a session for this team, then retry.",
+    "user_action_required": "The storage provider needs your attention, then retry.",
+    "materialization_failed": "Setting up cloud storage failed. Retry.",
+    "allocation_conflict": "The cloud location changed underneath. Retry.",
+    "route_preparation_error": "Route preparation failed. Retry.",
+}
+
+
+def _report_join_state(report, team_name):
+    """Print a join-state report to stderr. Never touches stdout."""
+    click.echo(
+        f"join: {report['join']}  admission: {report['admission']}  "
+        f"route: {report['route']}",
+        err=True,
+    )
+    reason = report["route_reason"]
+    if reason is not None:
+        click.echo(
+            f"Route pending ({reason}). {_ROUTE_HELP.get(reason, 'Retry.')} "
+            f"Retry with: manager prepare-route {team_name}",
+            err=True,
+        )
+    if report["acceptance"] != "exportable":
+        click.echo(
+            f"Acceptance withheld ({report['acceptance_reason']}).",
+            err=True,
+        )
+
+
+def _echo_export(report, team_name):
+    """Print the courier token alone on stdout, or explain the withholding."""
+    _report_join_state(report, team_name)
+    if report.get("acceptance_token"):
+        click.echo(report["acceptance_token"])
+
+
 @cli.command("accept")
 @click.argument("token_b64")
 @click.pass_context
 def accept_invitation(ctx, token_b64):
-    """Accept an invitation token (invitee side). Prints the acceptance token to stdout."""
+    """Accept an invitation token (invitee side). Prints the acceptance token to stdout.
+
+    The token is withheld until a storage route is prepared; use
+    `prepare-route` and `export-acceptance` to finish a pending join.
+    """
     manager = _make_manager(ctx)
-    acceptance = manager.accept_invitation(token_b64)
-    click.echo(acceptance)
+    team_name = json.loads(base64.b64decode(token_b64))["team_name"]
+    report = manager.accept_invitation(token_b64)
+    if report["acceptance"] == "exportable":
+        report = manager.export_admission_acceptance(team_name)
+    _echo_export(report, team_name)
+
+
+@cli.command("prepare-route")
+@click.argument("team_name")
+@click.pass_context
+def prepare_route(ctx, team_name):
+    """Retry storage route preparation for a pending join."""
+    manager = _make_manager(ctx)
+    _report_join_state(manager.prepare_team_route(team_name), team_name)
+
+
+@cli.command("export-acceptance")
+@click.argument("team_name")
+@click.pass_context
+def export_acceptance(ctx, team_name):
+    """Print the courier token for a prepared join to stdout."""
+    manager = _make_manager(ctx)
+    _echo_export(manager.export_admission_acceptance(team_name), team_name)
 
 
 @cli.command("complete-acceptance")
@@ -188,8 +252,14 @@ def accept_invitation(ctx, token_b64):
 def complete_acceptance(ctx, team_name, acceptance_b64):
     """Complete an acceptance (inviter side), given the acceptance token from the invitee."""
     manager = _make_manager(ctx)
-    manager.complete_invitation_acceptance(team_name, acceptance_b64)
+    result = manager.complete_invitation_acceptance(team_name, acceptance_b64)
     click.echo(f"Acceptance complete for team '{team_name}'")
+    if result["route_delivery"] != "imported":
+        click.echo(
+            f"No storage route recorded for this teammate "
+            f"({result['route_delivery']}: {result['route_reason']}).",
+            err=True,
+        )
 
 
 @cli.command("revoke")

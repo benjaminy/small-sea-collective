@@ -1,6 +1,8 @@
 """FastAPI + Jinja2 + htmx web UI for the Small Sea Manager."""
 
 import asyncio
+import base64
+import json
 import pathlib
 from typing import Any
 
@@ -19,6 +21,25 @@ _template_dir = pathlib.Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=_template_dir)
 
 _NOTETOSELF = "NoteToSelf"
+
+#: What the invitee should do about a pending route. Every reason is retryable.
+_ROUTE_HELP = {
+    "storage_not_configured": "Add cloud storage below, then retry.",
+    "hub_session_unavailable": "Open a session for this team, then retry.",
+    "user_action_required": "Your storage provider needs your attention, then retry.",
+    "materialization_failed": "Setting up your cloud storage failed. Retry.",
+    "allocation_conflict": "Your cloud location changed underneath. Retry.",
+    "route_preparation_error": "Route preparation failed. Retry.",
+}
+
+#: What the inviter is told about the couriered route. These describe local
+#: processing only -- none of them claims the teammate's storage is reachable.
+_ROUTE_DELIVERY_NOTICE = {
+    "imported": "A Core route claim came with it; the route passed setup before it was sent.",
+    "missing": "No route claim came with it, so this teammate is not routable yet.",
+    "invalid": "The attached route claim did not verify and was discarded.",
+    "conflict": "The attached route claim collided with a stored row and was discarded.",
+}
 
 
 def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> FastAPI:
@@ -587,26 +608,49 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     # Accept invitation (invitee side)
     # ------------------------------------------------------------------ #
 
-    @app.post("/accept-invitation", response_class=HTMLResponse)
-    async def accept_invitation(request: Request, invitation_token: str = Form(...)):
-        mgr = _mgr(request)
-        try:
-            acceptance_token = mgr.accept_invitation(invitation_token.strip())
-            error = None
-        except Exception as e:
-            acceptance_token = None
-            error = str(e)
+    def _acceptance_fragment(request, mgr, team_name, report, error=None):
         # Pass updated teams list so acceptance_token.html can OOB-update #sidebar-teams
-        teams = _teams_with_status(mgr) if acceptance_token else []
         return templates.TemplateResponse(
             "fragments/acceptance_token.html",
             {
                 "request": request,
-                "acceptance_token": acceptance_token,
+                "team_name": team_name,
+                "report": report,
+                "acceptance_token": (report or {}).get("acceptance_token"),
+                "route_help": _ROUTE_HELP,
                 "error": error,
-                "teams": teams,
+                "teams": _teams_with_status(mgr) if report else [],
             },
         )
+
+    @app.post("/accept-invitation", response_class=HTMLResponse)
+    async def accept_invitation(request: Request, invitation_token: str = Form(...)):
+        mgr = _mgr(request)
+        team_name = None
+        try:
+            token = invitation_token.strip()
+            team_name = json.loads(base64.b64decode(token))["team_name"]
+            report = mgr.accept_invitation(token)
+            if report["acceptance"] == "exportable":
+                report = mgr.export_admission_acceptance(team_name)
+            error = None
+        except Exception as e:
+            report = None
+            error = str(e)
+        return _acceptance_fragment(request, mgr, team_name, report, error=error)
+
+    @app.post("/teams/{team_name}/prepare-route", response_class=HTMLResponse)
+    async def prepare_route(request: Request, team_name: str):
+        mgr = _mgr(request)
+        try:
+            report = mgr.prepare_team_route(team_name)
+            if report["acceptance"] == "exportable":
+                report = mgr.export_admission_acceptance(team_name)
+            error = None
+        except Exception as e:
+            report = None
+            error = str(e)
+        return _acceptance_fragment(request, mgr, team_name, report, error=error)
 
     @app.post("/teams/{team_name}/complete-acceptance", response_class=HTMLResponse)
     async def complete_acceptance(
@@ -614,8 +658,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     ):
         mgr = _mgr(request)
         try:
-            mgr.complete_invitation_acceptance(team_name, acceptance_token)
-            notice = "Acceptance recorded."
+            result = mgr.complete_invitation_acceptance(team_name, acceptance_token)
+            notice = "Acceptance recorded. " + _ROUTE_DELIVERY_NOTICE[
+                result["route_delivery"]
+            ]
             error = None
         except Exception as e:
             notice = None

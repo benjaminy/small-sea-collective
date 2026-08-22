@@ -1,4 +1,3 @@
-import base64
 import json
 import pathlib
 import sqlite3
@@ -20,7 +19,11 @@ from small_sea_manager.provisioning import (
     complete_invitation_acceptance,
     create_invitation, create_new_participant, create_team,
     get_berth_cloud_allocation_for_berth, get_current_team_device_key)
-from test_support import publish_storage_announcement_for_session
+from test_support import (
+    accept_and_export,
+    acceptance_record_from_courier,
+    publish_storage_announcement_for_session,
+)
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -165,13 +168,13 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
 
     # -- Bob: accept via Manager --
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
-    acceptance_b64 = bob_manager.accept_invitation(token)
+    acceptance_b64 = accept_and_export(bob_manager, token)
 
     # -- Alice: complete acceptance --
     complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
 
     # -- Bob: read Alice's latest link via Hub and verify signature --
-    acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
+    acceptance = acceptance_record_from_courier(acceptance_b64)
     bob_teammate_id_hex = acceptance["author_teammate_id"]
 
     bob_team_token = _open_session(http, "Bob", "ProjectX", mode="passthrough")

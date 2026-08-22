@@ -20,7 +20,11 @@ from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager
-from test_support import publish_storage_announcement_for_session
+from test_support import (
+    accept_and_export,
+    acceptance_record_from_courier,
+    publish_storage_announcement_for_session,
+)
 
 ALICE_MINIO_PORT = 19650
 BOB_MINIO_PORT = 19750
@@ -155,10 +159,10 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
 
     # ---- Bob: accept via Manager (all cloud I/O through Hub) ----
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
-    acceptance_b64 = bob_manager.accept_invitation(token_b64)
+    acceptance_b64 = accept_and_export(bob_manager, token_b64)
 
     assert isinstance(acceptance_b64, str)
-    acceptance = json.loads(base64.b64decode(acceptance_b64).decode())
+    acceptance = acceptance_record_from_courier(acceptance_b64)
     bob_teammate_id_hex = acceptance["author_teammate_id"]
 
     # ---- Bob: push accepted team repo via Hub ----

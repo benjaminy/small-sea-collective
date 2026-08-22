@@ -85,7 +85,10 @@ from small_sea_note_to_self.db import (
     get_note_to_self_adopted_count,
     initialize_bootstrap_local_state,
     initialize_shared_db,
+    list_admission_acceptance_artifacts,
+    mark_admission_acceptance_artifact_exported,
     note_to_self_sync_db_path,
+    save_admission_acceptance_artifact,
     set_note_to_self_adopted_count,
 )
 from small_sea_note_to_self.bootstrap import (
@@ -151,6 +154,7 @@ from wrasse_trust.transport import (
     key_certificate_from_team_db_record,
     select_effective_teammate_berth_storage,
     select_effective_teammate_transport,
+    verify_teammate_berth_storage_announcement_signature,
 )
 
 
@@ -917,15 +921,34 @@ def _validate_mode_plan(plan) -> None:
         raise ValueError(f"Invalid mode plan: {plan!r}")
 
 
+class AmbiguousCoreBerthError(ValueError):
+    """More than one Core berth row exists in a team DB.
+
+    Both sides of the invitation flow resolve the Core berth independently, so
+    an ambiguous join lets them pick different rows and fail the route binding
+    confusingly. Surface the ambiguity instead of choosing arbitrarily.
+    """
+
+    def __init__(self, count: int):
+        self.count = count
+        super().__init__(
+            f"core_berth_ambiguous: {count} SmallSeaCollectiveCore berth rows in team DB"
+        )
+
+
 def _core_berth_id(conn) -> bytes | None:
-    row = conn.execute(
+    rows = conn.execute(
         text(
             "SELECT tab.id FROM team_app_berth tab "
             "JOIN app a ON a.id = tab.app_id "
             "WHERE a.name = 'SmallSeaCollectiveCore'"
         )
-    ).fetchone()
-    return row[0] if row is not None else None
+    ).fetchall()
+    if not rows:
+        return None
+    if len(rows) > 1:
+        raise AmbiguousCoreBerthError(len(rows))
+    return rows[0][0]
 
 
 # --- Constitution record envelope + admission record builders -----------------
@@ -3563,6 +3586,238 @@ def has_local_team_clone(root_dir, participant_hex, team_name) -> bool:
     return _team_db_path(root_dir, participant_hex, team_name).exists()
 
 
+def _own_device_storage_announcement(
+    conn,
+    *,
+    teammate_id: bytes,
+    berth_id: bytes,
+    signer_public_key: bytes,
+    allocation: dict,
+) -> TeammateBerthStorageAnnouncement | None:
+    """Return this device's own valid announcement for `allocation`, if present.
+
+    Deliberately independent of membership-cert trust: an invitee whose
+    admission has not finalized still holds their own route. This mirrors the
+    Hub's `_has_current_device_storage_announcement` gate, so route readiness
+    and the Hub's own-storage check cannot disagree.
+    """
+    signer_key_id = key_id_from_public(signer_public_key)
+    for announcement in load_teammate_berth_storage_announcements(
+        conn, teammate_id, berth_id
+    ):
+        if (
+            announcement.signer_key_id != signer_key_id
+            or announcement.protocol != allocation["protocol"]
+            or announcement.url != allocation["url"]
+            or announcement.location != allocation["location"]
+        ):
+            continue
+        if verify_teammate_berth_storage_announcement_signature(
+            announcement, signer_public_key
+        ):
+            return announcement
+    return None
+
+
+def derive_team_join_state(root_dir, participant_hex, team_name) -> dict:
+    """Derive local join, admission, and route state for one team.
+
+    Everything here is read back from the clone, the NoteToSelf `team` row, the
+    team device key, the membership-cert view, and the announcement query --
+    no stored status column and no read of `admission_proposal`, which the
+    inviter may never have pushed.
+    """
+    root_dir = pathlib.Path(root_dir)
+    state = {
+        "join": "absent",
+        "admission": "pending",
+        "route": "pending",
+        "team_id": None,
+        "self_in_team": None,
+        "device_public_key": None,
+        "device_key_id": None,
+        "core_berth_id": None,
+        "allocation": None,
+    }
+    if not has_local_team_clone(root_dir, participant_hex, team_name):
+        return state
+    try:
+        team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+        _private_key, public_key = get_current_team_device_key(
+            root_dir, participant_hex, team_name
+        )
+    except (ValueError, FileNotFoundError):
+        return state
+
+    state.update(
+        join="complete",
+        team_id=team_id,
+        self_in_team=self_in_team,
+        device_public_key=public_key,
+        device_key_id=key_id_from_public(public_key),
+    )
+
+    engine = _sqlite_engine(_team_db_path(root_dir, participant_hex, team_name))
+    try:
+        with engine.begin() as conn:
+            trusted = resolve_trusted_device_keys_for_teammate(
+                _load_team_certificates(conn, team_id), team_id, self_in_team
+            )
+            if public_key in trusted:
+                state["admission"] = "finalized"
+            core_berth_id = _core_berth_id(conn)
+            state["core_berth_id"] = core_berth_id
+            if core_berth_id is None:
+                return state
+            allocation = get_berth_cloud_allocation_for_berth(
+                root_dir, participant_hex, core_berth_id
+            )
+            state["allocation"] = allocation
+            if allocation is not None and _own_device_storage_announcement(
+                conn,
+                teammate_id=self_in_team,
+                berth_id=core_berth_id,
+                signer_public_key=public_key,
+                allocation=allocation,
+            ) is not None:
+                state["route"] = "ready"
+    finally:
+        engine.dispose()
+    return state
+
+
+def selected_own_berth_storage_announcement(
+    root_dir, participant_hex, team_name, state
+) -> TeammateBerthStorageAnnouncement | None:
+    """Return the row this device published for its current Core allocation.
+
+    This is the same row `derive_team_join_state` reads to call the route
+    ready, so an exported sidecar is field-for-field the invitee's stored row
+    rather than a reconstruction.
+    """
+    if state["core_berth_id"] is None or state["allocation"] is None:
+        return None
+    engine = _sqlite_engine(_team_db_path(root_dir, participant_hex, team_name))
+    try:
+        with engine.begin() as conn:
+            return _own_device_storage_announcement(
+                conn,
+                teammate_id=state["self_in_team"],
+                berth_id=state["core_berth_id"],
+                signer_public_key=state["device_public_key"],
+                allocation=state["allocation"],
+            )
+    finally:
+        engine.dispose()
+
+
+def eligible_acceptance_artifact(
+    root_dir, participant_hex, state
+) -> tuple[dict | None, str | None]:
+    """Return the stored acceptance artifact for exactly this derived join.
+
+    Eligibility is by the join's own fields -- team, author teammate, author
+    device key -- never by team name or insertion order. `proposal_id` and
+    `nonce` are the artifact's own stored copies, which is what binds the
+    exported bytes to the record they were signed over.
+
+    Returns `(artifact, None)` or `(None, reason)` with `artifact_missing` or
+    `artifact_stale`.
+    """
+    if state["join"] != "complete":
+        return None, "artifact_missing"
+    stored = list_admission_acceptance_artifacts(
+        root_dir, participant_hex, state["team_id"]
+    )
+    if not stored:
+        return None, "artifact_missing"
+    eligible = [
+        artifact
+        for artifact in stored
+        if artifact["author_teammate_id"] == state["self_in_team"]
+        and artifact["author_device_key_id"] == state["device_key_id"]
+    ]
+    if len(eligible) == 1:
+        return eligible[0], None
+    # Zero matches means the local join moved on past these bytes. More than
+    # one means two signed acceptances describe this exact join and nothing in
+    # the local state says which is current; refusing both is the only answer
+    # that cannot circulate the wrong bytes.
+    return None, "artifact_stale"
+
+
+ACCEPTANCE_COURIER_ENVELOPE = "invitation_acceptance_courier"
+
+
+def read_teammate_berth_storage_announcement(
+    root_dir, participant_hex, team_name, announcement_id: bytes
+) -> TeammateBerthStorageAnnouncement | None:
+    """Read one stored announcement row back by its ID.
+
+    The publish result is not a full row -- its no-op branch omits
+    `announced_at` and neither branch returns `signature` -- so the sidecar is
+    always read back from the DB rather than reconstructed.
+    """
+    engine = _sqlite_engine(_team_db_path(root_dir, participant_hex, team_name))
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text(
+                    "SELECT announcement_id, teammate_id, berth_id, protocol, url, "
+                    "location, announced_at, signer_key_id, signature "
+                    "FROM teammate_berth_storage_announcement "
+                    "WHERE announcement_id = :announcement_id"
+                ),
+                {"announcement_id": announcement_id},
+            ).fetchone()
+    finally:
+        engine.dispose()
+    return None if row is None else TeammateBerthStorageAnnouncement(*row)
+
+
+def serialize_berth_storage_announcement(
+    announcement: TeammateBerthStorageAnnouncement,
+) -> dict:
+    return {
+        "announcement_id": announcement.announcement_id.hex(),
+        "teammate_id": announcement.teammate_id.hex(),
+        "berth_id": announcement.berth_id.hex(),
+        "protocol": announcement.protocol,
+        "url": announcement.url,
+        "location": announcement.location,
+        "announced_at": announcement.announced_at,
+        "signer_key_id": announcement.signer_key_id.hex(),
+        "signature": announcement.signature.hex(),
+    }
+
+
+def build_acceptance_courier_token(acceptance_token: str, route: dict | None) -> str:
+    """Wrap the stored base acceptance, attaching a signed route beside it.
+
+    The acceptance token is carried verbatim: the route is never part of the
+    admission record's signed fields, so attaching or changing it leaves the
+    acceptance's canonical bytes and `record_id` untouched.
+    """
+    return _tokenize(
+        {
+            "envelope": ACCEPTANCE_COURIER_ENVELOPE,
+            "admission_acceptance": acceptance_token,
+            "route": route,
+        }
+    )
+
+
+def export_admission_acceptance(root_dir, participant_hex, artifact) -> str:
+    """Mark the artifact exported and return its stored acceptance token."""
+    mark_admission_acceptance_artifact_exported(
+        root_dir,
+        participant_hex,
+        artifact["team_id"],
+        artifact["proposal_id"],
+    )
+    return artifact["acceptance_token"]
+
+
 def get_note_to_self_adopted_signal_count(root_dir, participant_hex, berth_id: bytes) -> int | None:
     return get_note_to_self_adopted_count(root_dir, participant_hex, berth_id)
 
@@ -5039,7 +5294,15 @@ def accept_invitation(
     """Accept a transcript-bound team invitation token (invitee side).
 
     The invitee may clone the repo and prepare local keys, but does not write
-    their own admission into the team DB.
+    their own admission into the team DB, and publishes no storage route: that
+    is `TeamManager`'s separate step, after Hub materialization settles the
+    locator.
+
+    All the work here is local. The signed base acceptance is persisted to the
+    device-local DB and also returned, but that return is a test-only escape
+    hatch: it bypasses the export gate, so a direct caller can obtain a
+    route-less acceptance without marking it exported. `TeamManager` is the
+    only production producer of a courier token.
     """
     root_dir = pathlib.Path(root_dir)
 
@@ -5112,42 +5375,20 @@ def accept_invitation(
 
     team_db_path = team_sync_dir / "core.db"
     ensure_team_db_schema(team_db_path)
-    core_conn = sqlite3.connect(str(team_db_path))
+    core_engine = _sqlite_engine(team_db_path)
     try:
-        core_berth_row = core_conn.execute(
-            """
-            SELECT tab.id
-            FROM team_app_berth tab
-            JOIN app a ON a.id = tab.app_id
-            WHERE a.name = ?
-            """,
-            ("SmallSeaCollectiveCore",),
-        ).fetchone()
+        with core_engine.begin() as core_conn:
+            core_berth_id = _core_berth_id(core_conn)
     finally:
-        core_conn.close()
-    if core_berth_row is not None:
-        acceptor_allocation = _auto_allocate_berth_cloud_if_available(
-            root_dir, acceptor_participant_hex, core_berth_row[0]
+        core_engine.dispose()
+    if core_berth_id is not None:
+        # Choose the acceptor's Core storage locally, but publish nothing here.
+        # A signed announcement must name a locator the provider will not
+        # rewrite, and only Hub materialization settles that. Route publication
+        # is TeamManager's separate, retryable step.
+        _auto_allocate_berth_cloud_if_available(
+            root_dir, acceptor_participant_hex, core_berth_id
         )
-        if acceptor_allocation is not None:
-            # Publish the acceptor's own berth storage announcement, signed with
-            # the acceptor's freshly generated team device key, so peers can
-            # discover the acceptor's storage without any team_device transport
-            # fallback. Committed below so the acceptor's next push carries it.
-            publish_teammate_berth_storage_announcement(
-                root_dir,
-                acceptor_participant_hex,
-                team_name,
-                acceptor_teammate_id,
-                core_berth_row[0],
-                acceptor_allocation,
-                signer_key=(
-                    team_keys["device_private_key"],
-                    team_keys["device_key"].public_key,
-                ),
-            )
-            repo.stage(["core.db"])
-            repo.commit("Announce acceptor berth storage")
     # Team sender state is local-only and does not publish admission.
     save_peer_sender_key(
         device_local_db_path(root_dir, acceptor_participant_hex),
@@ -5201,7 +5442,140 @@ def accept_invitation(
         "invitee_bootstrap_key": invitee_bootstrap_key.hex(),
         "signature": acceptance_signature.hex(),
     }
-    return _tokenize(acceptance_data)
+    acceptance_token = _tokenize(acceptance_data)
+
+    # Persist the immutable signed acceptance before reporting local
+    # preparation complete. `created_at` is inside the signature, so this is
+    # the one part of the ceremony that cannot be re-derived later. This is not
+    # atomic with the clone, Git, NoteToSelf, and key-file writes above: a
+    # failure here is a local acceptance-preparation failure and exposes no
+    # token.
+    save_admission_acceptance_artifact(
+        root_dir,
+        acceptor_participant_hex,
+        team_id=team_id,
+        proposal_id=proposal_id,
+        nonce=nonce,
+        author_teammate_id=acceptor_teammate_id,
+        author_device_key_id=acceptor_device_key_id,
+        acceptance_record_id=acceptance_record_id,
+        acceptance_token=acceptance_token,
+    )
+    return acceptance_token
+
+
+_ROUTE_SIDECAR_ROW_COLUMNS = (
+    "announcement_id, teammate_id, berth_id, protocol, url, location, "
+    "announced_at, signer_key_id, signature"
+)
+
+
+def _import_acceptance_route_sidecar(
+    conn,
+    *,
+    sidecar,
+    invitee_device_public_key: bytes,
+    invitee_teammate_id: bytes,
+) -> tuple[str, str | None]:
+    """Verify and insert the invitee's couriered Core route.
+
+    Acceptance-scoped on purpose, and deliberately not a channel-neutral
+    importer: the acceptable signer is the key the caller has just proved the
+    invitee holds, bound to the inviter's proposal. A general route importer
+    must instead derive acceptable keys from the local trust view, and keeping
+    the two apart avoids creating an accidental routing trust path.
+
+    Every failure is isolated. The admission record is independently
+    self-certifying, so no sidecar problem may abort it -- including an
+    ambiguous Core berth on the inviter's side, whose resolution raises.
+
+    Returns `(route_delivery, reason)` where `route_delivery` is `imported`,
+    `missing`, `invalid`, or `conflict`.
+    """
+    if sidecar is None:
+        return "missing", "absent"
+
+    try:
+        core_berth_id = _core_berth_id(conn)
+    except AmbiguousCoreBerthError:
+        return "invalid", "core_berth_ambiguous"
+    if core_berth_id is None:
+        return "invalid", "core_berth_missing"
+
+    try:
+        announcement = TeammateBerthStorageAnnouncement(
+            announcement_id=bytes.fromhex(sidecar["announcement_id"]),
+            teammate_id=bytes.fromhex(sidecar["teammate_id"]),
+            berth_id=bytes.fromhex(sidecar["berth_id"]),
+            protocol=sidecar["protocol"],
+            url=sidecar["url"],
+            location=sidecar["location"],
+            announced_at=sidecar["announced_at"],
+            signer_key_id=bytes.fromhex(sidecar["signer_key_id"]),
+            signature=bytes.fromhex(sidecar["signature"]),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return "invalid", "malformed"
+    text_values = (
+        announcement.protocol,
+        announcement.url,
+        announcement.location,
+        announcement.announced_at,
+    )
+    if not all(isinstance(value, str) for value in text_values):
+        return "invalid", "malformed"
+    try:
+        for value in text_values:
+            value.encode("utf-8")
+    except UnicodeEncodeError:
+        return "invalid", "malformed"
+
+    if announcement.signer_key_id != key_id_from_public(invitee_device_public_key):
+        return "invalid", "wrong_signer"
+    if announcement.teammate_id != invitee_teammate_id:
+        return "invalid", "wrong_teammate"
+    # Requiring only that the berth exist could accept a correctly signed
+    # non-Core route while leaving the first-contact cycle unresolved.
+    if announcement.berth_id != core_berth_id:
+        return "invalid", "wrong_berth"
+    if not verify_teammate_berth_storage_announcement_signature(
+        announcement, invitee_device_public_key
+    ):
+        return "invalid", "bad_signature"
+
+    existing = conn.execute(
+        text(
+            f"SELECT {_ROUTE_SIDECAR_ROW_COLUMNS} "
+            "FROM teammate_berth_storage_announcement "
+            "WHERE announcement_id = :announcement_id"
+        ),
+        {"announcement_id": announcement.announcement_id},
+    ).fetchone()
+    if existing is not None:
+        if TeammateBerthStorageAnnouncement(*existing) == announcement:
+            return "imported", None
+        return "conflict", "announcement_id_collision"
+
+    conn.execute(
+        text(
+            "INSERT INTO teammate_berth_storage_announcement "
+            f"({_ROUTE_SIDECAR_ROW_COLUMNS}) "
+            "VALUES (:announcement_id, :teammate_id, :berth_id, :protocol, :url, "
+            ":location, :announced_at, :signer_key_id, :signature)"
+        ),
+        {
+            "announcement_id": announcement.announcement_id,
+            "teammate_id": announcement.teammate_id,
+            "berth_id": announcement.berth_id,
+            "protocol": announcement.protocol,
+            "url": announcement.url,
+            "location": announcement.location,
+            "announced_at": announcement.announced_at,
+            "signer_key_id": announcement.signer_key_id,
+            "signature": announcement.signature,
+        },
+    )
+    return "imported", None
 
 
 def complete_invitation_acceptance(
@@ -5213,11 +5587,28 @@ def complete_invitation_acceptance(
     The inviter transports the invitee-authored `admission_acceptance` record
     and inserts it verbatim after a self-certifying verify -- the invitee is
     the author, the inviter is only the courier.
+
+    A courier token may carry the invitee's signed Core storage route beside
+    the acceptance. That route is optional and never fatal: the values below
+    describe local processing only, and say nothing about whether the invitee's
+    storage is reachable now.
+
+    Returns `{"route_delivery", "route_reason", "admission"}` where
+    `route_delivery` is `imported`, `missing`, `invalid`, or `conflict` and
+    `admission` is `finalized` or `pending`.
     """
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
 
-    acceptance = _untokenize(acceptance_b64)
+    courier = _untokenize(acceptance_b64)
+    if courier.get("envelope") == ACCEPTANCE_COURIER_ENVELOPE:
+        route_sidecar = courier.get("route")
+        acceptance = _untokenize(courier["admission_acceptance"])
+    else:
+        # A bare acceptance record: the test-only low-level return path, and
+        # any courier that stripped the envelope.
+        route_sidecar = None
+        acceptance = courier
     acceptance_record_id = bytes.fromhex(acceptance["record_id"])
     invitee_teammate_id = bytes.fromhex(acceptance["author_teammate_id"])
     author_device_key_id = bytes.fromhex(acceptance["author_device_key_id"])
@@ -5301,6 +5692,8 @@ def complete_invitation_acceptance(
         raise ValueError("Failed to issue a valid membership cert for the invitee")
 
     failure_reason = None
+    route_delivery, route_reason = "missing", "absent"
+    admission = "pending"
     with engine.begin() as conn:
         proposal_row = _load_proposal_row(conn, proposal_id)
         block_reason = _admission_action_block_reason(conn, proposal_row)
@@ -5342,6 +5735,17 @@ def complete_invitation_acceptance(
                     "invitee_bootstrap_key": invitee_bootstrap_key,
                     "signature": acceptance_signature,
                 },
+            )
+
+            # Same transaction as the acceptance, and only in this branch: the
+            # block_reason path writes nothing and raises afterwards, so a row
+            # inserted there would persist against a refused admission. The
+            # row is inert until a membership cert makes its signer trusted.
+            route_delivery, route_reason = _import_acceptance_route_sidecar(
+                conn,
+                sidecar=route_sidecar,
+                invitee_device_public_key=invitee_device_public_key,
+                invitee_teammate_id=invitee_teammate_id,
             )
 
             # The inviter endorses the acceptance they just recorded -- but
@@ -5392,6 +5796,7 @@ def complete_invitation_acceptance(
                     author_public_key=inviter_public_key,
                     anchor_commit=anchor_commit,
                 )
+                admission = "finalized"
 
     engine.dispose()
     if failure_reason is not None:
@@ -5400,6 +5805,11 @@ def complete_invitation_acceptance(
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
     repo.commit("Recorded admission acceptance")
+    return {
+        "route_delivery": route_delivery,
+        "route_reason": route_reason,
+        "admission": admission,
+    }
 
 
 def endorse_admission(root_dir, participant_hex, team_name, proposal_id_hex):
@@ -5952,7 +6362,7 @@ def list_cloud_storage(root_dir, participant_hex):
             FROM cloud_storage cs
             LEFT JOIN local.cloud_storage_credential csc
               ON csc.cloud_storage_id = cs.id
-            ORDER BY rowid
+            ORDER BY cs.rowid
             """
         ).fetchall()
     result = []
