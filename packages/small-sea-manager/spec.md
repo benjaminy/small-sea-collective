@@ -737,9 +737,11 @@ Takes the invitee's out-of-band acceptance blob. The inviter:
 The current admission extension counts anchor-relative endorsements toward a configured quorum and publishes a `finalization` record.
 That is Manager policy, not a Constitution-core membership decision.
 
-After the inviter publishes the completed transcript, the prospective teammate may set up their incoming cloud
-endpoint via the teammate-transport-configuration flow (B7) and then publishes
-their own sender key via `redistribute_sender_key(...)`.
+The invitee's Core storage route is not set up by admission itself.
+During the normal first-contact ceremony, Manager attempts to prepare the route and courier a signed `teammate_berth_storage_announcement` beside the acceptance (issue #183).
+Route delivery is optional and never blocks admission: when preparation and import succeed, the inviter holds the announcement when admission finalizes; otherwise finalization may leave the teammate's Core route `missing`.
+After the inviter publishes the completed transcript, the new teammate publishes their own sender key via `redistribute_sender_key(...)`.
+The general post-admission storage-configuration flow (B7) — a teammate adding storage later, or changing providers — is not implemented.
 Whether a peer accepts those publications or distributes future key material depends on that peer's admission and encryption policy.
 
 The current schema stores a mutable `admission_proposal` row plus append-only `steward_approval` rows.
@@ -1081,7 +1083,7 @@ A teammate berth storage announcement is the team-visible signed statement that
 tells peers where one teammate stores readable data for one berth. It is scoped
 to `(teammate_id, berth_id)`.
 
-This replaces teammate-scoped transport announcements for berth storage routing.
+It is the only storage-routing authority: Hub peer routing and Manager's team view both read it, and no teammate-scoped announcement table exists.
 Different teammates may store their clones of the same berth in different
 providers or accounts, so neither `teammate_id` alone nor `berth_id` alone is
 sufficient.
@@ -1107,9 +1109,9 @@ Publication is Manager's, after Hub materialization. Provisioning's acceptance
 step performs no invitee-storage materialization and no pre-materialization
 route publication.
 
-Selection mirrors the current transport-announcement rule: sort
-`announcement_id` descending and choose the first valid row for
-`(teammate_id, berth_id)`. The ID is UUIDv7, so this is the time-ordering rule;
+Selection sorts `announcement_id` descending and chooses the first valid row for `(teammate_id, berth_id)`.
+An invalid newer row does not hide an older valid one.
+The ID is UUIDv7, so this is the time-ordering rule;
 `announced_at` is display/audit data. Validity is structural: the signature
 verifies and the signer key is currently trusted for `teammate_id`. There is no
 max-age policy in v1.
@@ -1268,9 +1270,9 @@ Alice (inviter)                    Bob (invitee)         Other Core integrators
   |                                     |                      |
   | ---- finalization notice (OOB) ---> |                      |
   |                                     |                      |
-  |              [Bob runs B7 transport-config flow to stand   |
-  |               up incoming cloud endpoint, then publishes   |
-  |               own sender key via redistribute_sender_key]  |
+  |              [If Bob's Core route was couriered with his   |
+  |               acceptance, Alice already holds it; with or  |
+  |               without it, Bob publishes his sender key]    |
 ```
 
 **Token contents:** proposal ID, nonce, team name, inviter teammate ID, inviter
@@ -1500,8 +1502,9 @@ CREATE TABLE IF NOT EXISTS berth_role (
 
 -- [CONSTITUTION EVENT STORE TBD]
 -- Admission remains an extension over canonical signed events.
--- Transport metadata (cloud endpoints etc.) is NOT part of this schema;
--- that is configured post-admission via the B7 teammate-transport flow.
+-- Admission itself carries no transport metadata.
+-- Per-berth storage routes are a separate concern held in `teammate_berth_storage_announcement`.
+-- First contact may deliver one beside the acceptance (issue #183).
 
 CREATE TABLE IF NOT EXISTS team_device (
     device_key_id BLOB PRIMARY KEY,

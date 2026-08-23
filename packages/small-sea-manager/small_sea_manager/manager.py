@@ -378,17 +378,6 @@ class TeamManager:
             teammate,
         )
 
-    def announce_teammate_transport(self, team_name, *, protocol: str, url: str, bucket: str):
-        """Publish a signed transport announcement for the current teammate."""
-        return provisioning.announce_teammate_transport(
-            self.root_dir,
-            self.participant_hex,
-            team_name,
-            protocol=protocol,
-            url=url,
-            bucket=bucket,
-        )
-
     def publish_teammate_berth_storage_announcement(self, team_name, berth_id, allocation):
         """Publish this teammate's storage location for one berth."""
         team = provisioning._team_row(self.root_dir, self.participant_hex, team_name)

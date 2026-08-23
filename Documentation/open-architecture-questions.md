@@ -216,12 +216,12 @@ and `packages/small-sea-manager/spec.md` for the full descriptions.
 - **Rotation means containment or hygiene, never retroactive erasure.**
   The identity and encryption extensions decide who receives future key material.
 
-- **Post-admission transport setup is a separate flow (B7).** A prospective
-  teammate may configure their incoming cloud endpoint after the completed
-  admission transcript is published.
-  Peers decide whether to use that announcement under their storage-routing policy.
-  This capability is independent of admission and is also how existing
-  teammates change cloud providers.
+- **Storage routing is per berth, and changing it is a separate flow (B7).**
+  A teammate's route to one berth is a signed `teammate_berth_storage_announcement` scoped to `(teammate_id, berth_id)`.
+  For first contact, Manager attempts to prepare the invitee's Core route and couriers it beside the acceptance when preparation succeeds (issue #183).
+  Missing, invalid, or conflicting route delivery never blocks admission.
+  The general B7 flow — a teammate adding storage later, or changing providers — is not implemented, and has no Manager or CLI path today.
+  Peers decide whether to use an announcement under their storage-routing policy.
 
 
 

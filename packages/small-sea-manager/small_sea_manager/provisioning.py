@@ -148,12 +148,9 @@ from wrasse_trust.keys import (
 from wrasse_trust.transport import (
     EffectiveTransportSelection,
     TeammateBerthStorageAnnouncement,
-    TeammateTransportAnnouncement,
     canonical_teammate_berth_storage_announcement_bytes,
-    canonical_teammate_transport_announcement_bytes,
     key_certificate_from_team_db_record,
     select_effective_teammate_berth_storage,
-    select_effective_teammate_transport,
     verify_teammate_berth_storage_announcement_signature,
 )
 
@@ -934,6 +931,18 @@ class AmbiguousCoreBerthError(ValueError):
         super().__init__(
             f"core_berth_ambiguous: {count} SmallSeaCollectiveCore berth rows in team DB"
         )
+
+
+class MissingCoreBerthError(ValueError):
+    """No SmallSeaCollectiveCore berth row exists in a team DB.
+
+    The team view reports each teammate's route to that exact berth, so an
+    unresolvable coordinate is a broken team DB, not a team in which every
+    teammate happens to lack an announcement.
+    """
+
+    def __init__(self):
+        super().__init__("core_berth_missing: no SmallSeaCollectiveCore berth row in team DB")
 
 
 def _core_berth_id(conn) -> bytes | None:
@@ -2104,7 +2113,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 64
+USER_SCHEMA_VERSION = 65
 
 
 # ---- Provisioning functions ----
@@ -3174,29 +3183,6 @@ def _load_team_certificates(conn, team_id: bytes) -> list[KeyCertificate]:
     return certs
 
 
-def _load_teammate_transport_announcements(conn) -> list[TeammateTransportAnnouncement]:
-    rows = conn.execute(
-        text(
-            "SELECT announcement_id, teammate_id, protocol, url, bucket, announced_at, "
-            "signer_key_id, signature "
-            "FROM teammate_transport_announcement ORDER BY announcement_id DESC"
-        )
-    ).fetchall()
-    return [
-        TeammateTransportAnnouncement(
-            announcement_id=row[0],
-            teammate_id=row[1],
-            protocol=row[2],
-            url=row[3],
-            bucket=row[4],
-            announced_at=row[5],
-            signer_key_id=row[6],
-            signature=row[7],
-        )
-        for row in rows
-    ]
-
-
 def load_teammate_berth_storage_announcements(
     conn,
     teammate_id,
@@ -3270,21 +3256,52 @@ def _device_public_keys_by_key_id(conn) -> dict[bytes, bytes]:
     return {row[0]: row[1] for row in rows}
 
 
-def _effective_transports_by_teammate(
+def _core_routes_by_teammate(
     conn,
     *,
     team_id: bytes,
     teammate_ids: list[bytes],
 ) -> dict[bytes, EffectiveTransportSelection]:
+    """Select each teammate's effective Core berth storage route.
+
+    Batched: one announcement query for the Core berth, one certificate load,
+    one device-key load, and one trust resolution for the whole listing.
+    """
+    berth_id = _core_berth_id(conn)
+    if berth_id is None:
+        raise MissingCoreBerthError()
+    rows = conn.execute(
+        text(
+            "SELECT announcement_id, teammate_id, berth_id, protocol, url, location, "
+            "announced_at, signer_key_id, signature "
+            "FROM teammate_berth_storage_announcement "
+            "WHERE berth_id = :berth_id ORDER BY announcement_id DESC"
+        ),
+        {"berth_id": berth_id},
+    ).fetchall()
+    announcements_by_teammate: dict[bytes, list[TeammateBerthStorageAnnouncement]] = {}
+    for row in rows:
+        announcements_by_teammate.setdefault(row[1], []).append(
+            TeammateBerthStorageAnnouncement(
+                announcement_id=row[0],
+                teammate_id=row[1],
+                berth_id=row[2],
+                protocol=row[3],
+                url=row[4],
+                location=row[5],
+                announced_at=row[6],
+                signer_key_id=row[7],
+                signature=row[8],
+            )
+        )
     certs = _load_team_certificates(conn, team_id)
-    announcements = _load_teammate_transport_announcements(conn)
     device_public_keys = _device_public_keys_by_key_id(conn)
     trusted_by_teammate = resolve_trusted_device_keys_by_teammate(certs, team_id)
     return {
-        teammate_id: select_effective_teammate_transport(
+        teammate_id: select_effective_teammate_berth_storage(
             teammate_id=teammate_id,
-            announcements=announcements,
-            certs=certs,
+            berth_id=berth_id,
+            announcements=announcements_by_teammate.get(teammate_id, []),
             team_id=team_id,
             device_public_keys_by_key_id=device_public_keys,
             trusted_public_keys=trusted_by_teammate.get(teammate_id, set()),
@@ -3356,73 +3373,6 @@ def get_trusted_device_keys_by_teammate(root_dir, participant_hex, team_name):
 def _team_sync_dir(root_dir, participant_hex, team_name) -> pathlib.Path:
     team_name = _validate_team_name(team_name)
     return pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync"
-
-
-def announce_teammate_transport(
-    root_dir,
-    participant_hex,
-    team_name,
-    *,
-    protocol: str,
-    url: str,
-    bucket: str,
-) -> dict:
-    root_dir = pathlib.Path(root_dir)
-    team_id, teammate_id = _team_row(root_dir, participant_hex, team_name)
-    private_key, public_key = get_current_team_device_key(root_dir, participant_hex, team_name)
-    announcement_id = uuid7()
-    signer_key_id = key_id_from_public(public_key)
-    announcement = TeammateTransportAnnouncement(
-        announcement_id=announcement_id,
-        teammate_id=teammate_id,
-        protocol=protocol,
-        url=url,
-        bucket=bucket,
-        announced_at=_now_iso(),
-        signer_key_id=signer_key_id,
-        signature=b"",
-    )
-    signature = _sign_bytes(
-        private_key,
-        canonical_teammate_transport_announcement_bytes(announcement),
-    )
-    signed_announcement = replace(announcement, signature=signature)
-    team_db_path = _team_sync_dir(root_dir, participant_hex, team_name) / "core.db"
-    ensure_team_db_schema(team_db_path)
-    engine = _sqlite_engine(team_db_path)
-    try:
-        with engine.begin() as conn:
-            conn.execute(
-                text(
-                    "INSERT INTO teammate_transport_announcement "
-                    "(announcement_id, teammate_id, protocol, url, bucket, announced_at, "
-                    "signer_key_id, signature) "
-                    "VALUES (:announcement_id, :teammate_id, :protocol, :url, :bucket, "
-                    ":announced_at, :signer_key_id, :signature)"
-                ),
-                {
-                    "announcement_id": signed_announcement.announcement_id,
-                    "teammate_id": signed_announcement.teammate_id,
-                    "protocol": signed_announcement.protocol,
-                    "url": signed_announcement.url,
-                    "bucket": signed_announcement.bucket,
-                    "announced_at": signed_announcement.announced_at,
-                    "signer_key_id": signed_announcement.signer_key_id,
-                    "signature": signed_announcement.signature,
-                },
-            )
-    finally:
-        engine.dispose()
-    return {
-        "announcement_id_hex": signed_announcement.announcement_id.hex(),
-        "teammate_id_hex": signed_announcement.teammate_id.hex(),
-        "signer_key_id_hex": signed_announcement.signer_key_id.hex(),
-        "protocol": signed_announcement.protocol,
-        "url": signed_announcement.url,
-        "bucket": signed_announcement.bucket,
-        "announced_at": signed_announcement.announced_at,
-        "team_id_hex": team_id.hex(),
-    }
 
 
 def _insert_teammate_berth_storage_announcement(
@@ -6466,7 +6416,7 @@ def get_self_in_team(root_dir, participant_hex, team_name):
 def list_teammates(root_dir, participant_hex, team_name):
     """List teammates of a team with their berth roles. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)
-    team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+    team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     engine = _sqlite_engine(team_db_path)
 
@@ -6475,7 +6425,7 @@ def list_teammates(root_dir, participant_hex, team_name):
         role_rows = conn.execute(
             text("SELECT teammate_id, berth_id, role FROM berth_role")
         ).fetchall()
-        transport_by_teammate = _effective_transports_by_teammate(
+        core_route_by_teammate = _core_routes_by_teammate(
             conn,
             team_id=team_id,
             teammate_ids=[row[0] for row in teammates],
@@ -6493,25 +6443,23 @@ def list_teammates(root_dir, participant_hex, team_name):
     result = []
     for row in teammates:
         teammate_id = row[0]
-        transport = transport_by_teammate.get(teammate_id)
-        transport_dict = None
-        if transport is not None and transport.transport is not None:
-            transport_dict = {
-                "protocol": transport.transport.protocol,
-                "url": transport.transport.url,
-                "bucket": transport.transport.bucket,
+        route = core_route_by_teammate[teammate_id]
+        route_dict = None
+        if route.transport is not None:
+            # The selector's `bucket` field carries the announcement's
+            # `location`; the view names it `location` and exposes no alias.
+            route_dict = {
+                "protocol": route.transport.protocol,
+                "url": route.transport.url,
+                "location": route.transport.bucket,
             }
         result.append(
             {
                 "id": teammate_id.hex(),
                 "display_name": row[1],
                 "berth_roles": roles_by_teammate.get(teammate_id.hex(), []),
-                "transport_status": transport.status if transport is not None else "missing",
-                "effective_transport": transport_dict,
-                "needs_transport_announcement": (
-                    teammate_id == self_in_team
-                    and (transport is None or transport.status == "missing")
-                ),
+                "core_route_status": route.status,
+                "effective_core_route": route_dict,
             }
         )
     return result

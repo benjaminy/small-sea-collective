@@ -224,7 +224,7 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                         title=f"Admission finalized for {invitee_label or _teammate_label(None, teammate_id_hex)}",
                         summary=(
                             "This admission has been finalized in the current team view. "
-                            "Transport setup remains a separate post-admission step."
+                            "See the Core route column for this teammate's storage route."
                         ),
                         badge_label="finalized",
                         badge_class="badge-green",

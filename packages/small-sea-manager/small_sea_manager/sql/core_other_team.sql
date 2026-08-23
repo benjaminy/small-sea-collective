@@ -193,18 +193,6 @@ CREATE TABLE IF NOT EXISTS key_certificate (
     FOREIGN KEY (issuer_teammate_id) REFERENCES teammate(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS teammate_transport_announcement (
-    announcement_id BLOB PRIMARY KEY,
-    teammate_id BLOB NOT NULL,
-    protocol TEXT NOT NULL,
-    url TEXT NOT NULL,
-    bucket TEXT NOT NULL,
-    announced_at TEXT NOT NULL,
-    signer_key_id BLOB NOT NULL,
-    signature BLOB NOT NULL,
-    FOREIGN KEY (teammate_id) REFERENCES teammate(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS teammate_berth_storage_announcement (
     announcement_id BLOB PRIMARY KEY,
     teammate_id BLOB NOT NULL,
