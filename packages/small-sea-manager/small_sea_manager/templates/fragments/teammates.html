@@ -12,7 +12,7 @@
       <tr>
         <th>Teammate</th>
         <th>Core berth role</th>
-        <th>Transport</th>
+        <th>Core route</th>
         <th></th>
       </tr>
     </thead>
@@ -38,25 +38,12 @@
           {% endif %}
         </td>
         <td>
-          {% if m.transport_status == "announced" and m.effective_transport %}
+          {% if m.core_route_status == "announced" and m.effective_core_route %}
           <div><span class="badge badge-green">announced</span></div>
-          <div class="muted" style="margin-top:0.2rem">{{ m.effective_transport.protocol }} {{ m.effective_transport.url }}</div>
-          <div class="muted">{{ m.effective_transport.bucket }}</div>
+          <div class="muted" style="margin-top:0.2rem">{{ m.effective_core_route.protocol }} {{ m.effective_core_route.url }}</div>
+          <div class="muted">{{ m.effective_core_route.location }}</div>
           {% else %}
           <span class="badge badge-grey">missing</span>
-          {% endif %}
-          {% if m.is_self and m.needs_transport_announcement %}
-          <p class="stub-label" style="margin-top:0.45rem">Transport not yet configured for current announcements.</p>
-          <form hx-post="/teams/{{ team_name }}/transport"
-                hx-sync="#team-detail:replace"
-                hx-target="#team-detail"
-                hx-swap="innerHTML"
-                style="margin-top:0.45rem">
-            <input type="text" name="protocol" placeholder="protocol" value="{{ m.effective_transport.protocol if m.effective_transport else '' }}" required>
-            <input type="text" name="url" placeholder="url" value="{{ m.effective_transport.url if m.effective_transport else '' }}" required>
-            <input type="text" name="bucket" placeholder="bucket" value="{{ m.effective_transport.bucket if m.effective_transport else '' }}" required>
-            <button class="btn btn-primary btn-sm" type="submit" style="margin-top:0.35rem">Announce transport</button>
-          </form>
           {% endif %}
         </td>
         <td style="text-align:right; white-space:nowrap">

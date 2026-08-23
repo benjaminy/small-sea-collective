@@ -11,45 +11,15 @@ from wrasse_trust.identity import (
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_public
 from wrasse_trust.transport import (
     TeammateBerthStorageAnnouncement,
-    TeammateTransportAnnouncement,
     canonical_teammate_berth_storage_announcement_bytes,
-    canonical_teammate_transport_announcement_bytes,
     key_certificate_from_team_db_record,
     select_effective_teammate_berth_storage,
-    select_effective_teammate_transport,
 )
 
 
 TEAM_ID = bytes.fromhex("11" * 16)
 TEAMMATE_ID = bytes.fromhex("22" * 16)
 BERTH_ID = bytes.fromhex("55" * 16)
-
-
-def _signed_announcement(
-    *,
-    announcement_id: bytes,
-    teammate_id: bytes,
-    protocol: str,
-    url: str,
-    bucket: str,
-    announced_at: str,
-    signer_private_key: bytes,
-    signer_key_id: bytes,
-) -> TeammateTransportAnnouncement:
-    unsigned = TeammateTransportAnnouncement(
-        announcement_id=announcement_id,
-        teammate_id=teammate_id,
-        protocol=protocol,
-        url=url,
-        bucket=bucket,
-        announced_at=announced_at,
-        signer_key_id=signer_key_id,
-        signature=b"",
-    )
-    signature = Ed25519PrivateKey.from_private_bytes(signer_private_key).sign(
-        canonical_teammate_transport_announcement_bytes(unsigned)
-    )
-    return replace(unsigned, signature=signature)
 
 
 def _signed_storage_announcement(
@@ -134,52 +104,6 @@ def test_teammate_berth_storage_canonical_bytes_are_stable():
     )
 
 
-def test_select_effective_teammate_transport_uses_announcement_id_not_announced_at():
-    founder_key, founder_private_key = generate_key_pair(ProtectionLevel.DAILY)
-    membership = issue_membership_cert(
-        founder_key,
-        founder_key,
-        founder_private_key,
-        TEAM_ID,
-        issuer_teammate_id=TEAMMATE_ID,
-        admitted_teammate_id=TEAMMATE_ID,
-    )
-    signer_key_id = key_id_from_public(founder_key.public_key)
-    older = _signed_announcement(
-        announcement_id=bytes.fromhex("01" * 16),
-        teammate_id=TEAMMATE_ID,
-        protocol="s3",
-        url="http://future.example",
-        bucket="future-bucket",
-        announced_at="2099-01-01T00:00:00+00:00",
-        signer_private_key=founder_private_key,
-        signer_key_id=signer_key_id,
-    )
-    newer = _signed_announcement(
-        announcement_id=bytes.fromhex("02" * 16),
-        teammate_id=TEAMMATE_ID,
-        protocol="s3",
-        url="http://current.example",
-        bucket="current-bucket",
-        announced_at="2026-01-01T00:00:00+00:00",
-        signer_private_key=founder_private_key,
-        signer_key_id=signer_key_id,
-    )
-
-    selection = select_effective_teammate_transport(
-        teammate_id=TEAMMATE_ID,
-        announcements=[older, newer],
-        certs=[membership],
-        team_id=TEAM_ID,
-        device_public_keys_by_key_id={signer_key_id: founder_key.public_key},
-    )
-
-    assert selection.status == "announced"
-    assert selection.transport is not None
-    assert selection.transport.url == "http://current.example"
-    assert selection.transport.bucket == "current-bucket"
-
-
 def test_select_effective_teammate_berth_storage_uses_announcement_id_and_berth():
     founder_key, founder_private_key = generate_key_pair(ProtectionLevel.DAILY)
     membership = issue_membership_cert(
@@ -240,7 +164,7 @@ def test_select_effective_teammate_berth_storage_uses_announcement_id_and_berth(
     assert selection.transport.bucket == "current-location"
 
 
-def test_select_effective_teammate_transport_binds_signer_key_id_in_signature():
+def test_select_effective_teammate_berth_storage_binds_signer_key_id_in_signature():
     founder_key, founder_private_key = generate_key_pair(ProtectionLevel.DAILY)
     linked_key, linked_private_key = generate_key_pair(ProtectionLevel.DAILY)
     membership = issue_membership_cert(
@@ -260,20 +184,22 @@ def test_select_effective_teammate_transport_binds_signer_key_id_in_signature():
     )
     founder_key_id = key_id_from_public(founder_key.public_key)
     linked_key_id = key_id_from_public(linked_key.public_key)
-    valid = _signed_announcement(
+    valid = _signed_storage_announcement(
         announcement_id=bytes.fromhex("03" * 16),
         teammate_id=TEAMMATE_ID,
+        berth_id=BERTH_ID,
         protocol="s3",
         url="http://valid.example",
-        bucket="valid-bucket",
+        location="valid-location",
         announced_at="2026-01-01T00:00:00+00:00",
         signer_private_key=founder_private_key,
         signer_key_id=founder_key_id,
     )
     tampered = replace(valid, signer_key_id=linked_key_id)
 
-    selection = select_effective_teammate_transport(
+    selection = select_effective_teammate_berth_storage(
         teammate_id=TEAMMATE_ID,
+        berth_id=BERTH_ID,
         announcements=[tampered],
         certs=[membership, device_link],
         team_id=TEAM_ID,
@@ -283,14 +209,14 @@ def test_select_effective_teammate_transport_binds_signer_key_id_in_signature():
         },
     )
 
-    # A tampered signer_key_id breaks the signature, so the only announcement is
-    # rejected. With the team_device fallback removed, that resolves to missing.
+    # Re-pointing signer_key_id at another trusted device of the same teammate
+    # breaks the signature over the canonical bytes, so the row is rejected.
     assert linked_private_key is not None
     assert selection.status == "missing"
     assert selection.transport is None
 
 
-def test_select_effective_teammate_transport_rejects_other_teammates_signer():
+def test_select_effective_teammate_berth_storage_rejects_other_teammates_signer():
     alice_key, alice_private_key = generate_key_pair(ProtectionLevel.DAILY)
     bob_key, bob_private_key = generate_key_pair(ProtectionLevel.DAILY)
     alice_teammate_id = bytes.fromhex("33" * 16)
@@ -311,19 +237,21 @@ def test_select_effective_teammate_transport_rejects_other_teammates_signer():
         issuer_teammate_id=bob_teammate_id,
         admitted_teammate_id=bob_teammate_id,
     )
-    bad_announcement = _signed_announcement(
+    bad_announcement = _signed_storage_announcement(
         announcement_id=bytes.fromhex("04" * 16),
         teammate_id=alice_teammate_id,
+        berth_id=BERTH_ID,
         protocol="s3",
         url="http://wrong-teammate.example",
-        bucket="wrong-teammate-bucket",
+        location="wrong-teammate-location",
         announced_at="2026-01-01T00:00:00+00:00",
         signer_private_key=bob_private_key,
         signer_key_id=key_id_from_public(bob_key.public_key),
     )
 
-    selection = select_effective_teammate_transport(
+    selection = select_effective_teammate_berth_storage(
         teammate_id=alice_teammate_id,
+        berth_id=BERTH_ID,
         announcements=[bad_announcement],
         certs=[alice_membership, bob_membership],
         team_id=TEAM_ID,
@@ -333,7 +261,6 @@ def test_select_effective_teammate_transport_rejects_other_teammates_signer():
         },
     )
 
-    # The announcement is signed by Bob for Alice's teammate_id, so it is rejected.
-    # With the team_device fallback removed, that resolves to missing.
+    # Bob's key is trusted for Bob, not for Alice, so Alice's row is rejected.
     assert selection.status == "missing"
     assert selection.transport is None

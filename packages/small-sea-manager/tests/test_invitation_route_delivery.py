@@ -33,6 +33,7 @@ from small_sea_client.client import (
 from small_sea_hub.cloud_errors import MaterializationOutcome
 from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager
+from small_sea_manager.web import create_app
 from small_sea_note_to_self.db import (
     AcceptanceArtifactAlreadyExportedError,
     list_admission_acceptance_artifacts,
@@ -699,6 +700,40 @@ def test_sidecar_delivers_the_route_and_finalizes_admission(playground_dir):
     ) == _stored_announcements(
         _sync_dir(root, bob_hex) / "core.db", bob_state["self_in_team"]
     )
+
+
+def test_the_delivered_route_is_visible_in_alices_team_view(playground_dir):
+    """Issue #210: the delivered route reaches Alice's Core route column.
+
+    Anchored to Bob's own row and his exact couriered location, so Alice's
+    automatically published route cannot satisfy the assertion. Rendering reads
+    the synced Core DB only -- no provider contact.
+    """
+    root = pathlib.Path(playground_dir)
+    alice_hex, bob_hex, alice_cloud = _setup(root)
+    courier = _prepared_bob(
+        root, alice_cloud, alice_hex, bob_hex, _invite(root, alice_hex, alice_cloud)
+    )
+    provisioning.complete_invitation_acceptance(root, alice_hex, TEAM, courier)
+
+    bob_state = provisioning.derive_team_join_state(root, bob_hex, TEAM)
+    bob_route = _bob_announcement(root, bob_hex)
+
+    teammates = provisioning.list_teammates(root, alice_hex, TEAM)
+    bob_row = next(
+        t for t in teammates if t["id"] == bob_state["self_in_team"].hex()
+    )
+    assert bob_row["core_route_status"] == "announced"
+    assert bob_row["effective_core_route"] == {
+        "protocol": bob_route.protocol,
+        "url": bob_route.url,
+        "location": bob_route.location,
+    }
+
+    client = TestClient(create_app(root, alice_hex))
+    response = client.get(f"/teams/{TEAM}")
+    assert response.status_code == 200
+    assert bob_route.location in response.text
 
 
 @pytest.mark.parametrize(
