@@ -161,7 +161,7 @@ def test_select_effective_teammate_berth_storage_uses_announcement_id_and_berth(
     assert selection.status == "announced"
     assert selection.transport is not None
     assert selection.transport.url == "http://current.example"
-    assert selection.transport.bucket == "current-location"
+    assert selection.transport.location == "current-location"
 
 
 def test_select_effective_teammate_berth_storage_binds_signer_key_id_in_signature():
