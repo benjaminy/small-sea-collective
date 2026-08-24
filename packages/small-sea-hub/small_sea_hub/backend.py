@@ -1318,7 +1318,7 @@ class SmallSeaBackend:
         return self.materialize_for_session(session_hex)
 
     def download_from_peer(self, session_hex, teammate_id_hex, path):
-        """Download a file from a peer's public cloud bucket via the Hub proxy."""
+        """Download a file from a peer's public cloud location via the Hub proxy."""
         ss_session = self._lookup_session(session_hex)
         ok, data, etag = self._download_peer_file(session_hex, teammate_id_hex, path)
         if ok and ss_session.mode == "encrypted":
@@ -1418,13 +1418,13 @@ class SmallSeaBackend:
         return result
 
     def download_runtime_artifact_from_cloud(self, session_hex, path):
-        """Download a raw runtime-control artifact from this session's own bucket."""
+        """Download a raw runtime-control artifact from this session's cloud location."""
         ss_session = self._lookup_session(session_hex)
         adapter = self._make_storage_adapter(ss_session)
         return adapter.download(path)
 
     def download_runtime_artifact_from_peer(self, session_hex, teammate_id_hex, path):
-        """Download a raw runtime-control artifact from a peer bucket."""
+        """Download a raw runtime-control artifact from a peer cloud location."""
         return self._download_peer_file(session_hex, teammate_id_hex, path)
 
     def get_local_signal(self, session_hex):
@@ -1615,14 +1615,13 @@ class SmallSeaBackend:
 
         protocol = transport.protocol
         url = transport.url
-        bucket = transport.bucket
+        location = transport.location
 
         if protocol == "s3":
             import boto3
             from botocore import UNSIGNED
             from botocore.config import Config as BotoConfig
 
-            bucket_name = bucket
             s3_client = boto3.client(
                 "s3",
                 endpoint_url=url,
@@ -1630,7 +1629,7 @@ class SmallSeaBackend:
                 region_name="us-east-1",
             )
             try:
-                response = s3_client.get_object(Bucket=bucket_name, Key=path)
+                response = s3_client.get_object(Bucket=location, Key=path)
                 data_bytes = response["Body"].read()
                 etag = response["ETag"].strip('"')
                 return True, data_bytes, etag
@@ -1642,11 +1641,10 @@ class SmallSeaBackend:
 
         elif protocol == "dropbox":
             # Use own Dropbox credentials to access the shared account,
-            # with the peer's folder prefix (stored in peer.bucket).
+            # with the peer's folder prefix (stored in peer.location).
             cloud = self._get_cloud_link(ss_session)
             access_token = self._refresh_token_if_needed(ss_session, cloud)
-            folder_prefix = bucket or ""
-            adapter = SmallSeaDropboxAdapter(access_token, folder_prefix=folder_prefix)
+            adapter = SmallSeaDropboxAdapter(access_token, folder_prefix=location or "")
             return adapter.download(path)
 
         else:
@@ -1808,7 +1806,7 @@ class SmallSeaBackend:
             and transport is not None
             and transport.protocol == cloud.protocol
             and transport.url == cloud.url
-            and transport.bucket == cloud.location
+            and transport.location == cloud.location
         ):
             return
         if self._has_current_device_storage_announcement(

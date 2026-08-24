@@ -26,7 +26,7 @@ class TeammateBerthStorageAnnouncement:
 class TransportEndpoint:
     protocol: str
     url: str
-    bucket: str
+    location: str
 
 
 @dataclass(frozen=True)
@@ -138,7 +138,7 @@ def select_effective_teammate_berth_storage(
             transport=TransportEndpoint(
                 protocol=announcement.protocol,
                 url=announcement.url,
-                bucket=announcement.location,
+                location=announcement.location,
             ),
             announcement_id=announcement.announcement_id,
             signer_key_id=announcement.signer_key_id,

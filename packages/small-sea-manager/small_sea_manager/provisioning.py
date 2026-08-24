@@ -3409,7 +3409,7 @@ def _insert_teammate_berth_storage_announcement(
         and selected.transport is not None
         and selected.transport.protocol == protocol
         and selected.transport.url == url
-        and selected.transport.bucket == location
+        and selected.transport.location == location
     ):
         return {
             "wrote": False,
@@ -6446,12 +6446,10 @@ def list_teammates(root_dir, participant_hex, team_name):
         route = core_route_by_teammate[teammate_id]
         route_dict = None
         if route.transport is not None:
-            # The selector's `bucket` field carries the announcement's
-            # `location`; the view names it `location` and exposes no alias.
             route_dict = {
                 "protocol": route.transport.protocol,
                 "url": route.transport.url,
-                "location": route.transport.bucket,
+                "location": route.transport.location,
             }
         result.append(
             {
