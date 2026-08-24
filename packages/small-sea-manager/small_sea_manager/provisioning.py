@@ -3375,6 +3375,50 @@ def _team_sync_dir(root_dir, participant_hex, team_name) -> pathlib.Path:
     return pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync"
 
 
+def _uuid7_after(lower_bound: bytes | None) -> bytes:
+    """Mint a UUIDv7 that sorts strictly after `lower_bound`.
+
+    The generator is random within a millisecond, so a replacement row minted
+    in the same millisecond as the row it supersedes is not guaranteed to sort
+    last. Announcement selection orders by descending `announcement_id`, so a
+    publisher replacing its own route must force the ordering rather than rely
+    on insertion order.
+    """
+    candidate = uuid7()
+    if lower_bound is None or candidate > lower_bound:
+        return candidate
+    if (
+        len(lower_bound) != 16
+        or lower_bound[6] >> 4 != 0x7
+        or lower_bound[8] >> 6 != 0x2
+    ):
+        raise ValueError("Announcement ordering bound is not a UUIDv7")
+
+    timestamp = int.from_bytes(lower_bound[:6], "big")
+    rand_a = ((lower_bound[6] & 0x0F) << 8) | lower_bound[7]
+    rand_b = ((lower_bound[8] & 0x3F) << 56) | int.from_bytes(
+        lower_bound[9:], "big"
+    )
+    if rand_b < (1 << 62) - 1:
+        rand_b += 1
+    elif rand_a < (1 << 12) - 1:
+        rand_a += 1
+        rand_b = 0
+    elif timestamp < (1 << 48) - 1:
+        timestamp += 1
+        rand_a = 0
+        rand_b = 0
+    else:
+        raise ValueError("UUIDv7 announcement ordering space is exhausted")
+
+    return (
+        timestamp.to_bytes(6, "big")
+        + bytes([0x70 | (rand_a >> 8), rand_a & 0xFF])
+        + bytes([0x80 | (rand_b >> 56)])
+        + (rand_b & ((1 << 56) - 1)).to_bytes(7, "big")
+    )
+
+
 def _insert_teammate_berth_storage_announcement(
     conn,
     *,
@@ -3431,8 +3475,11 @@ def _insert_teammate_berth_storage_announcement(
             "team_id_hex": team_id.hex(),
         }
 
+    # Minted here, immediately before signing. Never apply this where a row
+    # arrives already signed: `announcement_id` is inside the canonical signed
+    # bytes, so renumbering an imported peer or sidecar row would invalidate it.
     announcement = TeammateBerthStorageAnnouncement(
-        announcement_id=uuid7(),
+        announcement_id=_uuid7_after(selected.announcement_id),
         teammate_id=teammate_id,
         berth_id=berth_id,
         protocol=protocol,
@@ -6139,6 +6186,139 @@ def add_berth_cloud_allocation_by_berth_id(
         "protocol": protocol,
         "url": cloud_row[2],
     }
+
+
+def resolve_berth_cloud_allocation_intent(
+    root_dir,
+    participant_hex,
+    berth_id,
+    *,
+    cloud_storage_id_hex=None,
+    new_location=False,
+):
+    """Resolve the Core allocation an established teammate means to publish.
+
+    Returns `(allocation, None)`, or `(None, reason)` with
+    `storage_not_configured` or `storage_choice_required`. A requested account
+    that is malformed or unregistered raises `ValueError` before anything is
+    mutated: that is invalid input, not route state.
+
+    Selecting a different account or asking for a new location atomically
+    replaces the berth's single allocation row with a fresh allocation ID.
+    That ID is the generation token the Hub and the publisher check, so a
+    materialization started against the superseded row cannot claim the
+    replacement. Selecting the current account without `new_location` is a
+    no-op that preserves the allocation ID and location.
+    """
+    root_dir = pathlib.Path(root_dir)
+    if isinstance(berth_id, str):
+        berth_id = bytes.fromhex(berth_id)
+    requested_id = (
+        bytes.fromhex(cloud_storage_id_hex)
+        if cloud_storage_id_hex is not None
+        else None
+    )
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        current = conn.execute(
+            """
+            SELECT
+                bca.id,
+                bca.cloud_storage_id,
+                bca.location,
+                cs.protocol,
+                cs.url,
+                cs.client_id,
+                cs.path_metadata
+            FROM berth_cloud_allocation bca
+            JOIN cloud_storage cs ON cs.id = bca.cloud_storage_id
+            WHERE bca.berth_id = ?
+            """,
+            (berth_id,),
+        ).fetchone()
+        # Validated inside the same transaction that would replace the row, so
+        # a bad selection never costs the caller their current allocation.
+        cloud_row = (
+            _cloud_storage_row(conn, requested_id) if requested_id is not None else None
+        )
+        if current is not None:
+            changing = new_location or (
+                requested_id is not None and requested_id != current[1]
+            )
+            if not changing:
+                reason = None
+                replaced = False
+            else:
+                if cloud_row is None:
+                    cloud_row = _cloud_storage_row(conn, current[1])
+                reason = None
+                replaced = True
+        elif cloud_row is not None:
+            reason = None
+            replaced = True
+        else:
+            registered = conn.execute(
+                "SELECT id FROM cloud_storage ORDER BY rowid"
+            ).fetchall()
+            if not registered:
+                reason, replaced = "storage_not_configured", False
+            elif len(registered) > 1:
+                reason, replaced = "storage_choice_required", False
+            else:
+                cloud_row = _cloud_storage_row(conn, registered[0][0])
+                reason, replaced = None, True
+
+        if replaced:
+            protocol = cloud_row[1]
+            location = _bucket_safe_generated_location(protocol)
+            if protocol == "s3":
+                _validate_s3_location(location)
+            if current is not None:
+                conn.execute(
+                    "DELETE FROM berth_cloud_allocation WHERE berth_id = ?",
+                    (berth_id,),
+                )
+            allocation_id = uuid7()
+            conn.execute(
+                """
+                INSERT INTO berth_cloud_allocation (
+                    id, berth_id, cloud_storage_id, location, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (allocation_id, berth_id, cloud_row[0], location, _now_iso()),
+            )
+            conn.commit()
+            resolved = {
+                "id": allocation_id.hex(),
+                "berth_id": berth_id.hex(),
+                "cloud_storage_id": cloud_row[0].hex(),
+                "location": location,
+                "protocol": cloud_row[1],
+                "url": cloud_row[2],
+                "client_id": cloud_row[3],
+                "path_metadata": cloud_row[4],
+            }
+        elif reason is None:
+            resolved = {
+                "id": current[0].hex(),
+                "berth_id": berth_id.hex(),
+                "cloud_storage_id": current[1].hex(),
+                "location": current[2],
+                "protocol": current[3],
+                "url": current[4],
+                "client_id": current[5],
+                "path_metadata": current[6],
+            }
+
+    if reason is not None:
+        return None, reason
+    return resolved, None
+
+
+def validate_cloud_storage_id(root_dir, participant_hex, cloud_storage_id_hex):
+    """Raise ValueError unless an ID names a registered storage account."""
+    cloud_storage_id = bytes.fromhex(cloud_storage_id_hex)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        _cloud_storage_row(conn, cloud_storage_id)
 
 
 def get_berth_cloud_allocation_for_berth(root_dir, participant_hex, berth_id):

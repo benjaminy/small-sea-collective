@@ -658,6 +658,18 @@ class TeamManager:
     # Route preparation and acceptance export
     # ------------------------------------------------------------------ #
 
+    def _route_report(self, state, *, route_reason) -> dict:
+        """Build the route-only report: what happened to the storage route.
+
+        The established-teammate operation uses this directly. The invitation
+        path extends it with join, admission, and acceptance fields.
+        """
+        route = state["route"]
+        return {
+            "route": route,
+            "route_reason": None if route == "ready" else route_reason,
+        }
+
     def _report(self, state, *, route_reason) -> dict:
         """Build the join-state report over derived state.
 
@@ -678,26 +690,120 @@ class TeamManager:
         return {
             "join": "complete" if state["join"] == "complete" else "absent",
             "admission": state["admission"],
-            "route": route,
-            "route_reason": None if route == "ready" else route_reason,
+            **self._route_report(state, route_reason=route_reason),
             "acceptance": "withheld" if acceptance_reason else "exportable",
             "acceptance_reason": acceptance_reason,
         }
 
-    def _commit_prepared_route(self, team_name, state) -> dict | None:
-        """Commit a ready route, returning a retryable failure report if needed."""
+    def _commit_prepared_route(self, team_name) -> bool:
+        """Commit a ready route. False means the caller should report a retry."""
         try:
             self._team_repo(team_name).commit_paths(
                 ["core.db"], "Announce berth storage"
             )
         except Exception:
             _LOG.exception("Committing a team storage route failed")
-            pending_state = dict(state)
-            pending_state["route"] = "pending"
-            return self._report(
-                pending_state, route_reason="route_preparation_error"
+            return False
+        return True
+
+    @staticmethod
+    def _pending_route(state) -> dict:
+        pending_state = dict(state)
+        pending_state["route"] = "pending"
+        return pending_state
+
+    @staticmethod
+    def _same_allocation(expected, observed) -> bool:
+        """Is `observed` the allocation generation and account `expected` names?
+
+        Location is deliberately excluded: a provider-issued locator writeback
+        changes it within one generation, and that is the value we came back
+        to reread.
+        """
+        return (
+            observed is not None
+            and observed["id"] == expected["id"]
+            and observed["cloud_storage_id"] == expected["cloud_storage_id"]
+        )
+
+    def _publish_core_route(
+        self, team_name, state, allocation
+    ) -> tuple[dict, str | None]:
+        """Session, materialize, reread, publish, read back, commit.
+
+        The shared spine of both route paths. It consumes an already-resolved
+        allocation -- choosing one is the caller's policy -- and reads no
+        acceptance artifact. `allocation` is also the expected generation: only
+        a reread of that same allocation and account may be signed, so a
+        replacement that landed mid-flight is reported rather than announced.
+
+        Returns `(state, route_reason)`; a `None` reason means ready.
+        """
+        berth_id = state["core_berth_id"]
+        try:
+            session = self._get_or_open_session(team_name)
+        except (SmallSeaHubUnavailable, SmallSeaError):
+            return state, "hub_session_unavailable"
+
+        try:
+            session.ensure_cloud_ready()
+        except SmallSeaCloudStorageRequired as exc:
+            return state, _ROUTE_REASON_BY_CLOUD_REASON.get(
+                exc.reason, "route_preparation_error"
             )
-        return None
+        except SmallSeaHubUnavailable:
+            return state, "hub_session_unavailable"
+        except Exception:
+            _LOG.exception("Cloud setup failed while preparing a team route")
+            return state, "route_preparation_error"
+
+        try:
+            # Reread after materialization: the provider may have written back
+            # a final locator, and only that one may be signed.
+            reread = provisioning.get_berth_cloud_allocation_for_berth(
+                self.root_dir, self.participant_hex, berth_id
+            )
+            if reread is None:
+                return state, "storage_not_configured"
+            if not self._same_allocation(allocation, reread):
+                return state, "allocation_conflict"
+            published = provisioning.publish_teammate_berth_storage_announcement(
+                self.root_dir,
+                self.participant_hex,
+                team_name,
+                state["self_in_team"],
+                berth_id,
+                reread,
+            )
+            announcement = provisioning.read_teammate_berth_storage_announcement(
+                self.root_dir,
+                self.participant_hex,
+                team_name,
+                bytes.fromhex(published["announcement_id_hex"]),
+            )
+        except Exception:
+            _LOG.exception("Publishing a team storage route failed")
+            return state, "route_preparation_error"
+
+        if announcement is None or announcement.signer_key_id != state["device_key_id"]:
+            # The selected row may be an older one signed by another device.
+            # Attaching it would reach the inviter and fail their signer check.
+            _LOG.error(
+                "Read-back storage announcement is missing or signed by another device"
+            )
+            return state, "route_preparation_error"
+
+        if not self._commit_prepared_route(team_name):
+            return self._pending_route(state), "route_preparation_error"
+
+        state = provisioning.derive_team_join_state(
+            self.root_dir, self.participant_hex, team_name
+        )
+        if not self._same_allocation(allocation, state["allocation"]):
+            # A replacement became visible after publication. This route is
+            # published, but it is no longer the allocation in force.
+            return self._pending_route(state), "allocation_conflict"
+        return state, None
 
     def prepare_team_route(self, team_name) -> dict:
         """Publish this participant's Core storage route, and report join state.
@@ -713,7 +819,7 @@ class TeamManager:
         if state["join"] != "complete":
             raise ValueError(f"Team '{team_name}' has no local join to prepare")
 
-        artifact, artifact_reason = provisioning.eligible_acceptance_artifact(
+        artifact, _artifact_reason = provisioning.eligible_acceptance_artifact(
             self.root_dir, self.participant_hex, state
         )
         if artifact is None:
@@ -722,84 +828,113 @@ class TeamManager:
             return self._report(state, route_reason=None)
 
         if state["route"] == "ready":
-            commit_failure = self._commit_prepared_route(team_name, state)
-            if commit_failure is not None:
-                return commit_failure
+            if not self._commit_prepared_route(team_name):
+                return self._report(
+                    self._pending_route(state), route_reason="route_preparation_error"
+                )
             return self._report(state, route_reason=None)
 
-        berth_id = state["core_berth_id"]
-        if berth_id is None:
+        if state["core_berth_id"] is None:
             return self._report(state, route_reason="storage_not_configured")
 
         # Allocate rather than only reading what acceptance left behind, so an
-        # invitee who adds cloud storage afterwards retries into a route.
+        # invitee who adds cloud storage afterwards retries into a route. The
+        # silent first-account pick belongs to this path alone: an invitee is
+        # racing to publish a first route, not choosing where their data lives.
         allocation = provisioning._auto_allocate_berth_cloud_if_available(
-            self.root_dir, self.participant_hex, berth_id
+            self.root_dir, self.participant_hex, state["core_berth_id"]
         )
         if allocation is None:
             return self._report(state, route_reason="storage_not_configured")
 
-        try:
-            session = self._get_or_open_session(team_name)
-        except (SmallSeaHubUnavailable, SmallSeaError):
-            return self._report(state, route_reason="hub_session_unavailable")
+        state, route_reason = self._publish_core_route(team_name, state, allocation)
+        return self._report(state, route_reason=route_reason)
 
-        try:
-            session.ensure_cloud_ready()
-        except SmallSeaCloudStorageRequired as exc:
-            return self._report(
-                state,
-                route_reason=_ROUTE_REASON_BY_CLOUD_REASON.get(
-                    exc.reason, "route_preparation_error"
-                ),
-            )
-        except SmallSeaHubUnavailable:
-            return self._report(state, route_reason="hub_session_unavailable")
-        except Exception:
-            _LOG.exception("Cloud setup failed while preparing a team route")
-            return self._report(state, route_reason="route_preparation_error")
+    def reconcile_team_route(
+        self, team_name, cloud_storage_id=None, new_location=False
+    ) -> dict:
+        """Reconcile and publish an established teammate's Core storage route.
 
-        try:
-            # Reread after materialization: the provider may have written back
-            # a final locator, and only that one may be signed.
-            allocation = provisioning.get_berth_cloud_allocation_for_berth(
-                self.root_dir, self.participant_hex, berth_id
-            )
-            if allocation is None:
-                return self._report(state, route_reason="storage_not_configured")
-            published = provisioning.publish_teammate_berth_storage_announcement(
-                self.root_dir,
-                self.participant_hex,
-                team_name,
-                state["self_in_team"],
-                berth_id,
-                allocation,
-            )
-            announcement = provisioning.read_teammate_berth_storage_announcement(
-                self.root_dir,
-                self.participant_hex,
-                team_name,
-                bytes.fromhex(published["announcement_id_hex"]),
-            )
-        except Exception:
-            _LOG.exception("Publishing a team storage route failed")
-            return self._report(state, route_reason="route_preparation_error")
+        Repairs a missing or unusable route, and carries out an intentional
+        provider, account, or location change. No acceptance artifact is
+        involved: this is the operation for a teammate who is already admitted.
 
-        if announcement is None or announcement.signer_key_id != state["device_key_id"]:
-            # The selected row may be an older one signed by another device.
-            # Attaching it would reach the inviter and fail their signer check.
-            _LOG.error(
-                "Read-back storage announcement is missing or signed by another device"
-            )
-            return self._report(state, route_reason="route_preparation_error")
+        A change request is one-shot. Once the replacement allocation is
+        durable, retry with no change arguments; repeating `new_location` asks
+        for another rotation. Between replacement and successful publication
+        this device's own Hub cloud reads and writes for the team fail with
+        `announcement_missing` until a retry converges.
 
-        commit_failure = self._commit_prepared_route(team_name, state)
-        if commit_failure is not None:
-            return commit_failure
+        `cloud_storage_id` names a registered account; a malformed or
+        unregistered one raises `ValueError` before anything is mutated. There
+        is deliberately no raw location parameter.
+        """
         state = provisioning.derive_team_join_state(
             self.root_dir, self.participant_hex, team_name
         )
-        return self._report(state, route_reason=None)
+        if state["join"] != "complete":
+            raise ValueError(f"Team '{team_name}' has no local join to reconcile")
+
+        if cloud_storage_id is not None:
+            provisioning.validate_cloud_storage_id(
+                self.root_dir, self.participant_hex, cloud_storage_id
+            )
+
+        if state["admission"] != "finalized":
+            # Peers skip announcements from keys they no longer trust, so a row
+            # signed by this key could not repair their selection anyway. A
+            # locally valid announcement is not a usable route here, so this
+            # reports pending however the local state derives.
+            return self._route_report(
+                self._pending_route(state), route_reason="current_device_untrusted"
+            )
+
+        if state["core_berth_id"] is None:
+            return self._route_report(state, route_reason="storage_not_configured")
+
+        allocation, reason = provisioning.resolve_berth_cloud_allocation_intent(
+            self.root_dir,
+            self.participant_hex,
+            state["core_berth_id"],
+            cloud_storage_id_hex=cloud_storage_id,
+            new_location=new_location,
+        )
+        if allocation is None:
+            return self._route_report(state, route_reason=reason)
+
+        # Re-derived after the intent, so an already-ready old route cannot
+        # suppress a requested provider or location change.
+        state = provisioning.derive_team_join_state(
+            self.root_dir, self.participant_hex, team_name
+        )
+        if not self._same_allocation(allocation, state["allocation"]):
+            return self._route_report(
+                self._pending_route(state), route_reason="allocation_conflict"
+            )
+        if state["route"] == "ready":
+            if not self._commit_prepared_route(team_name):
+                return self._route_report(
+                    self._pending_route(state), route_reason="route_preparation_error"
+                )
+            return self._route_report(state, route_reason=None)
+
+        state, route_reason = self._publish_core_route(team_name, state, allocation)
+        return self._route_report(state, route_reason=route_reason)
+
+    def core_storage_allocation(self, team_name) -> dict:
+        """Report this device's current Core storage decision for one team.
+
+        Read-only and local: it names the account and location this device
+        would publish, not whether peers can reach it.
+        """
+        state = provisioning.derive_team_join_state(
+            self.root_dir, self.participant_hex, team_name
+        )
+        return {
+            "allocation": state["allocation"],
+            "route": state["route"],
+            "admission": state["admission"],
+        }
 
     def export_admission_acceptance(self, team_name) -> dict:
         """Return the courier token for a prepared join, or say why it is withheld.
@@ -816,10 +951,12 @@ class TeamManager:
         if report["acceptance"] != "exportable":
             return report
 
-        commit_failure = self._commit_prepared_route(team_name, state)
-        if commit_failure is not None:
-            commit_failure["acceptance_token"] = None
-            return commit_failure
+        if not self._commit_prepared_route(team_name):
+            failure = self._report(
+                self._pending_route(state), route_reason="route_preparation_error"
+            )
+            failure["acceptance_token"] = None
+            return failure
 
         artifact, _reason = provisioning.eligible_acceptance_artifact(
             self.root_dir, self.participant_hex, state

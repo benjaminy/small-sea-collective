@@ -454,6 +454,31 @@ Reads the `team` table from NoteToSelf DB. Does not query the Hub.
 
 Reads from the team's `core.db` directly: teammates, berths, pending invitations.
 
+#### Reconcile Core storage route
+
+`TeamManager.reconcile_team_route(team_name, cloud_storage_id=None, new_location=False)` is the established teammate's route operation.
+It repairs a missing or unusable Core route, and carries out an intentional provider, account, or location change.
+No acceptance artifact is involved: this is the counterpart to `prepare_team_route`, which belongs to a join in progress.
+
+It shares one pipeline with `prepare_team_route` -- session, `/cloud/setup`, reread after any provider locator writeback, publish, read back, commit -- and differs in policy on both ends.
+Selection is explicit: with more than one registered account and none chosen, it reports `storage_choice_required` rather than silently picking one, and no provider is contacted.
+It reports only `route` and `route_reason`; the invitation report extends that with join, admission, and acceptance fields.
+
+Reasons are the shared retryable set plus `storage_choice_required` and `current_device_untrusted`.
+The second is the trust precondition: peers skip announcements signed by keys they no longer trust, so if this device's own key is untrusted, a row it signs cannot repair peer selection.
+That case reports without contacting the provider or publishing.
+
+There is no caller-supplied location parameter on the Manager method or on either surface.
+A malformed or unregistered `cloud_storage_id` is invalid input -- `ValueError`, raised before the current allocation is touched -- not a route outcome.
+
+A change request is one-shot.
+The replacement allocation becomes durable before provider materialization, so a later failure leaves the new generation in place and the previous announcement still selected by peers.
+The retry is `reconcile_team_route(team_name)` with no change arguments; repeating `new_location` asks for another rotation.
+Between the replacement and a successful publication, this device's own Hub cloud reads and writes for the team fail with `announcement_missing` -- materialization stays open, so the retry path itself is not blocked.
+
+Ready ends at local publication and commit.
+The operation does not copy existing Core history to a new location, deliver the announcement to peers, retire the old location, or claim external reachability.
+
 #### Leave team
 
 Removes the Team pointer from NoteToSelf DB. Deletes the `{TeamName}/Sync/` directory locally. Pushes the NoteToSelf change so other devices can pick it up and do the corresponding deletion. Other apps are responsible for cleaning up their own data in that team's berths.
@@ -1077,6 +1102,11 @@ on the allocation still matching the materialization request.
 V1 allows at most one allocation per berth. It does not add provider-migration
 history columns; those can be added with migration tooling later.
 
+Changing the selected account or asking for a new location replaces that single row atomically with a fresh allocation ID.
+The ID is a generation token: the Hub must prove that any materialization it reports as success belongs to the same allocation ID and `cloud_storage_id` it started against, and Manager may sign only a reread of that same generation.
+Reconciling without a requested change preserves the current row and ID.
+Announcement history is unaffected by either: the allocation is replaced before anything is announced, so a failure in between leaves the previous route announcement standing.
+
 #### Teammate berth storage announcements
 
 A teammate berth storage announcement is the team-visible signed statement that
@@ -1112,7 +1142,13 @@ route publication.
 Selection sorts `announcement_id` descending and chooses the first valid row for `(teammate_id, berth_id)`.
 An invalid newer row does not hide an older valid one.
 The ID is UUIDv7, so this is the time-ordering rule;
-`announced_at` is display/audit data. Validity is structural: the signature
+`announced_at` is display/audit data.
+UUIDv7 is random within a millisecond, so insertion order does not imply sort order.
+A publisher replacing its own route mints an ID strictly greater than the currently effective row for that teammate and berth.
+Rows the selector rejects cannot bound publication because they cannot win selection.
+This applies only where the ID is minted immediately before signing: `announcement_id` is inside the canonical signed bytes, so a row that arrives already signed -- an imported peer row or an acceptance sidecar -- is never renumbered.
+Ordering across devices publishing concurrently is not settled by this rule.
+Validity is structural: the signature
 verifies and the signer key is currently trusted for `teammate_id`. There is no
 max-age policy in v1.
 

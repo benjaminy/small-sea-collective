@@ -1201,6 +1201,12 @@ class SmallSeaBackend:
 
     def _handle_materialization_outcome(self, ss_session, cloud, adapter, outcome):
         if outcome.status == "materialized":
+            # Success still has to prove it belongs to the generation it
+            # materialized: the Manager may have replaced the allocation while
+            # the provider call was in flight.
+            self._same_allocation_generation(
+                cloud, self._resolve_berth_cloud_or_raise(ss_session)
+            )
             return adapter
         if outcome.status == "needs_user_action":
             raise CloudUserActionRequiredExn()
@@ -1217,13 +1223,28 @@ class SmallSeaBackend:
             cloud.allocation_id,
             cloud.location,
             final_location,
+            cloud_storage_id=cloud.cloud_storage_id,
         ):
+            # Lost-race recovery: the stored row may already carry this
+            # locator, but only the same allocation generation and account may
+            # be treated as the one that was materialized. Two providers can
+            # issue the same location string.
             latest = self._resolve_berth_cloud_or_raise(ss_session)
+            self._same_allocation_generation(cloud, latest)
             if latest.location == final_location:
                 return self._make_storage_adapter_from_record(ss_session, latest)
             raise CloudAllocationConflictExn()
         latest = self._resolve_berth_cloud_or_raise(ss_session)
+        self._same_allocation_generation(cloud, latest)
         return self._make_storage_adapter_from_record(ss_session, latest)
+
+    def _same_allocation_generation(self, cloud, latest) -> None:
+        """Raise unless `latest` is the allocation generation `cloud` names."""
+        if (
+            latest.allocation_id != cloud.allocation_id
+            or latest.cloud_storage_id != cloud.cloud_storage_id
+        ):
+            raise CloudAllocationConflictExn()
 
     def materialize_for_session(self, session_hex):
         ss_session = self._lookup_session(session_hex)
@@ -1239,6 +1260,8 @@ class SmallSeaBackend:
         allocation_id: bytes,
         expected_location: str,
         new_location: str,
+        *,
+        cloud_storage_id: bytes | None = None,
     ) -> bool:
         with attached_note_to_self_connection(self.root_dir, participant_hex) as conn:
             cur = conn.execute(
@@ -1246,8 +1269,15 @@ class SmallSeaBackend:
                 UPDATE berth_cloud_allocation
                 SET location = ?
                 WHERE id = ? AND location = ?
+                  AND (? IS NULL OR cloud_storage_id = ?)
                 """,
-                (new_location, allocation_id, expected_location),
+                (
+                    new_location,
+                    allocation_id,
+                    expected_location,
+                    cloud_storage_id,
+                    cloud_storage_id,
+                ),
             )
             conn.commit()
         return cur.rowcount == 1

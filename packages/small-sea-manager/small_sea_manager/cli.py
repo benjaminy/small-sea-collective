@@ -179,6 +179,13 @@ _ROUTE_HELP = {
     "materialization_failed": "Setting up cloud storage failed. Retry.",
     "allocation_conflict": "The cloud location changed underneath. Retry.",
     "route_preparation_error": "Route preparation failed. Retry.",
+    "storage_choice_required": (
+        "Pick one of the accounts from `cloud-storage` with --cloud-storage-id."
+    ),
+    "current_device_untrusted": (
+        "This device's team key is not trusted, so a route it signs cannot help "
+        "peers. Finish admission or use a trusted device."
+    ),
 }
 
 
@@ -234,6 +241,61 @@ def prepare_route(ctx, team_name):
     """Retry storage route preparation for a pending join."""
     manager = _make_manager(ctx)
     _report_join_state(manager.prepare_team_route(team_name), team_name)
+
+
+def _report_route(report, team_name):
+    """Print a route-only report to stderr. Never touches stdout."""
+    click.echo(f"route: {report['route']}", err=True)
+    reason = report["route_reason"]
+    if reason is not None:
+        click.echo(
+            f"Route pending ({reason}). {_ROUTE_HELP.get(reason, 'Retry.')} "
+            f"Retry with: manager reconcile-route {team_name}",
+            err=True,
+        )
+
+
+@cli.command("cloud-storage")
+@click.pass_context
+def list_cloud_storage(ctx):
+    """List registered cloud storage accounts and their IDs."""
+    manager = _make_manager(ctx)
+    providers = manager.list_cloud_storage()
+    if not providers:
+        click.echo("No cloud storage configured.", err=True)
+        return
+    for provider in providers:
+        click.echo(f"{provider['id']}  {provider['protocol']}  {provider['url']}")
+
+
+@cli.command("reconcile-route")
+@click.argument("team_name")
+@click.option(
+    "--cloud-storage-id", default=None,
+    help="Registered account to publish Core storage on (see `cloud-storage`)",
+)
+@click.option(
+    "--new-location", is_flag=True,
+    help="Generate a fresh location on the selected account",
+)
+@click.pass_context
+def reconcile_route(ctx, team_name, cloud_storage_id, new_location):
+    """Reconcile and publish this device's Core storage route for a team.
+
+    Retry a pending result with `reconcile-route TEAM` alone: repeating
+    --new-location asks for another rotation rather than resuming this one.
+    """
+    manager = _make_manager(ctx)
+    try:
+        report = manager.reconcile_team_route(
+            team_name,
+            cloud_storage_id=cloud_storage_id,
+            new_location=new_location,
+        )
+    except ValueError as exc:
+        # Invalid input, not route state: nothing was changed.
+        raise click.UsageError(str(exc)) from exc
+    _report_route(report, team_name)
 
 
 @cli.command("export-acceptance")
