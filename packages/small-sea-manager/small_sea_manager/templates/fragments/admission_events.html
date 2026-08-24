@@ -1,4 +1,4 @@
-<div id="admission-events-{{ team_name }}">
+<div id="admission-events-{{ team_name }}"{% if oob %} hx-swap-oob="outerHTML"{% endif %}>
   {% if notice %}
   <p class="notice notice-ok">{{ notice }}</p>
   {% endif %}

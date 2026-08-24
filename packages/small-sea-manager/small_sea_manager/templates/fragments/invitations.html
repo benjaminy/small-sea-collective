@@ -1,4 +1,4 @@
-<div id="invitations-{{ team_name }}">
+<div id="invitations-{{ team_name }}"{% if oob %} hx-swap-oob="outerHTML"{% endif %}>
   {% if error %}
   <p class="notice notice-err">{{ error }}</p>
   {% endif %}
@@ -70,6 +70,4 @@
       <button class="btn btn-secondary" type="submit">Create invitation</button>
     </form>
   </div>
-
-  <div id="invitation-token-area" style="margin-top:0.5rem"></div>
 </div>
