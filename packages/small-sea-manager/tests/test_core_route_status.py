@@ -49,9 +49,10 @@ def _signed_storage_announcement(
     location: str,
     signer_private_key: bytes,
     signer_key_id: bytes,
+    announcement_id: bytes | None = None,
 ) -> TeammateBerthStorageAnnouncement:
     unsigned = TeammateBerthStorageAnnouncement(
-        announcement_id=uuid7(),
+        announcement_id=announcement_id if announcement_id is not None else uuid7(),
         teammate_id=teammate_id,
         berth_id=berth_id,
         protocol="localfolder",
@@ -221,6 +222,7 @@ def test_a_newer_invalid_row_does_not_hide_an_older_valid_row(playground_dir):
         location="older-valid-location",
         signer_private_key=private_key,
         signer_key_id=key_id_from_public(public_key),
+        announcement_id=bytes.fromhex("01" * 16),
     )
     newer_broken = replace(
         _signed_storage_announcement(
@@ -229,6 +231,7 @@ def test_a_newer_invalid_row_does_not_hide_an_older_valid_row(playground_dir):
             location="newer-broken-location",
             signer_private_key=private_key,
             signer_key_id=key_id_from_public(public_key),
+            announcement_id=bytes.fromhex("02" * 16),
         ),
         signature=b"\x00" * 64,
     )
