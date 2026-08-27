@@ -2102,9 +2102,6 @@ class TeamDevice(Base):
     device_key_id = Column(LargeBinary, primary_key=True)
     teammate_id = Column(LargeBinary, nullable=False)
     public_key = Column(LargeBinary, nullable=False)
-    protocol = Column(String, nullable=True)
-    url = Column(String, nullable=True)
-    bucket = Column(String, nullable=True)
     created_at = Column(String, nullable=False)
 
     def __repr__(self):
