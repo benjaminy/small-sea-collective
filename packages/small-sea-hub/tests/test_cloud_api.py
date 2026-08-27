@@ -733,7 +733,9 @@ def test_locator_writeback_race_returns_cloud_allocation_conflict(
         location="pending-provider-locator",
     )
 
-    def write_conflicting_location(participant_hex, allocation_id, expected, new):
+    def write_conflicting_location(
+        participant_hex, allocation_id, expected, new, *, cloud_storage_id=None
+    ):
         db_path = note_to_self_sync_db_path(playground_dir, participant_hex)
         with sqlite3.connect(db_path) as conn:
             cur = conn.execute(
@@ -847,3 +849,224 @@ def test_an_unauthenticated_download_is_not_absence(test_env):
         headers={"Authorization": "Bearer " + "00" * 16},
     )
     assert resp.status_code != 404
+
+
+# --------------------------------------------------------------------------- #
+# Allocation generation (issue #208)
+#
+# The Manager may replace a berth's allocation while a provider call is in
+# flight. Materialization success has to prove it belongs to the generation and
+# account it started against; a location string alone does not prove it.
+# --------------------------------------------------------------------------- #
+
+
+def _core_berth_allocation_setup(test_env):
+    client = test_env["client"]
+    backend = test_env["backend"]
+    session_hex = _open_session(client)
+    storage_id = _register_cloud(backend, session_hex, test_env["minio"])
+    ss_session = backend._lookup_session(session_hex)
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        test_env["playground_dir"],
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+        location="pending-provider-locator",
+    )
+    return session_hex, ss_session, storage_id
+
+
+def _replace_allocation(test_env, ss_session, *, location=None, cloud_storage_id=None):
+    """Stand in for a Manager-side allocation replacement mid-flight."""
+    participant_hex = ss_session.participant_id.hex()
+    allocation, reason = Provisioning.resolve_berth_cloud_allocation_intent(
+        test_env["playground_dir"],
+        participant_hex,
+        ss_session.berth_id,
+        cloud_storage_id_hex=cloud_storage_id,
+        new_location=True,
+    )
+    assert reason is None
+    if location is not None:
+        db_path = note_to_self_sync_db_path(test_env["playground_dir"], participant_hex)
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE berth_cloud_allocation SET location = ? WHERE id = ?",
+                (location, bytes.fromhex(allocation["id"])),
+            )
+            conn.commit()
+    return allocation
+
+
+def test_a_superseded_allocation_fails_a_plain_materialization(test_env, monkeypatch):
+    client = test_env["client"]
+    backend = test_env["backend"]
+    session_hex, ss_session, _storage_id = _core_berth_allocation_setup(test_env)
+
+    class ReplacingAdapter:
+        def materialize(self):
+            _replace_allocation(test_env, ss_session)
+            return MaterializationOutcome("materialized")
+
+    monkeypatch.setattr(
+        backend,
+        "_make_storage_adapter_from_record",
+        lambda _session, _cloud: ReplacingAdapter(),
+    )
+
+    resp = client.post(
+        "/cloud/setup", headers={"Authorization": f"Bearer {session_hex}"}
+    )
+
+    # No locator to write back, so nothing else would have caught this.
+    _assert_cloud_storage_required(resp, "cloud_allocation_conflict")
+
+
+def test_a_stale_locator_cannot_claim_a_replacement_at_the_same_location(
+    test_env, monkeypatch
+):
+    """Textual equality is not identity.
+
+    Contrived on purpose -- it needs a provider-issued locator to collide with
+    a freshly generated name -- but it is what separates checking the location
+    from checking the generation.
+    """
+    client = test_env["client"]
+    backend = test_env["backend"]
+    session_hex, ss_session, _storage_id = _core_berth_allocation_setup(test_env)
+    final_location = "provider-final-locator"
+
+    class ReplacingLocatorAdapter:
+        def materialize(self):
+            _replace_allocation(test_env, ss_session, location=final_location)
+            return MaterializationOutcome("materialized_with_locator", final_location)
+
+    monkeypatch.setattr(
+        backend,
+        "_make_storage_adapter_from_record",
+        lambda _session, _cloud: ReplacingLocatorAdapter(),
+    )
+
+    resp = client.post(
+        "/cloud/setup", headers={"Authorization": f"Bearer {session_hex}"}
+    )
+
+    _assert_cloud_storage_required(resp, "cloud_allocation_conflict")
+
+
+def test_lost_race_recovery_requires_the_same_account(test_env, monkeypatch):
+    client = test_env["client"]
+    backend = test_env["backend"]
+    session_hex, ss_session, _storage_id = _core_berth_allocation_setup(test_env)
+    second_storage_id = backend.add_cloud_location(
+        session_hex,
+        "s3",
+        test_env["minio"]["endpoint"] + "/second",
+        access_key=test_env["minio"]["access_key"],
+        secret_key=test_env["minio"]["secret_key"],
+    )
+    final_location = "provider-final-locator"
+
+    class ReplacingLocatorAdapter:
+        def materialize(self):
+            _replace_allocation(
+                test_env,
+                ss_session,
+                location=final_location,
+                cloud_storage_id=second_storage_id,
+            )
+            return MaterializationOutcome("materialized_with_locator", final_location)
+
+    monkeypatch.setattr(
+        backend,
+        "_make_storage_adapter_from_record",
+        lambda _session, _cloud: ReplacingLocatorAdapter(),
+    )
+
+    resp = client.post(
+        "/cloud/setup", headers={"Authorization": f"Bearer {session_hex}"}
+    )
+
+    # Same location string, different account: not the row we materialized.
+    _assert_cloud_storage_required(resp, "cloud_allocation_conflict")
+
+
+def test_hub_own_storage_accepts_a_repaired_and_a_replaced_allocation(test_env):
+    """The Hub's own-storage gate follows the Manager's route, both ways.
+
+    A repaired announcement reopens this device's own cloud I/O, and a
+    replacement closes it until the new route is published -- the accepted gap
+    an established teammate retries through.
+    """
+    client = test_env["client"]
+    backend = test_env["backend"]
+    playground_dir = test_env["playground_dir"]
+
+    alice_hex = backend._find_participant("alice")[0][0].name
+    Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    nts_session = _open_session(client, mode="passthrough")
+    storage_id = _register_cloud(backend, nts_session, test_env["minio"])
+    session_hex = _open_session(client, team="ProjectX")
+    ss_session = backend._lookup_session(session_hex)
+    auth = {"Authorization": f"Bearer {session_hex}"}
+    Provisioning.add_berth_cloud_allocation_by_berth_id(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        storage_id,
+    )
+
+    def _publish_and_round_trip(payload):
+        assert client.post("/cloud/setup", headers=auth).status_code == 200
+        publish_storage_announcement_for_session(backend, session_hex)
+        upload = client.post(
+            "/cloud_file",
+            json={"path": "core.txt", "data": base64.b64encode(payload).decode()},
+            headers=auth,
+        )
+        assert upload.status_code == 200, upload.text
+        download = client.get("/cloud_file", params={"path": "core.txt"}, headers=auth)
+        assert download.status_code == 200
+        return base64.b64decode(download.json()["data"])
+
+    assert _publish_and_round_trip(b"first") == b"first"
+
+    team_db = (
+        pathlib.Path(playground_dir)
+        / "Participants"
+        / ss_session.participant_id.hex()
+        / "ProjectX"
+        / "Sync"
+        / "core.db"
+    )
+    with sqlite3.connect(str(team_db)) as conn:
+        conn.execute("DELETE FROM teammate_berth_storage_announcement")
+        conn.commit()
+    _assert_cloud_storage_required(
+        client.get("/cloud_file", params={"path": "core.txt"}, headers=auth),
+        "announcement_missing",
+    )
+    assert _publish_and_round_trip(b"repaired") == b"repaired"
+
+    replacement, reason = Provisioning.resolve_berth_cloud_allocation_intent(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        ss_session.berth_id,
+        new_location=True,
+    )
+    assert reason is None
+    _assert_cloud_storage_required(
+        client.post(
+            "/cloud_file",
+            json={"path": "core.txt", "data": base64.b64encode(b"gap").decode()},
+            headers=auth,
+        ),
+        "announcement_missing",
+    )
+
+    # A new location is a new empty bucket: this operation publishes a route,
+    # it does not carry existing data across.
+    assert _publish_and_round_trip(b"replaced") == b"replaced"
+    assert _read_bucket_object(
+        test_env["minio"], replacement["location"], "core.txt"
+    ) == b"replaced"

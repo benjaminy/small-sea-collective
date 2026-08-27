@@ -256,6 +256,12 @@ conditional on the allocation still matching the materialization request. If a
 conditional update loses a local race, the Hub re-reads and proceeds if
 possible, or returns `cloud_allocation_conflict`.
 
+"Still matching" is allocation identity, not location text.
+The Manager may replace an allocation while a provider call is in flight, and the replacement carries a fresh allocation ID.
+Every materialization outcome the Hub reports as success -- with or without a locator writeback -- must first prove that the stored row is the same allocation ID and the same `cloud_storage_id` it materialized against.
+Two accounts can name the same location string, so a matching location alone proves nothing.
+A superseded materialization returns `cloud_allocation_conflict`.
+
 A teammate berth storage announcement is a signed selection of a route for one
 teammate and berth.
 Manager signs only a final locator: one the provider will not rewrite.

@@ -30,6 +30,11 @@ _ROUTE_HELP = {
     "materialization_failed": "Setting up your cloud storage failed. Retry.",
     "allocation_conflict": "Your cloud location changed underneath. Retry.",
     "route_preparation_error": "Route preparation failed. Retry.",
+    "storage_choice_required": "Choose which storage account to publish on.",
+    "current_device_untrusted": (
+        "This device's team key is not trusted, so a route it signs cannot help "
+        "your teammates. Finish admission, or use a trusted device."
+    ),
 }
 
 #: What the inviter is told about the couriered route. These describe local
@@ -128,6 +133,11 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "admission_watch_delay": _watch_delay(
                 mgr.session_state(team_name, _ENCRYPTED) == "active"
             ),
+            "core_storage": mgr.core_storage_allocation(team_name),
+            "cloud_providers": mgr.list_cloud_storage(),
+            "route_help": _ROUTE_HELP,
+            "core_route": None,
+            "core_route_error": None,
             "team_notice": notice,
             "team_error": error,
         }
@@ -651,6 +661,46 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             report = None
             error = str(e)
         return _acceptance_fragment(request, mgr, team_name, report, error=error)
+
+    def _core_storage_fragment(request, team_name, *, report=None, error=None):
+        mgr = _mgr(request)
+        return templates.TemplateResponse(
+            "fragments/core_storage.html",
+            {
+                "request": request,
+                "team_name": team_name,
+                "core_storage": mgr.core_storage_allocation(team_name),
+                "cloud_providers": mgr.list_cloud_storage(),
+                "route_help": _ROUTE_HELP,
+                "core_route": report,
+                "core_route_error": error,
+            },
+        )
+
+    @app.post("/teams/{team_name}/reconcile-route", response_class=HTMLResponse)
+    async def reconcile_route(
+        request: Request,
+        team_name: str,
+        cloud_storage_id: str = Form(""),
+        new_location: bool = Form(False),
+    ):
+        """Reconcile this device's Core storage route for one team.
+
+        Only a registered account ID and a boolean intent come from the form.
+        A caller-supplied location is deliberately not accepted here.
+        """
+        mgr = _mgr(request)
+        try:
+            report = mgr.reconcile_team_route(
+                team_name,
+                cloud_storage_id=cloud_storage_id.strip() or None,
+                new_location=new_location,
+            )
+            error = None
+        except ValueError as e:
+            report = None
+            error = str(e)
+        return _core_storage_fragment(request, team_name, report=report, error=error)
 
     @app.post("/teams/{team_name}/complete-acceptance", response_class=HTMLResponse)
     async def complete_acceptance(
