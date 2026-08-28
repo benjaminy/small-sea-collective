@@ -17,11 +17,15 @@ from small_sea_manager import provisioning
 _CORE_APP = "SmallSeaCollectiveCore"
 _LOG = logging.getLogger(__name__)
 
-#: Hub `cloud_storage_required` reasons, mapped to the route reasons the join
-#: report speaks. Every one of them is retryable.
-_ROUTE_REASON_BY_CLOUD_REASON = {
-    "cloud_location_missing": "storage_not_configured",
-    "cloud_credentials_missing": "storage_not_configured",
+#: Hub `cloud_storage_required` reasons, mapped to the route reasons the
+#: Manager speaks. Every one of them is retryable, but they do not share a
+#: repair, so the two storage preconditions stay distinct: a missing location
+#: is created by reconciling the route, while missing credentials have to be
+#: supplied on the account itself. Neither is `storage_not_configured`, which
+#: means no local storage account is registered at all.
+ROUTE_REASON_BY_CLOUD_REASON = {
+    "cloud_location_missing": "location_missing",
+    "cloud_credentials_missing": "credentials_missing",
     "cloud_user_action_required": "user_action_required",
     "cloud_materialization_failed": "materialization_failed",
     "cloud_allocation_conflict": "allocation_conflict",
@@ -748,7 +752,7 @@ class TeamManager:
         try:
             session.ensure_cloud_ready()
         except SmallSeaCloudStorageRequired as exc:
-            return state, _ROUTE_REASON_BY_CLOUD_REASON.get(
+            return state, ROUTE_REASON_BY_CLOUD_REASON.get(
                 exc.reason, "route_preparation_error"
             )
         except SmallSeaHubUnavailable:

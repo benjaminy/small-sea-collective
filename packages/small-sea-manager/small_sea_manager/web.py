@@ -15,16 +15,30 @@ from cod_sync.protocol import (
     PublicationOutcomeUnresolvedError,
     PublicationRetryableError,
 )
-from small_sea_manager.manager import TeamManager, _CORE_APP
+from small_sea_client.client import SmallSeaCloudStorageRequired
+from small_sea_manager.manager import (
+    ROUTE_REASON_BY_CLOUD_REASON,
+    TeamManager,
+    _CORE_APP,
+)
 
 _template_dir = pathlib.Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=_template_dir)
 
 _NOTETOSELF = "NoteToSelf"
 
-#: What the invitee should do about a pending route. Every reason is retryable.
+#: What the user should do about a pending route. Every reason is retryable.
 _ROUTE_HELP = {
     "storage_not_configured": "Add cloud storage below, then retry.",
+    "location_missing": (
+        "This device has no cloud location for the team's Core berth yet. "
+        "Reconcile the Core route to create one."
+    ),
+    "credentials_missing": (
+        "The selected cloud account has no usable credentials. Add a replacement "
+        "account below with its access key and secret, reopen this team, select "
+        "the replacement under Core Storage, and reconcile the route."
+    ),
     "hub_session_unavailable": "Open a session for this team, then retry.",
     "user_action_required": "Your storage provider needs your attention, then retry.",
     "materialization_failed": "Setting up your cloud storage failed. Retry.",
@@ -36,6 +50,19 @@ _ROUTE_HELP = {
         "your teammates. Finish admission, or use a trusted device."
     ),
 }
+
+#: Route reasons the existing Core-route reconciliation repairs. The two that
+#: are missing from it need the user to change something first: registering a
+#: storage account, or selecting a credentialed replacement account.
+_RECONCILABLE_ROUTE_REASONS = frozenset(
+    {
+        "location_missing",
+        "user_action_required",
+        "materialization_failed",
+        "allocation_conflict",
+        "route_preparation_error",
+    }
+)
 
 #: What the inviter is told about the couriered route. These describe local
 #: processing only -- none of them claims the teammate's storage is reachable.
@@ -138,6 +165,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "route_help": _ROUTE_HELP,
             "core_route": None,
             "core_route_error": None,
+            "offer_reconcile": False,
             "team_notice": notice,
             "team_error": error,
         }
@@ -454,6 +482,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/teams/{team_name}/push", response_class=HTMLResponse)
     async def push_team(request: Request, team_name: str):
         mgr = _mgr(request)
+        storage_reason = None
         try:
             outcome = mgr.push_team(team_name)
             notice = (
@@ -462,6 +491,19 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 else "Pushed to cloud."
             )
             error = None
+        except SmallSeaCloudStorageRequired as exc:
+            # A live session says nothing about current-route state, and the
+            # Hub's 409 body carries no `detail`, so its raw JSON envelope is
+            # all `str(exc)` would show. Speak the same route reasons the
+            # Core-storage section does, and hand the repair to it.
+            notice = None
+            storage_reason = ROUTE_REASON_BY_CLOUD_REASON.get(
+                exc.reason, "route_preparation_error"
+            )
+            error = (
+                f"Push blocked: this team's Core storage is not ready "
+                f"({storage_reason}). {_ROUTE_HELP[storage_reason]}"
+            )
         except PublicationIntegrationRequiredError:
             # Manager has no integration operation yet (#185, #48), so this
             # says what is true and offers no action that does not exist. The
@@ -490,7 +532,13 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             error = str(e)
         return templates.TemplateResponse(
             "fragments/sync_result.html",
-            {"request": request, "team_name": team_name, "notice": notice, "error": error},
+            {
+                "request": request,
+                "team_name": team_name,
+                "notice": notice,
+                "error": error,
+                "offer_reconcile": storage_reason in _RECONCILABLE_ROUTE_REASONS,
+            },
         )
 
     # ------------------------------------------------------------------ #
@@ -674,6 +722,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "route_help": _ROUTE_HELP,
                 "core_route": report,
                 "core_route_error": error,
+                "offer_reconcile": (
+                    report is not None
+                    and report.get("route_reason") in _RECONCILABLE_ROUTE_REASONS
+                ),
             },
         )
 

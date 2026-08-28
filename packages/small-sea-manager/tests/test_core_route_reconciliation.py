@@ -877,7 +877,7 @@ def test_web_false_rotation_value_does_not_generate_a_new_location(
     assert _allocation(root, alice_hex) == before
 
 
-def test_web_renders_a_pending_reason_with_a_retry_that_drops_the_intent(
+def test_web_requires_an_account_choice_without_offering_a_useless_retry(
     playground_dir, fake_session
 ):
     root = pathlib.Path(playground_dir)
@@ -889,10 +889,8 @@ def test_web_renders_a_pending_reason_with_a_retry_that_drops_the_intent(
 
     assert resp.status_code == 200
     assert "storage_choice_required" in resp.text
-    retry = resp.text.split('<form hx-post="/teams/')[1]
-    # The retry form carries no rotation intent: repeating one would generate
-    # another location instead of resuming this allocation.
-    assert 'name="new_location"' not in retry.split("</form>")[0]
+    assert 'name="cloud_storage_id"' in resp.text
+    assert ">Retry</button>" not in resp.text
 
 
 def test_web_renders_an_invalid_account_as_input_error(playground_dir, fake_session):

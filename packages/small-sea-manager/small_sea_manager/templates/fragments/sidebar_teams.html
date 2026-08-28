@@ -7,7 +7,9 @@
             hx-swap="innerHTML">
       {{ team.name }}
     </button>
-    <span class="session-dot dot-{{ team.session_status }}"></span>
+    {# Hub session only: it says nothing about current Core-route state. #}
+    <span class="session-dot dot-{{ team.session_status }}"
+          title="Hub session: {{ team.session_status }}"></span>
   </div>
   {% endfor %}
   {% if not teams %}

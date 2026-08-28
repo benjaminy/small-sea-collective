@@ -349,8 +349,10 @@ def test_route_pending_when_no_hub_session(playground_dir, error, expected):
         ("cloud_user_action_required", "user_action_required"),
         ("cloud_materialization_failed", "materialization_failed"),
         ("cloud_allocation_conflict", "allocation_conflict"),
-        ("cloud_location_missing", "storage_not_configured"),
-        ("cloud_credentials_missing", "storage_not_configured"),
+        # Distinct on purpose: reconciling creates a missing location, but it
+        # cannot supply credentials the account never stored.
+        ("cloud_location_missing", "location_missing"),
+        ("cloud_credentials_missing", "credentials_missing"),
         ("announcement_missing", "route_preparation_error"),
     ],
 )
