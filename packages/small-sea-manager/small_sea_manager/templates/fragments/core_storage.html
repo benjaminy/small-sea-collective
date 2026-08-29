@@ -1,4 +1,18 @@
 <div id="core-storage-section">
+  {# Current-route state is its own signal. A live Hub session for this team
+     says only that the Hub will talk to this device; it does not mean the Core
+     berth has a location, credentials, or a current published route. #}
+  <p style="padding:0 1rem 0.4rem; font-size:0.85rem; color:#78716c">
+    {% if core_storage.route == "ready" %}
+    <span class="badge badge-green">Current Core route published</span>
+    Teammates can select this announcement after it syncs.
+    {% else %}
+    <span class="badge badge-amber">Current Core route pending</span>
+    This device cannot push with the current allocation until it publishes a
+    matching route. Teammates may still use an earlier published route.
+    {% endif %}
+  </p>
+
   {% if core_route_error %}
   <p class="notice notice-err">{{ core_route_error }}</p>
   {% endif %}
@@ -14,6 +28,7 @@
       Route pending ({{ core_route.route_reason }}).
       {{ route_help.get(core_route.route_reason, "Retry.") }}
     </p>
+    {% if offer_reconcile %}
     {# Deliberately posts no change intent: a retry resumes the current
        allocation, and repeating a rotation would generate another location. #}
     <form hx-post="/teams/{{ team_name }}/reconcile-route"
@@ -21,6 +36,7 @@
           hx-swap="outerHTML">
       <button class="btn btn-secondary" type="submit">Retry</button>
     </form>
+    {% endif %}
     {% endif %}
   {% endif %}
 

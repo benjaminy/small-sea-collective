@@ -47,7 +47,8 @@
             hx-swap="innerHTML">
       {{ team.name }}
     </button>
-    <span class="session-dot dot-{{ team.session_status }}"></span>
+    <span class="session-dot dot-{{ team.session_status }}"
+          title="Hub session: {{ team.session_status }}"></span>
   </div>
   {% endfor %}
 </div>

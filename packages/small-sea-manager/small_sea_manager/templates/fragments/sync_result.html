@@ -1,4 +1,12 @@
 <div id="sync-result">
   {% if notice %}<p class="notice notice-ok">{{ notice }}</p>{% endif %}
   {% if error %}<p class="notice notice-err">{{ error }}</p>{% endif %}
+  {% if offer_reconcile %}
+  {# Carries no change intent: the repair resumes the current allocation. #}
+  <form hx-post="/teams/{{ team_name }}/reconcile-route"
+        hx-target="#core-storage-section"
+        hx-swap="outerHTML">
+    <button class="btn btn-secondary" type="submit">Repair Core storage</button>
+  </form>
+  {% endif %}
 </div>

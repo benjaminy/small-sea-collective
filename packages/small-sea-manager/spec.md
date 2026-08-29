@@ -465,6 +465,11 @@ Selection is explicit: with more than one registered account and none chosen, it
 It reports only `route` and `route_reason`; the invitation report extends that with join, admission, and acceptance fields.
 
 Reasons are the shared retryable set plus `storage_choice_required` and `current_device_untrusted`.
+The shared set keeps the Hub's two storage preconditions apart, because their repairs differ.
+`storage_not_configured` means no account is registered at all.
+`location_missing` (Hub `cloud_location_missing`) means an account exists but the Core berth has no allocation, which reconciliation itself creates.
+`credentials_missing` (Hub `cloud_credentials_missing`) means the selected account stores no usable credentials, which reconciliation cannot supply.
+The current account surface does not update credentials in place, so the user registers a replacement account, selects it for the Core berth, and reconciles the route.
 The second is the trust precondition: peers skip announcements signed by keys they no longer trust, so if this device's own key is untrusted, a row it signs cannot repair peer selection.
 That case reports without contacting the provider or publishing.
 
@@ -609,7 +614,7 @@ report rather than a token:
 | `join` | `complete` once the local work has landed, else `absent` |
 | `admission` | `finalized` or `pending` |
 | `route` | `ready` or `pending` |
-| `route_reason` | when preparation was attempted but the route is not ready: `hub_session_unavailable`, `storage_not_configured`, `user_action_required`, `materialization_failed`, `allocation_conflict`, or `route_preparation_error` — all retryable; `null` when preparation was skipped because the acceptance artifact is missing or stale |
+| `route_reason` | when preparation was attempted but the route is not ready: `hub_session_unavailable`, `storage_not_configured`, `location_missing`, `credentials_missing`, `user_action_required`, `materialization_failed`, `allocation_conflict`, or `route_preparation_error` — all retryable; `null` when preparation was skipped because the acceptance artifact is missing or stale |
 | `acceptance` | `exportable` or `withheld` |
 | `acceptance_reason` | when withheld: `route_pending`, `artifact_missing`, or `artifact_stale` |
 
@@ -1229,6 +1234,9 @@ This outgoing state is tracked independently of the incoming state above; neithe
 **Push (user-initiated):** Commits outstanding Manager-owned `core.db` state, opens a Hub session for the relevant berth (e.g. `{Team}/SmallSeaCollectiveCore`), then triggers a Cod Sync push via the Hub.
 The Hub handles the actual cloud I/O.
 Preparing `core.db` is purely local, so a publication with nothing new to send is reported as such without opening a session.
+A Hub `cloud_storage_required` refusal is reported as the same route reason the Core storage section speaks, with the matching repair, rather than as the Hub's response body.
+A valid session never implies a current published storage route: the Manager presents session authorization and current Core-route state as separate signals, and the per-team session indicator speaks only for the session.
+Pending current-route state does not claim that peers have lost an earlier valid announcement.
 
 > For testing, sync can be triggered immediately without user interaction via a config flag or test fixture.
 

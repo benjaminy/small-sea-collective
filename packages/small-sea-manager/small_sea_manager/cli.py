@@ -174,6 +174,14 @@ def list_invitations(ctx, team_name):
 
 _ROUTE_HELP = {
     "storage_not_configured": "Add cloud storage, then retry.",
+    "location_missing": (
+        "The Core berth has no cloud location yet; reconciling creates one."
+    ),
+    "credentials_missing": (
+        "The selected account has no usable credentials. Add a replacement in "
+        "the Manager, find its ID with `cloud-storage`, then select it with "
+        "`reconcile-route TEAM --cloud-storage-id ID`."
+    ),
     "hub_session_unavailable": "Open a session for this team, then retry.",
     "user_action_required": "The storage provider needs your attention, then retry.",
     "materialization_failed": "Setting up cloud storage failed. Retry.",
