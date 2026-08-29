@@ -740,6 +740,29 @@ def test_divergence_under_an_open_write_keeps_its_evidence(scratch_dir):
     assert_within_envelope(scripted)
 
 
+def test_settlement_refuses_to_replace_a_park_holding_another_head(scratch_dir):
+    """One link uid records one observation, whoever wrote the ref first."""
+    scratch = pathlib.Path(scratch_dir)
+    bob, publication, competing, base, stale = diverging_race(scratch)
+
+    def publish_divergent():
+        scripted = ScriptedStore(
+            LocalFolderStore(str(publication)), reads=[frozen(stale)]
+        )
+        with pytest.raises(PublicationIntegrationRequiredError) as exc:
+            make_cod_sync(bob, scripted).publish()
+        return exc.value.parked_ref
+
+    parked_ref = publish_divergent()
+    assert bob.resolve_ref(parked_ref) == competing
+
+    # Something else already holds this link uid at a different head.
+    bob._run(["update-ref", parked_ref, base])
+    with pytest.raises(ChainError):
+        publish_divergent()
+    assert bob.resolve_ref(parked_ref) == base
+
+
 def stale_head(snapshot):
     return decode_link(snapshot[0]).head
 

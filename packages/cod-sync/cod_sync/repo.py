@@ -60,6 +60,22 @@ class RefDivergedError(RepoError):
         self.new_sha = new_sha
 
 
+class RefImmutableConflictError(RepoError):
+    """Raised by create_ref_immutable() when the ref already names another SHA.
+
+    Ancestry is irrelevant: an immutable ref is a record of one observation,
+    so anything other than the exact same SHA is a different record.
+    """
+
+    def __init__(self, ref_name: str, current_sha: str, new_sha: str):
+        super().__init__(
+            f"{ref_name} already exists at {current_sha}, which is not {new_sha}"
+        )
+        self.ref_name = ref_name
+        self.current_sha = current_sha
+        self.new_sha = new_sha
+
+
 class RefAdvanceContendedError(RepoError):
     """Raised by advance_ref() when repeated compare-and-swap attempts all lose."""
 
@@ -85,6 +101,19 @@ class RefAdvanceResult:
     ref_name: str
     disposition: str
     previous_sha: Optional[str]
+    current_sha: str
+
+
+@dataclass(frozen=True)
+class RefCreateResult:
+    """Outcome of an immutable ref creation.
+
+    disposition is "created" when this call installed the ref and "verified"
+    when it already named the same SHA, whoever wrote it.
+    """
+
+    ref_name: str
+    disposition: str
     current_sha: str
 
 
@@ -371,7 +400,7 @@ class Repo:
             snapshot.create_bundle(path, rev_args)
 
     def verify_bundle(self, path: Union[str, pathlib.Path]):
-        """Check that the bundle at path is valid and its prerequisites are present."""
+        """Check the bundle header and that its prerequisites are present."""
         self._run(["bundle", "verify", str(path)])
 
     def bundle_heads(self, path: Union[str, pathlib.Path]) -> Dict[str, str]:
@@ -474,6 +503,61 @@ class Repo:
                 f"{hard_failure.stderr.strip()}"
             )
         raise RefAdvanceContendedError(ref_name, REF_ADVANCE_ATTEMPTS)
+
+    def list_refs(self, prefix: str) -> Dict[str, str]:
+        """Return {ref_name: sha} for every ref under prefix.
+
+        Reads live refs, so a caller that wants durable state does not have to
+        remember anything across processes.
+        """
+        result = self._run(
+            ["for-each-ref", "--format=%(refname) %(objectname)", prefix]
+        )
+        refs = {}
+        for line in result.stdout.splitlines():
+            name, _, sha = line.strip().partition(" ")
+            if name and sha:
+                refs[name] = sha
+        return refs
+
+    def create_ref_immutable(self, ref_name: str, sha: str) -> RefCreateResult:
+        """Create ref_name at sha, or verify it already names exactly sha.
+
+        The write is `git update-ref <name> <sha> ""`, whose empty old value
+        asserts the ref does not exist yet, so a concurrent creator cannot be
+        silently overwritten. Losing that race is not a failure when the winner
+        wrote the same SHA: the record the caller wanted exists either way.
+        Any other existing SHA raises RefImmutableConflictError regardless of
+        ancestry, and nothing is written.
+        """
+        if set(sha) == {"0"}:
+            raise RepoError(
+                f"cannot create {ref_name} at the null object id {sha}"
+            )
+
+        def settle(current: Optional[str]) -> Optional[RefCreateResult]:
+            if current == sha:
+                return RefCreateResult(ref_name, "verified", sha)
+            if current is not None:
+                raise RefImmutableConflictError(ref_name, current, sha)
+            return None
+
+        settled = settle(self.resolve_ref(ref_name))
+        if settled is not None:
+            return settled
+
+        result = self._run(
+            ["update-ref", ref_name, sha, ""], raise_on_error=False
+        )
+        if result.returncode == 0:
+            return RefCreateResult(ref_name, "created", sha)
+
+        settled = settle(self.resolve_ref(ref_name))
+        if settled is not None:
+            return settled
+        raise RepoError(
+            f"update-ref {ref_name} -> {sha} failed: {result.stderr.strip()}"
+        )
 
     # ------------------------------------------------------------------ #
     # Work-tree operations (require work_tree to be set)

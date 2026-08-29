@@ -6640,6 +6640,31 @@ def list_teammates(root_dir, participant_hex, team_name):
     return result
 
 
+def teammate_exists(root_dir, participant_hex, team_name, teammate_id_hex) -> bool:
+    """Return True if teammate_id_hex names a row in this team's Core DB.
+
+    Deliberately selects no route data. A peer read's route is the Hub's to
+    choose, so this must not grow into a second route view that could disagree
+    with it. Callers that need routes use list_teammates instead.
+
+    A teammate id that is not valid hex raises; normalizing malformed input is
+    separate work.
+    """
+    root_dir = pathlib.Path(root_dir)
+    teammate_id = bytes.fromhex(teammate_id_hex)
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    engine = _sqlite_engine(team_db_path)
+    try:
+        with engine.begin() as conn:
+            row = conn.execute(
+                text("SELECT 1 FROM teammate WHERE id = :teammate_id"),
+                {"teammate_id": teammate_id},
+            ).fetchone()
+    finally:
+        engine.dispose()
+    return row is not None
+
+
 def list_invitations(root_dir, participant_hex, team_name):
     """List admission proposals for a team. Returns list of dicts."""
     root_dir = pathlib.Path(root_dir)

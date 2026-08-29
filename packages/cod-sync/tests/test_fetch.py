@@ -180,6 +180,19 @@ def test_an_already_current_fetch_still_catches_a_doctored_bundle(scratch_dir):
     assert all_refs(bob) == before
 
 
+def test_a_corrupt_published_bundle_is_a_chain_error(scratch_dir):
+    scratch = pathlib.Path(scratch_dir)
+    _alice, publication, _heads = build_chain(scratch, 1)
+    bob = reader(scratch)
+    bundle = next(pathlib.Path(publication).glob("B-*.bundle"))
+    bundle.write_bytes(bundle.read_bytes()[:-20])
+
+    before = all_refs(bob)
+    with pytest.raises(ChainError, match="payload could not be imported"):
+        make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+    assert all_refs(bob) == before
+
+
 # ----------------------------------------------------------------- no refs #
 
 

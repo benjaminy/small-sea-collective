@@ -1,10 +1,31 @@
 import logging
 import pathlib
-from typing import Optional
+from dataclasses import dataclass
+from typing import Literal, Optional
 
-from cod_sync.repo import Repo as _Repo
-from cod_sync.protocol import CodSync
-from cod_sync.store import BootstrapProxyStore, SmallSeaStore
+from cod_sync.repo import (
+    Repo as _Repo,
+    RepoError as _RepoError,
+)
+from cod_sync.format import (
+    LinkFormatError as _LinkFormatError,
+    UnsupportedLinkVersionError as _UnsupportedLinkVersionError,
+)
+from cod_sync.protocol import (
+    PARKED_REF_PREFIX as _PARKED_REF_PREFIX,
+    ChainError as _ChainError,
+    CodSync,
+    NoPublishedHeadError as _NoPublishedHeadError,
+    PinIntegrationRequiredError as _PinIntegrationRequiredError,
+)
+from cod_sync.store import (
+    BootstrapProxyStore,
+    PeerSenderKeyUnavailableError as _StorePeerSenderKeyUnavailableError,
+    PeerSmallSeaStore,
+    PeerStorageUnknownError as _StorePeerStorageUnknownError,
+    SmallSeaStore,
+    StoreError as _StoreError,
+)
 from small_sea_client.client import (
     SmallSeaClient,
     SmallSeaCloudStorageRequired,
@@ -30,6 +51,96 @@ ROUTE_REASON_BY_CLOUD_REASON = {
     "cloud_materialization_failed": "materialization_failed",
     "cloud_allocation_conflict": "allocation_conflict",
 }
+
+
+#: Namespace for the durable device-local record of what was fetched from a
+#: teammate's Core chain. Refs are the only truth here: no sidecar database,
+#: watermark, or status column mirrors them.
+CORE_PEER_REF_PREFIX = "refs/small-sea/core-peer"
+
+
+def core_peer_latest_ref(teammate_id_hex: str) -> str:
+    """The forward-only convenience ref for one teammate's Core chain.
+
+    Named after the teammate, not a storage route: the chain belongs to the
+    teammate and survives any replacement of the route it was read through.
+    """
+    return f"{CORE_PEER_REF_PREFIX}/{teammate_id_hex}/latest"
+
+
+def core_peer_observation_ref(teammate_id_hex: str, link_uid: str) -> str:
+    """The immutable ref recording one divergent observation of a teammate."""
+    return f"{CORE_PEER_REF_PREFIX}/{teammate_id_hex}/observations/{link_uid}"
+
+
+class CoreFetchError(Exception):
+    """Base class for every failure of a teammate Core fetch."""
+
+
+class TeammateNotFoundError(CoreFetchError):
+    """This team's Core DB holds no such teammate."""
+
+
+class CorePublicationMissingError(CoreFetchError):
+    """The teammate's store publishes no Core chain yet."""
+
+
+class PeerSenderKeyUnavailableError(CoreFetchError):
+    """This device cannot yet decrypt the teammate's published bytes."""
+
+
+class PeerStorageUnknownError(CoreFetchError):
+    """The Hub resolved no storage route for the teammate."""
+
+
+class CoreFetchRemoteError(CoreFetchError):
+    """The Hub or the cloud provider behind it failed the read."""
+
+
+class InvalidCoreChainError(CoreFetchError):
+    """The fetched bytes are not a structurally valid Cod Sync chain."""
+
+
+class CoreRefPersistenceError(CoreFetchError):
+    """The local Git repository could not durably preserve the fetched source."""
+
+
+@dataclass(frozen=True)
+class TeammateCoreFetchResult:
+    """What one explicit fetch of one teammate's Core chain observed.
+
+    disposition is the convenience ref's outcome — "created", "advanced",
+    "unchanged", or "stale" — or "divergent", where the ref was left alone and
+    observation_ref_name durably names observed_head_sha instead.
+    current_head_sha always names whatever latest_ref_name now holds.
+    """
+
+    disposition: str
+    observed_head_sha: str
+    current_head_sha: str
+    latest_ref_name: str
+    observation_ref_name: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class CoreSourceHead:
+    """One live parked head, derived from refs and ancestry at read time.
+
+    Nothing here is stored state. Supersession is judged only within one
+    logical source — one teammate, or this participant's own publications —
+    so a head contained in a different teammate's history stays visible.
+    contained_in_main says the local checkout already holds these commits; it
+    does not say the state was integrated, and no field claims the fetched
+    history is authored, admissible, or safe to adopt.
+    """
+
+    source_kind: Literal["teammate", "self_publication"]
+    teammate_id: Optional[str]
+    ref_name: str
+    head_sha: str
+    is_maximal: bool
+    superseded_by_refs: tuple[str, ...]
+    contained_in_main: bool
 
 
 class AppSightingsRefresh(list):
@@ -1070,6 +1181,175 @@ class TeamManager:
         if intended_head:
             self._push_status_file(team_name).write_text(intended_head)
         return result.disposition
+
+    # ------------------------------------------------------------------ #
+    # Incoming Core state: fetch and park, never integrate
+    # ------------------------------------------------------------------ #
+
+    def fetch_teammate_core(self, team_name, teammate_id) -> TeammateCoreFetchResult:
+        """Fetch one teammate's Core chain and preserve the head it published.
+
+        Explicit and unconditional: no notification state is read, and nothing
+        about the local repository decides whether the fetch happens. Objects
+        are imported without a checkout, local `main` never moves, and the only
+        refs written are this teammate's own.
+
+        A head that diverges from what was fetched before is an observation,
+        not a failure. The convenience ref keeps its head and the newly seen
+        one is recorded under its own immutable ref, so a later fetch of the
+        same link finds that record rather than wedging.
+
+        The result says what this device fetched from the store the Hub
+        selected. It is not evidence that the teammate authored the
+        publication, that the chain may extend local history, or that any of
+        it may be integrated.
+        """
+        # A well-formed id that names no teammate is worth distinguishing here,
+        # before any peer transport. Route selection stays the Hub's: this
+        # lookup reads no route data, so it cannot disagree with the Hub about
+        # where the teammate's chain lives.
+        if not provisioning.teammate_exists(
+            self.root_dir, self.participant_hex, team_name, teammate_id
+        ):
+            raise TeammateNotFoundError(
+                f"team {team_name!r} has no teammate {teammate_id}"
+            )
+
+        repo = self._team_repo(team_name)
+        latest_ref = core_peer_latest_ref(teammate_id)
+        try:
+            session = self._get_or_open_session(team_name)
+            store = PeerSmallSeaStore(
+                session.token,
+                teammate_id,
+                base_url=self.client._base_url,
+                client=self.client._http_client,
+            )
+            result = CodSync(repo, store).fetch(pin_to_ref=latest_ref)
+        except _PinIntegrationRequiredError as exc:
+            return self._record_core_divergence(repo, teammate_id, latest_ref, exc)
+        except _NoPublishedHeadError as exc:
+            raise CorePublicationMissingError(
+                f"teammate {teammate_id} publishes no Core chain"
+            ) from exc
+        except (
+            _ChainError,
+            _LinkFormatError,
+            _UnsupportedLinkVersionError,
+        ) as exc:
+            # Cod Sync raises its link-decoding errors outside CodSyncError, so
+            # they are named here rather than reached through a base class.
+            raise InvalidCoreChainError(str(exc)) from exc
+        except _StorePeerStorageUnknownError as exc:
+            raise PeerStorageUnknownError(str(exc)) from exc
+        except _StorePeerSenderKeyUnavailableError as exc:
+            raise PeerSenderKeyUnavailableError(str(exc)) from exc
+        except _StoreError as exc:
+            raise CoreFetchRemoteError(str(exc)) from exc
+        except (SmallSeaHubUnavailable, SmallSeaError) as exc:
+            raise CoreFetchRemoteError(str(exc)) from exc
+        except _RepoError as exc:
+            # Cod Sync converts failures while inspecting or importing fetched
+            # bundle bytes into ChainError. What remains here is ref contention
+            # or a hard ref-write failure, neither of which leaves a newly
+            # fetched source durably claimed.
+            raise CoreRefPersistenceError(str(exc)) from exc
+
+        return TeammateCoreFetchResult(
+            disposition=result.pin_disposition,
+            observed_head_sha=result.observed_head,
+            current_head_sha=result.pinned_head,
+            latest_ref_name=latest_ref,
+        )
+
+    def _record_core_divergence(
+        self, repo, teammate_id, latest_ref, exc
+    ) -> TeammateCoreFetchResult:
+        """Preserve a divergent teammate head under its own immutable ref.
+
+        The objects are already imported by the time the pin refuses to move,
+        so the only thing at risk is the record of which head was seen. One ref
+        per observed link means a repeated fetch of the same link verifies the
+        record it already wrote instead of failing.
+        """
+        observation_ref = core_peer_observation_ref(teammate_id, exc.link_uid)
+        try:
+            repo.create_ref_immutable(observation_ref, exc.observed_head)
+        except _RepoError as err:
+            raise CoreRefPersistenceError(
+                f"could not preserve {observation_ref} at {exc.observed_head}: {err}"
+            ) from err
+        return TeammateCoreFetchResult(
+            disposition="divergent",
+            observed_head_sha=exc.observed_head,
+            current_head_sha=exc.current_sha,
+            latest_ref_name=latest_ref,
+            observation_ref_name=observation_ref,
+        )
+
+    @staticmethod
+    def _core_peer_teammate_id(ref_name: str) -> Optional[str]:
+        """Return the teammate a Core peer ref belongs to, or None if unreadable."""
+        remainder = ref_name[len(CORE_PEER_REF_PREFIX) + 1 :]
+        parts = remainder.split("/")
+        if len(parts) == 2 and parts[1] == "latest":
+            return parts[0]
+        if len(parts) == 3 and parts[1] == "observations":
+            return parts[0]
+        return None
+
+    def list_core_source_heads(self, team_name) -> list[CoreSourceHead]:
+        """Report every parked Core head this device currently holds.
+
+        Derived entirely from live refs and Git ancestry, so a fresh
+        TeamManager sees exactly what the previous one left on disk. Teammate
+        sources come from this operation's own refs; self-publication sources
+        are the refs Cod Sync's publication settlement already parked, read
+        here and otherwise left alone.
+
+        Supersession is decided within one logical source only, and only by
+        strict descent: two refs at the same SHA both stay maximal, and
+        ordinary divergence keeps both heads rather than picking a winner.
+        """
+        repo = self._team_repo(team_name)
+        main_sha = repo.resolve_ref("refs/heads/main")
+
+        entries = []
+        for ref_name, sha in repo.list_refs(CORE_PEER_REF_PREFIX).items():
+            teammate_id = self._core_peer_teammate_id(ref_name)
+            if teammate_id is None:
+                _LOG.warning("ignoring unrecognized Core peer ref %s", ref_name)
+                continue
+            entries.append((("teammate", teammate_id), "teammate", teammate_id, ref_name, sha))
+        for ref_name, sha in repo.list_refs(_PARKED_REF_PREFIX).items():
+            # Cod Sync parks a competing head this participant's own
+            # publication lost to. Which device wrote it is not recorded, so
+            # the source is not attributed to one.
+            entries.append((("self_publication", None), "self_publication", None, ref_name, sha))
+
+        heads = []
+        for source, kind, teammate_id, ref_name, sha in entries:
+            superseded_by = tuple(sorted(
+                other_ref
+                for other_source, _kind, _id, other_ref, other_sha in entries
+                if other_source == source
+                and other_sha != sha
+                and repo.is_ancestor(sha, other_sha)
+            ))
+            heads.append(
+                CoreSourceHead(
+                    source_kind=kind,
+                    teammate_id=teammate_id,
+                    ref_name=ref_name,
+                    head_sha=sha,
+                    is_maximal=not superseded_by,
+                    superseded_by_refs=superseded_by,
+                    contained_in_main=(
+                        main_sha is not None and repo.is_ancestor(sha, main_sha)
+                    ),
+                )
+            )
+        return sorted(heads, key=lambda head: head.ref_name)
 
     def complete_invitation_acceptance(self, team_name, acceptance_b64) -> dict:
         """Record invitee acceptance and finalize when quorum is met.

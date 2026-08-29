@@ -12,6 +12,14 @@ from small_sea_note_to_self.sender_keys import (
 )
 
 
+class SenderKeyUnavailableExn(Exception):
+    """The device holds no sender key for the peer device that wrote a payload.
+
+    A retryable prerequisite, not a decryption failure: sender-key delivery is
+    a separate exchange that may simply not have arrived yet.
+    """
+
+
 def serialize_group_message(message: GroupMessage) -> bytes:
     return json.dumps(
         {
@@ -89,7 +97,7 @@ def decrypt_group_payload(ss_session, payload: bytes) -> bytes:
         user_db_path, ss_session.team_id, message.sender_device_key_id
     )
     if sender_key is None:
-        raise ValueError(
+        raise SenderKeyUnavailableExn(
             f"Missing sender key for device key {message.sender_device_key_id.hex()}"
         )
     replay_message_key = _message_key_for(message, sender_key)

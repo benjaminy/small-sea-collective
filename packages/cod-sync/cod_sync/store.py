@@ -108,6 +108,21 @@ class CasConflictError(StoreError):
     write_closed = True
 
 
+class PeerStorageUnknownError(StoreError):
+    """The Hub knows of no storage route for the peer being read.
+
+    A retryable prerequisite, not a provider failure: the peer's chain may
+    exist and simply have no route this device can resolve yet.
+    """
+
+
+class PeerSenderKeyUnavailableError(StoreError):
+    """This device holds no sender key for the peer device that wrote the bytes.
+
+    Also a retryable prerequisite: sender-key delivery is a separate exchange.
+    """
+
+
 class PublicationOutcomeUnknownError(StoreError):
     """The final head write may or may not have taken effect.
 
@@ -520,11 +535,30 @@ class PeerSmallSeaStore(_HubStore):
         super().__init__(session_hex, base_url, client=client, path_prefix=path_prefix)
         self.teammate_id_hex = teammate_id_hex
 
+    #: Hub 409 error codes that name a peer-read prerequisite rather than a
+    #: failure of the peer's storage. Only the peer endpoint returns them, so
+    #: only this store may read a 409 as anything but a CAS loss.
+    _PREREQUISITE_ERRORS = {
+        "peer_storage_unknown": PeerStorageUnknownError,
+        "peer_sender_key_unavailable": PeerSenderKeyUnavailableError,
+    }
+
     def _download_endpoint(self, cloud_path: str):
         return "/peer_cloud_file", {
             "teammate_id": self.teammate_id_hex,
             "path": self._path_prefix + cloud_path,
         }
+
+    def _classify(self, resp, cloud_path: str) -> StoreError:
+        if resp.status_code == 409:
+            try:
+                error_code = resp.json().get("error")
+            except Exception:
+                error_code = None
+            failure = self._PREREQUISITE_ERRORS.get(error_code)
+            if failure is not None:
+                return failure(f"{cloud_path}: {self._detail(resp)}")
+        return super()._classify(resp, cloud_path)
 
 
 class ExplicitProxyStore(_HubStore):
