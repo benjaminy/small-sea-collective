@@ -38,7 +38,12 @@ from cod_sync.format import (
     parse_version,
     signed_link,
 )
-from cod_sync.repo import RefDivergedError, Repo
+from cod_sync.repo import (
+    Repo,
+    RepoError,
+    RefDivergedError,
+    RefImmutableConflictError,
+)
 from cod_sync.store import CasConflictError, ObjectNotFoundError, StoreError
 
 logger = logging.getLogger("cod_sync")
@@ -504,16 +509,15 @@ class CodSync:
         record of the first.
         """
         ref_name = parked_ref_name(observed.link_uid)
-        existing = self.repo.resolve_ref(ref_name)
-        if existing is None:
-            self.repo.advance_ref(ref_name, observed.head)
-        elif existing != observed.head:
+        try:
+            self.repo.create_ref_immutable(ref_name, observed.head)
+        except RefImmutableConflictError as exc:
             raise ChainError(
                 "the same link has already been parked at a different head",
                 link_uid=observed.link_uid,
                 declared_head=observed.head,
-                advertised_head=existing,
-            )
+                advertised_head=exc.current_sha,
+            ) from exc
         return ref_name
 
     # -- writing -- #
@@ -856,7 +860,15 @@ class CodSync:
                 actual_prerequisites=set(entry.descriptor.prerequisites),
             )
         self.repo.verify_bundle(entry.bundle_path)
-        self.repo.import_bundle(entry.bundle_path)
+        try:
+            self.repo.import_bundle(entry.bundle_path)
+        except RepoError as exc:
+            raise ChainError(
+                "the published bundle payload could not be imported",
+                link_uid=link.link_id,
+                bundle_uid=link.bundle_id,
+                declared_head=link.head,
+            ) from exc
         if not self.repo.has_commit(link.head):
             raise ChainError(
                 "importing the bundle did not produce its declared head",
@@ -872,8 +884,19 @@ class CodSync:
 
     def _require_bundle_matches(self, link: Link, bundle_path) -> BundleDescriptor:
         """Check a bundle's own header against the link that advertises it."""
-        heads: Dict[str, str] = self.repo.bundle_heads(bundle_path)
-        prerequisites = frozenset(self.repo.bundle_prerequisites(bundle_path))
+        try:
+            # Parse the header without Git first so malformed peer bytes keep a
+            # structural-chain type rather than looking like a local Git write
+            # failure. Git then supplies the advertised heads independently.
+            prerequisites = frozenset(self.repo.bundle_prerequisites(bundle_path))
+            heads: Dict[str, str] = self.repo.bundle_heads(bundle_path)
+        except RepoError as exc:
+            raise ChainError(
+                "the published bundle is not readable as a Git bundle",
+                link_uid=link.link_id,
+                bundle_uid=link.bundle_id,
+                declared_head=link.head,
+            ) from exc
         descriptor = BundleDescriptor(
             head=heads.get(MAIN_REF), prerequisites=prerequisites
         )

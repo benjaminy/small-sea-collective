@@ -21,6 +21,7 @@ from small_sea_hub.backend import (
     SmallSeaSessionNotFoundExn,
 )
 from small_sea_hub.cloud_errors import CloudStorageRequiredExn
+from small_sea_hub.crypto import SenderKeyUnavailableExn
 from small_sea_hub.config import Settings
 
 _templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "templates"))
@@ -1034,6 +1035,14 @@ async def download_peer_cloud_file(
         return JSONResponse(
             status_code=409,
             content={"error": "peer_storage_unknown", "detail": str(exn)},
+        )
+    except SenderKeyUnavailableExn as exn:
+        # The bytes arrived; this device just cannot read them yet. Reporting
+        # it as a server fault would hide a prerequisite that resolves itself
+        # once sender-key delivery completes.
+        return JSONResponse(
+            status_code=409,
+            content={"error": "peer_sender_key_unavailable", "detail": str(exn)},
         )
     if not ok:
         return _download_failure_response(path, etag)

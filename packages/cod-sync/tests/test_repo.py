@@ -13,6 +13,7 @@ from cod_sync.repo import (
     NoWorkTreeError,
     RefAdvanceContendedError,
     RefDivergedError,
+    RefImmutableConflictError,
     Repo,
     RepoError,
 )
@@ -1027,3 +1028,145 @@ def test_new_git_failures_are_wrapped_as_repo_error(scratch_dir, chain):
         repo.bundle_heads(missing)
     with pytest.raises(RepoError):
         repo.import_bundle(missing)
+
+
+# ---------------------------------------------------------------------------
+# list_refs
+# ---------------------------------------------------------------------------
+
+OBSERVED = "refs/small-sea/core-peer/aa/observations/L1"
+
+
+def test_list_refs_returns_exact_pairs_under_one_prefix(scratch_dir, chain):
+    repo, _work, shas = chain
+    repo.advance_ref("refs/small-sea/core-peer/aa/latest", shas[0])
+    repo.advance_ref(OBSERVED, shas[1])
+    repo.advance_ref("refs/small-sea/other/aa", shas[2])
+
+    assert repo.list_refs("refs/small-sea/core-peer") == {
+        "refs/small-sea/core-peer/aa/latest": shas[0],
+        OBSERVED: shas[1],
+    }
+
+
+def test_list_refs_is_empty_when_the_prefix_holds_nothing(scratch_dir, chain):
+    repo, _work, _shas = chain
+    assert repo.list_refs("refs/small-sea/core-peer") == {}
+
+
+def test_list_refs_needs_no_work_tree(scratch_dir, chain):
+    repo, _work, shas = chain
+    repo.advance_ref(OBSERVED, shas[0])
+    cached = Repo(repo.git_dir)
+
+    assert cached.list_refs("refs/small-sea/core-peer") == {OBSERVED: shas[0]}
+
+
+# ---------------------------------------------------------------------------
+# create_ref_immutable
+# ---------------------------------------------------------------------------
+
+
+def test_create_ref_immutable_creates_an_absent_ref(scratch_dir, chain):
+    repo, _work, shas = chain
+    result = repo.create_ref_immutable(OBSERVED, shas[1])
+
+    assert result.disposition == "created"
+    assert result.current_sha == shas[1]
+    assert repo.resolve_ref(OBSERVED) == shas[1]
+
+
+def test_create_ref_immutable_verifies_the_same_sha(scratch_dir, chain):
+    repo, _work, shas = chain
+    repo.create_ref_immutable(OBSERVED, shas[1])
+
+    result = repo.create_ref_immutable(OBSERVED, shas[1])
+
+    assert result.disposition == "verified"
+    assert repo.resolve_ref(OBSERVED) == shas[1]
+
+
+def test_create_ref_immutable_refuses_to_retarget_even_forward(scratch_dir, chain):
+    repo, _work, shas = chain
+    repo.create_ref_immutable(OBSERVED, shas[0])
+
+    with pytest.raises(RefImmutableConflictError) as excinfo:
+        repo.create_ref_immutable(OBSERVED, shas[2])
+
+    assert excinfo.value.current_sha == shas[0]
+    assert repo.resolve_ref(OBSERVED) == shas[0]
+
+
+def test_create_ref_immutable_accepts_a_race_lost_to_the_same_sha(
+    scratch_dir, chain, monkeypatch
+):
+    """Another creator wins between the read and the write, writing our SHA."""
+    repo, _work, shas = chain
+    real_run = repo._run
+    raced = []
+
+    def racing_run(extra_args, raise_on_error=True):
+        if extra_args[0] == "update-ref" and not raced:
+            raced.append(True)
+            subprocess.run(
+                ["git", "--git-dir", str(repo.git_dir), "update-ref", OBSERVED, shas[1]],
+                check=True, capture_output=True,
+            )
+        return real_run(extra_args, raise_on_error=raise_on_error)
+
+    monkeypatch.setattr(repo, "_run", racing_run)
+    result = repo.create_ref_immutable(OBSERVED, shas[1])
+
+    assert raced == [True]
+    assert result.disposition == "verified"
+    assert repo.resolve_ref(OBSERVED) == shas[1]
+
+
+def test_create_ref_immutable_reports_a_race_lost_to_another_sha(
+    scratch_dir, chain, monkeypatch
+):
+    repo, _work, shas = chain
+    real_run = repo._run
+    raced = []
+
+    def racing_run(extra_args, raise_on_error=True):
+        if extra_args[0] == "update-ref" and not raced:
+            raced.append(True)
+            subprocess.run(
+                ["git", "--git-dir", str(repo.git_dir), "update-ref", OBSERVED, shas[2]],
+                check=True, capture_output=True,
+            )
+        return real_run(extra_args, raise_on_error=raise_on_error)
+
+    monkeypatch.setattr(repo, "_run", racing_run)
+    with pytest.raises(RefImmutableConflictError) as excinfo:
+        repo.create_ref_immutable(OBSERVED, shas[1])
+
+    assert excinfo.value.current_sha == shas[2]
+    assert repo.resolve_ref(OBSERVED) == shas[2]
+
+
+def test_create_ref_immutable_rejects_the_null_object_id(scratch_dir, chain):
+    repo, _work, shas = chain
+    repo.create_ref_immutable(OBSERVED, shas[0])
+
+    with pytest.raises(RepoError) as excinfo:
+        repo.create_ref_immutable(OBSERVED, "0" * len(shas[0]))
+
+    assert not isinstance(excinfo.value, RefImmutableConflictError)
+    assert repo.resolve_ref(OBSERVED) == shas[0]
+
+
+def test_create_ref_immutable_reports_a_hard_failure_as_repo_error(scratch_dir, chain):
+    repo, _work, shas = chain
+    with pytest.raises(RepoError) as excinfo:
+        repo.create_ref_immutable("not a valid ref name", shas[0])
+
+    assert not isinstance(excinfo.value, RefImmutableConflictError)
+
+
+def test_create_ref_immutable_needs_no_work_tree(scratch_dir, chain):
+    repo, _work, shas = chain
+    cached = Repo(repo.git_dir)
+
+    assert cached.create_ref_immutable(OBSERVED, shas[0]).disposition == "created"

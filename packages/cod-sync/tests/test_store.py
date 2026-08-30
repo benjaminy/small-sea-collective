@@ -17,6 +17,9 @@ from cod_sync.store import (
     LocalFolderStore,
     MalformedStoreResponseError,
     ObjectNotFoundError,
+    PeerSenderKeyUnavailableError,
+    PeerSmallSeaStore,
+    PeerStorageUnknownError,
     SmallSeaStore,
     StoreAuthenticationError,
     StoreAuthorizationError,
@@ -398,3 +401,41 @@ def test_s3_store_head_is_create_only_then_cas(minio):
 
     with pytest.raises(CasConflictError):
         store.put_latest_link(b"three", expected_etag=etag)
+
+
+# ---------------------------------------------------------------------------
+# Peer reads: prerequisites that are not provider failures
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "error_code,expected",
+    [
+        ("peer_storage_unknown", PeerStorageUnknownError),
+        ("peer_sender_key_unavailable", PeerSenderKeyUnavailableError),
+    ],
+)
+def test_a_peer_prerequisite_409_is_not_a_provider_failure(error_code, expected):
+    client = FakeHubClient(FakeResponse(409, {"error": error_code, "detail": "later"}))
+    store = PeerSmallSeaStore("session", "aa" * 16, client=client)
+    with pytest.raises(expected) as excinfo:
+        store.get_latest_link()
+
+    assert not isinstance(excinfo.value, StoreProviderError)
+    assert "later" in str(excinfo.value)
+
+
+def test_an_unrecognized_peer_409_stays_a_provider_failure():
+    client = FakeHubClient(FakeResponse(409, {"error": "something_else"}))
+    store = PeerSmallSeaStore("session", "aa" * 16, client=client)
+    with pytest.raises(StoreProviderError):
+        store.get_latest_link()
+
+
+def test_peer_reads_still_share_the_hub_status_classification():
+    client = FakeHubClient(FakeResponse(404, {"detail": "nope"}))
+    store = PeerSmallSeaStore("session", "aa" * 16, client=client)
+    with pytest.raises(ObjectNotFoundError):
+        store.get_latest_link()
+    assert client.calls[0][1] == "/peer_cloud_file"
+    assert client.calls[0][2]["params"]["teammate_id"] == "aa" * 16
