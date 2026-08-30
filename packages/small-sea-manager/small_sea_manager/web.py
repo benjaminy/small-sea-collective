@@ -64,6 +64,96 @@ _RECONCILABLE_ROUTE_REASONS = frozenset(
     }
 )
 
+#: NoteToSelf push and refresh both need the passthrough session; integration
+#: does not, because it reads only local refs and the local database.
+_CONNECT_TO_HUB_FIRST = "Connect to Hub above before pushing or refreshing NoteToSelf."
+
+
+def _conflict_key_text(key) -> str:
+    """Render one normalised row key as something a person can match a row on."""
+
+    def part(element):
+        if isinstance(element, tuple) and len(element) == 2:
+            head, value = element
+            if head == "blob":
+                return value
+            if head == "val":
+                return "NULL" if value is None else str(value)
+            return f"{head}={part(value)}"
+        return str(element)
+
+    return ", ".join(part(element) for element in key)
+
+
+def _source_outcome_text(outcome) -> tuple[str | None, str | None]:
+    """(notice, error) describing what adopting one stored head did."""
+    short = outcome.head_sha[:12]
+    if outcome.outcome == "integrated":
+        return f"Integrated {short} into this device's NoteToSelf history.", None
+    if outcome.outcome == "already_contained":
+        return f"{short} was already part of this device's history.", None
+    if outcome.outcome == "recording_pending":
+        return (
+            None,
+            f"The rows from {short} are adopted and committed to the database, but "
+            f"recording the new history in Git did not finish ({outcome.detail}). "
+            "Run this again to record it; nothing will be adopted twice.",
+        )
+    if outcome.outcome == "semantic_conflict":
+        return (
+            None,
+            f"Refused {short}: {outcome.detail}. Nothing was changed, and the "
+            "stored history stays available.",
+        )
+    if outcome.outcome == "constraint_refused":
+        return (
+            None,
+            f"Refused {short}: {outcome.detail} Nothing was changed, and the "
+            "stored history stays available.",
+        )
+    # Cod Sync proves structure, bundle contents and ancestry, not authorship
+    # (#190), so a refusal says what this Manager could not read -- never that a
+    # sibling device wrote the source.
+    return (
+        None,
+        f"Refused {short}: this Manager cannot read it as NoteToSelf history -- "
+        f"{outcome.detail}. Nothing was changed.",
+    )
+
+
+def _conflict_rows(outcome) -> list:
+    """The D9 conflicts of one outcome, in the shape the card renders."""
+    return [
+        {
+            "table": conflict.table,
+            "key": _conflict_key_text(conflict.key),
+            "kind": conflict.kind,
+        }
+        for conflict in outcome.conflicts
+    ]
+
+
+def _integration_report(result):
+    """(notice, error, conflicts) for one run of the integration operation."""
+    if result.blocked:
+        return None, result.blocked, []
+    if not result.outcomes:
+        return "No stored NoteToSelf history is waiting to be integrated.", None, []
+    notices, errors, conflicts = [], [], []
+    for outcome in result.outcomes:
+        notice, error = _source_outcome_text(outcome)
+        if notice:
+            notices.append(notice)
+        if error:
+            errors.append(error)
+        conflicts.extend(_conflict_rows(outcome))
+    return (
+        " ".join(notices) or None,
+        " ".join(errors) or None,
+        conflicts,
+    )
+
+
 #: What the inviter is told about the couriered route. These describe local
 #: processing only -- none of them claims the teammate's storage is reachable.
 _ROUTE_DELIVERY_NOTICE = {
@@ -211,6 +301,31 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             },
         )
 
+    def _render_note_to_self_sync(
+        request: Request,
+        *,
+        notice: str = None,
+        error: str = None,
+        conflicts: list[dict[str, Any]] | None = None,
+        sidebar_oob: bool = False,
+    ):
+        mgr = _mgr(request)
+        return templates.TemplateResponse(
+            "fragments/note_to_self_sync.html",
+            {
+                "request": request,
+                "session_status": mgr.session_state(_NTS_TEAM, _PASSTHROUGH),
+                # Read from refs on every render, so the offer survives a
+                # Manager restart and never depends on remembered state.
+                "nts_sources": mgr.note_to_self_conflict_status(),
+                "nts_notice": notice,
+                "nts_error": error,
+                "nts_conflicts": conflicts or [],
+                "sidebar_oob": sidebar_oob,
+                "teams": _teams_with_status(mgr) if sidebar_oob else [],
+            },
+        )
+
     def _refresh_app_sightings_after_action(request: Request, notice: str):
         mgr = _mgr(request)
         try:
@@ -259,6 +374,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "session_status": mgr.session_state(_NTS_TEAM, _PASSTHROUGH),
                 "session_error": None,
                 "sightings": None,
+                "nts_sources": mgr.note_to_self_conflict_status(),
+                "nts_notice": None,
+                "nts_error": None,
+                "nts_conflicts": [],
                 "notice": None,
                 "error": None,
             },
@@ -310,6 +429,86 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         mgr = _mgr(request)
         mgr.clear_session(_NTS_TEAM, mode=_PASSTHROUGH)
         return _hub_connection_ctx(request)
+
+    # ------------------------------------------------------------------ #
+    # NoteToSelf sync
+    # ------------------------------------------------------------------ #
+
+    @app.post("/note-to-self/push", response_class=HTMLResponse)
+    async def note_to_self_push(request: Request):
+        mgr = _mgr(request)
+        # Enforced here as well as hidden in the card: a stale page must not be
+        # able to open a transport this installation has no session for.
+        if mgr.session_state(_NTS_TEAM, _PASSTHROUGH) != "active":
+            return _render_note_to_self_sync(request, error=_CONNECT_TO_HUB_FIRST)
+        try:
+            mgr.push_note_to_self()
+        except PublicationIntegrationRequiredError:
+            return _render_note_to_self_sync(
+                request,
+                error=(
+                    "Push refused: your stored NoteToSelf history holds changes this "
+                    "device does not have. Both are kept locally. Integrate the "
+                    "stored history, then push again."
+                ),
+            )
+        except PublicationOutcomeUnresolvedError:
+            return _render_note_to_self_sync(
+                request,
+                error=(
+                    "Push outcome unknown: the stored head may or may not have moved. "
+                    "Local state is preserved. A later push observes the stored state "
+                    "afresh before attempting another write."
+                ),
+            )
+        except PublicationRetryableError:
+            return _render_note_to_self_sync(
+                request,
+                error=(
+                    "Push did not finish, but this attempt can no longer change the "
+                    "stored head. Push again."
+                ),
+            )
+        except Exception as e:
+            return _render_note_to_self_sync(request, error=str(e))
+        return _render_note_to_self_sync(request, notice="Pushed NoteToSelf to cloud.")
+
+    @app.post("/note-to-self/refresh", response_class=HTMLResponse)
+    async def note_to_self_refresh(request: Request):
+        mgr = _mgr(request)
+        if mgr.session_state(_NTS_TEAM, _PASSTHROUGH) != "active":
+            return _render_note_to_self_sync(request, error=_CONNECT_TO_HUB_FIRST)
+        try:
+            result = mgr.refresh_note_to_self()
+        except Exception as e:
+            return _render_note_to_self_sync(request, error=str(e))
+        outcome = result["integration"]
+        notice, error = _source_outcome_text(outcome)
+        return _render_note_to_self_sync(
+            request,
+            notice=notice,
+            error=error,
+            conflicts=_conflict_rows(outcome),
+            sidebar_oob=True,
+        )
+
+    @app.post("/note-to-self/integrate", response_class=HTMLResponse)
+    async def note_to_self_integrate(request: Request):
+        # Deliberately available with no Hub session: integration reads only
+        # local refs and the local database.
+        mgr = _mgr(request)
+        try:
+            result = mgr.integrate_note_to_self()
+        except Exception as e:
+            return _render_note_to_self_sync(request, error=str(e))
+        notice, error, conflicts = _integration_report(result)
+        return _render_note_to_self_sync(
+            request,
+            notice=notice,
+            error=error,
+            conflicts=conflicts,
+            sidebar_oob=result.adopted_anything,
+        )
 
     # ------------------------------------------------------------------ #
     # App-bootstrap sightings

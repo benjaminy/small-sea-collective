@@ -1,18 +1,80 @@
 """Core merge logic for SQLite databases."""
 
+import contextlib
 import sqlite3
-import sys
+from dataclasses import dataclass
+from typing import Tuple
 
 
-def sqlite_to_json(db_path):
+#: The four ways ours and theirs can both change one row. Every one of them is
+#: reported rather than resolved: `reconcile_deltas` keeps ours, and the caller
+#: decides whether that silent choice is acceptable for its data.
+CONFLICT_KINDS = ("insert/insert", "delete/modify", "modify/delete", "update/update")
+
+
+@dataclass(frozen=True)
+class RowConflict:
+    """One row both sides changed incompatibly.
+
+    `key` is the normalised row key `compute_delta` compares on, so it is
+    comparable across the three versions but is not a display string.
+    """
+
+    table: str
+    key: tuple
+    kind: str
+
+
+class AmbiguousRowKeyError(ValueError):
+    """A SQLite snapshot contains two rows with the same merge identity."""
+
+    def __init__(self, table: str, key: tuple, snapshot: str):
+        super().__init__(
+            f"{snapshot} snapshot of {table} contains more than one row "
+            f"with merge key {key!r}"
+        )
+        self.table = table
+        self.key = key
+        self.snapshot = snapshot
+
+
+@contextlib.contextmanager
+def _connection(db):
+    """Yield a connection for db, which is a path or an open connection.
+
+    A passed connection is borrowed: it is not committed, rolled back, or
+    closed here, and no setting on it is left changed.
+    """
+    if isinstance(db, sqlite3.Connection):
+        yield db
+        return
+    conn = sqlite3.connect(str(db))
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def sqlite_to_json(db):
     """Convert a SQLite database to a JSON-serialisable dict.
+
+    db is a path or an open sqlite3.Connection. Reading through a caller's
+    connection is what lets a merge see live rows inside that connection's
+    transaction instead of a separate snapshot of the file.
 
     BLOB columns are encoded as {"__blob__": "<hex>"} so the round-trip
     through JSON is lossless.
     """
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
+    with _connection(db) as conn:
+        previous_row_factory = conn.row_factory
+        conn.row_factory = sqlite3.Row
+        try:
+            return _read_tables(conn)
+        finally:
+            conn.row_factory = previous_row_factory
 
+
+def _read_tables(conn):
     # Grab user_version pragma
     user_version = conn.execute("PRAGMA user_version").fetchone()[0]
 
@@ -43,7 +105,6 @@ def sqlite_to_json(db_path):
         tables[table_name] = row_dicts
         primary_keys[table_name] = pk_columns
 
-    conn.close()
     return {
         "__tables__": tables,
         "__pragmas__": {"user_version": user_version},
@@ -95,8 +156,8 @@ def compute_delta(ancestor_json, version_json):
         v_rows = v_tables.get(table_name, [])
         pk_columns = a_primary_keys.get(table_name) or v_primary_keys.get(table_name) or []
 
-        a_by_key = {_row_key(r, pk_columns): r for r in a_rows}
-        v_by_key = {_row_key(r, pk_columns): r for r in v_rows}
+        a_by_key = _rows_by_key(a_rows, pk_columns, table_name, "ancestor")
+        v_by_key = _rows_by_key(v_rows, pk_columns, table_name, "version")
 
         inserts = {}
         deletes = {}
@@ -122,12 +183,38 @@ def compute_delta(ancestor_json, version_json):
     return delta
 
 
-def reconcile_deltas(ours_delta, theirs_delta):
+def _rows_by_key(rows, pk_columns, table_name, snapshot):
+    """Index rows without silently collapsing an ambiguous SQLite identity.
+
+    SQLite permits duplicate NULL values even in a non-INTEGER PRIMARY KEY,
+    and tables without a declared key can contain duplicate rows. Neither case
+    has a stable row identity that a three-way merge can choose between, so a
+    loud refusal is the only lossless answer.
+    """
+    indexed = {}
+    for row in rows:
+        key = _row_key(row, pk_columns)
+        if key in indexed:
+            raise AmbiguousRowKeyError(table_name, key, snapshot)
+        indexed[key] = row
+    return indexed
+
+
+def reconcile_deltas(ours_delta, theirs_delta) -> Tuple[dict, list]:
     """Reconcile theirs_delta against ours_delta. Ours wins on conflicts.
 
-    Returns a cleaned copy of theirs_delta with conflicts removed.
+    Returns (cleaned, conflicts): a copy of theirs_delta with the conflicting
+    operations removed, and a RowConflict for each one removed. Nothing is
+    printed. A caller that wants ours-wins applies the cleaned delta and
+    reports the conflicts however suits it; a caller that cannot accept a
+    silent ours-wins refuses on a non-empty conflict list instead.
+
+    Identical work on both sides is redundant rather than conflicting, for
+    inserts, deletes and updates alike. That is what makes re-running a merge
+    against the same ancestor produce nothing the second time.
     """
     cleaned = {}
+    conflicts = []
 
     for table_name, t_ops in theirs_delta.items():
         o_ops = ours_delta.get(
@@ -147,10 +234,7 @@ def reconcile_deltas(ours_delta, theirs_delta):
                 # here and `sqlite_to_json` renders BLOBs as {"__blob__": hex},
                 # so equality compares the stored bytes.
                 if ours[key] != row:
-                    print(
-                        f"warning: insert/insert conflict in {table_name}, keeping ours",
-                        file=sys.stderr,
-                    )
+                    conflicts.append(RowConflict(table_name, key, "insert/insert"))
             else:
                 new_inserts[key] = row
 
@@ -159,24 +243,18 @@ def reconcile_deltas(ours_delta, theirs_delta):
                 # Both deleted — redundant, drop
                 pass
             elif key in o_ops.get("updates", {}):
-                print(
-                    f"warning: delete/modify conflict in {table_name}, keeping ours",
-                    file=sys.stderr,
-                )
+                conflicts.append(RowConflict(table_name, key, "delete/modify"))
             else:
                 new_deletes[key] = row
 
         for key, row in t_ops.get("updates", {}).items():
             if key in o_ops.get("deletes", {}):
-                print(
-                    f"warning: modify/delete conflict in {table_name}, keeping ours",
-                    file=sys.stderr,
-                )
+                conflicts.append(RowConflict(table_name, key, "modify/delete"))
             elif key in o_ops.get("updates", {}):
-                print(
-                    f"warning: true conflict in {table_name}, keeping ours",
-                    file=sys.stderr,
-                )
+                # An update both sides already made to the same values is the
+                # state a re-run of an interrupted merge sees on both sides.
+                if o_ops["updates"][key] != row:
+                    conflicts.append(RowConflict(table_name, key, "update/update"))
             else:
                 new_updates[key] = row
 
@@ -187,20 +265,36 @@ def reconcile_deltas(ours_delta, theirs_delta):
                 "updates": new_updates,
             }
 
-    return cleaned
+    return cleaned, conflicts
 
 
-def apply_delta(db_path, delta):
+def apply_delta(db, delta):
     """Apply a reconciled delta to a SQLite database in-place.
+
+    db is a path or an open sqlite3.Connection. A borrowed connection is left
+    uncommitted and open with its settings untouched, so the caller's
+    transaction decides whether the delta takes effect at all; a path is opened
+    with foreign keys off, committed, and closed here.
 
     Only touches rows that actually changed — preserves SQLite page stability.
     """
     if not delta:
         return
 
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("PRAGMA foreign_keys = OFF")
+    borrowed = isinstance(db, sqlite3.Connection)
+    conn = db if borrowed else sqlite3.connect(str(db))
+    try:
+        if not borrowed:
+            conn.execute("PRAGMA foreign_keys = OFF")
+        _apply_to_connection(conn, delta)
+        if not borrowed:
+            conn.commit()
+    finally:
+        if not borrowed:
+            conn.close()
 
+
+def _apply_to_connection(conn, delta):
     for table_name, ops in delta.items():
         # Get column names from the actual DB
         col_info = conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
@@ -208,7 +302,10 @@ def apply_delta(db_path, delta):
         pk_columns = [row[1] for row in sorted(col_info, key=lambda row: row[5]) if row[5]]
         if not pk_columns and "id" in col_names:
             pk_columns = ["id"]
-        where_clause = " AND ".join(f"{column} = ?" for column in pk_columns)
+        # `IS ?` has ordinary equality semantics for non-NULL values and also
+        # lets a single nullable SQLite key be updated or deleted correctly.
+        # Multiple rows under that key are rejected by `_rows_by_key`.
+        where_clause = " AND ".join(f"{column} IS ?" for column in pk_columns)
 
         # DELETEs
         for key, row in ops.get("deletes", {}).items():
@@ -241,6 +338,3 @@ def apply_delta(db_path, delta):
                 f"UPDATE '{table_name}' SET {', '.join(set_clauses)} WHERE {where_clause}",
                 set_values,
             )
-
-    conn.commit()
-    conn.close()

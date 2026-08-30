@@ -33,6 +33,7 @@ from small_sea_client.client import (
     SmallSeaHubUnavailable,
 )
 from small_sea_manager import admission_events
+from small_sea_manager import note_to_self_sync
 from small_sea_manager import provisioning
 
 _CORE_APP = "SmallSeaCollectiveCore"
@@ -187,7 +188,15 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=11437, _h
 
     repo = _Repo(sync_dir / ".git", sync_dir)
     result = CodSync(repo, store).fetch()
-    repo.checkout_branch("main", start_point=result.observed_head)
+    outcome = note_to_self_sync.adopt_fetched_source(
+        root_dir,
+        bundle.participant_hex,
+        repo,
+        result.observed_head,
+        result.link_uid,
+    )
+    if outcome.outcome != "integrated":
+        raise ValueError(outcome.detail or "the fetched NoteToSelf source was refused")
     return provisioning.finalize_identity_bootstrap(root_dir, prepared)
 
 
@@ -268,6 +277,10 @@ class TeamManager:
     def _note_to_self_repo_dir(self) -> pathlib.Path:
         return self.root_dir / "Participants" / self.participant_hex / "NoteToSelf" / "Sync"
 
+    def _note_to_self_repo(self) -> _Repo:
+        repo_dir = self._note_to_self_repo_dir()
+        return _Repo(repo_dir / ".git", repo_dir)
+
     def _open_note_to_self_session(self, mode: str = "passthrough"):
         return self._get_or_open_session("NoteToSelf", mode=mode)
 
@@ -319,21 +332,28 @@ class TeamManager:
     def push_note_to_self(self):
         """Push the NoteToSelf Sync repo to the participant's cloud bucket.
 
-        Stages and commits any outstanding changes to core.db before pushing
-        so that NoteToSelf mutations (e.g. new team rows from create_team) are
-        included in the push without requiring callers to commit explicitly.
+        Commits any outstanding changes to core.db before pushing so that
+        NoteToSelf mutations (e.g. new team rows from create_team) are included
+        in the push without requiring callers to commit explicitly.
 
-        Unlike push_team, this still commits the whole index. The analogous
-        path-scoping change belongs with the NoteToSelf multi-device work.
+        "Outstanding" is a row difference, not a byte difference: adoption
+        applies rows to the live database instead of checking out a blob, so a
+        logically clean database can differ from HEAD byte-wise, and committing
+        that would publish a head holding no change. The comparison and the
+        commit run under one writer reservation, which is released before any
+        Hub I/O, so the committed bytes are one stable SQLite state and no Hub
+        write can land inside Git's read of the file.
         """
         session = self._open_note_to_self_session(mode="passthrough")
         berth_id, adopted = self._ensure_note_to_self_adopted_count(session)
         session.ensure_cloud_ready()
         repo_dir = self._note_to_self_repo_dir()
-        # Stage and commit any uncommitted NoteToSelf DB changes.
         nts_repo = _Repo(repo_dir / ".git", repo_dir)
-        nts_repo.stage(["core.db"])
-        nts_repo.commit("Update NoteToSelf")
+        with note_to_self_sync.write_reservation(
+            self.root_dir, self.participant_hex
+        ) as conn:
+            if note_to_self_sync.live_differs_from_head(nts_repo, conn):
+                nts_repo.commit_paths(["core.db"], "Update NoteToSelf")
         store = SmallSeaStore(
             session.token, base_url=self.client._base_url, client=self.client._http_client
         )
@@ -352,7 +372,17 @@ class TeamManager:
         )
 
     def refresh_note_to_self(self):
-        """Fetch and adopt shared NoteToSelf updates through the Hub transport."""
+        """Fetch and adopt shared NoteToSelf updates through the Hub transport.
+
+        Adoption runs on the same path as explicit integration, so no refresh
+        can leave a conflicted core.db in the work tree, and a refusal reports
+        itself instead of stranding a half-merged database.
+
+        The fetched head is preserved under its immutable parked ref before the
+        live database is touched. Dying before that ref exists has changed
+        nothing and a later refresh refetches; once it exists, recovery is
+        entirely local.
+        """
         session = self._open_note_to_self_session(mode="passthrough")
         berth_id, adopted = self._ensure_note_to_self_adopted_count(session)
         repo_dir = self._note_to_self_repo_dir()
@@ -369,22 +399,43 @@ class TeamManager:
         pre_fetch_snapshot = session.watch_notifications({}, timeout=0, known_self_count=adopted)
         pre_fetch_count = int(pre_fetch_snapshot.get("self_updated_count") or adopted)
         result = cs.fetch()
-        if repo.has_commits():
-            repo.merge(result.observed_head)
-        else:
-            repo.checkout_branch("main", start_point=result.observed_head)
-        provisioning.set_note_to_self_adopted_signal_count(
+        outcome = note_to_self_sync.adopt_fetched_source(
             self.root_dir,
             self.participant_hex,
-            berth_id,
-            pre_fetch_count,
+            repo,
+            result.observed_head,
+            result.link_uid,
         )
-        new_count = pre_fetch_count
+        if outcome.outcome in ("integrated", "already_contained"):
+            # Only state this device actually incorporated moves the baseline.
+            provisioning.set_note_to_self_adopted_signal_count(
+                self.root_dir,
+                self.participant_hex,
+                berth_id,
+                pre_fetch_count,
+            )
         return {
             "berth_id": berth_id.hex(),
-            "adopted_count": new_count,
+            "adopted_count": provisioning.get_note_to_self_adopted_signal_count(
+                self.root_dir, self.participant_hex, berth_id
+            ),
+            "integration": outcome,
             "teams": self.list_known_teams(),
         }
+
+    def note_to_self_conflict_status(self) -> list:
+        """Every outstanding stored NoteToSelf head, read from refs only.
+
+        Makes no Hub contact, so a freshly started Manager can offer the
+        integration without a session and without remembering anything.
+        """
+        return note_to_self_sync.outstanding_sources(self._note_to_self_repo())
+
+    def integrate_note_to_self(self):
+        """Combine outstanding stored NoteToSelf heads into local state."""
+        return note_to_self_sync.integrate(
+            self.root_dir, self.participant_hex, self._note_to_self_repo()
+        )
 
     def list_cloud_storage(self):
         """Return all cloud storage configs as a list of dicts."""

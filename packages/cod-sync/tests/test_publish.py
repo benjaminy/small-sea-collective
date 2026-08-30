@@ -30,6 +30,7 @@ from cod_sync.protocol import (
     PublicationIntegrationRequiredError,
     PublicationOutcomeUnresolvedError,
     PublicationRetryableError,
+    outstanding_parked_heads,
     parked_ref_name,
 )
 from cod_sync.store import (
@@ -835,3 +836,56 @@ def test_a_covering_head_needs_no_etag(alice):
     assert result.disposition == "already_present"
     assert result.observed_head == first.observed_head
     assert scripted.head_writes == 0
+
+
+# ---------------------------------------------------------------------------
+# Parked-head discovery
+# ---------------------------------------------------------------------------
+
+
+def test_outstanding_parked_heads_reports_nothing_when_none_are_parked(scratch_dir):
+    repo = make_repo(pathlib.Path(scratch_dir) / "repo")
+    commit_file(repo, "a.txt", "a")
+    assert outstanding_parked_heads(repo) == []
+
+
+def test_outstanding_parked_heads_drops_heads_already_in_local_history(scratch_dir):
+    repo = make_repo(pathlib.Path(scratch_dir) / "repo")
+    base = commit_file(repo, "a.txt", "a")
+    head = commit_file(repo, "a.txt", "ab")
+    repo._run(["update-ref", parked_ref_name("absorbed"), base])
+    repo._run(["update-ref", parked_ref_name("current"), head])
+
+    assert outstanding_parked_heads(repo) == []
+
+
+def test_outstanding_parked_heads_suppresses_an_ancestor_of_another_head(scratch_dir):
+    """The descendant already carries the ancestor's commits."""
+    repo = make_repo(pathlib.Path(scratch_dir) / "repo")
+    base = commit_file(repo, "a.txt", "a")
+    repo.checkout_branch("side", start_point=base)
+    older = commit_file(repo, "a.txt", "ab")
+    newer = commit_file(repo, "a.txt", "abc")
+    repo.checkout_branch("main", start_point=base)
+    repo._run(["update-ref", parked_ref_name("older"), older])
+    repo._run(["update-ref", parked_ref_name("newer"), newer])
+
+    assert outstanding_parked_heads(repo) == [(parked_ref_name("newer"), newer)]
+
+
+def test_outstanding_parked_heads_keeps_incomparable_heads_and_dedupes_shas(scratch_dir):
+    repo = make_repo(pathlib.Path(scratch_dir) / "repo")
+    base = commit_file(repo, "a.txt", "a")
+    repo.checkout_branch("left", start_point=base)
+    left = commit_file(repo, "a.txt", "left")
+    repo.checkout_branch("right", start_point=base)
+    right = commit_file(repo, "a.txt", "right")
+    repo.checkout_branch("main", start_point=base)
+    repo._run(["update-ref", parked_ref_name("left"), left])
+    repo._run(["update-ref", parked_ref_name("left-again"), left])
+    repo._run(["update-ref", parked_ref_name("right"), right])
+
+    assert outstanding_parked_heads(repo) == [
+        (parked_ref_name("left"), left),
+        (parked_ref_name("right"), right),
+    ]

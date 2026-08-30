@@ -11,6 +11,14 @@ import sys
 
 from .core import apply_delta, compute_delta, reconcile_deltas, sqlite_to_json
 
+#: The wording the driver has always used for each conflict kind.
+_CONFLICT_LABEL = {
+    "insert/insert": "insert/insert conflict",
+    "delete/modify": "delete/modify conflict",
+    "modify/delete": "modify/delete conflict",
+    "update/update": "true conflict",
+}
+
 
 def main():
     if len(sys.argv) < 4:
@@ -30,7 +38,13 @@ def main():
 
         ours_delta = compute_delta(ancestor, ours)
         theirs_delta = compute_delta(ancestor, theirs)
-        cleaned = reconcile_deltas(ours_delta, theirs_delta)
+        cleaned, conflicts = reconcile_deltas(ours_delta, theirs_delta)
+        for conflict in conflicts:
+            print(
+                f"warning: {_CONFLICT_LABEL[conflict.kind]} in {conflict.table}, "
+                "keeping ours",
+                file=sys.stderr,
+            )
         apply_delta(ours_path, cleaned)
     except Exception as e:
         print(f"splice-sqlite-merge failed for {pathname}: {e}", file=sys.stderr)

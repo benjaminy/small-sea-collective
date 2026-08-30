@@ -1,0 +1,90 @@
+<div id="note-to-self-sync">
+  <div class="detail-section">
+    {% if nts_notice %}
+      <div class="notice notice-ok">{{ nts_notice }}</div>
+    {% endif %}
+    {% if nts_error %}
+      <div class="notice notice-err">{{ nts_error }}</div>
+    {% endif %}
+
+    {% if nts_conflicts %}
+      <div class="notice notice-err">
+        <p class="token-instruction">
+          These rows were changed both here and in the stored history, in different ways.
+          Nothing was applied, and the stored history is still available to integrate later.
+        </p>
+        <ul class="mono">
+          {% for conflict in nts_conflicts %}
+            <li>{{ conflict.table }} — {{ conflict.key }} ({{ conflict.kind }})</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
+
+    <div class="inline-form">
+      <form hx-post="/note-to-self/push"
+            hx-target="#note-to-self-sync"
+            hx-swap="outerHTML">
+        {% if session_status == "active" %}
+          <button class="btn btn-primary btn-sm" type="submit">Push</button>
+        {% else %}
+          <button class="btn btn-disabled btn-sm" type="button" disabled>Push</button>
+        {% endif %}
+      </form>
+
+      <form hx-post="/note-to-self/refresh"
+            hx-target="#note-to-self-sync"
+            hx-swap="outerHTML">
+        {% if session_status == "active" %}
+          <button class="btn btn-secondary btn-sm" type="submit">Refresh</button>
+        {% else %}
+          <button class="btn btn-disabled btn-sm" type="button" disabled>Refresh</button>
+        {% endif %}
+      </form>
+
+      {% if nts_sources %}
+        <form hx-post="/note-to-self/integrate"
+              hx-target="#note-to-self-sync"
+              hx-swap="outerHTML">
+          <button class="btn btn-primary btn-sm" type="submit">Integrate stored history</button>
+        </form>
+      {% endif %}
+    </div>
+
+    {% if session_status != "active" %}
+      <p class="token-instruction">
+        Connect to Hub above to push or refresh. Integrating stored history is local and
+        does not need a connection.
+      </p>
+    {% endif %}
+  </div>
+
+  <div class="detail-section">
+    {% if nts_sources %}
+      <p class="token-instruction">
+        {{ nts_sources | length }} stored NoteToSelf
+        {{ "history" if nts_sources | length == 1 else "histories" }}
+        from your configured storage
+        {{ "is" if nts_sources | length == 1 else "are" }}
+        not yet part of this device's history. Cod Sync checked
+        {{ "its" if nts_sources | length == 1 else "their" }}
+        structure and ancestry; it does not establish which device wrote
+        {{ "it" if nts_sources | length == 1 else "them" }}.
+      </p>
+      <ul class="mono">
+        {% for source in nts_sources %}
+          <li>{{ source.head_sha[:12] }} — {{ source.ref_name }}</li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="token-instruction">No stored NoteToSelf history is waiting to be integrated.</p>
+    {% endif %}
+  </div>
+</div>
+
+{% if sidebar_oob %}
+{# OOB: refresh and integration can make new teams known. #}
+<div id="sidebar-teams" hx-swap-oob="true">
+  {% include "fragments/sidebar_teams_body.html" %}
+</div>
+{% endif %}

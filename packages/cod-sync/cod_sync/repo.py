@@ -12,7 +12,7 @@ import tempfile
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Set, Union
 
-from cod_sync.git import GitCmdFailed, gitCmd as _gitCmd
+from cod_sync.git import GitCmdFailed, gitCmd as _gitCmd, gitCmdBinary as _gitCmdBinary
 
 
 class RepoError(Exception):
@@ -102,6 +102,20 @@ class RefAdvanceResult:
     disposition: str
     previous_sha: Optional[str]
     current_sha: str
+
+
+@dataclass(frozen=True)
+class TreeEntry:
+    """One entry of a Git tree, exactly as `ls-tree` reports it.
+
+    path stays raw bytes because a tree may name a path that is not valid
+    UTF-8, and nothing here assigns application meaning to mode or object_type.
+    """
+
+    mode: str
+    object_type: str
+    object_id: str
+    path: bytes
 
 
 @dataclass(frozen=True)
@@ -263,6 +277,13 @@ class Repo:
         """Run a git command with the repo's identity args prepended."""
         try:
             return _gitCmd(self._base_args() + extra_args, raise_on_error=raise_on_error)
+        except GitCmdFailed as exc:
+            raise RepoError(str(exc), cause=exc) from exc
+
+    def _run_binary(self, extra_args: List[str]):
+        """Run a git command whose stdout is bytes rather than text."""
+        try:
+            return _gitCmdBinary(self._base_args() + extra_args)
         except GitCmdFailed as exc:
             raise RepoError(str(exc), cause=exc) from exc
 
@@ -558,6 +579,57 @@ class Repo:
         raise RepoError(
             f"update-ref {ref_name} -> {sha} failed: {result.stderr.strip()}"
         )
+
+    # ------------------------------------------------------------------ #
+    # Object and index plumbing (no work tree, no ref movement)
+    # ------------------------------------------------------------------ #
+
+    def tree_entries(self, rev: str) -> List[TreeEntry]:
+        """Return the entries of rev's root tree, without recursing.
+
+        Reports mode, object type, object id and the raw path bytes and
+        nothing else: which paths a tree is allowed to hold is the calling
+        application's rule, not Cod Sync's.
+        """
+        result = self._run_binary(["ls-tree", "-z", f"{rev}^{{tree}}"])
+        entries = []
+        for record in result.stdout.split(b"\x00"):
+            if not record:
+                continue
+            # `<mode> <type> <oid>\t<path>`; the path is separated by a tab and
+            # the records by NUL, so no line-oriented parsing can see it.
+            meta, _, path = record.partition(b"\t")
+            mode, object_type, object_id = meta.decode("ascii").split(" ")
+            entries.append(TreeEntry(mode, object_type, object_id, path))
+        return entries
+
+    def blob_at(self, rev: str, path: str, dest: Union[str, pathlib.Path]):
+        """Write the blob at rev:path to dest, byte for byte.
+
+        Reads out of the object store, so the index and the work tree are
+        untouched and the live file at path is never disturbed.
+        """
+        result = self._run_binary(["cat-file", "blob", f"{rev}:{path}"])
+        pathlib.Path(dest).write_bytes(result.stdout)
+
+    def read_tree(self, rev: str):
+        """Load rev's tree into the index, leaving the work tree alone."""
+        self._run(["read-tree", f"{rev}^{{tree}}"])
+
+    def write_tree(self) -> str:
+        """Write the current index out as a tree object and return its id."""
+        return self._run(["write-tree"]).stdout.strip()
+
+    def commit_tree(self, tree: str, parents: List[str], message: str) -> str:
+        """Create a commit object for tree, and move no ref.
+
+        The caller decides whether anything points at the result, which is what
+        keeps history construction separable from adopting it.
+        """
+        args = ["commit-tree", tree]
+        for parent in parents:
+            args += ["-p", parent]
+        return self._run(args + ["-m", message]).stdout.strip()
 
     # ------------------------------------------------------------------ #
     # Work-tree operations (require work_tree to be set)
