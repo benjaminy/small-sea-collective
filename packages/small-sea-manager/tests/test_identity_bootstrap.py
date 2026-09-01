@@ -6,6 +6,7 @@ import json
 import base64
 
 import cod_sync.protocol as CodSync
+from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore, StoreProviderError
 from cod_sync.git import gitCmd
 import pytest
@@ -175,6 +176,37 @@ def test_localfolder_identity_bootstrap_roundtrip(playground_dir):
         ).fetchone()
     assert team_device_row is not None
     assert team_device_row[0] == joined_device_id
+
+
+def test_identity_bootstrap_refuses_a_corrupt_fetched_database(playground_dir):
+    workspace = pathlib.Path(playground_dir)
+    root1 = workspace / "install-a"
+    root2 = workspace / "install-b"
+    cloud_dir = workspace / "cloud"
+    root1.mkdir()
+    root2.mkdir()
+    cloud_dir.mkdir()
+
+    alice_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
+    join_request = create_identity_join_request(root2)
+    welcome = TeamManager(root1, alice_hex).authorize_identity_join(
+        join_request["join_request_artifact"]
+    )
+
+    repo_dir = root1 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
+    repo = Repo(repo_dir / ".git", repo_dir)
+    note_to_self_sync_db_path(root1, alice_hex).write_bytes(
+        b"SQLite format 3\x00garbage"
+    )
+    repo.stage(["core.db"])
+    repo.commit("publish corrupt bootstrap source")
+    CodSync.CodSync(repo, LocalFolderStore(str(cloud_dir))).publish()
+
+    with pytest.raises(ValueError, match="not a readable SQLite database"):
+        bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+
+    assert not note_to_self_sync_db_path(root2, alice_hex).exists()
 
 
 def test_localfolder_identity_bootstrap_preserves_an_unresolved_push(

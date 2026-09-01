@@ -64,6 +64,49 @@ def parked_ref_name(link_uid: str) -> str:
     return f"{PARKED_REF_PREFIX}/{link_uid}"
 
 
+def outstanding_parked_heads(repo: Repo) -> List[tuple]:
+    """Return (ref_name, sha) for the parked heads still worth integrating.
+
+    A publication that loses to a competing head exits with only an exception,
+    so the head it parked is named nowhere durable. Integration therefore scans
+    this namespace instead of looking a name up, which is also what makes a
+    fresh process see exactly what an earlier one left behind.
+
+    Two filters apply, both from live ancestry rather than stored state.
+    A head already contained in local `HEAD` has been absorbed, whether by an
+    integration or by simply fetching further. A head contained in another
+    outstanding head is redundant with it, and integrating the ancestor first
+    could manufacture a conflict that integrating the descendant does not have.
+    Refs are immutable and are never swept, so nothing here deletes one.
+
+    Sorted by ref name, and one entry per distinct SHA, for a deterministic
+    integration order.
+    """
+    outstanding = []
+    has_head = repo.has_commits()
+    for ref_name in sorted(repo.list_refs(f"{PARKED_REF_PREFIX}/")):
+        sha = repo.resolve_ref(ref_name)
+        if sha is None:
+            continue
+        if has_head and repo.is_ancestor(sha, "HEAD"):
+            continue
+        outstanding.append((ref_name, sha))
+
+    maximal = []
+    seen = set()
+    for ref_name, sha in outstanding:
+        if sha in seen:
+            continue
+        seen.add(sha)
+        if any(
+            other_sha != sha and repo.is_ancestor(sha, other_sha)
+            for _other_ref, other_sha in outstanding
+        ):
+            continue
+        maximal.append((ref_name, sha))
+    return maximal
+
+
 def _comparable(etag: Optional[str]) -> bool:
     """True when the store returned an etag it can be held to.
 

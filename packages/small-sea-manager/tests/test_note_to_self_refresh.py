@@ -18,6 +18,7 @@ import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 from cod_sync.protocol import PublicationIntegrationRequiredError, parked_ref_name
 from cod_sync.repo import Repo
+from cod_sync.store import SmallSeaStore
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
 from small_sea_manager.manager import (
@@ -25,6 +26,7 @@ from small_sea_manager.manager import (
     bootstrap_existing_identity,
     create_identity_join_request,
 )
+from small_sea_manager import note_to_self_sync
 from small_sea_manager.provisioning import add_cloud_storage, create_new_participant
 from small_sea_note_to_self.db import device_local_db_path, note_to_self_sync_db_path
 
@@ -386,19 +388,14 @@ def test_unchanged_note_to_self_publication_invents_no_signal(playground_dir, mi
 MINIO_PORT_DIVERGENT_PUBLISH = 19736
 
 
-def test_divergent_note_to_self_push_reports_integration_required(
-    playground_dir, minio_server_gen
-):
-    """Two real installations of one identity witness publication divergence.
+def _diverge_two_devices(workspace, minio):
+    """Bring two real installations of one identity to a parked divergence.
 
-    Device B bootstraps, device A publishes a team B has not seen, and B then
-    commits its own team without refreshing. B's push is not behind the cloud
-    head and cannot replace it, so Cod Sync parks the observed head and hands
-    the choice to the application. Nothing device-local moves: B keeps its own
-    commit, and its adopted signal count stays where it was.
+    Device A publishes SharedProject then OnlyOnA. Device B bootstraps in
+    between, commits OnlyOnB without refreshing, and its push is refused with
+    A's head parked. Returns everything the callers need to continue from
+    there; the Hub backend is left pointing at device B.
     """
-    minio = minio_server_gen(port=MINIO_PORT_DIVERGENT_PUBLISH)
-    workspace = pathlib.Path(playground_dir)
     root_a = workspace / "install-a"
     root_b = workspace / "install-b"
     root_a.mkdir()
@@ -452,36 +449,190 @@ def test_divergent_note_to_self_push_reports_integration_required(
         Provisioning.get_note_to_self_adopted_signal_count(root_b, alice_hex, berth_id_b)
         is None
     )
-    adopted_before = 0
-    Provisioning.set_note_to_self_adopted_signal_count(
-        root_b, alice_hex, berth_id_b, adopted_before
-    )
+    Provisioning.set_note_to_self_adopted_signal_count(root_b, alice_hex, berth_id_b, 0)
 
     # Device B commits its own team without refreshing first.
     manager_b.create_team("OnlyOnB")
     with pytest.raises(PublicationIntegrationRequiredError) as excinfo:
         manager_b.push_note_to_self()
 
-    failure = excinfo.value
+    return {
+        "alice_hex": alice_hex,
+        "root_a": root_a,
+        "root_b": root_b,
+        "http_a": http_a,
+        "http_b": http_b,
+        "backend_a": backend_a,
+        "backend_b": backend_b,
+        "manager_a": manager_a,
+        "manager_b": manager_b,
+        "repo_b": repo_b,
+        "shared_head": shared_head,
+        "cloud_head": cloud_head,
+        "berth_id_b": berth_id_b,
+        "failure": excinfo.value,
+        "adopted_before": 0,
+    }
+
+
+def test_divergent_note_to_self_push_reports_integration_required(
+    playground_dir, minio_server_gen
+):
+    """Two real installations of one identity witness publication divergence.
+
+    Device B bootstraps, device A publishes a team B has not seen, and B then
+    commits its own team without refreshing. B's push is not behind the cloud
+    head and cannot replace it, so Cod Sync parks the observed head and hands
+    the choice to the application. Nothing device-local moves: B keeps its own
+    commit, and its adopted signal count stays where it was.
+    """
+    minio = minio_server_gen(port=MINIO_PORT_DIVERGENT_PUBLISH)
+    scene = _diverge_two_devices(pathlib.Path(playground_dir), minio)
+    alice_hex = scene["alice_hex"]
+    root_b = scene["root_b"]
+    repo_b = scene["repo_b"]
+    failure = scene["failure"]
+
     local_head = repo_b.head()
     assert failure.attempted_head == local_head
-    assert failure.observed_head == cloud_head
+    assert failure.observed_head == scene["cloud_head"]
     # Divergence, not a fast-forward in either direction: the reported base is
     # a common ancestor and neither head reaches the other.
     assert repo_b.is_ancestor(failure.merge_base, local_head)
-    assert repo_b.is_ancestor(failure.merge_base, cloud_head)
-    assert not repo_b.is_ancestor(local_head, cloud_head)
-    assert not repo_b.is_ancestor(cloud_head, local_head)
+    assert repo_b.is_ancestor(failure.merge_base, scene["cloud_head"])
+    assert not repo_b.is_ancestor(local_head, scene["cloud_head"])
+    assert not repo_b.is_ancestor(scene["cloud_head"], local_head)
 
     # The competing head survives the process that observed it.
     parked = parked_ref_name(failure.observed_link_uid)
     assert failure.parked_ref == parked
-    assert _note_to_self_repo(root_b, alice_hex).resolve_ref(parked) == cloud_head
+    assert _note_to_self_repo(root_b, alice_hex).resolve_ref(parked) == scene["cloud_head"]
 
     # Divergence changes nothing device-local.
     assert repo_b.head() == local_head
     # A publication that never landed must not advance the adopted baseline.
     assert (
-        Provisioning.get_note_to_self_adopted_signal_count(root_b, alice_hex, berth_id_b)
-        == adopted_before
+        Provisioning.get_note_to_self_adopted_signal_count(
+            root_b, alice_hex, scene["berth_id_b"]
+        )
+        == scene["adopted_before"]
+    )
+
+
+MINIO_PORT_SELF_INTEGRATION = 19738
+
+
+def test_integrated_note_to_self_round_trips_back_to_the_other_device(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    """The whole point of the branch: two devices' histories actually combine.
+
+    Device B integrates the head its own push was refused for, publishes the
+    result, and device A refreshes and sees every team. The round trip through
+    cloud storage is what makes the claim real rather than locally plausible.
+    """
+    minio = minio_server_gen(port=MINIO_PORT_SELF_INTEGRATION)
+    scene = _diverge_two_devices(pathlib.Path(playground_dir), minio)
+    alice_hex = scene["alice_hex"]
+    root_b = scene["root_b"]
+    repo_b = scene["repo_b"]
+    local_head_b = repo_b.head()
+    cloud_head = scene["cloud_head"]
+
+    # A freshly constructed Manager finds the outstanding head in refs alone.
+    fresh_b = TeamManager(root_b, alice_hex, _http_client=scene["http_b"])
+    assert [source.head_sha for source in fresh_b.note_to_self_conflict_status()] == [
+        cloud_head
+    ]
+
+    result = fresh_b.integrate_note_to_self()
+
+    [outcome] = result.outcomes
+    assert outcome.outcome == "integrated", outcome
+    assert outcome.kind == "divergent"
+    assert {t["name"] for t in fresh_b.list_known_teams()} >= {
+        "SharedProject", "OnlyOnA", "OnlyOnB",
+    }
+
+    # The merge publishes, and the stored head now descends from both sides.
+    # No SQLite writer reservation may be held across Hub I/O: the Hub is the
+    # other writer, so holding one there would deadlock a real installation.
+    original_put = SmallSeaStore.put_latest_link
+    probes = []
+
+    def put_latest_link_unlocked(self, *args, **kwargs):
+        probes.append(True)
+        probe = sqlite3.connect(str(note_to_self_sync_db_path(root_b, alice_hex)), timeout=0)
+        try:
+            probe.execute("BEGIN IMMEDIATE")
+            probe.execute("ROLLBACK")
+        finally:
+            probe.close()
+        return original_put(self, *args, **kwargs)
+
+    monkeypatch.setattr(SmallSeaStore, "put_latest_link", put_latest_link_unlocked)
+    fresh_b.push_note_to_self()
+    monkeypatch.undo()
+    assert probes, "the push never reached the store, so the probe proved nothing"
+    published = repo_b.head()
+    assert repo_b.is_ancestor(local_head_b, published)
+    assert repo_b.is_ancestor(cloud_head, published)
+
+    # Device A refreshes and sees the team it never had.
+    app.state.backend = scene["backend_a"]
+    manager_a = scene["manager_a"]
+    refreshed = manager_a.refresh_note_to_self()
+    assert refreshed["integration"].outcome == "integrated"
+    assert {t["name"] for t in manager_a.list_known_teams()} >= {
+        "SharedProject", "OnlyOnA", "OnlyOnB",
+    }
+    assert _note_to_self_repo(scene["root_a"], alice_hex).is_ancestor(
+        published, "HEAD"
+    )
+
+
+MINIO_PORT_REFRESH_DURABILITY = 19740
+
+
+def test_refresh_parks_the_fetched_head_before_touching_the_database(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    """A crash during adoption leaves a locally recoverable source.
+
+    Cod Sync's fetch imports objects but creates no ref of its own, so if the
+    Manager did not park the fetched head first, a failure during adoption
+    would leave nothing durable naming what had been observed.
+    """
+    minio = minio_server_gen(port=MINIO_PORT_REFRESH_DURABILITY)
+    scene = _diverge_two_devices(pathlib.Path(playground_dir), minio)
+    alice_hex = scene["alice_hex"]
+    root_b = scene["root_b"]
+    repo_b = scene["repo_b"]
+    local_head_b = repo_b.head()
+
+    # Forget the head the refused publication parked, so only the refresh's own
+    # ref can explain what the next process finds.
+    repo_b._run(["update-ref", "-d", scene["failure"].parked_ref])
+    assert TeamManager(root_b, alice_hex, _http_client=scene["http_b"]).note_to_self_conflict_status() == []
+
+    def die(*args, **kwargs):
+        raise RuntimeError("process died at the start of adoption")
+
+    monkeypatch.setattr(note_to_self_sync, "adopt_source", die)
+    manager_b = TeamManager(root_b, alice_hex, _http_client=scene["http_b"])
+    with pytest.raises(RuntimeError):
+        manager_b.refresh_note_to_self()
+    monkeypatch.undo()
+
+    assert repo_b.head() == local_head_b
+    # A fresh Manager finds the fetched source with no Hub contact at all.
+    offline = TeamManager(root_b, alice_hex, _http_client=scene["http_b"])
+    assert [s.head_sha for s in offline.note_to_self_conflict_status()] == [
+        scene["cloud_head"]
+    ]
+    assert (
+        Provisioning.get_note_to_self_adopted_signal_count(
+            root_b, alice_hex, scene["berth_id_b"]
+        )
+        == scene["adopted_before"]
     )

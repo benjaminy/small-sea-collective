@@ -1170,3 +1170,130 @@ def test_create_ref_immutable_needs_no_work_tree(scratch_dir, chain):
     cached = Repo(repo.git_dir)
 
     assert cached.create_ref_immutable(OBSERVED, shas[0]).disposition == "created"
+
+
+# ---------------------------------------------------------------------------
+# Object and index plumbing
+# ---------------------------------------------------------------------------
+
+
+def _sqlite_bytes(path):
+    """Write a small real SQLite database and return its exact bytes."""
+    import sqlite3
+
+    conn = sqlite3.connect(str(path))
+    conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, v BLOB)")
+    conn.execute("INSERT INTO t (id, v) VALUES (1, ?)", (bytes(range(256)),))
+    conn.commit()
+    conn.close()
+    return pathlib.Path(path).read_bytes()
+
+
+def test_blob_at_preserves_exact_binary_content(scratch_dir):
+    """A SQLite blob survives extraction byte for byte, work tree untouched."""
+    repo_dir = pathlib.Path(scratch_dir) / "repo"
+    repo = _make_normal_repo(repo_dir)
+    original = _sqlite_bytes(repo_dir / "core.db")
+    repo.stage(["core.db"])
+    committed = repo.commit("add db")
+
+    # Local work moves on; the extraction must not see or disturb it.
+    (repo_dir / "core.db").write_bytes(original + b"\x00local\xff")
+
+    dest = pathlib.Path(scratch_dir) / "extracted.db"
+    repo.blob_at(committed, "core.db", dest)
+
+    assert dest.read_bytes() == original
+    assert (repo_dir / "core.db").read_bytes() == original + b"\x00local\xff"
+    assert [entry["path"] for entry in repo.status()] == ["core.db"]
+
+
+def test_tree_entries_reports_mode_type_and_raw_path_bytes(scratch_dir):
+    repo_dir = pathlib.Path(scratch_dir) / "repo"
+    repo = _make_normal_repo(repo_dir)
+    (repo_dir / "core.db").write_bytes(b"\x00\x01\x02")
+    (repo_dir / "script.sh").write_text("#!/bin/sh\n")
+    (repo_dir / "script.sh").chmod(0o755)
+    (repo_dir / "nested").mkdir()
+    (repo_dir / "nested" / "inner").write_text("x")
+    repo.stage(None)
+    head = repo.commit("mixed tree")
+
+    by_path = {entry.path: entry for entry in repo.tree_entries(head)}
+
+    assert set(by_path) == {b"core.db", b"script.sh", b"nested"}
+    assert by_path[b"core.db"].mode == "100644"
+    assert by_path[b"core.db"].object_type == "blob"
+    assert by_path[b"script.sh"].mode == "100755"
+    assert by_path[b"nested"].object_type == "tree"
+
+
+def test_tree_entries_survives_newline_and_non_utf8_paths(scratch_dir):
+    """Path bytes come back intact, so no line-oriented parser can split them.
+
+    The tree is built with plumbing rather than files: macOS rejects a
+    filename that is not valid UTF-8, while a Git tree from another platform
+    can still name one.
+    """
+    repo_dir = pathlib.Path(scratch_dir) / "repo"
+    repo = _make_normal_repo(repo_dir)
+    awkward = b"od\nd\xff name"
+
+    blob = subprocess.run(
+        ["git", "--git-dir", str(repo.git_dir), "hash-object", "-w", "--stdin"],
+        input=b"x", capture_output=True, check=True,
+    ).stdout.decode().strip()
+    tree = subprocess.run(
+        ["git", "--git-dir", str(repo.git_dir), "mktree", "-z"],
+        input=b"100644 blob " + blob.encode() + b"\t" + awkward + b"\x00",
+        capture_output=True, check=True,
+    ).stdout.decode().strip()
+    head = repo.commit_tree(tree, [], "awkward path")
+
+    entries = repo.tree_entries(head)
+
+    assert [entry.path for entry in entries] == [awkward]
+    assert entries[0].object_type == "blob"
+
+
+def test_read_tree_changes_only_the_index(scratch_dir):
+    repo_dir = pathlib.Path(scratch_dir) / "repo"
+    repo = _make_normal_repo(repo_dir)
+    (repo_dir / "core.db").write_bytes(b"first")
+    repo.stage(["core.db"])
+    first = repo.commit("first")
+    (repo_dir / "core.db").write_bytes(b"second")
+    repo.stage(["core.db"])
+    second = repo.commit("second")
+
+    (repo_dir / "core.db").write_bytes(b"live")
+    repo.read_tree(first)
+
+    assert repo.head() == second
+    assert (repo_dir / "core.db").read_bytes() == b"live"
+    # The index now holds `first`, so the staged diff is against it.
+    staged = repo._run(["diff", "--cached", "--name-only", second]).stdout.split()
+    assert staged == ["core.db"]
+
+
+def test_commit_tree_declares_its_parents_and_moves_no_ref(scratch_dir):
+    repo_dir = pathlib.Path(scratch_dir) / "repo"
+    repo = _make_normal_repo(repo_dir)
+    (repo_dir / "core.db").write_bytes(b"base")
+    repo.stage(["core.db"])
+    base = repo.commit("base")
+    repo.checkout_branch("side", start_point=base)
+    (repo_dir / "core.db").write_bytes(b"side")
+    repo.stage(["core.db"])
+    side = repo.commit("side")
+    repo.checkout_branch("main", start_point=base)
+
+    (repo_dir / "core.db").write_bytes(b"merged")
+    repo.stage(["core.db"])
+    tree = repo.write_tree()
+    merged = repo.commit_tree(tree, [base, side], "merge side")
+
+    parents = repo._run(["rev-list", "--parents", "-n", "1", merged]).stdout.split()
+    assert parents[1:] == [base, side]
+    assert repo.resolve_ref("refs/heads/main") == base
+    assert repo.resolve_ref("refs/heads/side") == side

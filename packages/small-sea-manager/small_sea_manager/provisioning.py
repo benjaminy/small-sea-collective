@@ -108,6 +108,7 @@ from small_sea_note_to_self.bootstrap import (
     welcome_bundle_confirmation_string,
     welcome_bundle_aad,
 )
+from small_sea_manager import note_to_self_sync
 from small_sea_note_to_self.ids import uuid7
 from small_sea_note_to_self.sender_keys import (
     deserialize_distribution_message,
@@ -2205,8 +2206,9 @@ def _initialize_user_db(root_dir, ident, nickname, device_label):
 
     repo_dir = root_dir / "Participants" / ident.hex() / "NoteToSelf" / "Sync"
     nts_repo = _Repo.init(repo_dir / ".git").with_work_tree(repo_dir)
-    nts_repo.stage(["core.db"])
-    nts_repo.commit("Welcome to Small Sea Collective")
+    note_to_self_sync.commit_core_db(
+        root_dir, ident.hex(), nts_repo, "Welcome to Small Sea Collective"
+    )
 
 
 def create_identity_join_request(root_dir, *, device_label=None):
@@ -2308,8 +2310,12 @@ def authorize_identity_join(
     if inserted_user_device:
         repo_dir = root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync"
         nts_repo = _Repo(repo_dir / ".git", repo_dir)
-        nts_repo.stage(["core.db"])
-        nts_repo.commit(f"Admit device {artifact.device_id_hex[:8]}")
+        note_to_self_sync.commit_core_db(
+            root_dir,
+            participant_hex,
+            nts_repo,
+            f"Admit device {artifact.device_id_hex[:8]}",
+        )
         if remote_descriptor.get("protocol") == "localfolder":
             _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
 
@@ -2495,7 +2501,15 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
     store = _store_from_descriptor(bundle.remote_descriptor)
     repo = _Repo(sync_dir / ".git", sync_dir)
     result = CodSync.CodSync(repo, store).fetch()
-    repo.checkout_branch("main", start_point=result.observed_head)
+    outcome = note_to_self_sync.adopt_fetched_source(
+        root_dir,
+        bundle.participant_hex,
+        repo,
+        result.observed_head,
+        result.link_uid,
+    )
+    if outcome.outcome != "integrated":
+        raise ValueError(outcome.detail or "the fetched NoteToSelf source was refused")
     return finalize_identity_bootstrap(root_dir, prepared)
 
 
@@ -5037,8 +5051,9 @@ def register_app_for_participant(root_dir, participant_hex, app_name):
     if changed:
         repo_dir = participant_dir / "NoteToSelf" / "Sync"
         nts_repo = _Repo(repo_dir / ".git", repo_dir)
-        nts_repo.stage(["core.db"])
-        nts_repo.commit(f"Registered app {app_name}")
+        note_to_self_sync.commit_core_db(
+            root_dir, participant_hex, nts_repo, f"Registered app {app_name}"
+        )
 
     return app_id.hex()
 
