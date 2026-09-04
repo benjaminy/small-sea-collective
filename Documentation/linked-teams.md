@@ -4,6 +4,11 @@ Status: exploratory design note.
 This is expected to become a feature, but the protocol is not settled.
 Any linked-team format is an extension over the Constitution event DAG, not part of its core envelope or verification rules.
 
+This document mostly uses **team** in the repository's current protocol sense.
+A newer, deliberately deferred possibility is that the protocol primitive is a more general **constitutional group**, while **Team** is a UI term reserved for groups with durable social identity.
+The distinction is recorded below but should not trigger protocol or implementation changes yet.
+The broader follow-up is tracked in [GitHub issue #236](https://github.com/benjaminy/small-sea-collective/issues/236).
+
 Small Sea teams are intended to stay human-sized.
 A team with several dozen people is already near the upper edge of the intended operating shape.
 When a group gets large enough to need departments, nested roles, visibility matrices, delegated administrators, and policy engines, the first answer should usually be "more than one team," not "one team with an organization system inside it."
@@ -43,6 +48,30 @@ The linked-team idea starts from a different claim:
 
 The desired outcome is not "Small Sea supports huge teams."
 The desired outcome is "Small Sea supports many small teams that can cooperate deliberately."
+
+### Deferred reframing: constitutional groups underneath Teams
+
+There is a second pressure at the many-groups end of the design space.
+Making every project, reader subset, or group conversation a user-visible Team would produce a different kind of organizational clutter.
+A Team should probably mean a meaningful, durable "we": a group with recognizable continuity, shared memory, and an identity that can survive changing work and membership.
+
+The lower-level protocol object may be broader.
+A **constitutional group** is a working name for a group with a stable technical origin and signed rules or history determining membership, berths, and accepted change.
+"Constitutional" is intentionally thin here; it does not imply bylaws, elaborate governance, permanence, or organizational importance.
+A Team, an ad hoc conversation, and an app-specific workspace might all use that substrate while only the first is presented as a Team.
+
+One promising formation rule for a cross-cutting ad hoc group is that its members must be connected through a declared graph of existing constitutional groups and dual-member people.
+The existing groups can carry signed creation and membership records, while the new group's app data remains readable only by its own members.
+Its existence and roster may be visible to everyone in the declared source groups even when its app payload is not.
+That separates a relatively visible control plane from an encrypted data plane and avoids inventing an out-of-band identity or invitation system.
+
+Transitive connectivity must not become transitive authority.
+A path through existing groups can transport introductions and signed evidence; it does not let one source group administer another or grant every reachable person access.
+The source graph must be explicit and bounded, never the ambient transitive closure of all known links.
+The least surprising starting semantics are probably admission-time: the graph explains how a person became eligible to join, while later source-group churn does not silently evict them from the new group.
+
+This reframing leaves large questions open: who may announce a new group into a source group's shared history, how much metadata is visible, whether membership records are mirrored or merely witnessed, whether a new group gets independent transport immediately, and which optional signed profile makes a constitutional group appear as a Team.
+Those questions belong to a later design pass rather than the first linked-team implementation.
 
 ---
 
@@ -163,6 +192,16 @@ Witness is the option consistent with the whole project ethos — trust runs thr
 The tradeoff must be stated out loud wherever this is documented, never slipped in:
 under the witness model, Team A trusts its bridges' summary of Team B and accepts being only as well-informed as those people are.
 
+### Preserve evidence in either mode
+
+Prior art weakens the apparent witness-or-router binary.
+A bridge can carry the exact remote signed artifact, its technical origin, and the remote head or other analysis basis alongside the bridge's local semantic attestation.
+Team A can verify the artifact's bytes and signature without claiming to have evaluated the signer's remote standing.
+The bridge remains responsible for that standing judgment under witness policy, while a later or more demanding receiver can replay enough remote history to evaluate it independently.
+
+The first format should therefore avoid reducing a remote artifact to an unverifiable summary even if the first implementation uses witness semantics.
+Preserving evidence keeps stronger verification possible without making it mandatory for every receiver.
+
 ---
 
 ## Provisional Design Principle
@@ -216,20 +255,22 @@ Read sharing is important, but it should not be allowed to drag in an accidental
 
 ## The Bridge / Shared-Child-Team Duality
 
-There is a second way to connect two teams: create a third team C that the relevant people from A and B both join, and do the shared work there.
+There is a second way to connect two teams: create a third constitutional group C that the relevant people from A and B both join, and do the shared work there.
+In the repository's current vocabulary C is another team, but it need not appear as a user-facing Team if it is only a conversation, project, or reader set.
 
 Bridge teammates and shared child teams are duals.
-In both, the cross-team tie is carried by people who belong to more than one team.
+In both, the cross-team tie is carried by people who belong to more than one group.
 The only difference is *where those dual-member people do their shared work*:
 
 - **Bridge:** keep two constitutions; a co-member mediates between them.
-- **Shared child team:** the co-members do their shared work inside a new constitution, reusing all existing machinery — admission, integration modes, recovery, storage — with zero new protocol.
+- **Shared child group:** the co-members do their shared work inside a new constitution, reusing existing machinery — admission, integration modes, recovery, storage — with little or no new protocol.
 
 This suggests a deeper invariant:
 the connection between two teams is always dual-member people; the only question is whether their shared work gets its own room.
 
 That makes "bridge versus shared team" a per-relationship choice rather than two unrelated features.
-A standing, content-heavy collaboration probably wants its own room.
+A standing, content-heavy collaboration may want its own constitutional group.
+That does not by itself make the group a Team in the UI; the collaboration should also have acquired a durable identity.
 A bounded recognition or a trickle of proposals probably wants a bridge.
 
 ---
@@ -430,12 +471,27 @@ Keybase teams, Matrix restricted rooms, and MLS are folded into their respective
 Radicle is covered in [`related-work.md`](related-work.md);
 Secure Scuttlebutt and AT Protocol are queued there for mechanism-level entries.
 
-Two readings are specific enough to bridges to keep here:
+The most relevant conclusions are:
 
 - **Local names are the right frame for a link.** Team A's name for Team B is really Team A's name for the people it reaches Team B through.
   A link is not a claim about Team B; it is a claim about a path.
 - **Bridges are follow-the-people replication.** Secure Scuttlebutt replicates along a social graph rather than from a server.
   A bridge is the same idea drawn across a team boundary: you replicate across it because a person you trust sits on it.
+- **Nested groups import organization machinery.** Jazz group membership cascades permissions through nested groups, while Keybase subteams inherit parent administration and require cross-chain coordination.
+  Both show that a generic parent-child link quickly acquires role precedence, revocation propagation, and key-rotation semantics.
+  Small Sea should keep links typed and avoid treating graph position as authority.
+- **Admission and continued eligibility are different policies.** Matrix restricted rooms can admit someone because they belong to another room, but the condition is checked at join time rather than continuously enforced.
+  Continuous coupling requires additional synchronization and eviction machinery.
+  Any Small Sea cross-group edge must state whether it records an admission-time basis or a maintained invariant.
+- **Many independent groups are viable, but their cost must stay visible.** Earthstar's shares are deliberately separate, small, self-sufficient synchronization scopes.
+  That supports the constitutional-group direction, while warning that every new group creates discovery, storage, and lifecycle work even if the UI does not call it a Team.
+- **Capabilities are better than broad links for narrow data access.** Spritely's guest and reviewer capabilities, and Willow's Meadowcap delegation by namespace, path, and time, show how specific verbs and attenuated grants avoid importing another group's roles.
+  If cross-group read or write sharing arrives later, it should look more like a scoped capability than membership inheritance.
+- **Stable origin is not canonical social state.** Radicle derives a stable repository identifier from an initial identity document, then lets signed delegate state evolve.
+  Small Sea can borrow the origin/current-state separation without adopting Radicle's delegate-selected canonical continuation.
+
+Taken together, the prior art supports a graph of independent constitutional groups but argues against a generic "linked" permission edge.
+Links should carry explicit evidence and a specific verb; group formation should name a bounded source graph; and neither routing nor reachability should silently become authorization.
 
 ---
 

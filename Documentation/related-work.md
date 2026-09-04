@@ -8,6 +8,10 @@ Followed by: what is the honest, specific differentiation that survives that pus
 
 Small Sea is local-first infrastructure for human-scale institutions: a team can outlive its apps and members while retaining inspectable history, without a team server or forced global state.
 
+Terminology is not settled.
+This document uses **Team** in the repository's current protocol sense, but a deferred design direction may generalize that substrate to **constitutional groups** and reserve **Team** for the UI treatment of groups with durable social identity.
+The comparisons below should not be read as a decision against that direction.
+
 The novelty claim is not that groups or longevity are new to local-first software.
 The sharpest defensible position is the conjunction of three constraints:
 
@@ -45,7 +49,11 @@ What is novel here?"
 **Differentiation.**
 
 - Jazz Groups are *permissions on data* — a scoping mechanism for who can read/write a CoValue.
-  Small Sea Teams are the *social primitive itself*: identity is per-team, apps are scoped to teams, the team is the unit of governance, not just an access-control attribute.
+  Small Sea's current Teams combine a signed constitutional history, per-context identity, app berths, and a social continuity boundary rather than serving only as an access-control attribute.
+  If Small Sea generalizes that substrate, the distinction must rest on those mechanics rather than on reserving the word "group."
+- Jazz also permits Groups to be members of Groups, with inherited roles and cascading permissions and removal.
+  That is useful prior art for the obvious hierarchical design and a warning about what it imports: transitive authority, role precedence, and key rotation coupled to a group graph.
+  Reference: <https://jazz.tools/docs/react-native/permissions-and-sharing/cascading-permissions>
 - Jazz uses Jazz Cloud (a hosted sync mesh) by default, even though it is self-hostable.
   Small Sea's "no bespoke services even for sync" rule is a sharper constraint than Jazz adopts.
 - Jazz is CRDT-centric (CoValues are CRDTs); Small Sea's bet on version-control-style history with 3-way merge is explicitly the alternative path on the longevity-vs-immediacy axis.
@@ -80,6 +88,9 @@ Recent versions added local-network peer discovery via DNS-SD.
 - Earthstar treats one keypair as one author across all shares; Small Sea defaults to per-team-scoped identity, so the same person presents separately in different teams unless they deliberately link.
 - Earthstar is intentionally small-scope.
   Small Sea is also small-scope but expects to host meaningful applications (file stores, structured data, the social bridging app) rather than primarily journals and chats.
+- Earthstar's insistence that workspaces remain independent and self-sufficient is positive evidence for the many-groups side of Small Sea's design.
+  It also makes the operational question unavoidable: creating a new cryptographic group must remain cheap enough that conversations and temporary workspaces do not become administrative objects.
+  Reference: <https://github.com/earthstar-project/earthstar-docs/blob/main/docs/intro/rules-of-earthstar.md>
 
 **Risk.**
 Real but limited.
@@ -109,6 +120,9 @@ We have been doing local-first peer-to-peer team collaboration on Git for years.
   Small Sea routes communication through users' generic cloud storage and notification services, not bespoke nodes.
 - Identity in Radicle is one keypair per developer, used across all repositories.
   Small Sea is per-team-scoped.
+- A Radicle repository's stable identifier derives from its initial identity document while signed delegate state can evolve afterward.
+  That is a useful separation between technical origin and current recognized continuation, even though Small Sea declines Radicle's delegate-selected canonical state.
+  Reference: <https://radicle.dev/guides/protocol>
 
 **Risk.**
 Lower than Jazz or Earthstar.
@@ -137,6 +151,9 @@ We have been thinking about decentralized communities at the foundational layer 
   Different abstraction levels, potentially complementary.
 - Spritely's "communities" are a research target framed in capability-secure terms.
   Small Sea's teams are concrete deployment artifacts with file-level semantics, governance roles, and a specific admission protocol.
+- Spritely's worked examples grant concrete capabilities such as guest posting, reviewing, and restricted editing rather than a broad organizational relationship.
+  That supports defining cross-group links as specific verbs and keeping application authority narrower than group recognition.
+  Reference: <https://files.spritely.institute/papers/spritely-core.pdf>
 
 **Risk.**
 Branding-adjacent rather than design-adjacent, but the visibility of the Spritely team in the decentralized-web scene means they should be named and credited explicitly when the conversation turns to community-scale decentralized infrastructure.

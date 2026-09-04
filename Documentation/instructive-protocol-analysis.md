@@ -210,9 +210,13 @@ This is strong precedent for Small Sea's split: a participant-owned label in Not
 **Mechanism worth noting: restricted rooms.**
 Matrix has working machinery where membership in one room can satisfy a join condition in another.
 That is one plausible linked-teams purpose: "membership over there satisfies a condition over here."
-The caution is complexity — worth learning the shape without inheriting full federated room-state authorization.
+The condition is checked at admission time; losing membership in the authorizing room does not itself evict someone from the restricted room.
+Matrix consequently treats continuously synchronized parent/child membership as an external tooling problem rather than an automatic property of the relationship.
+This is the cleanest prior-art warning that "eligible when admitted" and "must remain eligible" are different policies with very different failure and recovery costs.
+Small Sea should learn the shape without inheriting full federated room-state authorization.
 See [`linked-teams.md`](linked-teams.md) for how this bears on bridges.
 Reference: <https://spec.matrix.org/latest/client-server-api/#restricted-rooms>
+Operational discussion: <https://matrix.org/blog/2022/02/02/matrix-v-1-2-release/>
 
 **Contrast.**
 Matrix ultimately does resolve concurrent state into one answer, currently via state resolution v2.1 for room version 12, because a chat room must display one member list.
@@ -259,7 +263,12 @@ That permanence helps people audit a global public account, but it is the wrong 
 
 **Contrast.**
 Keybase's central premise is one global identity per person, cryptographically bound to public social-media accounts — the direct inverse of per-team-scoped identity.
-Its subteam hierarchy is a further caution: hierarchy quickly becomes organization machinery, and Small Sea wants signed team relationships without hierarchy as the default answer.
+Its subteams each have their own sigchain and keys, while parent-team administrators receive implicit administrative authority over descendants.
+Keybase's design therefore needs cross-chain pointers, server-coordinated atomic operations, and machinery for temporary administration changes while preserving hierarchy.
+It also deliberately omits filesystem shares spanning otherwise separate teams because such sharing would reveal membership in both directions.
+The general caution is sharper than "hierarchy becomes complicated": group nesting couples authorization, privacy, key distribution, and mutation across histories.
+Small Sea wants signed group relationships without making those coupled semantics the default meaning of an edge.
+References: <https://book.keybase.io/docs/teams/design> and <https://book.keybase.io/docs/teams/details>
 
 **What it cost them.**
 Keybase's auditable device set is inseparable from one public global account and from Keybase's Merkle-tree service.
@@ -367,6 +376,11 @@ Attenuation is enforced by chained HMAC, so a caveat can be added but never remo
 **Mechanism worth borrowing: attenuation without round-trips.**
 Handing on less authority than you hold, offline, is precisely the shape a bridge or invitation needs.
 An inviter should be able to pass a narrowed capability without a server adjudicating the narrowing.
+
+Willow's Meadowcap vocabulary sharpens this for replicated data.
+Its signed capabilities are bound to receivers and can be delegated only with narrower namespace, path, and time constraints.
+That is closer than a bearer macaroon to a possible future Small Sea grant for a bounded app view, because the receiver and delegation chain remain explicit.
+Reference: <https://willowprotocol.org/specs/meadowcap/index.html>
 
 **Contrast.**
 Macaroons are bearer tokens: possession is authority, and there is no inherent record of who exercised it.

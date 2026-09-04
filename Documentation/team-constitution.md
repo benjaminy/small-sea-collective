@@ -3,6 +3,10 @@
 Status: architectural direction, not a frozen wire format.
 The current code implements parts of an older admission design.
 
+This document uses **Team** as the current name of the protocol scope.
+A deferred design question may instead make the low-level object a more general **constitutional group** and reserve **Team** for a UI description of groups with durable social identity.
+Nothing in this document currently depends on that renaming or generalization.
+
 ## Purpose
 
 The Team Constitution is a decentralized, cryptographically linked DAG of signed events.
