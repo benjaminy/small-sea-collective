@@ -619,57 +619,6 @@ def _peer_ref_name(teammate_id, branch="main"):
     return f"refs/peers/{teammate_id}/{branch}"
 
 
-def _outstanding_parked_refs(git_dir):
-    """Return (ref, sha) for Cod Sync parked refs not yet contained in HEAD.
-
-    Cod Sync parks a competing self-store head at
-    refs/cod-sync/parked/{link_uid} on whichever observation pass sees it, and
-    the publishing process exits without reporting the UID anywhere durable.
-    The integration operation therefore scans the namespace instead of looking
-    a name up. Parked refs are immutable and are never swept (#11, #12), so the
-    ancestry test is what separates an outstanding conflict from one an earlier
-    merge already absorbed.
-
-    Sorted by ref name for a deterministic integration order.
-    """
-    result = gitCmd(
-        [
-            "--git-dir", str(git_dir), "for-each-ref",
-            "--format=%(refname)", f"{CS.PARKED_REF_PREFIX}/",
-        ],
-        raise_on_error=False,
-    )
-    if result.returncode != 0:
-        return []
-    outstanding = []
-    for ref in sorted(line.strip() for line in result.stdout.splitlines() if line.strip()):
-        sha = _resolve_ref(git_dir, ref)
-        if sha is None:
-            continue
-        if _has_commits(git_dir) and _is_ancestor(git_dir, sha, "HEAD"):
-            continue
-        outstanding.append((ref, sha))
-    return outstanding
-
-
-def _parked_self_refs_to_merge(git_dir):
-    """Return the unique maximal parked refs a self merge would integrate."""
-    outstanding = _outstanding_parked_refs(git_dir)
-    maximal = []
-    seen_shas = set()
-    for ref, sha in outstanding:
-        if sha in seen_shas:
-            continue
-        seen_shas.add(sha)
-        if any(
-            other_sha != sha and _is_ancestor(git_dir, sha, other_sha)
-            for _, other_sha in outstanding
-        ):
-            continue
-        maximal.append((ref, sha))
-    return maximal
-
-
 def _merge_parked_self_refs(git_dir, checkout):
     """Merge every outstanding parked self-store ref into checkout.
 
@@ -680,7 +629,7 @@ def _merge_parked_self_refs(git_dir, checkout):
     merging the descendant directly avoids. Ancestry is still retested before
     each merge because one incomparable merge can absorb another ref.
     """
-    maximal = _parked_self_refs_to_merge(git_dir)
+    maximal = CS.outstanding_parked_heads(Repo(git_dir))
 
     merged = []
     for ref, sha in maximal:
@@ -1172,11 +1121,11 @@ def self_conflict_status(files_root, participant_hex, context, niche_name):
     _ensure_registry(files_root, participant_hex, context)
     registry_git_dir = _registry_git_dir(files_root, context)
     registry_shas = [
-        sha for _ref, sha in _parked_self_refs_to_merge(registry_git_dir)
+        sha for _ref, sha in CS.outstanding_parked_heads(Repo(registry_git_dir))
     ]
     niche_git_dir = _niche_git_dir(files_root, context, niche_name)
     niche_shas = (
-        [sha for _ref, sha in _parked_self_refs_to_merge(niche_git_dir)]
+        [sha for _ref, sha in CS.outstanding_parked_heads(Repo(niche_git_dir))]
         if niche_git_dir.exists()
         else []
     )
