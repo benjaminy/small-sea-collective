@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+from test_support import reserve_ports
 from test_support import minio_server_gen  # noqa: F401  (pytest fixture)
 
 
@@ -40,23 +41,44 @@ def playground_dir():
 def ntfy_server():
     import httpx
 
-    port = 9090
+    (port,) = reserve_ports([None])
     container_name = f"ntfy-test-{os.getpid()}"
-    subprocess.run(
-        [
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            container_name,
-            "-p",
-            f"{port}:80",
-            "binwiederhier/ntfy",
-            "serve",
-        ],
+
+    # A container already holding this name is not ours to delete: the teardown
+    # below removes the one we start, so a survivor came from an earlier run that
+    # crashed and happened to share our pid.  Fail rather than destroy it.
+    existing = subprocess.run(
+        ["docker", "ps", "-aq", "--filter", f"name=^{container_name}$"],
+        capture_output=True,
+        text=True,
         check=True,
     )
-    url = f"http://localhost:{port}"
+    if existing.stdout.strip():
+        raise RuntimeError(
+            f"Container {container_name} already exists; remove it and rerun"
+        )
+
+    try:
+        subprocess.run(
+            [
+                "docker",
+                "run",
+                "-d",
+                "--name",
+                container_name,
+                "-p",
+                f"127.0.0.1:{port}:80",
+                "binwiederhier/ntfy",
+                "serve",
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        # A `docker run` that fails to start the container still leaves it created.
+        subprocess.run(["docker", "rm", "-f", container_name])
+        raise
+
+    url = f"http://127.0.0.1:{port}"
 
     # Health check — wait up to 15 seconds
     for _ in range(30):
