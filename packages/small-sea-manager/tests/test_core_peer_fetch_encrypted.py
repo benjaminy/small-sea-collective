@@ -117,7 +117,7 @@ def _invite(root, inviter, inviter_hex, invitee, team_name, inviter_minio):
 
 @pytest.fixture(scope="module")
 def minios(minio_server_gen):
-    return minio_server_gen(port=None), minio_server_gen(port=None)
+    return minio_server_gen(), minio_server_gen()
 
 
 @pytest.fixture()

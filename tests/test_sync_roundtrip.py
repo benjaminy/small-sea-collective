@@ -17,7 +17,6 @@ import tempfile
 import pytest
 import requests
 
-_REPO_ROOT = str(pathlib.Path(__file__).parent.parent)
 from botocore.config import Config as BotoConfig
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
@@ -27,10 +26,6 @@ import cod_sync.protocol as CS
 from cod_sync.repo import Repo
 from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.git import gitCmd
-
-
-MINIO_PORT = 9600
-HUB_PORT = 11600
 
 
 def _repo(repo_dir):
@@ -46,32 +41,16 @@ def _git(args, repo_dir=None):
 
 @pytest.fixture(scope="module")
 def minio(minio_server_gen):
-    return minio_server_gen(port=MINIO_PORT)
+    return minio_server_gen()
 
 
 @pytest.fixture(scope="module")
 def hub(hub_server_gen, tmp_path_factory, minio):
     root_dir = str(tmp_path_factory.mktemp("hub_root"))
-    import os as _os
-    env = _os.environ.copy()
-    env["SMALL_SEA_ROOT_DIR"] = root_dir
-    env["SMALL_SEA_AUTO_APPROVE_SESSIONS"] = "1"
-
-    import subprocess, time
-    cmd = [
-        "uv", "run", "fastapi", "dev",
-        "packages/small-sea-hub/small_sea_hub/server.py",
-        "--port", str(HUB_PORT),
-    ]
-    proc = subprocess.Popen(cmd, env=env, cwd=_REPO_ROOT)
-    time.sleep(2)
-    if proc.poll() is not None:
-        raise RuntimeError(f"Hub exited early (code {proc.returncode})")
-
-    yield {"root_dir": root_dir, "endpoint": f"http://localhost:{HUB_PORT}", "proc": proc}
-
-    proc.terminate()
-    proc.wait()
+    return hub_server_gen(
+        root_dir=root_dir,
+        extra_env={"SMALL_SEA_AUTO_APPROVE_SESSIONS": "1"},
+    )
 
 
 @pytest.fixture()

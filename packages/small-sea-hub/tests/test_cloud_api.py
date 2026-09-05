@@ -22,12 +22,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 from test_support import publish_storage_announcement_for_session
 
-MINIO_PORT = 9200
 
 
 @pytest.fixture(scope="module")
 def minio(minio_server_gen):
-    return minio_server_gen(port=MINIO_PORT)
+    return minio_server_gen()
 
 
 @pytest.fixture()

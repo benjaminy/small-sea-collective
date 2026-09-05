@@ -130,7 +130,7 @@ def test_peer_download_uses_teammate_berth_storage_announcement(
     playground_dir, minio_server_gen
 ):
     root = pathlib.Path(playground_dir)
-    minio = minio_server_gen(port=19920)
+    minio = minio_server_gen()
     backend = SmallSea.SmallSeaBackend(root_dir=root)
     alice_hex = Provisioning.create_new_participant(root, "alice")
     Provisioning.add_cloud_storage(
@@ -181,7 +181,7 @@ def test_peer_download_falls_back_when_announcement_signature_is_invalid(
     playground_dir, minio_server_gen
 ):
     root = pathlib.Path(playground_dir)
-    minio = minio_server_gen(port=19930)
+    minio = minio_server_gen()
     backend = SmallSea.SmallSeaBackend(root_dir=root)
     alice_hex = Provisioning.create_new_participant(root, "alice")
     Provisioning.add_cloud_storage(
@@ -239,7 +239,7 @@ def test_peer_download_falls_back_when_announcement_signer_loses_trust(
     playground_dir, minio_server_gen
 ):
     root = pathlib.Path(playground_dir)
-    minio = minio_server_gen(port=19940)
+    minio = minio_server_gen()
     backend = SmallSea.SmallSeaBackend(root_dir=root)
     alice_hex = Provisioning.create_new_participant(root, "alice")
     Provisioning.add_cloud_storage(
@@ -322,7 +322,7 @@ def test_app_berth_peer_read_without_announcement_returns_missing(
     playground_dir, minio_server_gen
 ):
     root = pathlib.Path(playground_dir)
-    minio = minio_server_gen(port=19950)
+    minio = minio_server_gen()
     backend = SmallSea.SmallSeaBackend(root_dir=root)
     alice_hex = Provisioning.create_new_participant(root, "alice")
     Provisioning.add_cloud_storage(
@@ -353,7 +353,7 @@ def test_app_berth_peer_read_uses_announcement_location(
     playground_dir, minio_server_gen
 ):
     root = pathlib.Path(playground_dir)
-    minio = minio_server_gen(port=19960)
+    minio = minio_server_gen()
     backend = SmallSea.SmallSeaBackend(root_dir=root)
     alice_hex = Provisioning.create_new_participant(root, "alice")
     Provisioning.add_cloud_storage(
@@ -413,7 +413,7 @@ def test_peer_read_does_not_use_current_device_bootstrap_allowance(
     playground_dir, minio_server_gen
 ):
     root = pathlib.Path(playground_dir)
-    minio = minio_server_gen(port=19970)
+    minio = minio_server_gen()
     backend = SmallSea.SmallSeaBackend(root_dir=root)
     alice_hex = Provisioning.create_new_participant(root, "alice")
     Provisioning.add_cloud_storage(
@@ -473,7 +473,7 @@ def test_create_team_publishes_creator_storage_for_peer_download(
     peer discovery now that the legacy team_device transport fallback is gone.
     """
     root = pathlib.Path(playground_dir)
-    minio = minio_server_gen(port=19980)
+    minio = minio_server_gen()
     backend = SmallSea.SmallSeaBackend(root_dir=root)
     alice_hex = Provisioning.create_new_participant(root, "alice")
     Provisioning.add_cloud_storage(

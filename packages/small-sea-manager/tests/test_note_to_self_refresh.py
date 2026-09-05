@@ -30,8 +30,6 @@ from small_sea_manager import note_to_self_sync
 from small_sea_manager.provisioning import add_cloud_storage, create_new_participant
 from small_sea_note_to_self.db import note_to_self_sync_db_path
 
-MINIO_PORT_DISCOVERY = 19730
-MINIO_PORT_LOCAL_STATE = 19732
 
 
 def _note_to_self_repo(root, participant_hex):
@@ -168,7 +166,7 @@ def test_refresh_note_to_self_two_device_team_discovery(playground_dir, minio_se
     Uses MinIO + Hub TestClient. Hub backend is swapped between installations
     following the pattern in test_identity_bootstrap.py.
     """
-    minio = minio_server_gen(port=MINIO_PORT_DISCOVERY)
+    minio = minio_server_gen()
     workspace = pathlib.Path(playground_dir)
     root_a = workspace / "install-a"
     root_b = workspace / "install-b"
@@ -264,7 +262,7 @@ def test_refresh_note_to_self_two_device_team_discovery(playground_dir, minio_se
 
 def test_refresh_does_not_sync_device_local_state(playground_dir, minio_server_gen):
     """Refresh must not move device-local secrets into the shared NoteToSelf DB."""
-    minio = minio_server_gen(port=MINIO_PORT_LOCAL_STATE)
+    minio = minio_server_gen()
     workspace = pathlib.Path(playground_dir)
     root_a = workspace / "install-a"
     root_b = workspace / "install-b"
@@ -324,7 +322,6 @@ def test_refresh_does_not_sync_device_local_state(playground_dir, minio_server_g
     assert not leaked, f"Device-local tables leaked into shared NoteToSelf: {leaked}"
 
 
-MINIO_PORT_NOOP_PUBLISH = 19734
 
 
 def test_unchanged_note_to_self_publication_invents_no_signal(playground_dir, minio_server_gen):
@@ -334,7 +331,7 @@ def test_unchanged_note_to_self_publication_invents_no_signal(playground_dir, mi
     Advancing it after a publication that never happened would make the next
     real push look already-adopted and be skipped.
     """
-    minio = minio_server_gen(port=MINIO_PORT_NOOP_PUBLISH)
+    minio = minio_server_gen()
     root = pathlib.Path(playground_dir) / "install"
     root.mkdir()
 
@@ -377,7 +374,6 @@ def test_unchanged_note_to_self_publication_invents_no_signal(playground_dir, mi
     )
 
 
-MINIO_PORT_DIVERGENT_PUBLISH = 19736
 
 
 def _diverge_two_devices(workspace, minio):
@@ -478,7 +474,7 @@ def test_divergent_note_to_self_push_reports_integration_required(
     the choice to the application. Nothing device-local moves: B keeps its own
     commit, and its adopted signal count stays where it was.
     """
-    minio = minio_server_gen(port=MINIO_PORT_DIVERGENT_PUBLISH)
+    minio = minio_server_gen()
     scene = _diverge_two_devices(pathlib.Path(playground_dir), minio)
     alice_hex = scene["alice_hex"]
     root_b = scene["root_b"]
@@ -511,7 +507,6 @@ def test_divergent_note_to_self_push_reports_integration_required(
     )
 
 
-MINIO_PORT_SELF_INTEGRATION = 19738
 
 
 def test_integrated_note_to_self_round_trips_back_to_the_other_device(
@@ -523,7 +518,7 @@ def test_integrated_note_to_self_round_trips_back_to_the_other_device(
     result, and device A refreshes and sees every team. The round trip through
     cloud storage is what makes the claim real rather than locally plausible.
     """
-    minio = minio_server_gen(port=MINIO_PORT_SELF_INTEGRATION)
+    minio = minio_server_gen()
     scene = _diverge_two_devices(pathlib.Path(playground_dir), minio)
     alice_hex = scene["alice_hex"]
     root_b = scene["root_b"]
@@ -583,7 +578,6 @@ def test_integrated_note_to_self_round_trips_back_to_the_other_device(
     )
 
 
-MINIO_PORT_REFRESH_DURABILITY = 19740
 
 
 def test_refresh_parks_the_fetched_head_before_touching_the_database(
@@ -595,7 +589,7 @@ def test_refresh_parks_the_fetched_head_before_touching_the_database(
     Manager did not park the fetched head first, a failure during adoption
     would leave nothing durable naming what had been observed.
     """
-    minio = minio_server_gen(port=MINIO_PORT_REFRESH_DURABILITY)
+    minio = minio_server_gen()
     scene = _diverge_two_devices(pathlib.Path(playground_dir), minio)
     alice_hex = scene["alice_hex"]
     root_b = scene["root_b"]

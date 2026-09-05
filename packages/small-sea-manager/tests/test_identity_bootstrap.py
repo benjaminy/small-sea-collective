@@ -488,7 +488,7 @@ def test_identity_bootstrap_via_hub_bootstrap_transport(playground_dir, minio_se
     root1.mkdir()
     root2.mkdir()
 
-    minio = minio_server_gen(port=19660)
+    minio = minio_server_gen()
 
     alice_hex = create_new_participant(root1, "Alice")
 
@@ -546,7 +546,7 @@ def test_bootstrap_transport_token_is_rejected_by_normal_routes(playground_dir, 
     workspace = pathlib.Path(playground_dir)
     root = workspace / "install-a"
     root.mkdir()
-    minio = minio_server_gen(port=19680)
+    minio = minio_server_gen()
 
     backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
     app.state.backend = backend

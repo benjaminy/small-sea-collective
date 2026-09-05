@@ -160,8 +160,8 @@ def test_create_invitation_includes_bucket(playground_dir):
 
 def test_full_invitation_flow(playground_dir, minio_server_gen):
     """Full invitation flow routed through the Hub."""
-    alice_minio = minio_server_gen(port=19100)
-    bob_minio = minio_server_gen(port=19200)
+    alice_minio = minio_server_gen()
+    bob_minio = minio_server_gen()
 
     root = pathlib.Path(playground_dir)
 
@@ -493,9 +493,9 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
 
 def test_double_accept_rejected(playground_dir, minio_server_gen):
     """Second acceptance of the same invitation should fail."""
-    alice_minio = minio_server_gen(port=19300)
-    bob_minio = minio_server_gen(port=19400)
-    carol_minio = minio_server_gen(port=19500)
+    alice_minio = minio_server_gen()
+    bob_minio = minio_server_gen()
+    carol_minio = minio_server_gen()
 
     root = pathlib.Path(playground_dir)
 

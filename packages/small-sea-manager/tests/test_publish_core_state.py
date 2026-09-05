@@ -69,7 +69,7 @@ def _announcement_ids(db_path):
 
 @pytest.fixture(scope="module")
 def minio(minio_server_gen):
-    return minio_server_gen(port=None)
+    return minio_server_gen()
 
 
 class _HubEnv:

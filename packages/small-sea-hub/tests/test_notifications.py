@@ -78,8 +78,8 @@ def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
 
 def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     """Two participants on one Hub: one sends a notification, the other receives it."""
-    alice_minio = minio_server_gen(port=19600)
-    bob_minio = minio_server_gen(port=19700)
+    alice_minio = minio_server_gen()
+    bob_minio = minio_server_gen()
 
     root = pathlib.Path(playground_dir)
 

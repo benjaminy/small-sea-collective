@@ -14,7 +14,6 @@ from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
 
-MINIO_PORT = 9300
 
 
 def _open_session(client):
@@ -50,7 +49,7 @@ def _bucket_name(backend, session_hex):
 
 
 def test_local_provision_then_hub_roundtrip(playground_dir, minio_server_gen):
-    minio = minio_server_gen(port=MINIO_PORT)
+    minio = minio_server_gen()
     root = pathlib.Path(playground_dir)
 
     # ---- 1. Provision a participant purely locally ----

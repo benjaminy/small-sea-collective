@@ -26,8 +26,6 @@ from test_support import (
     publish_storage_announcement_for_session,
 )
 
-ALICE_MINIO_PORT = 19650
-BOB_MINIO_PORT = 19750
 
 
 def _open_session(http, nickname, team, mode="encrypted"):
@@ -90,8 +88,8 @@ def _push_via_hub(http, session_hex, repo_dir, base_url="http://testserver"):
 
 def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     """Full invitation flow: Alice invites Bob; all cloud I/O goes through the Hub."""
-    alice_minio = minio_server_gen(port=ALICE_MINIO_PORT)
-    bob_minio = minio_server_gen(port=BOB_MINIO_PORT)
+    alice_minio = minio_server_gen()
+    bob_minio = minio_server_gen()
 
     root = pathlib.Path(playground_dir)
 
