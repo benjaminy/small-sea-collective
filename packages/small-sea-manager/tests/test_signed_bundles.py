@@ -88,8 +88,8 @@ def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
 
 def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     """Alice pushes a signed bundle; Bob pulls and verifies Alice's signature."""
-    alice_minio = minio_server_gen(port=19800)
-    bob_minio = minio_server_gen(port=19900)
+    alice_minio = minio_server_gen()
+    bob_minio = minio_server_gen()
 
     root = pathlib.Path(playground_dir)
 

@@ -515,7 +515,7 @@ def test_linked_device_connects_credentials_to_the_inherited_account(
     against the same inherited account and allocation; disconnecting takes it
     away again, without either operation changing anything device A relies on.
     """
-    minio = minio_server_gen(port=None)
+    minio = minio_server_gen()
     workspace = pathlib.Path(playground_dir)
     root_a = workspace / "install-a"
     root_b = workspace / "install-b"

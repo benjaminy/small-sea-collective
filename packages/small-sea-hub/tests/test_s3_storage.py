@@ -12,7 +12,6 @@ import pytest
 from botocore.config import Config
 from small_sea_hub.adapters import SmallSeaS3Adapter
 
-MINIO_PORT = 9100
 _minio_info = None
 
 
@@ -20,7 +19,7 @@ _minio_info = None
 def minio(minio_server_gen):
     global _minio_info
     if _minio_info is None:
-        _minio_info = minio_server_gen(port=MINIO_PORT)
+        _minio_info = minio_server_gen()
     return _minio_info
 
 

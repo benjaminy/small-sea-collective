@@ -21,10 +21,6 @@ from cod_sync.store import SmallSeaStore
 from cod_sync.git import gitCmd
 
 
-MINIO_PORT = 9500
-HUB_PORT = 11500
-
-
 def working_tree_files(repo_dir):
     """Return {path: content} for all git-tracked files."""
     result = gitCmd(["-C", str(repo_dir), "ls-files"])
@@ -42,7 +38,7 @@ def make_repo(repo_dir):
 
 @pytest.fixture(scope="module")
 def minio(minio_server_gen):
-    return minio_server_gen(port=MINIO_PORT)
+    return minio_server_gen()
 
 
 @pytest.fixture()
@@ -62,7 +58,7 @@ def hub_env(playground_dir, minio, hub_server_gen):
     )
 
     # Start hub as a real subprocess
-    hub = hub_server_gen(root_dir=root_dir, port=HUB_PORT)
+    hub = hub_server_gen(root_dir=root_dir)
     hub_endpoint = hub["endpoint"]
 
     # Open session via two-step HTTP flow.

@@ -1,5 +1,4 @@
 import pathlib
-import socket
 
 import boto3
 import pytest
@@ -75,12 +74,6 @@ def _push_team_repo_via_hub(http, session_hex, repo_dir):
     cs.publish()
 
 
-def _free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
-
-
 def _session_berth_info(http, session_hex):
     return http.get(
         "/session/info",
@@ -89,8 +82,8 @@ def _session_berth_info(http, session_hex):
 
 
 def _setup_two_teammate_team(playground_dir, minio_server_gen):
-    alice_minio = minio_server_gen(port=_free_port())
-    bob_minio = minio_server_gen(port=_free_port())
+    alice_minio = minio_server_gen()
+    bob_minio = minio_server_gen()
     root = pathlib.Path(playground_dir)
 
     backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)

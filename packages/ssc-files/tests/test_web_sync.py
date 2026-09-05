@@ -1,5 +1,4 @@
 import pathlib
-import socket
 
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
@@ -14,12 +13,6 @@ from test_support import (
     acceptance_record_from_courier,
     publish_storage_announcement_for_session,
 )
-
-
-def _free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
 
 
 def _open_session(http, nickname, team, mode="encrypted", app_name=sync.HUB_APP_NAME):
@@ -68,8 +61,8 @@ def _session_berth_info(http, session_hex):
 
 
 def _setup_two_teammate_team(playground_dir, minio_server_gen):
-    alice_minio = minio_server_gen(port=_free_port())
-    bob_minio = minio_server_gen(port=_free_port())
+    alice_minio = minio_server_gen()
+    bob_minio = minio_server_gen()
     root = pathlib.Path(playground_dir)
 
     backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)

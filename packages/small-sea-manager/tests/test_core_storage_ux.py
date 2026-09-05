@@ -298,7 +298,7 @@ def test_cli_reconcile_names_the_split_reason(
 
 @pytest.fixture(scope="module")
 def minio(minio_server_gen):
-    return minio_server_gen(port=None)
+    return minio_server_gen()
 
 
 def test_storage_configured_late_is_repaired_and_then_pushes(playground_dir, minio):

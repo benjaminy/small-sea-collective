@@ -350,12 +350,11 @@ def test_path_prefix_namespaces_every_object():
 # ------------------------------------------- testing stores, same contract #
 
 
-MINIO_PORT_STORE = 9420
 
 
 @pytest.fixture(scope="module")
 def minio(minio_server_gen):
-    return minio_server_gen(port=MINIO_PORT_STORE)
+    return minio_server_gen()
 
 
 def s3_store(minio, bucket):

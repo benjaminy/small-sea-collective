@@ -17,12 +17,11 @@ from small_sea_hub.server import app
 from cod_sync.format import decode_link
 from cod_sync.store import ObjectNotFoundError, SmallSeaStore
 
-MINIO_PORT = 9400
 
 
 @pytest.fixture(scope="module")
 def minio(minio_server_gen):
-    return minio_server_gen(port=MINIO_PORT)
+    return minio_server_gen()
 
 
 @pytest.fixture()
