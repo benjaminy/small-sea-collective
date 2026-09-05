@@ -458,6 +458,34 @@ class TeamManager:
         """Remove a cloud storage config by its hex ID."""
         provisioning.remove_cloud_storage(self.root_dir, self.participant_hex, storage_id_hex)
 
+    def connect_cloud_storage_credentials(
+        self, storage_id_hex, access_key=None, secret_key=None,
+        client_secret=None, refresh_token=None, access_token=None,
+        token_expiry=None,
+    ):
+        """Save this device's credentials for an already registered account.
+
+        Device-local only: the account, its berth allocations, and its
+        announcements are unchanged, and nothing is published. The supplied
+        credentials replace any existing ones completely.
+        """
+        provisioning.connect_cloud_storage_credentials(
+            self.root_dir, self.participant_hex, storage_id_hex,
+            access_key=access_key, secret_key=secret_key,
+            client_secret=client_secret, refresh_token=refresh_token,
+            access_token=access_token, token_expiry=token_expiry,
+        )
+
+    def disconnect_cloud_storage_credentials(self, storage_id_hex):
+        """Delete this device's credentials for a registered account.
+
+        The participant's account stays registered and allocated; only this
+        device stops being able to reach it.
+        """
+        provisioning.disconnect_cloud_storage_credentials(
+            self.root_dir, self.participant_hex, storage_id_hex
+        )
+
     # --- Team CRUD ---
 
     def create_team(self, team_name):

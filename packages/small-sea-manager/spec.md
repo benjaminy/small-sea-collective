@@ -469,7 +469,7 @@ The shared set keeps the Hub's two storage preconditions apart, because their re
 `storage_not_configured` means no account is registered at all.
 `location_missing` (Hub `cloud_location_missing`) means an account exists but the Core berth has no allocation, which reconciliation itself creates.
 `credentials_missing` (Hub `cloud_credentials_missing`) means the selected account stores no usable credentials, which reconciliation cannot supply.
-The current account surface does not update credentials in place, so the user registers a replacement account, selects it for the Core berth, and reconciles the route.
+The repair is to connect that same account's credentials on this device and retry the original operation; the selected account, its allocation, and its announcements do not change.
 The second is the trust precondition: peers skip announcements signed by keys they no longer trust, so if this device's own key is untrusted, a row it signs cannot repair peer selection.
 That case reports without contacting the provider or publishing.
 
@@ -1074,6 +1074,24 @@ credentials and OAuth refresh/access material.
 
 These rows describe cloud accounts or endpoints, not where a particular berth
 stores data. One participant may have multiple cloud accounts.
+
+Registering and removing an account is participant-wide configuration: the
+shared row reaches every device through NoteToSelf. Connecting credentials is
+device-local. A device that inherits an account through NoteToSelf has no
+credentials for it until someone supplies them there, so
+`connect_cloud_storage_credentials(storage_id_hex, ...)` and
+`disconnect_cloud_storage_credentials(storage_id_hex)` write and delete only
+that device's `cloud_storage_credential` row. They resolve an existing account
+by ID -- a malformed or unregistered ID is a `ValueError` raised before any
+write -- and never touch shared account metadata, berth allocations,
+announcements, or the NoteToSelf commit. Supplied credentials replace the row
+completely rather than merging into it. Manager exposes S3 credential entry;
+other providers report that Manager cannot set them up yet.
+
+Saving credentials contacts no provider, so it is not evidence that the
+account is reachable. The Manager surface reports only whether credential
+material is stored on this device; the Hub remains the authority on whether
+the provider accepts it.
 
 #### Berth cloud allocations
 

@@ -353,13 +353,14 @@ def test_cloud_storage_listing_survives_the_device_local_credential_join(playgro
     )
 
     providers = Provisioning.list_cloud_storage(root, participant_hex)
-    assert [(p["protocol"], p["url"], p["access_key"]) for p in providers] == [
-        ("s3", "http://localhost:9000", "alice-key")
-    ]
+    assert [
+        (p["protocol"], p["url"], p["access_key"], p["credentials_on_this_device"])
+        for p in providers
+    ] == [("s3", "http://localhost:9000", "alice-key", True)]
 
     client = TestClient(create_app(root, participant_hex))
     response = client.get("/cloud-storage")
     assert response.status_code == 200
     assert "http://localhost:9000" in response.text
-    assert "Add S3 / MinIO provider" in response.text
+    assert "Register S3 / MinIO account" in response.text
     assert "alice-secret" not in response.text

@@ -6494,13 +6494,32 @@ def add_cloud_storage(
     return storage_id.hex()
 
 
+#: Device-local credential columns that count as saved credential material.
+#: `token_expiry` is deliberately absent: it describes material rather than
+#: being any.
+_CREDENTIAL_MATERIAL_COLUMNS = (
+    "access_key",
+    "secret_key",
+    "client_secret",
+    "refresh_token",
+    "access_token",
+)
+
+
 def list_cloud_storage(root_dir, participant_hex):
-    """Return all cloud storage configs as a list of dicts (credentials masked)."""
+    """Return all cloud storage configs as a list of dicts (credentials masked).
+
+    `credentials_on_this_device` says only that a local credential row holds
+    at least one nonempty field. It is not a claim that the provider accepts
+    them: the Hub is the authority on whether an account is usable.
+    """
     root_dir = pathlib.Path(root_dir)
+    material = ", ".join(f"csc.{column}" for column in _CREDENTIAL_MATERIAL_COLUMNS)
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         rows = conn.execute(
-            """
-            SELECT cs.id, cs.protocol, cs.url, csc.access_key, cs.client_id
+            f"""
+            SELECT cs.id, cs.protocol, cs.url, csc.access_key, cs.client_id,
+                   {material}
             FROM cloud_storage cs
             LEFT JOIN local.cloud_storage_credential csc
               ON csc.cloud_storage_id = cs.id
@@ -6516,8 +6535,79 @@ def list_cloud_storage(root_dir, participant_hex):
             "url": row[2],
             "access_key": row[3],
             "client_id": row[4],
+            "credentials_on_this_device": any(row[5:]),
         })
     return result
+
+
+def connect_cloud_storage_credentials(
+    root_dir,
+    participant_hex,
+    storage_id_hex,
+    access_key=None,
+    secret_key=None,
+    client_secret=None,
+    refresh_token=None,
+    access_token=None,
+    token_expiry=None,
+):
+    """Save this device's credentials for an already registered cloud account.
+
+    The account is resolved by ID in the participant's shared NoteToSelf; a
+    malformed or unregistered ID raises `ValueError` before anything is
+    written. Only the device-local credential row changes: shared account
+    metadata, berth allocations, and announcements are untouched, and no
+    provider is contacted, so saving credentials is not a claim that they
+    work.
+
+    The supplied credentials replace the row completely. Omitted fields are
+    cleared rather than retained, so a replacement cannot silently leave stale
+    secrets or tokens behind. (OAuth token refresh needs a narrower in-place
+    mutation; issue #10 owns that contract.)
+    """
+    root_dir = pathlib.Path(root_dir)
+    storage_id = bytes.fromhex(storage_id_hex)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        cloud_row = _cloud_storage_row(conn, storage_id)
+        if cloud_row[1] == "s3" and not (access_key and secret_key):
+            raise ValueError("S3 credentials need both an access key and a secret key")
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO local.cloud_storage_credential (
+                cloud_storage_id, access_key, secret_key, client_secret,
+                refresh_token, access_token, token_expiry
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                storage_id,
+                access_key,
+                secret_key,
+                client_secret,
+                refresh_token,
+                access_token,
+                token_expiry,
+            ),
+        )
+        conn.commit()
+
+
+def disconnect_cloud_storage_credentials(root_dir, participant_hex, storage_id_hex):
+    """Delete this device's credentials for a registered cloud account.
+
+    The account itself, its berth allocations, and its announcements stay as
+    they are: this is a device-local disconnection, not removal of the
+    participant's account. Disconnecting an already disconnected account is
+    harmless.
+    """
+    root_dir = pathlib.Path(root_dir)
+    storage_id = bytes.fromhex(storage_id_hex)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        _cloud_storage_row(conn, storage_id)
+        conn.execute(
+            "DELETE FROM local.cloud_storage_credential WHERE cloud_storage_id = ?",
+            (storage_id,),
+        )
+        conn.commit()
 
 
 def remove_cloud_storage(root_dir, participant_hex, storage_id_hex):
