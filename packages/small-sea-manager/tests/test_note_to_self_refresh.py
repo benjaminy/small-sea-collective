@@ -28,7 +28,7 @@ from small_sea_manager.manager import (
 )
 from small_sea_manager import note_to_self_sync
 from small_sea_manager.provisioning import add_cloud_storage, create_new_participant
-from small_sea_note_to_self.db import device_local_db_path, note_to_self_sync_db_path
+from small_sea_note_to_self.db import note_to_self_sync_db_path
 
 MINIO_PORT_DISCOVERY = 19730
 MINIO_PORT_LOCAL_STATE = 19732
@@ -145,29 +145,21 @@ def test_get_team_joined_locally_returns_full_detail(playground_dir):
 
 
 def _wire_device_b_credentials(root_b, alice_hex, minio):
-    """After bootstrap, inject S3 credentials into device B's local NoteToSelf DB.
+    """After bootstrap, connect device B's credentials to the inherited account.
 
     During bootstrap device B clones the shared NoteToSelf (getting the
-    cloud_storage URL row), but has no matching credential row. We insert
-    the credential directly against the existing row ID so the Hub can use
-    it for steady-state push/pull.
+    cloud_storage URL row), but has no matching credential row. Device B
+    selects that inherited account through the Manager's own listing and
+    connects credentials to it, which is what a user does (issue #237).
     """
-    nts_db_b = note_to_self_sync_db_path(root_b, alice_hex)
-    local_db_b = device_local_db_path(root_b, alice_hex)
-    with sqlite3.connect(nts_db_b) as conn:
-        row = conn.execute("SELECT id FROM cloud_storage LIMIT 1").fetchone()
-    assert row is not None, "No cloud_storage row found in device B's shared NoteToSelf"
-    cloud_storage_id = row[0]
-    with sqlite3.connect(local_db_b) as conn:
-        conn.execute(
-            """
-            INSERT OR IGNORE INTO cloud_storage_credential
-                (cloud_storage_id, access_key, secret_key)
-            VALUES (?, ?, ?)
-            """,
-            (cloud_storage_id, minio["access_key"], minio["secret_key"]),
-        )
-        conn.commit()
+    manager_b = TeamManager(root_b, alice_hex)
+    accounts = manager_b.list_cloud_storage()
+    assert accounts, "No cloud_storage row found in device B's shared NoteToSelf"
+    manager_b.connect_cloud_storage_credentials(
+        accounts[0]["id"],
+        access_key=minio["access_key"],
+        secret_key=minio["secret_key"],
+    )
 
 
 def test_refresh_note_to_self_two_device_team_discovery(playground_dir, minio_server_gen):

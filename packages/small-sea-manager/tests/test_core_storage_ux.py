@@ -113,12 +113,16 @@ def test_missing_location_and_missing_credentials_get_different_guidance(help_ma
     # registered in both cases.
     assert location != help_map["storage_not_configured"]
     assert credentials != help_map["storage_not_configured"]
-    # Reconciling creates a location by itself; credentials require selecting
-    # a replacement account before reconciliation can succeed.
+    # Reconciling creates a location by itself; credentials are device-local
+    # material that no route operation can supply, so the repair names
+    # connecting the account already selected. ("selected" survives as an
+    # ordinary adjective, so a bare "select" check would test nothing.)
     assert "econcil" in location
     assert "replacement" not in location
-    assert "replacement" in credentials
-    assert "select" in credentials
+    assert "replacement" not in credentials
+    assert "onnect" in credentials
+    assert "on this device" in credentials
+    assert "econcil" not in credentials
 
 
 def test_credentials_missing_does_not_offer_the_reconcile_repair():

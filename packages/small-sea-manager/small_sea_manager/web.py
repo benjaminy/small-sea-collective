@@ -35,9 +35,8 @@ _ROUTE_HELP = {
         "Reconcile the Core route to create one."
     ),
     "credentials_missing": (
-        "The selected cloud account has no usable credentials. Add a replacement "
-        "account below with its access key and secret, reopen this team, select "
-        "the replacement under Core Storage, and reconcile the route."
+        "The selected cloud account has no credentials saved on this device. "
+        "Connect it under Cloud Storage below, then retry."
     ),
     "hub_session_unavailable": "Open a session for this team, then retry.",
     "user_action_required": "Your storage provider needs your attention, then retry.",
@@ -53,7 +52,8 @@ _ROUTE_HELP = {
 
 #: Route reasons the existing Core-route reconciliation repairs. The two that
 #: are missing from it need the user to change something first: registering a
-#: storage account, or selecting a credentialed replacement account.
+#: storage account, or connecting the selected account's credentials on this
+#: device.
 _RECONCILABLE_ROUTE_REASONS = frozenset(
     {
         "location_missing",
@@ -856,6 +856,37 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         mgr = _mgr(request)
         try:
             mgr.remove_cloud_storage(storage_id)
+            error = None
+        except Exception as e:
+            error = str(e)
+        return _cloud_storage_fragment(request, error=error)
+
+    @app.post("/cloud-storage/{storage_id}/connect", response_class=HTMLResponse)
+    async def connect_cloud_storage(
+        request: Request,
+        storage_id: str,
+        access_key: str = Form(""),
+        secret_key: str = Form(""),
+    ):
+        # First connection and replacement are the same operation: whatever is
+        # submitted becomes this device's credentials for that account.
+        mgr = _mgr(request)
+        try:
+            mgr.connect_cloud_storage_credentials(
+                storage_id,
+                access_key=access_key.strip() or None,
+                secret_key=secret_key.strip() or None,
+            )
+            error = None
+        except Exception as e:
+            error = str(e)
+        return _cloud_storage_fragment(request, error=error)
+
+    @app.post("/cloud-storage/{storage_id}/disconnect", response_class=HTMLResponse)
+    async def disconnect_cloud_storage(request: Request, storage_id: str):
+        mgr = _mgr(request)
+        try:
+            mgr.disconnect_cloud_storage_credentials(storage_id)
             error = None
         except Exception as e:
             error = str(e)

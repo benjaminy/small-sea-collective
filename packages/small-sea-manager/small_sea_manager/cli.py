@@ -178,9 +178,8 @@ _ROUTE_HELP = {
         "The Core berth has no cloud location yet; reconciling creates one."
     ),
     "credentials_missing": (
-        "The selected account has no usable credentials. Add a replacement in "
-        "the Manager, find its ID with `cloud-storage`, then select it with "
-        "`reconcile-route TEAM --cloud-storage-id ID`."
+        "The selected account has no credentials saved on this device. Connect "
+        "it in the Manager under Cloud Storage, then retry."
     ),
     "hub_session_unavailable": "Open a session for this team, then retry.",
     "user_action_required": "The storage provider needs your attention, then retry.",
