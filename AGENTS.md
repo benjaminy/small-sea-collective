@@ -57,26 +57,9 @@ For trivial tasks, use judgment.
    Do not amend or rewrite existing commits.
 - **Micro tests, not unit tests.** The project calls quick, developer-focused tests "micro tests".
    Use that term in discussion and documentation.
-- **Branch docs.** For a nontrivial unit of work, keep all branch-scoped documents in `.IN_PROGRESS/{branch-nickname}/`,
-   named after the current git branch with `/` replaced by `-`.
+- **Branch lifecycle.** When starting, continuing, or finishing a nontrivial unit of branch work, read and follow [small-sea-branch-lifecycle](.agents/skills/small-sea-branch-lifecycle/SKILL.md).
+   If your harness does not discover skills, read the linked file directly.
    Skip this for work that is conceptually very small in scope (cleanup, rename, etc).
-   Create each document when it has something to hold.
-   A human handles the PR and cleans up the branch folder after merging.
-   - `plan.md` — the implementation plan, handed to the implementer once planning is done.
-      The validation story deserves the most attention.
-      AIs are not yet trusted to be reliable for serious work, so the plan must say how the implementation will convince a smart skeptic that the branch's goals were met
-      and that the general integrity of the repo (low coupling, maintainability, consistency) was maintained or improved.
-      As steps are completed, deferred or abandoned, revise this document only briefly; substantial discussion belongs in `notes.md`.
-   - `notes.md` — anything that does not fit another document.
-      May be empty.
-   - `follow-up.md` — the plan for GitHub issue changes to make after the implementation work.
-   - `design-record.md` — design choices worth remembering but not important enough for the real repo docs (`architecture.md`, etc).
-      Write it near the end of the branch's life; a human copies it to `Archive/`.
-      Decisions that belong in a proper design doc, and small facts that can be re-derived by reading the code, both stay out.
-      Many branches have nothing in that middle ground, in which case the document should not exist.
-   - `final-commit-message.md` — a draft of the message for the branch's last commit, summarizing what the branch is about.
-      At most a couple of paragraphs; not a design record or a catalog.
-      A human condenses the commits and attaches it.
 
 ## Architectural Mandates
 - **Hub as Gateway**: In production, all Small Sea internet traffic must go through the **Hub**.
