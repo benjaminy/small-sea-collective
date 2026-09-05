@@ -20,7 +20,7 @@ from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
 
 ALICE_CLOUD = {
-    "protocol": "file",
+    "protocol": "localfolder",
     "url": "file:///tmp/fake-alice",
     "access_key": None,
     "secret_key": None,

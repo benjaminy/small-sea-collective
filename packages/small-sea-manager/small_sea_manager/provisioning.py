@@ -14,6 +14,7 @@ import os
 import pathlib
 import secrets
 import sqlite3
+import sys
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -3082,11 +3083,20 @@ def _install_sqlite_merge_driver(team_sync_dir):
     gitattributes = team_sync_dir / ".gitattributes"
     gitattributes.write_text("core.db merge=splice-sqlite\n")
 
-    # Find the splice-sqlite-merge executable
+    # Find the splice-sqlite-merge executable.  Git runs the driver through a
+    # shell, so the recorded command has to resolve without relying on our own
+    # PATH: a virtualenv's script directory is only on PATH when the venv was
+    # activated, not when its interpreter is invoked by path.
     merge_bin = shutil.which("splice-sqlite-merge")
     if merge_bin is None:
-        # Fallback: try to find it via the Python that's running us
-        merge_bin = "splice-sqlite-merge"
+        # Console scripts are installed next to the running interpreter.
+        beside_python = pathlib.Path(sys.executable).parent / "splice-sqlite-merge"
+        if not beside_python.is_file():
+            raise RuntimeError(
+                f"splice-sqlite-merge not found on PATH or at {beside_python}; "
+                "core.db merges would fall back to a text merge and conflict"
+            )
+        merge_bin = str(beside_python)
 
     driver_cmd = f"{merge_bin} %O %A %B %L %P"
     _Repo(team_sync_dir / ".git", team_sync_dir).config(
