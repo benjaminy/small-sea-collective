@@ -71,14 +71,15 @@ def _open_session(client, mode="passthrough", team="NoteToSelf"):
 
 
 def _participant_hex(backend):
-    return backend._find_participant("alice")[0][0].name
+    return backend._find_participant("alice")[0].name
 
 
 def _register_cloud(backend, session_hex, minio):
-    return backend.add_cloud_location(
-        session_hex,
-        "s3",
-        minio["endpoint"],
+    return Provisioning.add_cloud_storage(
+        backend.root_dir,
+        _participant_hex(backend),
+        protocol="s3",
+        url=minio["endpoint"],
         access_key=minio["access_key"],
         secret_key=minio["secret_key"],
     )
@@ -244,7 +245,7 @@ def test_non_files_team_path_uses_encryption(test_env):
     minio = test_env["minio"]
     playground_dir = test_env["playground_dir"]
 
-    alice_hex = backend._find_participant("alice")[0][0].name
+    alice_hex = backend._find_participant("alice")[0].name
     Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
 
     nts_session = _open_session(client, mode="passthrough")
@@ -303,7 +304,7 @@ def test_team_cloud_file_requires_storage_announcement(test_env):
     minio = test_env["minio"]
     playground_dir = test_env["playground_dir"]
 
-    alice_hex = backend._find_participant("alice")[0][0].name
+    alice_hex = backend._find_participant("alice")[0].name
     Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
     nts_session = _open_session(client, mode="passthrough")
     storage_id = _register_cloud(backend, nts_session, minio)
@@ -361,7 +362,7 @@ def test_team_cloud_file_allows_current_device_bootstrap_announcement(test_env):
     minio = test_env["minio"]
     playground_dir = test_env["playground_dir"]
 
-    alice_hex = backend._find_participant("alice")[0][0].name
+    alice_hex = backend._find_participant("alice")[0].name
     Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
     nts_session = _open_session(client, mode="passthrough")
     storage_id = _register_cloud(backend, nts_session, minio)
@@ -454,7 +455,7 @@ def test_team_cloud_file_bootstrap_allowance_rejects_rotated_signer(test_env):
     minio = test_env["minio"]
     playground_dir = test_env["playground_dir"]
 
-    alice_hex = backend._find_participant("alice")[0][0].name
+    alice_hex = backend._find_participant("alice")[0].name
     Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
     nts_session = _open_session(client, mode="passthrough")
     storage_id = _register_cloud(backend, nts_session, minio)
@@ -515,7 +516,7 @@ def test_cloud_setup_is_not_blocked_by_missing_announcement(test_env):
     minio = test_env["minio"]
     playground_dir = test_env["playground_dir"]
 
-    alice_hex = backend._find_participant("alice")[0][0].name
+    alice_hex = backend._find_participant("alice")[0].name
     Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
     nts_session = _open_session(client, mode="passthrough")
     storage_id = _register_cloud(backend, nts_session, minio)
@@ -958,10 +959,11 @@ def test_lost_race_recovery_requires_the_same_account(test_env, monkeypatch):
     client = test_env["client"]
     backend = test_env["backend"]
     session_hex, ss_session, _storage_id = _core_berth_allocation_setup(test_env)
-    second_storage_id = backend.add_cloud_location(
-        session_hex,
-        "s3",
-        test_env["minio"]["endpoint"] + "/second",
+    second_storage_id = Provisioning.add_cloud_storage(
+        backend.root_dir,
+        ss_session.participant_id.hex(),
+        protocol="s3",
+        url=test_env["minio"]["endpoint"] + "/second",
         access_key=test_env["minio"]["access_key"],
         secret_key=test_env["minio"]["secret_key"],
     )
@@ -1002,7 +1004,7 @@ def test_hub_own_storage_accepts_a_repaired_and_a_replaced_allocation(test_env):
     backend = test_env["backend"]
     playground_dir = test_env["playground_dir"]
 
-    alice_hex = backend._find_participant("alice")[0][0].name
+    alice_hex = backend._find_participant("alice")[0].name
     Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
     nts_session = _open_session(client, mode="passthrough")
     storage_id = _register_cloud(backend, nts_session, test_env["minio"])

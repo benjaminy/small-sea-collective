@@ -57,14 +57,15 @@ def hub_env(playground_dir, minio):
     # Register MinIO cloud account, allocate a berth cloud, and pre-create the bucket.
     # Account registration alone is insufficient: the Hub resolves storage per berth
     # via berth_cloud_allocation, so the session's berth needs an explicit allocation.
-    storage_id = backend.add_cloud_location(
-        session_hex,
-        "s3",
-        minio["endpoint"],
+    ss_session = backend._lookup_session(session_hex)
+    storage_id = Provisioning.add_cloud_storage(
+        playground_dir,
+        ss_session.participant_id.hex(),
+        protocol="s3",
+        url=minio["endpoint"],
         access_key=minio["access_key"],
         secret_key=minio["secret_key"],
     )
-    ss_session = backend._lookup_session(session_hex)
     allocation = Provisioning.add_berth_cloud_allocation_by_berth_id(
         playground_dir,
         ss_session.participant_id.hex(),

@@ -497,10 +497,11 @@ def test_identity_bootstrap_via_hub_bootstrap_transport(playground_dir, minio_se
     http_a = TestClient(app)
 
     alice_nts_token = _open_session(http_a, "Alice", "NoteToSelf")
-    cloud_storage_id = backend_a.add_cloud_location(
-        alice_nts_token,
-        "s3",
-        minio["endpoint"],
+    cloud_storage_id = add_cloud_storage(
+        root1,
+        alice_hex,
+        protocol="s3",
+        url=minio["endpoint"],
         access_key=minio["access_key"],
         secret_key=minio["secret_key"],
     )

@@ -103,18 +103,20 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
     Provisioning.register_app_for_participant(root, bob_hex, sync.HUB_APP_NAME)
 
     alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
-    alice_cloud_id = backend.add_cloud_location(
-        alice_nts,
-        "s3",
-        alice_minio["endpoint"],
+    alice_cloud_id = Provisioning.add_cloud_storage(
+        root,
+        alice_hex,
+        protocol="s3",
+        url=alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
     )
     bob_nts = _open_session(http, "Bob", "NoteToSelf", mode="passthrough")
-    bob_cloud_id = backend.add_cloud_location(
-        bob_nts,
-        "s3",
-        bob_minio["endpoint"],
+    bob_cloud_id = Provisioning.add_cloud_storage(
+        root,
+        bob_hex,
+        protocol="s3",
+        url=bob_minio["endpoint"],
         access_key=bob_minio["access_key"],
         secret_key=bob_minio["secret_key"],
     )

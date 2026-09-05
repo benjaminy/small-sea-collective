@@ -92,9 +92,8 @@ class _HubEnv:
         hub_app.state.backend = self.backend
         self.http = TestClient(hub_app)
 
-        nts_token = _open_session(self.http, "NoteToSelf", mode="passthrough")
-        cloud_id = self.backend.add_cloud_location(
-            nts_token, "s3", minio["endpoint"],
+        cloud_id = Provisioning.add_cloud_storage(
+            root, self.alice_hex, protocol="s3", url=minio["endpoint"],
             access_key=minio["access_key"], secret_key=minio["secret_key"],
         )
         self.allocation = Provisioning.add_berth_cloud_allocation_by_berth_id(

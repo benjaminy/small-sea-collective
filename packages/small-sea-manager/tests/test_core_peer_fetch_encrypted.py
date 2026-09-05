@@ -70,21 +70,6 @@ def _make_bucket_public(minio, bucket_name):
     )
 
 
-def _open_note_to_self(http, nickname):
-    resp = http.post(
-        "/sessions/request",
-        json={
-            "participant": nickname,
-            "app": "SmallSeaCollectiveCore",
-            "team": "NoteToSelf",
-            "client": "Core peer fetch probe",
-            "mode": "passthrough",
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    return resp.json()["token"]
-
-
 def _team_repo(root, participant_hex, team_name):
     sync = root / "Participants" / participant_hex / team_name / "Sync"
     return Repo(sync / ".git", sync)
@@ -152,12 +137,12 @@ def teams(playground_dir, minios):
     alice_hex = Provisioning.create_new_participant(root, "Alice")
     bob_hex = Provisioning.create_new_participant(root, "Bob")
 
-    backend.add_cloud_location(
-        _open_note_to_self(http, "Alice"), "s3", alice_minio["endpoint"],
+    Provisioning.add_cloud_storage(
+        root, alice_hex, protocol="s3", url=alice_minio["endpoint"],
         access_key=alice_minio["access_key"], secret_key=alice_minio["secret_key"],
     )
-    backend.add_cloud_location(
-        _open_note_to_self(http, "Bob"), "s3", bob_minio["endpoint"],
+    Provisioning.add_cloud_storage(
+        root, bob_hex, protocol="s3", url=bob_minio["endpoint"],
         access_key=bob_minio["access_key"], secret_key=bob_minio["secret_key"],
     )
 

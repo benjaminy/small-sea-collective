@@ -68,11 +68,12 @@ def test_local_provision_then_hub_roundtrip(playground_dir, minio_server_gen):
     # ---- 3. Open a session for NoteToSelf / core app ----
     session_hex = _open_session(client)
 
-    # ---- 4. Register cloud location and pre-create the bucket ----
-    cloud_storage_id = backend.add_cloud_location(
-        session_hex,
-        "s3",
-        minio["endpoint"],
+    # ---- 4. Register the cloud account and pre-create the bucket ----
+    cloud_storage_id = Provisioning.add_cloud_storage(
+        playground_dir,
+        participant_hex,
+        protocol="s3",
+        url=minio["endpoint"],
         access_key=minio["access_key"],
         secret_key=minio["secret_key"],
     )

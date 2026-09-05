@@ -104,18 +104,24 @@ def test_invitation_flow_via_hub(playground_dir, minio_server_gen):
     alice_hex = Provisioning.create_new_participant(root, "Alice")
     bob_hex = Provisioning.create_new_participant(root, "Bob")
 
-    # ---- Register cloud storage for Alice (NoteToSelf Hub session) ----
+    # ---- Register cloud storage for Alice ----
     alice_nts_token = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
-    alice_cloud_id = backend.add_cloud_location(
-        alice_nts_token, "s3", alice_minio["endpoint"],
+    alice_cloud_id = Provisioning.add_cloud_storage(
+        root,
+        alice_hex,
+        protocol="s3",
+        url=alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
     )
 
-    # ---- Register cloud storage for Bob (NoteToSelf Hub session) ----
+    # ---- Register cloud storage for Bob ----
     bob_nts_token = _open_session(http, "Bob", "NoteToSelf", mode="passthrough")
-    bob_cloud_id = backend.add_cloud_location(
-        bob_nts_token, "s3", bob_minio["endpoint"],
+    bob_cloud_id = Provisioning.add_cloud_storage(
+        root,
+        bob_hex,
+        protocol="s3",
+        url=bob_minio["endpoint"],
         access_key=bob_minio["access_key"],
         secret_key=bob_minio["secret_key"],
     )

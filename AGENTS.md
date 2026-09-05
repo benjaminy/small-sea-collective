@@ -65,8 +65,9 @@ For trivial tasks, use judgment.
 - **Hub as Gateway**: In production, all Small Sea internet traffic must go through the **Hub**.
    Going around the Hub to talk to cloud storage, any other service or peer device is bad.
    - This is *not* intended to limit what apps are allowed to do outside the scope of Small Sea.
-- **Manager Database Exclusivity**: Only the `small-sea-manager` package is permitted to read/write the `{Team}/SmallSeaCollectiveCore` berth databases directly.
-   All other apps must retrieve session and identity information via the Hub's API (`GET /session/info`).
+- **Manager Owns Management Decisions**: The Manager decides account registration, credential connect/replace/disconnect, storage allocation, app registration and activation, and membership.
+   The Hub may read the `{Team}/SmallSeaCollectiveCore` berth databases directly for its framework responsibilities, and may write only the narrow set of execution results enumerated in [the Hub spec](packages/small-sea-hub/spec.md).
+   All other apps must retrieve session and identity information via the Hub's API (`GET /session/info`), and open no Core database.
 - **Local-Only Testing**: During testing, avoid internet communication where possible. If tests require network interaction, use local mocks or services like MinIO.
 
 ## Contextual Knowledge

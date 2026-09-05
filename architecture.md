@@ -348,8 +348,12 @@ This is not a problem to solve now, but it belongs on the architecture TODO
 list rather than being quietly inherited.
 
 ### Database Access
-**Only the Small Sea Manager reads the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is an internal implementation detail of the Manager.
+**Only the Small Sea Manager and the Hub read the `SmallSeaCollectiveCore` database directly.** The `{team}/Sync/core.db` SQLite database is internal to the framework rather than a surface applications may open.
 The NoteToSelf-SmallSeaCollectiveCore berth specifically (the one holding device and identity state) is referred to as the **Core berth**. Other applications must obtain identity and session information through the Hub API (e.g., `GET /session/info`).
+
+The Hub reads that database for its framework responsibilities, which is a deliberate choice rather than a tolerated exception: the Hub is part of the framework, not an application.
+Management decisions remain the Manager's, and the Hub writes only the results of operations it executes, enumerated in the [Hub spec](packages/small-sea-hub/spec.md).
+Schema ownership is a separate question from decision authority: `small-sea-note-to-self` owns the NoteToSelf schema and Manager provisioning owns the team Core schema, whoever reads them.
 
 Device-related fields are placed by authority and lifecycle rather than collected into one device record.
 The signed history associating a device key with a teammate is durable team state.
@@ -372,9 +376,9 @@ surface ambiguity rather than choose a row implicitly.
 
 Registration and activation authorize a berth; they do not make the Manager the
 owner of an app's working tree. App data materialization is app-owned. The
-Manager owns Core registration state, and the Hub obtains the framework state
-it needs through a Manager-owned boundary.
-Arbitrary app homes are not Hub-readable databases.
+Manager decides Core registration state, and the Hub reads that state directly
+rather than through a Manager-owned boundary.
+Arbitrary app homes remain outside what the Hub reads.
 
 ### Security: PIN-Based Access
 
