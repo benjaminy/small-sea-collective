@@ -400,7 +400,7 @@ def test_web_offers_no_s3_form_for_a_provider_manager_cannot_set_up(playground_d
 
 
 # --------------------------------------------------------------------------- #
-# Two-device witness against local MinIO
+# Hub execution witnesses
 # --------------------------------------------------------------------------- #
 
 
@@ -451,6 +451,60 @@ def _cloud_refusal_reason(call):
     return excinfo.value.reason
 
 
+@pytest.mark.parametrize("protocol,refresh_helper", [
+    ("gdrive", "refresh_google_token"),
+    ("dropbox", "refresh_dropbox_token"),
+])
+def test_hub_token_refresh_changes_only_the_allocated_accounts_token_and_expiry(
+    playground_dir, monkeypatch, protocol, refresh_helper
+):
+    """Hub provider execution persists only its permitted credential fields (#181)."""
+    root = pathlib.Path(playground_dir)
+    alice_hex = provisioning.create_new_participant(root, "Alice")
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
+    token = _open_note_to_self_session(_use(backend), "Alice")
+    session = backend._lookup_session(token)
+
+    # Register the unrelated account first so allocation must select the target.
+    other = _register(
+        root, alice_hex, protocol=protocol, url="https://example.invalid/other",
+        client_id="other-client", client_secret="other-secret",
+        refresh_token="other-refresh", access_token="other-access",
+        token_expiry="2000-01-01T00:00:00+00:00",
+    )
+    target = _register(
+        root, alice_hex, protocol=protocol, url="https://example.invalid/target",
+        access_key="preserved-key", secret_key="preserved-secret",
+        client_id="target-client", client_secret="target-secret",
+        refresh_token="target-refresh", access_token="expired-access",
+        token_expiry="2000-01-01T00:00:00+00:00",
+    )
+    provisioning.add_berth_cloud_allocation_by_berth_id(
+        root, alice_hex, session.berth_id, target, location="existing-location",
+    )
+    shared_before = _shared_state(root, alice_hex)
+    target_before = _credential_row(root, alice_hex, target)
+    other_before = _credential_row(root, alice_hex, other)
+    refreshed_expiry = "2099-01-01T00:00:00+00:00"
+    refresh_calls = []
+
+    def refresh(client_id, client_secret, refresh_token):
+        refresh_calls.append((client_id, client_secret, refresh_token))
+        return "refreshed-access", refreshed_expiry
+
+    monkeypatch.setattr(SmallSea, refresh_helper, refresh)
+    cloud = backend._resolve_berth_cloud_or_raise(session)
+    adapter = backend._make_storage_adapter_from_record(session, cloud)
+
+    assert refresh_calls == [("target-client", "target-secret", "target-refresh")]
+    assert adapter.access_token == "refreshed-access"
+    assert _credential_row(root, alice_hex, target) == (
+        *target_before[:4], "refreshed-access", refreshed_expiry,
+    )
+    assert _credential_row(root, alice_hex, other) == other_before
+    assert _shared_state(root, alice_hex) == shared_before
+
+
 def test_linked_device_connects_credentials_to_the_inherited_account(
     playground_dir, minio_server_gen
 ):
@@ -473,8 +527,8 @@ def test_linked_device_connects_credentials_to_the_inherited_account(
     backend_a = SmallSea.SmallSeaBackend(root_dir=str(root_a), auto_approve_sessions=True)
     http_a = _use(backend_a)
     token_a = _open_note_to_self_session(http_a, "Alice")
-    cloud_storage_id = backend_a.add_cloud_location(
-        token_a, "s3", minio["endpoint"],
+    cloud_storage_id = provisioning.add_cloud_storage(
+        root_a, alice_hex, protocol="s3", url=minio["endpoint"],
         access_key=minio["access_key"], secret_key=minio["secret_key"],
     )
     provisioning.add_berth_cloud_allocation_by_berth_id(

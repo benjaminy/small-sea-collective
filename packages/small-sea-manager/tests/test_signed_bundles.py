@@ -102,16 +102,22 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
     alice_hex = create_new_participant(root, "Alice")
     bob_hex = create_new_participant(root, "Bob")
 
-    # -- Register cloud storage via Hub --
+    # -- Register cloud storage via Manager --
     alice_nts = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
-    alice_cloud_id = backend.add_cloud_location(
-        alice_nts, "s3", alice_minio["endpoint"],
+    alice_cloud_id = Provisioning.add_cloud_storage(
+        root,
+        alice_hex,
+        protocol="s3",
+        url=alice_minio["endpoint"],
         access_key=alice_minio["access_key"],
         secret_key=alice_minio["secret_key"],
     )
     bob_nts = _open_session(http, "Bob", "NoteToSelf", mode="passthrough")
-    backend.add_cloud_location(
-        bob_nts, "s3", bob_minio["endpoint"],
+    Provisioning.add_cloud_storage(
+        root,
+        bob_hex,
+        protocol="s3",
+        url=bob_minio["endpoint"],
         access_key=bob_minio["access_key"],
         secret_key=bob_minio["secret_key"],
     )

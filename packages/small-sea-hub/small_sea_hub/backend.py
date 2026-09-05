@@ -172,39 +172,6 @@ class BootstrapSession(Base):
     expires_at = Column(String, nullable=False)
 
 
-# Per-user core.db models (duplicated in team manager — the DB is the contract)
-
-
-class Nickname(Base):
-    __tablename__ = "nickname"
-
-    id = Column(LargeBinary, primary_key=True)
-    name = Column(String, nullable=False)
-
-
-class Team(Base):
-    __tablename__ = "team"
-
-    id = Column(LargeBinary, primary_key=True)
-    name = Column(String, nullable=False)
-    self_in_team = Column(LargeBinary, nullable=False)
-
-
-class App(Base):
-    __tablename__ = "app"
-
-    id = Column(LargeBinary, primary_key=True)
-    name = Column(String, nullable=False)
-
-
-class TeamAppBerth(Base):
-    __tablename__ = "team_app_berth"
-
-    id = Column(LargeBinary, primary_key=True)
-    team_id = Column(LargeBinary, nullable=True)  # absent in team DBs (table is team-scoped)
-    app_id = Column(LargeBinary, nullable=False)
-
-
 @dataclass
 class CloudStorageRecord:
     id: bytes
@@ -414,7 +381,7 @@ class SmallSeaBackend:
         """)
 
     def _find_participant(self, nickname):
-        """Return list of (participant_dir, engine) for participants matching nickname.
+        """Return the participant directories matching nickname.
 
         Accepts either a human-readable nickname ("Alice") or the participant's
         hex directory name. Matching by directory name is an exact match and
@@ -428,16 +395,17 @@ class SmallSeaBackend:
                 continue
             # Direct match by participant directory name (hex ID).
             if d.name == nickname:
-                note_to_self_db_path = d / "NoteToSelf" / "Sync" / "core.db"
-                engine = create_engine(f"sqlite:///{note_to_self_db_path}")
-                matching.append((d, engine))
+                matching.append(d)
                 continue
-            note_to_self_db_path = d / "NoteToSelf" / "Sync" / "core.db"
-            engine = create_engine(f"sqlite:///{note_to_self_db_path}")
-            with Session(engine) as sess:
-                results = sess.query(Nickname).filter(Nickname.name == nickname).all()
-                if results:
-                    matching.append((d, engine))
+            conn = sqlite3.connect(str(d / "NoteToSelf" / "Sync" / "core.db"))
+            try:
+                row = conn.execute(
+                    "SELECT 1 FROM nickname WHERE name = ?", (nickname,)
+                ).fetchone()
+            finally:
+                conn.close()
+            if row is not None:
+                matching.append(d)
         return matching
 
     def _resolve_berth(self, participant_dir, team_name, app_name):
@@ -712,7 +680,7 @@ class SmallSeaBackend:
             raise SmallSeaNotFoundExn()
         mode = self._normalize_mode(mode)
 
-        participant_dir, engine = matching[0]
+        participant_dir = matching[0]
         participant_hex = participant_dir.absolute().name
         try:
             self._resolve_berth(participant_dir, team, app)  # validate existence
@@ -1031,77 +999,6 @@ class SmallSeaBackend:
         return [row.token.hex() for row in rows]
 
     # ---- Cloud storage ----
-
-    def add_cloud_location(
-        self,
-        session,
-        protocol,
-        url,
-        access_key=None,
-        secret_key=None,
-        client_id=None,
-        client_secret=None,
-        refresh_token=None,
-    ):
-        known_protocols = ["s3", "webdav", "gdrive", "dropbox"]
-        if protocol not in known_protocols:
-            raise SmallSeaBackendExn(f"Unknown protocol: {protocol}")
-
-        return self._add_cloud_location(
-            session,
-            protocol,
-            url,
-            access_key=access_key,
-            secret_key=secret_key,
-            client_id=client_id,
-            client_secret=client_secret,
-            refresh_token=refresh_token,
-        )
-
-    def _add_cloud_location(
-        self,
-        session_hex,
-        scheme,
-        location,
-        access_key=None,
-        secret_key=None,
-        client_id=None,
-        client_secret=None,
-        refresh_token=None,
-    ):
-        ss_session = self._lookup_session(session_hex)
-
-        # TODO: Should we check permissions? Probably.
-        with attached_note_to_self_connection(
-            self.root_dir, ss_session.participant_id.hex()
-        ) as conn:
-            cloud_id = uuid7()
-            conn.execute(
-                """
-                INSERT INTO cloud_storage (id, protocol, url, client_id, path_metadata)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (cloud_id, scheme, location, client_id, None),
-            )
-            conn.execute(
-                """
-                INSERT INTO local.cloud_storage_credential (
-                    cloud_storage_id, access_key, secret_key, client_secret,
-                    refresh_token, access_token, token_expiry
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    cloud_id,
-                    access_key,
-                    secret_key,
-                    client_secret,
-                    refresh_token,
-                    None,
-                    None,
-                ),
-            )
-            conn.commit()
-        return cloud_id.hex()
 
     def _get_cloud_link(self, ss_session: SmallSeaSession):
         # TODO: Should we check permissions? Probably.

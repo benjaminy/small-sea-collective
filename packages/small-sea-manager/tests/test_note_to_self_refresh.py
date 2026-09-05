@@ -184,8 +184,8 @@ def test_refresh_note_to_self_two_device_team_discovery(playground_dir, minio_se
 
     # Open NoteToSelf session on device A so the Hub knows the berth
     nts_token_a = _open_session(http_a, "Alice", "NoteToSelf", mode="passthrough")
-    cloud_storage_id = backend_a.add_cloud_location(
-        nts_token_a, "s3", minio["endpoint"],
+    cloud_storage_id = Provisioning.add_cloud_storage(
+        root_a, alice_hex, protocol="s3", url=minio["endpoint"],
         access_key=minio["access_key"], secret_key=minio["secret_key"],
     )
     nts_session_a = backend_a._lookup_session(nts_token_a)
@@ -277,8 +277,8 @@ def test_refresh_does_not_sync_device_local_state(playground_dir, minio_server_g
     http_a = TestClient(app)
 
     nts_token_a = _open_session(http_a, "Alice", "NoteToSelf", mode="passthrough")
-    cloud_storage_id = backend_a.add_cloud_location(
-        nts_token_a, "s3", minio["endpoint"],
+    cloud_storage_id = Provisioning.add_cloud_storage(
+        root_a, alice_hex, protocol="s3", url=minio["endpoint"],
         access_key=minio["access_key"], secret_key=minio["secret_key"],
     )
     nts_session_a = backend_a._lookup_session(nts_token_a)
@@ -344,8 +344,8 @@ def test_unchanged_note_to_self_publication_invents_no_signal(playground_dir, mi
     http = TestClient(app)
 
     nts_token = _open_session(http, "Alice", "NoteToSelf", mode="passthrough")
-    cloud_storage_id = backend.add_cloud_location(
-        nts_token, "s3", minio["endpoint"],
+    cloud_storage_id = Provisioning.add_cloud_storage(
+        root, alice_hex, protocol="s3", url=minio["endpoint"],
         access_key=minio["access_key"], secret_key=minio["secret_key"],
     )
     nts_session = backend._lookup_session(nts_token)
@@ -399,8 +399,8 @@ def _diverge_two_devices(workspace, minio):
     http_a = TestClient(app)
 
     nts_token_a = _open_session(http_a, "Alice", "NoteToSelf", mode="passthrough")
-    cloud_storage_id = backend_a.add_cloud_location(
-        nts_token_a, "s3", minio["endpoint"],
+    cloud_storage_id = Provisioning.add_cloud_storage(
+        root_a, alice_hex, protocol="s3", url=minio["endpoint"],
         access_key=minio["access_key"], secret_key=minio["secret_key"],
     )
     nts_session_a = backend_a._lookup_session(nts_token_a)

@@ -104,10 +104,29 @@ back in the `/sessions/request` response rather than sending an OS notification.
 The Hub has a special relationship with the Small Sea Manager app.
 Small Sea Manager writes the databases that the Hub reads to do its work: team membership, app registrations, cloud service credentials, etc.
 
-The Hub never writes to Manager's databases; it only reads them.
+The Hub reads those databases directly.
+It makes management changes through the Manager, and writes them itself only where it holds
+the execution responsibility that produces the result:
+
+| Storage | Permitted Hub write | Limit |
+| --- | --- | --- |
+| NoteToSelf `core.db`, `berth_cloud_allocation.location` | A provider-issued locator for an existing allocation | The Hub receives the result of materialization. It does not choose or replace the allocation, and the conditional writeback rejects a result for an allocation that has since changed. |
+| NoteToSelf `device_local.db`, cloud credentials | A refreshed access token and expiry | Refresh happens during Hub provider I/O. This is not authority to create an account or to connect, replace, or disconnect credentials. |
+| NoteToSelf `device_local.db`, cryptographic runtime state | Sender and receiver key material, key rotation, runtime reconciliation state, and redistribution delivery and receipt marks | The Hub performs the operation that advances this state. Membership, admission, and key-distribution policy stay with the Manager. |
+
+Everything else the Manager owns: account registration, credential connect, replace and
+disconnect, storage allocation, app registration and activation, and membership.
+Hub-local runtime records are ordinary Hub responsibility rather than exceptions to this,
+including sessions, sightings, and the mark that an admission event was notified.
+
 Manager never reads the Hub's local database directly; Hub-local tables are exposed,
 when needed, through Hub APIs. Session rows remain Hub-private.
 The shared databases are the contract between them.
+
+Physical schema ownership is separate from authority over decisions.
+`small-sea-note-to-self` owns the shared and device-local NoteToSelf schema,
+Manager provisioning owns the team Core schema, and the Hub owns its own local schema.
+A Hub reader consumes the schema the repository currently defines.
 
 **Directory layout the Hub expects:**
 

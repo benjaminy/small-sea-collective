@@ -156,6 +156,11 @@ from wrasse_trust.transport import (
 )
 
 
+#: Storage protocols account registration accepts. `localfolder` is the local
+#: testing backend; the rest are the providers the Hub can execute against.
+SUPPORTED_CLOUD_PROTOCOLS = ("s3", "webdav", "gdrive", "dropbox", "localfolder")
+
+
 class CloudStorageRequiredError(ValueError):
     reason = "cloud_storage_required"
 
@@ -178,6 +183,17 @@ class FutureTeamDatabaseVersionError(Exception):
 
 class CloudLocationMissingError(CloudStorageRequiredError):
     reason = "cloud_location_missing"
+
+
+class UnknownCloudProtocolError(ValueError):
+    """Account registration named a protocol this build does not support."""
+
+    def __init__(self, protocol: str):
+        self.protocol = protocol
+        super().__init__(
+            f"Unknown protocol: {protocol}. "
+            f"Supported: {', '.join(SUPPORTED_CLOUD_PROTOCOLS)}"
+        )
 
 
 def _serialize_cert(cert: KeyCertificate) -> dict:
@@ -6462,7 +6478,13 @@ def add_cloud_storage(
     access_token=None,
     token_expiry=None,
 ):
-    """Add a cloud storage configuration to a participant's NoteToSelf DB."""
+    """Register a cloud storage account in a participant's NoteToSelf DB.
+
+    Rejects an unsupported protocol before touching either database, so a bad
+    protocol leaves no shared account row and no device-local credential row.
+    """
+    if protocol not in SUPPORTED_CLOUD_PROTOCOLS:
+        raise UnknownCloudProtocolError(protocol)
     root_dir = pathlib.Path(root_dir)
     storage_id = uuid7()
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:

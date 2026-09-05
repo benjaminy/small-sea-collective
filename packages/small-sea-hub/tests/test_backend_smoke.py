@@ -58,7 +58,12 @@ def helper_add_cloud(small_sea, username, cloud_port):
 
     session = session_bytes.hex()
 
-    small_sea.add_cloud_location(session, "s3", f"localhost:{cloud_port}")
+    Provisioning.add_cloud_storage(
+        small_sea.root_dir,
+        small_sea._lookup_session(session).participant_id.hex(),
+        protocol="s3",
+        url=f"localhost:{cloud_port}",
+    )
 
     return session
 

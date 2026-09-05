@@ -33,18 +33,21 @@ The Hub-as-chokepoint architecture exists to enable transparent E2E encryption, 
 
 ## 2. Hub ↔ Small Sea Manager Database Contract
 
-Explicitly TBD in the Hub spec.
-Hub needs team and berth state to make local synchronization decisions, while Small Sea Manager exclusively owns direct Core database access.
-This is a hard coupling.
+Settled in issue #181.
+Hub needs team and berth state to make local synchronization decisions.
+Rather than replicating that state or routing every read through a Manager service, the Hub reads Core databases directly, and the boundary is drawn around decisions instead of around file access.
 
-**Why it's urgent:** Session authorization, synchronization policy, and the application basis service all need framework state without giving Hub direct Core database access.
+**Why it mattered:** Session authorization, synchronization policy, and the application basis service all need framework state, and the previous exclusivity rule could only supply it through machinery nobody wanted to build.
 
 ### Settled Decisions
 
-- **Manager database exclusivity** — only the `small-sea-manager` package reads or writes team `core.db` databases directly.
-  Hub and client apps obtain required framework state through Manager-owned operations rather than opening Core databases themselves.
-- **Hub is the client boundary** — client apps interact with framework state only through the Hub API.
-  Hub's `/cloud_locations` endpoint is wrong and should be removed; cloud storage configuration and Core persistence are Manager responsibilities.
+- **Manager owns management decisions; Hub may read Core** — the Manager decides account registration, credential connect, replace and disconnect, storage allocation, app registration and activation, and membership.
+  The Hub reads NoteToSelf and team Core databases directly for its framework responsibilities, and writes only the execution results enumerated in the Hub spec.
+  The rule is about authority over decisions, not about which process may open a file.
+- **Schema ownership is separate from decision authority** — one authoritative schema implementation per database: `small-sea-note-to-self` for the NoteToSelf schemas, Manager provisioning for the team Core schema, and the Hub for its own local schema.
+  A Hub reader consumes the repository's current schema; component-version compatibility is not supported.
+- **Hub is the client boundary** — client apps interact with framework state only through the Hub API, and open no Core database themselves.
+  Cloud storage configuration is a Manager responsibility: Hub-owned account registration was removed in #181, so callers use `provisioning.add_cloud_storage`.
 - **Sessions in Hub-only DB** — sessions live in `small_sea_collective_local.db` (separate from `core.db`). Other apps access sessions through the Hub API only.
 - **Single-user-per-Hub** — one Hub per device/user; no multi-participant file-watcher complexity needed.
 - **Hub and Small Sea Manager stay version-locked** — they are the core infrastructure and update together; no cross-version compatibility needed.
@@ -74,8 +77,6 @@ This is a hard coupling.
 ### Remaining Open Items
 
 - **Hub monitoring API** — apps may need a way to register/deregister cloud locations for the Hub to watch, rather than hard-coding assumptions into the Hub. Shape TBD.
-- **Hub's `/cloud_locations` endpoint** — needs to be removed; currently writes to `core.db` directly which is Small Sea Manager's domain.
-- **Hub `open_session` for non-NoteToSelf teams** — currently reads `App`/`TeamAppBerth` from NoteToSelf/core.db; it must instead obtain the corresponding team-berth resolution through the Manager-owned boundary.
 - **`teammate` key/cert material** — schema placeholder exists; contents TBD (tied to Section 1 encryption decisions).
 - **NoteToSelf/[App] berths** — per-app personal state that's more app-specific than team-specific; useful but not yet designed.
 - **Default Manager/Hub policy interface** — current product behavior still needs one inspectable rule for deciding whom to watch, integrate, and give keys.
@@ -229,7 +230,7 @@ and `packages/small-sea-manager/spec.md` for the full descriptions.
 
 ## Suggested Order
 
-1. ~~Hub ↔ Small Sea Manager DB contract~~ — mostly resolved; see settled decisions in Section 2. Remaining: monitoring API shape, `/cloud_locations` removal, Hub `open_session` update
+1. ~~Hub ↔ Small Sea Manager DB contract~~ — resolved in #181; see settled decisions in Section 2. Remaining: monitoring API shape
 2. ~~Session lifecycle~~ — mostly resolved; see settled decisions in Section 3. Remaining: expiry policy, session management UI
 3. ~~Encryption layer interface~~ — mostly resolved; see settled decisions in Section 1. Remaining: key storage format, key backup/recovery, Cod Sync encryption wiring
 4. ~~Cod Sync chain format~~ — mostly resolved; see [format spec](../packages/cod-sync/Documentation/format-spec.md). Remaining: encryption details, direct-provider store elimination
