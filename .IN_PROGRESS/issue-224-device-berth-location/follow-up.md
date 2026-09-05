@@ -1,9 +1,7 @@
 # Follow-up for issue 224
 
-Drafts for GitHub changes.
-Nothing here has been posted.
-
-Posting order: create the credential-connection and allocation-coordination issues, replace `#CREDENTIALS` and `#COORDINATION` below with their numbers, update #139 and #235, then comment on #224 and close it as completed.
+All of this has been posted.
+`#237` is #237 and `#238` is #238; #139 and #235 were updated, and #224 was commented on and closed as completed.
 
 ## Comment on #224
 
@@ -29,13 +27,13 @@ Required coordination: use the existing NoteToSelf Cod Sync chain to settle the 
 A device whose NoteToSelf publication requires integration or has an unresolved outcome must not announce its candidate allocation.
 Integration conflicts require resolution before publication can continue.
 This ordering is not implemented by `reconcile_team_route()`, which currently resolves the allocation locally and proceeds to route publication and commit without publishing NoteToSelf.
-#COORDINATION owns implementation and validation, including retries after an interrupted announcement and preventing a delayed projection from superseding a newer allocation's route.
+#238 owns implementation and validation, including retries after an interrupted announcement and preventing a delayed projection from superseding a newer allocation's route.
 During the gap, peers retain their previous valid route; this does not guarantee that the old storage remains reachable.
 
 Rejected alternative: a signed route-selection DAG per `(teammate_id, berth_id)` so peers can independently detect concurrent or equivocal publication by still-trusted siblings.
 That would add a second conflict protocol for state whose source of truth already lives in NoteToSelf.
 For this decision, peers rely on current device trust rather than independently detecting sibling equivocation.
-A misbehaving device must be untrusted; ordinary concurrency between honest devices still requires #COORDINATION.
+A misbehaving device must be untrusted; ordinary concurrency between honest devices still requires #238.
 
 Smaller points settled the same way:
 
@@ -44,7 +42,7 @@ Smaller points settled the same way:
 - Binding the allocation generation ID into the announcement is deferred; nothing needs it yet.
 - Local Manager policy may restrict which devices expose the route-change action, but peers do not verify that.
 
-Work unblocked by this decision is tracked separately: #CREDENTIALS (device credential connection) and #COORDINATION (allocation and route coordination).
+Work unblocked by this decision is tracked separately: #237 (device credential connection) and #238 (allocation and route coordination).
 #235 applies this ownership rule to both Core and Files berths and validates the resulting two-device flow.
 Closing this decision issue as completed; the linked implementation work remains open.
 
@@ -132,11 +130,11 @@ Related: #224, #208, #191, #139, #235.
 
 Append to the scope:
 
-- Device-local credential connection and disconnection for an existing shared cloud account are tracked in #CREDENTIALS.
+- Device-local credential connection and disconnection for an existing shared cloud account are tracked in #237.
   Do not repair missing credentials by requiring a replacement shared account or berth allocation.
-- Generic app-berth provisioning must follow #224's shared-allocation ownership decision and the publication coordination implemented in #COORDINATION.
+- Generic app-berth provisioning must follow #224's shared-allocation ownership decision and the publication coordination implemented in #238.
 
-Add #CREDENTIALS, #COORDINATION, #224, and #235 to Related.
+Add #237, #238, #224, and #235 to Related.
 Leave #139 open for its remaining generic app-berth provisioning and repair scope.
 
 ## Update #235
@@ -144,12 +142,12 @@ Leave #139 open for its remaining generic app-berth provisioning and repair scop
 Replace its #224 critical-path bullet with:
 
 - #224 settles ownership: Core and Files each have one participant-owned allocation and route shared by the teammate's trusted devices.
-  #COORDINATION implements allocation and route publication ordering, including sibling concurrency and interrupted publication.
+  #238 implements allocation and route publication ordering, including sibling concurrency and interrupted publication.
   Apply that behavior to both berths in this capstone.
 
-Under "Enroll local credentials for a synced cloud account", identify #CREDENTIALS as the implementation issue and retain the capstone's existing no-shortcuts requirements.
+Under "Enroll local credentials for a synced cloud account", identify #237 as the implementation issue and retain the capstone's existing no-shortcuts requirements.
 
 In "Completion and issue hygiene", remove #224 from the list of issues to close when the capstone passes, because its design decision is already completed.
 Add:
 
-- Close #CREDENTIALS and #COORDINATION only when their full stated contracts are satisfied, including credential disconnection and concurrency/failure witnesses beyond the capstone's happy path.
+- Close #237 and #238 only when their full stated contracts are satisfied, including credential disconnection and concurrency/failure witnesses beyond the capstone's happy path.
