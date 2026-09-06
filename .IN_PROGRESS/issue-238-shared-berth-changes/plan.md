@@ -36,17 +36,24 @@ Decided.
   Reopened by: evidence that the witness does not establish observed replacement, or an explicit change to the requirement that observed replacement survive delayed signing.
 - **Attestation identity is minted per signing act, not reserved per selection.**
   A device repairing interrupted work signs its own attestation identity; identities carry no selection, succession or ordering meaning.
-  Reason: the Move 2 model shows both candidates can satisfy the repair and contradiction properties, so the choice rests on what each requires of recipients.
-  A reserved identity is correct only if every store, merge and restore path retains multiple signed payloads under one identity; keyed by identity alone it drops one contradictory claim and the survivor depends on delivery order.
-  Independent identities get that retention for free because two signing acts are already two records.
-  Reopened by: a requirement that two siblings' attestations be addressable under one identity, or a demonstration that payload-keyed retention is unavoidable anyway for other reasons.
+  Reason: both candidates can satisfy the modeled repair and contradiction properties; separate identities represent distinct signing acts directly and avoid sharing an identity during ordinary sibling repair.
+  With fresh IDs, identity-keyed retention preserves both claims; a reserved identity requires retaining multiple payloads under one identity.
+  This is not a general retention guarantee: an ad hoc control with a reused attestation ID loses one contradictory claim under either delivery order, with the survivor decided by arrival order.
+  How conflicting payloads under a reused identity remain detectable is still an obligation.
+  Reopened by: a requirement that two siblings' attestations be addressable under one identity, or an argument that the eventual retention design removes the conceptual advantage of representing signing acts separately.
   Both candidates still need payload comparison to tell equivalent duplicates from contradictions, so that is not a reason for the choice.
+- **Succession ordering is public; conflict detection is not derived from it.**
+  A public scalar succession counter decides provisional routing priority, and a fresh selection that exceeds every counter its author has observed survives delayed delivery and repeated attestation of the branch it was chosen over.
+  Detecting that two selections are competing branches is a separate capability that no counter comparison supplies; it requires retained selection history naming predecessors, including the superseded intermediate selections.
+  Reason: the Move 3 model, where X₂ at counter 3 outranks Y₁ at counter 2 while no evidence connects them, and where a fork is found only after the intermediate X₁ is retained or adopted.
+  Reopened by: a schedule where counter ordering alone must establish observed replacement, or a detection requirement that teammates must meet without receiving predecessor evidence.
+  This decides what the counter is for; it does not decide what the public attestation carries.
 
 Open.
 
 The remaining design questions are enumerated once under "Questions for the next rounds".
-Question 1's attestation half is closed by the ledger entry above; its succession half is not.
-Question 4 is the next one to close, for the reasons under "Next moves".
+Question 1's attestation half is closed by the attestation-identity ledger entry; its succession half is closed for ordering and open for representation.
+Question 4's competing-branch part is answered by Move 3; what the public attestation carries is the remaining discriminator, described under "Next moves".
 
 ## How to approach the discussion
 
@@ -154,7 +161,8 @@ A stronger alternative should be expressible in the same terms: local evidence, 
 Move 1 reproduced the delayed-signing reversal in `98c28ae` and earned the signing-time ledger entry above.
 The recipient-validation control in `e7e811c` closes Move 1's remaining evidence gap.
 Move 2's contract is in [contract-sibling-repair.md](contract-sibling-repair.md) and its model is in [models/model_sibling_repair.py](models/model_sibling_repair.py); together they earned the attestation-identity ledger entry above.
-Move 3 is next: challenge succession with competing branches.
+Move 3 challenged succession with competing branches and earned the succession-ordering ledger entry above; its model is in [models/model_succession_branches.py](models/model_succession_branches.py).
+Move 4 is next: decide what the public attestation carries, which is the discriminator Move 3 left.
 Runtime implementation remains later work.
 
 ### Move 1: complete, including the recipient-side control
@@ -206,21 +214,55 @@ Assert that equivalent duplicates are harmless and that repair creates neither a
 Result: both candidates satisfy the repair and contradiction properties, and the choice was made on what each requires of recipients rather than on impossibility.
 The model runs 26 cases across both schemes, both delivery orders, both recipient retention keys and both contradiction variants; commands, observations and limits are under "Move 2 model result" in [notes.md](notes.md).
 Repair created no successor and no allocation under either scheme, and an unadopted device could not attest.
-The one disconfirming case is the reserved identity under identity-keyed retention, which is what the ledger entry above rests on.
+The model's disconfirming case is the reserved identity under identity-keyed retention.
+The subsequent ad hoc reused-ID control narrows the ledger's retention claim; its command, result and limits are recorded in [notes.md](notes.md).
+Preserve that control as an explicit model case in the next executable increment; a complete retention design need not precede Move 3.
 The model assumes unit adoption of evidence, adoption distinguishable from reachability, and surviving predecessor evidence; those remain runtime obligations.
 Its succession handling is minimal by construction and does not address competing successors.
 
-### Move 3: challenge succession with competing branches
+### Move 3: complete, including the preserved reused-ID control
 
-After the separation experiment, test a scalar counter as a candidate, not an accepted representation.
-The contract's explicit predecessor field is a modeling hypothesis while succession remains undecided.
-Disconnected siblings create competing successors from one predecessor; one sibling then advances its own branch again.
-The competing announcements now have different counters, so detecting only different routes at equal counters would miss the disagreement.
+Prefer testing public scalar counters with private retained selection history; this is a candidate, not an accepted representation.
+Compare it with counter-only behavior to expose what the private evidence contributes.
+Keep teammate attestations and sibling NoteToSelf evidence as distinct model views.
+The Move 2 model's public predecessor access is a hypothesis, not permission to give teammates private history in this experiment.
 
-Explain whether the higher value merely determines provisional routing, which retained evidence exposes the competing history, who can inspect it, and what communication detection requires.
-Distinguish public succession claims from private retrospective checking.
+Use one bounded schedule:
+
+1. A and B adopt P, then disconnect.
+2. A selects X₁ and B selects Y₁ from P; A advances to X₂ without observing Y₁.
+3. A teammate receives X₂ and Y₁ in both orders, initially without X₁.
+   Distinguish higher provisional routing priority from evidence that X₂ supersedes B's choice.
+4. A sibling later adopts enough private history to inspect the competing branches.
+   State exactly which evidence enables detection, what communication delivers it, and what the sibling and teammate may do before and after discovery.
+5. After observing both branches, a human deliberately chooses Y's location.
+   Test whether a fresh selection establishes appropriate succession while delayed X₂ delivery and repeated attestation cannot reverse that choice.
+   Preserve evidence of the earlier disagreement; agreement need not follow.
+
+Unequal counters alone do not establish observed replacement, and equal-counter conflict detection misses this schedule.
+The candidate must explain how private conflict discovery affects subsequent local actions and public claims without assuming teammates see private evidence.
 If the candidate needs peer-verifiable selection history, argue the substantive change to #224's rejection of a peer-verifiable selection DAG.
 Do not infer agreement from numeric order or require detection before the necessary evidence arrives.
+
+Deliver one executable model, its counterexample and supported conclusions, and a succession decision with assumptions and a falsifier or a precise remaining discriminator.
+Runtime publication and adoption probes follow once the candidate states the guarantees those mechanisms must supply.
+This increment does not authorize runtime implementation.
+
+Result: the counter and the private history do different jobs, and the model separates them.
+Under both public representations the teammate routes to X₂ on its higher counter and can conclude nothing about replacement, while the equal-counter check finds nothing at all because this schedule produces 3 against 2.
+Fork detection required retaining the superseded intermediate selection: a device holding P, Y₁ and X₂ but not X₁ found nothing, and B found the fork only after adopting A's history.
+The human's fresh selection at counter 4 won in every delivery order against delayed X₂ delivery and repeated attestation, under both representations, and B's history still showed the fork afterwards.
+The 32 model cases and their limits are under "Move 3 model result" in [notes.md](notes.md); no teammate is given private history anywhere in the model.
+The Move 2 model now carries the reused-ID control as an explicit case, as the previous round required.
+
+### Move 4: decide what the public attestation carries
+
+Move 3 shows the predecessor selection ID buys a teammate two things: it distinguishes a verified chain from one with a missing link, and it locates a branch point once the intermediate selection is delivered.
+Both benefits depend on delivery of superseded selections that no teammate is promised, and the model did not price the exposure of publishing selection history to peers, which is what #224 rejected.
+That is the discriminator: whether a teammate should receive predecessor links at all, or whether provisional routing takes the counter alone and every conflict claim goes through a sibling holding private history.
+Argue the substantive change to #224's rejection if the answer is that teammates need the links.
+Also state how much superseded selection history a device retains, since detection rests on it, and what a teammate does with an unverified higher counter.
+Then decide, with assumptions and a falsifier.
 
 ### Documentation housekeeping still pending
 

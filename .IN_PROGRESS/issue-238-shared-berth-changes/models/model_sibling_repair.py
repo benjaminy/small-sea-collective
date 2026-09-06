@@ -314,3 +314,39 @@ def test_contradiction_under_one_selection(scheme_cls, order, retention, differi
         assert set(view["contradictions"]) == {"sel-2"}
         assert view["route"] is None, "a contradiction must not be routed through"
         assert len(recipient.retained) == 2
+
+
+@pytest.mark.parametrize("order", ORDERS)
+def test_reused_identity_loses_a_contradiction(order):
+    """The ad hoc control from the post-Move 2 review, made explicit.
+
+    Minting separate identities is not itself a retention guarantee: when one
+    signer reuses an attestation ID for a changed payload, an identity-keyed
+    recipient keeps one payload and delivery order decides which. Detecting
+    conflicting payloads under a reused identity remains an obligation.
+    """
+    a, _b, evidence = _interrupted_signing(SeparateIdentities)
+    first = a.attest(evidence.selection_id)
+    changed = dataclasses.replace(
+        first, route=dataclasses.replace(first.route, location="berth-core-y")
+    )
+    assert changed.attestation_id == first.attestation_id
+    assert changed.claim != first.claim
+
+    recipient = Recipient(IDENTITY_KEYED)
+    for att in (first, changed) if order == "a_then_b" else (changed, first):
+        recipient.deliver(att)
+    view = recipient.view()
+
+    assert len(recipient.retained) == 1
+    assert not view["contradictions"]
+    assert view["route"].location == (
+        "berth-core-y" if order == "a_then_b" else "berth-core-x"
+    )
+
+    # Keying on the payload as well retains both, as it does for a reserved
+    # identity, at the same cost of a recipient rule that has to be enforced.
+    payload_keyed = Recipient(PAYLOAD_KEYED)
+    for att in (first, changed):
+        payload_keyed.deliver(att)
+    assert set(payload_keyed.view()["contradictions"]) == {"sel-2"}

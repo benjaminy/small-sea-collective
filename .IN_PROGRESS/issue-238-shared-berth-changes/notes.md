@@ -502,7 +502,8 @@ That is the model's one disconfirming case, and it is asserted explicitly rather
 
 This does not show that reservation cannot work.
 It locates the cost precisely: the reserved candidate's correctness depends on a recipient rule that an identity-keyed store does not supply by default, and that rule has to be stated and enforced everywhere attestations are stored, merged or restored.
-Independent identities need no such rule, because two signing acts are already two rows.
+With fresh independently minted identities, two signing acts are already two rows.
+The subsequent reused-ID control below narrows this finding: separate identities do not supply a general guarantee against evidence loss.
 Both candidates still need payload comparison to tell equivalent duplicates from contradictions; that requirement is not a discriminator.
 
 The model's assumptions are stated in its docstring and are obligations, not findings:
@@ -511,3 +512,95 @@ Its succession handling is deliberately minimal — it orders selections by whic
 Competing successors and unequal counters are Move 3, not modeled here.
 
 The contract needed one correction, applied in this increment: its reserved-identity paragraph allowed a recipient to retain multiple payloads under one identity but did not say that failing to is a live failure mode with an ordering-dependent outcome.
+
+## Post-Move 2 review, 2026-09-06: narrow retention claim and test succession next
+
+The review reran the 26 model cases against `e6c1fb1`; all passed in 0.02 seconds using the command above.
+Separate attestation identities remain the choice because they represent distinct signing acts directly and avoid sharing an identity during ordinary sibling repair.
+The stronger claim that they need no special retention rule assumes fresh IDs, however, and does not cover deliberate reuse by a signer.
+
+An ad hoc model control retained the same signer, selection and attestation ID while changing the route payload:
+
+```sh
+.venv/bin/python - <<'PY'
+import dataclasses
+import runpy
+m = runpy.run_path('.IN_PROGRESS/issue-238-shared-berth-changes/models/model_sibling_repair.py')
+a, b, evidence = m['_interrupted_signing'](m['SeparateIdentities'])
+first = a.attest(evidence.selection_id)
+changed = dataclasses.replace(first, route=dataclasses.replace(first.route, location='contradictory-location'))
+for order in ((first, changed), (changed, first)):
+    recipient = m['Recipient'](m['IDENTITY_KEYED'])
+    for att in order:
+        recipient.deliver(att)
+    view = recipient.view()
+    print({'retained': len(recipient.retained), 'contradiction_detected': bool(view['contradictions']), 'routed_location': view['route'].location})
+PY
+```
+
+Both orders retained one payload and reported no contradiction.
+Delivering the changed payload last routed to `contradictory-location`; delivering the original last routed to `berth-core-x`.
+This exercises the model's storage behavior, not actual signatures, cryptographic validation or runtime ingestion.
+It establishes that minting separate IDs does not itself prevent overwrite when an ID is reused; it does not establish which runtime identity or retention design should handle that case.
+The control has not been added to the executable model file.
+Preserve it there in the next executable increment and keep conflicting-payload detection as an explicit obligation.
+The ledger and contract now state the narrower claim.
+
+The next main experiment remains succession under competing branches, with public scalar counters and private retained selection history as the preferred candidate.
+Counter-only behavior supplies the comparison: a higher value may guide provisional routing but cannot establish that its author observed and replaced another branch.
+Separate teammate and sibling evidence in the model rather than inheriting Move 2's public predecessor access.
+This lets the experiment examine private retrospective checking without silently reversing the recorded rejection of a peer-verifiable selection DAG.
+The plan specifies the P → X₁ → X₂ versus P → Y₁ schedule, initially withheld X₁, and a human choosing Y's location after observing both branches.
+The experiment must identify the observer and evidence needed for detection, the response after discovery, and whether a fresh human selection survives delayed delivery and repeated attestation.
+It need not establish eventual agreement.
+
+The next deliverable is a bounded executable model with a counterexample, supported conclusions, and either a succession decision with a falsifier or a precise remaining discriminator.
+Publication, adoption and evidence retention remain later runtime obligations once the candidate defines the guarantees needed.
+This distillation edits branch documentation only; it accepts no succession representation and changes no model, runtime code or permanent spec.
+Validation is documentation diff review and `git diff --check`; the model rerun and ad hoc control above occurred during the preceding analysis, not as new experiments in this documentation edit.
+
+## Move 3 model result, 2026-09-06: the counter orders, private history detects
+
+The executable model is [models/model_succession_branches.py](models/model_succession_branches.py).
+Like the Move 2 model it restates the problem in its own terms, runs no runtime code and inherits no table boundaries.
+It varies the public succession representation (a scalar counter alone, or a counter plus the predecessor selection ID) and the delivery order of every attestation in the schedule.
+Teammates and siblings are separate classes: a `Teammate` sees only delivered attestations, and only a `Device` holds private selection history or adopts a sibling's.
+No teammate is given private history anywhere in the model, so the experiment does not quietly reverse [#224's rejection](https://github.com/benjaminy/small-sea-collective/issues/224#issuecomment-5548215384) of a peer-verifiable selection DAG.
+
+Command:
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_succession_branches.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_sibling_repair.py -q
+```
+
+60 cases pass on two consecutive runs against `815a4d4` with no runtime code changed: 32 succession cases and the 28 Move 2 cases, which now include the preserved reused-ID control.
+
+The schedule is the plan's.
+A and B adopt P, disconnect, and select X₁ and Y₁ from it; A advances to X₂ without observing Y₁, so the counters are X₂ 3, X₁ 2, Y₁ 2.
+
+Step 3, X₂ and Y₁ delivered in both orders without X₁.
+Both representations route to X₂ on its higher counter, and under both the teammate can conclude nothing about replacement: `observed_replacement("sel-x2", "sel-y1")` is false because no retained evidence connects the two.
+The equal-counter check finds nothing, because this schedule produces 3 against 2.
+That is the counterexample the move was for: the arithmetic that decides routing is silent about agreement, and the conflict check that would speak is not triggered.
+The predecessor field adds exactly one thing here — the teammate sees that X₂'s chain to P has a missing link while Y₁'s is complete, so X₂ is higher but unverified rather than simply higher.
+
+Step 4, detection.
+Delivering X₁ makes the equal-counter check fire under both representations, but only the predecessor representation locates the branch point, reporting X₁ and Y₁ as competing children of P; the counter-only teammate has two selections at counter 2 and no way to relate them.
+Under both, `observed_replacement` stays false, which is correct: nobody observed anything.
+On the sibling side, B detects the fork in private history only after adopting A's history, and a control asserts that adopting the tip is not enough — a device holding P, Y₁ and X₂ but not X₁ finds no fork.
+Detection therefore rests on retaining superseded selections, not on receiving the current one.
+
+Step 5, human resolution.
+After discovery a human on B reselects Y's location as Z, with counter 4 and X₂ as predecessor.
+Across all six delivery orders of Z, a delayed X₂ and a repeated attestation of X₂ by the other sibling, and under both representations, the teammate routes to Y's location.
+Repeated attestation restates a selection's counter rather than advancing it, which is the Move 1 ledger entry holding in a succession setting.
+B's private history still shows the fork after resolution, so the disagreement is preserved rather than erased by the choice.
+
+The Move 2 model gained the reused-ID control as `test_reused_identity_loses_a_contradiction`, as the previous round required.
+It asserts what the ad hoc run showed: one payload survives, no contradiction is reported, and delivery order picks the survivor, while payload-keyed retention keeps both.
+
+Limits.
+Two devices, one teammate, one berth, one fork and no signatures, trust revocation or reachability.
+Counters are assigned from each device's own greatest observed value, which the model asserts rather than establishes.
+The model says nothing about how selection history is published, how much of it a sibling retains, or what it costs to keep superseded selections.
+It also does not price the predecessor field's public exposure, which is the reason the representation question stays open below.

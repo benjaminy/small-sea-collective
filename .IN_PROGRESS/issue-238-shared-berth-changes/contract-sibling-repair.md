@@ -74,7 +74,9 @@ That does not inherently erase contradictions: a recipient can retain multiple s
 The model must give this candidate that behavior and permit multiple signers, rather than assuming collisions overwrite or the reservation fixes a signer.
 The Move 2 model found that this retention behavior is a requirement rather than a detail:
 when the recipient keys retention by attestation identity alone, the reserved candidate loses one of two contradictory payloads and the survivor is decided by delivery order.
-Independent identities need no such rule.
+Independent identities avoid this collision during ordinary sibling repair when each signing act receives a fresh ID.
+They do not by themselves preserve contradictory payloads when a signer reuses an attestation ID.
+The subsequent ad hoc control in [notes.md](notes.md) demonstrates that limit; detection of conflicting payloads under one reused identity remains an obligation.
 Fixing a signer would reintroduce dependence on one specific device, but it is not required by reservation itself.
 Both candidates need payload comparison to distinguish equivalent attestations from contradictory claims.
 
