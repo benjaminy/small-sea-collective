@@ -335,10 +335,12 @@ This lets an invitee push an accepted-but-not-finalized team repo before the
 trust-chain update has been adopted locally. Peer reads never use this
 allowance.
 
-Remote reads from another device of the same teammate use the announcement path,
-not this device's local allocation. This device's local allocation describes
-where this device writes. A sibling device may have written the same berth to a
-different location.
+Remote reads from another device of the same teammate use the announcement path, not this device's local allocation.
+A participant's devices share one allocation and one route per berth;
+there is no owner device, and any currently trusted team-device key may publish or repair the route
+([#224](https://github.com/benjaminy/small-sea-collective/issues/224#issuecomment-5548215384)).
+A sibling's local view of that shared allocation, and any location it has already materialized,
+can still diverge from this device's until the shared NoteToSelf state converges.
 
 #### First contact
 
@@ -357,14 +359,21 @@ Manager-like local clients, such as the Manager web UI, Manager CLI commands,
 scripts, or test harnesses, coordinate through SQLite transactions and
 conditional updates.
 
-Cross-device first-use races are possible because sibling devices sync through
-Cod Sync rather than shared SQLite locks. Two sibling devices may both
-materialize locations before sync convergence. For provider-issued locators,
-that can create orphaned provider objects. This is recoverable clutter, not a
-correctness failure, as long as peers do not silently route to the wrong
-location. If multiple same-teammate announcements briefly coexist, peers select
-the newest valid announcement by UUIDv7 `announcement_id`; after sync
-convergence, losing provider locations can be cleaned up by follow-up tooling.
+Cross-device first-use races are possible because sibling devices sync through Cod Sync rather than shared SQLite locks.
+Two sibling devices may both materialize locations before sync convergence.
+For provider-issued locators, that can create orphaned provider objects.
+
+Newest-by-UUIDv7 selection does not by itself make such a race safe.
+The publisher mints `announcement_id` immediately before signing, from the predecessor it has observed locally,
+so a device that settles a route, pauses, and resumes after a sibling has published a successor
+can mint a greater ID for the superseded location.
+Peers would then route to that superseded location.
+The Manager spec states the same limit:
+"Ordering across devices publishing concurrently is not settled by this rule."
+
+Coordinating sibling publication so this cannot happen is open work;
+see [#238](https://github.com/benjaminy/small-sea-collective/issues/238).
+This section describes what is decided, not a protocol the Hub implements today.
 
 ### CAS Uploads
 
