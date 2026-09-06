@@ -1,10 +1,11 @@
 # Candidate contract: sibling repair from durable selection evidence
 
 Branch: `issue-238-shared-berth-changes`.
-Status: draft candidate contract for Move 2 in [plan.md](plan.md).
-Drafting it accepts neither candidate and selects no succession representation.
-Its purpose is to give the Move 2 executable model a reviewable claim to test.
-The explicit predecessor field remains a modeling hypothesis: Move 3 supports public counter ordering, while the post-Move 4 review in [plan.md](plan.md) leaves advisory public links preferred but not settled.
+Status: historical Move 2 model contract, not an implementation handoff.
+The current decision ledger and open questions are in [plan.md](plan.md).
+Move 2 chose separate signing identities; Move 3 supports public counter ordering; advisory public predecessor links remain preferred but undecided.
+Move 7 found no durable completion marker in the current allocation or local route report.
+Item 5 below remains an unvalidated candidate assumption; the observed runtime repairs by repeating materialization, and the design has not decided whether to retain or replace that assumption.
 
 ## Terms
 
@@ -76,13 +77,12 @@ The Move 2 model found that this retention behavior is a requirement rather than
 when the recipient keys retention by attestation identity alone, the reserved candidate loses one of two contradictory payloads and the survivor is decided by delivery order.
 Independent identities avoid this collision during ordinary sibling repair when each signing act receives a fresh ID.
 They do not by themselves preserve contradictory payloads when a signer reuses an attestation ID.
-The subsequent ad hoc control in [notes.md](notes.md) demonstrates that limit; detection of conflicting payloads under one reused identity remains an obligation.
+The reused-ID control preserved in `models/model_sibling_repair.py` demonstrates that limit; detection of conflicting payloads under one reused identity remains an obligation.
 Fixing a signer would reintroduce dependence on one specific device, but it is not required by reservation itself.
 Both candidates need payload comparison to distinguish equivalent attestations from contradictory claims.
 
-Separate attestation identities remain preferred because each signing act can be represented independently.
-If both candidates satisfy the properties, report that result and compare conceptual simplicity rather than claiming the reserved candidate is impossible.
-The model should support a decision with reasons, assumptions and a falsifier, or identify the precise remaining discriminator.
+Move 2 chose separate attestation identities because they represent signing acts independently.
+Both candidates can satisfy the modeled properties with suitable retention; reservation was not rejected as impossible.
 
 ## Assumptions to validate later
 
@@ -98,5 +98,5 @@ Model success would not establish any of them.
 
 ## What this contract does not do
 
-It selects no representation for succession, proposes no schema, and changes no runtime code.
-It does not establish that separation is the better candidate; Move 2's model and comparison must assess that preference.
+This historical contract proposes no runtime schema.
+Its unit-adoption and completion assumptions still require design and runtime validation; later decisions and their reopening conditions belong to the plan.
