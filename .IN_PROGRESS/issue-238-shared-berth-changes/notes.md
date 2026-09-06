@@ -425,3 +425,89 @@ This session updates the plan to mark the control complete and separate contract
 It drafts neither the contract nor the model and accepts no new protocol design.
 The review inspected code and previously recorded results; it did not rerun the probe.
 Documentation validation consists of reviewing the diff and running `git diff --check`.
+
+## Move 2 contract draft, 2026-09-06
+
+The sibling-repair candidate contract requested by the previous round is drafted in [contract-sibling-repair.md](contract-sibling-repair.md).
+It names the durable evidence (selection ID, predecessor, allocation ID, frozen route content, materialization marker),
+states that adoption alone entitles a trusted sibling to attest,
+and separates a recipient's conclusions for one attestation, equivalent duplicates, contradictory content under one selection, and different selections.
+
+The contract identifies the discriminator the model must exercise.
+Separate attestation identities let duplicates coexist, so a contradiction under one selection stays representable, and ordering must come from payload fields alone.
+A reserved identity makes two siblings' attestations collide on one identity instead of coexisting;
+fixing the signer as well reintroduces the specific-device dependence repair exists to remove,
+and not fixing it leaves the reserved identity unable to distinguish equivalent attestations from contradictory ones.
+That is an argument to test, not a decision, and the contract accepts neither candidate.
+
+Two current-code facts were checked while drafting rather than assumed.
+`resolve_berth_cloud_allocation_intent` deletes the berth's allocation row before inserting the replacement,
+so no predecessor selection evidence survives a change today.
+`TeammateBerthStorageAnnouncement` carries no selection or succession field, and `select_effective_teammate_berth_storage` ranks solely on `announcement_id`.
+The contract therefore assumes evidence the runtime does not yet produce, and records that as an obligation rather than a claim.
+
+This round wrote documentation only.
+It builds no model, changes no probe or runtime code, reruns nothing, and earns no ledger entry.
+Validation is review of the diff plus `git diff --check`, which reports nothing.
+
+## Review of `10232be`: make the executable comparison fair
+
+The latest commit supplies a testable contract but no new executable evidence.
+Its argument against reserved identities is too strong: sharing an identity does not inherently prevent a recipient from retaining multiple signed payloads and exposing their differences.
+Separate identities also require payload comparison to detect contradiction.
+Assuming collision overwrite would build the preferred result into the model rather than test the candidates.
+This corrects the comparison in the preceding contract-draft entry.
+
+The plan and contract now compare independent attestation IDs with a reserved ID that permits multiple signers and preserves conflicting evidence.
+Separate IDs remain preferred because each signing act can be represented independently, but both candidates may satisfy the required properties.
+If they do, the choice needs an argument about conceptual simplicity, not a claim that reservation cannot work.
+
+The next increment should run the interrupted-signing and contradictory-content schedules for both candidates in both delivery orders, including a differing-predecessor variant under one selection ID.
+It should deliver the model, recorded results, any contract corrections, and a decision with assumptions and a falsifier or a precise remaining discriminator.
+No additional documentation-only increment is needed before that experiment.
+The next succession experiment remains competing successors followed by another advance on one branch, where unequal counters can conceal disagreement.
+The contract's predecessor field is explicitly a modeling hypothesis, not an accepted representation.
+
+This distillation changes branch documentation only and accepts no protocol design.
+Model success would still leave NoteToSelf publication, adoption and evidence retention to validate in the runtime.
+Validation is documentation diff review and `git diff --check`; no model or probe was run.
+
+## Move 2 model result, 2026-09-06: both candidates work; reservation costs a recipient rule
+
+The executable model is [models/model_sibling_repair.py](models/model_sibling_repair.py).
+It restates the contract's objects in its own terms and runs no runtime code, so today's tables, selectors and helper boundaries do not constrain it.
+It varies three things independently: the identity scheme (independently minted attestation IDs, or one ID reserved at selection time and shared by all signers),
+the delivery order of the two attestations, and the recipient's retention key (attestation identity alone, or identity plus signer and payload).
+
+Command:
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_sibling_repair.py -q
+```
+
+26 cases pass on two consecutive runs against `f8d65a6`, with no runtime code changed.
+
+Schedule 1, interrupted signing.
+A finalizes the evidence for one selection and is interrupted before signing; B adopts the whole record and attests; A resumes and attests.
+Under both schemes, both delivery orders and both retention keys, the recipient sees one selection, no contradiction, and routes to the frozen content.
+B's selection and allocation counters stay at zero, so repair creates neither a successor nor another allocation, and B needs nothing from A beyond the adopted record.
+The model also asserts the negative side of the contract: a device that has not adopted the evidence raises rather than attesting.
+
+Schedule 2, contradictory claims under one selection ID.
+B attests to a changed route field, or to a changed predecessor, while claiming the same selection.
+With independently minted identities the contradiction stays visible in both delivery orders under both retention keys, and the recipient routes nowhere.
+With a reserved identity it stays visible only when the recipient keys retention by identity *and* payload.
+Keyed by identity alone the second delivery displaces the first, one payload survives, and which claim survives is decided by delivery order.
+That is the model's one disconfirming case, and it is asserted explicitly rather than left as an absence.
+
+This does not show that reservation cannot work.
+It locates the cost precisely: the reserved candidate's correctness depends on a recipient rule that an identity-keyed store does not supply by default, and that rule has to be stated and enforced everywhere attestations are stored, merged or restored.
+Independent identities need no such rule, because two signing acts are already two rows.
+Both candidates still need payload comparison to tell equivalent duplicates from contradictions; that requirement is not a discriminator.
+
+The model's assumptions are stated in its docstring and are obligations, not findings:
+evidence is adopted as a unit, adoption is distinguishable from reachability, and predecessor evidence survives a selection change.
+Its succession handling is deliberately minimal — it orders selections by which one no other retained selection names as predecessor — and it exercises only two devices and one berth.
+Competing successors and unequal counters are Move 3, not modeled here.
+
+The contract needed one correction, applied in this increment: its reserved-identity paragraph allowed a recipient to retain multiple payloads under one identity but did not say that failing to is a live failure mode with an ordering-dependent outcome.

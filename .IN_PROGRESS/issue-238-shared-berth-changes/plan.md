@@ -34,11 +34,19 @@ Decided.
   Reason: the move 1 witness in `98c28ae` records B adopting X and deliberately replacing it with Y, yet A's delayed signing makes the selector prefer X.
   This rejects priority assigned at signing time, including a signing timestamp; it does not reject every timestamp use or choose a succession representation.
   Reopened by: evidence that the witness does not establish observed replacement, or an explicit change to the requirement that observed replacement survive delayed signing.
+- **Attestation identity is minted per signing act, not reserved per selection.**
+  A device repairing interrupted work signs its own attestation identity; identities carry no selection, succession or ordering meaning.
+  Reason: the Move 2 model shows both candidates can satisfy the repair and contradiction properties, so the choice rests on what each requires of recipients.
+  A reserved identity is correct only if every store, merge and restore path retains multiple signed payloads under one identity; keyed by identity alone it drops one contradictory claim and the survivor depends on delivery order.
+  Independent identities get that retention for free because two signing acts are already two records.
+  Reopened by: a requirement that two siblings' attestations be addressable under one identity, or a demonstration that payload-keyed retention is unavoidable anyway for other reasons.
+  Both candidates still need payload comparison to tell equivalent duplicates from contradictions, so that is not a reason for the choice.
 
 Open.
 
 The remaining design questions are enumerated once under "Questions for the next rounds".
-The succession and attestation half of question 1 is the next one to close, for the reasons under "Next moves".
+Question 1's attestation half is closed by the ledger entry above; its succession half is not.
+Question 4 is the next one to close, for the reasons under "Next moves".
 
 ## How to approach the discussion
 
@@ -145,8 +153,8 @@ A stronger alternative should be expressible in the same terms: local evidence, 
 
 Move 1 reproduced the delayed-signing reversal in `98c28ae` and earned the signing-time ledger entry above.
 The recipient-validation control in `e7e811c` closes Move 1's remaining evidence gap.
-The next small increment should write a reviewable candidate contract for sibling repair before building the executable model.
-The model and comparison should then support a decision about separation with reasons, limits and a falsifier, if the evidence warrants one.
+Move 2's contract is in [contract-sibling-repair.md](contract-sibling-repair.md) and its model is in [models/model_sibling_repair.py](models/model_sibling_repair.py); together they earned the attestation-identity ledger entry above.
+Move 3 is next: challenge succession with competing branches.
 Runtime implementation remains later work.
 
 ### Move 1: complete, including the recipient-side control
@@ -164,17 +172,20 @@ Authentic rows are inserted directly into recipient database copies; full fetch/
 The probe fixes nothing.
 Disposition as a permanent regression micro test follows the chosen design.
 
-### Move 2: evaluate separation through sibling repair
+### Move 2: complete, including the contradiction schedules
 
 Prefer distinct attestation identities carrying stable selection/succession information and exact route content.
 The delayed-signing witness rejects signing-time priority but does not choose this candidate over an identity reserved at selection time.
-Sibling repair supplies the stronger discriminator.
-Compare the reserved-identity candidate on its own simplicity merits, independently of the current schema.
+Sibling repair supplies the next comparison, but need not distinguish the candidates on correctness.
+Compare independently minted attestation IDs with a selection-time reserved ID that permits multiple signers and retains conflicting signed payloads.
+Do not assume a shared identity forces overwriting or a fixed signer.
+Both candidates need payload comparison; evaluate coordination and recipient rules independently of the current schema.
 
-First write a short candidate contract stating what durable evidence identifies a selection, binds its exact finalized route, and lets another currently trusted sibling attest to it.
-Explain what a recipient may conclude from one attestation and from several, and what coordination each candidate requires.
-Make the durability assumptions explicit obligations for later runtime validation.
-The contract gives the subsequent model a reviewable claim to test; drafting it does not accept the candidate.
+The candidate contract is drafted in [contract-sibling-repair.md](contract-sibling-repair.md).
+It states the durable evidence identifying a selection and binding its exact finalized route, the conditions under which another currently trusted sibling may attest,
+what a recipient may conclude from one attestation and from several, and the coordination each candidate requires.
+Its durability assumptions are recorded as obligations for later runtime validation, and drafting it accepted neither candidate.
+Review it with the model; revise it if the model disconfirms part of it.
 
 Then use a small executable model with two cases:
 
@@ -183,16 +194,26 @@ Then use a small executable model with two cases:
   Neither attestation creates a successor or requires another allocation.
 - B's attestation changes one route field while retaining the same claimed selection/succession.
   Once both attestations arrive, the contradiction remains visible rather than disappearing behind an identity tie-break.
+  Include a variant that changes the predecessor under the same selection ID; that is also a contradictory claim.
 
 For each case, state the evidence each actor needs, the meaning of its claim, and acceptable recipient behavior before and after both attestations arrive, exercising both delivery orders.
 Before contradictory evidence arrives, the recipient can judge only what it has.
 Define the model's assumptions about durable evidence explicitly; model success does not prove that NoteToSelf supplies those guarantees.
 Keep the contract independent of runtime table and helper boundaries.
 Record commands, results and any disconfirming case alongside the model in this branch folder.
+Assert that equivalent duplicates are harmless and that repair creates neither a selection nor an allocation.
+
+Result: both candidates satisfy the repair and contradiction properties, and the choice was made on what each requires of recipients rather than on impossibility.
+The model runs 26 cases across both schemes, both delivery orders, both recipient retention keys and both contradiction variants; commands, observations and limits are under "Move 2 model result" in [notes.md](notes.md).
+Repair created no successor and no allocation under either scheme, and an unadopted device could not attest.
+The one disconfirming case is the reserved identity under identity-keyed retention, which is what the ledger entry above rests on.
+The model assumes unit adoption of evidence, adoption distinguishable from reachability, and surviving predecessor evidence; those remain runtime obligations.
+Its succession handling is minimal by construction and does not address competing successors.
 
 ### Move 3: challenge succession with competing branches
 
 After the separation experiment, test a scalar counter as a candidate, not an accepted representation.
+The contract's explicit predecessor field is a modeling hypothesis while succession remains undecided.
 Disconnected siblings create competing successors from one predecessor; one sibling then advances its own branch again.
 The competing announcements now have different counters, so detecting only different routes at equal counters would miss the disagreement.
 
