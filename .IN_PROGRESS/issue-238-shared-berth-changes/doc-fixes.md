@@ -1,16 +1,16 @@
 # Proposed side quest: remove two false Hub spec claims
 
-Status: reviewed and supported in the 2026-09-06 narrow round; the user plans to make the corrections separately on `main`.
-The `main` edit is not yet verified; no spec file is modified on this branch.
+Status: verified on return on 2026-09-06; both corrections landed on `main` in `2ebe9833051e56a1549e16496c0adcca96fc439e` (`Update spec.md`).
+The commit changes only the two Hub spec passages described below and preserves announcement-based sibling reads.
+This branch at `a4e0854` has not incorporated that commit and still contains the old passages; no spec file is modified on this branch.
 This agreement concerns only the two documentation corrections, not a #238 protocol.
 
-## Returning after the `main` detour
+## Return status after the `main` detour
 
 The evidence and line numbers below describe this branch at `f03ee3d`, before the proposed corrections.
-On return, inspect `main`'s Hub spec and its history to establish whether the corrections landed, and record the commit here if they did.
-This branch may still contain the old passages until it incorporates that change.
+The return check inspected `main`'s Hub spec and the correction commit's diff; both corrections landed as recorded above.
+This branch still contains the old passages until it incorporates that change.
 Do not mistake that stale checkout for a new defect, repeat an already completed correction, or restore the old claims when reconciling the branches.
-If the corrections did not land, leave them pending.
 Their completion does not resolve the delayed-signing race or close #238; resume the open discussion in [plan.md](plan.md).
 
 ## Review basis

@@ -4,13 +4,41 @@
 
 The user asked to turn the branch planning documents into an open discussion and give the existing implementation no weight in choosing a design.
 This is a research project with no production compatibility obligation.
-Earlier recommendations are hypotheses and discussion history, not a preferred baseline or accepted protocol.
+Protocol recommendations remain hypotheses and discussion history, not accepted designs.
+The return discussion below records the user's framing constraints and distinguishes them from proposed next steps.
 The agenda is in [plan.md](plan.md); possible later work is in [follow-up.md](follow-up.md).
 
 Compare conceptual mechanisms, their assumptions and their failure cases.
 Existing code is useful for discovering counterexamples and checking the feasibility of using a component.
 Its presence does not justify preserving its schema, wire format, API, tests or behavior.
 Deliberate architectural decisions have reasons to examine; they must not be conflated with implementation accidents.
+
+## Return discussion, 2026-09-06: provisional decisions and possible endless disagreement
+
+The user challenged the assistant's question about what makes a selection "authoritative."
+Small Sea is radically decentralized: a device must treat its view as at best probably true, decide what evidence is good enough to proceed, and support retrospective checking.
+The assistant accepted this as a substantive correction because asking for a durable event that grants authority risked presupposing globally settled state.
+Earlier references below to settlement and authority describe prior candidate reasoning; they do not establish global agreement or finality.
+Enforced local authorization remains a separate concept.
+
+The user also explicitly accepted that devices and/or users can enter a never-ending sync loop.
+Human scale and engineering can make that less likely, but making it impossible is not a useful requirement.
+The planning frame therefore permits persistent disagreement and does not require guaranteed convergence, automatic resolution or eventual termination of every sync loop.
+
+The assistant proposed separating safety obligations from conditional progress claims.
+Delayed signing must not recast an earlier choice as a successor, and mutable account data must not change what an earlier selection or attestation means.
+The design must distinguish acting with incomplete evidence from disregarding a known contradiction.
+Retrospective checks need explicit evidence and communication requirements: detection may remain impossible while evidence is unavailable, and later discovery cannot undo every effect.
+Visible unresolved disagreement is an acceptable outcome; human intervention is available without being a promise of final agreement.
+Accepting possible endless loops still leaves avoidable churn worth investigating, especially retries that create fresh selections without new evidence or a renewed choice.
+
+The proposed next round uses two disconnected siblings making competing choices.
+For each transition, write what the device knows, what provisional action it may take, what claim and evidence it retains, and what happens when contradictory evidence arrives.
+Ask what may happen before discovery, what becomes visible afterward, and what conditions permit further progress.
+A short working glossary should support this sketch rather than freeze substantive decisions into definitions.
+Pair the delayed-signing witness with competing successors from one predecessor, then investigate content binding and repair.
+Separating selection/succession from attestation identity remains the assistant's recommended starting hypothesis, not a user-accepted protocol.
+No requirement to permit disconnected route selection, particular retrospective mechanism, or succession representation was decided in this session.
 
 ## Discussion so far
 
@@ -133,7 +161,7 @@ They carry no preference for retaining it.
   Located precisely: `packages/small-sea-hub/spec.md` lines 338-341 for the sibling-location claim, and lines 357-366 for the concurrency passage that calls cross-device first-use races recoverable clutter rather than a correctness failure.
   The Manager spec does not make the second claim; `packages/small-sea-manager/spec.md:1172` states that ordering across devices publishing concurrently is not settled by the newest-wins rule.
   The two specs therefore contradicted each other at the inspected branch revision `f03ee3d`, independently of this discussion.
-  [doc-fixes.md](doc-fixes.md) tracks the separately planned correction on `main` and the checks needed when returning here.
+  [doc-fixes.md](doc-fixes.md) records the correction verified on `main`; this branch still contains the pre-correction passages.
 
 ## Deliberate choices and prior reasoning
 
@@ -180,13 +208,58 @@ Five concepts are currently tangled:
 The open questions are currently restated in all three branch documents.
 [follow-up.md](follow-up.md) in particular presupposes a design that does not exist yet.
 
+## Planning round, 2026-09-06: next moves
+
+This round chose what to do next rather than which design should win.
+Its output is the ledger and the "Next moves" section in [plan.md](plan.md).
+
+The neutrality generalization is why rounds cannot close questions.
+The user's instruction was that the existing implementation gets no weight.
+The `discussion` commit extended that into withholding a recommendation among candidates, which is a separate rule and was never argued for.
+Under it no round can close anything, because closing a question requires ranking, and ranking had been made suspect.
+The unranked candidate list and the growing share of prose about how to discuss both follow from it.
+That generalization is now withdrawn in the agenda.
+
+Harness evidence for the delayed-signing witness.
+`_diverge_two_devices` at `packages/small-sea-manager/tests/test_note_to_self_refresh.py:466` builds two real installations of one identity against MinIO with a common ancestor and divergent heads, and `test_divergent_note_to_self_push_reports_integration_required` asserts against that scene.
+Move 1 extends this rather than adding infrastructure, which makes the witness considerably cheaper than earlier rounds assumed.
+This is a reading of that test file; no witness has been written or run.
+
+The clock assumption is narrower than earlier rounds recorded.
+Those rounds qualified the delayed-signing schedule as permitted rather than guaranteed, because UUIDv7 ordering across devices with skewed clocks is not settled.
+Re-reading `_uuid7_after` and its call site suggests two installations running in sequence on one machine under monotone time should reproduce the reversal with no clock injection at all:
+A's lower bound is the predecessor A last observed, so A's resume-time UUID exceeds B's successor.
+That is an expectation for move 1 to test, not an observed result, and the general qualification remains correct.
+
+## Review round, 2026-09-06: evidence for the next coding round
+
+The review supports running a witness before expanding the design, with the tightened schedule now in [plan.md](plan.md).
+B must observe durable finalized X before deliberately replacing it with Y; otherwise the experiment demonstrates competing choices rather than reversal of an observed succession relationship.
+The two-installation harness supplies useful setup patterns, but its refused-publication endpoint does not establish this route history or both siblings' team-announcement readiness.
+Sequential execution also does not guarantee distinct UUID milliseconds, so the witness must expose its clock and ordering-bound assumptions.
+
+A reproduced delayed-signing defect would reject signing-time priority without choosing between separate attestation identities and an identity reserved at selection time.
+Sibling repair is the stronger discriminator: compare distinct attestations of identical selected content with contradictory content claiming equal succession.
+The recommendation remains separation, with the representation open and any decision conditional on the evidence.
+Preserve the eventual executable probe in the branch research folder; no code is requested for this documentation round.
+
 ## Investigation and validation record
+
+The return-session distillation updates only branch documents.
+It revises the agenda around provisional local decisions and retrospective checking, accepts possible endless sync loops, and consolidates duplicated handoff questions into the agenda.
+Validation is a documentation diff review and `git diff --check`; no executable witnesses or micro tests ran, and no protocol or runtime implementation was accepted.
+
+The return check on 2026-09-06 inspected local `main` and `git diff 2ebe983^ 2ebe983 -- packages/small-sea-hub/spec.md`.
+Both documentation corrections landed in `2ebe9833051e56a1549e16496c0adcca96fc439e`; the diff changes only the two reviewed passages.
+The current branch at `a4e0854` has not incorporated that commit.
+This check establishes documentation status only; no protocol decision or executable witness follows from it.
 
 The 2026-09-06 narrow doc-fix review supports correcting only the two Hub passages on `main`.
 It re-read #224's decision comment through `gh api`, the cited Hub/Manager passages, and `_uuid7_after` and its signing call site.
 The delayed-signing example was qualified as a possible ordering reversal, not a guarantee across arbitrary device clocks.
 The correction must preserve announcement-based sibling reads while distinguishing shared ownership from currently unresolved coordination.
-No `main` correction has been verified in this round, and no #238 protocol has been accepted.
+That earlier narrow review had not yet verified the `main` correction; the return check above now records it.
+No #238 protocol has been accepted.
 The return handoff is in [doc-fixes.md](doc-fixes.md); older claims and line references in these notes describe the pre-correction snapshot.
 This round changes branch documents only and runs no executable witnesses or micro tests.
 
@@ -199,5 +272,156 @@ It ran searches and file reads only; it wrote no code and ran no tests.
 
 No executable protocol witnesses or micro tests have run on this design branch.
 The earlier discussion edit reorganized the three branch documents for open discussion and removed implementation-preservation preferences and premature mandates.
-This branch has changed no runtime code or permanent specs; the separate `main` correction must be checked on return.
+This branch has changed no runtime code or permanent specs; the separate `main` correction is verified but has not been incorporated here.
 Future probes should record their actual commands, results, assumptions and limitations here.
+
+The 2026-09-06 next-move planning round read the four branch documents, #238, the ordering helper and its call site, and the two-installation harness in `test_note_to_self_refresh.py`.
+It ran searches and file reads only.
+It wrote no code, ran no tests and executed no witness; the delayed-signing expectation it records is untested.
+
+The subsequent review inspected the latest commit, branch documents, repository architecture, installation harness, route-publication path and shared selector.
+This distillation revises the next-round agenda and records the reasoning above.
+Validation is a documentation diff review and `git diff --check`; no executable witness or micro test has run, and no protocol has been accepted.
+
+## Move 1 result, 2026-09-06: the delayed-signing witness reproduces
+
+The witness ran and reproduced the defect.
+Probe source is `probes/probe_delayed_signing.py` with `probes/conftest.py`; command:
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_delayed_signing.py -x -q
+```
+
+It passed on three consecutive runs against `fcac0a2` with no runtime code changed.
+The probe asserts the defect, so a passing run means the defect is present.
+
+Schedule as staged.
+Two installations of one identity share a team clone and a Core berth.
+Device B reaches trusted-device status through the real linked-device team join
+(`prepare_linked_device_team_join`, `create_linked_device_bootstrap`, `finalize_linked_device_bootstrap`),
+so both devices sign as the same teammate with different device keys, each `derive_team_join_state` reporting `admission == "finalized"`.
+`create_team` already announces a first route, so both devices start from a common predecessor announcement rather than from nothing.
+
+1. A calls `reconcile_team_route(new_location=True)` with `provisioning.publish_teammate_berth_storage_announcement` patched to raise.
+   The replacement allocation X is durable in shared NoteToSelf and its bucket is materialized at MinIO, and the call returns `route="pending"`, `route_reason="route_preparation_error"`.
+   That is the pause before signing, produced by the operation's own retryable failure path rather than by a stub.
+   A then pushes NoteToSelf.
+2. B refreshes NoteToSelf and the probe asserts B's `derive_team_join_state` allocation equals X field for field.
+   This is the load-bearing observation: without it the schedule is competing selections, not reversal of an observed succession.
+   B then calls `reconcile_team_route(new_location=True)`, which replaces X with Y and signs Y, and pushes NoteToSelf.
+3. A, which never refreshed, still reads X, and `reconcile_team_route()` signs X.
+4. Both authentic signed rows are loaded into two copies of A's team `core.db`, inserted in both delivery orders,
+   and resolved through `provisioning.selected_teammate_berth_storage_announcement`, which calls `select_effective_teammate_berth_storage`.
+
+Result.
+In both delivery orders the selector returns `status="announced"` with X's announcement ID and X's location.
+A recipient therefore routes to the location B observed and deliberately replaced.
+Observed values from one run:
+
+| Row | announcement_id | announced_at |
+| --- | --- | --- |
+| predecessor | `01a077c113e5774580c208ae8faa6a53` | 17:25:37.381094Z |
+| Y, B's successor | `01a077c1208076b48a303cd00edf131d` | 17:25:40.608861Z |
+| X, A signed last | `01a077c1245f77a590945477457fd912` | 17:25:41.599152Z |
+
+Clock assumption, narrowed by the result.
+Earlier rounds worried that the reversal might need same-millisecond ties or `_uuid7_after`'s forcing branch.
+It needs neither.
+A resumed roughly 900 ms after B signed Y, so A's plain `uuid7()` already exceeded Y's ID and the lower-bound branch never ran.
+`announced_at` orders the same way, so a timestamp-based rule would not help either.
+The mechanism is simply that announcement ordering is minted from the signer's own clock at signing time, and A's signing is later in real time than the successor it never saw.
+No clock was injected; both installations ran sequentially in one process on one machine.
+The witness therefore does not establish anything about skewed clocks across machines, and it does not need to: monotone real time is enough to reverse the relationship.
+
+Limits.
+Delivery is staged by inserting the peer's authentic signed row into a copy of the recipient's team database.
+The rows and signatures are real and the selector is the one Manager and Hub use, but the runtime's fetch and merge path did not carry them.
+NoteToSelf publication and adoption, provider materialization and both signings are real.
+One reproduced schedule is evidence about this code path, not a proof about the runtime.
+The witness fixes nothing and no design follows from it by itself;
+it rejects signing-time priority as an ordering rule and leaves the choice between separate attestation identities and an identity reserved at selection time to move 2.
+
+## Post-witness planning, 2026-09-06
+
+Review of `98c28ae` supports closing the signing-time question in the plan's ledger.
+The interrupted operation takes its real retryable failure path, and direct insertion of authentic announcements limits the delivery claim without invalidating the selector counterexample.
+The conclusion concerns priority assigned at signing time, including a signing timestamp; it does not reject every timestamp use or select a succession representation.
+
+One recipient-side control remains useful.
+`select_effective_teammate_berth_storage` returns after validating the highest-ranked acceptable row, so selecting X from both rows does not exercise Y's acceptance in that recipient.
+Assert that Y alone selects Y there, then add X and observe the reversal.
+B's finalized admission in its own installation supports the setup but does not replace this check.
+Full fetch/merge delivery can wait for integration validation.
+
+The next discriminator is sibling repair from durable evidence of one selection and its exact finalized route.
+Distinct attestation identities remain the preferred candidate because another trusted sibling can sign without creating a successor, reallocating storage or coordinating one signed payload.
+Compare equivalent sibling attestations with a changed route field under the same claimed selection/succession; the latter must remain visibly contradictory once both arrive.
+A small executable model should state its evidence assumptions and recipient behavior before and after discovery.
+Its success would not establish NoteToSelf's publication or adoption guarantees.
+
+The subsequent counter experiment must include competing successors followed by another advance on one branch.
+The surviving announcements can have unequal counters, so equal-counter conflict detection alone is insufficient.
+The candidate must distinguish provisional route ordering from evidence of competing history and identify who can inspect that evidence.
+Public succession claims and private retrospective checking need separate explanations, particularly given #224's rejection of a peer-verifiable selection DAG.
+
+This documentation round records the signing-time conclusion and revises the next-round agenda.
+It changes no probe or runtime code, reruns no witness, and accepts neither separation nor a particular succession representation.
+Validation consists of reviewing the documentation diff and running `git diff --check`.
+
+## Move 1 control, 2026-09-06: Y alone is acceptable in the recipient
+
+The recipient-side gap named in "Post-witness planning" is closed.
+`select_effective_teammate_berth_storage` returns after validating its highest-ranked acceptable row,
+so the two-row assertions never showed that Y would have been accepted by that recipient at all.
+The probe now selects from each single-row database before inserting the second row,
+and asserts the returned announcement is the one just inserted.
+In the `y_then_x` order that is the control the plan asked for: Y alone selects Y, then X is added and the selection flips to X.
+The `x_then_y` order gets the same single-row check, which costs nothing and keeps the two orders symmetric.
+
+Command, unchanged:
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_delayed_signing.py -x -q
+```
+
+It passed on two consecutive runs against `11c87ba` with the added control and no runtime code changed.
+Both insertion-order assertions and the announcement ID comparison are retained.
+Observed values from the first run:
+
+| Row | announcement_id | announced_at |
+| --- | --- | --- |
+| predecessor | `01a07852541b77a8b644920422bb97bd` | 20:04:16.539108Z |
+| Y, B's successor | `01a07852619d7ca3871714aed9b32999` | 20:04:19.997295Z |
+| X, A signed last | `01a07852651876afa1135ee15e639631` | 20:04:20.888088Z |
+
+The reversal reproduces exactly as recorded in "Move 1 result", with the same ordering mechanism and the same roughly 900 ms resume gap.
+The control adds one fact: Y's rejection is not what causes the recipient to prefer X.
+The recipient accepts Y when it is the only row, and stops preferring it as soon as a higher-ranked acceptable row exists.
+Ranking, not validation, produces the defect.
+
+Limits are unchanged.
+Delivery is still staged by direct insertion of authentic signed rows, so this says nothing about the runtime's fetch and merge path.
+The probe still fixes nothing and still selects no design.
+
+## Review of `e7e811c` and next increment, 2026-09-06
+
+The control closes Move 1's remaining recipient-validation gap.
+Inspection of the probe and selector supports the recorded interpretation: Y is acceptable on its own, and X wins once both are present because of announcement ranking.
+This strengthens the delayed-signing counterexample without changing runtime behavior or the existing signing-time conclusion.
+It supplies no new reason to choose separate attestation identities over an identity reserved at selection time.
+More reproductions of this schedule would not settle that comparison.
+
+The recommended next increment is a short sibling-repair candidate contract, followed by the executable comparison already specified in Move 2.
+The contract should name the durable selection evidence, its binding to exact finalized route content, the evidence a trusted sibling needs to attest, and the recipient's conclusions from one or multiple attestations.
+Compare the meaning and coordination required by separate and reserved identities on their own merits.
+Treat the model's durability assumptions as obligations for later runtime validation rather than claims already established about NoteToSelf.
+
+The two model cases remain equivalent sibling attestations after interrupted signing and contradictory route content under the same claimed selection/succession, each in both delivery orders.
+Record a decision about separation only if that comparison earns one, including reasons, limits and a condition that would reopen it.
+Then challenge succession with competing successors followed by another advance on one branch, where unequal counters can conceal disagreement.
+Runtime changes remain later work.
+
+This session updates the plan to mark the control complete and separate contract drafting from the subsequent model.
+It drafts neither the contract nor the model and accepts no new protocol design.
+The review inspected code and previously recorded results; it did not rerun the probe.
+Documentation validation consists of reviewing the diff and running `git diff --check`.

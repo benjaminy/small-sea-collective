@@ -1,21 +1,17 @@
 # Possible work after the discussion
 
 No implementation handoff is ready.
-This document retains the earlier two-stage outline and useful validation questions without committing to a protocol, state representation, API or orchestration sequence.
+This document retains the tentative implementation split, runtime validation guidance and eventual issue changes.
+The current design questions and witness schedules live in [plan.md](plan.md); the reasoning lives in [notes.md](notes.md).
 Revise it from the accepted design before assigning implementation work.
 These are local notes; no issues or messages have been posted by this document update.
-
-A 2026-09-06 review round recommends narrowing this file to a stub until a design is accepted.
-Its "Questions to carry into an eventual handoff" largely restate open questions that already appear in [plan.md](plan.md) and [notes.md](notes.md),
-and that duplication grows with every round.
-The narrowing is not done here, because deciding what an eventual handoff should ask is a committee call rather than an editing one.
 
 ## Tentative implementation split
 
 The earlier scope decision placed design investigation on this branch, one central Core operation in a first follow-up, and remaining integration and user-facing work in a second follow-up.
 That is a possible way to bound the work, not a reason to retain the current operation or helper structure.
 
-The first follow-up would implement the chosen protocol in one established-team Core use case and produce runtime evidence for its state, authority, concurrency, conflict-resolution and repair semantics.
+The first follow-up would implement the chosen protocol in one established-team Core use case and produce runtime evidence for its provisional decisions, retrospective checks, concurrency, conflict handling and repair semantics.
 Its output would include a concrete contract for the later integration work and an honest account of which paths remain outside that contract.
 A successful central use case would not establish system-wide safety.
 
@@ -27,31 +23,20 @@ Current function names, table boundaries, UUID ordering, publication result type
 Retain or replace them according to the accepted design.
 There is no production compatibility or rollout requirement.
 
-## Questions to carry into an eventual handoff
-
-- What exact durable state authorizes each effect, and what can a sibling infer after adoption?
-- How are refusal, uncertainty, historical inclusion and current selection distinguished?
-- Which provider effects must precede shared evidence, and which failures are retryable without another allocation?
-- How does successor authority survive explicit resolution, restoration and delayed actions?
-- How are replay, sibling attestation and intentional new selection distinguished?
-- What can peers verify, and how do they handle equivalent or contradictory attestations?
-- Where do invitation-specific signer requirements belong?
-- How do creation and linked-device bootstrap preserve local/offline use without silently selecting new storage?
-- Which integration or publication paths could otherwise bypass the authority rules?
-- Which user-visible claims require local evidence, shared settlement, actual delivery or provider reachability?
-
 ## Runtime evidence to preserve
 
 Turn the schedules in [plan.md](plan.md) into deterministic runtime witnesses once their intended semantics are decided.
 Use two installations with distinct trusted device keys and a local provider service where appropriate.
-Pause at real operation boundaries; do not replace the authority, publication, integration or selector being examined with a success stub.
+Pause at real operation boundaries; do not replace the decision checks, publication, integration or selector being examined with a success stub.
 Use local mocks or MinIO for provider networking.
 
-The witnesses should cover competing selections; definite and uncertain publication outcomes; historical inclusion with related and unrelated descendants; delayed signing and both delivery orders; clock skew; interrupted work and sibling repair; unavailable or untrusted original signers; differing provider locators; separately changing account endpoints; resolution choosing a refused candidate; return to a previously used location; equivalent and contradictory attestations; generic publication after merge or restoration; and local success followed by delivery failure.
+Use the schedule catalog in [plan.md](plan.md), including conflict discovery and possible persistent disagreement.
 Expected results must follow the chosen protocol rather than today's row counts, identifiers, return types or helper calls.
+Validate safety properties separately from progress under explicit favorable conditions; do not require universal convergence or promise detection before sufficient evidence arrives.
 
 An eventual integration audit must include creator setup, established-team changes, invitation preparation/export/import, ready-route shortcuts, generic NoteToSelf and Core publication, and the public management interface.
 Treat this as a list of behaviors to account for, not a requirement to preserve those APIs.
+Include the conditions for local/offline creation and linked-device bootstrap, and justify invitation-specific signer requirements separately from established-team repair.
 Reports must distinguish what happened at each relevant boundary without equating a valid signature with reachable storage.
 
 Existing evidence can save investigation when its assumptions still apply.
