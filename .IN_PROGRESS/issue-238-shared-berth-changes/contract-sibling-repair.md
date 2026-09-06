@@ -4,7 +4,7 @@ Branch: `issue-238-shared-berth-changes`.
 Status: draft candidate contract for Move 2 in [plan.md](plan.md).
 Drafting it accepts neither candidate and selects no succession representation.
 Its purpose is to give the Move 2 executable model a reviewable claim to test.
-The explicit predecessor field is a modeling hypothesis, not an accepted succession representation.
+The explicit predecessor field remains a modeling hypothesis: Move 3 supports public counter ordering, while the post-Move 4 review in [plan.md](plan.md) leaves advisory public links preferred but not settled.
 
 ## Terms
 

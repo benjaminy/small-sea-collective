@@ -48,12 +48,61 @@ Decided.
   Reason: the Move 3 model, where X₂ at counter 3 outranks Y₁ at counter 2 while no evidence connects them, and where a fork is found only after the intermediate X₁ is retained or adopted.
   Reopened by: a schedule where counter ordering alone must establish observed replacement, or a detection requirement that teammates must meet without receiving predecessor evidence.
   This decides what the counter is for; it does not decide what the public attestation carries.
+  A public report may therefore locate a branch and say which side lost routing priority, and may never call that a resolution: the post-Move 5 review's control produces the same classification from a deliberate human resolution and from an author who never observed the branch it outranks.
+- **An unknown publication outcome is incomplete evidence, not an observed conflict.**
+  After an unacknowledged publication a device keeps using and attesting to its own selection and reports the publication as unknown.
+  A definite refusal and an already-superseded result are observed conflicts: the device falls back to the greatest selection it still holds that it has not itself seen refused, or to the one the refusal names, and surfaces the conflict.
+  Publication outcome bounds what a device may claim about publication, not what it routes to; a device that later adopts a greater selection routes there and still cannot say whether its own was published.
+  Reason: the Move 5 model, where the device's standing and its retry are identical whether or not the lost write landed.
+  Reopened by: a schedule where proceeding after an unknown outcome causes damage that retrospective detection cannot make visible, or a runtime whose refusals are themselves unreliable enough that refused and unknown cannot be distinguished.
+  Three corrections from the post-Move 5 review are part of this entry, each with a preserved control.
+  An outcome describes one attempt: a refusal establishes that this attempt wrote nothing and is no evidence that an earlier attempt on the same record did not land, so what a device may claim about a record never weakens as attempts accumulate.
+  Refusals are durable for the device that observed them: a selection it has seen refused is not a fallback candidate later, because private history records what was chosen rather than what the store accepted.
+  A refusal that names a greater selection is evidence to be adopted rather than quoted, since attesting to a selection means holding it and the next deliberate selection must outrank what the device has now been told about.
+- **A retry republishes a record; it never makes a selection.**
+  Retrying an uncertain publication resends the identical selection ID, counter, predecessor and route.
+  Reason: the Move 5 model, where a retry expressed as a fresh selection takes a counter above everything the device has observed and so resurrects a route a sibling deliberately replaced — the Move 1 failure without any delayed signing.
+  A retry that has not yet seen the replacement instead lands on its counter and manufactures a tie nobody chose.
+  Deliberate human reselection produces a mechanically identical record, so this must be enforced at the retry call site rather than detected afterwards.
+  Reopened by: a retry schedule that cannot be expressed by replaying the original record.
+- **Merge and restore need one rule beyond ordering, and it constrains devices.**
+  Merging published records is union, and counters decide it in any merge order; restoring an old snapshot of published records revives nothing.
+  The two rules that do not follow from ordering are that the private-to-published boundary is crossed only by an explicit publication, and that a device's greatest observed counter is a monotone high-water mark that a restore adds to rather than replaces.
+  Reason: the Move 5 model, where publishing a device's private history promotes a definitely refused selection, and where a restore that replaces state leaves a human's deliberate choice below the selection it was chosen over and unpublishable.
+  Reopened by: a durable representation in which the high-water mark can be lost rather than replaced, or a merge that is not union.
+- **A selection record freezes complete route content; signing reads only the record.**
+  Protocol, endpoint, the finalized locator and every account value a route depends on are fixed in the selection record, and attesting to a selection reads nothing else.
+  Reason: the Move 6 model, where resolving account state at signing time makes a sibling's repair contradict the selection it was repairing, with two authentic signatures, neither device at fault and no route left for the teammate; and where union-merging a record set with a peer's account row derives a route nobody signed.
+  A content digest satisfies the same correctness property and was rejected on cost, not on correctness: the record alone cannot then support repair, so a second delivery path is needed for content that freezing already delivers.
+  Reopened by: a requirement that route content not be published to siblings in the clear, which is what would make the digest's separation of naming from content worth its delivery path, or a schedule where a selection must legitimately mean something different after account state changes.
+  This says which values are bound, not which row holds them.
+- **A selection is not minted until every field it freezes is final.**
+  Provider finalization precedes selection, so a record never names a locator the provider has not settled on.
+  Reason: the Move 6 model, where a record minted before finalization fixes the requested locator and the attested route names storage that does not exist, under both freezing and digesting.
+  Late binding is the only representation that tracks the correction, and only because it will change what a selection means later, which the account schedule rules out; so this is an ordering rule that no representation replaces.
+  Reopened by: a provider interaction that cannot settle a locator before a selection must exist, or evidence that finalization is not observable as a completed step.
+- **Devices retain superseded selections.**
+  A device keeps its own private selection record per berth without pruning at this stage, because fork detection rests entirely on holding the intermediate selections.
+  Reason: the Move 3 control, where a device holding P, Y₁ and X₂ but not X₁ detects nothing.
+  Reopened by: a workload where per-berth selection history grows without a human-scale bound.
 
 Open.
 
+**Advisory public predecessor links remain preferred, but the choice is still open.**
+The Move 4 correction supplied the missing comparison: honest counter-only provisional routing, which claims no supersession and leaves retrospective checking to siblings, routes identically to the verifying policy in every world.
+The link therefore buys diagnosis, not routing correctness.
+The Move 4 correction closed the gaps that review named — rivals are classified rather than flagged, and contradictory attestations for one selection are no longer collapsed — but the claim that the reporting gaps were closed was premature.
+The post-Move 5 review found two more in the same report and both are now corrected with preserved controls: a tie returned no route and dropped the evidence for it, which also made `open_disagreement` unreachable, and a located branch was reported as a matter of record when nothing public establishes that anyone resolved it.
+What remains is still the argument rather than the model, with the standing caution that a reporting surface has now been found wrong twice by review rather than by its own cases.
+Accepting the payload still requires defending teammate diagnostics as worth the change, the issue owner's agreement to revise #224, and an answer on metadata exposure, which remains unpriced.
+
 The remaining design questions are enumerated once under "Questions for the next rounds".
 Question 1's attestation half is closed by the attestation-identity ledger entry; its succession half is closed for ordering and open for representation.
-Question 4's competing-branch part is answered by Move 3; what the public attestation carries is the remaining discriminator, described under "Next moves".
+Question 4's ordering result stands; its public representation and post-resolution reporting remain open.
+Question 2's publication half is closed by the three Move 5 entries; what a disconnected sibling may prepare before publishing is untouched.
+Question 6's merge and restore half is closed by the same entries; its provider-finalization and integration boundaries are not.
+Question 3's binding half is closed by the two Move 6 entries; what remains of it, and of question 6, is the same thing: the provider and publication boundaries the models have been asserting rather than checking.
+Nothing is now blocked on further modeling.
 
 ## How to approach the discussion
 
@@ -162,7 +211,12 @@ Move 1 reproduced the delayed-signing reversal in `98c28ae` and earned the signi
 The recipient-validation control in `e7e811c` closes Move 1's remaining evidence gap.
 Move 2's contract is in [contract-sibling-repair.md](contract-sibling-repair.md) and its model is in [models/model_sibling_repair.py](models/model_sibling_repair.py); together they earned the attestation-identity ledger entry above.
 Move 3 challenged succession with competing branches and earned the succession-ordering ledger entry above; its model is in [models/model_succession_branches.py](models/model_succession_branches.py).
-Move 4 is next: decide what the public attestation carries, which is the discriminator Move 3 left.
+Move 4 supports the retention decision and an advisory-link preference; its model is in [models/model_public_payload.py](models/model_public_payload.py).
+Its correction added the honest counter-only comparison and preserved the two post-review controls.
+Move 5 answered uncertain publication, retry, merge and restore, and earned three ledger entries; its model is in [models/model_publication_outcomes.py](models/model_publication_outcomes.py).
+Its correction narrowed the publication entry and the reporting surface after review found five counterexamples, all now preserved as controls.
+Move 6 settled route-content binding and provider finalization, and earned two ledger entries; its model is in [models/model_route_binding.py](models/model_route_binding.py).
+That was the last modeled question, so the next move is the probe: check the provider and publication boundaries the models assert, against local services.
 Runtime implementation remains later work.
 
 ### Move 1: complete, including the recipient-side control
@@ -255,7 +309,7 @@ The human's fresh selection at counter 4 won in every delivery order against del
 The 32 model cases and their limits are under "Move 3 model result" in [notes.md](notes.md); no teammate is given private history anywhere in the model.
 The Move 2 model now carries the reused-ID control as an explicit case, as the previous round required.
 
-### Move 4: decide what the public attestation carries
+### Move 4: complete, with its comparison corrected; the decision stays open
 
 Move 3 shows the predecessor selection ID buys a teammate two things: it distinguishes a verified chain from one with a missing link, and it locates a branch point once the intermediate selection is delivered.
 Both benefits depend on delivery of superseded selections that no teammate is promised, and the model did not price the exposure of publishing selection history to peers, which is what #224 rejected.
@@ -263,6 +317,93 @@ That is the discriminator: whether a teammate should receive predecessor links a
 Argue the substantive change to #224's rejection if the answer is that teammates need the links.
 Also state how much superseded selection history a device retains, since detection rests on it, and what a teammate does with an unverified higher counter.
 Then decide, with assumptions and a falsifier.
+
+Initial result: advisory links add diagnostic information, while requiring a complete chain stalls routing on ordinary delay.
+Excluding opaque identifiers and route content, a counter-only teammate cannot distinguish a clean succession from a concealed fork; the two views are the same, so no recipient policy separates them.
+With the link, the verifying policy is quiet in the clean world and reports Y₁ as unresolved in the forked one while still routing provisionally.
+A recipient that requires a complete chain refuses to route in an uncontested succession whose middle link is late, which is why the link is advisory.
+The initial decision, the argument about #224 and the exposure the model does and does not price are under "Move 4 decision" in [notes.md](notes.md).
+The subsequent review narrows that decision: counter-only routing need not assume supersession, so the missing comparison is provisional routing with retrospective checks left to siblings.
+
+The correction, now made:
+
+- `PROVISIONAL_ONLY` is the honest counter-only policy — greatest counter routes, no supersession is claimed, retrospective checking is left to siblings.
+  It routes identically to the verifying policy in all three worlds, so the link's case rests on teammate diagnostics rather than on routing correctness.
+- The report classifies each rival as missing evidence, historical divergence or open disagreement, and only the first and third count as unresolved.
+  The preserved post-resolution control routes to `berth-y1` with a complete chain and reports Y₁ as divergence of record; a companion control shows the resolution itself is not public evidence, since a device that never saw Y₁ produces the same claim for Z.
+- The contradictory-attestation control runs in both delivery orders.
+  `Attestation.claim` excludes signing identity, and a contradicted selection is reported rather than projected away, so delivery order no longer chooses the route.
+
+The result is in "Move 4 correction" in [notes.md](notes.md).
+Move 3's ordering result stands; these were composition and reporting gaps, not demonstrated runtime defects.
+
+### Move 5: complete, with its reporting corrected
+
+Question 2 and question 6 are the remaining ones with counterexamples waiting in the evidence table:
+competing candidates with an uncertain publication outcome, publication finding a descendant, and merge or restore silently promoting refused or obsolete state.
+Take uncertain publication first, since what a device may claim after an unknown outcome bounds what the other schedules can assume.
+Distinguish an unknown outcome from a definite refusal and from an already superseded state, and say what each permits locally and what it may attest to.
+Start with publication succeeding but its acknowledgment being lost, then a sibling adopting and replacing that selection before the original device retries.
+Compare definite refusal and an already-superseded result, recording each device's actual evidence and what it may use, attest to and report.
+Then decide whether merge and restore need a rule beyond the ledger's ordering, or whether counters and predecessor links already deny them the ability to promote old state.
+Challenge importing historical evidence without promoting a refused candidate, resurrecting obsolete priority or erasing the highest counter already observed.
+Keep deliberate human reselection distinct from retry.
+
+Result: the four outcomes are not degrees of certainty.
+An unknown outcome carries no evidence of a competing selection, so it is ordinary incomplete evidence; a refusal and an already-superseded result are observed conflicts.
+The device's standing and its retry are identical whether or not the lost write landed, so it never has to learn the outcome.
+Retry must replay the record, because a retry expressed as a fresh selection resurrects a route a sibling deliberately replaced, and a human's deliberate reselection produces a mechanically identical record.
+Merging and restoring published records need nothing beyond counter ordering; the two rules that do not follow from it constrain devices, not records — the private-to-published boundary is crossed only by an explicit publication, and the greatest observed counter is a monotone high-water mark.
+The schedules, the disconfirming detail and the limits are under "Move 5 result" in [notes.md](notes.md).
+
+The subsequent review found five counterexamples, three in this model's reports and two in Move 4's.
+All five are now preserved as controls, and each fails against the code it was found in:
+
+- One publication outcome describes one attempt.
+  A retry refused as superseded said "not published" about a record an earlier attempt had already written, so `publication_claim` is now taken over every attempt on a record and never weakens, reported beside the separate `attempt_effect` and routing priority.
+- A refusal is durable evidence for the device that observed it.
+  Two refusals in a row let the fallback promote the first refused selection, because private history records what was chosen rather than what the store accepted.
+- A refusal that names a greater selection is adopted, not quoted.
+  Quoting it let a device attest to a record it did not hold and take its next deliberate counter below the selection it had just been told about.
+- A tie is classified rather than dropped.
+  The report returned early when there was no route, discarding the evidence for the tie, which also made `open_disagreement` unreachable: with a unique leader every rival is strictly older.
+- A located branch is not evidence of resolution.
+  `historical_divergence` is now `located_divergence`, `unresolved_rivals` is now `unaccounted_rivals`, and a control shows a deliberate human resolution and an author who never observed the branch produce the same classification.
+
+The result is in "Move 5 correction" in [notes.md](notes.md).
+Move 5's four-outcome, retry and merge results stand; these were reporting and eligibility gaps, not demonstrated runtime defects.
+
+### Move 6: complete for the model; the probe is the next move
+
+Settle exact route-content binding across provider finalization and account changes, which question 3 asks and no model has touched.
+The evidence table's account-only change and differing-locator rows are the counterexamples.
+Compare a frozen projection with other explicit bindings, state the atomicity and merge properties each requires, and do not assume current table boundaries.
+Then probe the real publication and adoption boundaries required by the candidate, rather than continuing to model them.
+
+Result: the binding question and the finalization question are separable, and both are now decided, in [models/model_route_binding.py](models/model_route_binding.py).
+Three bindings were compared by what a signer reads — the record, the mutable rows at signing time, or content it holds against a digest.
+Reference binding is falsified: after an account row moves, a sibling's repair contradicts the selection it repairs with two authentic signatures and nobody at fault, and merging a record set with a peer's account row derives a route neither device signed.
+The digest is correct and was rejected on cost, since the record alone can no longer support repair; that rejection is conditional on route content being publishable to siblings in the clear.
+Freezing needs no atomicity beyond writing one immutable record, and it is closed under union merge because it reads nothing; reference binding needs cross-row consistency that union merge cannot provide.
+No representation rescues a record minted before the provider settles the locator, so finalization before minting is a separate ordering rule.
+Binding also runs one way: identical route content under distinct selections stays distinct, so route equality is never a deduplication key.
+The schedules, the conditional rejection and the limits are under "Move 6 result" in [notes.md](notes.md).
+
+The next move is to check the provider and publication assumptions against real components using local services.
+Proceed in this order:
+
+1. **Interrupted provider finalization.**
+   Pause before and after storage exists and before the final locator is recorded.
+   Establish what counts as completed finalization, what evidence survives interruption, and what a sibling can recover from a partially materialized allocation.
+2. **Publication and sibling adoption.**
+   Exercise lost acknowledgments, superseding refusals and interrupted repair through real boundaries.
+   Check whether a sibling receives enough frozen content to attest to the same selection, and whether generic publication or restore can silently publish private or refused candidates.
+3. **Design decision and implementation handoff.**
+   Use the probe results to revise unsupported assumptions, identify the actual account fields a route must freeze, and settle the public-predecessor-link tradeoff between diagnostic value and metadata exposure, including the required agreement to revise #224.
+   Prepare the implementation handoff only after the remaining design choices are accepted.
+
+Start with interrupted finalization; further modeling is not currently the bottleneck.
+The five models passing does not establish runtime behavior or authorize implementation, and #238 remains open until its correctness requirements are implemented and validated.
 
 ### Documentation housekeeping still pending
 

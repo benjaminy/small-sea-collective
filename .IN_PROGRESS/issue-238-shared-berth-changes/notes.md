@@ -604,3 +604,391 @@ Two devices, one teammate, one berth, one fork and no signatures, trust revocati
 Counters are assigned from each device's own greatest observed value, which the model asserts rather than establishes.
 The model says nothing about how selection history is published, how much of it a sibling retains, or what it costs to keep superseded selections.
 It also does not price the predecessor field's public exposure, which is the reason the representation question stays open below.
+
+## Move 4 decision, 2026-09-06: the attestation carries an advisory predecessor link
+
+The model is [models/model_public_payload.py](models/model_public_payload.py).
+It reuses the Move 3 objects rather than restating them, because the question is about the same actors and the same schedule.
+It compares three worlds at one teammate — a clean succession P → X₁ → X₂, the Move 3 fork with X₁ withheld, and a clean succession whose middle link is merely late — against three recipient policies: assume everything below the greatest counter is superseded, verify supersession along the predecessor chain, or refuse to route until that chain is complete.
+
+Command:
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_public_payload.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_succession_branches.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_sibling_repair.py -q
+```
+
+71 cases pass on two consecutive runs against `1aa45c4`, 11 of them new, with no runtime code changed.
+
+The decisive result is an indistinguishability.
+Excluding opaque identifiers and route content, a counter-only teammate's view of the clean world and of the forked world is byte-for-byte the same: counters 1, 2, 3 and nothing that relates them.
+One of those worlds is safe and the other conceals a competing branch, and no recipient policy can separate them, because the evidence does not differ.
+With the predecessor link the two views differ, and the difference is exactly the one that matters: X₂'s chain to P is complete in the clean world and has a gap in the forked one.
+The policies show what that buys.
+Assume-superseded routes to X₂ and reports no unresolved rival in both worlds, which is the confident answer a counter-only payload forces.
+Verify-chain is quiet in the clean world and, in the forked world, still routes to X₂ while reporting Y₁ as unresolved.
+Under a counter-only payload the verifying policy degenerates: every other selection is unresolved in every world, so it reports nothing a recipient can act on.
+
+The link must be advisory.
+The `delayed` world is a correct, uncontested succession whose middle link has not arrived, and a recipient that demands a complete chain refuses to route there while the verifying recipient routes normally.
+A gap is evidence that the recipient's own evidence is incomplete, never evidence of a conflict, and delivery the recipient does not control decides when the gap closes.
+
+Decision.
+The public attestation carries the selection ID, the succession counter, the predecessor selection ID and the frozen route content.
+A teammate routes to the greatest counter it holds, provisionally and without waiting for any chain; it marks a selection whose chain is incomplete as unverified, reports the selections it cannot show were superseded, and resolves nothing by attestation identity, signer or time.
+
+This is a narrow, deliberate change to [#224's rejection](https://github.com/benjaminy/small-sea-collective/issues/224#issuecomment-5548215384) of a peer-verifiable selection DAG, and it needs the issue owner's agreement rather than being read as compatible.
+What #224 rejected is peers verifying a participant's selection history as a condition of accepting a route, and that stays rejected: no recipient may condition routing on chain completeness, and the model's `REQUIRE_CHAIN` case is the reason.
+What is added is one opaque name per attestation.
+The model asserts what that discloses: a link names a selection without disclosing where it pointed, and the teammate's known route content is exactly what was delivered to it.
+The counter already publishes how many times a participant has reselected; the link adds which selection each one claims to follow, and nothing else.
+Nothing obliges a participant to publish superseded selections, so peers cannot reconstruct the history — they can only sometimes notice that they do not have it.
+
+Retention.
+Detection rests entirely on retaining superseded selections, per the Move 3 control where a device holding P, Y₁ and X₂ but not X₁ finds no fork.
+A device therefore retains its own private selection records per berth without pruning at this stage: the records are small and route changes are human-rare.
+Falsifier for the retention rule: a workload where per-berth selection history grows without a human-scale bound.
+
+Assumptions and limits.
+Selection IDs are opaque and carry no route content; a teammate learns route content only from attestations delivered to it; everything Move 3 assumes about counters and private history still applies.
+The model prices exposure only as disclosure of route content, not as traffic analysis or correlation across berths and teams.
+It exercises one teammate, one berth and one fork, models no signatures or trust changes, and says nothing about how attestations are published or merged.
+
+## Post-Move 4 review, 2026-09-06: keep the ordering result, narrow the payload decision
+
+The review of `9b6695e` reran the three models with the command in the Move 4 entry above: 71 cases passed in 0.04 seconds.
+Move 3 earns its main conclusion: counters establish provisional routing priority, retained intermediate selections reveal competing branches, and reattestation preserves succession.
+These remain bounded model results, not runtime guarantees.
+
+Move 4's advisory link remains a reasonable preference for diagnosis, but its comparison does not earn the claim that counter-only recipients must assume supersession.
+A teammate can route provisionally, make no supersession claim, and leave retrospective checking to siblings holding private history.
+That is the alternative already under discussion, and the model does not evaluate it fairly.
+The link adds information; whether teammates need that information enough to justify revising #224 is a separate argument.
+The earlier "Move 4 decision" entry records the original conclusion; this review supersedes its claim that the public payload choice is closed.
+The attempt to retrieve the original #224 comment failed through both `gh api` and the web tool, so this review relies on the branch's recorded account of that decision rather than claiming a fresh verification.
+
+Two additional controls were run against the existing model objects:
+
+```sh
+.venv/bin/python - <<'PY'
+import sys
+sys.path.insert(0, '.IN_PROGRESS/issue-238-shared-berth-changes/models')
+from model_succession_branches import *
+from model_succession_branches import _diverged
+from model_public_payload import report, VERIFY_CHAIN
+
+a,b,x1,y1,x2 = _diverged(COUNTER_AND_PREDECESSOR)
+b.adopt_history(a)
+b.select('sel-z', ROUTE_Y1, predecessor_id='sel-x2')
+t = Teammate(COUNTER_AND_PREDECESSOR)
+for sid in ('sel-p','sel-x1','sel-x2','sel-y1','sel-z'):
+    t.deliver(b.attest(sid))
+print('After human resolution with every record delivered:', report(t, VERIFY_CHAIN))
+
+import dataclasses
+first = b.attest('sel-z')
+changed = dataclasses.replace(first, attestation_id='different-signing-act', counter=99, route=ROUTE_X1)
+for order in ((first, changed), (changed, first)):
+    recipient = Teammate(COUNTER_AND_PREDECESSOR)
+    for att in order:
+        recipient.deliver(att)
+    print('Contradictory same-selection attestations:', {'retained_attestations':len(recipient.attestations), 'projected_selections':len(recipient.selections), 'route':recipient.route()})
+PY
+```
+
+The human-resolution control routes to `berth-y1` with `chain_complete=True`, but still reports `unresolved_rivals={'sel-y1'}` after every record arrives.
+Z names X₂ as its single predecessor, so no chain from Z reaches Y₁ even though the human chose Y's location after observing both branches.
+That does not invalidate the routing result or require erasing the fork.
+It requires distinguishing historical divergence, missing evidence and disagreement still requiring action, with claims limited to what each observer can establish.
+The public recipient does not automatically inherit the human's private evidence of resolution.
+
+The contradiction control retains two distinct attestation IDs but projects them into one selection.
+Delivering the changed attestation last routes to `berth-x1`; reversing delivery routes to `berth-y1`.
+The changed claim differs in both counter and route under the same selection ID.
+`Teammate.selections` silently collapses those claims, so the newer model does not carry forward Move 2's contradiction behavior.
+This is a model composition gap, not a demonstrated defect in runtime ingestion or cryptographic validation.
+Neither ad hoc control has been preserved in the model files yet.
+
+Next increment.
+Make one bounded executable correction: compare against honest counter-only provisional routing, preserve both controls, carry contradictory-claim handling into the newer model and clarify the post-resolution report.
+Advisory links remain preferred, but the recommendation must defend teammate diagnostics and the change to the recorded #224 decision rather than treating model success as sufficient approval.
+Then take uncertain publication first in Move 5: publication succeeds, acknowledgment is lost, a sibling adopts and replaces the selection, and the original device retries.
+Compare definite refusal and already-superseded outcomes, stating what each device may use, attest to and report from its actual evidence.
+Follow with merge and restore schedules that challenge silent promotion of refused or obsolete state and loss of the highest observed counter, keeping deliberate human reselection distinct from retry.
+Before runtime implementation, settle exact content binding across provider finalization and account changes, then probe the real publication and adoption boundaries.
+
+This distillation changes branch documentation only; it accepts no new protocol decision and changes no model, runtime code or permanent spec.
+The model rerun and ad hoc controls above occurred during the preceding review, not as new experiments in this documentation edit.
+Validation of the distillation: documentation diff review and `git diff --check`, which reported no whitespace errors.
+
+## Move 4 correction, 2026-09-06: the fair comparison, and two controls made explicit
+
+The bounded correction the post-Move 4 review asked for is now in the models.
+81 cases pass in 0.06 seconds:
+
+```sh
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_public_payload.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_succession_branches.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_sibling_repair.py -q
+```
+
+The honest counter-only policy.
+`PROVISIONAL_ONLY` routes to the greatest counter held and asserts nothing about supersession, leaving retrospective checking to a sibling with private history.
+It is wrong in no world, and it routes identically to `VERIFY_CHAIN` in all three.
+So the advisory link is not defended as routing correctness, and the earlier claim that a counter-only recipient must assume supersession is retired: `ASSUME_SUPERSEDED` is now described as a policy a counter-only payload permits rather than one it forces.
+What the link buys is diagnosis — naming which rival is unaccounted for and why — and that benefit still has to be argued against the cost of revising #224.
+
+The report now classifies rivals instead of flagging them.
+`missing_evidence` is a rival whose relation cannot be established because a link is not held.
+`historical_divergence` is a rival whose branch point and branches are all held and which is strictly older than the routed selection.
+`open_disagreement` is a rival that is not older and still competes.
+Only the first and third are unresolved.
+
+The post-resolution control is preserved as `test_resolution_leaves_a_divergence_of_record_not_an_open_rival`.
+With every record delivered after the human reselects at Z, the teammate routes to `berth-y1` with a complete chain and reports Y₁ as historical divergence, not unfinished business.
+That is the reporting fix the review asked for: retaining a superseded branch does not require presenting it permanently as an open item.
+A second control, `test_the_resolution_itself_is_not_public_evidence`, states whose evidence supports what.
+A device that never adopted Y₁ produces an identical claim for Z, so the public record cannot distinguish deliberate resolution from accidental, and the teammate must not report the human's choice as established.
+Only B's private history holds that evidence.
+
+The contradiction control is preserved in both delivery orders as `test_contradictory_attestations_for_one_selection_are_not_collapsed`.
+Move 2's behavior is carried into the newer model: `Attestation.claim` excludes attestation identity and signer, `Teammate.claims` groups retained attestations by selection, `Teammate.contradictions` reports selections whose claims disagree, `Teammate.selections` omits a contradicted selection rather than picking one by delivery order, and `Teammate.route` refuses when a contradicted selection holds the greatest counter.
+A fresh signing identity over the same selection ID with a different counter and route no longer lets delivery order choose the route.
+
+Limits unchanged.
+These remain bounded model results about one teammate, one berth and one fork, with no signatures, no trust changes and no account of how attestations are published or merged.
+Metadata exposure is still unpriced: the model prices disclosure of route content only, not traffic analysis or correlation across berths and teams.
+The correction closes the composition and reporting gaps the review found; it does not by itself justify changing the recorded #224 decision, which still needs the issue owner's agreement and the diagnostic argument.
+
+## Move 5 result, 2026-09-06: uncertain publication, retry, merge and restore
+
+The model is [models/model_publication_outcomes.py](models/model_publication_outcomes.py).
+15 cases; 96 across all four models, in 0.06 seconds:
+
+```sh
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_publication_outcomes.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_public_payload.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_succession_branches.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_sibling_repair.py -q
+```
+
+### The discriminator is observed conflict, not degree of knowledge
+
+The four publication outcomes do not sit on a scale from certain to uncertain.
+An unknown outcome carries no information about a competing selection, so it is ordinary incomplete evidence, which the ledger already permits a device to act on provisionally.
+A definite refusal and an already-superseded result are observations of a conflict, which the ledger already requires a device to surface rather than proceed past.
+That is why unknown is the only one of the three that permits the device to keep using and attesting to its own selection.
+It also bounds the reports: publication outcome constrains what a device may claim about *publication*, not what it routes to.
+A device that adopts a greater selection after an unknown outcome routes to that selection and still cannot say whether its own was published.
+
+### The device never has to learn the outcome
+
+`test_the_unknown_outcome_needs_no_ground_truth` runs the lost acknowledgment with the write landing and with it not landing.
+The device's standing is identical, and republishing the same record converges both worlds.
+The ground-truth flag is recorded in the attempt and read by no device method.
+
+### Retry must republish a record, never make a selection
+
+The Move 5 schedule — publication lands, acknowledgment lost, sibling adopts and deliberately replaces the selection, original device retries — separates the two retry policies cleanly.
+Republishing the identical record is idempotent and leaves B's replacement on top.
+Making a fresh selection for the same intent takes a counter above everything the device has observed, so after A adopts Y the retry outranks Y and resurrects the route B chose against.
+That is the Move 1 delayed-signing failure in another costume, reached without any delay in signing.
+Retrying before A learns of Y is not better in kind, only in visibility: the fresh selection lands on B's counter and produces a tie nobody chose.
+
+`test_deliberate_reselection_is_mechanically_a_retry_and_must_not_be_one` is the sharp version.
+A human on A who has adopted Y and deliberately chooses X's location again produces exactly the record the bad retry policy produced: same route, same counter, outranking Y.
+The protocol cannot distinguish them after the fact, and should not try.
+The rule belongs at the retry call site — a retry replays bytes — rather than in a later check.
+
+### Merge needs no new rule; the two dangerous boundaries are elsewhere
+
+Merging published stores is union, and the counters and predecessor links the ledger already has decide the result in either merge order.
+Restoring an old snapshot of the store revives nothing, because an old record carries its old counter.
+So the answer to Move 5's second question is that ordering suffices for the records.
+
+Two things it does not cover, both of which are about devices rather than records.
+
+A refused candidate is in no store, so no merge of stores can promote it — but it is in the device's private history.
+A restore that treats private history as publishable puts a definitely refused selection on top.
+The rule is that the private-to-published boundary is crossed only by an explicit publication, never by a restore.
+
+A restore that *replaces* a device's state discards the counters it had observed.
+A human choosing a route on that device then lands below the selection it was chosen over and is refused as superseded, so the deliberate choice becomes unpublishable and no retry can fix it.
+Keeping the greatest observed counter as a monotone high-water mark, and treating restore as union with local state, is the one rule that does not follow from record ordering, because it constrains the device rather than the records.
+
+### Limits
+
+One berth, one participant with two devices, no teammate delivery and no signatures.
+The store is a set merged by union; nothing here tests a real git merge, conflicting concurrent writes to the same object, or the Hub's actual publication interface.
+Provider effects are assumed already done, so the model says nothing about a refusal that arrives with storage half-materialized, and nothing about route-content binding across provider finalization or account changes.
+`REFUSED` is modeled as a definite "nothing was written"; a runtime refusal that is itself unreliable would fold back into `UNKNOWN`, which the model handles but does not exercise from that direction.
+The high-water mark is modeled as a per-device integer; where it durably lives, and what happens when it is lost rather than replaced, is not modeled.
+
+## Review of `769c03f` and `010dd4d`, 2026-09-06
+
+The honest counter-only comparison and the identical-record retry discriminator are useful results.
+The stronger claims that the reporting gaps are closed and Move 5 is complete are premature.
+These findings concern the research models and their conclusions, not newly demonstrated runtime regressions.
+
+The four-model command recorded above was rerun: 96 cases passed in 0.05 seconds.
+Additional local controls were run with `.venv/bin/python -` from the repository root, adding `.IN_PROGRESS/issue-238-shared-berth-changes/models` to `sys.path` and importing the existing model objects.
+No provider or network calls were made.
+The observed counterexamples were:
+
+1. Start with `_lost_acknowledgment()`, run `_sibling_replaces(store)`, then `a.retry(store, RETRY_SAME_RECORD)`.
+   X is still in `store.published`, but `standing(a)["publication_claim"]` is `"not published"`.
+   A refusal of this attempt does not establish that an earlier attempt never published the record.
+   Publication reports must distinguish an attempt's effect, historical inclusion and current routing priority.
+2. Starting with published P, have A select X and receive `REJECTED`, then select Y and receive `REJECTED`.
+   Only P is published, but `standing(a)` routes to X and returns `may_attest="x"`.
+   The fallback examines every other private selection and forgets earlier refusals.
+   Eligibility needs to survive across attempts; private history alone is insufficient evidence for fallback.
+3. Let the store hold a selection at counter 9 while A knows only P at counter 1, then publish A's counter-2 X.
+   The superseded reply names counter 9, and `standing(a)` permits attesting to it, but A's history still holds only P and X and its high-water mark remains 2.
+   A deliberate next selection gets counter 3.
+   Receiving the reply must either adopt the evidence and advance the counter or explicitly require adoption before further selection and attestation.
+4. Deliver P and distinct X/Y successors at counter 2 to a teammate, in both X/Y delivery orders.
+   `report(teammate, VERIFY_CHAIN)` returns no route, empty `open_disagreement`, empty `unresolved_rivals` and empty `contradicted`.
+   The early return on no route drops the tie's evidence.
+   In fact, `open_disagreement` is unreachable: a routable unique maximum makes every other counter smaller, while a tied maximum returns before classification.
+5. Deliver all four records P, X1, X2 and Y1 from `_diverged(COUNTER_AND_PREDECESSOR)`, without any human resolution at Z.
+   The report calls Y1 `historical_divergence` and reports no unresolved rivals.
+   The original unequal-counter disagreement becomes a matter of record merely because its missing intermediate link arrived.
+   A complete chain does not establish that the author of X2 observed Y1 or that anyone resolved their disagreement.
+   Public diagnosis should distinguish a known branch relationship from evidence of resolution; the existing indistinguishable-worlds control already limits the latter claim.
+
+Recommended sequence: preserve these controls as micro tests and correct or narrow the affected ledger claims, then take Move 6's route-content binding question.
+The public-link choice still needs an explicit judgment about diagnostic value and metadata exposure.
+Once the candidate states its guarantees, probe actual publication, adoption and provider-finalization boundaries with local services before preparing a runtime implementation handoff.
+No model or runtime behavior was changed during this review.
+
+## Move 5 correction, 2026-09-06: five controls preserved, two reporting claims narrowed
+
+The five counterexamples from the review above are now controls in the models.
+102 cases pass in 0.07 seconds:
+
+```sh
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_publication_outcomes.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_public_payload.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_succession_branches.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_sibling_repair.py -q
+```
+
+Each control was checked against the code it was found in.
+Copies of the four model files were made in a scratch directory, the five fixes were reverted there one group at a time, and the reverted copies were run with the same interpreter.
+The three publication controls failed and the other 15 cases passed; the two payload controls failed in both delivery orders and the other 21 passed.
+So none of the five is an assertion that would have held anyway.
+No provider or network calls were made, and no runtime code was touched.
+
+### An outcome describes an attempt; a claim describes a record
+
+`standing` reported the last attempt's outcome as the record's publication status.
+After the lost acknowledgment landed and the queued retry was refused as superseded, the device claimed "not published" about a record sitting in the store.
+`publication_claim` is now taken over every attempt on a selection and never weakens: an acknowledged attempt makes it "published", an unacknowledged one leaves it "unknown" however many later attempts are refused.
+The report now carries three separate answers — `attempt_effect` for what this attempt did, `publication_claim` for the record, `routes_to` for current priority — because they were three questions sharing one field.
+
+### Refusals outlive the attempt that observed them
+
+The fallback took the greatest selection in private history other than the one just attempted, so two refusals in a row promoted the first refusal.
+Private history records what a device chose, not what the store accepted, so eligibility needs its own evidence: the device now keeps the set of selections it has seen refused and excludes them as fallback candidates.
+
+### A superseding refusal is adopted, not quoted
+
+A refusal naming a selection at counter 9 left the device's history and high-water mark at 2 while `standing` offered that selection as the one it may attest to.
+A deliberate next selection then took counter 3.
+Receiving such a refusal now adopts the named selection, so attesting to it means holding it and the next deliberate choice takes counter 10 — above what refused it.
+
+### A tie is evidence, and the report was dropping it
+
+`report` returned empty sets whenever there was no route, so a teammate holding two distinct successors at the same counter reported no route, no disagreement and no rivals.
+The same early return made `open_disagreement` unreachable by construction: a unique leader makes every rival strictly older, and a tie returned before classification.
+Classification is now relative to the leading selections rather than to a route, a rival is superseded only when *every* leader's chain reaches it, and tied leaders are rivals of each other.
+The tie control asserts both delivery orders: no route, `open_disagreement` of both branches, and P still claimed superseded because both leaders build on it.
+
+### Locating a branch is not resolving it
+
+`historical_divergence` described a fully linked older rival as "a matter of record, not an open action item", and `unresolved_rivals` excluded it.
+Delivering a missing intermediate link is not a resolution: the new control runs the Move 3 divergence with every record delivered and no human choice anywhere, and it produces exactly the classification the resolved world produces.
+The categories are renamed to say only what they establish — `located_divergence` for a branch whose parting point is visible and which lost routing priority, `unaccounted_rivals` for what the observer cannot place or that still competes — and the word "resolved" no longer appears in any report key.
+This composes with the existing indistinguishable-worlds control rather than replacing it: that one shows the public claim for Z is identical whether or not Y₁ was ever adopted, and this one shows the same for the rival's classification.
+
+### What this does and does not change
+
+The Move 5 conclusions stand: the four outcomes are still not degrees of certainty, retry still must replay a record, and merge and restore still need nothing beyond ordering plus the two device-level rules.
+Move 4's routing result stands: `PROVISIONAL_ONLY` and `VERIFY_CHAIN` still route identically in all three worlds.
+What changed is what a device and a teammate may *say*, which is where both reviews found the defects.
+That is now twice that this reporting surface has been corrected by review rather than by its own cases, which is a reason to treat the next reporting claim as unproven until a control exercises it, not a reason to expand the models further.
+
+### Limits
+
+Unchanged from Move 4 and Move 5, and none of the five corrections touches them.
+Still one berth, one participant with two devices, one teammate, one fork, no signatures, no trust changes, and a store that is a set merged by union.
+The refused set and the high-water mark are per-device in-memory values; where they durably live, and what a device may claim after losing them, is not modeled.
+Adoption of a superseding refusal assumes the refusal names an authentic record, which nothing here checks.
+
+## Move 6 result, 2026-09-06: route content is frozen into the selection record
+
+The model is [models/model_route_binding.py](models/model_route_binding.py).
+15 cases; 117 across all five models, in 0.07 seconds:
+
+```sh
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_route_binding.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_publication_outcomes.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_public_payload.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_succession_branches.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_sibling_repair.py -q
+```
+
+The three bindings differ in exactly one thing: what a signer reads.
+`FROZEN_PROJECTION` reads the record.
+`REFERENCE_BINDING` reads whatever the mutable rows say at signing time.
+`CONTENT_DIGEST` reads content the device holds and refuses unless its digest matches the record.
+No binding is defined in terms of a table, so nothing here rests on where the values live today.
+
+### The account change falsifies reference binding
+
+A signs the selection while the account row says `us-west`; the row moves to `eu-central`; B repairs the same selection.
+Under reference binding B signs `eu-central`, so the repair contradicts the selection it was repairing.
+Both signatures are authentic and neither device did anything wrong, so no recipient rule can assign fault, and the teammate ends with a contradicted selection and no route at all.
+Under the other two bindings the repair restates the claim field for field, which is the equivalent duplicate Move 2 already showed is harmless.
+
+Merge makes this worse rather than better.
+Composing A's record set with a peer's account row is a union of two individually valid states, and the derived route is a third thing that neither device ever chose or signed.
+That is the evidence-table observation — whole-row merge cannot prevent the schedule when relevant values sit on independently changing rows — as an executable case.
+A frozen record is closed under the same merge because it reads nothing.
+
+### The digest is a more expensive frozen projection, under this branch's assumptions
+
+`CONTENT_DIGEST` gives the same correctness as freezing: a sibling cannot sign substituted content, because substituted content does not match the digest.
+What it does not give is availability.
+The record alone does not carry the content, so a sibling holding the published record and nothing else cannot attest at all, and repair waits for a second delivery on a path the model does not supply.
+Since the content has to reach siblings for repair to be possible, and the frozen record is that delivery, the digest costs a delivery path and buys nothing over freezing.
+This conclusion is conditional: it assumes route content may be published to siblings in the clear.
+If it may not, the digest's separation of naming from content is exactly what earns its cost, and that argument has not been made here.
+
+### Finalization is an ordering rule, not a representation
+
+A record minted before the provider settles the locator fixes the requested value, and the provider then materializes a different one.
+Freezing and digesting both preserve a value that was never true, and the attested route names storage that does not exist.
+Reference binding is the only one that tracks the correction — and only because it is willing to change what a selection means later, which is the property the account schedule just ruled out.
+So the two cannot be had at once, and the cheaper side is a rule about when a record may be created: a selection is not minted until every field it freezes is final.
+No choice of representation substitutes for that rule.
+
+### Repair from the published record alone
+
+With B's allocation row stale and no content delivered, the frozen record is sufficient: B's repair matches A's claim field for field and names storage that exists.
+Reference binding produces a route pointing at the requested locator, which was never materialized.
+The digest produces nothing, which is correct and unavailable.
+This is the ledger's sibling-repair property meeting question 3: freezing is what makes the published record self-sufficient.
+The model states what each binding lets B sign; whether a blocked sibling would then materialize again is runtime policy it does not decide.
+
+### Binding runs one way
+
+X at counter 2, Y at 3, then a deliberate return to X's exact route at 4, with Y delivered last.
+The first and third records are field-for-field identical in route content and are different selections.
+All three are retained, the return routes on its counter, and nothing is folded into anything else.
+A selection fixes content; content never identifies a selection, so endpoint or route equality is not a deduplication key.
+
+### Limits
+
+One participant with two devices, one allocation, one account field and one teammate.
+The provider is a set of materialized locators: no partial materialization, no failure during finalization, no deletion, and no second provider.
+Nothing here models a refusal arriving with storage half-materialized, which Move 5 also left open and which the finalize-before-mint rule now makes the obvious next boundary.
+Account state is one scalar; a real account has several fields with different change rates, and the model does not say which of them a route depends on.
+Signatures are assumed authentic and trust is assumed unchanged, so this says nothing about a signer that is no longer trusted.
+Most importantly, every guarantee above is a claim about a model, and the finalize-before-mint rule in particular is a claim about a real provider's behavior that no probe here has checked.
+
+### Status review, 2026-09-06
+
+Reran the five-model command recorded above: 117 micro tests passed in 0.06 seconds, including Move 6's 15 cases.
+Move 6 is complete at the model level: freeze complete route content, and finalize the provider locator before minting the selection.
+The remaining evidence gap is actual interrupted finalization, publication and sibling adoption; this review ran no runtime probe.
+The next-step sequence is recorded in [plan.md](plan.md#move-6-complete-for-the-model-the-probe-is-the-next-move), starting with interrupted provider finalization against local services.
+Passing models alone do not justify an implementation handoff or closing #238.

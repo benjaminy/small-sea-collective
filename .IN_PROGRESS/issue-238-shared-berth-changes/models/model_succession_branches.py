@@ -75,6 +75,15 @@ class Attestation:
     predecessor_id: str | None
     route: Route
 
+    @property
+    def claim(self):
+        """What the attestation asserts, independent of who signed it.
+
+        Move 2's comparison, carried forward: identity is excluded so that a
+        fresh signing identity cannot hide a disagreement about the selection.
+        """
+        return (self.selection_id, self.counter, self.predecessor_id, self.route)
+
 
 COUNTER_ONLY = "counter"
 COUNTER_AND_PREDECESSOR = "counter+predecessor"
@@ -149,19 +158,57 @@ class Teammate:
         self.attestations[attestation.attestation_id] = attestation
 
     @property
+    def claims(self):
+        """Retained attestations grouped by the selection they name."""
+        grouped = {}
+        for att in self.attestations.values():
+            grouped.setdefault(att.selection_id, []).append(att)
+        return grouped
+
+    def contradictions(self):
+        """Selections whose retained attestations do not agree on their claim.
+
+        Move 2's obligation applied to this model: projecting attestations into
+        selections must not silently pick one of two conflicting claims, and
+        distinct signing identities must not conceal the conflict.
+        """
+        return {
+            selection_id: atts
+            for selection_id, atts in self.claims.items()
+            if len({a.claim for a in atts}) > 1
+        }
+
+    @property
     def selections(self):
-        """One entry per distinct selection; duplicates are equivalent here."""
-        return {a.selection_id: a for a in self.attestations.values()}
+        """One entry per distinct selection whose retained claims agree.
+
+        A contradicted selection is deliberately absent rather than resolved by
+        delivery order; `contradictions` is where it is reported.
+        """
+        contradicted = self.contradictions()
+        return {
+            selection_id: atts[0]
+            for selection_id, atts in self.claims.items()
+            if selection_id not in contradicted
+        }
 
     def route(self):
         """Provisional routing: greatest counter wins.
 
-        A tie between distinct selections is a visible conflict, not a choice.
+        A tie between distinct selections is a visible conflict, not a choice,
+        and so is a contradicted selection claiming the greatest counter.
         """
         selections = self.selections
-        if not selections:
+        contradicted = self.contradictions()
+        top = max(
+            (a.counter for atts in self.claims.values() for a in atts), default=None
+        )
+        if top is None:
             return None
-        top = max(a.counter for a in selections.values())
+        if any(
+            a.counter == top for atts in contradicted.values() for a in atts
+        ):
+            return None
         tied = [a for a in selections.values() if a.counter == top]
         if len({a.selection_id for a in tied}) > 1:
             return None
