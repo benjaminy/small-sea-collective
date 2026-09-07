@@ -4,46 +4,92 @@ Issue: [#238](https://github.com/benjaminy/small-sea-collective/issues/238).
 Branch: `issue-238-shared-berth-changes`.
 Status: research discussion; individual decisions below are settled or explicitly reopened, and no complete protocol or implementation handoff is accepted.
 Moves 1–9 are complete within their recorded limits.
-The Move 10 contract has been proposed and reviewed; next comes model-level comparison before extending the runtime probe.
+The Move 10 contract has been proposed and reviewed, and the model comparison in steps 1–5 below is complete; the contract records its corrections, and the comparison's checkpoint has been reviewed and its two findings addressed in `a7ce749`.
 Evidence, commands and review corrections live in [notes.md](notes.md); eventual issue work lives in [follow-up.md](follow-up.md).
 
 ## Next work
 
-The next deliverable is a small executable model and an evidence-backed comparison, not a runtime implementation or an accepted wire format.
+The retirement-timing experiment is complete; review of `a71d129` found that its gate can be opened by another routeless record without a referencing route selection.
+The gate and the history report are now corrected with focused counterexamples; see [notes.md](notes.md#move-10-review-follow-through-2026-09-07-the-corrected-gate-and-history-report).
+The next deliverable is the semantic checkpoint below, which needs a human decision, before durability work.
+The review and recommended sequence are in [notes.md](notes.md#review-of-a71d129-2026-09-07).
+The completed comparison below supplies its starting evidence, not a runtime implementation or an accepted wire format.
 The review of `5b18218` and the committee discussion are recorded in [notes.md](notes.md#review-of-move-10-and-next-research-step-2026-09-07).
 
-1. **Preserve the counterexamples before modeling a fix.**
-   Add `models/model_human_resolution.py`, reusing earlier model vocabulary where it fits without building a general simulation framework.
+1. **Preserve the counterexamples before modeling a fix.** Done in `models/model_human_resolution.py`; see [notes.md](notes.md#move-10-step-1-2026-09-07-the-counterexamples-are-executable).
+   It reuses earlier model vocabulary where it fits without building a general simulation framework.
    Preserve controls that demonstrate the single-predecessor failure after resolution followed by ordinary rotation, and the clean X → Y → Z history misclassified when Y is missing.
    Add the DAG variant where a held common ancestor appears to show a fork, but a missing second-parent path later proves succession.
    Controls should pass by asserting the demonstrated failure of the old candidate; new candidates must satisfy separately stated behavioral assertions on the same schedules.
-2. **Write down what each actor can actually conclude.**
+2. **Write down what each actor can actually conclude.** Done in [obligations-actor-claims.md](obligations-actor-claims.md) and the second half of `models/model_human_resolution.py`; see [notes.md](notes.md#move-10-step-2-2026-09-07-what-each-actor-may-conclude).
    For the selecting device, its sibling and a receiving teammate, specify held evidence, missing evidence, current route or pause, and permissible claims.
    Separate evidence of supersession, unresolved incompatible choices, incomplete ancestry, and contradictory signed payloads.
    A common held ancestor alone cannot establish incompatibility when missing ancestry could establish supersession.
    Distinguish remaining tips from historical forks, and retain distinct selection identities even when route content matches.
    Record a candidate resume rule: resume when new evidence removes the cause of the pause and no other pause or explicit human hold remains; missing history may remain unavailable indefinitely.
    Retrieving or inspecting evidence must remain distinguishable from integrating it into live state or publishing it.
-3. **Compare representations against those obligations.**
+3. **Compare representations against those obligations.** Done in `models/model_resolution_candidates.py`; see [notes.md](notes.md#move-10-steps-35-2026-09-07-comparing-resolution-representations).
    Model multi-parent supersession first because it directly addresses the counterexample.
    Compare it with a separate record of the reviewed choice and with deriving local resolution from retained Git evidence while keeping public succession separate.
    Reuse the counter-based candidate as an ordering baseline; a counter is neither evidence of human review nor a conflict-resolution rule.
    For each candidate, identify the minimum evidence each actor needs and what remains unverifiable to that actor.
    Do not assume private Git history is available to teammates, or that a signed multi-parent event proves human involvement.
    Do not require every representation to succeed: preserve the smallest counterexample or explicit unmet obligation when one fails.
-4. **Run the first comparison on a bounded set of schedules.**
+4. **Run the first comparison on a bounded set of schedules.** Done in the same file.
    Resolve either side of a two-sibling fork, rotate normally afterwards, and deliver old selections late or repeatedly to a teammate.
    Exercise the missing-link and missing-second-parent schedules in both arrival orders; distinguish evidence that clears uncertainty from evidence that confirms a disagreement.
    Introduce a third conflicting selection after inspection but before application, while leaving the two reviewed selections unchanged.
    The operation must refuse before changing the selected allocation or publishing effects, preserve all alternatives, and produce a report that includes the new evidence.
    Check that merely signing a merge-shaped event cannot justify a report claiming human review.
    Record actor traces and assertions alongside outcomes so a reviewer can inspect why a candidate passes, rather than trusting its own classifier as the oracle.
-5. **Review the comparison before expanding the experiment.**
+5. **Review the comparison before expanding the experiment.** Written up in [notes.md](notes.md#preference-weakness-and-the-next-discriminating-experiment); the outside review of the checkpoint found two model defects, both fixed and recorded in [notes.md](notes.md#review-correction-2026-09-07).
    Produce a compact comparison in `notes.md`: correctness evidence, retained state, public disclosure, missing-history behavior, restore obligations, and dependencies on existing policy.
    Identify which facts need durable representation and which choices can remain Manager policy or local interpretation.
    For public ancestry, explicitly assess the recorded #224 boundary and the extra disclosure that a signer observed multiple branches.
    Prefer a candidate on the evidence, state its weaknesses and reopening conditions, and name the next discriminating experiment if the comparison is inconclusive.
    Revise the contract only to the extent justified by that review; multi-parent links, separate resolution records, counters and automatic resumption remain candidates until then.
+
+The comparison rules out deriving resolution from retained private evidence alone and confirms the counter as an ordering baseline only.
+It does not settle the representation between multi-parent links and a separate resolution record.
+The named discriminating experiment — partial and interrupted delivery of a selection and its resolution record, with the selection naming the record's identity but not what it retires — was then run, and is recorded in [notes.md](notes.md#move-10-2026-09-07-the-discriminating-experiment).
+It removes the separate record's one clear disadvantage at the cost of one classification rule, that a routeless node is never a tip, and it does not rescue keeping resolution evidence private.
+That is evidence for the checkpoint; the review findings are addressed, and the representation is still open until a human accepts the checkpoint.
+
+### Immediate checkpoint: when retirement takes effect
+
+The record-first correction excludes a routeless record from route candidates, but receiving it still retires a branch and can clear a teammate's pause before its referencing selection arrives.
+That is not inert behavior; the reproduced trace and the distinction from the addressed review findings are in [notes.md](notes.md#checkpoint-follow-up-2026-09-07-when-retirement-takes-effect).
+
+The comparison is run in `models/model_retirement_timing.py`; results are in [notes.md](notes.md#move-10-checkpoint-2026-09-07-gating-retirement-on-the-referencing-selection).
+On the tested fork, independent and gated retirement differ while a record is held without its referencing selection, including the interval before an eventually delivered selection arrives.
+Gating remains the recommendation, subject to the gate correction found in review.
+An unrelated defect in the shared classifier's history report was found and recorded rather than fixed.
+The reassessment below is written up as evidence; no representation is accepted and the contract is unchanged, so the checkpoint still needs a human decision.
+
+- Compare a record that independently retires its named alternatives with one that supplies ancestry only through a held referencing selection.
+  Prefer the latter for the next experiment, not as an accepted rule: partial delivery should not complete retirement independently of the selection whose resolution it explains.
+  Done; the preference survived the experiment.
+- Preserve the current record-first trace as a control, and exercise both delivery orders into a populated fork and a settled lineage, including permanent withholding of either artifact.
+  Assert the exact tips, available route, pause causes and permission to resume before and after each delivery, with all alternatives retained.
+  Keep multi-parent selections as the comparison control, and state expected behavior independently of the classifier.
+  Done.
+- Reassess the separate-record preference on those results and update the candidate contract before expanding into durability modeling.
+  Optional disclosure still costs a teammate an indefinite pause; accepting public resolution evidence still requires an explicit decision about the recorded #224 boundary.
+  The reassessment is written; the contract update waits on acceptance of the gating rule.
+
+### Review follow-through before durability
+
+1. Preserve the review's two-orphan-record counterexample and correct the activation boundary.
+   Done: activation is rooted in a held route selection and is not transitive, so record-to-record links are inert rather than rejected.
+   A routeless record must not open another record's gate merely by naming it.
+   Both delivery orders, redelivery and independent retirement as the control are exercised; the existing cases are unchanged.
+2. Correct the known history-report defect in the same bounded model cleanup.
+   Done: fork subjects are route selections, and the record/selection surplus pair is gone from `Actor.inspect()` at all three points under both semantics and both chosen sides.
+   Routeless records supply ancestry and remain inspectable evidence, but are not incompatible route choices.
+3. Review the corrected evidence and decide the candidate semantics before adding persistence states.
+   Recommend gating, explicitly accepting its extra pause when the record arrives before the selection, indefinitely if that selection never arrives.
+   Keep the separate-record preference provisional: this experiment favors gating within that representation, but does not establish a new advantage over the multi-parent control.
+   Carry the existing #224 disclosure decision separately; no public representation or runtime handoff is accepted by this review.
 
 ## Work after that checkpoint
 

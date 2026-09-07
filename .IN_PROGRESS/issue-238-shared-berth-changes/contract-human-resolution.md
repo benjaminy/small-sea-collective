@@ -5,8 +5,30 @@ Status: Move 10 candidate contract, under revision after review of `5b18218`.
 It is not an implementation handoff and proposes no runtime schema.
 The decision ledger and open questions remain in [plan.md](plan.md); the repair-side terms it uses are defined in [contract-sibling-repair.md](contract-sibling-repair.md).
 The single-predecessor proposal and the classification of missing ancestry below have counterexamples; see the [review and next research step](notes.md#review-of-move-10-and-next-research-step-2026-09-07).
-The body preserves the reviewed candidate, not corrected semantics.
-The next step is model-level comparison under the plan, before extending the runtime probe; neither public multi-parent ancestry nor removal of the counter is accepted.
+The body below preserves the reviewed candidate, not corrected semantics, and the corrections established since are listed next.
+Neither public multi-parent ancestry nor removal of the counter is accepted.
+
+## Corrections established by the model comparison
+
+The obligations are [obligations-actor-claims.md](obligations-actor-claims.md); the evidence is the [step 1](notes.md#move-10-step-1-2026-09-07-the-counterexamples-are-executable), [step 2](notes.md#move-10-step-2-2026-09-07-what-each-actor-may-conclude) and [steps 3–5](notes.md#move-10-steps-35-2026-09-07-comparing-resolution-representations) results.
+These correct the body; they do not replace it, and no representation is accepted.
+
+- **"Competing" as defined below is wrong and is superseded by four separate conclusions**: supersession, incompatible choices, incomplete ancestry, and contradictory payloads.
+  Incomplete ancestry is a refusal to claim, not a weaker conflict, and a held common ancestor does not license an incompatibility claim.
+- **A resolution must durably record what it retires.**
+  A single predecessor plus content equality accounts for at most one alternative, whichever it names.
+  Whether the retirement lives in the selection's parents or in a separate record is open.
+  The retirement-timing experiment favors requiring a held referencing route selection before a separate record takes effect.
+  Review found that another routeless record can incorrectly open the modeled gate; the [correction and checkpoint](plan.md#review-follow-through-before-durability) precede acceptance and durability work.
+  Gating and the separate-record representation remain recommendations, not accepted contract rules.
+- **The binding is candidate-independent and is the part that carries its weight.**
+  Naming the reviewed predecessors is not the same check as verifying that nothing else arrived; a third selection between report and application must refuse under any representation.
+- **A merge-shaped signed event proves nothing about human review.**
+  A reviewed resolution and an automatically minted one are byte-identical to a teammate.
+- **A pause cause is a fact about held evidence**, so it clears exactly when that evidence changes, and retained historical forks do not pause anything.
+  The resume rule — no cause remains and no human hold — is a candidate, and promises no progress.
+- **Without published ancestry a teammate can conclude nothing at all**, which sharpens rather than settles the succession section below.
+  The counter remains an ordering baseline and is still not a resolution mechanism.
 
 This contract answers the four questions the [Move 9 review](notes.md#review-of-move-9-2026-09-07) left open.
 Three were settled by the 2026-09-07 discussion and are recorded here with their costs.

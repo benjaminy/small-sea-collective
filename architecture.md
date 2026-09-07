@@ -220,6 +220,11 @@ Make the disagreement and the scope of the pause visible, preserve the alternati
 The evidence may remain in parked histories; it need not all be integrated into live state before a person can decide.
 This option still requires detecting the problem and enforcing local authorization; it does not excuse silent replacement or harm that occurs before detection.
 
+This departs deliberately from conventional distributed systems design.
+Those systems avoid pausing on a human because they serve many uncoordinated parties under throughput, latency, and availability requirements, and no person is available to be asked.
+Small Sea's coordination groups are small, the parties can talk to each other out of band, and a paused device blocks only its owner.
+The tradeoff that makes pausing unacceptable elsewhere does not apply here, so treating it as acceptable is a decision, not an oversight.
+
 The corresponding safety rule is strict: human-scale repair is acceptable, but
 silent misresolution is not. Code must not grant access by arbitrary row order,
 collapse distinct identities by friendly name, or discard one side of a

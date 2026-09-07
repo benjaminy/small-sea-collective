@@ -14,6 +14,7 @@ Automatic recovery from sibling disagreement is still not an assumed acceptance 
 - **#224:** if public predecessor links are accepted, obtain the issue owner's agreement and explain the substantive change and diagnostic/privacy tradeoff.
   Public multi-parent ancestry specifically revisits the recorded rejection of a peer-verifiable selection DAG; explain why that additional evidence belongs in the public contract and what it reveals.
   A wire change alone is not an ownership or trust change.
+  The model comparison narrows the ask: what a resolution retires is the fact that must be public for a teammate to conclude anything, and a separate resolution record makes that disclosure separable from ordinary succession, at the cost of two artifacts that must travel together.
 - **#139 / #235:** record actual dependencies and interfaces for arbitrary app berths and Core/Files use.
   Their app provisioning UX and Files capstone scope remain separate.
 - **#237:** preserve the distinction between shared accounts and device-local credential repair when discussing overlap.

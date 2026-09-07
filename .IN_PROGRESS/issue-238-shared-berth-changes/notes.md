@@ -735,3 +735,436 @@ Existing pause choices remain the starting candidate; the predecessor correction
 The contract is marked under revision, with its reviewed body preserved for reference.
 No merge-node definition, wire format or runtime change is accepted by this planning update.
 No new model or runtime probe was run for this update.
+
+## Move 10 step 1, 2026-09-07: the counterexamples are executable
+
+`models/model_human_resolution.py` preserves the three counterexamples from the [review](#counterexamples-to-preserve) as passing controls.
+It runs no runtime code and proposes no replacement representation.
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_human_resolution.py -q
+```
+
+Nine cases pass; the five earlier models still pass alongside it, 126 cases in total.
+
+The candidate under test is the reviewed contract's: at most one predecessor, and two selections compete when a view holds both, neither reaches the other through held links, and their route content differs.
+Each control asserts that classification and, separately, what the complete evidence shows.
+
+### Neither single-predecessor choice retires both branches
+
+With P, A and B held and complete, a resolution R choosing B's content and naming A is not competing with B only because their route content matches.
+An ordinary successor S of R with new content then competes with B, on complete history and with no fresh disagreement.
+Naming B instead leaves A competing from the moment R exists.
+`test_no_single_predecessor_accounts_for_both_alternatives` holds both failures together, which is the form the counterexample should keep: it is not an argument for multi-parent links, only a demonstration that one link plus content equality is not enough.
+
+### Incomplete ancestry is the fact the candidate discards
+
+Both remaining controls report a conflict where none exists, and in both the view holds a selection whose named parent it does not have.
+For X → Y → Z with Y missing, delivering Y alone removes the reported conflict; nobody chose anything.
+For the DAG variant — X names P, Z names P and Y, Y names X — the view holds paths from P to both tips, so a held branch point is present and the report still says conflict; delivering Y proves Z supersedes X while P remains a common ancestor throughout.
+`test_incomplete_ancestry_accompanies_every_misreported_conflict` states the shared fact directly: incomplete ancestry accompanies both misreports, and a held common ancestor does not distinguish them.
+
+That is a necessary condition observed on two schedules, not a proposed classification rule.
+Whether incomplete ancestry is the right thing to report, and to whom, is step 2's question.
+
+### Limits
+
+Selections carry a parent set because the DAG control cannot be written otherwise; the candidate never mints more than one parent, and no multi-parent representation is accepted by this step.
+The model has one actor type — a view is a held set of selections — so it does not yet distinguish the selecting device, its sibling and a receiving teammate, which is step 2's deliverable.
+Delivery only adds, so nothing is forgotten, retained forks are not separated from current tips, and no signature, human review or pause behavior is modeled.
+
+## Move 10 step 2, 2026-09-07: what each actor may conclude
+
+[obligations-actor-claims.md](obligations-actor-claims.md) records the per-actor claims, and the second half of `models/model_human_resolution.py` makes them executable on the step 1 schedules.
+Twenty-two cases pass; the five earlier models still pass alongside it, 139 in total.
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_human_resolution.py -q
+```
+
+These are obligations for step 3 to compare candidates against, not a representation.
+The step 1 controls are untouched, so the reviewed candidate's failures still stand next to the corrected claims.
+
+### Unknown ancestry is not an empty ancestry
+
+Modeling the teammate exposed a distinction the vocabulary did not have.
+A selection naming no parents is a root with complete ancestry; an announcement that publishes no links leaves ancestry unknown.
+Collapsing them lets an actor claim incompatibility from an absence of information, which is the second counterexample in a new costume.
+`Selection.parents` is now `None` for unknown, and completeness is false there.
+
+### The teammate row is the sharp one
+
+With no ancestry published — today's runtime — every pair a teammate holds classifies as incomplete ancestry, so it can separate neither an ordinary rotation nor a disagreement and may claim neither.
+Publishing links is what buys the supersession claim.
+That prices the #224 boundary for step 3 rather than deciding it: it is what each representation must pay, not a decision to publish links.
+
+### Causes are facts, not flags
+
+A pause cause is an incompatible or incomplete pair among the tips, or a contradicted identity, so it disappears exactly when the evidence that produced it changes.
+The candidate resume rule — no cause remains and no human hold — promises no progress, since missing history may never arrive.
+Separating tips from retained history is what keeps a preserved fork from pausing anything after it is resolved, and matching route content still leaves two distinct selection identities.
+
+### Limits
+
+A merge-shaped claim asserts supersession of several branches and remains no evidence that a person reviewed anything; nothing here records human involvement, and step 3 must keep that gap visible per candidate.
+The classification is pairwise, delivery only adds, and no restart, replay, restore, competing human resolutions or multiple disputed berths are modeled.
+The resume rule is exercised only on the preserved schedules.
+
+## Move 10 steps 3–5, 2026-09-07: comparing resolution representations
+
+`models/model_resolution_candidates.py` runs four representations against the step 2 obligations on the preserved schedules.
+Forty-three cases pass; all seven models pass together, 182 in total.
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_resolution_candidates.py -q
+```
+
+The oracle is not candidate-supplied.
+`classify`, `tips` and `pause_causes` come from step 2 and are identical for every candidate; a candidate decides only what records exist and which actor holds which links.
+So a candidate passes because of the evidence it puts in an actor's hands, which is what a reviewer can check.
+
+### What was compared
+
+| Candidate | Where retirement lives | What a teammate receives |
+| --- | --- | --- |
+| Multi-parent | Both reviewed alternatives named as parents of the resolution selection | The links, inseparable from the selection |
+| Separate record | A resolution record beside a single-predecessor selection | Selection plus record, published together |
+| Retained local | The same record, never published | Selection only; public succession stays single-parent |
+| Counter | Nowhere; scalar ordering only | A rank |
+
+### Results
+
+All three link-bearing candidates repair the first counterexample for the resolving device, on either side of the fork and after an ordinary rotation: one tip, no current incompatibility, both alternatives retained as a historical fork, and the pause cleared.
+None of them turns missing ancestry into a disagreement, in either arrival order, on either the missing-link or the missing-second-parent schedule.
+Delivering the absent link clears the uncertainty; on a genuine fork, delivering the branch point instead confirms the disagreement, and the model asserts both directions from the same act of delivery.
+
+The separate record makes the choice that broke the reviewed candidate stop mattering: the selection may name the chosen alternative, and the record retires the other, so no single-predecessor choice has to carry both obligations.
+
+The discriminating result is at the teammate.
+Under retained-local, public succession alone never retires the alternative, so a teammate that witnessed the fork holds two current tips forever: it classifies the resolution's descendant and the rejected branch as an incompatible choice and cannot resume, no matter how often the old selections are redelivered.
+That is not a bug in the candidate; it is the #224 boundary applied honestly.
+Deriving resolution from retained private evidence resolves the device and leaves every teammate paused.
+
+The counter remains an ordering baseline and nothing more.
+It yields a route for an unresolved fork with equal counters — it cannot report what it cannot represent — and a teammate holding counter-only announcements has unknown ancestry for every selection, so it may claim neither rotation nor disagreement.
+
+Two candidate-independent results came out of the operation boundary.
+A third conflicting selection arriving between report and application makes the operation refuse under every candidate, with no selection changed, nothing published, all alternatives preserved, and a new report containing the arrived evidence; naming the reviewed predecessors is not the same check.
+And a person-reviewed multi-parent resolution and an automatically minted one produce byte-identical teammate evidence, so no report drawn from that evidence may claim a person reviewed anything.
+
+### Preference, weakness and the next discriminating experiment
+
+The comparison rules out two of the four.
+Retained-local fails the teammate obligation permanently, and the counter never detects.
+
+Between multi-parent and the separate record the evidence is close, and the honest reading is that it does not settle the representation.
+The weak preference is for the **separate record**, because it decouples three things the multi-parent shape fuses: which predecessor the selection names, what the resolution retires, and how much of that is disclosed.
+Retained-local is the same mechanism with publication off, so disclosure becomes a policy choice rather than a representation change — and that is itself a result, not a convenience.
+
+Its weakness is real and is the strongest argument for multi-parent: two artifacts must travel together.
+A teammate holding the selection but not the record is in exactly the retained-local state, and concludes a disagreement that was settled.
+Multi-parent cannot have that failure mode, because holding the selection is holding the retirement.
+
+The next discriminating experiment follows directly.
+If a selection names the identity of its resolution record without naming what that record retires, then a missing record reads as incomplete ancestry rather than as a disagreement — uncertainty instead of a false conflict — and the separate record's failure mode becomes a pause that later evidence can clear.
+Whether that holds under partial and interrupted delivery of the two artifacts is the experiment that would settle the choice.
+It is recorded as the next step, not implemented.
+
+### Which facts need durable representation
+
+- What a resolution retires. Every candidate that lacks it fails, wherever it is stored.
+- Whether a selection's ancestry is known or simply unpublished. Collapsing the two lets an actor claim incompatibility from missing information.
+- Selection identity, independent of route content, so a resolution is not hidden behind matching locations.
+
+These can remain Manager policy or local interpretation: whether to publish the resolution record, the pause scope, the resume rule and the human hold, and how the report and its binding are expressed at the operation boundary.
+The binding is behavior, not a wire format; the model checks it identically for every candidate.
+
+### The #224 boundary
+
+Both surviving candidates publish ancestry, and step 2 priced why: with nothing published, every pair a teammate holds is incomplete ancestry and it may claim neither a rotation nor a disagreement.
+That is the cost of the recorded boundary, stated rather than argued against.
+
+The extra disclosure a resolution adds is narrower than a peer-verifiable selection DAG but is real: publishing that one selection retires two branches tells a teammate that the signer held both.
+The separate record is what makes that disclosure separable from succession, since the record can be withheld — at the cost recorded above.
+Nothing here changes the boundary; #224's owner still has to agree before public resolution evidence is proposed, and [follow-up.md](follow-up.md) already carries that ask.
+
+### Limits
+
+Delivery only adds, so the partial-delivery case that decides the preference is described but not modeled; that is the named experiment.
+No restart, replay, restore, competing human resolutions, or more than one disputed berth.
+Signing is a claim with a signer and models no key, revocation or trust change, and nothing here records human involvement.
+The classification is pairwise on small schedules, and no runtime code was run for this move.
+
+## Move 10, 2026-09-07: the discriminating experiment
+
+Run to make the step 5 checkpoint decidable, not to settle the representation.
+Seven cases added to `models/model_resolution_candidates.py`, 50 in that file and 189 across all seven models; the review correction below brings those to 53 and 194.
+
+The mechanism is the one the comparison named: the selection names the identity of its resolution record, and the record names what it retires.
+The record is then an ancestry node carrying no route, so its absence is a missing named parent — which step 2 already classifies as incomplete ancestry.
+One rule was needed after all, and the review correction below records it.
+
+It works, in both interruption orders.
+A teammate holding the selection but not the record claims nothing rather than claiming a disagreement, and the arriving record clears the pause and leaves one tip.
+A record arriving before its selection is inert and pauses nothing, once a routeless node is excluded from the tips; the first version of the experiment only appeared to show this.
+The unreferenced version is preserved as a control: with no reference in the selection, a settled disagreement is indistinguishable from a live one, which is the failure the reference removes.
+
+It buys no progress, and the model says so.
+Withholding a referenced record leaves a teammate paused on evidence a policy decision is choosing not to send, indefinitely.
+So the reference converts a false conflict into honest uncertainty; it does not rescue keeping resolution evidence private.
+
+### What this settles and what it does not
+
+The separate record's one clear disadvantage against multi-parent — a holder of the selection alone concluding a settled disagreement is live — is removable, by a reference that needs no addition to the classification.
+Multi-parent's advantage was that it has no partial-delivery state at all, and that remains true; the reference trades it for a pause that clears when the record arrives.
+
+On that evidence the separate record with a reference is the better candidate, because it keeps disclosure separable from succession without the false-conflict cost, and because the same artifact is where evidence of human review would have to live if it is ever represented at all.
+Its remaining weaknesses: two artifacts and their delivery to keep track of, a public reference that still discloses that a resolution happened even when the record is withheld, and no reduction in what a teammate must hold to conclude anything.
+
+Reopened by: a delivery model where the record's absence is ordinary rather than exceptional, which would make the honest pause the common case; or a decision that resolution evidence must not be separable, which is the argument for folding it into the selection's parents.
+
+This is evidence for the checkpoint, not a decision.
+No representation is accepted, the contract's corrections are unchanged by it, and nothing here was probed against runtime code.
+
+### Review correction, 2026-09-07
+
+An outside review of the experiment found two defects in the models, both reproduced and both fixed in `a7ce749`.
+
+**A record arriving first was not inert.**
+The record was represented as a selection with no route, and the tips rule treated every held, unsuperseded node as a route candidate.
+The record-first case only passed because the teammate was empty; delivered into a clean A → B history, a record retiring A became a second tip and the teammate paused on a false incompatibility.
+The fix is one rule: a held node carrying no route is ancestry only, able to retire what it names but never a candidate itself.
+So the claim above that the reference needed no addition to the classification was wrong; it needs this one, and the model now states it.
+Three cases cover record-first delivery into populated teammate views, on both fork sides and on the reviewer's exact counterexample.
+
+**Repeated announcements erased contradictory evidence.**
+The teammate kept one announcement per signer and selection identity, so a second payload from the same signer overwrote the first before contradiction detection ran.
+That broke the contradiction obligation in [obligations-actor-claims.md](obligations-actor-claims.md) and the standing assumption that delivery only adds, and it let one signer rewrite a teammate's held route by redelivery.
+The teammate now retains every distinct announcement.
+Two cases cover a single signer contradicting itself, which pauses and leaves the first-held route in place, and exact redelivery, which contradicts nothing.
+
+Neither fix changes the checkpoint's reading: the separate record with a reference remains the better candidate on this evidence, at the cost of one explicit rule about routeless nodes.
+No runtime code was run or changed.
+
+### Checkpoint follow-up, 2026-09-07: when retirement takes effect
+
+Reviewing the seven commits through `100a874` identifies a remaining semantic question, not a recurrence of either defect fixed in `a7ce749`.
+Excluding a routeless record from the tips does not make its arrival inert: `tips` still collects its ancestors as superseded selections.
+The populated-fork micro test explicitly expects the record alone to remove the rejected branch from the tips.
+A direct model trace confirms the resulting change before any referencing selection arrives:
+
+| Held evidence | Tips | Available route | May resume |
+| --- | --- | --- | --- |
+| P and its conflicting children A and B | A, B | None | No |
+| The same history plus a routeless record retiring A | B | B's route | Yes |
+
+This qualifies the earlier claims that record-first delivery is inert or leaves a populated view undisturbed.
+The clean-lineage regression remains fixed, but the fork schedule allows independent retirement and resumption.
+Whether that is intended must be decided before treating the partial-delivery experiment as support for the complete resolution contract.
+
+The next experiment should compare independent retirement with retirement supported only through a held selection that references the record, retaining multi-parent selections as a control.
+The recommendation is to try the latter because it keeps retirement attached to the selection whose resolution the record explains; this is a proposed semantic choice, not an established obligation or accepted representation.
+Check both arrival orders and permanent withholding of either artifact against explicit expectations for tips, route availability, pause causes, resumption and evidence retention.
+The separate-record preference must then be reassessed; separable disclosure still does not satisfy the teammate's evidence requirement when the record remains private.
+
+After that checkpoint, restart, replay and restoration are the next bounded research scope already listed in `plan.md`.
+Include interruption between persistence and publication steps, competing resolutions, multiple disputed berths, unrelated sibling work, stale review bindings and fresh deliberate disagreements.
+Only then extend the runtime probe against the coherent candidate contract, distinguishing stand-ins from demonstrated runtime behavior.
+
+Validation at `100a874`: all 194 model micro tests passed with the explicit file glob below.
+The trace above used the existing model without editing it; no runtime behavior was tested.
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_*.py -q
+```
+
+## Move 10 checkpoint, 2026-09-07: gating retirement on the referencing selection
+
+Run to decide the checkpoint above, not to accept a representation.
+`models/model_retirement_timing.py` adds 28 cases, 222 across all eight models.
+It compares two semantics for the same artifacts, leaving `classify`, `tips`, `pause_causes` and the resume rule from step 2 untouched:
+
+- **Independent**, what the model did before: a held record retires the selections it names, whether or not any held selection references it.
+- **Gated**: a held record supplies ancestry only through a held selection that names it as a parent.
+  An unreferenced record is retained evidence and nothing else.
+
+Multi-parent selections are the control, and every expectation is written as literal tips, route, pause causes and resumption, so a candidate cannot pass by agreeing with the classifier about what it just did.
+
+### The record-only state separates the tested schedules
+
+A teammate holding the fork P → {A, B} and paused on it:
+
+| Delivery | Independent | Gated |
+| --- | --- | --- |
+| Record only, ever | tips {chosen}, chosen's route, resume | tips {A, B}, no route, still paused on the fork |
+| Record, then the selection | tips {sel-r}, resume | same |
+| Selection, then the record | pause on incomplete ancestry, then tips {sel-r} | same |
+| Selection only, ever | pause on incomplete ancestry, indefinitely | same |
+| Multi-parent selection | tips {sel-r}, resume; nothing to withhold or reorder | — |
+
+Both semantics keep the `a7ce749` regression fixed: a record retiring A, delivered into a clean A → B lineage, still changes nothing.
+Both leave the resolving device undisturbed, because it holds the reference throughout.
+All alternatives are retained in every case.
+
+The first row exposes the difference, which also occurs transiently between deliveries in the record-then-selection row.
+The final states agree once both artifacts arrive; the question is whether receiving a record whose selection may never arrive is enough to retire a branch and hand a teammate a route.
+
+### Reading
+
+The recommendation from the follow-up survives its own experiment: prefer gating.
+The independent row is a teammate acting on an artifact that explains a resolution it does not hold, and the route it adopts is the chosen branch rather than the selection that resolution produced — a route no held selection asserts is current.
+Gating adds a pause relative to independent retirement when only the record has arrived, lasting until the referencing selection arrives and indefinitely if it never does.
+The earlier experiment already charged the converse cost when only the selection arrives; accepting that cost does not eliminate this additional delivery-order cost.
+
+Gating also makes the two artifacts fail together rather than half-succeed.
+Under independent retirement, the record is a second, weaker way to change a teammate's route, and it is the one an adversary or a partial sync would have to deliver rather than the pair.
+That is an argument from the model's shape, not a threat analysis; nothing here models an attacker.
+
+What this does not do: it does not reduce what a teammate must hold to conclude anything, it does not rescue keeping resolution evidence private, and it does not decide the recorded #224 boundary, which still has to be settled explicitly before public resolution evidence is accepted.
+The separate record with a reference remains the better candidate on the accumulated evidence, now with retirement gated on that reference.
+Nothing is accepted here; the contract still records the representation as open.
+
+Reopened by: a delivery model where the referencing selection is routinely lost while its record survives, which would make gating a permanent pause where independent retirement made progress.
+
+### A routeless record still appears in the history
+
+Found while running this experiment, not fixed: `historical_forks` ranges over every held node and `classify` compares route content, so a routeless record pairs with the chosen selection as an incompatible historical fork.
+The rule from `a7ce749` excluded routeless nodes from the tips only.
+This affects the report `Actor.inspect` produces, not any tip, route, pause cause or resumption, so no result above depends on it.
+Whether a record is ever a party to a fork is the same kind of semantic question this checkpoint asked, and `classify` is the shared oracle for all eight models, so the surplus pair is asserted where it appears rather than removed.
+Corrected since; see [the follow-through](#fork-subjects-are-route-selections).
+
+### Limits
+
+No runtime code was run or changed, and no artifact is withheld or sent by any rule the model represents; withholding is a schedule here, not a policy.
+Nothing in the model is evidence that a person reviewed anything.
+Durability, restart, replay and restoration are untouched, and remain the next bounded scope in `plan.md`.
+
+Validation: all 222 model micro tests pass.
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_*.py -q
+```
+
+## Review of a71d129, 2026-09-07
+
+### Judgment
+
+The checkpoint is useful evidence for preferring gated retirement over independent retirement on the tested two-artifact schedules.
+It is not ready to serve as the foundation for durability modeling: the new gate admits a counterexample to its stated rule, and the acknowledged history-report defect should be corrected before reports become persistence or review-binding inputs.
+The next steps are the bounded corrections and validation in [plan.md](plan.md#review-follow-through-before-durability), then a semantic decision, then restart, replay and restore.
+No runtime change or public representation is accepted by this review.
+
+### P2: a routeless record can open another record's gate
+
+In `models/model_retirement_timing.py:66–70`, `GatedView._referenced()` gathers parent identities from every held node, including routeless records.
+The stated rule requires a held referencing selection, but another record alone can enable retirement.
+The inherited `tips()` walks ancestry from every held node, so suppressing the outer record's links does not prevent the inner record from independently retiring a route selection once this global gate opens.
+
+Reproduced without changing model code:
+
+| Delivery into a held P → {A, B} fork | Tips | Route | May resume |
+| --- | --- | --- | --- |
+| No record | A, B | None | No |
+| `rec-1` naming B | A, B | None | No |
+| Then routeless `rec-2` naming `rec-1` | A | A's route | Yes |
+
+No route selection references either record, all evidence is retained, and the graph is acyclic.
+This shape is accepted by the model's constructors and is neither rejected nor excluded by its stated assumptions.
+If record-to-record links are outside the intended vocabulary, make that restriction explicit and enforce it before applying their ancestry; otherwise activation must be rooted in a held route selection.
+This is a model boundary defect, not a demonstrated runtime exploit.
+Corrected since; the trace below no longer reproduces, and see [the follow-through](#the-gate-is-rooted-in-a-route-selection).
+
+The following trace asserts the observed failure, not the desired behavior:
+
+```python
+import sys
+sys.path.insert(0, '.IN_PROGRESS/issue-238-shared-berth-changes/models')
+from model_retirement_timing import GatedView, actor, resolution_node, state
+from model_human_resolution import ROUTE_P, ROUTE_A, ROUTE_B, selection
+
+a = actor('T', 'teammate', GatedView)
+a.view.receive(selection('sel-p', ROUTE_P),
+               selection('sel-a', ROUTE_A, 'sel-p'),
+               selection('sel-b', ROUTE_B, 'sel-p'))
+before = state(a)
+a.view.receive(resolution_node('rec-1', ['sel-b']))
+assert state(a) == before
+assert not a.may_resume()
+a.view.receive(resolution_node('rec-2', ['rec-1']))
+assert state(a)['tips'] == frozenset({'sel-a'})
+assert a.may_resume()
+assert all('rec-1' not in (s.parents or ())
+           for s in a.view.held.values() if s.route is not None)
+```
+
+### Existing history defect: fix the report's subjects
+
+The commit correctly discloses the surplus record/selection pair and preserves it as an assertion.
+That defect predates this commit, so it is not a second newly introduced regression.
+My recommendation is to exclude routeless nodes from fork subjects while retaining them as ancestry and inspectable evidence.
+An incompatible route choice requires a route; this follows the existing actor obligations rather than requiring another representation experiment.
+Check the full inspection report, retain the genuine A/B historical fork, and show that tips, routes and pauses are unchanged.
+Do not retain the surplus-pair assertion as a desired result after that correction.
+
+### Scope of the evidence and its cost
+
+The original write-up overstated the result by saying that only one schedule differs and gating adds no cost.
+The record-first schedule also differs between its two deliveries, even when the selection eventually arrives.
+The checkpoint discussion above now states that interval and its additional pause explicitly.
+Given the accepted human-scale pause design, I still prefer waiting for the selection whose resolution the record explains.
+That is a semantic judgment supported by the trace, not a result proven by asserting two different expected outcomes.
+
+This experiment compares retirement timing within the separate-record candidate.
+The multi-parent control still has one artifact and no separable retirement to time; preference for a separate record continues to rest on the earlier disclosure and representation arguments.
+The recorded #224 boundary remains an independent acceptance question.
+
+### Validation
+
+All 222 model micro tests pass at `a71d129` using the existing explicit file glob.
+The counterexample above was also run with `.venv/bin/python` and reproduced the premature resume.
+No runtime code was run or changed; this review updates branch documents only.
+The passing suite establishes the existing bounded schedules, not the stronger activation rule that the counterexample violates.
+
+## Move 10 review follow-through, 2026-09-07: the corrected gate and history report
+
+Steps 1 and 2 of [plan.md](plan.md#review-follow-through-before-durability) are done.
+Step 3, the semantic decision, is left to a human: nothing below accepts a representation, and the contract is unchanged.
+
+### The gate is rooted in a route selection
+
+`GatedView._referenced` now gathers named parents only from held nodes that carry a route.
+A routeless node's own links are suppressed before they are read, so activation is rooted in a route selection and is not transitive.
+Two orphan records can no longer open each other's gate: the review's `rec-1` / `rec-2` shape leaves the fork exactly as it was.
+
+Record-to-record links are inert under this rule rather than rejected.
+The shape is still received, retained and inspectable, which keeps the model's refusal to claim distinct from discarding evidence, and leaves the question of whether the vocabulary should carry that link at all to the checkpoint.
+Rejecting the shape at receipt was the other option the plan named; it would have required the model to decide what a receiver does with an artifact it cannot interpret, which is a durability question rather than a retirement-timing one.
+
+`test_records_alone_never_activate_each_other` exercises both delivery orders and redelivers each record, asserting literal tips, route, pause causes and permission to resume after every delivery, with both records and both alternatives retained.
+Independent retirement stays as the control on the same schedule, and does retire on `rec-1` as it does for a lone record.
+`test_gating_still_activates_through_the_referencing_selection` shows the correction does not close the gate the experiment was about: with both records already held, the referencing selection still settles the teammate on the chosen route.
+The existing selection-first, record-first, withholding and post-resolution rotation cases are unchanged and still pass.
+
+### Fork subjects are route selections
+
+`historical_forks` now ranges over route-carrying held nodes only.
+An incompatible choice is a choice of route, so a node with no route of its own is ancestry and inspectable evidence, never a party to a fork.
+`classify`, `tips`, `pause_causes` and the resume rule are untouched, and a record keeps supplying ancestry to the pairs that are subjects.
+
+`test_the_history_report_names_only_route_selections` checks the whole `Actor.inspect()` report at three points — the live disagreement, after resolution, and after ordinary rotation — under both semantics and both chosen sides.
+The A/B fork is current before resolution and history after it, the record/selection surplus pair is gone, `incomplete` stays empty, and tips, route and pause behavior are asserted alongside the report.
+The surplus-pair assertion in `test_gating_does_not_disturb_the_actor_that_made_the_resolution` is replaced by the corrected expectation, as the review asked.
+
+### What this does not establish
+
+Both corrections were checked against their absence: reverting either one fails the new tests and nothing else, so they are not passing by agreeing with the classifier.
+Neither correction is evidence for gating over independent retirement.
+It removes a counterexample to the gate's stated rule, which the earlier evidence had assumed rather than demonstrated.
+The separate-record preference, the #224 disclosure boundary and the retirement semantics all remain open.
+
+Validation: all 236 model micro tests pass; 14 fail with either correction reverted.
+
+```
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_*.py -q
+```
