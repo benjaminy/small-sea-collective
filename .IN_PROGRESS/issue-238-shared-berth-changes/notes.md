@@ -557,3 +557,181 @@ The publication-outcome and succession-branch models pass: 50 cases with `.venv/
 The initial combined Move 7/8 probe run was blocked by sandbox restrictions on binding localhost ports, before the 11 MinIO-backed cases could execute; the non-provider case passed.
 Rerunning with localhost access allowed passed all 12 cases in 61.34 seconds: `.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_publication_adoption.py .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_interrupted_finalization.py -q --tb=short`.
 No runtime code or probe assertions changed; `git diff --check` passes.
+
+## Move 9 result, 2026-09-07: the human-resolution walkthrough
+
+Source: [probes/probe_human_resolution.py](probes/probe_human_resolution.py), which imports Move 7's setup and Move 8's `_both_siblings_rotate` schedule rather than copying either.
+Six cases, on two consecutive runs against `b4d9318`; 19 across all four probes:
+
+```sh
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_human_resolution.py -q
+```
+
+No runtime code was changed.
+The probe starts from Move 8's refused publication and asks what a person can see, what stops, and what the smallest effective choice is.
+
+### What B shows, and where the evidence actually is
+
+The competing selections all survive, and none of them is reachable through the Manager API.
+`note_to_self_conflict_status` reports one parked ref: a name and a commit SHA, with nothing about a berth, an allocation or a disagreement.
+`core_storage_allocation` reports B's own allocation and `route: ready`.
+Reading the parked commit's `core.db` blob recovers A's allocation, and reading the merge base recovers the predecessor both devices rotated away from, so base, A's choice and B's choice are all inspectable — by opening Git objects and querying a SQLite blob, which is what a human's tooling would have to do.
+So the pause preserves the evidence a decision needs and reports none of it.
+That is the gap to close before an explicit pause is a design rather than an accident: detection already works, presentation does not exist.
+
+### The pause is not scoped to the disputed berth
+
+One berth's disagreement stops the entire NoteToSelf channel in both directions.
+B registers a second cloud account, an unrelated change nobody contests, and `push_note_to_self` is refused before that change is considered.
+A registers its own second account and publishes; B's refresh returns `constraint_refused` and applies no rows, so the unrelated change does not arrive either.
+This is a real cost of pausing that the human-resolution direction has to price.
+Waiting is cheap for the disputed route, because B keeps using its own storage; it is not cheap for everything else the participant's devices need to tell each other, and the blast radius is the channel, not the conflict.
+
+### Choosing the sibling's allocation takes three operations, one of which the Manager lacks
+
+Withdrawing B's competing row is enough to unblock adoption: with that row deleted, the parked head applies, the outcome is `integrated`, A's unrelated account arrives in the same operation, and the outstanding-ref list empties.
+That delete has no Manager operation behind it.
+`reconcile_team_route` replaces one selection with another and has no way to withdraw one, so the probe does the delete directly against the NoteToSelf database.
+Withdrawal is sufficient in this schedule; it does not establish which operation the eventual interface should expose.
+
+Adopting the row is also not the whole choice.
+B's own signed announcement still names the location it just gave up, so immediately after integration the route reports `pending`, not `ready`.
+A no-argument `reconcile_team_route` repairs that by signing for the adopted allocation, and B publishes normally afterwards.
+The demonstrated resolution is three operations — withdraw, integrate, reconcile — of which the runtime offers two.
+
+### Choosing this device's allocation is not expressible at all
+
+There is no way for B to keep the location it chose.
+Reinstating it means naming a location that already exists and is already materialized, and `reconcile_team_route` deliberately has no location parameter.
+After clearing the block, the only thing B's human can do is rotate again: a third location, a third bucket, and B's materialized storage abandoned.
+So of the two choices the walkthrough was asked to evaluate, one costs a hidden row delete and one cannot be made.
+The Move 3 model's "deliberate human reselection" has no runtime expression, which is why the plan's requirement that a resolution establish appropriate succession cannot be checked against this code.
+
+### A fresh disagreement pauses again
+
+The same schedule run again from the resolved state wedges again on the same constraint, parks a second ref, and leaves B holding its second rotation.
+Both devices deliberately select again, so this is a new conflict and another pause is consistent with the accepted design.
+Integration already records a merge commit containing both histories; the result does not establish that the first resolution lacks durable meaning.
+Whether replaying the resolved disagreement or delayed announcements can undo that choice remains unprobed.
+
+### What does not pause
+
+The allocation channel stops and the signed channel does not.
+While B is refused on `push_note_to_self`, its announcement for its own location is already written in the team Core database, and `push_team` succeeds.
+Allocations travel over NoteToSelf and announcements travel over the team Core chain, so a teammate can be told about a route that B's own sibling will never learn it selected.
+This is the delivery split Move 8 identified, now with the failure visible from one side: pausing the sibling channel does not pause what teammates are told.
+
+### Limits
+
+One participant, two installations, one berth, one provider, one machine, sequential devices, no teammate, no killed process.
+The row delete standing in for a withdrawal is a probe action, not a proposed API.
+`push_team` succeeding is established for this setup; no teammate fetched the pushed chain, so teammate-visible routing is not demonstrated here.
+Restore is still unprobed.
+Six passing cases are evidence about these code paths, and the probe fixes nothing.
+
+## Review of Move 9, 2026-09-07
+
+Reviewed `57c6ada` against the Manager integration and publication paths.
+The six new probes passed in 49.08 seconds with `.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_human_resolution.py -q --tb=short` after allowing localhost access for MinIO.
+The initial sandboxed run failed before setup could bind its ports.
+No runtime code or probe assertions changed.
+
+The substantive correction above separates a fresh disagreement from replay of a resolved one.
+The probe's "nothing structural" interpretation was too strong: a new conflict does not show that the earlier choice was forgotten.
+The next deliverable should define what a person chooses and demonstrate that the choice remains effective, before selecting its storage representation.
+
+### Debatable choices and the strongest alternatives
+
+- **A choice over reviewed evidence, or separate withdrawal and integration.**
+  Prefer an operation that chooses either preserved allocation for the named disagreement, retaining unrelated work from both sides.
+  The strongest case for withdrawal is economy: the existing integrator already makes it effective in Move 9, and the primitive could be useful beyond this conflict.
+  But withdrawal alone names neither the accepted alternative nor the evidence the person reviewed; integration considers outstanding heads and may encounter additional evidence.
+  Show that a changed disagreement remains visible and cannot silently substitute another choice before treating this sequence as the interface.
+  This requires a meaningful operation boundary, not necessarily a new transaction framework or resolution table.
+- **Channel-wide or berth-scoped pause.**
+  Start with a visible channel-wide pause as the simplest candidate: it preserves the existing refusal boundary without requiring partial integration of a shared database.
+  The strongest case for narrowing it is that an unrelated account or device-management change should not have to wait for a storage dispute the person chooses to leave unresolved.
+  Move 9 demonstrates blocked account propagation, but does not establish harm from that delay sufficient to require a narrower boundary.
+  Identify the blocked workflow and its consequence; if waiting is unacceptable, justify how partial integration preserves dependencies and conflicting evidence.
+- **Continue or pause team publication.**
+  Continuing preserves useful local work and avoids coupling two channels merely because one is blocked.
+  The strongest case for stopping disputed-route publication is containment: a local pause is insufficient if teammates silently adopt a route that resolution later rejects.
+  Neither safety nor harm at the receiving teammate is demonstrated by `push_team` succeeding.
+  Keep this choice open until a teammate consumes both delivery orders; distinguish replay of signed bytes, new attestation and route selection when defining the paused operations.
+- **Human pause or automatic counter-based priority.**
+  Prefer human resolution for observed incompatible choices under the accepted allowance for indefinite disagreement.
+  The strongest case for a counter is ordinary succession: delayed signing or delivery should not require a human to rediscover that Y deliberately replaced X, and Move 1 already shows why signing time cannot decide that.
+  A pause candidate must explain what detectable evidence prevents that reversal, including what the teammate can see; the current uniqueness refusal only detects one sibling-integration case.
+  Counters may satisfy that ordering obligation, but equal counters still conflict and unequal counters do not establish agreement.
+  Retain them if their ordering benefit justifies the machinery, without treating them as the resolution mechanism or automatically restoring fallback and union adoption.
+- **Existing Git evidence or explicit resolution records.**
+  First test whether retained histories and the integration commit suffice to preserve the selected state and recognize replay.
+  The strongest case for an explicit record is semantic evidence: ancestry proves incorporation, not that a person reviewed these alternatives and deliberately selected one.
+  Add such a record if a required report or replay rule cannot be derived from the retained evidence; a second fresh conflict is not that justification.
+  A record would describe a local choice and its reviewed evidence, not establish global agreement among siblings.
+
+### Focused validation before a handoff
+
+The first new schedule should choose B's existing location with unrelated changes on both A and B, then check that the selected location and both changes survive publication and sibling adoption.
+Restart and replay the already-resolved histories separately from making new selections; the former must not silently reverse the choice, and the latter may produce another visible pause.
+Introduce additional conflicting evidence between inspection and application to check that the operation still means what the person approved.
+Then exercise delayed announcements at a receiving teammate, both NoteToSelf/Core delivery orders and restore against the proposed contract.
+These checks supplement the earlier obligations against publication of unfinished or refused work and retries that manufacture new selections.
+None requires automatic convergence, a narrower pause, public predecessor links or a new durable-state subsystem in advance of evidence that it is needed.
+
+## Review of Move 10 and next research step, 2026-09-07
+
+Reviewed `5b18218`, which adds `contract-human-resolution.md` and changes no runtime code.
+The review identified two counterexamples in the proposed semantics.
+A small in-memory Python check reproduced both during review; it was not saved as a branch model and is not runtime validation.
+Preserving these controls is the first step in the revised [plan](plan.md#next-work).
+
+### Counterexamples to preserve
+
+Let A and B be selections with predecessor P and different route content.
+Resolution R chooses B's content and names A as its single predecessor.
+R and B are temporarily noncompeting under the candidate because their content matches.
+An ordinary successor S of R with new content competes with old B, despite complete retained history and no fresh disagreement.
+Naming B as R's predecessor instead leaves A competing immediately.
+A single predecessor and content equality therefore do not by themselves account durably for both alternatives.
+
+For the clean history X → Y → Z, a recipient holding X and Z but missing Y is classified as observing a conflict.
+Receiving Y alone establishes succession without a human choosing anything.
+A pause can be appropriate while evidence is missing, but the report must distinguish uncertainty from demonstrated incompatible choices.
+
+Multi-parent ancestry adds a further control.
+X names P; Z names P and Y; Y names X, but the recipient does not yet hold Y.
+The recipient holds paths from a common ancestor P to X and Z, yet obtaining Y proves Z supersedes X.
+A held common ancestor is therefore insufficient to establish that tips remain incompatible when missing ancestry could connect them.
+
+### Committee proposal and limits
+
+The committee proposed multi-parent selections, a three-way evidence classification, and automatic resumption when retrieved history establishes succession.
+Multi-parent supersession is a useful candidate for the first counterexample, not an accepted representation of every human resolution.
+Evaluate separate choice evidence and retained Git evidence as alternatives, while making each candidate's teammate-visible ordering evidence explicit.
+The scalar counter remains an ordering baseline, not proof of agreement or human review.
+
+A signed merge-shaped selection can assert supersession of both branches without proving that a person reviewed them.
+That distinction already appears in the earlier public-payload controls and must survive this revision.
+Likewise, naming the reviewed predecessors does not replace checking revisions and newly observed conflicting alternatives at application time.
+A third selection may arrive while both original IDs and payloads remain unchanged.
+
+Separate currently effective tips from retained historical forks so that preserving evidence does not itself keep a resolved disagreement active.
+Resuming after missing evidence establishes succession is a candidate policy, provided no other pause cause or explicit human hold remains.
+Human-Scale Coordination permits this policy; it does not mandate automatic progress or require a person to resolve an unavailable-history case.
+
+Public multi-parent ancestry exposes that a signer observed several branches and revisits the recorded #224 decision against a peer-verifiable selection DAG.
+The cost is a change to the public evidence boundary as well as payload size or diagnostic metadata.
+The model can explore it before any decision to change that boundary.
+
+### Direction from the user and next deliverable
+
+The user asked for concrete next steps while keeping later options open, prioritizing a durable and flexible foundation over shipping quickly.
+The plan now separates a bounded model comparison from later durability experiments, runtime probes and an eventual implementation handoff.
+Its next deliverable is executable counterexamples, actor-specific claims and a comparison that states reasons to prefer or reject each candidate.
+An inconclusive comparison should identify the next discriminating experiment rather than force a representation choice.
+Existing pause choices remain the starting candidate; the predecessor correction does not silently settle publication policy, restore behavior or implementation scope.
+
+The contract is marked under revision, with its reviewed body preserved for reference.
+No merge-node definition, wire format or runtime change is accepted by this planning update.
+No new model or runtime probe was run for this update.

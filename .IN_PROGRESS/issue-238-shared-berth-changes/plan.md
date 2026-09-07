@@ -3,20 +3,68 @@
 Issue: [#238](https://github.com/benjaminy/small-sea-collective/issues/238).
 Branch: `issue-238-shared-berth-changes`.
 Status: research discussion; individual decisions below are settled or explicitly reopened, and no complete protocol or implementation handoff is accepted.
-Moves 1–8 are complete within their recorded limits; the next work is a human-resolution walkthrough of Move 8's sibling-rotation conflict.
+Moves 1–9 are complete within their recorded limits.
+The Move 10 contract has been proposed and reviewed; next comes model-level comparison before extending the runtime probe.
 Evidence, commands and review corrections live in [notes.md](notes.md); eventual issue work lives in [follow-up.md](follow-up.md).
 
 ## Next work
 
-1. **Walk through detection, pause and human resolution.**
-   Starting from Move 8's refused integration, specify what B shows, which operations pause, and what evidence survives.
-   Evaluate choosing A's allocation, choosing B's, and leaving the device paused indefinitely.
-   Find the smallest operation that makes a human's choice effective, accounting for unrelated changes and another disagreement arriving later.
-   Use the existing parked histories where they suffice; automatic integration of both choices into live state is not a prerequisite.
-2. **Reassess machinery against that walkthrough.**
-   Compare pausing on conflicting route evidence with automatic counter-based routing and fallback before completing a durable-state contract.
-   Retain the detection and safety requirements established by the probes; do not require automatic recovery merely because a device is blocked.
-   Prepare an implementation handoff only after the remaining choices are accepted.
+The next deliverable is a small executable model and an evidence-backed comparison, not a runtime implementation or an accepted wire format.
+The review of `5b18218` and the committee discussion are recorded in [notes.md](notes.md#review-of-move-10-and-next-research-step-2026-09-07).
+
+1. **Preserve the counterexamples before modeling a fix.**
+   Add `models/model_human_resolution.py`, reusing earlier model vocabulary where it fits without building a general simulation framework.
+   Preserve controls that demonstrate the single-predecessor failure after resolution followed by ordinary rotation, and the clean X → Y → Z history misclassified when Y is missing.
+   Add the DAG variant where a held common ancestor appears to show a fork, but a missing second-parent path later proves succession.
+   Controls should pass by asserting the demonstrated failure of the old candidate; new candidates must satisfy separately stated behavioral assertions on the same schedules.
+2. **Write down what each actor can actually conclude.**
+   For the selecting device, its sibling and a receiving teammate, specify held evidence, missing evidence, current route or pause, and permissible claims.
+   Separate evidence of supersession, unresolved incompatible choices, incomplete ancestry, and contradictory signed payloads.
+   A common held ancestor alone cannot establish incompatibility when missing ancestry could establish supersession.
+   Distinguish remaining tips from historical forks, and retain distinct selection identities even when route content matches.
+   Record a candidate resume rule: resume when new evidence removes the cause of the pause and no other pause or explicit human hold remains; missing history may remain unavailable indefinitely.
+   Retrieving or inspecting evidence must remain distinguishable from integrating it into live state or publishing it.
+3. **Compare representations against those obligations.**
+   Model multi-parent supersession first because it directly addresses the counterexample.
+   Compare it with a separate record of the reviewed choice and with deriving local resolution from retained Git evidence while keeping public succession separate.
+   Reuse the counter-based candidate as an ordering baseline; a counter is neither evidence of human review nor a conflict-resolution rule.
+   For each candidate, identify the minimum evidence each actor needs and what remains unverifiable to that actor.
+   Do not assume private Git history is available to teammates, or that a signed multi-parent event proves human involvement.
+   Do not require every representation to succeed: preserve the smallest counterexample or explicit unmet obligation when one fails.
+4. **Run the first comparison on a bounded set of schedules.**
+   Resolve either side of a two-sibling fork, rotate normally afterwards, and deliver old selections late or repeatedly to a teammate.
+   Exercise the missing-link and missing-second-parent schedules in both arrival orders; distinguish evidence that clears uncertainty from evidence that confirms a disagreement.
+   Introduce a third conflicting selection after inspection but before application, while leaving the two reviewed selections unchanged.
+   The operation must refuse before changing the selected allocation or publishing effects, preserve all alternatives, and produce a report that includes the new evidence.
+   Check that merely signing a merge-shaped event cannot justify a report claiming human review.
+   Record actor traces and assertions alongside outcomes so a reviewer can inspect why a candidate passes, rather than trusting its own classifier as the oracle.
+5. **Review the comparison before expanding the experiment.**
+   Produce a compact comparison in `notes.md`: correctness evidence, retained state, public disclosure, missing-history behavior, restore obligations, and dependencies on existing policy.
+   Identify which facts need durable representation and which choices can remain Manager policy or local interpretation.
+   For public ancestry, explicitly assess the recorded #224 boundary and the extra disclosure that a signer observed multiple branches.
+   Prefer a candidate on the evidence, state its weaknesses and reopening conditions, and name the next discriminating experiment if the comparison is inconclusive.
+   Revise the contract only to the extent justified by that review; multi-parent links, separate resolution records, counters and automatic resumption remain candidates until then.
+
+## Work after that checkpoint
+
+The sequence below remains adjustable in response to the model results.
+Durability and a flexible foundation matter more than reaching an implementation handoff quickly.
+Keeping options open means preserving evidence, explicit assumptions and narrow semantic boundaries; it does not mean implementing every candidate or adding speculative extensibility machinery.
+
+- Extend the surviving candidate's model with restart, replay, restoration of older state, and interruption between resolution steps.
+  State what evidence survives each interruption and what may safely resume; do not assume an atomic transaction or a surviving high-water mark.
+  Check unrelated work on both siblings, more than one disputed berth, competing human resolutions, and a fresh deliberate disagreement after a completed resolution.
+  An old resolved branch must not regain effect merely through replay; a fresh disagreement may legitimately pause again.
+- Recheck the earlier obligations against delayed signing, retries that manufacture selections, promotion of unfinished or refused work, and contradictory payloads under reused identities.
+  Any changed obligation needs an explicit argument rather than a relaxed assertion to make a candidate pass.
+- Extend the runtime probe once there is a coherent behavioral contract to probe.
+  Choose B's existing location while preserving unrelated work from both devices, bind application to the reviewed evidence, and exercise the specified pause boundaries.
+  Test a receiving teammate under both NoteToSelf/Core delivery orders, including team publication before disagreement is detected.
+  Label stand-ins and distinguish model guarantees from properties the runtime actually demonstrates.
+- Reassess the current channel-wide pause and public evidence boundary against concrete workflows and model results.
+  Keep indefinite human pauses available; continued automatic progress is not a universal goal.
+  Evaluate versioned extension boundaries before any public schema is accepted, without adding compatibility layers for research artifacts.
+  Prepare a handoff only after the behavioral choices, evidence limits and remaining research questions have been reviewed.
 
 Restore was not probed and is the one item from the previous round left undone; the Move 5 restore rules stay model obligations.
 This branch changes no runtime code, and #238 stays open until its correctness requirements are implemented and validated.
@@ -57,6 +105,8 @@ Their model results remain evidence about those candidates, not proof that the m
   On detecting incompatible choices, a device may preserve the alternatives and pause the affected operation until a human decides, including indefinitely.
   Reason: the 2026-09-07 discussion; blocking a person's own device does not by itself justify an automatic correction algorithm.
   The decision must be meaningful and have a defined effect, but neither automatic adoption nor continued retry is required before the human acts.
+  Move 9 establishes what the current runtime charges for that pause: the disagreement is not reported, the whole NoteToSelf channel stops in both directions rather than the disputed berth, and the demonstrated adoption requires a raw deletion the Manager does not offer.
+  None of that reopens the entry; it names what an accepted pause must add.
   Reopened by: a concrete requirement for automatic progress or harm from waiting that this pause would not contain.
 - **Provisional local decisions with retrospective checking.**
   A device treats its view as at best probably true, decides what evidence is good enough to proceed, and supports later detection of contradiction.
@@ -146,7 +196,9 @@ Their model results remain evidence about those candidates, not proof that the m
   A located branch and lost routing priority are never evidence that anyone resolved the disagreement.
 - **Durable publication and adoption.**
   Establish what evidence detection and a meaningful human decision need, including conflicting payloads under reused identities and publication observations.
-  Move 8's competing allocations block the exercised integration and repair operations; decide how to expose that pause and apply a human choice using the preserved histories.
+  Move 8's competing allocations block the exercised integration and repair operations; Move 9 recovers the incoming alternative and predecessor from Git blobs, so decide what a conflict report names and how a choice survives replay of the resolved evidence.
+  A new deliberate disagreement may pause again; that does not establish a failure of resolution durability.
+  Decide how a person selects either preserved allocation, whether withdrawal belongs in the interface, and whether the pause should be scoped to the disputed berth.
   Decide whether the counter-based candidate's whole-record adoption and greatest observed counter are needed, then specify durable storage for the evidence the chosen design actually uses.
   Decide how a selection reaches a sibling at all, since allocations travel over NoteToSelf while announcements travel over the team Core chain with nothing ordering the two.
   Restore is still unprobed, so its rules remain model obligations.
@@ -169,7 +221,8 @@ Use two installations with distinct trusted device keys, explicit pause points a
 Do not replace the decision checks, publication, integration or selector under examination with success stubs.
 For each schedule record actor evidence, permissible effects, detection requirements, responses after discovery and conditions for progress.
 An explicit, evidence-preserving pause may satisfy a schedule; distinguish that outcome from misleading readiness or silent promotion of a choice.
-The immediate walkthrough must cover leaving B paused, choosing either preserved allocation, retaining unrelated changes, and pausing again on a later conflict.
+Move 9 examined the pause, demonstrated adoption of A with A's unrelated change, established the lack of a Manager operation to choose B's existing location, and reproduced a fresh conflict after resolution.
+It did not demonstrate choosing B, preservation of unrelated changes from both sides through resolution, or resistance to replay of the resolved disagreement.
 Validate safety separately from conditional progress; finite models and passing probes establish only their stated bounds.
 The research artifacts assert observed behavior, including defects, rather than fixing it.
 
