@@ -121,6 +121,8 @@ Small size does not excuse a safety rule that already fails with two or three pe
 
 When automatic convergence would require brittle machinery, Small Sea preserves both sides, makes the situation visible, and lets people decide what to merge.
 Git branches, forward restoration commits, Manager prompts, and structured Hub rejections are all expressions of this principle.
+Pausing a person's own device until they choose to resolve a disagreement can be an intended outcome, including an indefinite pause.
+The system must make the problem visible and preserve the alternatives; automatic progress is not a universal requirement.
 
 Signed evidence still has privacy and resource costs.
 Storage, retention, and application extensions must budget for those costs rather than assuming every authentic event deserves unlimited replication or effect.

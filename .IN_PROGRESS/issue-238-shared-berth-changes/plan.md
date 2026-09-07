@@ -2,22 +2,23 @@
 
 Issue: [#238](https://github.com/benjaminy/small-sea-collective/issues/238).
 Branch: `issue-238-shared-berth-changes`.
-Status: research discussion; individual decisions below are settled, but no complete protocol or implementation handoff is accepted.
-Moves 1–7 are complete within their recorded limits; the next work is publication and sibling adoption.
+Status: research discussion; individual decisions below are settled or explicitly reopened, and no complete protocol or implementation handoff is accepted.
+Moves 1–8 are complete within their recorded limits; the next work is a human-resolution walkthrough of Move 8's sibling-rotation conflict.
 Evidence, commands and review corrections live in [notes.md](notes.md); eventual issue work lives in [follow-up.md](follow-up.md).
 
 ## Next work
 
-1. **Probe publication and sibling adoption through real boundaries.**
-   Exercise lost acknowledgments, superseding refusals and interrupted repair.
-   Check what complete route content a sibling actually receives, and whether generic publication or restore can silently publish private or refused candidates.
-   Distinguish historical inclusion from current selection, including publication finding a descendant containing related or unrelated changes.
-2. **Use those results to finish the design.**
-   Settle the open questions below, revise unsupported assumptions, and prepare an implementation handoff only after the remaining choices are accepted.
-   Further modeling is not the current bottleneck.
+1. **Walk through detection, pause and human resolution.**
+   Starting from Move 8's refused integration, specify what B shows, which operations pause, and what evidence survives.
+   Evaluate choosing A's allocation, choosing B's, and leaving the device paused indefinitely.
+   Find the smallest operation that makes a human's choice effective, accounting for unrelated changes and another disagreement arriving later.
+   Use the existing parked histories where they suffice; automatic integration of both choices into live state is not a prerequisite.
+2. **Reassess machinery against that walkthrough.**
+   Compare pausing on conflicting route evidence with automatic counter-based routing and fallback before completing a durable-state contract.
+   Retain the detection and safety requirements established by the probes; do not require automatic recovery merely because a device is blocked.
+   Prepare an implementation handoff only after the remaining choices are accepted.
 
-Move 7 exercised interrupted S3 materialization with local MinIO: a sibling adopts a half-materialized allocation and repairs it by repeating materialization, retaining its ID and location.
-The candidate contract's completion marker has no counterpart in the observed allocation; deciding what evidence the design needs remains open.
+Restore was not probed and is the one item from the previous round left undone; the Move 5 restore rules stay model obligations.
 This branch changes no runtime code, and #238 stays open until its correctness requirements are implemented and validated.
 
 ## Design frame
@@ -40,6 +41,8 @@ Public succession, allocation identity and peer verification of private history 
 
 Each decision retains its reason and the evidence that would reopen it.
 The complete protocol and implementation handoff remain open.
+The 2026-09-07 discussion reopens automatic routing, fallback and union-adoption requirements for comparison with pausing for human resolution.
+Their model results remain evidence about those candidates, not proof that the machinery is necessary.
 
 - **Participant-owned shared allocation.**
   One participant's devices share one allocation and one route per berth, there is no owner device, and any currently trusted team device may rotate or repair that route.
@@ -50,9 +53,14 @@ The complete protocol and implementation handoff remain open.
   Reason: the 2026-09-06 return discussion; at human scale, making disagreement impossible is not a useful requirement.
   Reopened by: nothing expected.
   This bounds what the design must promise rather than what it must do.
+- **A visible pause can be an intended outcome.**
+  On detecting incompatible choices, a device may preserve the alternatives and pause the affected operation until a human decides, including indefinitely.
+  Reason: the 2026-09-07 discussion; blocking a person's own device does not by itself justify an automatic correction algorithm.
+  The decision must be meaningful and have a defined effect, but neither automatic adoption nor continued retry is required before the human acts.
+  Reopened by: a concrete requirement for automatic progress or harm from waiting that this pause would not contain.
 - **Provisional local decisions with retrospective checking.**
   A device treats its view as at best probably true, decides what evidence is good enough to proceed, and supports later detection of contradiction.
-  Reason: the same discussion; requiring a durable event that grants authority presupposes globally settled state.
+  Reason: the 2026-09-06 discussion; requiring a durable event that grants authority presupposes globally settled state.
   Reopened by: a schedule where retrospective detection is impossible and the resulting damage is unacceptable.
 - **Signing or delivery must not advance route succession.**
   Succession must survive delayed attestation and delivery independently of when those actions occur.
@@ -67,40 +75,54 @@ The complete protocol and implementation handoff remain open.
   How conflicting payloads under a reused identity remain detectable is still an obligation.
   Reopened by: a requirement that two siblings' attestations be addressable under one identity, or an argument that the eventual retention design removes the conceptual advantage of representing signing acts separately.
   Both candidates still need payload comparison to tell equivalent duplicates from contradictions, so that is not a reason for the choice.
-- **Succession ordering is public; conflict detection is not derived from it.**
-  A public scalar succession counter decides provisional routing priority, and a fresh selection that exceeds every counter its author has observed survives delayed delivery and repeated attestation of the branch it was chosen over.
+- **Public succession ordering; automatic priority reopened.**
+  In the counter-based candidate, a public scalar succession counter decides provisional routing priority, and a fresh selection that exceeds every counter its author has observed survives delayed delivery and repeated attestation of the branch it was chosen over.
   Detecting that two selections are competing branches is a separate capability that no counter comparison supplies; it requires retained selection history naming predecessors, including the superseded intermediate selections.
   Reason: the Move 3 model, where X₂ at counter 3 outranks Y₁ at counter 2 while no evidence connects them, and where a fork is found only after the intermediate X₁ is retained or adopted.
   Reopened by: a schedule where counter ordering alone must establish observed replacement, or a detection requirement that teammates must meet without receiving predecessor evidence.
   This decides what the counter is for; it does not decide what the public attestation carries.
+  The human-resolution walkthrough now reopens whether automatic priority is needed at all; a pause must still prevent delayed evidence from silently reversing an observed replacement.
   A public report may therefore locate a branch and say which side lost routing priority, and may never call that a resolution: the post-Move 5 review's control produces the same classification from a deliberate human resolution and from an author who never observed the branch it outranks.
 - **An unknown publication outcome is incomplete evidence, not an observed conflict.**
   After an unacknowledged publication a device keeps using and attesting to its own selection and reports the publication as unknown.
-  A definite refusal and an already-superseded result are observed conflicts: the device falls back to the greatest selection it still holds that it has not itself seen refused, or to the one the refusal names, and surfaces the conflict.
+  A definite refusal and an already-superseded result are observed conflicts: the Move 5 candidate falls back to the greatest selection the device still holds that it has not itself seen refused, or to the one the refusal names, and surfaces the conflict.
   Publication outcome bounds what a device may claim about publication, not what it routes to; a device that later adopts a greater selection routes there and still cannot say whether its own was published.
+  Automatic fallback after an observed conflict is reopened in favor of evaluating an explicit pause; the distinction between unknown and refused remains necessary.
   Reason: the Move 5 model, where the device's standing and its retry are identical whether or not the lost write landed.
   Reopened by: a schedule where proceeding after an unknown outcome causes damage that retrospective detection cannot make visible, or a runtime whose refusals are themselves unreliable enough that refused and unknown cannot be distinguished.
   Three corrections from the post-Move 5 review are part of this entry, each with a preserved control.
   An outcome describes one attempt: a refusal establishes that this attempt wrote nothing and is no evidence that an earlier attempt on the same record did not land, so what a device may claim about a record never weakens as attempts accumulate.
   Refusals are durable for the device that observed them: a selection it has seen refused is not a fallback candidate later, because private history records what was chosen rather than what the store accepted.
   A refusal that names a greater selection is evidence to be adopted rather than quoted, since attesting to a selection means holding it and the next deliberate selection must outrank what the device has now been told about.
+  Move 8 narrows the unknown window when a successful settlement reread finds the attempted head and proves the write's condition spent.
+  A failed reread can leave even a landed write unresolved; a changed etag alone does not identify whose write landed.
+  Cod Sync parks the divergent observed head and names the merge base, supplying inspectable Git evidence rather than a finding that another route supersedes this one.
+  What no runtime path supplies is durability: `push_note_to_self` discards every disposition and writes no marker, so the publication claim exists only for the duration of the call.
 - **A retry republishes a record; it never makes a selection.**
   Retrying an uncertain publication resends the identical selection ID, counter, predecessor and route.
   Reason: the Move 5 model, where a retry expressed as a fresh selection takes a counter above everything the device has observed and so resurrects a route a sibling deliberately replaced — the Move 1 failure without any delayed signing.
   A retry that has not yet seen the replacement instead lands on its counter and manufactures a tie nobody chose.
   Deliberate human reselection produces a mechanically identical record, so this must be enforced at the retry call site rather than detected afterwards.
   Reopened by: a retry schedule that cannot be expressed by replaying the original record.
-- **Merge and restore need one rule beyond ordering, and it constrains devices.**
-  Merging published records is union, and counters decide it in any merge order; restoring an old snapshot of published records revives nothing.
+- **Union merge and restore rules; automatic adoption reopened.**
+  In the Move 5 model, published records merge by union and counters determine provisional routing or a tie in any merge order; restoring an old snapshot of published records revives nothing.
   The two rules that do not follow from ordering are that the private-to-published boundary is crossed only by an explicit publication, and that a device's greatest observed counter is a monotone high-water mark that a restore adds to rather than replaces.
   Reason: the Move 5 model, where publishing a device's private history promotes a definitely refused selection, and where a restore that replaces state leaves a human's deliberate choice below the selection it was chosen over and unpublishable.
   Reopened by: a durable representation in which the high-water mark can be lost rather than replaced, or a merge that is not union.
+  Move 8 shows union is not available in current storage: `idx_berth_cloud_allocation_berth` makes one allocation per berth a schema constraint, replacement inserts rather than updates, and merging two siblings' rotations is refused outright.
+  Equal-counter selections can remain conflicted even with ordering, so a counter alone would not choose between them.
+  The human-resolution candidate may preserve the alternatives in parked histories and defer live integration until a human decides; union adoption is no longer a prerequisite.
 - **A selection record freezes complete route content; signing reads only the record.**
   Protocol, endpoint, the finalized locator and every account value a route depends on are fixed in the selection record, and attesting to a selection reads nothing else.
   Reason: the Move 6 model, where resolving account state at signing time makes a sibling's repair contradict the selection it was repairing, with two authentic signatures, neither device at fault and no route left for the teammate; and where union-merging a record set with a peer's account row derives a route nobody signed.
   A content digest satisfies the same correctness property and was rejected on cost, not on correctness: the record alone cannot then support repair, so a second delivery path is needed for content that freezing already delivers.
   Reopened by: a requirement that route content not be published to siblings in the clear, which is what would make the digest's separation of naming from content worth its delivery path, or a schedule where a selection must legitimately mean something different after account state changes.
   This says which values are bound, not which row holds them.
+  Move 8 splits the answer by consumer.
+  What a teammate consumes is `TransportEndpoint(protocol, url, location)`, and the signed announcement freezes exactly those.
+  That does not establish that selection content is frozen before signing; this requirement remains unimplemented.
+  What a repairing sibling consumes is read at repair time from a JOIN onto the account row, and includes `client_id` and `path_metadata`, which no announcement carries, plus device-local credentials that are published nowhere.
+  The reference-binding counterexample's precondition is therefore present in current code on the repair path, with no shipped mutation to trigger it.
 - **A selection is not minted until every field it freezes is final.**
   Provider finalization precedes selection, so a record never names a locator the provider has not settled on.
   Reason: the Move 6 model, where a record minted before finalization fixes the requested locator and the attested route names storage that does not exist, under both freezing and digesting.
@@ -118,16 +140,20 @@ The complete protocol and implementation handoff remain open.
 ## Open questions
 
 - **Public predecessor links.**
-  Advisory links remain preferred for teammate diagnostics, but honest counter-only provisional routing produces the same routing results without claiming supersession.
+  Advisory links were preferred for teammate diagnostics under the counter-based candidate; revisit their need after the human-resolution walkthrough.
   Decide whether diagnostics justify metadata exposure and revising #224, including the issue owner's agreement.
   Exposure beyond route content, including traffic analysis and correlation across berths or teams, is unpriced.
   A located branch and lost routing priority are never evidence that anyone resolved the disagreement.
 - **Durable publication and adoption.**
-  Establish the real guarantees for whole-record adoption, retention of conflicting payloads under reused identities, refusal evidence and the greatest observed counter.
-  Models assume set union and authentic records; they do not establish Git integration semantics or durability after state loss.
+  Establish what evidence detection and a meaningful human decision need, including conflicting payloads under reused identities and publication observations.
+  Move 8's competing allocations block the exercised integration and repair operations; decide how to expose that pause and apply a human choice using the preserved histories.
+  Decide whether the counter-based candidate's whole-record adoption and greatest observed counter are needed, then specify durable storage for the evidence the chosen design actually uses.
+  Decide how a selection reaches a sibling at all, since allocations travel over NoteToSelf while announcements travel over the team Core chain with nothing ordering the two.
+  Restore is still unprobed, so its rules remain model obligations.
   What a disconnected sibling may prepare before publication is still open.
 - **Complete route content and provider completion.**
   Identify the actual account fields a route must freeze and the consistency needed to capture them.
+  Move 8 gives the current answer — three frozen fields for a teammate, a read-time join plus device-local credentials for a repairing sibling — and leaves open whether repair should read a frozen record instead, and what a sibling does when the credentials a repair needs were never published.
   Decide whether to represent the interior state of multi-call materialization and what completion evidence a repairing sibling needs.
   No shipped adapter returns `materialized_with_locator`; the provider-issued-locator case remains modeled and stub-tested, not demonstrated by Move 7.
   Decide its present design role without treating a hypothetical provider as a requirement for new machinery.
@@ -142,11 +168,14 @@ The complete protocol and implementation handoff remain open.
 Use two installations with distinct trusted device keys, explicit pause points and local mocks or MinIO.
 Do not replace the decision checks, publication, integration or selector under examination with success stubs.
 For each schedule record actor evidence, permissible effects, detection requirements, responses after discovery and conditions for progress.
+An explicit, evidence-preserving pause may satisfy a schedule; distinguish that outcome from misleading readiness or silent promotion of a choice.
+The immediate walkthrough must cover leaving B paused, choosing either preserved allocation, retaining unrelated changes, and pausing again on a later conflict.
 Validate safety separately from conditional progress; finite models and passing probes establish only their stated bounds.
 The research artifacts assert observed behavior, including defects, rather than fixing it.
 
 | Question or schedule | What it should establish |
 | --- | --- |
+| Sibling rotations refuse integration | The disagreement and paused operations are visible; alternatives survive until a human chooses, with no deadline or requirement to merge first. |
 | A selects X, B selects successor Y, A resumes | Delayed signing and delivery cannot promote X above Y, regardless of clocks. |
 | Competing candidates and uncertain publication | Which actions are locally justified, what uncertainty remains, and how later evidence exposes incompatible claims or a silently promoted refused candidate. |
 | Competing successors, then another advance on one branch | Unequal succession counters do not establish agreement; identify the evidence and observer needed to detect competing history. |

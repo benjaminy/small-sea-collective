@@ -6,6 +6,7 @@ These are local proposals, not posted issue changes.
 The tentative split is one established-team Core implementation followed by broader integration and reports.
 The first must define a contract and identify paths outside it; the second must account for creation, invitations, changes, repair, integration, generic publication and courier delivery.
 Concrete scope follows the accepted design, not today's helpers or tables.
+The next design step is a human-resolution walkthrough; automatic recovery from sibling disagreement is not an assumed acceptance requirement.
 
 - **#238:** record the decision, rejected alternatives, evidence, limitations and agreed implementation split.
   Keep it open until runtime correctness requirements are implemented and validated.
@@ -16,6 +17,11 @@ Concrete scope follows the accepted design, not today's helpers or tables.
 - **#237:** preserve the distinction between shared accounts and device-local credential repair when discussing overlap.
 - **Independent defects:** prepare focused issue proposals for demonstrated problems outside the agreed scope.
   No duplicated-selector-policy defect was found; provider migration, old-location cleanup and speculative recovery remain outside this work.
+- **Sibling-rotation wedge (new, Move 8):** two of one participant's devices rotating the same berth's route while disconnected produce a NoteToSelf state that cannot be merged.
+  Integration fails on `UNIQUE constraint failed: berth_cloud_allocation.berth_id`, and the refused device stays diverged through refresh, integrate, reconcile and a further rotation while reporting `route: ready`.
+  Reproduced by `probes/probe_publication_adoption.py`; evidence in [notes.md](notes.md).
+  Frame the proposed issue around visibility of the pause and a meaningful way to apply a human choice, linked to #238.
+  Integration refusal by itself may be intended behavior; neither a counter nor automatic merging is a prescribed fix.
 
 After acceptance, put the appropriate semantics in Manager/Hub specs and architecture, clearly separating designed from implemented behavior and removing unsupported safety claims.
 The two already-completed Hub spec corrections have their own status in [doc-fixes.md](doc-fixes.md).

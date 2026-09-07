@@ -29,6 +29,12 @@ The architectural mandates below describe the intended destination, not what mus
 Minimum code that solves the problem, nothing speculative.
 No features beyond what was asked, no abstractions for single-use code, no unrequested configurability, no error handling for impossible scenarios.
 
+**Human resolution is a design option.**
+Before designing automatic conflict correction, evaluate detecting the problem, preserving the alternatives, and pausing for a human decision.
+Identify whose work is blocked and what harm waiting causes; a person's own device may remain paused indefinitely if they choose not to resolve it.
+Require automatic progress only when the task needs it, while keeping the problem visible and preserving the evidence needed for a meaningful decision.
+See [Human-Scale Coordination](architecture.md#human-scale-coordination).
+
 **Surgical changes.**
 Every changed line should trace to the user's request.
 Do not improve adjacent code, do not refactor what is not broken, and match existing style even where you would do it differently.

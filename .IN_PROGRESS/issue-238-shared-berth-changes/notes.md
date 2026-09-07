@@ -406,3 +406,154 @@ The Hub spec correction is already incorporated; no merge remains for it.
 Condensation retains the decision ledger with reasons and reopening conditions, the schedule catalog, model/probe evidence and limitations, corrected review findings and issue disposition.
 Completed agendas, superseded conclusions, repeated handoffs and now-preserved ad hoc control scripts were removed from the working documents.
 No executable artifact, runtime code or permanent spec changed.
+
+## Move 8 result, 2026-09-06: publication and sibling adoption at the real boundary
+
+Source: [probes/probe_publication_adoption.py](probes/probe_publication_adoption.py), which imports Move 7's two-installation setup rather than copying it, so `probe_interrupted_finalization.py` is untouched and its recorded witness still runs.
+Eight cases; twelve across both probes, on two consecutive runs against `589150e`:
+
+```sh
+.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_publication_adoption.py .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_interrupted_finalization.py -q
+```
+
+No runtime code was changed.
+`push_note_to_self` discards the `PublishResult`, so a pass-through recorder around `CodSync.publish` observes dispositions without altering what crosses the boundary.
+
+### Two siblings rotating one berth cannot merge, and the loser is wedged
+
+This is the move's main result and it was not predicted by any model.
+A and B adopt a common allocation, disconnect, and each call `reconcile_team_route(new_location=True)`.
+A publishes first.
+B's publication is refused as `PublicationIntegrationRequiredError`, which is the well-formed part: the refusal names the observed head and the merge base, parks the observed head under an immutable ref, and `note_to_self_conflict_status` lists exactly that ref.
+That is the "a superseding refusal is adopted, not quoted" evidence the Move 5 ledger asks for, present in the runtime already.
+
+The integration that evidence exists for cannot run.
+`integrate_note_to_self` returns `constraint_refused` with `UNIQUE constraint failed: berth_cloud_allocation.berth_id` and records no head.
+Replacement inserts a new allocation row rather than updating one, `idx_berth_cloud_allocation_berth` in `shared_schema.sql` says a berth has at most one, and Splice Merge unions rows by primary key.
+So the union of two deliberate selections is not a state the database will hold.
+
+Move 6 warned that union could derive a route nobody chose.
+The observed failure is the opposite and worse: union produces nothing, because no rule in the merge decides between two competing rows.
+Deciding between them is exactly what the branch's succession counter is for, and no counter exists in this schema.
+
+The control asserts the wedge is permanent under every ordinary next step.
+Refreshing reports the same constraint instead of adopting; integrating repeats it; reconciling with no change argument reports `route: ready, route_reason: None` because from B's side nothing is broken; and rotating again — the deliberate human resolution Move 3 modeled — succeeds locally, mints a third allocation and is refused for the same reason.
+Throughout, `core_storage_allocation` reports `ready`, so the device that can never publish again is the one that looks healthy.
+This is an independent defect in current code, not a property of the proposed protocol; it is recorded in [follow-up.md](follow-up.md).
+
+### Generic publication carries a refused candidate into a sibling's current selection
+
+A rotates into a location the provider never creates (Move 7's P0 pause), leaving a durable allocation with `route_reason: materialization_failed` and no bucket.
+A then does something unrelated — registers a second account — and calls the generic `push_note_to_self`, which commits whatever `core.db` holds.
+B refreshes for the unrelated change, integration reports `integrated`, and B's current allocation is now A's failed one.
+The working allocation is gone rather than retained, because replacement deletes the row it replaces.
+
+So the plan's question is answered: generic publication can silently publish a refused candidate, because nothing between a failed materialization and the shared chain distinguishes a candidate from a selection.
+B's own report calls the result `pending`, the same word Move 7 showed does not separate a half-materialized allocation from a finished unsigned one.
+
+The case also exposes a split the models did not represent.
+Allocations travel over NoteToSelf; announcements are written into the team Core chain and travel by `push_team`.
+B's signed evidence names neither the location it just stopped selecting nor the one it adopted, and nothing orders the two publications against each other.
+
+### Publication finding a descendant tells the device nothing
+
+A publishes, B adopts and deliberately replaces the route, B publishes.
+A — which never refreshed — pushes again with nothing outstanding.
+Cod Sync reports `already_present` with `observed_head != attempted_head`, which is true and says only that the store's head *contains* A's.
+`push_note_to_self` returns `None` for that and for a plain `published`, so the disposition is discarded at the Manager boundary, and every local report A can read still names A's replaced location.
+A second case runs the same schedule with B's descendant holding an unrelated change and gets an identical result, so the disposition does not depend on what the descendant contains.
+Historical inclusion and current selection are two facts and the runtime surfaces one of them, to a caller that throws it away.
+
+### A lost acknowledgment settles further than the model assumed
+
+Staged by patching `SmallSeaStore.put_latest_link` to perform the real write and then raise the `PublicationOutcomeUnknownError` that method already raises on an unreadable Hub response, so the runtime takes its own path rather than a stub's.
+Cod Sync's settlement pass rereads the store, finds this device's own head, and — because the landed write spent the conditional etag — closes the write and returns `already_present`.
+The Move 5 ledger treats an unacknowledged publication as incomplete evidence; on this path the evidence is not incomplete, because the etag distinguishes a landed write from a lost one.
+
+The control stages the identical error over a write that did not land.
+The etag is unspent, settlement cannot close the write, and `PublicationOutcomeUnresolvedError` propagates uncaught through `push_note_to_self`, which is the typed unknown the ledger describes.
+A plain retry then publishes.
+
+What the runtime does not do is keep either answer.
+`push_team` writes `.ss_last_push` beside a team's Sync repo for both ordinary dispositions; the NoteToSelf path writes no marker, so the settled claim exists only for the duration of the call.
+The landed-but-unacknowledged case also leaves the adopted signal count behind: the write carried `notify=True` and the Hub counted a self-update, while the `already_present` early return in `push_note_to_self` does not advance the baseline.
+
+### What complete route content a sibling actually receives
+
+Two different routes are at stake and the Move 6 ledger entry holds for one of them.
+What a teammate consumes is `TransportEndpoint(protocol, url, location)`, and the signed announcement carries exactly those three plus `announcement_id`, `teammate_id`, `berth_id`, `announced_at`, `signer_key_id` and `signature`.
+For teammate routing, route content is frozen in the record, as the ledger requires.
+
+What a sibling needs in order to repair is more, and none of the extra arrives frozen.
+`get_berth_cloud_allocation_for_berth` is a read-time JOIN of `berth_cloud_allocation` onto `cloud_storage`, so `protocol`, `url`, `client_id` and `path_metadata` are read at repair time from an independently mutable row; `client_id` and `path_metadata` are in that view and in no announcement.
+The credentials a repair materializes with are device-local and published nowhere: B's account row reports `credentials_on_this_device` and carries no secret.
+So Move 6's reference-binding counterexample has its precondition present in current code for the repair path.
+It has no shipped producer: accounts support add, connect-credentials and disconnect-credentials, and no code path updates `protocol`, `url`, `client_id` or `path_metadata` on an existing row.
+That is the same shape as Move 7's provider-issued locator — the exposure is structural and the mutation that would exercise it is unimplemented.
+
+### Limits
+
+One participant, two installations, one berth, one provider through one adapter, one machine, no teammate.
+Devices act in sequence: nothing here is concurrent, and no process was killed.
+The lost acknowledgment is a raised error at a real call site, not a torn write or a delayed effect.
+Restore was not probed at all, so the Move 5 restore rules remain model obligations.
+The wedge is established for `berth_cloud_allocation`; whether other shared tables refuse the same way was not checked.
+Eight passing cases are evidence about these code paths, and the probe fixes nothing.
+
+## Review of Move 8, 2026-09-07
+
+Reviewed `97898a3` against the runtime and the earlier models.
+The sibling-rotation constraint failure is a useful new witness.
+The review initially recommended a durable-state contract with automatic adoption of competing selections; the subsequent human-resolution discussion below replaces that recommendation.
+
+### Corrections needed before an implementation handoff
+
+- **A counter alone does not remove the wedge.**
+  Siblings selecting from the same observed history can mint equal counters; `Store.head()` in `model_publication_outcomes.py` deliberately returns no selection for that tie.
+  Both choices must remain inspectable, but the subsequent discussion rejects the review's assumption that this requires adopting both into live state before a human can act.
+  The initial plan's one-row-per-berth or ordering-aware-merge alternatives omitted another option: immutable selection records keyed by selection identity, with current routing derived separately.
+  Choosing one row during merge must not erase the history required for retrospective checking, and generic sync must not acquire route-selection policy.
+- **Provider failure, Git divergence and selection refusal are different evidence.**
+  The generic-publication probe demonstrates promotion of an unmaterialized candidate, not promotion of a selection previously refused publication.
+  The latter remains unprobed through the runtime.
+  Likewise, a parked divergent Git head supplies inspectable history, not a finding that another route has a greater succession counter.
+  Manager must interpret retained selection records before making that domain claim; an unrelated Git conflict must not automatically disqualify a selection.
+- **Freezing an announcement is weaker than freezing a selection before signing.**
+  The field-shape probe establishes that signed announcements contain the three transport fields.
+  It does not establish the Move 6 requirement that later signing reads an immutable selection rather than account state joined at signing or repair time.
+  Treat that requirement as still unimplemented even for fields a teammate eventually receives.
+- **Settlement requires an observation, not merely a landed write.**
+  The plan's claim that only a lost write remains unresolved is too broad.
+  `CodSync._settle` leaves an inconclusive write unresolved when its observation fails, including when the write actually landed; a changed etag closes the attempted write but alone does not identify whose write landed.
+  The probe establishes settlement when the reread succeeds and finds the attempted head.
+  The wedge is likewise established for the exercised Manager operations, not as proof that no possible manual repair exists.
+
+### Human-resolution direction from this session
+
+The user challenged the assumption that blocked integration needs an algorithmic remedy: if a person's own device is blocked, they can deal with it if and when they want.
+That argument is persuasive because the branch already permits indefinite disagreement, yet the review was still requiring automatic progress in the representation.
+Preserving both alternatives under parked Git heads and refusing integration may be the intended result.
+The issue to investigate is whether the disagreement is visible and a human can make a meaningful choice, rather than whether the device can merge automatically.
+The current `route: ready` report does not explain the blocked integration, and another rotation merely reproduces the constraint failure.
+
+The next move is a walkthrough from that refusal: what B shows, what pauses, what evidence survives, and how choosing A's allocation, choosing B's, or leaving the device paused would work.
+Find the smallest operation that makes a choice effective while accounting for unrelated changes and a later disagreement.
+Do not require automatic integration before a human acts, continued retries while paused, or eventual convergence.
+Reuse the existing parked histories where sufficient; immutable selection tables and a larger durable-state protocol remain options rather than prerequisites.
+
+This reopens automatic counter-based priority, fallback and union adoption, without discarding the earlier witnesses or selecting a replacement protocol yet.
+A pause must be triggered by detectable evidence: delayed signing must not silently reverse an observed replacement, and generic publication must not silently promote unfinished or refused work.
+Compare pausing on conflicting route evidence with the counter-based candidate, including the cost of asking a human about legitimate route changes.
+Keep publication uncertainty distinct from observed disagreement, and distinguish provider repair, another signing act and replaying signed bytes.
+Restore and the two NoteToSelf/Core delivery orders remain validation obligations for whichever design is chosen; a full loss of local evidence cannot be assumed to preserve an observed-counter high-water mark.
+
+The top-level docs already allowed human repair when automatic convergence becomes difficult.
+The missing guidance was to evaluate detection and pause early, identify whose work is blocked and what harm waiting causes, and allow an indefinite pause on a person's own device as an intended outcome.
+README and architecture now state that principle, and AGENTS asks future design work to evaluate it before introducing automatic correction.
+
+### Review validation
+
+The publication-outcome and succession-branch models pass: 50 cases with `.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_publication_outcomes.py .IN_PROGRESS/issue-238-shared-berth-changes/models/model_succession_branches.py -q --tb=short`.
+The initial combined Move 7/8 probe run was blocked by sandbox restrictions on binding localhost ports, before the 11 MinIO-backed cases could execute; the non-provider case passed.
+Rerunning with localhost access allowed passed all 12 cases in 61.34 seconds: `.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_publication_adoption.py .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_interrupted_finalization.py -q --tb=short`.
+No runtime code or probe assertions changed; `git diff --check` passes.
