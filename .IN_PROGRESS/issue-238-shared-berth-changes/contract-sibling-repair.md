@@ -1,8 +1,11 @@
 # Candidate contract: sibling repair from durable selection evidence
 
+Historical terminology: the singular selection and public ordering requirements below are being reassessed under the [multiple-location candidate](contract-multiple-locations.md).
+Frozen content and signing/selection separation remain relevant; the old representation is not a runtime requirement.
+
 Branch: `issue-238-shared-berth-changes`.
 Status: historical Move 2 model contract, not an implementation handoff.
-The current decision ledger and open questions are in [plan.md](plan.md).
+The preceding decision ledger and open questions are preserved in [the historical plan](plan-single-route.md).
 Move 2 chose separate signing identities; Move 3 supports public counter ordering; advisory public predecessor links remain preferred but undecided.
 Move 7 found no durable completion marker in the current allocation or local route report.
 Item 5 below remains an unvalidated candidate assumption; the observed runtime repairs by repeating materialization, and the design has not decided whether to retain or replace that assumption.

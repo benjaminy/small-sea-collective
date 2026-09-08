@@ -684,7 +684,7 @@ None requires automatic convergence, a narrower pause, public predecessor links 
 Reviewed `5b18218`, which adds `contract-human-resolution.md` and changes no runtime code.
 The review identified two counterexamples in the proposed semantics.
 A small in-memory Python check reproduced both during review; it was not saved as a branch model and is not runtime validation.
-Preserving these controls is the first step in the revised [plan](plan.md#next-work).
+Preserving these controls is the first step in the revised [plan](plan-single-route.md#next-work).
 
 ### Counterexamples to preserve
 
@@ -1052,7 +1052,7 @@ Validation: all 222 model micro tests pass.
 
 The checkpoint is useful evidence for preferring gated retirement over independent retirement on the tested two-artifact schedules.
 It is not ready to serve as the foundation for durability modeling: the new gate admits a counterexample to its stated rule, and the acknowledged history-report defect should be corrected before reports become persistence or review-binding inputs.
-The next steps are the bounded corrections and validation in [plan.md](plan.md#review-follow-through-before-durability), then a semantic decision, then restart, replay and restore.
+The next steps are the bounded corrections and validation in [historical plan](plan-single-route.md#review-follow-through-before-durability), then a semantic decision, then restart, replay and restore.
 No runtime change or public representation is accepted by this review.
 
 ### P2: a routeless record can open another record's gate
@@ -1128,7 +1128,7 @@ The passing suite establishes the existing bounded schedules, not the stronger a
 
 ## Move 10 review follow-through, 2026-09-07: the corrected gate and history report
 
-Steps 1 and 2 of [plan.md](plan.md#review-follow-through-before-durability) are done.
+Steps 1 and 2 of [historical plan](plan-single-route.md#review-follow-through-before-durability) are done.
 Step 3, the semantic decision, is left to a human: nothing below accepts a representation, and the contract is unchanged.
 
 ### The gate is rooted in a route selection
@@ -1168,3 +1168,411 @@ Validation: all 236 model micro tests pass; 14 fail with either correction rever
 ```
 .venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_*.py -q
 ```
+
+## Review of 98e4bbf, 2026-09-07
+
+No functional blocker found in this bounded increment.
+The gate now requires a direct reference from a held route selection, and the history report excludes routeless subjects while preserving route ancestry and the real A/B fork.
+The requested delivery, redelivery and inspection counterexamples are present.
+An additional review probe referenced only the outer record (`sel-r → rec-2 → rec-1 → sel-b`): the inner retirement remained inactive, both route tips survived and the actor stayed paused, confirming non-transitive activation on that shape.
+
+One P3 reporting correction remains in the validation paragraph above: reverting the gate alone fails 6 micro tests (230 pass), reverting the history correction alone fails 8 (228 pass), and reverting both fails 14 (222 pass).
+The history-only failures include four existing cases whose surplus-pair assertion was corrected, so “the new tests and nothing else” should also say “the new or updated assertions.”
+These results were reproduced in temporary model copies without changing the reviewed implementation.
+The unmodified explicit model suite passes all 236 micro tests.
+
+This review supports proceeding to the human semantic checkpoint, not accepting gated retirement, the separate-record representation or the #224 disclosure change on the human's behalf.
+No runtime code was changed or tested.
+
+## Multiple-location reframe, 2026-09-08
+
+The user proposes treating uncertain cloud placement as multiple locations to try, with future migration and primary/backup needs as motivation.
+This reopens the single-route assumption; it does not yet accept a replacement contract or authorize migration/backup implementation.
+
+A promising candidate separates authenticated read locations from the participant's write-placement decision.
+A reader can inspect several locations without claiming that their announcements are ordered, that their histories agree, or that a person resolved the placement dispute.
+Keep complete route records and their provenance; retrieving data remains subject to existing verification and integration policy.
+This could remove public succession classification from the prerequisite for reading, while leaving sibling write decisions and meaningful human resolution as separate obligations.
+It also challenges the current model's assumption that incomplete route ancestry necessarily pauses a receiving teammate.
+
+Availability, apparent freshness and a history containing another history do not establish that an offline sibling will never publish at the older location again.
+Trying all known locations therefore needs an explicit account of retirement and discovery: what permits stopping reads, what late announcements do, and how a reader knowing only an old location learns about a new one.
+Location sets alone also do not fix the demonstrated unique-allocation constraint that blocks NoteToSelf integration.
+Multiple locations must not silently mean replicating writes, merging independent bundle-chain heads or treating the first successful response as the only source worth reading.
+
+Recommended next comparison, before further retirement-representation detail: two sibling publishers use X and Y, a teammate reads both, one location is unavailable, and later a person chooses Y for future writes.
+Deliver a delayed X announcement and a fresh publication from an offline sibling at X, separately; include a receiver initially knowing only X and unrelated NoteToSelf changes.
+Compare the single-route candidate with multiple read locations on preserved work, visibility, discovery, write-choice replay, and the evidence needed to stop polling X.
+Judge simplification by which existing obligations and state disappear, not by allowing multiple rows alone.
+This is a proposed research direction; existing models remain evidence for their stated assumptions and no plan checkpoint or public representation is accepted here.
+
+## Plan reframe, 2026-09-08: channels, write placement and retirement
+
+### Direction from the discussion
+
+The user proposes a small amount of multiple-location support as a way to simplify disputed berth placement, with migration and primary/backup as ordinary future uses of the same capability.
+The subsequent discussion distinguishes device retirement from location retirement: devices author and sign, while cloud locations carry publications.
+A compromised device can manufacture authorized-looking work until the applicable trust policy deals with it; leaving an old channel available does not itself confer that signing authority.
+Authenticity, context binding and integration still need verification at their actual runtime boundaries.
+
+The user also makes the common operating assumption explicit: users do not control cloud providers and can do little about retained copies beyond stopping further uploads.
+Accordingly, location retirement must not require proof of deletion, a provider's cooperation in erasure or a key-revocation protocol.
+A write stop describes future uploads by the actor honoring it, not cancellation of an already in-flight upload or control over an offline sibling.
+
+I am persuaded that the earlier response put too much weight on establishing permanent silence at the old location.
+An offline sibling's later publication is a possible discovery/completeness problem, not proof that retiring the channel was an invalid security decision.
+A person can deliberately stop checking the channel, accept that work may be missed, and use manual inspection if they later learn of it and it is still available.
+That choice need not establish global agreement or promise eventual recovery.
+
+### Why this is a substantive change
+
+The preceding Move 10 investigation required a receiving teammate to identify a single route, distinguish live disagreement from historical forks, and resume only once the route-selection ambiguity was gone.
+Its public ancestry and retirement-record experiments answer that contract.
+They do not establish that reading requires the contract in the first place.
+
+The new candidate permits multiple authenticated locations to remain readable.
+A teammate may retrieve work without knowing whether the participant's siblings agree about placement, and may refrain from making succession or human-review claims it cannot support.
+This changes what the reader needs to conclude, rather than inventing a cheaper proof of the same conclusion.
+In particular, the earlier result that private resolution evidence alone is insufficient is scoped to a teammate being required to recognize resolution and select one route.
+It is not a proof that public resolution ancestry is necessary for the new behavior.
+
+The current plan therefore replaces the retirement-gate acceptance checkpoint with a bounded comparison and a runtime path map.
+The corrected gate and history-classification experiments are retained, not accepted or discarded.
+They may be useful if a specific write-choice or reporting obligation later requires them, but no longer dictate the next step.
+The complete preceding plan is preserved in [plan-single-route.md](plan-single-route.md).
+Its supersession retirement must not be confused with a reader deciding to stop polling a transport.
+
+### What the reframe does not solve by naming it differently
+
+Multiple sources can reveal divergent data histories, which still need the existing integration decision.
+A latest or reachable provider head cannot silently replace those histories.
+Cod Sync's current format uses a per-remote mutable head, archived links and bundles, including prerequisite checks; the experiment must not pretend these form a single cross-provider chain or CAS domain.
+The runtime path map should check source association throughout a chain traversal and preservation/deduplication of fetched evidence.
+See [the format specification](../../packages/cod-sync/Documentation/format-spec.md) for the existing boundary, not a multiple-location implementation.
+
+Move 8's allocation uniqueness refusal also survives the conceptual reframe.
+A reader's ability to fetch two locations does not make two sibling allocation rows mergeable or supply a meaningful choice of future write destination.
+The new plan requires an explicit comparison of retained locations versus write-choice state and a report of any remaining channel-wide blockage.
+It does not prescribe merely dropping a unique constraint or teaching generic sync to decide allocation policy.
+
+Finally, trying all known locations does not discover a location known to nobody reachable.
+A reader knowing only X needs Y's announcement through X or some other available communication path.
+Signed forwarding is a candidate convenience, not a new trusted cloud redirect or a guarantee of migration completion.
+When X is unavailable and there is no other route-delivery path, acknowledge that limitation and permit human assistance.
+
+### Recommended minimal defaults, still to test
+
+Read both admissible locations in the bounded experiment, preserving separate outcomes and verifying retrieved work.
+Do not stop after the first successful answer when the other may contain distinct work.
+Keep a single local write destination per publication attempt, allow siblings to have different local views, and treat adopting a new write choice as distinct from hearing an announcement or retrying a publication.
+Use a local explicit read stop as the first retirement candidate, with retained evidence that makes redelivery unable to silently undo it.
+These defaults are proposals for comparing behavior, not final schema or API decisions.
+
+There is some unavoidable local state if a stop must survive replay, but its purpose is modest: preserve the person's choice.
+It need not certify that all siblings stopped, establish permanent silence, or describe a public route-selection DAG.
+The model must not assume this state survives restoration when it does not; persistence work follows the smaller behavioral comparison.
+Identity binding for an old route re-announced under a new attestation, or intentionally used again later, remains a concrete representation question.
+
+The first validation set covers two siblings, one teammate and two locations; source failure, duplicate and divergent work, missing chain dependencies, invalid/context-mismatched claims, delayed announcements, an offline writer after a local stop, and a reader knowing only X.
+It also preserves the sibling integration and stale-review-binding obligations.
+Controls must show that first-success-only reads and write selection by signing time fail the intended assertions.
+The comparison should count state removed and added, rather than declare simplification from supporting multiple rows.
+
+### Scope, authority and document changes
+
+This edit carries the discussion into the active plan and adds [contract-multiple-locations.md](contract-multiple-locations.md) as the proposed experimental behavior.
+The prior human-resolution contract, sibling-repair contract and actor obligations have historical notices and precise links to the preserved plan.
+The issue follow-up now distinguishes the reopened one-route cardinality from participant ownership and device trust, and stops treating public ancestry disclosure as inevitable.
+No public spec, runtime code, model implementation or issue has been changed by this edit.
+
+Migration and primary/backup justify testing whether the vocabulary supports overlapping or persistently useful locations.
+They do not expand this branch into mirroring, automated failover, provider cleanup, erasure or migration UX.
+Practical decisions to stop reading and stop writing are in the new behavioral scope.
+The old blanket exclusion of old-location work is narrowed accordingly, without importing provider-object deletion.
+
+
+### Validation of this document edit
+
+Checked all 69 local Markdown links in the branch's top-level documents, including heading anchors; no missing targets were found.
+`git diff --check` passes.
+Reviewed the companion documents for stale active-plan references and redirected historical checkpoint links to the preserved plan.
+The pre-existing review addition in `notes.md` is retained.
+No model or runtime micro tests were run because this change only revises documentation; the 236-test result above is historical evidence, not new validation of multiple locations.
+
+## Runtime path map, 2026-09-08: where multiple locations would land
+
+Reviewed after the reframe commit `3b0a964`, from reading the runtime rather than running it.
+The probe in plan step 2 should confirm each item; none is accepted as a finding until it does.
+
+### The single-route choice point is one function
+
+`select_effective_teammate_berth_storage` in `packages/wrasse-trust/wrasse_trust/transport.py` filters a teammate's announcements for one berth to those signed by a device trusted for that teammate in that team, sorts by `announcement_id` descending, and returns the first that verifies.
+There is no succession, ancestry or pause anywhere in the runtime.
+The uuid7 ordering means the newest signature wins, which is exactly the control the plan requires to be shown failing.
+A multiple-read variant would return every trusted, verified announcement with a distinct `(protocol, url, location)` rather than the first; that is the whole read-side interface change at this layer.
+
+### The Hub has two consumers, and the write side already tolerates disagreement
+
+`_download_peer_file` in `packages/small-sea-hub/small_sea_hub/backend.py` calls the selector and reads from the single transport it returns.
+This is the read path that would fan out.
+
+`_require_own_storage_announcement` in the same file calls the selector for the publishing device's own participant.
+If the selected transport does not match the allocation being written to, it falls back to `_has_current_device_storage_announcement`, accepting the current device's own signed announcement instead.
+So a device already publishes to its own choice when a sibling's newer announcement differs.
+The runtime is closer to the "one local write destination per device" default than the earlier plan assumed.
+
+### Cod Sync keeps sources separate for free, but fetch does not preserve a divergent head
+
+A `CodSync` instance owns one store, so a chain walk (`_resolve`) never mixes endpoints; reading X and Y is two instances, not a new feature.
+Parked refs are named by link uid, so two stores cannot collide on a parked ref.
+
+Gap: `fetch` with `pin_to_ref` imports the remote chain's objects, then raises `PinIntegrationRequiredError` when the pin cannot advance.
+Unlike `publish`, it does not park the observed head.
+The divergent head's objects are in the object store with no ref pointing at them, recoverable only from the SHA in the exception.
+Preserving alternatives on the read side needs that closed, or a caller that parks itself.
+The probe should record exactly this.
+
+### What the announcement signature binds
+
+The canonical bytes cover announcement id, announced-at, berth id, location, teammate id, protocol, signer key id and url.
+Team id is not in the signed bytes.
+Trust is resolved per team from certificates before the signature is checked, so a device not trusted in a team is filtered before verification.
+Whether that suffices when one device key is trusted in two teams that share a berth id is a question for the probe, not a claim.
+
+### The sibling wedge is a schema constraint the reframe does not touch
+
+`idx_berth_cloud_allocation_berth` in `packages/small-sea-note-to-self/small_sea_note_to_self/sql/shared_schema.sql` is a unique index on `berth_id`, and `add_berth_cloud_allocation_by_berth_id` refuses a second row before insert.
+Two siblings each holding one row for the same berth cannot integrate NoteToSelf, as Moves 8 and 9 demonstrated.
+Reading both siblings' locations from a teammate's side changes nothing here.
+This is the primary #238 defect and is the subject of the human decision in plan step 4.
+
+### Consequence for the plan
+
+The reframe removes a proposal, not code.
+Counting state against the runtime, multiple reads add a read set, per-source observations and read stops, and remove nothing.
+The plan was resequenced accordingly: path map and probe first, a thin model only for stop/replay, the wedge decision before any Hub read-path change.
+The "compare against the single-route candidate on the same deliveries" requirement was dropped in favor of listing which Move 10 obligations the new candidate no longer carries.
+
+### Validation of this document edit
+
+Line numbers were checked by reading the named functions and the schema file; no code was run.
+`git diff --check` and the local link check are recorded in the commit that carries this edit.
+
+## Multiple-location probe result, 2026-09-08: the runtime with two readable locations
+
+Plan step 2, in `probes/probe_multiple_locations.py`.
+Eight tests, all passing, asserting observed behavior rather than a design.
+The probe confirms most of the path map above and corrects one item.
+
+### What is real and what is staged
+
+Real: MinIO, the Hub's own endpoints, `reconcile_team_route`, `push_team`, `fetch_teammate_core`, Cod Sync's publish and fetch, and one sender-key redistribution.
+Device A publishes at its first location L0, replaces it with X and publishes again, so X's head descends L0's.
+Device B, whose team clone predates both replacements, selects Y and publishes its own divergent head there.
+A spare location Z is materialized by a further rotation and never written.
+
+Staged, because no runtime path carries it: the sibling's authentic signed announcement row is inserted into the reader's team DB, as `probe_delayed_signing.py` does.
+Two provider-level stagings support single schedules: one bucket-to-bucket copy for identical content at two locations, and deletion of X's bundle objects for the incomplete-store schedule.
+
+The reader is device A, not a third participant.
+`_download_peer_file` selects by teammate and berth and reads anonymously, so nothing on that path depends on the reader being someone else.
+A real teammate would need its membership certificate, the sibling's device certificate and the announcements staged into the other devices anyway, because none of them travels over the fetch path that #185 built.
+That is a departure from the plan's wording and it is recorded here rather than hidden; it does not change the code under test.
+
+### Reading a sibling's location is not only a routing question
+
+Getting device B's location readable at all required B to redistribute its team sender key to A **before** B's first upload.
+A key redistributed afterwards arrives at a later ratchet iteration, and the already-uploaded objects fail to decrypt with `No skipped key for iteration 2 (current iteration: 3)`.
+So each additional publishing device is a decryption prerequisite for every reader of its location, ordered before that device publishes.
+The path map treated multiple locations as a selection and transport question; this is a third boundary, and a reader-side fan-out design has to say where those keys come from.
+Scoped since to the ratchet state the probe exercises; see [the follow-through](#multiple-location-review-follow-through-2026-09-08-source-binding-fallback-and-the-sender-key).
+
+### Selection, and the absence of any fallback
+
+`test_the_reader_uses_the_newest_announcement_and_reaches_one_location`: with X and Y both admissible, the peer store returns Y's head, the higher `announcement_id`, and `fetch_teammate_core` pins Y.
+The Hub exposes no way to ask for the other one.
+This is the "latest signature wins" control the plan required to be visible in the runtime rather than argued from the model.
+
+`test_an_empty_selected_location_is_not_backed_up_by_a_published_one`: with the newest announcement naming Z, which exists at the provider and holds no chain, the reader reports that the teammate publishes no Core chain while X and Y both hold complete, readable histories.
+One announcement is chosen and one store is asked; there is no fan-out and no fallback.
+
+### Divergence: the protocol drops the second head, the caller catches it
+
+`test_two_fetches_import_both_heads_and_leave_the_second_unreferenced`: two `CodSync` instances over two stores need no new feature, and a chain walk never mixes endpoints.
+The second half of that sentence is wrong outside the fixed-announcement schedule; corrected since, see [the follow-through](#multiple-location-review-follow-through-2026-09-08-source-binding-fallback-and-the-sender-key).
+The second fetch imports Y's objects and then refuses the pin; afterwards `repo.has_commit(head_y)` is true and no ref in the repository names it.
+The path map called that a gap to close.
+
+`test_the_manager_parks_the_head_the_protocol_leaves_unreferenced` corrects the consequence: `fetch_teammate_core` already catches `PinIntegrationRequiredError` and writes an immutable observation ref at the divergent head, and `list_core_source_heads` then reports both heads.
+Preserving alternatives on the read side is existing caller behavior, not something a fan-out design would have to invent.
+The gap is confined to Cod Sync's own `fetch`, which is worth stating precisely: a second caller written against `fetch` alone would silently lose the observation.
+
+### Ancestry, duplicates and an incomplete store
+
+`test_an_older_location_does_not_roll_the_pin_back`: reading L0 after X reports `stale` and leaves the pin at X; the reverse order reports `created` then `advanced`.
+Held work is not rolled back, and the ancestry describes the two stored histories only.
+
+`test_the_same_publication_at_two_locations_settles_on_one_head`: with X's objects copied to a second location, both delivery orders give `created` then `unchanged`.
+Deduplication here is ordinary chain validation, not a comparison between sources.
+
+`test_a_missing_bundle_at_one_location_is_reported_not_spliced`: with X's bundles deleted and its links intact, Cod Sync raises `ObjectNotFoundError` and the Manager reports `CoreFetchRemoteError`, which is distinct from the missing-publication error above.
+The pin does not move, and Y stays readable — but only because a separate announcement names it.
+Nothing in the runtime turns X's failure into an attempt at Y.
+That schedule left the reader holding X's announcement alone, so it could not have used Y; replaced since by `test_an_incomplete_selected_location_is_not_backed_up_by_a_known_one`, which keeps both installed, see [the follow-through](#multiple-location-review-follow-through-2026-09-08-source-binding-fallback-and-the-sender-key).
+
+### The write side already keeps one destination per device
+
+`test_a_siblings_newer_announcement_does_not_move_this_devices_writes`: with Y as the selected announcement and X as A's own allocation, A's `push_team` publishes to X.
+`_require_own_storage_announcement` compares the selection against the allocation and falls back to this device's own signed announcement.
+The experiment's proposed default — one local write destination per device, a sibling's announcement not redirecting writes — is what the runtime does today, so that part of the candidate costs nothing to adopt.
+
+### What this does not establish
+
+Nothing here integrates two retrieved histories; the divergence is preserved, not resolved.
+Because the reader is device A, the objects at L0 and X are already local and only Y's head is a genuine import; what the fetches establish is which store was asked and where the refs ended up, not the cost of transferring a history.
+Nothing here is evidence about a third participant's certificate and membership delivery, about persistence of any of this across restart, or about more than two publishing devices.
+The allocation uniqueness wedge is untouched, as expected: it is a write-side schema constraint and the read path never reaches it.
+
+### Validation of this document edit
+
+`.venv/bin/python -m pytest` over the five probe files: 27 passed in 138 s, of which 8 are new.
+The pre-existing model suite was run unchanged in the same session: 236 passed.
+Every claim above names the test that produced it.
+
+## Read-stop model result, 2026-09-08: replay, missed work and discovery
+
+Plan step 3, in `models/model_read_stops.py`.
+Eleven tests, standalone: it shares no vocabulary with the single-route models, because those represent route succession and a receiving teammate's pause and this candidate has neither.
+Modeled state is what the plan allowed — locations known, read stops and write stops held, publications retrieved, one write destination — with no simulator, clock, polling or migration engine.
+
+Results, one per schedule.
+
+A read stop survives replay of the announcement that named the location, whether the same announcement is redelivered or a fresh one for the same location is minted.
+The control `ReplayForgetsStop` shows the assertion has teeth: with the stop cleared on hearing the location again, nothing distinguishes the resumed location from one that was never stopped.
+Reading again is not resuming: only a deliberate `resume_reading` returns the location to the read set.
+
+Work published at a stopped location by an offline sibling is missed and stays valid.
+The read outcome never claims completeness, the stop report says `work_may_be_missed`, and a deliberate `inspect` recovers the work while the location is still available without resuming it or making it a write destination.
+When the location is unavailable, `inspect` reports `unavailable` — a limitation, not a recovery protocol.
+
+A reader knowing only X does not discover Y by trying everything it knows.
+Y is learned through a delivery or not at all; the model gives the forwarding-through-X and out-of-band paths as labeled candidates and reports the third case as undiscoverable rather than enumerating the world.
+Learning Y neither stops X nor moves writes to Y.
+
+Read stops and write placement stay separate: a delayed announcement for X does not move writes away from Y, stopping reads at X leaves the write destination alone, and a write stop describes this actor's uploads only — the provider keeps every byte and a sibling can still publish there.
+The stop report claims no erasure, no signer revocation and no permanent silence.
+
+The plan's other required control is also here: `FirstSuccessReader` returns after the first location that answers, reports an outcome that looks successful, and loses the other location's unique work.
+
+### Which Move 10 obligations this candidate drops
+
+Each of these was an obligation of the single-route contract preserved in `plan-single-route.md`, and none of them survives into the current candidate.
+
+- **Identify one current route before reading.**
+   Dropped: reads are per-location and the read set never asks which location won.
+   The runtime never implemented the pause this obligation existed to lift, and the probe shows the selector ignoring succession entirely.
+- **Pause on incomplete route ancestry.**
+   Dropped as a read prerequisite.
+   What remains is the narrower limit the plan retained: incomplete evidence still cannot justify a succession claim.
+- **Public succession links, so a teammate can separate live disagreement from a historical fork.**
+   Dropped: no such classification is needed to fetch, retain and report.
+- **A retirement record whose effect is gated on a referencing selection.**
+   Dropped: a read stop is local, retires nothing publicly and asserts nothing about other devices.
+   The Move 10 checkpoint comparing independent and gated retirement answers a question this candidate no longer asks.
+- **Establishing that an old location will never carry another publication.**
+   Dropped explicitly; the model reports possible missed work instead.
+- **Permission to resume once route ambiguity is gone.**
+   Dropped: resuming is a deliberate local request with no ambiguity precondition.
+
+What the candidate keeps: verification before use, preserved alternatives, no rollback of held work, honest reports of what was and was not observed, a deliberate choice not reversed by replay or retry, and a write destination that changes only by decision.
+
+What it adds, counted against the runtime rather than against Move 10: a read set, per-source outcomes, read stops with enough evidence to recognize replay, and the sender-key prerequisite the probe found.
+What it leaves open: discovery of a location nobody has told the reader about, integration of divergent retrieved histories, and persistence of a stop across restart or restoration, which is plan step 7.
+
+### Validation of this document edit
+
+`.venv/bin/python -m pytest models/model_read_stops.py -q`: 11 passed.
+The eight pre-existing model files were run unchanged in the same session: 236 passed, reported separately as the plan requires.
+
+## Review of b81e2af, 2026-09-08
+
+Two corrections are needed before treating step 2 as sufficient evidence for a runtime handoff.
+
+- The claim that a chain walk never mixes endpoints is too strong.
+  `PeerSmallSeaStore` retains a teammate id, not a selected location, and Hub `_download_peer_file` selects again for each object request.
+  These probes replace announcements between fetches and hold them fixed during each fetch.
+  A new announcement arriving after the latest-link read can redirect the bundle or predecessor reads to another location.
+  Narrow the conclusion to the fixed-announcement schedule and add a controlled mid-fetch announcement change with recorded provider requests.
+  Source binding remains a Hub/store design obligation; separate Cod Sync instances alone do not provide it.
+- The missing-bundle probe removes every announcement except X before the failing fetch.
+  Y being available at the provider cannot test fallback when the reader no longer knows Y.
+  Keep both authenticated announcements installed, remove bundles from the selected location, and record which locations the runtime attempts.
+  The empty-location probe already covers its distinct failure case with alternatives known.
+
+The next design decision remains plan step 4.
+Prefer separating retained locations from the device's explicit write choice: multiple valid locations need not block unrelated NoteToSelf integration.
+This is a recommendation, not acceptance of schema changes.
+The experiment must still show that sibling integration preserves unrelated work and does not redirect writes, and that a reviewed write choice is refused when relevant evidence changes.
+Keeping the uniqueness refusal is viable only with a concrete visible resolution path and an explicit account of the unrelated work it blocks.
+
+Keep the sender-key observation scoped to the exercised ratchet state.
+Add a reproducible late-distribution case before using the reported setup failure to set a general historical-readability requirement.
+The model establishes in-memory stop behavior only; restart/restoration and authenticated source binding remain later validation obligations.
+
+Review validation: the 11 new model micro tests passed, and all eight new runtime probes passed in 45.76 seconds after granting localhost service access.
+The first probe run was blocked at socket binding by the sandbox, before exercising the runtime.
+`git diff --check` passed.
+The 236 older model micro tests were not rerun for this review.
+
+## Multiple-location review follow-through, 2026-09-08: source binding, fallback and the sender key
+
+The review of `b81e2af` rejected two of the probe's conclusions and asked the sender-key observation to be scoped.
+`probes/probe_multiple_locations.py` now holds ten tests: two new ones, one rewritten, and one narrowed docstring.
+
+### A chain walk is not bound to one location
+
+The claim that a chain walk never mixes endpoints was too strong, and only the fixed-announcement schedule supported it.
+`PeerSmallSeaStore` retains a teammate id, not a selected location, and `_download_peer_file` runs the whole selection again for every object request.
+
+`test_an_announcement_arriving_mid_fetch_redirects_the_rest_of_the_walk` installs a second announcement in the gap between the latest-link read and the bundle read, and records the location the Hub resolved for each request.
+Redirected to a byte-identical copy, the fetch reads its head at X and its bundle at Z, pins X's head as `created`, and reports nothing unusual.
+Redirected to the sibling's divergent chain it fails with `ObjectNotFoundError`, because the bundle the link names was never uploaded there.
+
+A walk that stays at one location therefore does so because nothing changed underneath it.
+Source binding is a Hub and store obligation, and separate `CodSync` instances do not supply it: a fan-out design has to say what a walk is bound to, and the runtime currently binds nothing.
+The recorder patches `_download_peer_file` and `_select_teammate_berth_storage` on the backend class, which is the only place the location of a single object read is visible.
+
+### The fallback question, asked with the alternative installed
+
+The earlier incomplete-store schedule deleted X's bundles and left the reader holding X's announcement alone, so Y's availability at the provider was not something the reader could have used.
+It tested nothing about fallback.
+
+`test_an_incomplete_selected_location_is_not_backed_up_by_a_known_one` deletes the bundles from Y — the newest announcement and therefore the selection — and keeps both authentic announcements installed throughout, while X holds a complete chain.
+Cod Sync raises `ObjectNotFoundError`, the Manager reports `CoreFetchRemoteError`, the pin and the latest ref stay where they were, and every recorded request names Y.
+The conclusion the earlier test claimed now rests on a reader that had the alternative in hand.
+
+### The sender-key ordering, scoped to one ratchet state
+
+`test_a_sender_key_distributed_after_the_upload_cannot_read_it` holds the ordering fixed instead of meeting it once in setup.
+With B's redistribution withheld, A holds no sender key for B's device and the Hub answers `peer_sender_key_unavailable`, a named prerequisite.
+After redistribution, A holds B's chain at iteration 3 while B's own record still holds message keys for iterations 0, 1 and 2: a distribution message carries an iteration and a chain key and none of the skipped keys, so what B already uploaded stays unreadable.
+
+That is a claim about this ratchet state, not about history in general.
+A reader can read what B publishes from the distributed iteration onward and nothing earlier, and no runtime path delivers the earlier keys; whether one should exist is not asked here.
+
+The second failure is also misreported twice.
+`decrypt_group_payload` raises a bare `ValueError` rather than the `SenderKeyUnavailableExn` the Hub route classifies as a prerequisite, and the client store then reads it as a failed request.
+In-process the exception reaches the store directly; over a real HTTP boundary it would arrive as a 500.
+Either way the reader is told the request did not complete, when the bytes arrived and cannot be decrypted.
+
+### What this follow-through does not establish
+
+Nothing here binds a walk to a source or proposes how to; it shows that the runtime does not.
+The mid-fetch schedule changes announcements at one chosen point, which shows the redirect is possible, not how likely it is under real delivery.
+The sender-key result covers one distribution of one chain; multiple rotations, more than two publishing devices, and any recovery of earlier keys remain unexamined.
+
+### Validation of this document edit
+
+`.venv/bin/python -m pytest` over the five probe files: 29 passed in 157 s, ten of them in `probe_multiple_locations.py`.
+No model file changed, so the 236 model micro tests were not rerun.
+`git diff --check` is recorded in the commit that carries this edit.

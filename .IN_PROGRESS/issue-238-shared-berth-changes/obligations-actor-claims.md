@@ -1,7 +1,12 @@
 # What each actor may conclude about a berth disagreement
 
+Historical obligations for the Move 10 single-route candidate.
+The classification limits below still describe what its ancestry evidence can establish, but the new [multiple-location candidate](contract-multiple-locations.md) does not require those claims before reading.
+In particular, distinct routes need not be incompatible read choices, and incomplete ancestry does not itself require a read pause.
+Use [plan.md](plan.md) for current work.
+
 Branch: `issue-238-shared-berth-changes`.
-Status: Move 10 step 2 under [plan.md](plan.md#next-work).
+Status: Move 10 step 2 under [historical plan](plan-single-route.md#next-work).
 These are obligations a representation must meet, not a representation.
 No wire format, merge-node definition or runtime change is proposed or accepted here.
 

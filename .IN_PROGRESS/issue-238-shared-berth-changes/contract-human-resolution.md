@@ -1,9 +1,13 @@
 # Candidate contract: human resolution of a sibling berth disagreement
 
+Historical single-route candidate, superseded as the active research direction on 2026-09-08.
+Its blanket pause and public succession requirements are not requirements of the new [multiple-location candidate](contract-multiple-locations.md).
+The body and corrections are retained as evidence; use [plan.md](plan.md) for current work.
+
 Branch: `issue-238-shared-berth-changes`.
 Status: Move 10 candidate contract, under revision after review of `5b18218`.
 It is not an implementation handoff and proposes no runtime schema.
-The decision ledger and open questions remain in [plan.md](plan.md); the repair-side terms it uses are defined in [contract-sibling-repair.md](contract-sibling-repair.md).
+The preceding decision ledger and open questions remain in [the historical plan](plan-single-route.md); the repair-side terms it uses are defined in [contract-sibling-repair.md](contract-sibling-repair.md).
 The single-predecessor proposal and the classification of missing ancestry below have counterexamples; see the [review and next research step](notes.md#review-of-move-10-and-next-research-step-2026-09-07).
 The body below preserves the reviewed candidate, not corrected semantics, and the corrections established since are listed next.
 Neither public multi-parent ancestry nor removal of the counter is accepted.
@@ -19,7 +23,7 @@ These correct the body; they do not replace it, and no representation is accepte
   A single predecessor plus content equality accounts for at most one alternative, whichever it names.
   Whether the retirement lives in the selection's parents or in a separate record is open.
   The retirement-timing experiment favors requiring a held referencing route selection before a separate record takes effect.
-  Review found that another routeless record can incorrectly open the modeled gate; the [correction and checkpoint](plan.md#review-follow-through-before-durability) precede acceptance and durability work.
+  Review found that another routeless record can incorrectly open the modeled gate; the [correction and checkpoint](plan-single-route.md#review-follow-through-before-durability) precede acceptance and durability work.
   Gating and the separate-record representation remain recommendations, not accepted contract rules.
 - **The binding is candidate-independent and is the part that carries its weight.**
   Naming the reviewed predecessors is not the same check as verifying that nothing else arrived; a third selection between report and application must refuse under any representation.
