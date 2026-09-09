@@ -68,3 +68,24 @@ Repair tooling may publish a manifest naming the clean base, pre-repair head, om
 Cod Sync does not prove authorship or replay honesty.
 Each application decides whether repair is user-directed, author-asserted, or backed by application-defined cryptographic provenance.
 The exact manifest and app-specific replay mechanisms remain design work.
+
+### Commit Signatures
+
+Signing and verification are optional and disabled by default.
+`Repo.configure_signing(key)` enables SSH signing for `commit`, `commit_paths`, `merge`, and `commit_tree`.
+Invalid signing configuration or an unavailable key fails creation; a signing-failed merge stays in progress for retry.
+
+`CodSync(repo, store, verifier=...)` verifies stored history before `fetch` moves a pin or `publish` accepts an observation.
+It checks existing objects again on every invocation, including after rejection.
+Publication does not check the local head it uploads.
+
+`cod_sync.verify.SshCommitVerifier` takes SSH public key lines and returns commit-to-fingerprint evidence.
+It verifies original commit objects with Git replacement processing disabled and rejects shallow or incomplete history.
+It accepts only Git's `G` verdict with a fingerprint in the supplied key set.
+Unsigned commits, bad signatures, unknown signers, and verification setup failures have distinct errors.
+An empty key set recognizes nobody; malformed keys are setup failures.
+
+A signature attests a commit object, not the original authorship of copied content.
+Membership and key authorization remain Manager decisions.
+No runtime caller supplies a verifier yet; berth-scoped keys and Manager wiring are separate work.
+The micro tests exercise git 2.50.1 (Apple Git-155); other versions remain untested.

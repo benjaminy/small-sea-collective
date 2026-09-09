@@ -1,29 +1,26 @@
 # GitHub and documentation follow-up
 
-No GitHub changes are part of this documentation revision.
+Acted on 2026-09-09.
+All issue filing and linking below is done; the only remaining item is closing #190, which is left to the human handling the merge.
 
-- Update #190's title and scope: this branch delivers Cod Sync commit signing and an optional verifier with a verified acceptance boundary (scratch verification or the equivalent invariant in `plan.md`).
-  State plainly that verification is wired only in tests until the berth-scoped keys and Manager wiring issue is completed.
-  File and link the separate follow-up issues below when narrowing #190, before closing it.
-  #190 closes on its library validation; it does not remain open across the follow-up implementations.
-- File a separate follow-up issue: **Hub authenticated publication context**.
-  This can proceed independently of #190.
-  Bind writer, team, berth, and path on upload and download; note that `decrypt_group_payload` is not passed expected peer and path today, and that valid ciphertext must not be interchangeable across unrelated paths within one berth.
-  Validate cross-path, cross-berth, and wrong-writer substitution rejection with passing controls across ordinary, passthrough, explicit proxy, bootstrap, and runtime artifact reads, or explicitly state each route's separate contract.
-  Failed checks must not persist receiver crypto-state changes or become successful downloads through error translation.
-- File a separate follow-up issue: **Berth-scoped keys and Manager wiring**.
-  Depends on #190's signing and verification seam.
-  Resolve the bootstrap trust source and the initial removal/unknown-authority policy through the corresponding issues before claiming runtime verification; the later reconsideration repair mechanism remains separate.
-  Cover key provisioning and replacement, the Hub trust/signing interface (which berth a key belongs to, what evidence recognizes it, which local trust view was consulted, why an operation is blocked), reconciliation with the wrasse-trust README's device-only model, and passing a real verifier and signing key into Cod Sync.
-  Promote the per-berth key rule and settled responsibilities to `architecture.md` and relevant specs when this issue is completed.
-  Validate distinct keys across two berths, rejection of cross-berth keys, missing or ambiguous authority, trust-view changes during an operation, and actual Manager fetch/publication verification with passing controls.
-  Revise Manager stored-history claims to match the demonstrated guarantees.
-- File an issue for bootstrap trust: the transcript deliverable described in `notes.md`, including a removed original author and a substituted Core history.
-- File an issue for removal and reconsideration policy: record the provisional direction and its limits, evidence retention, human decisions, and consistency with forward-only history.
-  Do not imply acceptance is permanent or that removal policy is complete.
-- File an issue: the Sender Keys ratchet is mismatched with repeatedly readable storage.
-  Cite per-iteration replay key retention in `small_sea_hub/crypto.py` and the inability of newly admitted devices to derive earlier chain positions without additional retained key material.
-- File an issue: provider rollback and equivocation detection.
-- Retain existing link signatures; file a separate issue if a later proposal changes them.
-- Reassess the #196 dependency against the named publication-context, wiring, and bootstrap issues once filed.
-  #190 alone does not verify anything in the running system; do not treat closing it as satisfying #196's runtime trust prerequisites.
+- **Done.** #190 retitled "Sign Cod Sync commits and enforce a verified acceptance boundary" and rewritten to the narrowed library scope: commit signing, the verified acceptance boundary, the explicit key set, unchanged link signatures, and the validation actually performed.
+  It states plainly that verification is wired only in tests until #266, and that it closes on its library validation rather than staying open across the follow-ups.
+  All six follow-up issues are linked from it.
+- **Not done, for a human.** Close #190 once the branch merges.
+  It is still open because the work is not merged.
+- **Done.** #261 — Bind authenticated publication context at the Hub upload/download boundary.
+  Independent of #190.
+  Records that `decrypt_group_payload` is not passed expected peer and path, and requires cross-path, cross-berth, and wrong-writer rejection with passing controls across all five read routes or an explicit per-route contract.
+- **Done.** #266 — Berth-scoped signing keys and Manager verifier wiring.
+  Depends on #190's seam and on #262 and #263.
+  Covers key provisioning and replacement, the Hub trust/signing interface, reconciliation with the `wrasse-trust` README's device-only model, passing a real verifier and signing key into Cod Sync, and the documentation promotion and Manager stored-history claims due on completion.
+- **Done.** #262 — Write the Small Sea bootstrap trust transcript.
+  Includes the removed original author and substituted Core history cases, and the prior-art comparison from `notes.md` so it survives this branch folder.
+- **Done.** #263 — Define removal and reconsideration policy for signed history.
+  Records the provisional direction and its limits, evidence retention, human decisions, and the forward-only history constraint, without implying acceptance is permanent.
+- **Done.** #264 — Sender Keys ratchet is mismatched with repeatedly readable storage.
+  Cites the per-iteration replay key retention at `small_sea_hub/crypto.py:78-80` and `:105-107`.
+- **Done.** #265 — Detect provider rollback and equivocation.
+  Cross-referenced to #198 and #199.
+- **Done.** Existing link signatures retained; #190 says any later change to them is tracked separately.
+- **Done.** The #196 dependency was reassessed in a comment there: its runtime trust prerequisite is #266, not #190, and #261 also bears on it.

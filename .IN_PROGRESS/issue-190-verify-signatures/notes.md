@@ -201,3 +201,106 @@ Do not infer those causes from `U` alone or label ambiguous failures as proven t
 The decisive next test is rejection and retry through both `fetch` and publication observation, including already-present heads, existing predecessors, merge-side ancestry, and failure after earlier chain imports.
 Assert unchanged refs and pins, no publication upload after failed initial observation, and a passing control.
 Individual signature checks do not yet demonstrate this acceptance boundary or complete graph validation.
+
+## 2026-09-09: implementation of steps 1 through 4
+
+Steps 1 through 4 are implemented, with the full `cod-sync` and `small-sea-manager` suites at 630 passed on git 2.50.1 (Apple Git-155).
+The 619-test baseline needed no changes, which is the evidence that an unconfigured caller is unaffected.
+
+### Signing
+
+`Repo.configure_signing(key)` sets `gpg.format=ssh`, `user.signingkey`, and `commit.gpgsign`.
+`commit_tree` asks git whether `commit.gpgsign` is on and passes `-S` itself, rather than remembering a flag from whoever configured the repo.
+Reading the repository's own config means every `Repo` instance over one git dir agrees, including the ones `protocol.py` builds internally.
+The cost is one extra `git config` invocation per `commit_tree` call.
+
+### Verification at acceptance, not in a scratch repository
+
+`plan.md` allowed either a scratch repository or a verification boundary that tolerates untrusted objects.
+The boundary was chosen: bundles import into the caller's repository as before, and `_require_verified` runs at the two points where a head is accepted, in `fetch` after the import loop and in `_observe` before an observation is returned.
+Verifying at acceptance rather than at import is what defeats the `_already_satisfied` and existing-predecessor shortcuts, because those skip an import and cannot skip an acceptance.
+A rejection therefore leaves untrusted objects in the repository with no ref pointing at them, and a retry re-runs the same checks over exactly those objects.
+The test for that retry fails if either `_require_verified` call is removed.
+A scratch repository would additionally keep unverified objects out of the caller's object store; that is a real difference, and it costs a second import of every bundle.
+The cost was not worth paying for objects nothing references, but the choice deserves revisiting if an app ever treats object presence as meaningful.
+
+Verifying every commit reachable from the accepted head is O(history) on every fetch.
+The first spike measured roughly 13 ms per commit for the batched sweep, so a long history will notice.
+Nothing here caches a verified prefix, because a cache would be a second acceptance record to keep honest.
+
+### Error classification
+
+`SshCommitVerifier` writes its own allowed-signers file and passes `gpg.format=ssh` and `gpg.ssh.allowedSignersFile` per invocation.
+`B` is a bad signature, `N` an unsigned commit, and `U` an unrecognized signer, which is also what an intentionally empty key set produces.
+Everything else is an inability to check: a nonzero git exit, any stderr diagnostic under configuration the verifier itself wrote, no rows at all, and the statuses `E`, `X`, `Y`, `R`, and anything a later git adds.
+Folding `X`, `Y`, and `R` into "unrecognized signer" was rejected: this package configures no expiry or revocation source, so a status reporting one means the verifier is not running as intended.
+
+### Test isolation is now a shared fixture
+
+`isolated_git_config` lives in `cod_sync_test_helpers.py` and is applied module-wide in `test_signing.py` and `test_verify.py`.
+Disabling it makes the unsigned control fail on this developer's machine, whose global config sets `commit.gpgsign=true`, so the fixture is demonstrably load-bearing rather than defensive.
+The existing suites were left alone: giving every Cod Sync test this isolation is a larger change than #190 needs.
+
+### Still unvalidated
+
+No caller supplies a verifier, so nothing in the running system verifies anything; that remains the wiring follow-up's work.
+Publication does not verify the local head it is about to publish, only the stored head it builds on.
+Only git 2.50.1 was exercised.
+
+## Review of `087072b`: keep the design, fix the evidence boundary
+
+The acceptance-time seam, explicit key-set input, `commit_tree -S`, merge retry behavior, and isolated real-Git micro tests are worth keeping.
+Optional verification and deferred Manager wiring match the agreed scope.
+Repeated rationale across constructor/module docstrings, README, and the draft commit message can be shortened; it is not a reason to discard the implementation.
+
+Three failures reproduced locally on git 2.50.1 with global and system Git configuration isolated:
+
+- `Repo.signature_report` honors replacement refs.
+  Create an unsigned root and a signed child, publish, and fetch the objects into a receiver without a verifier.
+  Verified fetch correctly rejects the unsigned root.
+  In the receiver, create a signed parentless replacement and run `git replace <unsigned-root> <signed-replacement>`.
+  The same verified fetch now succeeds and creates the requested pin; its signature report attributes the replacement's fingerprint to the original unsigned object ID.
+  Verification must inspect original commit objects, with replacement processing disabled.
+- `Repo.signature_report` honors shallow boundaries.
+  Start with the same rejected history and write the signed child's object ID plus newline to the receiver's `shallow` file.
+  The same verified fetch now succeeds and creates the requested pin without checking the unsigned root, even though that object remains present.
+  Reject shallow repositories at this boundary or explicitly establish complete original ancestry.
+  These two reproductions require local repository state; they do not demonstrate a remote bundle creating a replacement ref or shallow marker.
+- `_signing_configured` ignores failed boolean parsing.
+  Configure SSH signing, create a signed commit, then set `commit.gpgsign=tru`.
+  `commit_tree` returns a new unsigned commit (`git log -1 --format=%G?` reports `N`) because the failed `git config --type=bool` call is treated as false.
+  Distinguish an absent value from a configuration error and propagate the latter before creating a commit.
+
+The 25 new signing and verification micro tests pass.
+The initial broader run hit the developer's ambient GPG signing configuration and sandbox restrictions, so those failures are not evidence of a regression.
+The broader rerun with global and system Git configuration isolated reached 182 passed before stopping because the sandbox disallowed the local MinIO fixture's loopback socket bind.
+The reported 630-pass full-suite result was therefore not independently reproduced in this review.
+
+The completion claim also needs a validation audit.
+The retained acceptance tests do not demonstrate publication rejection/retry with leftover objects, failure after earlier chain entries import, or an already-present bad predecessor under a newly imported head.
+The missing/empty/nonmatching allowed-signers matrix exercises raw Git, not the verifier's setup-error classification; malformed public-key input currently produces `UnknownSignerError` rather than a configuration failure.
+Keep these distinctions visible when declaring the planned library validation complete.
+
+## Review corrections
+
+`signature_report` disables Git replacement processing and refuses shallow repositories.
+A missing ancestor remains a Git traversal failure, translated to `VerificationUnavailableError`.
+These checks preserve the original-object, complete-ancestry contract without repairing local repositories.
+`_signing_configured` treats only a missing setting as unconfigured and propagates invalid boolean configuration before commit creation.
+
+The verifier parses and normalizes supplied public keys using the existing cryptography dependency.
+Malformed keys and signer-file/tool failures are setup errors; an intentionally empty or nonmatching valid key set remains an unknown signer.
+Accepted fingerprints must also belong to the supplied SSH keys, so a good verdict under another trust configuration cannot satisfy the explicit-key contract.
+
+Retained micro tests cover the replacement and shallow reproductions through both fetch and publication, invalid signing configuration without object creation, missing ancestry, and verifier setup failures.
+Incremental-history cases exercise fresh imports and already-present bad predecessors, repeat rejection over the imported objects, assert unchanged refs and storage, and fail on any attempted upload.
+Both fetch and publication also exercise an unrecognized merge-side ancestor with an expanded-key-set passing control.
+README, docstrings, and the draft final commit message were shortened to state the contract and its runtime limitation.
+
+Focused validation passed: 15 signing micro tests and 25 verification micro tests.
+The four incremental cases were rerun successfully after adding the explicit no-upload assertion.
+Full Cod Sync and Manager validation passed: 643 micro tests, 104 existing settings/template warnings, in 423.46 seconds on git 2.50.1 (Apple Git-155).
+The command was `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null .venv/bin/python -m pytest packages/cod-sync/tests packages/small-sea-manager/tests -q --maxfail=1`, with permission for the local service fixtures to bind sockets.
+Two additional verification cases were added after that run collected its tests; the final verification suite passed all 25 cases separately, and the current combined collection contains 645 cases.
+`git diff --check` passes.
+The fixes and branch documents are staged, with no commit created.

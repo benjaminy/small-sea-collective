@@ -8,11 +8,13 @@ must be proved before anything durable moves.
 What Cod Sync proves
     A bundle advertises the head its link declares, the bundle's actual Git
     prerequisites are covered by the predecessor its link declares, and the
-    resulting commit graph has the promised ancestry.
+    resulting commit graph has the promised ancestry. With a verifier supplied,
+    also that every commit an accepted head relies on was signed by a key in
+    the set that verifier was given.
 
 What Cod Sync does not prove
-    Authorship, membership, complete disclosure, or that a fetched history
-    should have any local effect. Fetching stays separate from merging:
+    Authorship, membership, which keys belong in that set, complete
+    disclosure, or that a fetched history should have any local effect. Fetching stays separate from merging:
     `fetch` moves no ref except an explicitly requested forward-only pin.
 
 What a publication may move
@@ -364,9 +366,23 @@ class _ChainEntry:
 class CodSync:
     """Publish and fetch one repository's `main` through one store."""
 
-    def __init__(self, repo: Repo, store):
+    def __init__(self, repo: Repo, store, verifier=None):
+        """verifier is optional, and absent means signatures are not checked.
+
+        A verifier implements verify_history(repo, head).
+        No runtime caller supplies one yet; Manager wiring is separate work.
+        """
         self.repo = repo
         self.store = store
+        self.verifier = verifier
+
+    def _require_verified(self, head: str):
+        """Check every commit head relies on, at the moment of acceptance.
+
+        Existing objects can skip import, but cannot skip this check.
+        """
+        if self.verifier is not None:
+            self.verifier.verify_history(self.repo, head)
 
     # ------------------------------------------------------------------ #
     # Publication
@@ -525,6 +541,7 @@ class CodSync:
                 self._import(entry)
             imported = True
 
+        self._require_verified(stored.head)
         return _Observation(
             head=stored.head,
             etag=etag,
@@ -796,6 +813,7 @@ class CodSync:
             for entry in chain:
                 self._import(entry)
             observed_head = latest.head
+            self._require_verified(observed_head)
 
         pinned_head = None
         disposition = None

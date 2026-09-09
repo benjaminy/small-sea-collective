@@ -2,7 +2,8 @@
 
 Branch: `issue-190-verify-signatures`.
 Issue: [#190 — Verify Cod Sync link signatures on the fetch path](https://github.com/benjaminy/small-sea-collective/issues/190).
-Status: sequencing settled 2026-09-09; implementation of the narrowed #190 scope may begin.
+Status: steps 1 through 4 and review corrections implemented and validated 2026-09-09; see `notes.md`.
+The remaining GitHub work is in `follow-up.md`.
 
 ## Working direction
 
@@ -33,6 +34,9 @@ Hub publication context can proceed independently.
 Berth-scoped keys and Manager wiring depends on #190 and must resolve its bootstrap and authority prerequisites before claiming verified runtime history.
 
 ### #190, this branch: Cod Sync acceptance boundary
+
+All four steps and the review corrections are implemented.
+Step 2 took the tolerates-untrusted-objects option rather than a scratch repository.
 
 All changes stay inside `packages/cod-sync` and its tests.
 The verifier takes an explicit key set and does not know where keys come from.
@@ -83,6 +87,8 @@ Pair each rejection with a passing control so failures prove the intended bounda
 - Existing link-signature tests in `test_format.py` and `packages/small-sea-manager/tests/test_signed_bundles.py` continue to pass.
 
 Run Cod Sync and Manager micro tests after the edits.
+Review validation: 643 passed in the full run; all 25 final verification cases passed separately, including two added after full-suite collection.
+The signing evidence is in `packages/cod-sync/tests/test_signing.py` and the acceptance boundary in `tests/test_verify.py`.
 Review that no policy about key sources or membership leaked into `packages/cod-sync`.
 
 ## Explicitly deferred
@@ -90,3 +96,11 @@ Review that no policy about key sources or membership leaked into `packages/cod-
 All follow-up issues listed above are outside #190's completion scope.
 Neither valid signatures nor authenticated context prove that a provider returned the latest state.
 See `follow-up.md` for issue plans and documentation promotion.
+
+## Review correction validation
+
+Reject shallow history and inspect original commit objects despite replacement refs.
+Propagate invalid `commit.gpgsign` values before `commit_tree` creates an object.
+Validate supplied public keys and classify signer-file/tool failures as verification unavailable.
+Exercise both fetch and publication rejection/retry over incremental history, with and without an existing predecessor, asserting unchanged refs and storage on every rejection.
+Retain passing controls and rerun the Cod Sync and Manager micro tests under isolated Git configuration.

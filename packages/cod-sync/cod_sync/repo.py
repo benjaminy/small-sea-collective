@@ -119,6 +119,19 @@ class TreeEntry:
 
 
 @dataclass(frozen=True)
+class SignatureRow:
+    """One commit's signature verdict, exactly as `git log` reported it.
+
+    status is git's `%G?` character and fingerprint its `%GF`. Neither is
+    interpreted here: what counts as acceptable is the caller's policy.
+    """
+
+    commit: str
+    status: str
+    fingerprint: str
+
+
+@dataclass(frozen=True)
 class RefCreateResult:
     """Outcome of an immutable ref creation.
 
@@ -261,6 +274,26 @@ class Repo:
         """Set a config value in the repository."""
         self._run(["config", key, value])
 
+    def configure_signing(self, signing_key: Union[str, pathlib.Path]):
+        """Sign every commit this repository creates with an SSH private key.
+
+        An Ed25519 key file signs without an ssh-agent, so headless callers
+        need no agent. Once this is set a signing failure fails the commit;
+        git does not fall back to creating an unsigned one.
+        """
+        self.config("gpg.format", "ssh")
+        self.config("user.signingkey", str(signing_key))
+        self.config("commit.gpgsign", "true")
+
+    def _signing_configured(self) -> bool:
+        """Whether commit.gpgsign is on for this repository."""
+        result = self._run(
+            ["config", "--type=bool", "--get", "commit.gpgsign"], raise_on_error=False
+        )
+        if result.returncode not in (0, 1):
+            raise RepoError(f"could not read commit.gpgsign: {result.stderr.strip()}")
+        return result.stdout.strip() == "true"
+
     # ------------------------------------------------------------------ #
     # Internal helpers
     # ------------------------------------------------------------------ #
@@ -347,6 +380,39 @@ class Repo:
             raise_on_error=False,
         )
         return result.returncode == 0
+
+    def signature_report(
+        self, rev: str, allowed_signers_file: Union[str, pathlib.Path]
+    ) -> tuple:
+        """Report the signature verdict for rev and every commit it reaches.
+
+        Returns (rows, diagnostics). Inspect original objects and require a
+        complete history. Git exits 0 even for rejected signatures, so retain
+        diagnostics as well as the status characters.
+        """
+        if self._run(["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true":
+            raise RepoError("signature verification requires a non-shallow repository")
+        pathlib.Path(allowed_signers_file).read_bytes()
+        result = self._run(
+            [
+                "--no-replace-objects",
+                "-c",
+                "gpg.format=ssh",
+                "-c",
+                f"gpg.ssh.allowedSignersFile={allowed_signers_file}",
+                "log",
+                "--format=%H%x09%G?%x09%GF",
+                rev,
+            ]
+        )
+        rows = []
+        for line in result.stdout.splitlines():
+            if not line.strip():
+                continue
+            commit, _, rest = line.partition("\t")
+            status, _, fingerprint = rest.partition("\t")
+            rows.append(SignatureRow(commit, status, fingerprint))
+        return rows, result.stderr
 
     def log(self, limit: int = 10) -> List[Dict[str, str]]:
         """Return up to limit log entries as list of dicts with 'sha' and 'message'."""
@@ -627,6 +693,10 @@ class Repo:
         keeps history construction separable from adopting it.
         """
         args = ["commit-tree", tree]
+        if self._signing_configured():
+            # commit-tree is plumbing and ignores commit.gpgsign, so this path
+            # has to ask for the signature itself.
+            args.append("-S")
         for parent in parents:
             args += ["-p", parent]
         return self._run(args + ["-m", message]).stdout.strip()
