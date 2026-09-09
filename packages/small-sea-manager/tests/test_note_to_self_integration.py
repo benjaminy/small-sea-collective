@@ -22,11 +22,14 @@ import pytest
 
 from cod_sync.protocol import parked_ref_name
 from cod_sync.repo import Repo, RepoError
+from small_sea_manager import berth_source_decision
 from small_sea_manager import note_to_self_sync
+from small_sea_manager import provisioning
 from small_sea_manager.manager import TeamManager
 from small_sea_manager.provisioning import create_new_participant
 from small_sea_note_to_self.db import (
     SHARED_SCHEMA_VERSION,
+    attached_note_to_self_connection,
     initialize_bootstrap_local_state,
     note_to_self_sync_db_path,
 )
@@ -736,23 +739,305 @@ def test_identical_changes_on_both_sides_do_not_refuse(playground_dir):
     }
 
 
-def test_a_unique_index_violation_is_a_constraint_refusal(playground_dir):
-    """Two devices allocating the same berth: different keys, one berth_id."""
-    root = pathlib.Path(playground_dir)
-    participant_hex, repo = _participant(root)
-    base = _with_shared_cloud_row(root, participant_hex, repo)
+# ---------------------------------------------------------------------------
+# Competing placements: detection, the held pause, and the human decision
+#
+# Two of a participant's devices can rotate one berth while disconnected. The
+# rows are deliberately allowed to coexist -- refusing them named a commit
+# rather than a disagreement and rejected every unrelated row travelling with
+# it -- so what used to be a unique index is now a projected pause these tests
+# pin down.
+# ---------------------------------------------------------------------------
 
-    source = _source_commit(repo, base, [_allocation(b"\xa1" * 16, "loc-A")])
+
+def _pause_report(root, participant_hex):
+    """The retained pause report for the test berth, or None."""
+    with contextlib.closing(
+        attached_note_to_self_connection(root, participant_hex)
+    ) as conn:
+        pause = berth_source_decision.read_pause(conn, _BERTH_ID)
+    return None if pause is None else pause["report"]
+
+
+def _fresh_report(root, participant_hex):
+    """Reproject and return (report, digest) the way a status read would."""
+    refreshed = berth_source_decision.refresh_report(root, participant_hex, _BERTH_ID)
+    return refreshed["report"], refreshed["evidence_digest"]
+
+
+def _locations(report, *, live=None):
+    return sorted(
+        candidate["location"]
+        for candidate in report["candidates"]
+        if live is None or candidate["live"] is live
+    )
+
+
+def _key_for(report, location):
+    [candidate] = [c for c in report["candidates"] if c["location"] == location]
+    return candidate["candidate_key"]
+
+
+def _live_locations(root, participant_hex):
+    with _live(root, participant_hex) as conn:
+        return sorted(
+            row[0]
+            for row in conn.execute(
+                "SELECT location FROM berth_cloud_allocation WHERE berth_id = ?",
+                (_BERTH_ID,),
+            )
+        )
+
+
+def _competing_allocations(root, participant_hex, repo, *, source_extra=()):
+    """Adopt a sibling's allocation beside this device's own for one berth.
+
+    Returns the parked source SHA. The source also carries an unrelated team
+    row, so every test here can say whether work nobody disagreed about
+    survived the disagreement.
+    """
+    base = _with_shared_cloud_row(root, participant_hex, repo)
+    source = _source_commit(
+        repo,
+        base,
+        [_allocation(b"\xa1" * 16, "loc-A"), _insert_team(b"\xaa" * 16, "OnlyOnA")]
+        + list(source_extra),
+    )
     _apply_local(root, participant_hex, [_allocation(b"\xb1" * 16, "loc-B")])
     _commit_local(root, participant_hex, repo)
     _park(repo, "uid-a", source)
-    before = _durable_state(root, participant_hex, repo)
+    return source
+
+
+def test_competing_allocations_are_adopted_and_pause_the_berth(playground_dir):
+    """The disagreement becomes visible without rejecting unrelated work.
+
+    Both rows land, the sibling's unrelated team row lands with them, and the
+    berth carries a held pause naming both locations. That is the whole point
+    of dropping the unique index: a refusal would have thrown away A's team row
+    to say something about a berth.
+    """
+    root = pathlib.Path(playground_dir)
+    participant_hex, repo = _participant(root)
+    _competing_allocations(root, participant_hex, repo)
 
     [outcome] = TeamManager(root, participant_hex).integrate_note_to_self().outcomes
 
-    assert outcome.outcome == "constraint_refused"
-    assert "UNIQUE" in outcome.detail
-    assert _durable_state(root, participant_hex, repo) == before
+    assert outcome.outcome == "integrated", outcome
+    assert _live_locations(root, participant_hex) == ["loc-A", "loc-B"]
+    assert "OnlyOnA" in _team_names(root, participant_hex)
+    report = _pause_report(root, participant_hex)
+    assert report is not None
+    assert _locations(report, live=True) == ["loc-A", "loc-B"]
+    assert report["unavailable"]["authorship"]
+
+
+def test_the_pause_is_recorded_with_the_rows_that_opened_it(playground_dir):
+    """No window exists where the merged rows are visible without the pause.
+
+    Detection runs inside adoption's own row transaction, so a reader that can
+    see two live allocations can also see the pause. Asserting it through a
+    separate connection is what makes that a cross-process claim rather than a
+    property of one Manager object.
+    """
+    root = pathlib.Path(playground_dir)
+    participant_hex, repo = _participant(root)
+    _competing_allocations(root, participant_hex, repo)
+    TeamManager(root, participant_hex).integrate_note_to_self()
+
+    with contextlib.closing(
+        attached_note_to_self_connection(root, participant_hex)
+    ) as conn:
+        live = conn.execute(
+            "SELECT COUNT(*) FROM berth_cloud_allocation WHERE berth_id = ?",
+            (_BERTH_ID,),
+        ).fetchone()[0]
+        pause = berth_source_decision.read_pause(conn, _BERTH_ID)
+    assert live == 2
+    assert pause is not None
+
+
+def test_a_pause_survives_the_evidence_that_would_explain_it_away(playground_dir):
+    """A sibling withdrawing its row improves the explanation, decides nothing.
+
+    The contract's sharpest requirement: a predicate over current state would
+    release here, and must not. The withdrawn location stays in the retained
+    evidence, marked not live, because a person may still want to choose it.
+    """
+    root = pathlib.Path(playground_dir)
+    participant_hex, repo = _participant(root)
+    _competing_allocations(root, participant_hex, repo)
+    TeamManager(root, participant_hex).integrate_note_to_self()
+
+    _apply_local(
+        root,
+        participant_hex,
+        [("DELETE FROM berth_cloud_allocation WHERE location = 'loc-A'", ())],
+    )
+    report, _digest = _fresh_report(root, participant_hex)
+
+    assert _pause_report(root, participant_hex) is not None
+    assert _locations(report, live=True) == ["loc-B"]
+    assert _locations(report, live=False) == ["loc-A"]
+
+
+def test_a_held_pause_refuses_an_ordinary_rotation(playground_dir):
+    """Rotation states a preference; it is not a way to delete a rival row."""
+    root = pathlib.Path(playground_dir)
+    participant_hex, repo = _participant(root)
+    _competing_allocations(root, participant_hex, repo)
+    TeamManager(root, participant_hex).integrate_note_to_self()
+
+    allocation, reason = provisioning.resolve_berth_cloud_allocation_intent(
+        root, participant_hex, _BERTH_ID, new_location=True
+    )
+
+    assert (allocation, reason) == (None, "berth_source_paused")
+    assert _live_locations(root, participant_hex) == ["loc-A", "loc-B"]
+
+
+def test_a_choice_reviewed_over_stale_evidence_is_refused(playground_dir):
+    """The question moved between review and application, so nothing is decided."""
+    root = pathlib.Path(playground_dir)
+    participant_hex, repo = _participant(root)
+    _competing_allocations(root, participant_hex, repo)
+    TeamManager(root, participant_hex).integrate_note_to_self()
+    report, stale_digest = _fresh_report(root, participant_hex)
+
+    _apply_local(
+        root,
+        participant_hex,
+        [_allocation(b"\xc1" * 16, "loc-C")],
+    )
+
+    with pytest.raises(berth_source_decision.EvidenceChangedError) as raised:
+        berth_source_decision.resolve_berth_source(
+            root, participant_hex, _BERTH_ID, _key_for(report, "loc-A"), stale_digest
+        )
+
+    assert _locations(raised.value.report, live=True) == ["loc-A", "loc-B", "loc-C"]
+    assert _pause_report(root, participant_hex) is not None
+    assert _live_locations(root, participant_hex) == ["loc-A", "loc-B", "loc-C"]
+
+
+@pytest.mark.parametrize("chosen", ["loc-A", "loc-B"])
+def test_either_existing_location_can_be_chosen(playground_dir, chosen):
+    """Both halves of the Move 9 gap close: no raw edit, no third rotation.
+
+    Choosing the sibling's location and choosing this device's own are the same
+    operation with a different candidate key. Either way one row survives, the
+    pause is gone, the decision and the evidence it was made over are kept, and
+    the unrelated team row is untouched.
+    """
+    root = pathlib.Path(playground_dir)
+    participant_hex, repo = _participant(root)
+    _competing_allocations(root, participant_hex, repo)
+    TeamManager(root, participant_hex).integrate_note_to_self()
+    report, digest = _fresh_report(root, participant_hex)
+
+    berth_source_decision.resolve_berth_source(
+        root, participant_hex, _BERTH_ID, _key_for(report, chosen), digest
+    )
+
+    assert _live_locations(root, participant_hex) == [chosen]
+    assert _pause_report(root, participant_hex) is None
+    assert "OnlyOnA" in _team_names(root, participant_hex)
+    with contextlib.closing(
+        attached_note_to_self_connection(root, participant_hex)
+    ) as conn:
+        decision = berth_source_decision.read_choice(conn, _BERTH_ID)
+    assert _locations(decision["report"]) == ["loc-A", "loc-B"]
+
+
+def test_a_withdrawn_candidate_can_still_be_chosen(playground_dir):
+    """Deleting the row does not remove the choice; the reviewed row comes back."""
+    root = pathlib.Path(playground_dir)
+    participant_hex, repo = _participant(root)
+    _competing_allocations(root, participant_hex, repo)
+    TeamManager(root, participant_hex).integrate_note_to_self()
+    _apply_local(
+        root,
+        participant_hex,
+        [("DELETE FROM berth_cloud_allocation WHERE location = 'loc-A'", ())],
+    )
+    report, digest = _fresh_report(root, participant_hex)
+
+    berth_source_decision.resolve_berth_source(
+        root, participant_hex, _BERTH_ID, _key_for(report, "loc-A"), digest
+    )
+
+    assert _live_locations(root, participant_hex) == ["loc-A"]
+    assert _pause_report(root, participant_hex) is None
+
+
+def test_restoring_a_candidate_whose_account_is_gone_keeps_the_pause(playground_dir):
+    """An account this device no longer holds is a different place than reviewed.
+
+    Restoration writes back exactly the reviewed row or nothing: it does not
+    recreate the account, and it does not clear the pause on the way out.
+    """
+    root = pathlib.Path(playground_dir)
+    participant_hex, repo = _participant(root)
+    _competing_allocations(root, participant_hex, repo)
+    TeamManager(root, participant_hex).integrate_note_to_self()
+    _apply_local(
+        root,
+        participant_hex,
+        [
+            ("DELETE FROM berth_cloud_allocation WHERE berth_id = ?", (_BERTH_ID,)),
+            ("DELETE FROM cloud_storage WHERE id = ?", (_CLOUD_ID,)),
+        ],
+    )
+    report, digest = _fresh_report(root, participant_hex)
+
+    with pytest.raises(berth_source_decision.CandidateNotRestorableError):
+        berth_source_decision.resolve_berth_source(
+            root, participant_hex, _BERTH_ID, _key_for(report, "loc-A"), digest
+        )
+
+    assert _pause_report(root, participant_hex) is not None
+    assert _live_locations(root, participant_hex) == []
+
+
+def test_replay_after_a_decision_is_not_a_second_decision(playground_dir):
+    """Re-adopting the same head restores nothing and reopens nothing.
+
+    Replay is filtered by ancestry, and the surviving row is the one the human
+    chose. A resolved berth stays resolved across a fresh Manager, which is the
+    restart claim the durable rows are there to make.
+    """
+    root = pathlib.Path(playground_dir)
+    participant_hex, repo = _participant(root)
+    _competing_allocations(root, participant_hex, repo)
+    TeamManager(root, participant_hex).integrate_note_to_self()
+    report, digest = _fresh_report(root, participant_hex)
+    berth_source_decision.resolve_berth_source(
+        root, participant_hex, _BERTH_ID, _key_for(report, "loc-B"), digest
+    )
+
+    assert TeamManager(root, participant_hex).integrate_note_to_self().outcomes == ()
+    assert _live_locations(root, participant_hex) == ["loc-B"]
+    assert _pause_report(root, participant_hex) is None
+
+
+def test_a_fresh_disagreement_after_a_decision_pauses_again(playground_dir):
+    """A resolution is a state, not a rule, and the old choice is not consent."""
+    root = pathlib.Path(playground_dir)
+    participant_hex, repo = _participant(root)
+    _competing_allocations(root, participant_hex, repo)
+    TeamManager(root, participant_hex).integrate_note_to_self()
+    report, digest = _fresh_report(root, participant_hex)
+    berth_source_decision.resolve_berth_source(
+        root, participant_hex, _BERTH_ID, _key_for(report, "loc-B"), digest
+    )
+
+    _apply_local(root, participant_hex, [_allocation(b"\xd1" * 16, "loc-D")])
+    fresh, _digest = _fresh_report(root, participant_hex)
+
+    assert _pause_report(root, participant_hex) is not None
+    assert _locations(fresh, live=True) == ["loc-B", "loc-D"]
+    # The earlier decision is still readable, and is not a permission.
+    assert _locations(fresh, live=False) == ["loc-A"]
 
 
 # ---------------------------------------------------------------------------

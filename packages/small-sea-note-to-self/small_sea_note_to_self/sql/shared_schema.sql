@@ -48,7 +48,13 @@ CREATE TABLE IF NOT EXISTS berth_cloud_allocation (
     FOREIGN KEY (cloud_storage_id) REFERENCES cloud_storage(id)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_berth_cloud_allocation_berth
+-- Deliberately not unique on berth_id. Two of a participant's devices can each
+-- rotate the same berth while disconnected, and refusing the merged rows here
+-- would reject the whole source instead of making the disagreement visible.
+-- The invariant is now a stated rule the Manager projects and the Hub enforces:
+-- one live allocation per berth after resolution, and more than one live
+-- candidate means a held pause.
+CREATE INDEX IF NOT EXISTS idx_berth_cloud_allocation_berth
     ON berth_cloud_allocation(berth_id);
 
 CREATE TABLE IF NOT EXISTS notification_service (

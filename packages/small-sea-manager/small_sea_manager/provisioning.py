@@ -109,6 +109,7 @@ from small_sea_note_to_self.bootstrap import (
     welcome_bundle_confirmation_string,
     welcome_bundle_aad,
 )
+from small_sea_manager import berth_source_decision
 from small_sea_manager import note_to_self_sync
 from small_sea_note_to_self.ids import uuid7
 from small_sea_note_to_self.sender_keys import (
@@ -184,6 +185,16 @@ class FutureTeamDatabaseVersionError(Exception):
 
 class CloudLocationMissingError(CloudStorageRequiredError):
     reason = "cloud_location_missing"
+
+
+class BerthSourceAmbiguousError(CloudStorageRequiredError):
+    """More than one live allocation names this berth.
+
+    Raised instead of picking one. Which row a provider operation would have
+    used is exactly what nothing local is entitled to decide.
+    """
+
+    reason = "berth_source_ambiguous"
 
 
 class UnknownCloudProtocolError(ValueError):
@@ -3653,6 +3664,72 @@ def _own_device_storage_announcement(
     return None
 
 
+def candidate_announcement_status(
+    root_dir, participant_hex, team_name, state, route
+) -> str:
+    """Whether any trusted device of this participant announced exactly this route.
+
+    Evidence about a placement candidate, not a permission. Broader than the
+    Hub's own-storage gate, which takes the newest selection or this device's
+    own: a sibling's candidate is announced by the sibling's key, and that is
+    still a trusted device key of this teammate.
+
+    Returns "announced", "missing", or "unknown" when there is no local team
+    state to check it against.
+    """
+    if state["team_id"] is None or state["self_in_team"] is None:
+        return "unknown"
+    berth_id = state["core_berth_id"]
+    if berth_id is None:
+        return "unknown"
+    engine = _sqlite_engine(_team_db_path(root_dir, participant_hex, team_name))
+    try:
+        with engine.begin() as conn:
+            trusted = resolve_trusted_device_keys_for_teammate(
+                _load_team_certificates(conn, state["team_id"]),
+                state["team_id"],
+                state["self_in_team"],
+            )
+            public_keys = _device_public_keys_by_key_id(conn)
+            announcements = load_teammate_berth_storage_announcements(
+                conn, state["self_in_team"], berth_id
+            )
+    finally:
+        engine.dispose()
+    for announcement in announcements:
+        if (
+            announcement.protocol != route["protocol"]
+            or announcement.url != route["url"]
+            or announcement.location != route["location"]
+        ):
+            continue
+        signer_public_key = public_keys.get(announcement.signer_key_id)
+        if signer_public_key is None or signer_public_key not in trusted:
+            continue
+        if verify_teammate_berth_storage_announcement_signature(
+            announcement, signer_public_key
+        ):
+            return "announced"
+    return "missing"
+
+
+def berth_placement_state(root_dir, participant_hex, berth_id) -> str:
+    """Say whether a berth's placement is settled, paused, or ambiguous.
+
+    "paused" is the durable device-local record of a question a human holds;
+    "ambiguous" is several live rows with no pause recorded, which the Hub
+    also refuses on its own. Both mean no location here was chosen.
+    """
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        if berth_source_decision.read_pause(conn, berth_id) is not None:
+            return "paused"
+        live = conn.execute(
+            "SELECT COUNT(*) FROM berth_cloud_allocation WHERE berth_id = ?",
+            (berth_id,),
+        ).fetchone()[0]
+    return "ambiguous" if live > 1 else "settled"
+
+
 def derive_team_join_state(root_dir, participant_hex, team_name) -> dict:
     """Derive local join, admission, and route state for one team.
 
@@ -3672,6 +3749,7 @@ def derive_team_join_state(root_dir, participant_hex, team_name) -> dict:
         "device_key_id": None,
         "core_berth_id": None,
         "allocation": None,
+        "placement": "settled",
     }
     if not has_local_team_clone(root_dir, participant_hex, team_name):
         return state
@@ -3702,6 +3780,14 @@ def derive_team_join_state(root_dir, participant_hex, team_name) -> dict:
             core_berth_id = _core_berth_id(conn)
             state["core_berth_id"] = core_berth_id
             if core_berth_id is None:
+                return state
+            state["placement"] = berth_placement_state(
+                root_dir, participant_hex, core_berth_id
+            )
+            if state["placement"] != "settled":
+                # Deriving a route from either of several disputed rows would
+                # report a decision nobody made. The report says the placement
+                # is open and leaves the allocation unset.
                 return state
             allocation = get_berth_cloud_allocation_for_berth(
                 root_dir, participant_hex, core_berth_id
@@ -6237,9 +6323,10 @@ def resolve_berth_cloud_allocation_intent(
     """Resolve the Core allocation an established teammate means to publish.
 
     Returns `(allocation, None)`, or `(None, reason)` with
-    `storage_not_configured` or `storage_choice_required`. A requested account
-    that is malformed or unregistered raises `ValueError` before anything is
-    mutated: that is invalid input, not route state.
+    `storage_not_configured`, `storage_choice_required` or
+    `berth_source_paused`. A requested account that is malformed or
+    unregistered raises `ValueError` before anything is mutated: that is
+    invalid input, not route state.
 
     Selecting a different account or asking for a new location atomically
     replaces the berth's single allocation row with a fresh allocation ID.
@@ -6247,6 +6334,11 @@ def resolve_berth_cloud_allocation_intent(
     materialization started against the superseded row cannot claim the
     replacement. Selecting the current account without `new_location` is a
     no-op that preserves the allocation ID and location.
+
+    Reports `berth_source_paused` while the berth's placement is a held
+    question rather than rotating through it: an ordinary rotation is this
+    device stating a preference, and only an explicit resolution may remove a
+    competing candidate.
     """
     root_dir = pathlib.Path(root_dir)
     if isinstance(berth_id, str):
@@ -6256,8 +6348,19 @@ def resolve_berth_cloud_allocation_intent(
         if cloud_storage_id_hex is not None
         else None
     )
-    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
-        current = conn.execute(
+    conn = attached_note_to_self_connection(root_dir, participant_hex)
+    try:
+        conn.isolation_level = None
+        conn.execute("BEGIN IMMEDIATE")
+        # Reads the pre-change rows into retained evidence, so a candidate this
+        # rotation is about to replace survives a pause that is already held.
+        berth_source_decision.project_pause(conn, berth_id)
+        if berth_source_decision.read_pause(conn, berth_id) is not None:
+            # Committed, not rolled back: the projection above may have
+            # retained a candidate this refusal is protecting.
+            conn.execute("COMMIT")
+            return None, "berth_source_paused"
+        rows = conn.execute(
             """
             SELECT
                 bca.id,
@@ -6270,9 +6373,11 @@ def resolve_berth_cloud_allocation_intent(
             FROM berth_cloud_allocation bca
             JOIN cloud_storage cs ON cs.id = bca.cloud_storage_id
             WHERE bca.berth_id = ?
+            ORDER BY bca.id
             """,
             (berth_id,),
-        ).fetchone()
+        ).fetchall()
+        current = rows[0] if rows else None
         # Validated inside the same transaction that would replace the row, so
         # a bad selection never costs the caller their current allocation.
         cloud_row = (
@@ -6311,9 +6416,12 @@ def resolve_berth_cloud_allocation_intent(
             if protocol == "s3":
                 _validate_s3_location(location)
             if current is not None:
+                # By id, not by berth: the pause check above proved this is
+                # the only live row, and deleting by berth would make an
+                # ordinary rotation a way to discard a competing candidate.
                 conn.execute(
-                    "DELETE FROM berth_cloud_allocation WHERE berth_id = ?",
-                    (berth_id,),
+                    "DELETE FROM berth_cloud_allocation WHERE id = ?",
+                    (current[0],),
                 )
             allocation_id = uuid7()
             conn.execute(
@@ -6324,7 +6432,6 @@ def resolve_berth_cloud_allocation_intent(
                 """,
                 (allocation_id, berth_id, cloud_row[0], location, _now_iso()),
             )
-            conn.commit()
             resolved = {
                 "id": allocation_id.hex(),
                 "berth_id": berth_id.hex(),
@@ -6346,6 +6453,16 @@ def resolve_berth_cloud_allocation_intent(
                 "client_id": current[5],
                 "path_metadata": current[6],
             }
+        # Projected inside the same transaction as the row change, so no
+        # reader can see the new placement without the pause it implies.
+        berth_source_decision.project_pause(conn, berth_id)
+        conn.execute("COMMIT")
+    except BaseException:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
 
     if reason is not None:
         return None, reason
@@ -6360,11 +6477,17 @@ def validate_cloud_storage_id(root_dir, participant_hex, cloud_storage_id_hex):
 
 
 def get_berth_cloud_allocation_for_berth(root_dir, participant_hex, berth_id):
+    """Return the berth's sole live allocation, or None if it has none.
+
+    Several live rows is not a case this can serve: choosing among them is the
+    human decision `berth_source_decision` exists for, and returning either one
+    would hand a caller a location nobody selected.
+    """
     root_dir = pathlib.Path(root_dir)
     if isinstance(berth_id, str):
         berth_id = bytes.fromhex(berth_id)
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
-        row = conn.execute(
+        rows = conn.execute(
             """
             SELECT
                 bca.id,
@@ -6378,11 +6501,18 @@ def get_berth_cloud_allocation_for_berth(root_dir, participant_hex, berth_id):
             FROM berth_cloud_allocation bca
             JOIN cloud_storage cs ON cs.id = bca.cloud_storage_id
             WHERE bca.berth_id = ?
+            ORDER BY bca.id
             """,
             (berth_id,),
-        ).fetchone()
-    if row is None:
+        ).fetchall()
+    if len(rows) > 1:
+        raise BerthSourceAmbiguousError(
+            f"berth {berth_id.hex()} has {len(rows)} live cloud allocations; "
+            "a human decision is required before one can be used"
+        )
+    if not rows:
         return None
+    row = rows[0]
     return {
         "id": row[0].hex(),
         "berth_id": row[1].hex(),

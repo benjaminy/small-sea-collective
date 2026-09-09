@@ -85,8 +85,7 @@ With fresh independently minted identities, two signing acts are already two row
 The reused-ID control narrows this finding: separate identities do not supply a general guarantee against evidence loss.
 Both candidates still need payload comparison to tell equivalent duplicates from contradictions; that requirement is not a discriminator.
 
-The model's assumptions are stated in its docstring and are obligations, not findings:
-evidence is adopted as a unit, adoption is distinguishable from reachability, and predecessor evidence survives a selection change.
+The model's assumptions are stated in its docstring and are obligations, not findings: evidence is adopted as a unit, adoption is distinguishable from reachability, and predecessor evidence survives a selection change.
 Its succession handling is deliberately minimal — it orders selections by which one no other retained selection names as predecessor — and it exercises only two devices and one berth.
 Competing successors and unequal counters are Move 3, not modeled here.
 
@@ -338,8 +337,7 @@ Observed values from one run:
 | P1 after storage exists | pending | `materialization_failed` | yes | 403 |
 | P2 before signing | pending | `route_preparation_error` | yes | 404 |
 
-The route reason separates P2 from the other two and does not separate P0 from P1:
-a failed bucket creation and a half-applied bucket policy are the same reason.
+The route reason separates P2 from the other two and does not separate P0 from P1: a failed bucket creation and a half-applied bucket policy are the same reason.
 So the answer to the Move 6 ledger entry's falsifier is split.
 Finalization is observable as a completed call at the moment a device makes it, which is what the ordering rule needs.
 Neither the retained allocation nor the local route report records completion for a later reader; this does not mean no durable evidence survives, since the bucket and policy are provider state.
@@ -1576,3 +1574,251 @@ The sender-key result covers one distribution of one chain; multiple rotations, 
 `.venv/bin/python -m pytest` over the five probe files: 29 passed in 157 s, ten of them in `probe_multiple_locations.py`.
 No model file changed, so the 236 model micro tests were not rerun.
 `git diff --check` is recorded in the commit that carries this edit.
+
+## Accepted simplification, 2026-09-08: evidence gathering during a human pause
+
+The user proposed allowing the Hub and Manager to read relevant sources to gather evidence whenever source use for a berth is uncertain, while other normal operations wait for a human decision.
+The subsequent analysis was accepted for incorporation into the branch documents.
+This supersedes the previous candidate's expectation of continued normal reading across multiple locations during a placement disagreement.
+It does not undo the distinction between cloud locations as transport and devices as trusted authors.
+
+The accepted boundary is investigation during a pause.
+On detecting an unresolved source-use question, the device pauses normal reads, integration and publication for the affected berth.
+The Hub and Manager may fetch, verify, compare and preserve alternatives, with provider I/O through the Hub and existing authorization, device trust and explicit stops enforced.
+Evidence stays outside live integration until resolution; investigation neither redirects writes nor silently resumes routine use of a stopped source.
+A human may authorize deliberate inspection of a stopped source without canceling the stop.
+Investigation and the operations needed to apply the human resolution remain possible while paused.
+
+Uncertainty means a detected unresolved question, not an inability to prove that every possible location is known.
+Several sources deliberately accepted by a human need not themselves be in dispute.
+New evidence can improve the explanation, including showing that the apparent disagreement has disappeared, but cannot automatically release this pause.
+An explicit human choice is required, and any other independent block must still be honored.
+The choice is local and may authorize one source or several; it does not prove global agreement or control offline siblings.
+Normal multi-location operation remains deferred, and the first complete path only needs to select either existing location.
+
+The pause is scoped to the affected berth on the detecting device.
+Move 9 shows that today's allocation refusal also blocks unrelated NoteToSelf work.
+That broader pause must be visible and the blocked work preserved, but this branch need not build isolation machinery merely to keep that work moving before the human acts.
+Preserving unrelated work through resolution remains required.
+
+This settles the previous step 4 question at the behavioral level: a visible human pause is the chosen direction.
+It does not select a schema change or endorse the current uniqueness refusal as sufficient implementation.
+The refusal preserves alternatives but does not present the disagreement meaningfully, and choosing either existing location is not fully expressible through the Manager.
+The completion target is therefore one connected path: detect, visibly pause, inspect and preserve both sides, choose either existing location over the reviewed evidence, and resume without losing unrelated work.
+Newly relevant evidence between review and application must invalidate the stale choice.
+Restart and replay with retained evidence must not silently release the pause or reverse an explicit choice.
+
+The simplification avoids requiring automatic progress through disagreement, a public route-resolution graph, global agreement, or proof that a retired location will never contain another valid publication.
+It does not remove the need for concrete detection, source-associated retrieval, evidence preservation, pause enforcement and effective resolution.
+Unknown sources and unavailable bytes remain discovery and recovery limitations that a human can accept; they do not mandate a new recovery protocol.
+The earlier probes and models remain evidence under their recorded assumptions, not validation of this newly accepted behavior.
+
+Updated plan.md, contract-multiple-locations.md and follow-up.md to use this boundary and defer automatic multi-location operation and elaborate retirement workflows.
+This is a documentation update only; runtime code, historical experiments and public specifications are unchanged.
+
+## Step 4 handoff, 2026-09-08: what the pause costs in the runtime
+
+[handoff-sibling-disagreement.md](handoff-sibling-disagreement.md) is the plan step 4 deliverable.
+Written from reading the runtime; no code was run and nothing is implemented.
+Two questions in it are for the planning committee and are stated below rather than decided.
+
+### The pause cannot be derived, and that is a contract requirement
+
+The attractive design was no new durable state at all: derive the pause from the parked refs and the live rows the way `note_to_self_conflict_status` derives outstanding sources, so restart and replay are covered for free by ancestry.
+
+It fails one clause.
+The contract requires that evidence removing the apparent disagreement — a sibling that adopted this device's choice, or withdrew its own — must not release the pause without a human.
+A predicate over current state releases exactly then, and a control that clears the pause on re-observing agreement is indistinguishable from never having paused.
+So a held pause is a device-local row, and only `resolve_berth_source` deletes it.
+
+Restart and replay still cost nothing beyond the row: replay is filtered by ancestry in `outstanding_sources`, and re-detection over an unchanged candidate set recomputes the same digest.
+
+### Detection has to be a domain projection, not a classified error
+
+Today the disagreement surfaces as `sqlite3.IntegrityError` text inside a `constraint_refused` outcome.
+Reading a berth and two locations back out of that string would be the cheapest change and the worst one: it binds the Manager's report to SQLite's message format, and it can only fire where the constraint fires, which is one integration path.
+
+The projection — more than one allocation row for one berth, with no local choice over exactly those rows — is available at integration, at refresh, at this device's own rotation and at status read time, and it carries the alternatives rather than a sentence about them.
+
+### What no representation recovers: who chose what
+
+`berth_cloud_allocation` has no author column, and Cod Sync proves a history's structure rather than its author (#190).
+A report can name the head a row first appears under and its local `created_at`; it cannot say "device B chose this" without inventing evidence.
+The human decides between two locations, not between two devices.
+That is a limit to state in the report, not a gap to close in this branch.
+
+### Choosing the sibling's location and choosing this device's own become the same operation
+
+Move 9 found the first cost a raw row delete and the second inexpressible.
+Under the handoff both are `resolve_berth_source(berth, allocation_id, digest)` followed by an argument-free `reconcile_team_route`, differing only in the id.
+`reconcile_team_route` still needs no location parameter, because after resolution the chosen allocation is the berth's current one and the no-change branch of `resolve_berth_cloud_allocation_intent` returns it.
+
+### For the planning committee
+
+These are the original questions; the response and revised handoff are recorded in [the review follow-through](#step-4-review-follow-through-2026-09-08).
+
+**A. Drop `idx_berth_cloud_allocation_berth`, or keep it.**
+Dropping it lets a berth hold candidate rows while a question is open, and moves "one allocation per berth" from a schema constraint to a rule the pause enforces.
+It is a shared Core schema change: `SHARED_SCHEMA_VERSION` bumps, existing playgrounds are replaced rather than migrated, and the Manager and Hub specs both state the one-row rule today.
+
+Keeping it is the smaller diff to the schema and a larger one everywhere else.
+Detection would have to run before `apply_delta`, over `ours_delta` and `theirs_delta`, because the constraint converts the disagreement into a refusal of the whole source.
+The alternatives stay inside parked Git blobs, so presentation means extracting `core.db` from a commit and querying it — what `probes/probe_human_resolution.py:_allocations_at` does by hand.
+Unrelated work from both siblings stays blocked for as long as the human declines to decide, which is the cost Move 9 measured and the contract asks to be made visible.
+And "keep my own location" needs the resolution to suppress one row from `reconcile_deltas` output, which is a second merge policy living beside the first.
+
+Recommended: drop it.
+The pause is the thing that has to be visible and enforceable, and a constraint that turns the question into an error can neither present it nor be scoped to it.
+Not recommended silently: it reopens #224's exactly-one-route cardinality in storage as well as in the read path, which [follow-up.md](follow-up.md) already flags as needing the issue owner.
+
+**B. Does resolution delete the losing candidate rows from shared NoteToSelf?**
+The handoff says yes, in the same transaction as the choice.
+That makes the choice effective for siblings by ordinary adoption: a sibling fast-forwards, finds its signed announcement no longer matches the surviving allocation, reports `route: pending` and reconciles.
+One participant, one location per berth, restored without any device agreeing.
+
+The alternative is that resolution writes only the device-local choice and leaves both rows.
+Then each sibling detects and resolves independently, which is the most literal reading of "does not claim agreement by devices that have not participated" — and it means the shared state holds two allocations indefinitely, every sibling pauses, and a participant with three devices decides three times.
+
+Recommended: delete.
+A participant's own management decision written to the participant's own shared state is not a claim about a device; it is what NoteToSelf is for.
+But it does change a sibling's storage destination without that device's human being asked, and it orphans whatever that sibling materialized, so it is the committee's call and not a detail.
+
+**C. Scope, folded into A and B.**
+The handoff pauses this device's own-berth provider I/O and leaves teammate reads of the same berth id alone, since those resolve the teammate's placement and not the decision in dispute.
+Publication pausing is settled by the contract rather than by the Move 9 review's request for teammate-side evidence, which remains unobtained.
+
+### Validation of this document edit
+
+No code was run and no runtime code changed.
+Every runtime claim cites a file and line read in this session; the probe and model results it builds on were validated in their own sections above.
+
+## Step 4 review follow-through, 2026-09-08
+
+The user had no strong preference on A and invited arguments.
+The review recommended removing allocation uniqueness because competing live candidates make the berth question directly inspectable without rejecting unrelated NoteToSelf changes or introducing a second merge policy.
+The revised handoff adopts that recommendation under the user's request to fix the findings; it is not recorded as an earlier explicit user preference.
+
+For B, the user chose deletion of losing candidates from shared NoteToSelf.
+They also stated an eventual goal of minimal-fuss provider migration and deferred designing security checks that compare old and incoming placement state and may involve a human during adoption.
+The revised handoff preserves that boundary: delete active allocation rows, retain evidence, and do not equate deletion with removing provider bytes, accounts or credentials.
+A device that already holds a pause must still inspect its alternatives and explicitly decide; that is an existing contract requirement, not the deferred general adoption-time security review.
+
+The review found four defects in the proposed handoff, corrected as follows.
+
+1. Investigation previously retained the check that rejects paused berths.
+   A Manager-only Hub path now explicitly exempts investigation from the ordinary pause and live-allocation lookup while preserving authorization, admissible announcements, credential checks and publication verification.
+   It binds every request in a chain walk to the selected saved route and never materializes or integrates.
+2. Detection previously ran after adoption committed, while the Hub could accept an old local choice among fresh candidates.
+   Adoption and local allocation changes now project pause state in the same attached SQLite transaction as the shared rows.
+   The Hub reads one committed snapshot and refuses all multiple-live-allocation states regardless of an earlier choice.
+3. The digest previously bound allocation ids but not mutable route content, and resolution compared it before starting the mutation transaction.
+   The revised digest binds complete reviewed route content, live or withdrawn status and source-associated evidence.
+   Resolution compares and applies under one SQLite writer reservation; publication of relevant observation refs and outcomes participates in that same reservation.
+   Provider fetching and verification stay outside the short reservation.
+4. Shared deletion previously removed the only route lookup offered by the inspection interface.
+   Versioned device-local report snapshots now retain routes and provenance through deletion and restart, and distinguish different content under a reused allocation id.
+   An explicit choice can restore a withdrawn allocation only with matching existing account context and no conflicting live identity; missing prerequisites preserve the pause rather than creating accounts or provider objects.
+
+With deletion on resolution, `berth_write_choice` is a decision record rather than a routing override.
+The single surviving live allocation determines the destination, and clearing the pause still leaves ordinary credential, announcement and publication checks in force.
+Status may refresh local evidence, so the handoff no longer calls it read-only.
+
+Updated the handoff, plan and local issue follow-up proposals.
+Step 5 is no longer blocked on A and B, but runtime implementation and validation are still outstanding.
+Added validation schedules for adoption interruption, stale local choices, concurrent evidence changes, deleted-candidate inspection and deliberate restoration.
+No runtime code or public specifications changed, and no issue messages were sent.
+
+## Step 5 result, 2026-09-08: the path implemented and validated
+
+The handoff is implemented and the connected path runs.
+`probes/probe_source_resolution.py` has nine passing scenarios against a real Manager, Hub and MinIO;
+`packages/small-sea-manager/tests/test_note_to_self_integration.py` gained eleven micro tests that pin the projection, the pause and the resolution down without a network.
+The repository suite was run before and after.
+
+### What landed
+
+Allocation uniqueness is gone (`SHARED_SCHEMA_VERSION` 58 to 59) and the invariant it carried is now a projection plus an enforcement point.
+`berth_source_pause` and `berth_write_choice` are device-local rows (`LOCAL_SCHEMA_VERSION` 11 to 12).
+The representation lives in `small_sea_note_to_self/berth_source.py` rather than in the Manager, because the Hub reads it and must not import Manager code; the policy lives in `small_sea_manager/berth_source_decision.py`.
+Detection runs inside adoption's own row transaction and inside the local allocation-change transaction, before and after each mutation.
+The Hub enforces at `_resolve_berth_cloud_or_raise`, reading the pause and the allocations in one read transaction.
+Investigation is a Manager-only `GET /berth_source/inspect` plus `CandidateInspectionStore`, which carries the candidate key on every object request so a walk cannot drift.
+`berth_source_status`, `inspect_berth_source_candidate` and `resolve_berth_source` are the Manager operations.
+
+### Three things the runtime said that the handoff did not
+
+**The announcement gate had to come off the investigation path.**
+The handoff kept "admissible announcement" as a check on investigation.
+Against the runtime that makes the sibling's candidate unreadable, which is the candidate most worth reading:
+A's announcement for its own location travels in A's team Core chain, published to the very bucket B cannot use yet, so B holds no announcement naming it.
+The gate exists to stop a device *writing* where teammates will not look, and investigation never writes.
+It is now recorded as evidence -- `observation.announcement` is `announced`, `missing` or `unknown` -- and does not refuse the read.
+`test_both_candidates_are_inspectable_while_the_berth_is_paused` asserts both outcomes in the same run: B's own candidate is `announced`, A's is `missing`, and both are read.
+
+**Resolving where to publish does not resolve what to publish.**
+Choosing the sibling's location leaves that location holding the sibling's Core chain, which diverges from this device's local `main`.
+`push_team` then raises `PublicationIntegrationRequiredError` naming the head already there, and the ordinary integration path takes over.
+That is the correct separation and not a gap, but it means "resolution resumes publication" is true only for a device choosing its own location;
+choosing the sibling's is resolution plus reconcile plus a Core integration.
+The parametrized `test_either_existing_location_can_be_chosen_and_publication_resumes` asserts both halves.
+
+**An open placement propagates further than the Hub.**
+`derive_team_join_state` cannot derive a route from either of several disputed rows, so it gained `placement` and reports no allocation while the question is open.
+`get_berth_cloud_allocation_for_berth` raises `BerthSourceAmbiguousError` rather than picking, which surfaces in ordinary management operations:
+`create_invitation` raises it while a berth is ambiguous, because an invitation has to name a route and there is none chosen.
+That is right, but it is a raised error rather than a reported reason, unlike `reconcile_team_route`, which reports `berth_source_paused`.
+
+### What the pause costs, measured
+
+The channel-wide block is gone.
+Under the old refusal one disputed berth stopped the whole NoteToSelf channel in both directions;
+`test_competing_choices_pause_the_berth_and_spare_unrelated_work` shows A's unrelated cloud account arriving on B in the same adoption that opens the pause, and B publishing NoteToSelf while the berth is stopped.
+What stops is the berth: the team session's `ensure_cloud_ready` and a `push_team` with real outstanding work both refuse with `berth_source_paused`.
+
+### Not covered
+
+Three of the plan's schedules have no runtime evidence and were not attempted:
+interrupting adoption between the shared rows and the projected pause;
+racing a locator writeback or a new candidate against a resolution's own transaction;
+and retrying a publication interrupted after resolution.
+The first two are argued from the transaction structure -- one `BEGIN IMMEDIATE` covering comparison and mutation, detection inside adoption's own transaction -- and that argument is not the same as a test.
+Restoration of older local state was also not exercised: nothing demonstrates what survives when a device-local database is rolled back to before a pause was recorded.
+
+### Validation of this document edit
+
+Ran `probe_source_resolution.py` (9 passed) and `test_note_to_self_integration.py` (41 passed, 11 of them new).
+The repository suite with `uv run pytest` is 964 passed, 3 skipped, 0 failed.
+The pre-change baseline was 952 passed with two failures that passed on rerun and did not recur;
+the difference is the eleven new micro tests less the unique-index test they replace.
+The probes are not collected by the suite -- they are named `probe_*.py` -- so they were run explicitly from their own directory.
+No issue messages were sent.
+
+## Latest-commit review fixes, 2026-09-08
+
+The review of `fca4745` reproduced two gaps in investigation.
+The Hub combined the retained location with current account route fields, so one candidate key could use different endpoints between object requests.
+Inspection also published Git refs before acquiring the NoteToSelf writer reservation; resolution could accept the old digest in that window, and an interruption could leave a head absent from every subsequent report.
+
+Inspection now checks the current account's protocol, URL, client ID and path metadata against the retained snapshot and refuses a mismatch before provider I/O.
+Credential refresh remains possible without changing the route, including when inspecting a withdrawn candidate.
+Fetching imports and verifies without publishing a ref.
+The Manager then publishes an immutable ref for every verified observation and advances the convenience ref under the same NoteToSelf writer reservation used by resolution.
+Status and resolution reconstruct source-associated heads from retained refs when report recording was interrupted.
+If resolution finished before inspection completed, the later ref remains inspectable without rewriting that decision's evidence or reopening its pause.
+The representation stays in NoteToSelf, management policy stays in Manager, and generic Cod Sync gains no placement policy or locking callback.
+
+Validation used temporary-repository Git signing overrides (`GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false`).
+The initial combined run of `test_berth_source_inspection.py` and `test_note_to_self_integration.py` passed 53 micro tests; after adding the final two inspection schedules, the inspection file alone passed all 14 micro tests.
+The existing NoteToSelf integration file accounts for 41 of the combined run.
+Explicitly running `probes/probe_source_resolution.py` against local Hub/MinIO passed all nine connected scenarios, with five existing Pydantic settings warnings.
+`git diff --check` passed.
+The whole repository suite was not rerun for this fix.
+
+The new micro tests exercise all four mutable account route fields with live and withdrawn candidates, permit credential refresh, and verify that a changed route never reaches an adapter.
+They exercise resolution on both sides of inspection publication, interruption after the immutable ref and after the convenience-ref update, direct resolution after restart without a preceding status refresh, preservation across a later fetch, and divergent observed heads.
+These use real SQLite, Git and Cod Sync with filesystem transport and substituted session/team lookup; account-route checks stub the provider adapter.
+The interruption tests unwind a transaction by raising an exception; they do not simulate an operating-system process kill or power loss.
+
+The [implementer checklist](handoff-sibling-disagreement.md#remaining-verification-after-the-latest-commit-review) identifies the remaining adoption interruption, allocation/locator writer race, publication-retry and older-state-restoration schedules.
+Each item names its trigger, ordering and required observations.
+These remain open and must not be inferred from the passing inspection checks.

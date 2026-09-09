@@ -48,6 +48,15 @@ _ROUTE_HELP = {
         "This device's team key is not trusted, so a route it signs cannot help "
         "your teammates. Finish admission, or use a trusted device."
     ),
+    "berth_source_paused": (
+        "Two of your devices chose different cloud locations for this team, so "
+        "this device has stopped using either one. Review both and choose which "
+        "to keep; retrying will not clear it."
+    ),
+    "berth_source_ambiguous": (
+        "This team's Core berth has more than one cloud location on this device "
+        "and none of them was chosen. Review the placement question and choose."
+    ),
 }
 
 #: Route reasons the existing Core-route reconciliation repairs. The two that

@@ -1,53 +1,58 @@
-# Shared berth placement with multiple readable locations
+# Shared berth placement: evidence gathering and human resolution
 
 Issue: [#238](https://github.com/benjaminy/small-sea-collective/issues/238).
 Branch: `issue-238-shared-berth-changes`.
-Updated: 2026-09-08 following the multiple-location and retirement discussion, resequenced after a review of the runtime sites, then again as steps 1-3 finished.
-Status: revised research direction and experiment plan; no runtime implementation or wire format is accepted.
+Updated: 2026-09-08 after the latest-commit review fixes.
+Status: the connected resolution path is implemented; the remaining verification work is listed in the [implementer checklist](handoff-sibling-disagreement.md#remaining-verification-after-the-latest-commit-review).
+The inspection/ref-publication race and frozen-account-route defects found in review are fixed, with focused regression coverage.
 Steps 1-3 are done: the runtime path map, the read-side probe and the stop/replay model.
-The next work is the human decision on the sibling wedge in step 4, which gates every runtime change; it is not acceptance of the earlier retirement-record gate.
+Step 4's handoff is [handoff-sibling-disagreement.md](handoff-sibling-disagreement.md).
+It adopts removing allocation uniqueness and deleting losing live candidates while retaining evidence locally.
+Step 5 is done except for the three schedules listed under it.
+Results, and the three places the runtime contradicted the handoff, are in [notes.md](notes.md#step-5-result-2026-09-08-the-path-implemented-and-validated).
 
 ## Direction
 
-A participant's berth can have several known, authenticated cloud locations without a reader first establishing which location won a placement disagreement.
+When a device detects an unresolved question about which sources to use for a berth, its normal operations for that berth pause until a human decides.
+The Hub and Manager may continue gathering, verifying, comparing and preserving relevant evidence from admissible sources, with all provider I/O through the Hub.
+Further evidence does not automatically release the pause.
 Treat locations as channels carrying device-authored publications.
 Separate the locations a reader checks, the destinations a participant chooses for future writes, and a decision to stop using a location.
-Try this small amount of multiple-location support as the main candidate for simplifying #238.
-Be explicit about what it simplifies: it avoids building the public route-resolution machinery that Move 10 proposed, which the runtime never implemented.
-It does not touch the one reproduced defect, the sibling allocation wedge, which remains the primary #238 question and gets its own decision in step 4.
-Migration and primary/backup are design checks, not authorization to build those workflows now.
+This narrows the previous multiple-location candidate to investigation and human repair during uncertainty.
+It avoids requiring automatic multi-location operation or the public route-resolution machinery proposed by Move 10, which the runtime never implemented.
+The primary #238 target remains the sibling allocation wedge: turn the refusal into a visible pause with an effective choice of either existing location, preserving unrelated work.
 
 Device trust and publication verification remain enforced boundaries.
 Stopping use of a cloud location does not revoke a device, invalidate an otherwise valid publication, or prove that stored data has been erased.
 Users commonly do not control their cloud providers; stopping further uploads is the meaningful control they can exercise over future disclosure to that provider.
 Retirement must explain possible missed work and discovery limits, but need not prove that an old location will never carry another publication.
 
-The working behavioral proposal is [contract-multiple-locations.md](contract-multiple-locations.md).
-It distinguishes the direction agreed in discussion from the narrower defaults proposed for the experiment.
-The reasoning and changes to prior assumptions are in [notes.md](notes.md#plan-reframe-2026-09-08-channels-write-placement-and-retirement).
+The behavioral contract is [contract-multiple-locations.md](contract-multiple-locations.md).
+The accepted simplification and its relationship to the earlier proposal are recorded in [notes.md](notes.md#accepted-simplification-2026-09-08-evidence-gathering-during-a-human-pause).
 
 ## What changes and what survives
 
 | Earlier assumption or finding | Treatment in this plan |
 | --- | --- |
 | One participant owns the berth placement; trusted siblings are equals | Retain ownership and equal siblings; multiple locations do not assign ownership to a device. |
-| Exactly one location must be selected before a teammate reads | Replace as the working research assumption; read several admissible locations without asserting a winner. |
-| Incomplete route ancestry requires a teammate to pause | Drop as a general read prerequisite; retain the limit on what succession claims that evidence can justify. |
-| Different locations imply incompatible read choices | Replace; distinct locations can coexist, while their retrieved histories can still require integration or human choice. |
-| Teammates need public resolution ancestry to resume | Reopen the need entirely; start the comparison without a public selection DAG or separate retirement-resolution record. |
+| Exactly one location must be selected before a teammate reads | Evidence gathering may inspect several admissible sources without choosing a winner; normal operations wait during detected uncertainty. |
+| Incomplete route ancestry requires a teammate to pause | Do not require a public ancestry graph; detect unresolved source-use questions from available evidence without demanding proof of a complete inventory. |
+| Different locations imply incompatible read choices | Several deliberately accepted sources need not be in dispute; automatic multi-location operation is deferred. |
+| Teammates need public resolution ancestry to resume | Use explicit local human resolution; do not require a public selection DAG or separate retirement-resolution record. |
 | Gated versus independent retirement is the next checkpoint | Suspend it; that experiment retires selection branches to establish one route, a different question from stopping channel use. |
 | A delayed signature or retry must not undo a deliberate choice | Retain for write placement and an explicit local stop; rediscovering an old readable location is not itself a reversal of a write decision. |
-| Two allocation rows block NoteToSelf integration | Retain as a demonstrated runtime defect to account for; reader fan-out alone does not fix it. |
+| Two allocation rows block NoteToSelf integration | Make the disagreement visible and resolvable; neither the existing refusal nor read fan-out alone satisfies the contract. |
 | Frozen route content, honest publication outcomes, preserved alternatives | Retain the properties; reassess each proposed representation against the new behavior. |
-| A person can pause their device indefinitely | Retain; do not impose a channel-wide pause merely because several readable locations exist. |
+| A person can pause their device indefinitely | Retain; disclose any broader storage-imposed pause and preserve blocked work rather than requiring automatic progress or isolation machinery. |
+| New evidence can clear a pause automatically | Replace for a source-use pause: evidence improves the explanation, but a human must explicitly authorize resumption. |
 | A location must be proven permanently inactive before retirement | Reject as an obligation; an explicit stop can accept incomplete discovery and later manual recovery. |
 
 The [historical plan](plan-single-route.md) preserves the prior decision ledger, completed sequence and schedule catalog.
 Moves 1–9 and the corrected Move 10 models remain evidence under their stated assumptions.
-The latest recorded review passes 236 model micro tests; this document edit does not extend that evidence to the new candidate.
+The recorded historical model suite has 236 passing micro tests; this document edit does not extend that evidence to the accepted pause contract.
 The historical actor obligations and contracts are labeled accordingly so their single-route pause rules are not inherited as current requirements.
 
-## Boundaries for the candidate
+## Boundaries
 
 Manager owns allocation, write-placement and management decisions.
 Hub performs all provider I/O and enforces the existing local authorization and peer-route trust boundaries.
@@ -55,8 +60,8 @@ Generic Cod Sync must not acquire placement policy or choose a location because 
 Core and arbitrary app berths need the same explanation, with Core's role in distributing routes made explicit.
 
 Multiple readable locations do not mean automatic write replication, automatic promotion of a backup, or a single merged provider head.
-For the first experiment, each device attempts publication to one locally chosen destination at a time; disconnected siblings may hold different choices.
-That is a proposed experiment boundary, not a permanent ban on multiple write destinations.
+For the first complete resolution path, the device resumes publication to one explicitly chosen existing destination; disconnected siblings may hold different choices.
+While paused, a retained destination does not authorize normal publication.
 Receiving a route announcement is not permission to upload to it.
 A change in read preference must not silently redirect writes.
 
@@ -65,17 +70,17 @@ A source's availability does not establish freshness, agreement or authority ove
 A valid signature alone does not establish authorization in the current team/berth context.
 Fetching, validating, preserving and integrating publications remain distinct operations.
 Content obtained through an old location receives the same checks as content obtained through a preferred location.
+Investigation does not override an explicit read stop; a human may authorize deliberate inspection without resuming routine use.
 
-Read-channel coexistence may remove a route disagreement without resolving a data disagreement.
-Preserve divergent histories for the existing integration boundary rather than replacing them with a winner chosen by provider response order.
+Keep evidence outside live integration while paused.
+Preserve divergent histories rather than replacing them with a winner chosen by provider response order.
 Repeated data can be recognized using validated identities, while contradictory payloads under reused identities remain inspectable.
 The runtime investigation must check the actual signing and context-binding boundary instead of assuming it from the conceptual model.
 
 ## Next work
 
-The order below puts the runtime trace and a probe before any new model.
-A reader that never pauses trivially never pauses; a fresh model of that is predictable, while the runtime already answers most of the read-side questions.
-Step 4 is the design decision the branch actually turns on, and it gates the first runtime change.
+Steps 1-3 are completed evidence from the previous candidate, not validation of the new pause contract.
+Step 4 turns the accepted behavioral direction into a concrete runtime handoff; step 5 defines what must convince a reviewer that the path works.
 
 ### 1. Record the runtime path map — done
 
@@ -99,7 +104,7 @@ That is the "latest signature wins" control the plan requires to be visible.
 
 Then fetch both stores through Cod Sync as two `CodSync` instances with a pin ref and record what divergence leaves behind: the exception's SHAs, which objects were imported, and whether any ref points at the second head.
 Cover identical history, divergent history, and a missing bundle at one location.
-This covers the first, third, fifth, sixth and eighth schedules below with real code and no new model.
+This records retrieval, divergence and missing-source behavior with real code and no new model.
 Like the earlier probes, it asserts observed behavior, defect or not, and fixes nothing.
 
 ### 3. Model only the stop and replay schedules — done
@@ -107,107 +112,104 @@ Like the earlier probes, it asserts observed behavior, defect or not, and fixes 
 `models/model_read_stops.py`, eleven passing tests; results and the list of dropped Move 10 obligations in [notes.md](notes.md#read-stop-model-result-2026-09-08-replay-missed-work-and-discovery).
 The 236 pre-existing model tests were run unchanged and reported separately.
 
-The ninth through eleventh schedules concern a local read stop, its replay, an offline sibling publishing after the stop, and a reader knowing only X.
+The modeled schedules concern a local read stop, its replay, an offline sibling publishing after the stop, and a reader knowing only X.
 No runtime exists to probe them, so a small model is appropriate.
 Represent only routes held, read stops held, and what each read attempt could observe; no simulator, polling or migration engine.
 Do not compare it against the single-route models on shared deliveries.
 Instead, list in notes.md which Move 10 obligations the new candidate drops and why, and leave the 236 existing tests running unchanged as evidence for their stated assumptions.
 
-### 4. Decide the sibling wedge before any read fan-out change — open, needs a human
+### 4. Prepare the complete human-resolution path — revised after review
 
-The one reproduced defect on this branch is the `berth_cloud_allocation.berth_id` uniqueness refusal between a participant's own devices.
-Multiple readable locations help teammate T and do nothing for siblings A and B.
-Before changing the Hub's read path, a human decides between two designs for the sibling side:
-separating retained location records from the local write choice so the refusal disappears,
-or keeping the refusal as an intended pause and adding a visible, resolvable choice at the write boundary.
-The probe evidence from Move 8 and Move 9 is the input; do not assume dropping the constraint supplies choice semantics.
-This decision determines whether read fan-out is the right first runtime change at all.
+The handoff is [handoff-sibling-disagreement.md](handoff-sibling-disagreement.md).
+It names atomic pause detection, retained device-local evidence, Hub enforcement, investigation during the pause and resolution over the reviewed evidence.
+The handoff removes `idx_berth_cloud_allocation_berth` and deletes losing live allocations on explicit resolution.
+Old local choices never override new ambiguity, and shared deletion does not clear a sibling's held pause or erase its inspection evidence.
+The committee response, rationale and four review fixes are recorded in [notes.md](notes.md#step-4-review-follow-through-2026-09-08).
 
-### 5. Evaluate practical retirement and discovery
+#### Requirements the handoff had to meet
 
-In the read-side experiment, use an explicit local decision to stop reading X and a separate decision to stop future writes to X.
-Keep enough local evidence that replay of the same old announcement does not silently cancel that read stop.
-This does not select tombstones, counters, a DAG, shared retirement state or permanent retention as the representation.
-A deliberate request to resume reading is distinct from an automatic retry.
+The user accepted pausing normal operations during detected uncertainty while investigation continues.
+The previous checkpoint asking whether sibling disagreement may intentionally pause is settled at the behavioral level.
+The reviewed handoff chooses multiple live candidates during disagreement and one live allocation after resolution.
+Implement the minimum path that makes the pause visible and enforceable and lets either existing location be selected.
 
-Try an offline sibling publishing fresh work to X after T stops reading it.
-Expected outcome: T can miss that work; the stop report must not promise completeness, global silence or device revocation.
-Show a manual path to inspect X again when its locator and storage are still available, without automatically making X the write destination.
-When X is inaccessible, record that recovery is unavailable through that channel; do not promise a recovery protocol.
+Use Move 8 and Move 9 as the starting evidence.
+Today the refusal parks alternatives but does not explain the berth disagreement, blocks the whole NoteToSelf channel, and lacks an effective Manager choice of either existing allocation.
+A generic refusal or a raw database edit is not the intended resolution interface.
 
-For a reader initially knowing only X, identify how it could learn Y through already available communication.
-Use a signed forwarding announcement or an independently delivered route only as explicitly labeled candidate paths.
-If no such path exists, report the discovery limitation instead of assuming the reader knows every location.
-A forwarding record need not command retirement, confer new trust or prove that X is permanently silent.
-Old-location polling and forwarding are options to compare, not mandatory infrastructure.
+The handoff must identify:
 
-### 6. Make a design judgment before expanding
+- The concrete observations that establish an unresolved source-use question, and where the Hub and Manager enforce the pause on normal reads, integration and publication within their existing responsibilities.
+- How the Manager presents the question, the alternatives, unavailable evidence and the actual scope of blocked work.
+- How investigation fetches and preserves relevant alternatives through the Hub without live integration, source switching within a chain walk, write redirection or cancellation of explicit stops.
+- How the human chooses either existing location over the reviewed evidence, and how the choice is refused if newly relevant evidence changes the question before application.
+- How resolution resumes the affected operations and preserves unrelated work from both siblings, without claiming agreement by devices that have not participated.
 
-Count state against the runtime as it stands, not against the Move 10 model.
-The runtime never implemented a pause or succession ancestry; the selector already ignores succession.
-Measured that way, multiple reads add a read set, per-source observations and read stops, and remove no existing code.
-The claimed win is avoiding the public route-resolution machinery; state that plainly rather than as a reduction.
-Name any work displaced into data integration and any new costs.
-Prefer multiple reads if that trade holds while preserving verification, legitimate alternatives and meaningful control of writes.
-Reject or narrow it if it recreates the machinery in another component.
+Evidence gathering and the operations needed to apply the human resolution are exceptions to the pause.
+No continuous retries, automatic integration through disagreement, or new machinery to isolate unrelated blocked work are required.
+If the storage design imposes a broader pause, name it and account for the preserved work when resolution completes.
+Do not require every source to answer before a person can act with incomplete evidence explicitly reported.
 
-Update the candidate contract from the results and recommend a concrete next step.
-A material new trust rule, public ancestry requirement, automatic conflict-resolution policy or larger implementation scope requires an explicit argument and human decision.
-Routine modeling choices within the stated boundaries do not.
+### 5. Implement and validate the complete path -- done except where noted
 
-### 7. Validate the surviving design across persistence and runtime
+Implemented across the Manager, the Hub and the NoteToSelf schema; the named runtime changes are listed in [notes.md](notes.md#what-landed).
+Validated by `probes/probe_source_resolution.py` (nine connected scenarios against a real Manager, Hub and MinIO) and eleven new micro tests in `packages/small-sea-manager/tests/test_note_to_self_integration.py`, which replace the unique-index test the change removes.
+The affected public specs are updated.
 
-Once the behavioral results are coherent, add restart, replay and restoration of older local state, with precise statements of what evidence survives.
-Check a retained read stop separately from a chosen write destination.
-If restoration loses knowledge of a stop, show the resulting behavior and the limitation; do not assume an indestructible high-water mark or storage system.
-A normal restart or redelivery with retained evidence must not silently undo either explicit choice.
+Three schedules in the table below have no runtime evidence and were not attempted: adoption interrupted between the shared rows and the projected pause, a locator writeback or new candidate racing resolution's own transaction, and a publication interrupted after resolution.
+They are argued from the transaction structure, which is not the same as a test.
+Restoration of older local state was not exercised either.
+The follow-up inspection micro tests cover observation publication versus resolution, ref/report interruption, and changed account routes; they do not close those four remaining checks.
+Use the [remaining verification checklist](handoff-sibling-disagreement.md#remaining-verification-after-the-latest-commit-review) for concrete schedules and acceptance observations.
 
-Then extend local runtime probes with real route verification, per-source retrieval, divergent-history preservation, and both NoteToSelf/Core delivery orders.
-Choose either sibling's existing write location while preserving unrelated work from both sides and refusing an application to changed reviewed evidence.
-Exercise interrupted publication without turning a retry into a new choice.
-Only after these checks propose the implementation handoff, schema changes and affected public documentation.
-No runtime work is performed by this plan edit.
+Two results differ from what the table expected.
+Choosing the sibling's location resumes publication only as far as the placement: that location holds the sibling's Core chain, so `push_team` reports the ordinary divergence and integration follows.
+And investigation is not gated on an admissible announcement, because the sibling's announcement travels in a chain published to the location this device cannot reach yet; announcement status is recorded as evidence instead.
 
-## Validation: initial schedule set
+The original obligations follow, unchanged.
 
-Each trace must show actor-held evidence, attempted I/O, verified publications, retained alternatives, write destination, stopped reads and user-visible claims after every step.
-Check safety separately from conditional progress and record missing knowledge explicitly.
+Extend the existing local runtime probes to demonstrate detection, visible pause, investigation, choice and resumption in one connected scenario.
+An isolated model of a pause flag is not sufficient evidence that actual callers stop or that a human choice takes effect.
+Use both NoteToSelf/Core delivery orders and choose each sibling's existing location in separate runs.
+Record the user-visible question, held alternatives, attempted I/O, live state, pause state and write destination at the relevant transitions.
 
 | Schedule | Required observation |
 | --- | --- |
-| A publishes at X, B at Y; T knows both | Both verified histories can be fetched and retained without choosing a winning route; integration follows its own policy. |
-| X fails or stalls while Y is usable, then the reverse | One source's failure does not prevent the other from being attempted under the experiment's bounded I/O; report incomplete coverage. |
-| Both answer, but each has unique work | First success does not exclude the other source; distinct work remains available. |
-| Both carry the same publication; redelivery in both orders | No duplicate semantic effect; identities and verification justify any deduplication. |
-| X contains a stale prefix, Y its descendant | Already-held work is not rolled back; ancestry describes held data, not future silence at X. |
-| Missing link or bundle at X, valid chain at Y | Y remains inspectable; incomplete X is reported without splicing unrelated chain heads or claiming complete retrieval. |
-| Invalid signature, wrong context, or contradictory payload at one source | Existing verification rejects or isolates the invalid claim; contradictory signed evidence is preserved; the other source is not implicitly trusted or suppressed. |
-| Delayed X announcement arrives after choosing Y for writes | Y remains the chosen write destination; read discovery is assessed separately. |
-| T explicitly stops reading X, then receives the same X announcement again | The retained local stop remains effective; no claim that other devices have stopped follows. |
-| An offline sibling publishes new valid work at stopped X | Work can be missed without becoming invalid; manual inspection can recover it if X remains available. |
-| T knows only X while future work moves to Y | Show an actual delivery path for Y or report inability to discover it; no fabricated global route inventory. |
-| Siblings disagree on writes and have unrelated NoteToSelf changes | Preserve alternatives and unrelated work in the candidate; identify any real integration refusal still preventing this. |
-| A third write choice arrives between review and application | Refuse applying a choice to changed evidence and show the newly relevant alternative. |
-| Stop future uploads while provider retains all old bytes | No further uploads from the actor honoring the stop; no erasure claim, key change or device-trust change is inferred. |
+| Siblings make competing choices and also have unrelated NoteToSelf changes | The disagreement becomes visible; normal operations covered by the pause stop; both alternatives and unrelated work survive. |
+| Inspect X and Y while paused, with unique work at each | Both remain inspectable through the Hub; evidence is retained without live integration or publication. |
+| X fails or is incomplete while Y is usable, then the reverse | The other source remains inspectable; missing evidence is reported; success elsewhere does not resume normal operations. |
+| A new announcement arrives during a chain walk | The walk remains associated with its intended source; a later source is a separate observation. |
+| Invalid signature, wrong context, or contradictory payload | Existing verification rejects or isolates invalid claims and preserves contradictory evidence without bypassing authorization. |
+| New evidence shows identical history or removes the apparent disagreement | The explanation may change; the pause stays held until a human explicitly decides. |
+| Human chooses X, then a separate run chooses Y | Either existing location can be selected through the Manager without raw database edits or a third allocation; resolution preserves unrelated work and resumes only when other blocks permit. |
+| Newly relevant evidence arrives between review and application | The stale choice is refused and the new alternative becomes visible. |
+| An earlier choice names X, then adoption adds Z; interrupt before or after the adoption transaction commits | Shared candidates and the held pause become visible together; no ordinary Hub call uses the old choice to bypass the new disagreement. |
+| A new candidate, changed locator/account route, or investigation head races resolution | Comparison and mutation are serialized; an earlier change invalidates the reviewed digest, while a later change is processed after resolution and cannot be silently deleted by it. |
+| A paused sibling adopts deletion of one candidate, then restarts | The pause stays held; both saved routes remain inspectable through the Hub, and the report distinguishes live from withdrawn candidates. |
+| The human deliberately selects a retained, withdrawn candidate | Restore only the reviewed allocation with matching existing account context; refuse conflicting identity or missing account without clearing the pause or creating provider resources. |
+| Inspect a withdrawn candidate while normal I/O is paused | Authorized inspection bypasses the pause and live-row lookup, retains credential and announcement checks, and never materializes, redirects the walk or integrates the fetched history. |
+| Normal restart or replay while paused, and after resolution | Retained evidence keeps the pause or explicit choice effective; replay is not a new choice or permission to resume. |
+| A fresh disagreement arrives after resolution | It is detected and may pause again; no global agreement is inferred from the prior local choice. |
+| Publication is interrupted after resolution | Retry preserves the chosen content and destination rather than manufacturing another choice. |
+| An explicit read stop is replayed or an old location is inspected deliberately | Replay does not cancel the stop; authorized inspection alone does not resume routine reads or writes there. |
 
-Use deterministic local fixtures for the model and local mocks or MinIO for runtime probes.
-Check both delivery orders where outcomes could depend on arrival order, and redelivery separately from a fresh deliberate choice.
-The runtime probe is itself the control for choosing by latest signature: today's selector does exactly that, and the probe records it.
-The stop/replay model needs a control that intentionally reads only the first successful location, demonstrating that the assertions catch it.
-Do not add a general fault-injection framework or operational retry machinery for this experiment.
+Exercise restoration of older local state with precise statements of what evidence survives.
+If restoration loses knowledge of a pause or stop, demonstrate and report the limitation instead of assuming indestructible state or adding a recovery system.
+The existing stop/discovery model remains evidence that valid work can be missed at a stopped source and that an unknown location cannot be discovered without a delivery path.
+Neither limitation requires proving global silence, complete discovery or provider erasure before a person can choose.
 
-Run the existing model suite unchanged when adding the stop/replay model, and report its results separately from new candidate assertions.
-Run the new probe with the existing probe command and record its observations as observed behavior, not as pass/fail of the design.
-Use the established `.venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/models/model_*.py -q` command when that environment is available.
-For eventual runtime changes, run affected micro tests and the repository suite with `uv run pytest`, recording limitations and blocked checks.
-A model result does not establish that current storage, trust verification or transport APIs implement its assumptions.
+Use local mocks or MinIO, deterministic schedules, both relevant delivery orders and replay controls.
+Run affected micro tests and the repository suite with `uv run pytest` for runtime changes, recording limitations and blocked checks.
+Rerun relevant existing models if their assumptions or implementation change; do not present historical passing results as validation of this contract.
+(That obligation is now discharged: this branch does carry runtime changes and new micro tests.)
 
 ## Design checks and limits
 
-Migration asks whether reads can overlap X and Y while future writes move, and how a reader discovers Y.
-Primary/backup asks whether more than one channel can remain useful without a single winner.
-Use those two examples to avoid hard-coding disputed locations as an exceptional error state.
-Do not implement data copying, mirroring, automated failover/failback, provider cleanup, polling configuration or management UX for those workflows now.
+Several sources deliberately accepted by a human need not themselves be in dispute.
+That semantic allowance does not require implementing normal multi-location operation in this branch.
+Migration, primary/backup, copying, mirroring, automatic failover/failback, forwarding infrastructure and polling policy remain deferred.
+Minimal-fuss provider migration remains an eventual goal; deleting allocation rows does not implement migration or provider erasure.
+Additional security checks comparing old and incoming placement state during adoption, potentially involving a human, remain future work.
 
 More sources cost I/O and retained evidence.
 The bounded experiment uses two; the handoff must identify how existing trust and resource boundaries apply rather than silently accepting unlimited provider work from route announcements.
@@ -221,9 +223,11 @@ Any eventual issue update must explain exactly which part of #224 changes.
 
 ## Scope and handoff
 
-The path map and the read-side probe are delivered; the next deliverable is the decision on the sibling wedge, followed by a recommended minimal contract.
-Full provider migration, backup replication, app provisioning UX, the Files capstone and remote erasure remain outside scope.
-Practical read retirement and stopping writes are now part of the branch's behavioral scope; automatic provider-object cleanup remains outside it.
+The branch completion target -- detecting and visibly pausing, inspecting and preserving both sides, choosing either existing location, and resuming without losing unrelated work -- is met and has runtime evidence.
+What remains is a human review of the implementation, the three unvalidated schedules, and the issue updates [follow-up.md](follow-up.md) proposes.
+Automatic multi-location operation, global agreement, public resolution ancestry, elaborate retirement mechanisms, full provider migration, backup replication, app provisioning UX, the Files capstone and remote erasure remain outside scope.
+Retain the distinction between stopping reads, stopping writes and revoking devices; honor explicit stops without requiring a general retirement workflow.
+The affected public specs are updated: the Manager spec's one-allocation rule and a new "Berth placement disagreement" section, and the Hub spec's own-berth resolution passage.
 
 Keep substantial discussion and experiment results in [notes.md](notes.md), and revise this plan briefly as steps finish or change.
 [follow-up.md](follow-up.md) tracks local proposals for eventual issue updates; no issue messages are authorized by this edit.

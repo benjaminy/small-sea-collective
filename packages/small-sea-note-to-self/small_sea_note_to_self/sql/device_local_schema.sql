@@ -158,3 +158,30 @@ CREATE TABLE IF NOT EXISTS admission_acceptance_artifact (
     first_exported_at TEXT,
     PRIMARY KEY (team_id, proposal_id)
 );
+
+-- A held pause on one berth's source-use question. Device-local because it is
+-- this device's own refusal to keep operating on a berth whose placement it
+-- cannot resolve alone, and durable because new evidence that removes the
+-- apparent disagreement must not release it: only an explicit human decision
+-- does. `evidence_json` is a versioned report snapshot -- complete candidate
+-- route content, provenance, live/withdrawn status and investigation outcomes
+-- -- retained so shared deletion cannot destroy the local explanation or the
+-- locator deliberate inspection needs. It carries no credentials.
+CREATE TABLE IF NOT EXISTS berth_source_pause (
+    berth_id BLOB PRIMARY KEY,
+    evidence_digest BLOB NOT NULL,
+    evidence_json TEXT NOT NULL,
+    detected_at TEXT NOT NULL
+);
+
+-- The human decision that ended a pause, with the evidence it was made over.
+-- Not a routing override: the single surviving live allocation determines the
+-- destination. Keeping the resolved snapshot means resolution does not erase
+-- its own explanation.
+CREATE TABLE IF NOT EXISTS berth_write_choice (
+    berth_id BLOB PRIMARY KEY,
+    allocation_id BLOB NOT NULL,
+    evidence_digest BLOB NOT NULL,
+    evidence_json TEXT NOT NULL,
+    decided_at TEXT NOT NULL
+);
