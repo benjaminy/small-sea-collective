@@ -1,27 +1,4 @@
-"""Step 5 validation: the whole human-resolution path against the runtime.
-
-Unlike the Move 7-10 probes in this directory, this file is not asserting a
-defect. It runs the implemented path end to end -- real Manager, real Hub, real
-MinIO, two installations -- and each test is one row of plan.md's step 5 table:
-
-  * competing choices become a visible pause, and unrelated work survives
-  * both candidates stay inspectable while the berth is paused
-  * an unreachable candidate is reported without resuming anything
-  * evidence that explains the disagreement away does not release the pause
-  * either existing location can be chosen, and publication resumes there
-  * a choice reviewed before an investigation is refused as stale
-  * a candidate a sibling deleted is still inspectable and still choosable
-
-The schedule is the Move 8 wedge with both locations actually written, so
-inspection has something to find at each. The two-installation setup and the
-device-switching helpers are Move 7's and Move 8's, imported rather than
-copied.
-
-What this file does not cover, and what therefore has no runtime evidence yet:
-interrupting adoption between the shared rows and the projected pause,
-racing a locator writeback or a new candidate against a resolution's own
-transaction, and retrying a publication interrupted after resolution.
-"""
+"""Connected berth resolution scenarios with two installations and local MinIO."""
 import pathlib
 
 import pytest
@@ -30,9 +7,9 @@ from small_sea_client.client import SmallSeaCloudStorageRequired
 from small_sea_manager import provisioning
 from small_sea_note_to_self.db import attached_note_to_self_connection
 
-from probe_interrupted_finalization import TEAM, _core_allocation, _two_installations
-from probe_multiple_locations import _redistribute_b_sender_key
-from probe_publication_adoption import _manager_b, _reattach
+from sibling_devices import (
+    TEAM, _core_allocation, _two_installations, _redistribute_b_sender_key, _reattach,
+)
 
 MAIN = "refs/heads/main"
 
@@ -77,7 +54,7 @@ def _paused_with_two_written_locations(workspace, minio):
     manager_a.push_team(TEAM)
     manager_a.push_note_to_self()
 
-    manager_b = _manager_b(root_b, alice_hex)
+    manager_b = _reattach(root_b, alice_hex)
     manager_b.refresh_note_to_self()
     manager_b.reconcile_team_route(TEAM, new_location=True)
     _redistribute_b_sender_key(root_a, root_b, alice_hex)
@@ -97,7 +74,7 @@ def _paused_with_two_written_locations(workspace, minio):
     manager_a.add_cloud_storage(protocol="s3", url=minio["endpoint"] + "/unrelated-a")
     manager_a.push_note_to_self()
 
-    manager_b = _manager_b(root_b, alice_hex)
+    manager_b = _reattach(root_b, alice_hex)
     with pytest.raises(PublicationIntegrationRequiredError):
         manager_b.push_note_to_self()
     result = manager_b.refresh_note_to_self()
@@ -272,7 +249,7 @@ def test_evidence_that_explains_the_disagreement_away_keeps_the_pause(
         setup["root_a"], setup["root_b"], setup["alice_hex"], setup["berth_id"]
     )
 
-    _manager_b(root_b, alice_hex).push_note_to_self()
+    _reattach(root_b, alice_hex).push_note_to_self()
     manager_a = _reattach(root_a, alice_hex)
     manager_a.refresh_note_to_self()
     status_a = manager_a.berth_source_status(TEAM)
@@ -284,7 +261,7 @@ def test_evidence_that_explains_the_disagreement_away_keeps_the_pause(
     )
     manager_a.push_note_to_self()
 
-    manager_b = _manager_b(root_b, alice_hex)
+    manager_b = _reattach(root_b, alice_hex)
     manager_b.refresh_note_to_self()
     status_b = manager_b.berth_source_status(TEAM)
 
@@ -409,7 +386,7 @@ def test_a_candidate_a_sibling_deleted_stays_inspectable_and_choosable(
         setup["root_a"], setup["root_b"], setup["alice_hex"], setup["berth_id"]
     )
 
-    _manager_b(root_b, alice_hex).push_note_to_self()
+    _reattach(root_b, alice_hex).push_note_to_self()
     manager_a = _reattach(root_a, alice_hex)
     manager_a.refresh_note_to_self()
     status_a = manager_a.berth_source_status(TEAM)
@@ -421,7 +398,7 @@ def test_a_candidate_a_sibling_deleted_stays_inspectable_and_choosable(
     )
     manager_a.push_note_to_self()
 
-    manager_b = _manager_b(root_b, alice_hex)
+    manager_b = _reattach(root_b, alice_hex)
     manager_b.refresh_note_to_self()
     status_b = manager_b.berth_source_status(TEAM)
     withdrawn = _key_for(status_b, setup["allocation_b"]["location"])
@@ -461,3 +438,122 @@ def test_a_paused_device_cannot_rotate_its_way_out(
     assert report["route_reason"] == "berth_source_paused"
     assert len(_live_locations(root_b, alice_hex, berth_id)) == 2
     assert manager_b.berth_source_status(TEAM)["paused"] is True
+
+
+@pytest.mark.parametrize("choose", ["a", "b"])
+@pytest.mark.parametrize("interruption", ["before_head", "lost_ack", "before_marker"])
+def test_publication_retry_after_resolution_keeps_the_choice(
+    playground_dir, minio_server_gen, monkeypatch, choose, interruption
+):
+    """Resolve, integrate if needed, interrupt publication, restart and retry.
+
+    Failure before the head request proves the write closed. A lost response
+    after it landed exercises Cod Sync's settlement. Interruption before the
+    Manager marker exercises a separate restart with no recorded success.
+    """
+    from cod_sync.protocol import CodSync, PublicationRetryableError
+    from cod_sync.repo import Repo
+    from cod_sync.store import (
+        CandidateInspectionStore, SmallSeaStore, PublicationOutcomeUnknownError,
+        StoreTransportError,
+    )
+    from small_sea_hub.adapters.s3 import SmallSeaS3Adapter
+
+    setup = _paused_with_two_written_locations(pathlib.Path(playground_dir), minio_server_gen())
+    root, participant = setup["root_b"], setup["alice_hex"]
+    manager = setup["manager_b"]
+    chosen = setup[f"allocation_{choose}"]
+    other_side = "b" if choose == "a" else "a"
+    other = setup[f"allocation_{other_side}"]
+    status = manager.berth_source_status(TEAM)
+    chosen_key = _key_for(status, chosen["location"])
+    other_key = _key_for(status, other["location"])
+    assert manager.resolve_berth_source(TEAM, chosen_key, status["evidence_digest"])["resolved"]
+    assert manager.reconcile_team_route(TEAM)["route"] == "ready"
+    repo = manager._team_repo(TEAM)
+
+    if choose == "a":
+        with pytest.raises(PublicationIntegrationRequiredError) as raised:
+            manager.push_team(TEAM)
+        assert raised.value.observed_head == setup["head_a"]
+        # Core has no Manager integration operation yet. Use its installed
+        # splice-sqlite Git merge driver on the source parked by publication.
+        repo.merge(raised.value.parked_ref)
+        assert repo.is_ancestor(setup["head_a"], repo.head())
+        assert repo.is_ancestor(setup["head_b"], repo.head())
+    repo.commit_paths(["core.db"], "Prepare resolved Core publication")
+    intended = repo.head()
+    marker_before = manager._last_published_head(TEAM)
+    decision_before = manager.berth_source_status(TEAM)["decided"]
+    uploads = []
+    real_upload = SmallSeaS3Adapter._upload
+
+    def record_upload(adapter, path, *args, **kwargs):
+        result = real_upload(adapter, path, *args, **kwargs)
+        uploads.append((adapter.bucket_name, path, result[0]))
+        return result
+
+    monkeypatch.setattr(SmallSeaS3Adapter, "_upload", record_upload)
+    with monkeypatch.context() as patch:
+        if interruption == "before_marker":
+            real_write = pathlib.Path.write_text
+            marker = manager._push_status_file(TEAM)
+
+            def interrupt_marker(path, *args, **kwargs):
+                if path == marker:
+                    raise RuntimeError("interrupted before success marker")
+                return real_write(path, *args, **kwargs)
+
+            patch.setattr(pathlib.Path, "write_text", interrupt_marker)
+            with pytest.raises(RuntimeError, match="before success marker"):
+                manager.push_team(TEAM)
+            assert manager._last_published_head(TEAM) == marker_before
+        else:
+            real_put = SmallSeaStore.put_latest_link
+
+            def interrupt_head(store, data, expected_etag, link_uid=None):
+                if interruption == "before_head":
+                    failure = StoreTransportError("interrupted before sending head request")
+                    failure.write_closed = True
+                    raise failure
+                real_put(store, data, expected_etag, link_uid=link_uid)
+                raise PublicationOutcomeUnknownError(
+                    "lost response after head write", expected_etag=expected_etag, link_uid=link_uid,
+                )
+
+            patch.setattr(SmallSeaStore, "put_latest_link", interrupt_head)
+            if interruption == "before_head":
+                with pytest.raises(PublicationRetryableError) as raised:
+                    manager.push_team(TEAM)
+                assert raised.value.attempted_head == intended
+                assert raised.value.observed_head == setup[f"head_{choose}"]
+                assert manager._last_published_head(TEAM) == marker_before
+            else:
+                assert manager.push_team(TEAM) == "already_present"
+                assert manager._last_published_head(TEAM) == intended
+
+    def observed_head(fresh_manager, key, label):
+        session = fresh_manager._get_or_open_session(TEAM)
+        store = CandidateInspectionStore(
+            session.token, key, client=fresh_manager.client._http_client,
+            base_url=fresh_manager.client._base_url,
+        )
+        reader = Repo.init(pathlib.Path(playground_dir) / label / ".git")
+        return CodSync(reader, store).fetch().observed_head
+
+    manager = _reattach(root, participant)
+    before_retry = observed_head(manager, chosen_key, "before-retry")
+    assert before_retry == (setup[f"head_{choose}"] if interruption == "before_head" else intended)
+    assert manager.push_team(TEAM) == ("published" if interruption == "before_head" else "already_present")
+    assert manager._last_published_head(TEAM) == intended
+    assert repo.head() == intended
+    assert observed_head(manager, chosen_key, "after-retry") == intended
+    assert repo.is_ancestor(before_retry, intended)
+    assert observed_head(manager, other_key, "discarded-source") == setup[f"head_{other_side}"]
+    assert uploads and {bucket for bucket, _, _ in uploads} == {chosen["location"]}
+    assert sum(path == "latest-link.yaml" and success for _, path, success in uploads) == 1
+    assert manager.berth_source_status(TEAM)["decided"] == decision_before
+    assert not manager.berth_source_status(TEAM)["paused"]
+    allocation = provisioning.get_berth_cloud_allocation_for_berth(root, participant, setup["berth_id"])
+    assert allocation["id"] == chosen["id"]
+    assert allocation["location"] == chosen["location"]

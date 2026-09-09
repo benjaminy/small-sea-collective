@@ -1,28 +1,9 @@
 Make a sibling berth disagreement a visible pause a human can resolve
 
-Two of a participant's devices can rotate one berth's cloud allocation while
-disconnected. A unique index used to refuse the merged rows, which named a
-commit rather than a disagreement, rejected every unrelated row travelling with
-it, stopped the whole NoteToSelf channel in both directions, and left the
-device publishing to a location its sibling would never learn about. The only
-effective repair was a raw row delete.
+Competing cloud allocations from a participant's devices now merge into a visible, device-local berth pause instead of rejecting unrelated NoteToSelf work through a unique index.
+The Manager can inspect and preserve either location through the Hub, compare a human choice against the reviewed evidence, and resolve to either existing allocation without raw database edits.
+The Hub enforces the pause, investigation stays bound to the retained route, and shared deletion does not release another device's held pause.
 
-The index is gone and the invariant it carried is now a projection plus an
-enforcement point. More than one live allocation for a berth is an unresolved
-question: the Manager records it as a durable device-local pause inside the
-same transaction as the rows that opened it, and the Hub refuses every
-own-berth provider operation at its one allocation lookup. New evidence that
-explains the disagreement away does not release the pause, because none of it
-is a decision. A Manager-only Hub path reads either candidate while the berth
-is stopped, bound to that candidate for the whole chain walk, so a person can
-look at both locations without integrating either. Resolution compares the
-evidence digest the person actually read, deletes the losing rows, and keeps
-the report the decision was made over; either existing location can be chosen,
-including one a sibling already deleted.
-
-Validated by nine connected scenarios in
-`.IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_source_resolution.py`
-against a real Manager, Hub and MinIO, and eleven micro tests in
-`test_note_to_self_integration.py` that replace the unique-index test.
-Fourteen additional inspection micro tests cover account-route binding, serialized observation publication, interrupted report reconstruction and preservation of divergent heads.
-The implementer handoff still lists interrupted adoption, allocation/locator writers racing resolution, interrupted post-resolution publication and restoration of older local state as open verification work.
+The connected scenarios now live in the sandbox and cover resolution and interrupted publication at either destination.
+Micro tests cover atomic adoption, competing writers, retained inspection evidence and restoration of older snapshots; restoring an old snapshot can still lose the only recorded pause or decision, a limit documented in the Manager spec.
+Final validation passed 998 repository micro tests with 3 skipped and all 15 explicitly invoked sandbox scenarios.

@@ -2,13 +2,13 @@
 
 Issue: [#238](https://github.com/benjaminy/small-sea-collective/issues/238).
 Branch: `issue-238-shared-berth-changes`.
-Updated: 2026-09-08 after the latest-commit review fixes.
-Status: the connected resolution path is implemented; the remaining verification work is listed in the [implementer checklist](handoff-sibling-disagreement.md#remaining-verification-after-the-latest-commit-review).
+Updated: 2026-09-09 after verification closeout.
+Status: implementation and all four verification closeout checks are complete; results and limits are in the [verification closeout](handoff-sibling-disagreement.md#verification-closeout).
 The inspection/ref-publication race and frozen-account-route defects found in review are fixed, with focused regression coverage.
 Steps 1-3 are done: the runtime path map, the read-side probe and the stop/replay model.
 Step 4's handoff is [handoff-sibling-disagreement.md](handoff-sibling-disagreement.md).
 It adopts removing allocation uniqueness and deleting losing live candidates while retaining evidence locally.
-Step 5 is done except for the three schedules listed under it.
+Step 5 is done, including the interruption, writer-race, publication-retry and older-state-restoration schedules.
 Results, and the three places the runtime contradicted the handoff, are in [notes.md](notes.md#step-5-result-2026-09-08-the-path-implemented-and-validated).
 
 ## Direction
@@ -150,17 +150,19 @@ No continuous retries, automatic integration through disagreement, or new machin
 If the storage design imposes a broader pause, name it and account for the preserved work when resolution completes.
 Do not require every source to answer before a person can act with incomplete evidence explicitly reported.
 
-### 5. Implement and validate the complete path -- done except where noted
+### 5. Implement and validate the complete path — done
 
 Implemented across the Manager, the Hub and the NoteToSelf schema; the named runtime changes are listed in [notes.md](notes.md#what-landed).
-Validated by `probes/probe_source_resolution.py` (nine connected scenarios against a real Manager, Hub and MinIO) and eleven new micro tests in `packages/small-sea-manager/tests/test_note_to_self_integration.py`, which replace the unique-index test the change removes.
+Validated by `devtools/sandbox/scenarios/scenario_berth_source_resolution.py` (fifteen connected scenarios against a real Manager, Hub and MinIO), the NoteToSelf integration and inspection micro tests, and twenty closeout micro tests in `packages/small-sea-manager/tests/test_berth_source_closeout.py`.
+The connected scenarios and their required helpers now live in the sandbox and have no branch-folder dependencies.
 The affected public specs are updated.
+Final validation: 998 repository micro tests passed, 3 skipped; all 15 explicitly invoked sandbox scenarios passed.
 
-Three schedules in the table below have no runtime evidence and were not attempted: adoption interrupted between the shared rows and the projected pause, a locator writeback or new candidate racing resolution's own transaction, and a publication interrupted after resolution.
-They are argued from the transaction structure, which is not the same as a test.
-Restoration of older local state was not exercised either.
-The follow-up inspection micro tests cover observation publication versus resolution, ref/report interruption, and changed account routes; they do not close those four remaining checks.
-Use the [remaining verification checklist](handoff-sibling-disagreement.md#remaining-verification-after-the-latest-commit-review) for concrete schedules and acceptance observations.
+The four checks previously left open now have runtime evidence: adoption interrupted before pause projection and after SQLite commit; adoption, locator and account writers on both sides of resolution; publication interruption and retry at either chosen destination; and twelve older-state restoration combinations.
+No verification deferral was needed.
+The interruptions unwind exceptions rather than simulating a process kill or power loss.
+Restoring an old snapshot can lose the only record of a pause or decision; the result and the remaining ambiguity guard are documented in the Manager spec.
+See the [verification closeout](handoff-sibling-disagreement.md#verification-closeout) and [closeout results](notes.md#branch-closeout-2026-09-09).
 
 Two results differ from what the table expected.
 Choosing the sibling's location resumes publication only as far as the placement: that location holds the sibling's Core chain, so `push_team` reports the ordinary divergence and integration follows.
@@ -224,7 +226,8 @@ Any eventual issue update must explain exactly which part of #224 changes.
 ## Scope and handoff
 
 The branch completion target -- detecting and visibly pausing, inspecting and preserving both sides, choosing either existing location, and resuming without losing unrelated work -- is met and has runtime evidence.
-What remains is a human review of the implementation, the three unvalidated schedules, and the issue updates [follow-up.md](follow-up.md) proposes.
+What remains is the human review/PR and normal issue and final-commit handoff.
+The [design record](design-record.md) is ready for the human to copy to `Archive/`; the sandbox scenarios survive branch-folder cleanup.
 Automatic multi-location operation, global agreement, public resolution ancestry, elaborate retirement mechanisms, full provider migration, backup replication, app provisioning UX, the Files capstone and remote erasure remain outside scope.
 Retain the distinction between stopping reads, stopping writes and revoking devices; honor explicit stops without requiring a general retirement workflow.
 The affected public specs are updated: the Manager spec's one-allocation rule and a new "Berth placement disagreement" section, and the Hub spec's own-berth resolution passage.

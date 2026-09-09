@@ -1,7 +1,7 @@
 # Implementation handoff: sibling berth disagreement and human resolution
 
 Branch: `issue-238-shared-berth-changes`, plan [step 4](plan.md#4-prepare-the-complete-human-resolution-path--revised-after-review).
-Status: implemented for the demonstrated schedules, with review fixes applied; the [remaining verification checklist](#remaining-verification-after-the-latest-commit-review) is still open.
+Status: implemented with review fixes; all four [verification closeout checks](#verification-closeout) now have runtime results, with no deferrals.
 Three points where the runtime contradicted this document are recorded in [notes.md](notes.md#three-things-the-runtime-said-that-the-handoff-did-not);
 the most significant is that piece 4's admissible-announcement check had to come off the investigation path.
 The handoff adopts removing allocation uniqueness and deleting losing live candidates on resolution.
@@ -10,9 +10,9 @@ The user's response and the reasons for these choices are recorded in [notes.md]
 The behavioral contract is [contract-multiple-locations.md](contract-multiple-locations.md).
 This document turns it into named runtime changes, and says which are forced by the contract and which are the cheapest way to satisfy it among alternatives.
 
-## What the runtime does today
+## Historical runtime before implementation
 
-Established by Moves 8 and 9 and the 2026-09-08 probes; every claim below names the code.
+Established by Moves 8 and 9 before implementation; these are the defects the handoff addressed, with historical code references.
 
 A berth has at most one allocation: `idx_berth_cloud_allocation_berth` in `packages/small-sea-note-to-self/small_sea_note_to_self/sql/shared_schema.sql:51`.
 Two siblings that each rotate the same berth produce two allocation rows in one merged state, so `apply_delta` raises `sqlite3.IntegrityError` and `_apply_source_rows` (`packages/small-sea-manager/small_sea_manager/note_to_self_sync.py:525`) refuses the whole source as `constraint_refused` with SQLite's message as its detail.
@@ -149,8 +149,9 @@ Investigating a *candidate location of this participant's own berth* needs the s
 Add one Manager-only Hub entry point taking a candidate key from the current pause report or retained decision report.
 The Hub looks up the saved route snapshot in device-local NoteToSelf, checks its participant and berth scope, and uses current local credentials for the named account.
 This path explicitly bypasses the ordinary pause and live-allocation cardinality checks, including when the candidate no longer has a live allocation row.
-It preserves session authorization, admissible announcement and publication verification, credential checks and any applicable explicit inspection authorization.
-A retained route snapshot is evidence, not authority to bypass those checks; missing credentials or admissible announcements are reported as unavailable evidence.
+It preserves session authorization, publication verification and credential checks.
+The implemented path records announcement status as evidence without requiring an announcement before inspection, because that announcement can be inside the Core chain being investigated.
+A retained route snapshot is evidence, not authority to bypass the enforced checks; missing credentials are reported as unavailable evidence.
 
 Bind the entire chain walk to that candidate snapshot, including its account, endpoint and location; do not reselect a live allocation or announcement for each object request.
 The implemented path permits credential refresh but refuses changed account route fields before provider I/O, including inspection of a withdrawn candidate.
@@ -196,55 +197,46 @@ The Move 9 gap closes in both directions.
 Choosing the sibling's location is `resolve_berth_source` plus `reconcile_team_route`, with no raw row delete.
 Choosing this device's own location is the same two calls with a different candidate key, and needs no location parameter on `reconcile_team_route` and no third rotation.
 
-## Remaining verification after the latest-commit review
+## Verification closeout
 
-These are implementation and verification tasks, not a request to reopen the accepted human-pause design.
-Do not mark this handoff fully validated until each item has a runtime result or an explicit, human-approved deferral.
-The existing nine connected probes are the starting fixtures; the focused inspection micro tests are in `packages/small-sea-manager/tests/test_berth_source_inspection.py`.
-Those micro tests use real SQLite, Git and Cod Sync with filesystem transport, substituted session/team lookup, and an adapter stub for the account-route checks.
-Their injected interruption unwinds the SQLite transaction; it is not an operating-system process-kill or power-loss test.
+All four checks have runtime results, recorded in [notes.md](notes.md#branch-closeout-2026-09-09).
+No human-approved deferral was needed.
+The twenty new micro tests are in `packages/small-sea-manager/tests/test_berth_source_closeout.py`; the connected scenarios are preserved in `devtools/sandbox/scenarios/scenario_berth_source_resolution.py` alongside their reusable two-installation helpers.
 
-1. **Adoption interrupted around pause projection — open.**
-   Extend the competing-allocation setup in `test_note_to_self_integration.py` or the two-installation probe.
-   Start with a prior explicit choice, then adopt a genuinely new competing allocation.
-   Interrupt after the row delta but before the post-mutation projection, and separately after the SQLite commit but before Git merge recording.
-   Inspect through a fresh attached connection and a fresh Hub operation.
-   Before commit, neither the new row nor its pause may be visible; after commit, the new candidate and held pause must both survive and the old choice must not permit ordinary I/O.
-   Retry adoption and assert that unrelated work and both alternatives survive without duplication or automatic resumption.
+1. **Adoption interrupted around pause projection — complete.**
+   Starting with an earlier explicit choice, interruption after the row delta exposes neither the new allocation nor its pause to a fresh connection and Hub lookup.
+   Interruption after SQLite commit but before Git merge recording exposes both and refuses ordinary I/O despite the old choice.
+   Retrying adoption preserves both alternatives and unrelated work without duplication; replay does not release the pause.
+2. **Allocation/locator writers racing resolution — complete.**
+   A new allocation adopted from Git, Hub locator writeback and an account-route edit each run in both orderings.
+   Earlier writes invalidate the reviewed digest; a deterministic reservation barrier excludes a second SQLite writer and holds later writes until resolution commits.
+   A later adoption produces a new held pause; locator writeback against the deleted allocation reports the lost race; a later account edit survives and the Hub reads its new route.
+3. **Publication interrupted after resolution — complete.**
+   Both existing destinations are chosen in separate two-installation runs.
+   The sibling destination's divergent Core head is merged using the installed SQLite Git merge driver before retry validation; no Manager Core-integration API was added.
+   Six schedules cover failure before sending the head request, a lost response after it succeeds, and interruption before the Manager writes its success marker.
+   Settlement and restart/retry preserve the intended head and recorded decision, perform one successful head write at the chosen destination and leave the discarded destination's head unchanged.
+4. **Restoration of older local state — complete, with a demonstrated limit.**
+   Twelve schedules combine a snapshot before detection or while paused, restoration of only the local database or the whole installation, and later ambiguous, withdrawn or resolved state.
+   Assertions record exactly which shared rows, local pause/choice records and Git refs survive.
+   Competing live rows still cause Hub ambiguity refusal and Manager pause projection.
+   Restoring before detection can lose a pause or decision when only one live allocation remains; restoring a paused snapshot can reinstate a pause after a later choice.
+   The Manager spec documents that snapshot restoration is different from restart durability.
 
-2. **Allocation/locator writers racing resolution — open.**
-   Use two connections with deterministic barriers around resolution's `BEGIN IMMEDIATE` and digest comparison.
-   Exercise a new allocation, a Hub `_writeback_locator` update, and an account-route edit.
-   When the other writer commits first, resolution with the old digest must refuse and report changed evidence.
-   When resolution acquires its reservation first, the writer must wait; its subsequent change must not be swallowed by resolution's deletion.
-   A subsequently adopted competing allocation must produce a fresh pause; a locator update against a deleted allocation must report that it lost the race.
-   Record the live rows, retained alternatives, digest, pause and actual Hub destination in each ordering.
-   The inspection publication versus resolution micro test does not stand in for these writers.
+The micro tests use real SQLite and Git, with a supplied Hub session and no provider I/O.
+The publication scenarios use real Manager/Hub code, in-process Hub clients and local MinIO.
+Injected interruptions raise exceptions; they do not establish power-loss or operating-system process-kill durability.
+No read-stop runtime or recovery subsystem was added.
 
-3. **Publication interrupted after resolution — open.**
-   Choose each existing candidate in separate two-installation runs, reconcile, and reach a publishable Core head (perform ordinary integration if the chosen source diverges).
-   Inject failure before publication takes effect, and separately after the remote head write succeeds but before the caller records success.
-   Retry without asking for a new location.
-   Assert that the selected allocation ID, route and intended content survive, publication remains forward-only, and retry neither creates another choice nor writes to the discarded destination.
-   A typed unresolved publication outcome is acceptable only if reported honestly and exercised through the documented settlement path.
-
-4. **Restoration of older local state — open; document the limit.**
-   Save snapshots before detection and after a pause, then test restoring only the device-local database and restoring the whole installation separately.
-   State exactly which shared rows, choice/pause records and Git refs survive each restoration.
-   If competing live rows remain, a fresh Hub call must still reject ambiguity and Manager status must project the pause again.
-   If restoration loses the only evidence that this device held a pause or made a decision, demonstrate and report that loss; do not claim that restart durability covers restoring an earlier snapshot.
-   No runtime read-stop workflow was added by this branch, so do not report its replay model as runtime restoration coverage.
-   Do not add a recovery subsystem as part of this check.
-
-Run the relevant micro tests with temporary-repository Git signing disabled if local signing setup interferes:
+Run from the repository root with temporary-repository Git signing disabled:
 
 ```sh
-GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false .venv/bin/python -m pytest packages/small-sea-manager/tests/test_berth_source_inspection.py packages/small-sea-manager/tests/test_note_to_self_integration.py -q
-GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false .venv/bin/python -m pytest .IN_PROGRESS/issue-238-shared-berth-changes/probes/probe_source_resolution.py -q
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false uv run pytest packages/small-sea-manager/tests/test_berth_source_closeout.py -q
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false uv run pytest devtools/sandbox/scenarios/scenario_berth_source_resolution.py -q
 ```
 
-The connected probes require local Hub/MinIO servers and are not collected by an ordinary repository-suite invocation.
-For every added schedule, record the exact invocation, assertions, result and any remaining limitation in `notes.md`, then briefly update `plan.md` and the issue-follow-up proposals.
+The connected scenarios require localhost access and MinIO and are explicitly selected rather than collected by the ordinary repository-suite invocation.
+The sandbox README documents the command and lifecycle.
 
 ## Required representation change
 

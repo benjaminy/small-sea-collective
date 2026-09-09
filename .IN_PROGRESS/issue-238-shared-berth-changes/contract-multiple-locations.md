@@ -1,7 +1,8 @@
 # Working contract: evidence gathering during a human pause
 
 Branch: `issue-238-shared-berth-changes`.
-Status: accepted behavioral direction, 2026-09-08; representation and runtime implementation remain open.
+Status: accepted behavioral direction, 2026-09-08; the scoped sibling-resolution path is implemented and its verification closeout is complete.
+The handoff and public specs define the implemented boundaries; the retirement and general multi-location concepts below remain future behavior.
 The user accepted narrowing multiple-location support to evidence gathering while ordinary operations wait for a human decision.
 [plan.md](plan.md) defines the sequence, validation and scope.
 
@@ -93,9 +94,8 @@ Refuse applying the choice if newly relevant evidence changes that disagreement 
 Retain unrelated sibling work and the alternatives needed to explain the result.
 The runtime walkthrough must show that either sibling's existing location can be selected without a raw database edit or an unnecessary third allocation.
 
-The existing unique-allocation refusal is not sufficient implementation of this contract.
-Its alternatives must become inspectable, the pause must be enforced and reported, and the choice must actually take effect.
-Whether to retain that constraint or change the storage representation is an implementation question judged against those requirements.
+The implementation removes allocation uniqueness during disagreement, enforces a held local pause and makes either existing location inspectable and selectable.
+Resolution deletes losing live rows while retaining evidence locally.
 
 ## Retirement is a decision about channel use
 
@@ -149,4 +149,5 @@ Lack of route ancestry limits succession claims rather than automatically forbid
 The branch succeeds with one complete path: detect the disagreement, visibly pause, inspect and preserve both sides, let the human choose either existing location, and resume without losing unrelated work.
 Restart, replay and newly relevant evidence must not silently release the pause or reverse an explicit choice.
 This avoids requiring automatic progress through disagreement, public route-resolution ancestry or proof of global retirement.
-It still requires concrete detection, evidence preservation, pause enforcement and effective resolution; the existing models and probes do not establish that implementation.
+Concrete detection, evidence preservation, pause enforcement and effective resolution now have runtime evidence in the sandbox scenarios and package micro tests.
+Historical models remain evidence only for their stated assumptions; restoration of older state has the limits documented in the Manager spec.

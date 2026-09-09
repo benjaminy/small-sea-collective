@@ -1,6 +1,6 @@
 # Issue follow-up after the design decision
 
-The [implementation handoff](handoff-sibling-disagreement.md) is implemented and validated; results are in [notes.md](notes.md#step-5-result-2026-09-08-the-path-implemented-and-validated).
+The [implementation handoff](handoff-sibling-disagreement.md) is implemented and all four closeout checks have runtime evidence; final results are in [notes.md](notes.md#branch-closeout-2026-09-09).
 These are local proposals, not posted issue changes.
 The scope below can now be written against implemented behavior rather than a design.
 
@@ -36,31 +36,26 @@ Automatic recovery from sibling disagreement is still not an assumed acceptance 
   Preserve minimal-fuss provider migration as an eventual goal.
   Record future adoption-time security checks over old and incoming placement state, with human intervention when needed, without designing them in this branch.
   Honor explicit read and write stops, with possible missed work explicit; general retirement workflows are deferred and provider-controlled retention is not an erasure obligation.
-- **Sibling-rotation wedge (new, Move 8):** two of one participant's devices rotating the same berth's route while disconnected produce a NoteToSelf state that cannot be merged.
-  Integration fails on `UNIQUE constraint failed: berth_cloud_allocation.berth_id`, and the refused device stays diverged through refresh, integrate, reconcile and a further rotation while reporting `route: ready`.
-  Reproduced by `probes/probe_publication_adoption.py`; evidence in [notes.md](notes.md).
-  Frame the proposed issue around preserving alternatives and unrelated work plus meaningful control of writes, linked to #238.
-  The refusal is the unique index `idx_berth_cloud_allocation_berth`; retaining or changing it is an implementation choice under the accepted pause contract.
-  Integration refusal by itself does not satisfy that contract: normal operations must pause visibly, evidence must remain inspectable and either existing location must be selectable through the Manager.
-  Neither a counter nor automatic merging through disagreement is a prescribed fix.
-  Move 9 adds what the issue should ask for: the refusal reports a commit SHA and no domain conflict, one berth's disagreement stops the whole NoteToSelf channel in both directions, and the demonstrated resolution requires a raw row deletion.
-  Ask for an effective choice over the reviewed alternatives that preserves unrelated work from both sides; withdrawal is a candidate mechanism, not a prescribed API.
-  Keeping the blocked device's own choice is not expressible at all, since `reconcile_team_route` has no location parameter.
-  Distinguish replay of an already-resolved disagreement from a fresh deliberate conflict, which may legitimately pause again.
-  Reproduced by `probes/probe_human_resolution.py`.
+- **Sibling-rotation wedge (historical Move 8/9 evidence, fixed by this branch):** two disconnected rotations formerly violated the unique allocation index during NoteToSelf integration.
+  The refusal blocked unrelated rows and both directions of the NoteToSelf channel while reporting `route: ready`; effective repair required a raw database deletion and could not express either existing choice symmetrically.
+  The old witnesses remain in `probes/probe_publication_adoption.py` and `probes/probe_human_resolution.py` as historical evidence.
+  Use this as the before-state in #238, not as a new defect issue.
+  The implemented path adopts unrelated work, holds a visible berth pause, and supports explicit choice of either existing allocation while preserving alternatives locally.
 
-The Manager and Hub specs now carry the implemented semantics; `architecture.md` has not been touched and may still need the concept named there.
+The Manager and Hub specs carry the implemented semantics, including the restoration limit.
+The architecture already states the human-scale coordination principle; the branch-specific reasoning is preserved in `design-record.md`.
 The two already-completed Hub spec corrections have their own status in [doc-fixes.md](doc-fixes.md).
 
 ## Added by the step 5 implementation
 
 The latest-commit review found and fixed two inspection defects: mutable account routing could redirect a candidate walk, and inspection refs could become visible outside the reservation used by resolution while remaining absent from the reviewed digest.
 Focused micro tests now cover route mismatch, both observation/decision orderings, and recovery from ref publication followed by an interrupted report update.
-The [remaining verification checklist](handoff-sibling-disagreement.md#remaining-verification-after-the-latest-commit-review) is the current implementer handoff; do not treat these fixes as evidence for the still-open adoption, allocation/locator race, publication-retry or older-state-restoration schedules.
+The [verification closeout](handoff-sibling-disagreement.md#verification-closeout) completes the adoption, allocation/locator/account race, publication-retry and older-state-restoration schedules.
 
-- **#238, scope closure:** the wedge is closed for the schedules validated in `probes/probe_source_resolution.py`.
-  Say which three schedules have no runtime evidence -- adoption interrupted between the shared rows and the projected pause, a locator writeback or new candidate racing resolution's own transaction, and a publication interrupted after resolution -- rather than implying the contract is fully evidenced.
-  Note that restoration of older device-local state was not exercised, so what survives a rollback past a recorded pause is unknown.
+- **#238, scope closure:** all four formerly open verification checks now have runtime results.
+  Reference `devtools/sandbox/scenarios/scenario_berth_source_resolution.py` and `packages/small-sea-manager/tests/test_berth_source_closeout.py` and state the limits of exception-based interruption and controlled local service schedules.
+  Record that restoring an older device-local snapshot can erase the only pause/choice record; competing live rows still trigger refusal and reprojection, but a sole surviving row cannot reconstruct a lost decision.
+  Preserve this limitation without proposing a recovery subsystem as part of this branch.
 - **#224:** the exactly-one-route cardinality is now "one live allocation per berth once the placement is settled", enforced by a Manager projection and a Hub check rather than a unique index.
   No public selection DAG was introduced and no retirement record exists, as the reframe argued.
 - **Announcement gate on investigation (new):** the reviewed handoff kept an admissible-announcement check on the investigation path.

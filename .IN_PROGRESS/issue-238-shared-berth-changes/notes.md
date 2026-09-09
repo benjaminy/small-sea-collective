@@ -1819,6 +1819,86 @@ They exercise resolution on both sides of inspection publication, interruption a
 These use real SQLite, Git and Cod Sync with filesystem transport and substituted session/team lookup; account-route checks stub the provider adapter.
 The interruption tests unwind a transaction by raising an exception; they do not simulate an operating-system process kill or power loss.
 
-The [implementer checklist](handoff-sibling-disagreement.md#remaining-verification-after-the-latest-commit-review) identifies the remaining adoption interruption, allocation/locator writer race, publication-retry and older-state-restoration schedules.
+The [implementer checklist](handoff-sibling-disagreement.md#verification-closeout) identifies the remaining adoption interruption, allocation/locator writer race, publication-retry and older-state-restoration schedules.
 Each item names its trigger, ordering and required observations.
 These remain open and must not be inferred from the passing inspection checks.
+
+## Branch closeout, 2026-09-09
+
+All four closeout items are complete: the remaining verification, a permanent home for the connected scenarios, a design record, and final validation with reconciled status documents.
+This section supersedes the open-check status in the preceding review entry.
+No verification check was deferred and no runtime implementation change was needed.
+
+### Adoption, competing writers and restoration
+
+`packages/small-sea-manager/tests/test_berth_source_closeout.py` adds twenty micro tests using real SQLite and Git and the Hub's real route lookup with a supplied session.
+They require no provider I/O.
+
+Two adoption schedules start with an earlier explicit choice and a genuinely new competing allocation carried alongside unrelated sibling work.
+An exception after the row delta but before pause projection leaves a fresh connection and Hub lookup seeing only the prior committed allocation and choice.
+An interruption after SQLite commit but before Git merge recording returns `recording_pending`; both candidates and the held pause are already visible, and ordinary Hub lookup refuses the old choice.
+Retry completes Git recording, preserves unrelated local and sibling work exactly once, and retains the earlier alternatives and decision without allowing them to release the new pause.
+
+Six writer schedules exercise a new allocation adopted through the real NoteToSelf path, Hub `_writeback_locator`, and an account URL edit, each before and after resolution's comparison.
+An earlier write invalidates the reviewed digest and preserves the pause.
+When resolution holds its reservation first, a separate SQLite writer is demonstrably locked and the pending writer waits behind an event-controlled barrier until resolution commits.
+A later adoption survives resolution's deletion and opens a fresh pause.
+A later locator writeback targeting the deleted allocation returns `False`.
+A later account edit survives, and a fresh Hub lookup reads that changed route at the selected allocation.
+The account-first schedule also verifies that the refreshed choice selects the live route snapshot rather than confusing it with the retained snapshot at the same location.
+
+Twelve restoration schedules combine snapshots before detection or while paused, restoration of the local database or the entire installation, and subsequent ambiguous, withdrawn or resolved state.
+They assert the exact shared allocation rows and Git ref map, absence of the later choice record after restoration, and presence or absence of the saved pause before any status projection.
+Restoring only the local database preserves current shared rows and Git refs; restoring the installation brings both back to their saved state.
+Competing live rows still cause Hub ambiguity refusal and pause reprojection.
+A paused snapshot restores its pause even after a later resolution.
+A snapshot predating detection can erase the only pause or decision record; with a single surviving live allocation the Hub permits that route and projection cannot reconstruct the lost human decision.
+The Manager spec now states this limit.
+
+These interruptions unwind exceptions, including SQLite rollback; they are not operating-system process-kill or power-loss tests.
+No recovery subsystem or runtime read-stop workflow was added.
+
+### Connected scenarios preserved in the sandbox
+
+The former `probes/probe_source_resolution.py` moved to `devtools/sandbox/scenarios/scenario_berth_source_resolution.py`.
+Its necessary two-installation setup and switching/sender-key helpers now live in `sibling_devices.py`; no sandbox scenario imports branch-folder code.
+The original research probes and models remain historical evidence and were not promoted as assertions of current behavior.
+The sandbox README documents the explicit non-interactive command, local service requirements and temporary-state lifecycle.
+Dashboard integration remains outside this branch.
+
+The nine existing connected scenarios pass at the new location.
+Six additional publication schedules choose each existing destination and exercise failure before the head request, a lost response after the head write succeeds, and interruption before the Manager records success.
+For the sibling destination, publication first parks the divergent Core head and the scenario merges it through the installed SQLite Git merge driver.
+There is no Manager Core-integration operation, so this uses the existing repository-level integration path explicitly.
+
+The scenarios assert that the intended Git head, selected allocation ID/location and recorded decision survive settlement or restart/retry.
+The stored head moves forward to that intended head, exactly one head write succeeds, and every observed provider upload goes to the selected destination.
+A separate verified fetch through the Hub confirms the discarded destination still holds its earlier head.
+A lost response is settled as `already_present`; a request known not to have been sent raises `PublicationRetryableError` and succeeds on retry; missing local success recording is repaired by a fresh Manager without another head write.
+
+### Design and document handoff
+
+`design-record.md` preserves why inspection during a human pause displaced the proposed public selection/retirement machinery, why waiting has an acceptable local owner and cost, the inspection announcement bootstrap circle, and the separation between placement and content integration.
+Implemented mechanics remain in the public specs.
+The plan, contract status, handoff and local issue proposals now agree about completed verification and the restoration limit.
+The earlier handoff's unique-index description is labeled historical and its investigation announcement rule matches the implementation.
+A human still handles the PR, final commit, design-record archival and branch-folder cleanup.
+No GitHub issue messages were sent.
+
+### Final validation
+
+All commands ran from the repository root with temporary-repository commit signing disabled.
+
+```sh
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false .venv/bin/python -m pytest packages/small-sea-manager/tests/test_berth_source_closeout.py -q
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false .venv/bin/python -m pytest devtools/sandbox/scenarios/scenario_berth_source_resolution.py -q
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false uv run pytest -q
+```
+
+Results: 20 closeout micro tests passed in 19.22 seconds; 15 connected scenarios passed in 116.37 seconds; the full repository suite passed 998 micro tests with 3 skipped in 504.79 seconds.
+The explicit scenario run reported 33 existing Pydantic settings warnings; the full suite reported 141 Pydantic settings and Starlette template warnings.
+The first scenario attempt was refused at localhost socket binding by the filesystem/network sandbox, before exercising the runtime; the successful run and full suite used approved localhost service access.
+The initial micro-test draft had one fixture-selection failure after an account edit retained two snapshots at the same location; selecting the live snapshot corrected the test and all twenty passed.
+The final full-suite run includes all twenty new micro tests; the separately invoked sandbox scenarios are deliberately not collected by it.
+Historical models were unchanged and were not rerun or counted as current-contract validation.
+`git diff --check` passed.

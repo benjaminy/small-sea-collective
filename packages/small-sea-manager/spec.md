@@ -1141,6 +1141,11 @@ The Manager projects it inside the same SQLite transaction as the shared rows th
 A held pause is durable device-local state in `berth_source_pause`.
 It cannot be a predicate over current state: evidence that removes the apparent disagreement, such as a sibling adopting this device's row or deleting its own, must not release it, because none of that is a decision.
 
+Restart durability assumes the device-local records are retained.
+Restoring an older device-local database can lose the only record of a pause or decision, while restoring a snapshot containing a pause can reinstate it after a later resolution.
+If competing live allocations remain, the Hub still refuses ambiguity and Manager status projects a pause again.
+A sole live allocation and retained Git history alone do not reconstruct a lost human decision.
+
 The Hub refuses every ordinary provider operation for a paused berth, and refuses an ambiguous berth even when a choice was recorded earlier.
 NoteToSelf publication and integration are deliberately not paused; they are the channel the resolution travels over.
 
