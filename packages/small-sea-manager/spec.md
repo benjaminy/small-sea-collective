@@ -1509,7 +1509,8 @@ CREATE TABLE IF NOT EXISTS berth_cloud_allocation (
     FOREIGN KEY (cloud_storage_id) REFERENCES cloud_storage(id)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_berth_cloud_allocation_berth
+-- Deliberately not unique on berth_id; see Berth placement disagreement.
+CREATE INDEX IF NOT EXISTS idx_berth_cloud_allocation_berth
     ON berth_cloud_allocation(berth_id);
 
 CREATE TABLE IF NOT EXISTS notification_service (
