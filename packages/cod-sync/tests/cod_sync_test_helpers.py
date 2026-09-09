@@ -5,6 +5,9 @@ the same `conftest` module name when their suites run together.
 """
 
 import pathlib
+import subprocess
+
+import pytest
 
 from cod_sync.protocol import MAIN_REF, CodSync
 from cod_sync.repo import Repo
@@ -34,8 +37,37 @@ def make_store(path) -> LocalFolderStore:
     return LocalFolderStore(str(path))
 
 
-def make_cod_sync(repo: Repo, store) -> CodSync:
-    return CodSync(repo, store)
+def make_cod_sync(repo: Repo, store, verifier=None) -> CodSync:
+    return CodSync(repo, store, verifier=verifier)
+
+
+@pytest.fixture
+def isolated_git_config(monkeypatch):
+    """Hide the developer's own git config and ssh-agent from a signing test.
+
+    Import this into a signing or verification module as an autouse fixture.
+    Without it a developer's own signing config silently signs the unsigned
+    control, so the negative controls pass for the wrong reason on a laptop and
+    fail in CI.
+    """
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", "/dev/null")
+    monkeypatch.setenv("GIT_CONFIG_SYSTEM", "/dev/null")
+    monkeypatch.delenv("SSH_AUTH_SOCK", raising=False)
+
+
+def make_ssh_key(directory, name):
+    """Generate a fresh Ed25519 SSH key pair. Returns the private key path."""
+    path = pathlib.Path(directory) / f"{name}_ed25519"
+    subprocess.run(
+        ["ssh-keygen", "-t", "ed25519", "-N", "", "-C", name, "-f", str(path)],
+        check=True,
+        capture_output=True,
+    )
+    return path
+
+
+def public_key_text(key_path):
+    return pathlib.Path(f"{key_path}.pub").read_text().strip()
 
 
 def working_tree_files(repo: Repo):
