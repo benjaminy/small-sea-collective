@@ -31,6 +31,8 @@ from small_sea_hub.adapters.oauth import (is_token_expired,
 from small_sea_hub.cloud_errors import (
     CloudAllocationConflictExn,
     CloudAnnouncementMissingExn,
+    CloudBerthSourceAmbiguousExn,
+    CloudBerthSourcePausedExn,
     CloudCredentialsMissingExn,
     CloudLocationMissingExn,
     CloudMaterializationFailedExn,
@@ -43,6 +45,7 @@ from small_sea_hub.cloud_errors import (
 from small_sea_hub.crypto import (commit_encrypted_upload,
                                   decrypt_group_payload,
                                   prepare_encrypted_upload)
+from small_sea_note_to_self.berth_source import saved_route_for_candidate
 from small_sea_note_to_self.db import attached_note_to_self_connection
 from small_sea_note_to_self.ids import uuid7
 from wrasse_trust.keys import key_id_from_public
@@ -1032,38 +1035,64 @@ class SmallSeaBackend:
             )
         return CloudStorageRecord(*row)
 
+    #: Every own-berth provider operation resolves its location here --
+    #: uploads, downloads, materialization, runtime artifacts and signals --
+    #: which is why the Manager's pause is enforced at this one point rather
+    #: than at each caller. The Hub decides nothing about placement: it reads
+    #: the state the Manager committed and refuses what that state does not
+    #: authorize. Both writes to the pause tables stay with the Manager.
     def _resolve_berth_cloud_or_raise(self, ss_session: SmallSeaSession):
         with attached_note_to_self_connection(
             self.root_dir, ss_session.participant_id.hex()
         ) as conn:
-            row = conn.execute(
-                """
-                SELECT
-                    bca.id,
-                    bca.berth_id,
-                    bca.location,
-                    cs.id,
-                    cs.protocol,
-                    cs.url,
-                    csc.access_key,
-                    csc.secret_key,
-                    cs.client_id,
-                    csc.client_secret,
-                    csc.refresh_token,
-                    csc.access_token,
-                    csc.token_expiry,
-                    cs.path_metadata
-                FROM berth_cloud_allocation bca
-                JOIN cloud_storage cs ON cs.id = bca.cloud_storage_id
-                LEFT JOIN local.cloud_storage_credential csc
-                  ON csc.cloud_storage_id = cs.id
-                WHERE bca.berth_id = ?
-                """,
-                (ss_session.berth_id,),
-            ).fetchone()
-        if row is None:
+            # One read transaction, so the pause and the allocations describe
+            # the same committed state. Reading them separately could see a
+            # resolution land in between and miss both the pause and the row
+            # it removed.
+            conn.execute("BEGIN")
+            try:
+                paused = conn.execute(
+                    "SELECT 1 FROM local.berth_source_pause WHERE berth_id = ?",
+                    (ss_session.berth_id,),
+                ).fetchone()
+                rows = conn.execute(
+                    """
+                    SELECT
+                        bca.id,
+                        bca.berth_id,
+                        bca.location,
+                        cs.id,
+                        cs.protocol,
+                        cs.url,
+                        csc.access_key,
+                        csc.secret_key,
+                        cs.client_id,
+                        csc.client_secret,
+                        csc.refresh_token,
+                        csc.access_token,
+                        csc.token_expiry,
+                        cs.path_metadata
+                    FROM berth_cloud_allocation bca
+                    JOIN cloud_storage cs ON cs.id = bca.cloud_storage_id
+                    LEFT JOIN local.cloud_storage_credential csc
+                      ON csc.cloud_storage_id = cs.id
+                    WHERE bca.berth_id = ?
+                    ORDER BY bca.id
+                    """,
+                    (ss_session.berth_id,),
+                ).fetchall()
+            finally:
+                conn.rollback()
+        if paused is not None:
+            raise CloudBerthSourcePausedExn()
+        if not rows:
             raise CloudLocationMissingExn()
-        cloud = BerthCloudRecord(*row)
+        if len(rows) > 1:
+            # Reached whenever the shared rows are ambiguous, including by a
+            # path that never went through the Manager's detection, and never
+            # relieved by an earlier recorded choice.
+            raise CloudBerthSourceAmbiguousExn()
+        cloud = BerthCloudRecord(*rows[0])
         if self._cloud_credentials_missing(cloud):
             raise CloudCredentialsMissingExn()
         return cloud
@@ -1327,6 +1356,89 @@ class SmallSeaBackend:
         cloud = self._resolve_berth_cloud_or_raise(ss_session)
         self._require_own_storage_announcement(ss_session, cloud)
         adapter = self._make_materialized_storage_adapter(ss_session, cloud)
+        ok, data, etag = adapter.download(path)
+        if ok and ss_session.mode == "encrypted":
+            data = decrypt_group_payload(ss_session, data)
+        return ok, data, etag
+
+    # ---- Investigation of a paused berth's retained candidates ----
+
+    def inspect_berth_source_candidate(self, session_hex, candidate_key, path):
+        """Read one object from a named retained candidate of this berth.
+
+        The exception to the pause, and deliberately the only one on the read
+        side. A person deciding which of two locations to keep has to be able
+        to look at both, including one whose allocation row a sibling's
+        resolution already deleted, so this path bypasses `berth_source_pause`
+        and the live-row cardinality check.
+
+        Nothing else is relaxed. The route comes from this device's own
+        retained evidence rather than from the caller, so no arbitrary location
+        can be reached through it, and the account must still be registered
+        with usable credentials on this device. It reads only: no
+        materialization, no locator writeback, no signal, and nothing is
+        integrated by getting the bytes back.
+
+        Deliberately not gated on a storage announcement, unlike every
+        ordinary own-berth operation. That gate keeps a device from *writing*
+        where teammates will not look, and the candidate most worth inspecting
+        is the sibling's, whose announcement travels in a team chain published
+        to the very location this device cannot reach yet. Requiring it would
+        make the disputed location unreadable exactly when a person needs to
+        look at it. Whether an admissible announcement backs a candidate is
+        evidence the Manager records in the report instead.
+        """
+        ss_session = self._lookup_session(session_hex)
+        with attached_note_to_self_connection(
+            self.root_dir, ss_session.participant_id.hex()
+        ) as conn:
+            route = saved_route_for_candidate(
+                conn, ss_session.berth_id, candidate_key
+            )
+            if route is None:
+                raise SmallSeaNotFoundExn(
+                    f"No retained candidate {candidate_key} for this berth"
+                )
+            account = conn.execute(
+                """
+                SELECT
+                    cs.id,
+                    cs.protocol,
+                    cs.url,
+                    csc.access_key,
+                    csc.secret_key,
+                    cs.client_id,
+                    csc.client_secret,
+                    csc.refresh_token,
+                    csc.access_token,
+                    csc.token_expiry,
+                    cs.path_metadata
+                FROM cloud_storage cs
+                LEFT JOIN local.cloud_storage_credential csc
+                  ON csc.cloud_storage_id = cs.id
+                WHERE cs.id = ?
+                """,
+                (bytes.fromhex(route["cloud_storage_id"]),),
+            ).fetchone()
+        if account is None:
+            raise CloudLocationMissingExn()
+        # Credentials may be refreshed, but account edits must not redirect
+        # a walk already bound to a retained candidate's complete route.
+        current_account = CloudStorageRecord(*account)
+        if any(
+            getattr(current_account, field) != route[field]
+            for field in ("protocol", "url", "client_id", "path_metadata")
+        ):
+            raise CloudAllocationConflictExn()
+        cloud = BerthCloudRecord(
+            bytes.fromhex(route["allocation_id"]),
+            ss_session.berth_id,
+            route["location"],
+            *account,
+        )
+        if self._cloud_credentials_missing(cloud):
+            raise CloudCredentialsMissingExn()
+        adapter = self._make_storage_adapter_from_record(ss_session, cloud)
         ok, data, etag = adapter.download(path)
         if ok and ss_session.mode == "encrypted":
             data = decrypt_group_payload(ss_session, data)

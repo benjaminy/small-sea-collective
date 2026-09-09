@@ -212,6 +212,19 @@ safely, the system should preserve the competing states and make the ambiguity
 visible rather than inventing a brittle automatic winner. A Hub rejection, a
 Manager prompt, or a parked git branch is often the correct result.
 
+Detecting a disagreement and pausing for a human decision is a first-class design option.
+Evaluate it before introducing automatic correction, rather than only after an automatic design becomes too complicated.
+State whose work is blocked, which operations pause, and what harm waiting could cause.
+A person's own device may remain paused indefinitely until they choose to act; automatic convergence or continued retries are not universal requirements.
+Make the disagreement and the scope of the pause visible, preserve the alternatives, and define how a human's choice can take effect without silently discarding unrelated work.
+The evidence may remain in parked histories; it need not all be integrated into live state before a person can decide.
+This option still requires detecting the problem and enforcing local authorization; it does not excuse silent replacement or harm that occurs before detection.
+
+This departs deliberately from conventional distributed systems design.
+Those systems avoid pausing on a human because they serve many uncoordinated parties under throughput, latency, and availability requirements, and no person is available to be asked.
+Small Sea's coordination groups are small, the parties can talk to each other out of band, and a paused device blocks only its owner.
+The tradeoff that makes pausing unacceptable elsewhere does not apply here, so treating it as acceptable is a decision, not an oversight.
+
 The corresponding safety rule is strict: human-scale repair is acceptable, but
 silent misresolution is not. Code must not grant access by arbitrary row order,
 collapse distinct identities by friendly name, or discard one side of a

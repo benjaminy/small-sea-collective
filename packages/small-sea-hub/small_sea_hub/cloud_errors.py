@@ -38,6 +38,27 @@ class CloudAllocationConflictExn(CloudStorageRequiredExn):
     reason = "cloud_allocation_conflict"
 
 
+class CloudBerthSourcePausedExn(CloudStorageRequiredExn):
+    """The Manager holds an unresolved question about this berth's placement.
+
+    Not a retry: the repair is a human decision, and the Hub refuses every
+    ordinary provider operation on the berth until the Manager clears it.
+    """
+
+    reason = "berth_source_paused"
+
+
+class CloudBerthSourceAmbiguousExn(CloudStorageRequiredExn):
+    """More than one live allocation names this berth.
+
+    Refused even when a choice was recorded earlier: an old decision is not
+    permission to use a newly disputed allocation, and this state can arrive
+    by any path that writes the shared database.
+    """
+
+    reason = "berth_source_ambiguous"
+
+
 #: A download that reached the provider and got a definite "no such object".
 DOWNLOAD_ABSENT = "absent"
 

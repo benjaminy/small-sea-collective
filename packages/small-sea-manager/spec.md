@@ -1122,13 +1122,50 @@ Hub may write the provider-issued locator back into the allocation row as a
 narrow "record provider reality" exception. The writeback must be conditional
 on the allocation still matching the materialization request.
 
-V1 allows at most one allocation per berth. It does not add provider-migration
-history columns; those can be added with migration tooling later.
+V1 allows at most one *live* allocation per berth once its placement is settled.
+The rule is no longer a unique index: two of a participant's devices can each rotate one berth while disconnected, and refusing the merged rows named a commit rather than a disagreement and rejected every unrelated row travelling with it.
+More than one live allocation is instead an unresolved question, which the Manager projects as a device-local pause and the Hub enforces at its one allocation lookup.
+Only an explicit human resolution deletes a competing row; ordinary rotation reports `berth_source_paused` rather than rotating through the question.
+See [Berth placement disagreement](#berth-placement-disagreement).
+It does not add provider-migration history columns; those can be added with migration tooling later.
 
 Changing the selected account or asking for a new location replaces that single row atomically with a fresh allocation ID.
 The ID is a generation token: the Hub must prove that any materialization it reports as success belongs to the same allocation ID and `cloud_storage_id` it started against, and Manager may sign only a reread of that same generation.
 Reconciling without a requested change preserves the current row and ID.
 Announcement history is unaffected by either: the allocation is replaced before anything is announced, so a failure in between leaves the previous route announcement standing.
+
+#### Berth placement disagreement
+
+Detection is a domain projection, not a classified error: **more than one live `berth_cloud_allocation` row for one berth**.
+The Manager projects it inside the same SQLite transaction as the shared rows that produced it -- adoption, refresh, and its own allocation changes -- so no reader can see the merged rows without the pause they imply.
+A held pause is durable device-local state in `berth_source_pause`.
+It cannot be a predicate over current state: evidence that removes the apparent disagreement, such as a sibling adopting this device's row or deleting its own, must not release it, because none of that is a decision.
+
+Restart durability assumes the device-local records are retained.
+Restoring an older device-local database can lose the only record of a pause or decision, while restoring a snapshot containing a pause can reinstate it after a later resolution.
+If competing live allocations remain, the Hub still refuses ambiguity and Manager status projects a pause again.
+A sole live allocation and retained Git history alone do not reconstruct a lost human decision.
+
+The Hub refuses every ordinary provider operation for a paused berth, and refuses an ambiguous berth even when a choice was recorded earlier.
+NoteToSelf publication and integration are deliberately not paused; they are the channel the resolution travels over.
+
+Retained evidence outlives the rows it describes.
+Every candidate ever projected stays in the report, marked live or withdrawn, with complete route content, provenance and investigation outcomes.
+A candidate is identified by a key over its whole route snapshot rather than its allocation id, because ids are reused across a delete-and-reinsert and can name different content on two devices.
+
+Investigation reads one named candidate through a Manager-only Hub path.
+It bypasses the pause and the live-row lookup, binds the whole chain walk to the candidate so a newer announcement cannot switch sources mid-walk, and never materializes, writes back a locator or integrates.
+It is not gated on a storage announcement: that gate keeps a device from writing where teammates will not look, and the candidate most worth inspecting is the sibling's, whose announcement travels in a team chain published to the very location this device cannot reach.
+Whether a trusted device of this participant announced a candidate is recorded as evidence instead.
+Current credentials may be refreshed, but a change to the candidate account's protocol, URL, client ID or path metadata refuses inspection with `cloud_allocation_conflict` before provider I/O.
+Each verified head is preserved under an immutable candidate observation ref, and ref publication shares the NoteToSelf writer reservation with resolution.
+Fetching and verification run outside that reservation.
+Status and resolution reconstruct observed heads from these refs if an interruption prevented the report update.
+An inspection finishing after resolution retains its evidence without rewriting the earlier decision or reopening its pause.
+
+Resolution compares the reviewed evidence digest and applies the choice under one writer reservation, so a change either invalidates the digest or lands after the decision commits.
+It deletes the losing live rows, restores a withdrawn candidate only when its account still exists with matching route fields, and keeps the resolved report so the decision retains its own explanation.
+Resolving where to publish does not decide what to publish: choosing a sibling's location leaves that location's Core chain divergent from local `main`, which is the ordinary integration path.
 
 #### Teammate berth storage announcements
 
@@ -1472,7 +1509,8 @@ CREATE TABLE IF NOT EXISTS berth_cloud_allocation (
     FOREIGN KEY (cloud_storage_id) REFERENCES cloud_storage(id)
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_berth_cloud_allocation_berth
+-- Deliberately not unique on berth_id; see Berth placement disagreement.
+CREATE INDEX IF NOT EXISTS idx_berth_cloud_allocation_berth
     ON berth_cloud_allocation(berth_id);
 
 CREATE TABLE IF NOT EXISTS notification_service (

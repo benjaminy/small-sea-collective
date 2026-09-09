@@ -1,3 +1,4 @@
+import contextlib
 import logging
 import pathlib
 from dataclasses import dataclass
@@ -6,6 +7,7 @@ from typing import Literal, Optional
 from cod_sync.repo import (
     Repo as _Repo,
     RepoError as _RepoError,
+    RefDivergedError as _RefDivergedError,
 )
 from cod_sync.format import (
     LinkFormatError as _LinkFormatError,
@@ -20,6 +22,7 @@ from cod_sync.protocol import (
 )
 from cod_sync.store import (
     BootstrapProxyStore,
+    CandidateInspectionStore,
     PeerSenderKeyUnavailableError as _StorePeerSenderKeyUnavailableError,
     PeerSmallSeaStore,
     PeerStorageUnknownError as _StorePeerStorageUnknownError,
@@ -33,8 +36,10 @@ from small_sea_client.client import (
     SmallSeaHubUnavailable,
 )
 from small_sea_manager import admission_events
+from small_sea_manager import berth_source_decision
 from small_sea_manager import note_to_self_sync
 from small_sea_manager import provisioning
+from small_sea_note_to_self.db import attached_note_to_self_connection
 
 _CORE_APP = "SmallSeaCollectiveCore"
 _LOG = logging.getLogger(__name__)
@@ -51,6 +56,11 @@ ROUTE_REASON_BY_CLOUD_REASON = {
     "cloud_user_action_required": "user_action_required",
     "cloud_materialization_failed": "materialization_failed",
     "cloud_allocation_conflict": "allocation_conflict",
+    # Neither is retryable. Both say the berth's placement is an open question
+    # only a person can close, so they stay distinct from the preconditions
+    # above rather than collapsing into `location_missing`.
+    "berth_source_paused": "berth_source_paused",
+    "berth_source_ambiguous": "berth_source_ambiguous",
 }
 
 
@@ -72,6 +82,26 @@ def core_peer_latest_ref(teammate_id_hex: str) -> str:
 def core_peer_observation_ref(teammate_id_hex: str, link_uid: str) -> str:
     """The immutable ref recording one divergent observation of a teammate."""
     return f"{CORE_PEER_REF_PREFIX}/{teammate_id_hex}/observations/{link_uid}"
+
+
+#: Namespace for what this device has fetched from a named placement
+#: candidate of its own berth. Separate from the Core peer refs: a candidate is
+#: a location of this participant's own berth, not a teammate's chain.
+BERTH_SOURCE_REF_PREFIX = "refs/small-sea/berth-source"
+
+
+def berth_source_candidate_ref(candidate_key: str) -> str:
+    """The forward-only convenience ref for one inspected candidate."""
+    return f"{BERTH_SOURCE_REF_PREFIX}/{candidate_key}/latest"
+
+
+def berth_source_observation_ref(candidate_key: str, link_uid: str) -> str:
+    """The immutable ref recording one verified observation of a candidate.
+
+    Keyed by candidate as well as link, so two locations that publish the same
+    head stay two observations rather than one.
+    """
+    return f"{BERTH_SOURCE_REF_PREFIX}/{candidate_key}/observations/{link_uid}"
 
 
 class CoreFetchError(Exception):
@@ -1120,6 +1150,11 @@ class TeamManager:
 
         Read-only and local: it names the account and location this device
         would publish, not whether peers can reach it.
+
+        `placement` is "settled", "paused" or "ambiguous". It is here so an
+        existing caller notices an open placement question without having to
+        learn `berth_source_status`; a paused or ambiguous berth reports no
+        allocation, because there is none this device chose.
         """
         state = provisioning.derive_team_join_state(
             self.root_dir, self.participant_hex, team_name
@@ -1128,7 +1163,257 @@ class TeamManager:
             "allocation": state["allocation"],
             "route": state["route"],
             "admission": state["admission"],
+            "placement": state["placement"],
         }
+
+    # ------------------------------------------------------------------ #
+    # A berth's source-use question: report it, investigate it, decide it
+    # ------------------------------------------------------------------ #
+
+    def berth_source_status(self, team_name) -> dict:
+        """Report the placement question this device holds for a team's Core berth.
+
+        Refreshes device-local evidence and makes no provider request, so it
+        can be read while every ordinary operation on the berth is refused.
+        Refreshing can change the report -- a candidate a sibling deleted is
+        retained here, and a newly arrived competing row opens a pause -- so
+        this is not read-only, and the digest it returns is what a decision
+        made now would be checked against.
+        """
+        state = provisioning.derive_team_join_state(
+            self.root_dir, self.participant_hex, team_name
+        )
+        berth_id = state["core_berth_id"]
+        if berth_id is None:
+            return {
+                "berth_id": None,
+                "paused": False,
+                "placement": state["placement"],
+                "candidates": [],
+                "blocked": [],
+            }
+        repo = self._note_to_self_repo()
+        refreshed = berth_source_decision.refresh_report(
+            self.root_dir,
+            self.participant_hex,
+            berth_id,
+            retained_sources_fn=lambda: note_to_self_sync.stored_head_berth_routes(
+                repo, berth_id
+            ),
+            retained_observations_fn=lambda: self._stored_berth_source_observations(team_name),
+        )
+        report = refreshed["report"]
+        pause = refreshed["pause"]
+        choice = refreshed["choice"]
+        live = [c for c in report["candidates"] if c["live"]]
+
+        blocked = []
+        if pause is not None:
+            # Every own-berth provider operation resolves through the Hub's one
+            # allocation lookup, so the pause covers uploads, downloads,
+            # materialization, runtime artifacts and signals for this berth.
+            blocked.append("berth_source_paused")
+        elif len(live) > 1:
+            blocked.append("berth_source_ambiguous")
+        outstanding = note_to_self_sync.outstanding_sources(repo)
+        if outstanding:
+            # Channel-wide, not berth-scoped: a source that has not been
+            # adopted holds up every row travelling with it.
+            blocked.append("note_to_self_sources_outstanding")
+
+        return {
+            "berth_id": berth_id.hex(),
+            "paused": pause is not None,
+            "detected_at": pause["detected_at"] if pause is not None else None,
+            "placement": "paused"
+            if pause is not None
+            else ("ambiguous" if len(live) > 1 else "settled"),
+            "evidence_digest": refreshed["evidence_digest"].hex(),
+            "candidates": report["candidates"],
+            "unavailable": report["unavailable"],
+            "blocked": blocked,
+            "outstanding_note_to_self_sources": [s.ref_name for s in outstanding],
+            "decided": None
+            if choice is None
+            else {
+                "allocation_id": choice["allocation_id"],
+                "decided_at": choice["decided_at"],
+                "evidence_digest": choice["evidence_digest"].hex(),
+            },
+        }
+
+    def inspect_berth_source_candidate(self, team_name, candidate_key) -> dict:
+        """Fetch one retained candidate's Core chain without integrating it.
+
+        The whole walk is bound to the named candidate: every object request
+        carries the same key, and the Hub refuses account routing that differs
+        from the saved snapshot. A newer announcement cannot switch sources.
+
+        Objects are imported and the observed head is preserved under a ref of
+        this candidate's own; `main` never moves and nothing is integrated. The
+        outcome is published under the reservation used by resolution, which
+        invalidates an earlier review. If resolution finished before the fetch,
+        the later evidence stays inspectable without rewriting that decision.
+
+        Whether a trusted device of this participant announced the candidate's
+        route is recorded alongside the outcome rather than gating the read.
+        The sibling's announcement usually travels in a team chain published to
+        the very location this device cannot reach, so requiring it would make
+        the disputed location unreadable exactly when someone needs to look.
+        Investigation never writes, so nothing depends on the route being one
+        teammates would look at.
+        """
+        state = provisioning.derive_team_join_state(
+            self.root_dir, self.participant_hex, team_name
+        )
+        berth_id = state["core_berth_id"]
+        if berth_id is None:
+            raise ValueError(f"Team '{team_name}' has no Core berth to inspect")
+
+        repo = self._team_repo(team_name)
+        observation = {
+            "reached": True,
+            "announcement": self._candidate_announcement_status(
+                team_name, state, berth_id, candidate_key
+            ),
+        }
+        result = None
+        try:
+            session = self._get_or_open_session(team_name)
+            store = CandidateInspectionStore(
+                session.token,
+                candidate_key,
+                base_url=self.client._base_url,
+                client=self.client._http_client,
+            )
+            # Import and verify outside the writer reservation. Publishing a
+            # ref makes this evidence visible and belongs with the report.
+            result = CodSync(repo, store).fetch()
+        except _NoPublishedHeadError as exc:
+            observation.update(disposition="empty", detail=str(exc))
+        except (
+            _ChainError,
+            _LinkFormatError,
+            _UnsupportedLinkVersionError,
+            _StoreError,
+            SmallSeaHubUnavailable,
+            SmallSeaError,
+            _RepoError,
+        ) as exc:
+            # Recorded rather than raised: a candidate that cannot be read is
+            # missing evidence a person may still decide without, and saying
+            # so is more useful than failing the investigation.
+            observation.update(
+                reached=False, failure=type(exc).__name__, detail=str(exc)
+            )
+        retained = berth_source_decision.record_observation(
+            self.root_dir, self.participant_hex, berth_id, candidate_key, observation,
+            publish_observation_fn=(
+                lambda: self._publish_berth_source_observation(repo, candidate_key, result)
+            ) if result is not None else None,
+        )
+        return {
+            "candidate_key": candidate_key,
+            "observation": observation,
+            "retained": retained,
+        }
+
+    @staticmethod
+    def _publish_berth_source_observation(repo, candidate_key, result) -> dict:
+        """Publish verified evidence while the NoteToSelf writer lock is held."""
+        ref_name = berth_source_observation_ref(candidate_key, result.link_uid)
+        # Preserve every observation before moving the convenience ref, so a
+        # later fetch cannot erase evidence left by an interrupted report write.
+        repo.create_ref_immutable(ref_name, result.observed_head)
+        try:
+            advance = repo.advance_ref(
+                berth_source_candidate_ref(candidate_key), result.observed_head
+            )
+            disposition = advance.disposition
+        except _RefDivergedError:
+            disposition = "divergent"
+        return {
+            "disposition": disposition,
+            "observed_head": result.observed_head,
+            "ref_name": ref_name,
+        }
+
+    def _stored_berth_source_observations(self, team_name) -> list:
+        """Read source-associated heads under the caller's writer reservation."""
+        observations = []
+        for ref_name, head in sorted(
+            self._team_repo(team_name).list_refs(BERTH_SOURCE_REF_PREFIX).items()
+        ):
+            parts = ref_name[len(BERTH_SOURCE_REF_PREFIX) + 1:].split("/")
+            if (len(parts) == 2 and parts[1] == "latest") or (
+                len(parts) == 3 and parts[1] == "observations"
+            ):
+                observations.append((parts[0], ref_name, head))
+        # Recover an immutable ref in preference to a convenience ref naming
+        # the same head; the latter may advance on the next inspection.
+        return sorted(observations, key=lambda entry: entry[1].endswith("/latest"))
+
+    def _candidate_announcement_status(
+        self, team_name, state, berth_id, candidate_key
+    ) -> str:
+        """Announcement evidence for one candidate, or why there is none."""
+        with contextlib.closing(
+            attached_note_to_self_connection(self.root_dir, self.participant_hex)
+        ) as conn:
+            route = berth_source_decision.saved_route_for_candidate(
+                conn, berth_id, candidate_key
+            )
+        if route is None:
+            return "unknown"
+        return provisioning.candidate_announcement_status(
+            self.root_dir, self.participant_hex, team_name, state, route
+        )
+
+    def resolve_berth_source(self, team_name, candidate_key, evidence_digest) -> dict:
+        """Apply the human's choice of which location this Core berth keeps.
+
+        `evidence_digest` is the hex digest from the status report the person
+        actually read. If the question moved since -- a new candidate, a
+        locator writeback, another observation -- the choice is refused and the
+        updated report comes back instead of a silent decision over stale
+        evidence.
+
+        Resolution does not by itself resume publication: this device's own
+        signed announcement may still name the location it gave up, so an
+        argument-free `reconcile_team_route` is the second half of choosing a
+        sibling's location.
+        """
+        state = provisioning.derive_team_join_state(
+            self.root_dir, self.participant_hex, team_name
+        )
+        berth_id = state["core_berth_id"]
+        if berth_id is None:
+            raise ValueError(f"Team '{team_name}' has no Core berth to resolve")
+        repo = self._note_to_self_repo()
+        try:
+            berth_source_decision.resolve_berth_source(
+                self.root_dir,
+                self.participant_hex,
+                berth_id,
+                candidate_key,
+                bytes.fromhex(evidence_digest),
+                retained_sources_fn=lambda: note_to_self_sync.stored_head_berth_routes(
+                    repo, berth_id
+                ),
+                retained_observations_fn=lambda: self._stored_berth_source_observations(team_name),
+            )
+        except berth_source_decision.EvidenceChangedError:
+            status = self.berth_source_status(team_name)
+            return {"resolved": False, "reason": "evidence_changed", "status": status}
+        except berth_source_decision.CandidateNotRestorableError as exc:
+            status = self.berth_source_status(team_name)
+            return {
+                "resolved": False,
+                "reason": "candidate_not_restorable",
+                "detail": str(exc),
+                "status": status,
+            }
+        return {"resolved": True, "status": self.berth_source_status(team_name)}
 
     def export_admission_acceptance(self, team_name) -> dict:
         """Return the courier token for a prepared join, or say why it is withheld.

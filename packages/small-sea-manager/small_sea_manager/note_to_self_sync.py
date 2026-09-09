@@ -39,7 +39,12 @@ import tempfile
 from dataclasses import dataclass
 from typing import Optional
 
-from cod_sync.protocol import MAIN_REF, outstanding_parked_heads, parked_ref_name
+from cod_sync.protocol import (
+    MAIN_REF,
+    PARKED_REF_PREFIX as _PARKED_REF_PREFIX,
+    outstanding_parked_heads,
+    parked_ref_name,
+)
 from cod_sync.repo import Repo, RepoError
 from small_sea_note_to_self.db import (
     SHARED_DB_FILENAME,
@@ -48,6 +53,7 @@ from small_sea_note_to_self.db import (
     initialize_shared_db,
     note_to_self_sync_db_path,
 )
+from small_sea_manager import berth_source_decision
 from splice_merge.core import (
     AmbiguousRowKeyError,
     apply_delta,
@@ -490,6 +496,10 @@ def _apply_source_rows(root_dir, participant_hex, base_json, source_json, source
                         "incompatible_source",
                         _describe_shape_mismatch(live_shape, source_shape, "source"),
                     )
+                # Capture what the berths hold before the delta lands. A
+                # held pause whose row this source deletes keeps the route it
+                # is deciding about only if it was retained first.
+                berth_source_decision.project_all_pauses(conn)
                 live_json = sqlite_to_json(conn)
                 try:
                     ours_delta = compute_delta(base_json, live_json)
@@ -533,6 +543,10 @@ def _apply_source_rows(root_dir, participant_hex, base_json, source_json, source
                         "the combined rows leave "
                         f"{len(violations)} foreign-key violations",
                     )
+                # Detection commits with the rows that opened the question, so
+                # no window exists where the Hub can read the merged state
+                # without the pause it implies.
+                berth_source_decision.project_all_pauses(conn)
                 conn.execute("COMMIT")
             except BaseException:
                 if conn.in_transaction:
@@ -586,6 +600,73 @@ def _record_merge(root_dir, participant_hex, repo: Repo, local_head: str, source
 # ---------------------------------------------------------------------------
 # The operation
 # ---------------------------------------------------------------------------
+
+
+def stored_head_berth_routes(repo: Repo, berth_id: bytes) -> list:
+    """`(ref_name, head_sha, routes)` for every stored head naming this berth.
+
+    A parked ref names a whole `core.db` blob, so a sibling's competing
+    allocation is readable out of Git after it is gone from live state. That is
+    what lets a report attribute a candidate to a head that contains it instead
+    of to a device, which nothing here can establish.
+
+    Every parked ref is read, not only the outstanding ones: a head this device
+    already adopted is exactly where an adopted-then-withdrawn candidate came
+    from. One temporary file and one SQLite open per ref; the ref count is the
+    number of stored heads a participant's own devices have published.
+    """
+    results = []
+    with tempfile.TemporaryDirectory(prefix="nts-routes-") as work:
+        for ref_name, head_sha in sorted(repo.list_refs(_PARKED_REF_PREFIX).items()):
+            path = pathlib.Path(work) / "parked.db"
+            try:
+                repo.blob_at(head_sha, SHARED_DB_FILENAME, path)
+                with contextlib.closing(sqlite3.connect(str(path))) as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT
+                            bca.id,
+                            bca.cloud_storage_id,
+                            bca.location,
+                            bca.created_at,
+                            cs.protocol,
+                            cs.url,
+                            cs.client_id,
+                            cs.path_metadata
+                        FROM berth_cloud_allocation bca
+                        JOIN cloud_storage cs ON cs.id = bca.cloud_storage_id
+                        WHERE bca.berth_id = ?
+                        ORDER BY bca.id
+                        """,
+                        (berth_id,),
+                    ).fetchall()
+            except (RepoError, sqlite3.DatabaseError) as exc:
+                # A head whose blob is unreadable is missing evidence, not a
+                # reason to refuse the report the human is waiting for.
+                _LOG.warning("could not read allocations at %s: %s", ref_name, exc)
+                continue
+            finally:
+                path.unlink(missing_ok=True)
+            results.append(
+                (
+                    ref_name,
+                    head_sha,
+                    [
+                        {
+                            "allocation_id": row[0].hex(),
+                            "cloud_storage_id": row[1].hex(),
+                            "location": row[2],
+                            "created_at": row[3],
+                            "protocol": row[4],
+                            "url": row[5],
+                            "client_id": row[6],
+                            "path_metadata": row[7],
+                        }
+                        for row in rows
+                    ],
+                )
+            )
+    return results
 
 
 def outstanding_sources(repo: Repo) -> list:

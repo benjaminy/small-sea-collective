@@ -793,16 +793,26 @@ async def create_bootstrap_session(req: BootstrapSessionCreateReq):
     return {"token": token.hex()}
 
 
-def _require_manager_session(session_hex: str = Depends(_require_session)):
+def _require_manager_session_hex(session_hex: str = Depends(_require_session)) -> str:
+    """Require a Manager/Core session and return its token.
+
+    The one place the Manager-only auth shape is written, so it cannot drift
+    between the endpoints that want the session object and the ones that want
+    the token to pass back into the backend.
+    """
+    ss_session = app.state.backend._lookup_session(session_hex)
+    if ss_session.app_name != Settings().app_name:
+        raise HTTPException(status_code=403, detail="Manager session required")
+    return session_hex
+
+
+def _require_manager_session(session_hex: str = Depends(_require_manager_session_hex)):
     """Resolve the session and require it to be a Manager/Core session.
 
     Shared by GET /sightings, POST /sightings/clear, and POST /sightings/prune-stale
     so the auth shape cannot drift between the read and the cleanup endpoints.
     """
-    ss_session = app.state.backend._lookup_session(session_hex)
-    if ss_session.app_name != Settings().app_name:
-        raise HTTPException(status_code=403, detail="Manager session required")
-    return ss_session
+    return app.state.backend._lookup_session(session_hex)
 
 
 @app.get("/sightings")
@@ -999,6 +1009,33 @@ async def download_from_cloud(path: str, session_hex: str = Depends(_require_ses
     small_sea = app.state.backend
     try:
         ok, data, etag = small_sea.download_from_cloud(session_hex, path)
+    except CloudStorageRequiredExn as exn:
+        return _cloud_storage_required_response(exn)
+    if not ok:
+        return _download_failure_response(path, etag)
+    return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
+
+
+@app.get("/berth_source/inspect")
+async def inspect_berth_source_candidate(
+    candidate_key: str,
+    path: str,
+    session_hex: str = Depends(_require_manager_session_hex),
+):
+    """Read one object from a retained candidate location of a paused berth.
+
+    Manager-only, because deciding which locations are worth inspecting is a
+    management question. The candidate is named by key and its route is read
+    from this device's own retained evidence, so this endpoint cannot be
+    pointed at a location nobody announced.
+    """
+    import base64
+
+    small_sea = app.state.backend
+    try:
+        ok, data, etag = small_sea.inspect_berth_source_candidate(
+            session_hex, candidate_key, path
+        )
     except CloudStorageRequiredExn as exn:
         return _cloud_storage_required_response(exn)
     if not ok:

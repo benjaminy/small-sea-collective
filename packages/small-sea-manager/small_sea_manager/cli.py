@@ -193,6 +193,15 @@ _ROUTE_HELP = {
         "This device's team key is not trusted, so a route it signs cannot help "
         "peers. Finish admission or use a trusted device."
     ),
+    "berth_source_paused": (
+        "Two of this participant's devices chose different cloud locations for "
+        "this berth, so this device stopped using either. Review both and "
+        "choose one; retrying will not clear it."
+    ),
+    "berth_source_ambiguous": (
+        "This berth has more than one cloud location on this device and none of "
+        "them was chosen. Review the placement question and choose."
+    ),
 }
 
 

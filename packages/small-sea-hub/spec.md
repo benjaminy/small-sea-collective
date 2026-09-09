@@ -342,6 +342,13 @@ there is no owner device, and any currently trusted team-device key may publish 
 A sibling's local view of that shared allocation, and any location it has already materialized,
 can still diverge from this device's until the shared NoteToSelf state converges.
 
+Two disconnected siblings can each rotate the same berth, which leaves more than one live allocation once their NoteToSelf states merge.
+The Hub resolves every own-berth provider operation -- uploads, downloads, materialization, runtime artifacts and signals -- at one allocation lookup, and that lookup is where the resulting pause is enforced.
+It reads the Manager's `berth_source_pause` row and the berth's allocations in one read transaction, and refuses with `berth_source_paused` when a pause is held, or `berth_source_ambiguous` when several rows are live, whatever an earlier recorded choice says.
+The Hub decides nothing about placement and writes neither table; it reads the state the Manager committed.
+The single exception is the Manager-only investigation path, which reads one named retained candidate so a person can look at both locations while the berth is paused.
+It resolves that candidate's route from the device's own retained evidence rather than from its caller, and never materializes, writes back a locator, or bumps a signal.
+
 #### First contact
 
 Peer routing is circular on first contact: fetching a new teammate's Core chain

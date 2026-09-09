@@ -561,6 +561,37 @@ class PeerSmallSeaStore(_HubStore):
         return super()._classify(resp, cloud_path)
 
 
+class CandidateInspectionStore(_HubStore):
+    """Read-only view of one retained placement candidate of this own berth.
+
+    Used while a berth's placement is a held pause, to look at a location the
+    ordinary path refuses. Every object request carries the same candidate key,
+    so a whole chain walk stays bound to the location it started at: unlike the
+    ordinary store, which lets the Hub reselect the berth's allocation per
+    request, this one cannot drift onto a newer announcement mid-walk.
+
+    The key names evidence the Hub already holds; no route travels in the
+    request, so this is not a general proxy.
+    """
+
+    def __init__(
+        self,
+        session_hex: str,
+        candidate_key: str,
+        base_url: str = "http://localhost:11437",
+        client=None,
+        path_prefix: str = "",
+    ):
+        super().__init__(session_hex, base_url, client=client, path_prefix=path_prefix)
+        self.candidate_key = candidate_key
+
+    def _download_endpoint(self, cloud_path: str):
+        return "/berth_source/inspect", {
+            "candidate_key": self.candidate_key,
+            "path": self._path_prefix + cloud_path,
+        }
+
+
 class ExplicitProxyStore(_HubStore):
     """Read-only view of a chain at explicit cloud coordinates.
 
