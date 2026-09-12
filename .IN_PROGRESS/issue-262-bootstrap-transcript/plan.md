@@ -19,12 +19,13 @@ Keep implementation gaps visible; a written protocol does not demonstrate that c
 
 - [x] Read #262, #190, #263, and #266; inspect the architecture and relevant Manager, Hub, Cod Sync, and Wrasse documentation.
 - [x] Record starting evidence, gaps, and issue boundaries in `notes.md` and `follow-up.md`.
-- [ ] Trace invitation acceptance, identity linking, and linked-team bootstrap through provisioning code and their micro tests.
+- [x] Trace invitation acceptance, identity linking, and linked-team bootstrap through provisioning code and their micro tests.
   Record what each path actually authenticates, including any fixture that supplies a baseline outside the ceremony.
-- [ ] Resolve the initial trust contract.
-  Specify which key, artifact, team/origin identifier, and history commitment the independent comparison or authenticated delivery binds.
+- [ ] Resolve the initial trust contract (human checkpoint).
+  Strawman anchor: a statement signed by the inviter's or sibling's device key that names the team, the Core root commit, and the current governance digest, with the signing key's fingerprint compared out of band.
+  This maps onto TUF's split: the out-of-band comparison is the adopter's initial root delivery, and Core history signed by already-recognized keys is verifiable evolution.
+  List alternatives against the strawman and stop for a human decision before drafting the transcript.
   Distinguish trusting a person or sibling's local view from proving authority from prior signed evidence.
-  Present materially different trust choices for human decision rather than silently selecting one.
 - [ ] Draft the transcript from the initial evidence to acceptance of a particular Core view and recognition of keys for a particular berth and purpose.
   Name the authorization extension or local policy at each transition; Constitution core verification alone supplies no membership verdict.
   Separate identity join, team admission/device enrollment, historical authorship, local history acceptance, and distribution of future encryption keys.
@@ -51,7 +52,10 @@ Keep implementation gaps visible; a written protocol does not demonstrate that c
 ## Validation and review evidence
 
 The primary validation is a step-by-step argument a reviewer can replay without assuming the desired conclusion.
-Give each transcript step an identifier and list its inputs, provenance, checks, policy owner, permitted conclusion, and pause conditions.
+Give each transcript step an identifier and list its inputs, provenance, checks, and policy owner, then three outcomes: the evidence recorded, the default conclusion, and what a human may override.
+Do not write steps as pass/fail verifier rules.
+An override changes local policy; the recorded evidence and the authentication result stay as they were.
+Expect the two adversarial cases to differ in kind: a substituted history is a failed binding whose default is to stop and show the mismatch, while a removed author is a policy question whose default is to accept the old signatures with the removal recorded.
 Every authority claim must lead back to independently authenticated evidence or an explicitly named local trust decision.
 Mark each mechanism as implemented, specified but unenforced, or proposed, with file/function or micro-test references for implementation claims.
 
