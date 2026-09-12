@@ -2,7 +2,8 @@
 
 Branch: `issue-262-bootstrap-transcript`.
 Issue: [#262 — Write the Small Sea bootstrap trust transcript](https://github.com/benjaminy/small-sea-collective/issues/262).
-Status: code trace done; the human selected exchange-authenticated snapshot delivery plus reconstruction of authority-bearing state from Constitution evidence (option D in the subsequent discussion).
+Status: code trace and snapshot field classification done; the human selected exchange-authenticated snapshot delivery plus reconstruction of authority-bearing state from Constitution evidence (option D in the subsequent discussion).
+The transcript is drafted; validating it against the cases below is the next step.
 See `notes.md` for the decision and remaining validation work; `trust-anchor-brief.md` preserves the earlier proposal.
 
 ## Outcome and scope
@@ -26,13 +27,15 @@ Keep implementation gaps visible; a written protocol does not demonstrate that c
   Authenticate the complete bootstrap exchange, including the snapshot digest and exact Constitution frontier.
   Reconstruct authority-bearing state from that frontier and its ancestry under explicitly named extension rules and local policy, then compare the snapshot's corresponding semantic state.
   Git carries the transient snapshot; permanent Constitution evidence supports authority decisions.
-- [ ] Classify the bootstrap-critical snapshot fields and complete the selected trust contract.
-  Identify fields derived from Constitution events, participant-local choices, and delivery information.
-  Name any essential field that permanent evidence cannot establish and the additional evidence or explicit local decision it requires.
-  Specify how conflicts and missing evidence affect reconstruction; do not assume a single policy-independent projection.
-- [ ] Draft the transcript from the initial evidence to acceptance of a particular Core view and recognition of keys for a particular berth and purpose.
-  Name the authorization extension or local policy at each transition; Constitution core verification alone supplies no membership verdict.
-  Separate identity join, team admission/device enrollment, historical authorship, local history acceptance, and distribution of future encryption keys.
+- [x] Classify the bootstrap-critical snapshot fields and complete the selected trust contract.
+  See `notes.md`, "Snapshot field classification".
+  The cert graph accepts any self-issued membership as a trust root, so reconstruction from the snapshot alone cannot identify the team; the exchange must carry the root.
+  Eight essential fields have no permanent evidence behind them, and NoteToSelf has no signed field at all.
+  Reconstruction is defined against named policy parameters and yields agreement, policy difference, evidence difference, or incompleteness rather than a boolean.
+- [x] Draft the transcript from the initial evidence to acceptance of a particular Core view and recognition of keys for a particular berth and purpose.
+  Drafted at `Documentation/bootstrap-trust.md`: ten backbone steps B1-B10, then the two entry paths.
+  The five decisions are separated up front, each step names its policy owner, and each carries a status of implemented, specified but unenforced, proposed, or contradicted.
+  Eleven required code changes are listed as consequences of the design, following the human's direction to fix the current state rather than accommodate it.
 - [ ] Work through the validation cases below and revise the transcript wherever a conclusion lacks evidence.
 - [ ] Reconcile narrow documentation claims, record remaining work by issue, and prepare the design for human review.
 

@@ -144,3 +144,122 @@ Micro tests: `test_full_invitation_flow` passes the token in-process and asserts
 | Invitation | Nothing; unsigned token, URL-controlled clone | No | No |
 
 Everything else the code checks is internal consistency of material fetched from the same source the check is meant to validate.
+
+## Snapshot field classification — 2026-09-12
+
+Option D asks the newcomer to reconstruct authority-bearing state from permanent Constitution evidence and compare it against the delivered snapshot.
+That is only meaningful for fields the evidence can actually establish.
+This section classifies the fields in the two databases a newcomer receives and names what the comparison cannot cover.
+
+Method: static reading of `core_other_team.sql`, `shared_schema.sql`, and every writer of those tables in `provisioning.py`, plus the cert resolver in `wrasse_trust/identity.py`.
+No micro tests were run.
+The claims are about which bytes are covered by a signature and which code inserts each row.
+
+### Classes
+
+- **Constitution-derived.** The value sits inside the canonical signed bytes of a record, and the newcomer can verify that signature.
+- **Local choice.** The value is an unsigned row. Whichever device wrote it chose it, and no permanent evidence pins it down.
+- **Delivery.** The value describes this exchange or this fetch, not the team.
+
+A second question cuts across all three: when a field is a local choice, can the newcomer make that choice for itself, or is it stuck adopting the introducer's?
+Those are very different risks, and the classification below marks the difference.
+
+### Team Core database
+
+| Table and field | Class | Basis |
+| --- | --- | --- |
+| `admission_proposal` except `invitee_label_payload` | Constitution-derived | Signed by the inviter's team-device key over canonical JSON; `mode_plan`, `invitee_teammate_id`, `team_id`, `nonce`, `expires_at` are all inside the signed bytes. |
+| `admission_proposal.invitee_label_payload` | Local choice, introducer's | Deliberately excluded from the signed bytes as droppable PII. `invitee_label_commitment` is nullable and no writer populates it (#168), so nothing commits to the label at all. |
+| `admission_acceptance` | Constitution-derived | Signed by the invitee under an embedded key; `author_device_key_id` must equal the key id derived from that key. |
+| `endorsement`, `finalization` | Constitution-derived | Signed; `finalization.endorsement_count` is signed over endorsements the finalizer re-verified. |
+| `admission_revocation` | Local choice, introducer's | The schema comment states it is a mutable projection, not a signed record. A newcomer cannot tell a revoked proposal from an unrevoked one by evidence. |
+| `key_certificate` | Constitution-derived, but unrooted | Each cert verifies. The graph they form does not identify a team; see "The root is self-asserted" below. |
+| `team_device` | Constitution-derived (redundant) | A projection of the cert graph. `trusted_device_keys_by_teammate` is the authoritative form and ignores this table. |
+| `teammate.id` | Constitution-derived for admitted teammates | `invitee_teammate_id` is a signed proposal field and `finalization` makes it effective. The founder's own id has no signed record; only a self-issued membership cert asserts it. |
+| `teammate.display_name` | Local choice, introducer's | `finalize_admission` writes it from `proposal_row[13]`, the unsigned `invitee_label_payload`. |
+| `teammate.identity_public_key` | Absent | No caller of `_upsert_teammate_row` passes it; the column is always NULL. Teammate-to-key binding exists only in the cert graph. |
+| `app`, `team_app_berth` | Local choice, introducer's | `_ensure_team_app_activation` inserts fresh uuid7 rows with no signed record. Signed records then reference `berth_id` values that no signature establishes. |
+| `berth_role` | Split | `set_teammate_integration_mode` and `_expand_mode_plan_at_finalization` write roles backed by signed `integration_mode_change` records. `_ensure_team_app_activation` also inserts initial roles unsigned, including the founder's Core role. |
+| `integration_mode_change` | Constitution-derived | Signed, with `teammate_id`, `berth_id`, and `mode` inside the signed bytes. |
+| `team_setting` | Local choice, introducer's | Plain key/value. `admission_quorum` and `proposal_expiry_seconds` decide whether a `finalization` was legitimate, and nothing signs them. |
+| `teammate_berth_storage_announcement` | Constitution-derived content, delivery meaning | Signed, so the announcement is authentic; what it announces is a URL and location, which is delivery information. |
+| `device_prekey_bundle` | Local choice, introducer's | No signature column. X3DH verifies `signed_prekey` against `identity_signing_public_key` carried in the same bundle, and nothing checks that key against the trusted device key the row is filed under. |
+| `invitation` | Local choice, introducer's | Mutable status columns from the older flow. The Hub and `admission_events` read it; no production writer remains in the Manager. |
+| `anchor_commit`, `constitution_digest`, `constitution_snapshot_json` on every record | Constitution-derived assertion, not independent evidence | Signed, so the author really claimed this view. The digest is a live query over current `teammate`/`team_device`/`berth_role` state, so it commits to a projection the newcomer must first reconstruct. |
+
+### NoteToSelf database
+
+`shared_schema.sql` has no signature column in any table.
+`user_device`, `team`, `team_device_key`, `cloud_storage`, `berth_cloud_allocation` are all unsigned rows.
+Every field in the identity snapshot is therefore a local choice, and on the identity-join path the newcomer is adopting the introducer's.
+
+This is the sharpest result of the classification.
+Option D reconstructs authority-bearing state from permanent Constitution evidence, and on the identity path there is no such evidence to reconstruct from.
+The identity snapshot can be bound to the exchange by digest, and that is all.
+Its authority content rests entirely on the human comparison of `second_confirmation_string`, which no code path records.
+
+### The root is self-asserted
+
+`trusted_device_keys_by_teammate` seeds trust like this:
+
+```
+if cert.issuer_participant_id == admitted_teammate_id:
+    issuer_keys = [cert.subject_public_key]
+```
+
+Any self-issued membership cert is a trust root.
+The resolver accepts as many roots as the snapshot contains and never asks which one is this team's genesis.
+An attacker who fabricates a team database fabricates its genesis membership too, and the graph resolves cleanly.
+
+So reconstruction from the snapshot's own records cannot distinguish the real team from a manufactured one, no matter how carefully each signature is checked.
+Option D's comparison has force only if the exchange independently carries the root: the team id together with the genesis membership cert's subject key, or an equivalent pin on the inviter's team-device public key.
+Without that, reconstruction and snapshot agree because they are the same forgery read twice.
+
+### Essential fields permanent evidence cannot establish
+
+1. **Which team this is.** Needs the exchange to carry `team_id` plus a genesis or inviter device public key.
+   Nothing in the snapshot supplies it.
+2. **Admission quorum.** `team_setting` is unsigned, so whoever wrote the snapshot chose the threshold that its `finalization` records had to clear.
+   Needs either a signed policy record or an exchange-carried value the newcomer adopts as an explicit local decision.
+3. **Berth existence and initial roles.** `app` and `team_app_berth` rows and the founder's Core `berth_role` have no signed origin, yet `integration_mode_change` and `mode_plan` expansion both name `berth_id` values.
+   Needs a signed berth-creation record, or the newcomer treats berth identity as adopted rather than verified.
+4. **Display names.** Unsigned and droppable, with the commitment column unpopulated.
+   The newcomer can only treat a name as the introducer's claim.
+   This is consistent with keeping PII off the durable chain; the transcript should say so rather than imply a gap.
+5. **Prekey bundles.** Unsigned and unbound to the device key id they are filed under.
+6. **Removal.** There is no signed removal or exclusion record anywhere in the schema; `admission_revocation` is a mutable projection of a proposal the inviter abandoned.
+   #263's removed-author case therefore has no permanent evidence on either side, which the transcript must state plainly.
+7. **Berth and purpose scoping.** `issue_membership_cert` and `issue_device_link_cert` bind `team_id` and `teammate_id` and nothing else.
+   A key trusted for one berth is trusted for all of them.
+   This is #266's gap, visible here as a field the classification cannot populate.
+8. **Git commit authorship.** `Repo.configure_signing` has no call site outside cod-sync's own tests, so every commit the Manager writes today is unsigned.
+   Git currently carries no authorship evidence at all, which makes the snapshot's delivery digest the only binding Git contributes.
+
+### Reconstruction under conflict and missing evidence
+
+The projection is not policy-independent, and three specific mechanisms make that concrete.
+
+**Quorum is local.**
+Two devices holding the same records but different `team_setting` rows reconstruct different sets of legitimate finalizations.
+Reconstruction must therefore be defined as a function of explicitly named policy parameters, and the transcript must report the parameters alongside the verdict.
+
+**The digest depends on activation.**
+`_constitution_digest` runs over current `teammate`, `team_device`, and `berth_role` state, so its value depends on which records the device has already activated.
+`_admission_status` returns `invalidated` on any drift.
+A newcomer reconstructing from a frontier can reach a different activation order than the introducer did and compute a different digest from the same evidence.
+Reconstruction must not treat a digest mismatch as forgery.
+
+**Ancestry gaps are not forgeries.**
+`endorsement` and `finalization` carry foreign keys to their proposal.
+A newcomer missing that proposal cannot verify the rows that reference it.
+Following the Constitution doc's handling states, those rows are ancestry-incomplete: hold them, do not drop them, and do not let anything that needs their closure proceed.
+
+Given all three, the comparison step should produce one of four outcomes rather than a boolean:
+
+- **Agrees.** Reconstruction under the named policy matches the snapshot's semantic state.
+- **Differs under policy.** The states differ only in ways the policy parameters explain. Record both and the parameter responsible.
+- **Differs on evidence.** The snapshot asserts state that the records do not support. Stop and show the first field that diverges.
+- **Incomplete.** Required ancestry is missing. Pause, preserve what arrived, and name what is absent.
+
+Only the third is an authentication failure.
+The other two are pauses, and a human override changes which of them the device acts on without changing what was verified.
