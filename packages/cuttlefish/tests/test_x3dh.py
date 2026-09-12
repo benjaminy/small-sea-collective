@@ -227,10 +227,11 @@ def test_x3dh_into_ratchet_into_sender_key_distribution():
     bob_has_alice = process_sender_key_distribution(received_dist)
 
     # --- Alice sends a group-encrypted message ---
+    context = b"x3dh-into-sender-key-context"
     alice_sender_key, group_msg = group_encrypt(
-        GROUP_ID, alice_sender_key, b"hello team!",
+        GROUP_ID, alice_sender_key, b"hello team!", context,
     )
 
     # Bob decrypts it
-    bob_has_alice, plaintext = group_decrypt(group_msg, bob_has_alice)
+    bob_has_alice, plaintext = group_decrypt(group_msg, bob_has_alice, context)
     assert plaintext == b"hello team!"

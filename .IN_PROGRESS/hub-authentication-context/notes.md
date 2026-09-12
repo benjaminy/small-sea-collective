@@ -254,3 +254,146 @@ This supports the proposed decoded UTF-8 rule; it does not survey provider alias
 
 Remaining implementation work includes final context/wire encoding, protected-route integration including retained candidates, consistent API/client failure translation, and persistence ordering under the actual Hub call path.
 The prototype deliberately supplies no database transaction, wire parser, concurrency guarantee, new retention mechanism, or provisional consumer workflow.
+
+## Implementation — 2026-09-10
+
+Package implementation is complete and staged for human review.
+The settled scope in [plan.md](plan.md) held; nothing in it needed reopening.
+No new retention, back-fill, or recovery machinery was required, which was the stated trigger for handing sequencing back to #264.
+
+### What was built
+
+`packages/cuttlefish/cuttlefish/group.py` gained an opaque `context` argument on `group_encrypt` and an `expected_context` argument on `group_decrypt`, plus a `context` field on `GroupMessage`.
+The associated data is now a length-prefixed encoding of a domain tag, the group id, the context, the sender device key id, the chain id, and the iteration; the signature covers a second domain-tagged transcript over that associated data, the IV and the ciphertext.
+Length prefixes rather than concatenation, so no field boundary can be moved.
+Cuttlefish still interprets nothing about the context.
+
+`group_decrypt` now runs its whole decision before touching the chain: iteration range, signature, header-versus-record agreement (`SenderHeaderMismatch`), then context equality (`ContextMismatch`), then derivation and AEAD.
+
+`packages/small-sea-hub/small_sea_hub/crypto.py` owns the context encoding, the envelope format marker, the ownership check, and the failure taxonomy.
+`publication_context` is compact UTF-8 JSON of `["small-sea/object-publication", 1, team hex, berth hex, path]`.
+The envelope carries `"format": "small-sea/group-publication/1"`; anything else is refused with no fallback.
+`decrypt_group_payload` takes `expected_context`, `expected_publisher` and `device_ownership` as required keyword arguments.
+
+The Hub's retained-key calculation moved after `group_decrypt` returns.
+`_message_key_for` is pure in the pre-read record, so computing it later derives exactly the same key while nothing iteration-driven runs before authentication.
+This turned out to be a two-line move rather than the reordering the plan anticipated.
+
+`backend.py` resolves the context and expected publisher at each protected entry point and reads Core's `team_device` projection as `dict[device_key_id, set[teammate_id]]`, with `None` for an absent table.
+Sets rather than single values so an ambiguity cannot disappear while the mapping is built, even though `team_device.device_key_id` is a primary key today and therefore cannot actually carry two rows.
+That is deliberate: the projection's shape is the thing that would change if ownership evidence ever came from somewhere with weaker uniqueness, and the check is one comparison.
+
+### Findings during implementation
+
+The `_table_exists` guard on `team_device` was left in place but its meaning changed.
+It previously produced an empty mapping that silently weakened `_device_public_keys_by_key_id`'s announcement verification; for publication it produces a distinct `OwnershipProjectionAbsentExn`.
+`_device_public_keys_by_key_id` still returns `{}` on an absent table.
+That pre-existing shortcut was left alone, but it is worth a focused issue: an absent projection there quietly weakens storage-announcement verification the same way an empty ownership mapping would have weakened publication.
+
+The invitation bootstrap consumer had to change and could not be given the guarantee.
+`decrypt_invitation_bootstrap_payload` reads through `/cloud_proxy` during acceptance, when the acceptor has no team session, no Core, and no berth id — the invitation token carries `team_id` but no Core berth id, and `ExplicitProxyStore._transform_download` receives only bytes.
+It now parses the bound envelope and passes the envelope's own context as the expected context, with a comment naming exactly what that does and does not establish.
+Adding a real expected context there would still leave the ownership half unanswerable until #262, so it was not worth the token and store changes.
+
+Fresh NoteToSelf behaves as the experiments predicted.
+`_device_ownership_by_key_id` returns `None` for it, and an encrypted-mode read of passthrough bytes is refused as an unreadable envelope rather than handed back raw.
+Its passthrough contract is unchanged.
+
+### Validation
+
+Run from the repository root with the developer's ordinary Git configuration:
+
+```sh
+.venv/bin/python -m pytest -q packages tests
+```
+
+The `packages/ssc-files` suite fails in a Git-isolated environment (`GIT_CONFIG_GLOBAL=/dev/null`) both before and after this branch — 36 identical failures on either side of the change, all `NoLocalHeadError` from commits that cannot be authored.
+Those tests need a real Git identity; the isolated invocation used during the experiments is not a valid way to run them.
+
+New and changed micro tests:
+
+| File | What it establishes |
+|---|---|
+| `packages/cuttlefish/tests/test_group.py` | Transcript-level binding, once, at the shared boundary: context mismatch with the key available, a validly signed device/chain relabelling, a mutation table over every authenticated field, and that an altered iteration is refused before any `_derive_message_key` call. |
+| `packages/small-sea-hub/tests/test_group_crypto.py` | The Hub's publication decision: two devices of one teammate accepted and kept distinct, another teammate's device refused with its key available, unknown device pending, absent projection distinct from an empty mapping, ambiguity refused, cross-path/berth/team substitution refused with a passing control each time, context and ownership refusals told apart, and refusals leaving persisted receiver records and skipped-key maps unchanged at current, future and retained iterations. |
+| `packages/small-sea-hub/tests/test_publication_routes.py` | Real provisioning, real sessions, real HTTP, real crypto, with only placement and provider I/O substituted: own, peer and retained-candidate entry points; exact logical path strings including composed and decomposed Unicode; a new invitee's own read pending with no receiver-state change while the recognized inviter's read succeeds, then succeeding once the ownership row arrives; a contradicted association refused; NoteToSelf's separate contract. |
+| `packages/small-sea-client/tests/test_client.py` | Neither a pending prerequisite nor a refused publication can reach a caller as success or as absence. |
+| `packages/small-sea-hub/tests/test_peer_cloud_file_errors.py` | The peer route's prerequisite codes, now including missing ownership. |
+
+The wire code for a missing sender key changed from `peer_sender_key_unavailable` to `sender_key_unavailable`, because own and candidate reads now report the same condition and two codes for one condition would be worse than renaming one.
+
+### Limits of this evidence
+
+The route tests substitute provider I/O, so they establish behavior after substituted bytes reach the read boundary; they do not demonstrate a provider attack.
+Sibling-device attribution is tested at the crypto boundary with a synthetic ownership mapping; the real linked-device fixture that produced the same result lives in `experiments/test_linked_device_bootstrap`-style code and was not carried into the package suite, because it costs a full second installation and two bootstrap rounds to re-prove a comparison the boundary test already makes.
+The ambiguity branch is exercised only with a synthetic mapping, since `team_device` cannot produce one.
+No MinIO or provider integration run was added; nothing in this change is provider-specific.
+
+## PR review — 2026-09-11
+
+Reviewed implementation commit `2912787` against the accepted scope.
+The implementation is committed; the earlier staged-only status above is stale.
+Two defects were reproduced with temporary micro tests; no implementation changes were made.
+
+- The Hub renamed `peer_sender_key_unavailable` to `sender_key_unavailable`, but `PeerSmallSeaStore` still recognizes only the old code.
+  A missing-key response now raises `StoreProviderError`, so Manager's Core fetch reports `CoreFetchRemoteError` instead of its missing-key prerequisite.
+  Update Cod Sync's response handling and cover the new ownership prerequisites for the affected stores as well.
+- An otherwise readable envelope with iteration `-1` or `2**64` produces HTTP 500 instead of the documented 502 publication rejection.
+  Cuttlefish's new range check raises `ValueError`, which the Hub's publication exception translation does not handle.
+  Both reproductions first uploaded and successfully read a valid control, then changed only its iteration.
+
+Validation used `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false` to disable personal Git signing only for the test process.
+Running `.venv/bin/python -m pytest -q packages/cuttlefish/tests packages/small-sea-hub/tests packages/small-sea-client/tests packages/small-sea-manager/tests/test_linked_device_bootstrap.py packages/small-sea-manager/tests/test_sender_key_rotation.py` passed 224 checks; 8 failed and 28 errored because the sandbox blocked local-service ports.
+Rerunning the Hub's `test_backend_smoke.py`, `test_cloud_api.py`, `test_peer_transport.py`, `test_notifications.py`, and `test_s3_storage.py` with local-service access passed 38 checks, including MinIO coverage.
+The notification check remained blocked because `docker ps` failed during fixture setup.
+The three temporary review probes failed as expected: two iteration cases and one missing-key classification case.
+`git diff --check` passed before this notes update.
+
+## PR review fixes — 2026-09-11
+
+Both review findings are fixed and covered by package micro tests.
+Cod Sync recognizes `sender_key_unavailable` and preserves all four ownership prerequisite reasons for own, peer, and retained-candidate reads.
+Manager's peer Core fetch preserves ownership prerequisite reasons in `CorePublicationPendingError`, while retaining its existing missing-sender-key exception.
+Cuttlefish raises `InvalidIteration` for iterations outside its header range, and the Hub translates that exception into a 502 publication rejection with reason `invalid_iteration`.
+The HTTP checks cover negative and overflowing iterations, unchanged receiver state, and successful reads of the original bytes after rejection.
+
+Validation: `GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false .venv/bin/python -m pytest -q packages/cuttlefish/tests/test_group.py packages/small-sea-hub/tests/test_group_crypto.py packages/small-sea-hub/tests/test_publication_routes.py packages/cod-sync/tests/test_store.py packages/small-sea-manager/tests/test_core_peer_fetch.py -k 'not s3' --tb=short` passed 124 checks, with two S3 checks deselected and one existing settings warning.
+These fixes change error classification, so this run uses local fixtures without provider services.
+They were committed in `4f7e740`.
+
+## Second PR review — 2026-09-11
+
+Reviewed the branch at `4f7e740` and fixed two findings; the fixes are staged for human review and commit.
+
+- Manager's `decrypt_invitation_bootstrap_payload` still computed the retained message key before `group_decrypt` verified the signature, the same ordering this branch had already fixed in the Hub.
+  Whoever controls the downloaded bytes could choose the iteration and make the invitee's device walk the chain that many steps before rejection.
+  A scratch probe measured 0.5 s at iteration 200,000 and 5.0 s at 2,000,000, both ending in `InvalidSignature`; the time grows linearly, so a 2^40 iteration would effectively hang acceptance.
+  The key calculation now runs after `group_decrypt` returns.
+  The route remains raw transport; this fixes only the pre-authentication work.
+- The Hub checked device ownership before the signature, so altered bytes naming a device with no ownership row were reported as a 409 pending prerequisite rather than a 502 rejection.
+  They were never accepted, but a caller would wait for evidence that could not help.
+  The ownership check now runs after `group_decrypt` and still before any receiver state is saved; the Hub spec states the order.
+
+New micro tests: `test_bytes_that_fail_authentication_are_refused_rather_than_left_pending` in `packages/small-sea-hub/tests/test_group_crypto.py`, and `test_bootstrap_decrypt_does_not_walk_the_chain_for_a_forged_iteration` in `packages/small-sea-manager/tests/test_invitation.py`.
+Both fail against the previous source ordering and pass after the change.
+
+Validation: `.venv/bin/python -m pytest -q -p no:cacheprovider packages/cuttlefish/tests packages/small-sea-hub/tests packages/small-sea-client/tests packages/cod-sync/tests packages/small-sea-manager/tests` passed 908 checks with 2 errors, neither in code this branch touches.
+`test_notifications.py` needs a running Docker daemon.
+One `test_invitation_route_delivery.py` case errored in fixture teardown when removing its temporary directory (`Directory not empty`); rerunning that file alone passed all 40 checks, and the cause was not investigated.
+Do not run the Cod Sync signing suites with the `GIT_CONFIG_COUNT` override used in earlier runs: it disables the commit signing those tests configure, and 34 of them fail for that reason alone.
+
+## Content readiness review — 2026-09-11
+
+Reviewed `c91d5d3` against local `main`, excluding Git and GitHub wrap-up as requested.
+No new blocking finding: the ordinary publication boundary, protected route wiring, state-commit ordering, and downstream prerequisite handling meet the accepted scope.
+The separate bootstrap, runtime-distribution, NoteToSelf, and stored-object retention limits remain as documented above.
+
+Fresh validation passed 171 micro tests, with two S3 checks deselected and the existing settings warning:
+
+```sh
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=false .venv/bin/python -m pytest -q -p no:cacheprovider packages/cuttlefish/tests/test_group.py packages/small-sea-hub/tests/test_group_crypto.py packages/small-sea-hub/tests/test_publication_routes.py packages/small-sea-client/tests/test_client.py packages/cod-sync/tests/test_store.py packages/small-sea-manager/tests/test_core_peer_fetch.py packages/small-sea-manager/tests/test_invitation.py::test_bootstrap_decrypt_does_not_walk_the_chain_for_a_forged_iteration -k 'not s3' --tb=short
+```
+
+An initial run without the signing override and including the whole invitation file hit sandbox restrictions on personal GPG signing and local server ports (125 passed, 4 failed, 46 setup errors).
+The successful focused run above does not cover provider-service checks or replace the broader suite evidence from the second review.
+`git diff --check main...HEAD` also passed.

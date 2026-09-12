@@ -21,7 +21,8 @@ from small_sea_hub.backend import (
     SmallSeaSessionNotFoundExn,
 )
 from small_sea_hub.cloud_errors import CloudStorageRequiredExn
-from small_sea_hub.crypto import SenderKeyUnavailableExn
+from small_sea_hub.crypto import (PublicationExn, PublicationNotAuthenticExn,
+                                  PublicationPendingExn)
 from small_sea_hub.config import Settings
 
 _templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "templates"))
@@ -949,6 +950,31 @@ def _download_failure_response(path: str, failure):
     )
 
 
+def _publication_failure_response(
+    exn: PublicationPendingExn | PublicationNotAuthenticExn,
+):
+    """Report a refused publication as neither success nor absence.
+
+    A pending prerequisite is 409: the bytes arrived, this device just cannot
+    judge them yet, and the condition resolves when the missing evidence does.
+    Anything else is 502: the provider handed back something this object's
+    publication contract rejects.
+    """
+    if isinstance(exn, PublicationPendingExn):
+        return JSONResponse(
+            status_code=409,
+            content={"error": exn.error_code, "detail": str(exn)},
+        )
+    return JSONResponse(
+        status_code=502,
+        content={
+            "error": exn.error_code,
+            "reason": exn.reason,
+            "detail": str(exn),
+        },
+    )
+
+
 class CloudUploadReq(pydantic.BaseModel):
     path: str
     data: str  # base64-encoded
@@ -1011,6 +1037,8 @@ async def download_from_cloud(path: str, session_hex: str = Depends(_require_ses
         ok, data, etag = small_sea.download_from_cloud(session_hex, path)
     except CloudStorageRequiredExn as exn:
         return _cloud_storage_required_response(exn)
+    except PublicationExn as exn:
+        return _publication_failure_response(exn)
     if not ok:
         return _download_failure_response(path, etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
@@ -1038,6 +1066,8 @@ async def inspect_berth_source_candidate(
         )
     except CloudStorageRequiredExn as exn:
         return _cloud_storage_required_response(exn)
+    except PublicationExn as exn:
+        return _publication_failure_response(exn)
     if not ok:
         return _download_failure_response(path, etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
@@ -1073,14 +1103,8 @@ async def download_peer_cloud_file(
             status_code=409,
             content={"error": "peer_storage_unknown", "detail": str(exn)},
         )
-    except SenderKeyUnavailableExn as exn:
-        # The bytes arrived; this device just cannot read them yet. Reporting
-        # it as a server fault would hide a prerequisite that resolves itself
-        # once sender-key delivery completes.
-        return JSONResponse(
-            status_code=409,
-            content={"error": "peer_sender_key_unavailable", "detail": str(exn)},
-        )
+    except PublicationExn as exn:
+        return _publication_failure_response(exn)
     if not ok:
         return _download_failure_response(path, etag)
     return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}

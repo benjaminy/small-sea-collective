@@ -33,6 +33,43 @@ class SmallSeaCloudStorageRequired(SmallSeaConflict):
         super().__init__(detail)
 
 
+class SmallSeaPublicationPending(SmallSeaConflict):
+    """The Hub could not yet judge a downloaded object's publication.
+
+    The bytes were retrieved; the evidence needed to accept them (a sender key,
+    an accepted device-ownership row) has not arrived on this device. A
+    conflict rather than a not-found, so a caller cannot read it as an empty
+    chain. `reason` names the missing prerequisite.
+    """
+
+    def __init__(self, reason: str, detail: str):
+        self.reason = reason
+        super().__init__(detail)
+
+
+class SmallSeaPublicationNotAuthentic(SmallSeaError):
+    """The retrieved bytes are not the requested object's authentic publication.
+
+    Deliberately not a not-found and never an empty result: the object may well
+    exist and something served the wrong or altered bytes for it.
+    """
+
+    def __init__(self, reason: str, detail: str):
+        self.reason = reason
+        super().__init__(detail)
+
+
+_PUBLICATION_PENDING_ERRORS = frozenset(
+    {
+        "sender_key_unavailable",
+        "ownership_projection_absent",
+        "device_ownership_unavailable",
+        "device_ownership_ambiguous",
+        "expected_publisher_unknown",
+    }
+)
+
+
 class SmallSeaAppBootstrapRequired(SmallSeaError):
     """Manager action is required before this app can open a Hub session."""
 
@@ -82,8 +119,22 @@ def _check_response(resp: httpx.Response) -> None:
         raise SmallSeaCloudStorageRequired(
             str(body.get("reason", "cloud_storage_required")), detail
         )
+    if (
+        resp.status_code == 409
+        and isinstance(body, dict)
+        and body.get("error") in _PUBLICATION_PENDING_ERRORS
+    ):
+        raise SmallSeaPublicationPending(str(body["error"]), detail)
     if resp.status_code == 409:
         raise SmallSeaConflict(detail)
+    if (
+        resp.status_code == 502
+        and isinstance(body, dict)
+        and body.get("error") == "publication_not_authentic"
+    ):
+        raise SmallSeaPublicationNotAuthentic(
+            str(body.get("reason", "publication_not_authentic")), detail
+        )
     raise SmallSeaError(f"HTTP {resp.status_code}: {detail}")
 
 

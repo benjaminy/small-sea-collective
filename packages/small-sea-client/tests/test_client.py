@@ -16,6 +16,8 @@ from small_sea_client.client import (
     SmallSeaError,
     SmallSeaHubUnavailable,
     SmallSeaNotFound,
+    SmallSeaPublicationNotAuthentic,
+    SmallSeaPublicationPending,
     SmallSeaSession,
 )
 
@@ -549,3 +551,52 @@ def test_prune_stale_app_sightings_does_not_raise_bootstrap_exn(session):
 
     # Should simply return; no exception.
     assert session.prune_stale_app_sightings() == 0
+
+
+# --- Publication failures never become success or absence ---
+
+
+@respx.mock
+@pytest.mark.parametrize(
+    "error",
+    [
+        "sender_key_unavailable",
+        "ownership_projection_absent",
+        "device_ownership_unavailable",
+        "device_ownership_ambiguous",
+        "expected_publisher_unknown",
+    ],
+)
+def test_download_pending_publication_is_not_absence(session, error):
+    respx.get(f"{BASE_URL}/cloud_file").mock(
+        return_value=httpx.Response(
+            409, json={"error": error, "detail": "waiting on evidence"}
+        )
+    )
+    with pytest.raises(SmallSeaPublicationPending) as exc_info:
+        session.download("file.txt")
+
+    assert exc_info.value.reason == error
+    # A caller that only knows about conflicts still sees one; a caller that
+    # reads not-found as an empty chain never gets the chance.
+    assert isinstance(exc_info.value, SmallSeaConflict)
+    assert not isinstance(exc_info.value, SmallSeaNotFound)
+
+
+@respx.mock
+def test_download_of_an_inauthentic_publication_raises(session):
+    respx.get(f"{BASE_URL}/cloud_file").mock(
+        return_value=httpx.Response(
+            502,
+            json={
+                "error": "publication_not_authentic",
+                "reason": "context_mismatch",
+                "detail": "Message authenticates a different object context",
+            },
+        )
+    )
+    with pytest.raises(SmallSeaPublicationNotAuthentic) as exc_info:
+        session.download("file.txt")
+
+    assert exc_info.value.reason == "context_mismatch"
+    assert not isinstance(exc_info.value, SmallSeaNotFound)

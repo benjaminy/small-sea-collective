@@ -29,3 +29,24 @@ An invitee's fetched proposal snapshot also lacks its own ownership row despite 
 In particular, runtime redistribution's expected-source binding and prekey-consumption ordering need attention if they remain outside the agreed route contract.
 The prekey-consumption ordering in `receive_sender_key_distribution` (a one-time prekey is consumed before later decrypted-distribution checks) is a separate defect; prepare a focused issue for the human to publish rather than leaving it only in this file.
 Check existing issues before proposing a duplicate; #264 already covers the ratchet/storage mismatch, and #262/#266 already cover broader trust-source and key-scope questions.
+
+## After implementation — 2026-09-10
+
+Implementation is complete; the evidence for the #261 update is in [notes.md](notes.md#implementation--2026-09-10) and the public contract is now in `packages/small-sea-hub/spec.md`.
+Add to the update prepared above:
+
+- The chosen wire shapes: context `["small-sea/object-publication", 1, team hex, berth hex, path]` as compact UTF-8 JSON, envelope marker `small-sea/group-publication/1`, and the domain-separated length-prefixed transcript.
+  Older unbound envelopes are refused rather than read on the weaker contract.
+- The read-outcome table and its status codes, including that the missing-sender-key wire code changed from `peer_sender_key_unavailable` to `sender_key_unavailable` now that own and candidate reads report the same condition.
+- That the bounded-change test held: no retention, back-fill, or migration machinery was needed, so #264 sequencing does not reopen.
+- The limits named in the notes: substituted provider I/O rather than a provider attack, a synthetic mapping for the ambiguity branch, and no provider integration run.
+
+Two focused issues to prepare for the human to publish, neither folded into #261:
+
+- `SmallSeaBackend._device_public_keys_by_key_id` returns an empty mapping when `team_device` is absent, which quietly weakens storage-announcement verification the same way an empty ownership mapping would have weakened publication.
+  This branch left that pre-existing shortcut alone and made the publication path treat an absent projection as its own outcome instead.
+- The prekey-consumption ordering in `receive_sender_key_distribution` (a one-time prekey is consumed before later decrypted-distribution checks), together with its missing expected-source binding.
+  Both were already named above; they remain outside the agreed route contract.
+
+The NoteToSelf encrypted-publication lifecycle issue described above is still worth checking for and preparing.
+The implementation confirmed the diagnosis without changing anything about that path: `_device_ownership_by_key_id` returns an absent projection for NoteToSelf, and an encrypted-mode read of its passthrough bytes is refused rather than downgraded.

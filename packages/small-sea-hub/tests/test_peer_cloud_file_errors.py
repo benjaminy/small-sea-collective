@@ -1,9 +1,10 @@
 """Micro tests for the /peer_cloud_file error contract.
 
-Both failures below are prerequisites a client can wait out: the route may be
-announced later, and the sender key may be delivered later. Neither is the
-peer's storage failing, so neither may reach the client as a 500 or as an
-absent object. A stub backend stands in for the real one because the behavior
+Each failure below is a prerequisite a client can wait out: the route may be
+announced later, and the sender key or the accepted device-ownership row may
+arrive later. None of them is the peer's storage failing, so none may reach the
+client as a 500 or as an absent object.
+A stub backend stands in for the real one because the behavior
 under test is the response, not how the failure was produced.
 """
 
@@ -11,7 +12,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 import small_sea_hub.backend as SmallSea
-from small_sea_hub.crypto import SenderKeyUnavailableExn
+from small_sea_hub.crypto import (DeviceOwnershipUnavailableExn,
+                                  SenderKeyUnavailableExn)
 from small_sea_hub.server import app
 
 
@@ -27,7 +29,11 @@ class _RaisingBackend:
     "failure,error_code",
     [
         (SmallSea.SmallSeaNotFoundExn("no route"), "peer_storage_unknown"),
-        (SenderKeyUnavailableExn("no sender key"), "peer_sender_key_unavailable"),
+        (SenderKeyUnavailableExn("no sender key"), "sender_key_unavailable"),
+        (
+            DeviceOwnershipUnavailableExn("no accepted owner"),
+            "device_ownership_unavailable",
+        ),
     ],
 )
 def test_a_peer_read_prerequisite_is_a_409_with_a_stable_code(failure, error_code):

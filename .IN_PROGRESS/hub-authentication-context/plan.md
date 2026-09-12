@@ -6,11 +6,14 @@ Started 2026-09-09 from `b131145`.
 
 ## Status and goal
 
-Ready for implementation handoff as of 2026-09-10.
+Implemented in commit `2912787`; the first PR review's fixes are in `4f7e740`; see [review fixes](notes.md#pr-review-fixes--2026-09-11).
+The second review's fixes are staged for human review and commit; see [second review](notes.md#second-pr-review--2026-09-11).
+The scope below held without reopening; see [implementation notes](notes.md#implementation--2026-09-10) for what was built, the commands run, and the remaining limits.
+
+Handed off for implementation on 2026-09-10.
 The user accepted proceeding with ordinary-team publication authentication, waiting for missing ownership evidence at dependent read acceptance, and keeping NoteToSelf's existing passthrough contract separate.
 The decisions below are settled for this branch; routine encoding, API, and error-code choices belong to the implementer within these constraints.
-Initial investigation and local experiments are complete: 26 experimental micro tests and 12 existing group micro tests passed; see [commands, results, and limits](experiments/README.md).
-Package implementation has not changed.
+Initial investigation and local experiments were completed before implementation: 26 experimental micro tests and 12 existing group micro tests passed; see [commands, results, and limits](experiments/README.md).
 The user asked to examine the problem without letting the current implementation determine the solution, and to prefer progress when a mistake or attack has a clear recovery path.
 
 A successful authenticated read must establish that the publisher produced these bytes for the expected writer, team, berth, and logical object path.
@@ -159,7 +162,7 @@ If a route remains raw transport, do not claim it passes the encrypted-route sub
 
 Start with `packages/cuttlefish/tests/test_group.py` and `packages/small-sea-hub/tests/test_group_crypto.py`.
 Extend the relevant cloud API, peer transport/error, runtime watch, and Manager bootstrap micro tests as dictated by the settled contracts.
-Run affected package suites after the implementation's focused checks; the current branch contains isolated experiments rather than package changes.
+Run affected package suites after the implementation's focused checks.
 
 Review the final diff for one authoritative context encoding, explicit context and a required publisher expectation at every protected call site, no new Core access by apps, and no accidental membership-policy or storage-crypto redesign.
 Document the exact commands and results when implementation is tested.

@@ -14,12 +14,14 @@ import pytest
 from cod_sync.store import (
     LATEST_LINK_PATH,
     CasConflictError,
+    CandidateInspectionStore,
     LocalFolderStore,
     MalformedStoreResponseError,
     ObjectNotFoundError,
     PeerSenderKeyUnavailableError,
     PeerSmallSeaStore,
     PeerStorageUnknownError,
+    PublicationPendingError,
     SmallSeaStore,
     StoreAuthenticationError,
     StoreAuthorizationError,
@@ -411,7 +413,7 @@ def test_s3_store_head_is_create_only_then_cas(minio):
     "error_code,expected",
     [
         ("peer_storage_unknown", PeerStorageUnknownError),
-        ("peer_sender_key_unavailable", PeerSenderKeyUnavailableError),
+        ("sender_key_unavailable", PeerSenderKeyUnavailableError),
     ],
 )
 def test_a_peer_prerequisite_409_is_not_a_provider_failure(error_code, expected):
@@ -429,6 +431,31 @@ def test_an_unrecognized_peer_409_stays_a_provider_failure():
     store = PeerSmallSeaStore("session", "aa" * 16, client=client)
     with pytest.raises(StoreProviderError):
         store.get_latest_link()
+
+
+@pytest.mark.parametrize("store_kind", ["own", "peer", "candidate"])
+@pytest.mark.parametrize("reason", [
+    "sender_key_unavailable",
+    "ownership_projection_absent",
+    "device_ownership_unavailable",
+    "device_ownership_ambiguous",
+    "expected_publisher_unknown",
+])
+def test_publication_prerequisites_survive_every_store(store_kind, reason):
+    client = FakeHubClient(FakeResponse(409, {"error": reason, "detail": "resolve evidence"}))
+    if store_kind == "own":
+        store = SmallSeaStore("session", client=client)
+    elif store_kind == "peer":
+        store = PeerSmallSeaStore("session", "aa" * 16, client=client)
+    else:
+        store = CandidateInspectionStore("session", "candidate", client=client)
+
+    with pytest.raises(PublicationPendingError) as excinfo:
+        store.get_latest_link()
+
+    assert excinfo.value.reason == reason
+    assert "resolve evidence" in str(excinfo.value)
+    assert not isinstance(excinfo.value, StoreProviderError)
 
 
 def test_peer_reads_still_share_the_hub_status_classification():

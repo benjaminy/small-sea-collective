@@ -26,6 +26,7 @@ from cod_sync.store import (
     PeerSenderKeyUnavailableError as _StorePeerSenderKeyUnavailableError,
     PeerSmallSeaStore,
     PeerStorageUnknownError as _StorePeerStorageUnknownError,
+    PublicationPendingError as _StorePublicationPendingError,
     SmallSeaStore,
     StoreError as _StoreError,
 )
@@ -122,6 +123,14 @@ class PeerSenderKeyUnavailableError(CoreFetchError):
 
 class PeerStorageUnknownError(CoreFetchError):
     """The Hub resolved no storage route for the teammate."""
+
+
+class CorePublicationPendingError(CoreFetchError):
+    """Local publication evidence needs resolution before this fetch can proceed."""
+
+    def __init__(self, reason: str, detail: str):
+        self.reason = reason
+        super().__init__(detail)
 
 
 class CoreFetchRemoteError(CoreFetchError):
@@ -1608,6 +1617,8 @@ class TeamManager:
             raise PeerStorageUnknownError(str(exc)) from exc
         except _StorePeerSenderKeyUnavailableError as exc:
             raise PeerSenderKeyUnavailableError(str(exc)) from exc
+        except _StorePublicationPendingError as exc:
+            raise CorePublicationPendingError(exc.reason, str(exc)) from exc
         except _StoreError as exc:
             raise CoreFetchRemoteError(str(exc)) from exc
         except (SmallSeaHubUnavailable, SmallSeaError) as exc:

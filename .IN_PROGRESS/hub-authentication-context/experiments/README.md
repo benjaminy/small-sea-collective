@@ -80,3 +80,19 @@ The results above remain the dated experimental evidence, not a report of comple
    Do not synthesize a teammate association merely to make a uniform interface succeed.
 4. Implement authentication before derivation and return or commit receiver state only after successful context and ownership checks.
    Carry these fixtures into the final shared boundary, then add protected-route wiring, retained-candidate, and failure-translation checks.
+
+## Superseded by package micro tests — 2026-09-11
+
+The package micro tests below now carry the evidence these experiments gathered.
+The experiments remain as dated evidence of the weaknesses before implementation; their characterization probes are not behavior to preserve.
+
+| Experiment | Replacement |
+| --- | --- |
+| Own/peer HTTP substitution | `packages/small-sea-hub/tests/test_publication_routes.py`: own, other-berth, peer, and retained-candidate reads |
+| Chain-label mutation, header tampering, device relabelling | `packages/cuttlefish/tests/test_group.py`: the mutation table and the relabelling check |
+| Derivation before signature failure | `packages/cuttlefish/tests/test_group.py` and, for the invitation consumer, `test_bootstrap_decrypt_does_not_walk_the_chain_for_a_forged_iteration` in `packages/small-sea-manager/tests/test_invitation.py` |
+| Admission fixture: invitee lacks its own ownership row | `test_a_new_invitee_waits_for_its_own_accepted_ownership_row` in `test_publication_routes.py` |
+| Fresh NoteToSelf | `test_note_to_self_keeps_its_separate_passthrough_contract` in `test_publication_routes.py` |
+| Path strings through HTTP | `test_exact_logical_path_strings_survive_the_http_boundary` in `test_publication_routes.py` |
+| Prototype context substitution, false publisher, missing/ambiguous ownership, state at current/future/retained iterations | `packages/small-sea-hub/tests/test_group_crypto.py` |
+| Real sibling linking and redistribution | Not carried over; `test_group_crypto.py` checks sibling attribution with a synthetic ownership mapping (see [notes](../notes.md#limits-of-this-evidence)) |
