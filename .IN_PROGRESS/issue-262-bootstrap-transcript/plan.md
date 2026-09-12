@@ -2,7 +2,7 @@
 
 Branch: `issue-262-bootstrap-transcript`.
 Issue: [#262 — Write the Small Sea bootstrap trust transcript](https://github.com/benjaminy/small-sea-collective/issues/262).
-Status: planning started; the trust policy and transcript remain to be worked out.
+Status: code trace done; the trust anchor decision is out for review in `trust-anchor-brief.md`.
 
 ## Outcome and scope
 
@@ -25,6 +25,7 @@ Keep implementation gaps visible; a written protocol does not demonstrate that c
   Strawman anchor: a statement signed by the inviter's or sibling's device key that names the team, the Core root commit, and the current governance digest, with the signing key's fingerprint compared out of band.
   This maps onto TUF's split: the out-of-band comparison is the adopter's initial root delivery, and Core history signed by already-recognized keys is verifiable evolution.
   List alternatives against the strawman and stop for a human decision before drafting the transcript.
+  Options and reviewer questions are in `trust-anchor-brief.md`.
   Distinguish trusting a person or sibling's local view from proving authority from prior signed evidence.
 - [ ] Draft the transcript from the initial evidence to acceptance of a particular Core view and recognition of keys for a particular berth and purpose.
   Name the authorization extension or local policy at each transition; Constitution core verification alone supplies no membership verdict.
