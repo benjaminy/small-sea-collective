@@ -1,5 +1,39 @@
 # Planning notes
 
+## Selected bootstrap design
+
+The human selected option D from the subsequent discussion: authenticate snapshot delivery through the bootstrap exchange, then reconstruct and compare the authority-bearing state from permanent Constitution evidence.
+This option D is distinct from the earlier brief's A/B/C alternatives.
+
+The independently compared exchange binds the exact Constitution frontier (selected events and their ancestors), the snapshot digest, and the operation's identities, keys, and scope.
+The newcomer checks that the received snapshot matches the digest, establishing which bytes the introducer offered.
+The newcomer separately verifies Constitution evidence and applies named extension rules and local policy to reconstruct the authority-bearing semantic state.
+It compares that state with the snapshot; a matching delivery digest alone does not establish correct authority.
+Git may carry the transient snapshot, but permanent Constitution evidence must support lasting authority claims without requiring permanent Git ancestry.
+This choice does not add permanent snapshot endorsement events or authorize a runtime retention change.
+
+The next task is to classify every bootstrap-critical field as derived from Constitution evidence, a participant-local choice, or delivery information.
+For any essential field the permanent evidence cannot establish, name the additional evidence or explicit local trust decision needed.
+Define reconstruction in the presence of concurrent events and policy differences; do not assume that event integrity yields a unique membership verdict.
+Compare semantic state rather than SQLite file bytes, while retaining the snapshot digest for exact delivery binding.
+
+The preceding human discussion also selected exchange comparison over a reusable fingerprint anchor, introduction plus authority validation, and bootstrap at the exact offered view before later updates.
+The human accepted fresh sibling exchanges and asynchronous invitations as the working direction.
+Different devices must be able to join different subsets of teams; the mechanism for delivering team evidence remains open.
+Manual comparison first was the assistant's proposed way to exercise untrusted artifact delivery; direct scanning remains a later product path, not a settled implementation requirement.
+For removed-author history, the human selected pausing the newcomer's integration for local review with the evidence preserved.
+For absent authentication, default to inspection with ordinary integration and sensitive actions paused, while allowing explicit local acceptance that leaves the authentication result unchanged.
+These are local implementation and acceptance policies, not rules that every wire-compatible implementation can be forced to obey.
+
+The earlier brief needs two technical corrections when its material enters the durable transcript.
+A root commit plus a governance projection digest does not identify an exact later history.
+A sufficiently strong independent comparison of the complete exchange can detect substitution of both artifact and history; recording the comparison is a separate obligation for either ceremony.
+Preserve authentication of the joining request as well as the response; comparing only the authorizer's key cannot replace both jobs.
+
+The current full-ancestry Git verifier contract and the intended deletion of old Git contents need explicit reconciliation.
+Do not claim that selecting this design changes the verifier or makes current bootstrap enforce it.
+Validation must include an authentic delivery whose snapshot misrepresents Constitution evidence, as well as substitution during delivery and unavailable old Git contents.
+
 ## Starting evidence — 2026-09-12
 
 The branch began with a clean working tree.

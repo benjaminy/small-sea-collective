@@ -1,6 +1,8 @@
 # Bootstrap trust anchor: decision brief
 
-Status: for review, 2026-09-12.
+Status: historical proposal, 2026-09-12; superseded by the human discussion recorded in `notes.md` under "Selected bootstrap design".
+The selected design authenticates the exchange and reconstructs authority-bearing snapshot state from permanent Constitution evidence.
+The option A recommendation, option B substitution claim, and removed-author default below are retained as review history, not current decisions.
 Companion to `plan.md` and `notes.md`; the code trace in `notes.md` is the evidence base.
 This brief asks for one decision: what a newcomer authenticates independently before it trusts a fetched Small Sea history.
 

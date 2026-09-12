@@ -2,7 +2,8 @@
 
 Branch: `issue-262-bootstrap-transcript`.
 Issue: [#262 — Write the Small Sea bootstrap trust transcript](https://github.com/benjaminy/small-sea-collective/issues/262).
-Status: code trace done; the trust anchor decision is out for review in `trust-anchor-brief.md`.
+Status: code trace done; the human selected exchange-authenticated snapshot delivery plus reconstruction of authority-bearing state from Constitution evidence (option D in the subsequent discussion).
+See `notes.md` for the decision and remaining validation work; `trust-anchor-brief.md` preserves the earlier proposal.
 
 ## Outcome and scope
 
@@ -21,12 +22,14 @@ Keep implementation gaps visible; a written protocol does not demonstrate that c
 - [x] Record starting evidence, gaps, and issue boundaries in `notes.md` and `follow-up.md`.
 - [x] Trace invitation acceptance, identity linking, and linked-team bootstrap through provisioning code and their micro tests.
   Record what each path actually authenticates, including any fixture that supplies a baseline outside the ceremony.
-- [ ] Resolve the initial trust contract (human checkpoint).
-  Strawman anchor: a statement signed by the inviter's or sibling's device key that names the team, the Core root commit, and the current governance digest, with the signing key's fingerprint compared out of band.
-  This maps onto TUF's split: the out-of-band comparison is the adopter's initial root delivery, and Core history signed by already-recognized keys is verifiable evolution.
-  List alternatives against the strawman and stop for a human decision before drafting the transcript.
-  Options and reviewer questions are in `trust-anchor-brief.md`.
-  Distinguish trusting a person or sibling's local view from proving authority from prior signed evidence.
+- [x] Select the initial trust approach (human checkpoint).
+  Authenticate the complete bootstrap exchange, including the snapshot digest and exact Constitution frontier.
+  Reconstruct authority-bearing state from that frontier and its ancestry under explicitly named extension rules and local policy, then compare the snapshot's corresponding semantic state.
+  Git carries the transient snapshot; permanent Constitution evidence supports authority decisions.
+- [ ] Classify the bootstrap-critical snapshot fields and complete the selected trust contract.
+  Identify fields derived from Constitution events, participant-local choices, and delivery information.
+  Name any essential field that permanent evidence cannot establish and the additional evidence or explicit local decision it requires.
+  Specify how conflicts and missing evidence affect reconstruction; do not assume a single policy-independent projection.
 - [ ] Draft the transcript from the initial evidence to acceptance of a particular Core view and recognition of keys for a particular berth and purpose.
   Name the authorization extension or local policy at each transition; Constitution core verification alone supplies no membership verdict.
   Separate identity join, team admission/device enrollment, historical authorship, local history acceptance, and distribution of future encryption keys.
@@ -54,9 +57,9 @@ Keep implementation gaps visible; a written protocol does not demonstrate that c
 
 The primary validation is a step-by-step argument a reviewer can replay without assuming the desired conclusion.
 Give each transcript step an identifier and list its inputs, provenance, checks, and policy owner, then three outcomes: the evidence recorded, the default conclusion, and what a human may override.
-Do not write steps as pass/fail verifier rules.
+Keep precise check results separate from local acceptance decisions.
 An override changes local policy; the recorded evidence and the authentication result stay as they were.
-Expect the two adversarial cases to differ in kind: a substituted history is a failed binding whose default is to stop and show the mismatch, while a removed author is a policy question whose default is to accept the old signatures with the removal recorded.
+Expect the two adversarial cases to differ in kind: a substituted history is a failed binding whose default is to stop and show the mismatch, while a removed author is a policy question whose selected default is to pause the newcomer's integration for local review with the evidence preserved.
 Every authority claim must lead back to independently authenticated evidence or an explicitly named local trust decision.
 Mark each mechanism as implemented, specified but unenforced, or proposed, with file/function or micro-test references for implementation claims.
 
@@ -69,12 +72,16 @@ Mark each mechanism as implemented, specified but unenforced, or proposed, with 
 | Missing or mismatched ceremony evidence | Decryption and fetched signer membership do not silently enable ordinary identity use, team joins, or key distribution; distinguish intended policy from current enforcement. |
 | Missing ancestry or conflicting authority views | The transcript names the missing evidence or disagreement, preserves alternatives, and defines the scope of the pause without choosing by arrival order or timestamp. |
 | Key from another berth | The transcript identifies which evidence fails the scope check, even if the key has a valid signature and belongs to the same physical device. |
+| Authenticated snapshot misrepresents Constitution evidence | The snapshot digest matches the exchange, but reconstruction reveals different authority-bearing state; authenticated delivery does not establish correctness. |
+| Old Git contents unavailable | Identify which authority claims remain checkable from permanent Constitution evidence and which current storage or verifier assumptions still prevent bootstrap. |
 
 For the substitution case, let the attacker control the downloaded history, roster, routing descriptor, and signatures under its own keys while holding the independently authenticated evidence fixed.
 Also state the limits when the authenticated inviter itself is malicious; the transcript must not promise that an anchor proves an honest or complete team view.
 
 Review the removed-author case against #190's requirement to check every commit relied upon by an accepted head, including original authors retained in rollups and merge-side ancestry.
-Do not solve it by dropping ancestors or silently adding every fetched key to the verifier's input.
+That current verifier contract conflicts with a future retention model that discards old Git contents.
+Record the needed contract change or dependency explicitly; this decision does not implement pruning or change the current verifier.
+Do not silently drop required ancestors or add every fetched key to the verifier's input.
 Record the contract #266 needs and any unresolved #263 policy dependency.
 
 Check repository integrity by confirming that Manager still owns authority decisions, Hub still mediates Small Sea network traffic and app trust access, apps open no Core database, and Cod Sync still receives an explicit key set without learning membership policy.
