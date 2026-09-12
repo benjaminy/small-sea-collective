@@ -42,9 +42,11 @@ from small_sea_hub.cloud_errors import (
     absent,
     provider_failure,
 )
-from small_sea_hub.crypto import (commit_encrypted_upload,
+from small_sea_hub.crypto import (ExpectedPublisherUnavailableExn,
+                                  commit_encrypted_upload,
                                   decrypt_group_payload,
-                                  prepare_encrypted_upload)
+                                  prepare_encrypted_upload,
+                                  publication_context)
 from small_sea_note_to_self.berth_source import saved_route_for_candidate
 from small_sea_note_to_self.db import attached_note_to_self_connection
 from small_sea_note_to_self.ids import uuid7
@@ -1278,7 +1280,12 @@ class SmallSeaBackend:
         ss_session = self._lookup_session(session_hex)
         ok, data, etag = self._download_peer_file(session_hex, teammate_id_hex, path)
         if ok and ss_session.mode == "encrypted":
-            data = decrypt_group_payload(ss_session, data)
+            # The teammate the request named is the expected publisher. Which
+            # of that teammate's devices wrote the object is not this read's
+            # business, and a key that decrypts does not get to choose either.
+            data = self._accept_publication(
+                ss_session, data, path, bytes.fromhex(teammate_id_hex)
+            )
         return ok, data, etag
 
     def list_peers(self, session_hex):
@@ -1340,7 +1347,11 @@ class SmallSeaBackend:
         self._require_own_storage_announcement(ss_session, cloud)
         adapter = self._make_materialized_storage_adapter(ss_session, cloud)
         if ss_session.mode == "encrypted":
-            next_sender_key, data = prepare_encrypted_upload(ss_session, data)
+            next_sender_key, data = prepare_encrypted_upload(
+                ss_session,
+                data,
+                publication_context(ss_session.team_id, ss_session.berth_id, path),
+            )
         else:
             next_sender_key = None
         if expected_etag is not None:
@@ -1358,7 +1369,9 @@ class SmallSeaBackend:
         adapter = self._make_materialized_storage_adapter(ss_session, cloud)
         ok, data, etag = adapter.download(path)
         if ok and ss_session.mode == "encrypted":
-            data = decrypt_group_payload(ss_session, data)
+            data = self._accept_publication(
+                ss_session, data, path, self._own_expected_publisher(ss_session)
+            )
         return ok, data, etag
 
     # ---- Investigation of a paused berth's retained candidates ----
@@ -1441,7 +1454,12 @@ class SmallSeaBackend:
         adapter = self._make_storage_adapter_from_record(ss_session, cloud)
         ok, data, etag = adapter.download(path)
         if ok and ss_session.mode == "encrypted":
-            data = decrypt_group_payload(ss_session, data)
+            # An old physical location, but the same logical object: a
+            # candidate gets exactly the own-berth publication checks, and
+            # reading one still integrates and endorses nothing.
+            data = self._accept_publication(
+                ss_session, data, path, self._own_expected_publisher(ss_session)
+            )
         return ok, data, etag
 
     def upload_runtime_artifact(self, session_hex, path, data, expected_etag=None):
@@ -1754,6 +1772,51 @@ class SmallSeaBackend:
             )
             for row in rows
         ]
+
+    def _accept_publication(self, ss_session, data, path, expected_publisher):
+        """Open one downloaded object under this session's publication contract."""
+        return decrypt_group_payload(
+            ss_session,
+            data,
+            expected_context=publication_context(
+                ss_session.team_id, ss_session.berth_id, path
+            ),
+            expected_publisher=expected_publisher,
+            device_ownership=self._device_ownership_by_key_id(ss_session),
+        )
+
+    def _own_expected_publisher(self, ss_session: SmallSeaSession) -> bytes:
+        teammate_id = self._self_teammate_id_for_session(ss_session)
+        if teammate_id is None:
+            raise ExpectedPublisherUnavailableExn(
+                f"No local teammate identity for team {ss_session.team_name!r}"
+            )
+        return teammate_id
+
+    def _device_ownership_by_key_id(
+        self, ss_session: SmallSeaSession
+    ) -> dict[bytes, set[bytes]] | None:
+        """Core's accepted device-to-teammate projection, or None if absent.
+
+        `None` and `{}` say different things and are kept apart: a session kind
+        that carries no `team_device` projection is not a team whose sync is
+        merely behind, and neither one authorizes accepting a publication.
+        Sets of teammates, so a competing association stays visible instead of
+        being resolved by dictionary construction.
+        """
+        conn = sqlite3.connect(self._team_db_path_for_session(ss_session))
+        try:
+            if not self._table_exists(conn, "team_device"):
+                return None
+            rows = conn.execute(
+                "SELECT device_key_id, teammate_id FROM team_device"
+            ).fetchall()
+        finally:
+            conn.close()
+        ownership: dict[bytes, set[bytes]] = {}
+        for device_key_id, teammate_id in rows:
+            ownership.setdefault(device_key_id, set()).add(teammate_id)
+        return ownership
 
     def _device_public_keys_by_key_id(self, conn) -> dict[bytes, bytes]:
         if not self._table_exists(conn, "team_device"):

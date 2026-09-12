@@ -46,6 +46,64 @@ def _advance_chain_key(chain_key: bytes) -> bytes:
     return h.finalize()
 
 
+# --- Publication context binding ---
+#
+# Every group message authenticates an opaque context chosen by the caller
+# together with the sender header. Cuttlefish never interprets the context; the
+# Hub builds it from the logical coordinates of the object being published.
+
+_AAD_DOMAIN = b"small-sea/cuttlefish/group-aad/v1"
+_SIGNATURE_DOMAIN = b"small-sea/cuttlefish/group-signature/v1"
+
+_MAX_ITERATION = 2**64 - 1
+
+
+def _length_prefixed(*fields: bytes) -> bytes:
+    """Unambiguous concatenation: no field boundary can be moved."""
+    return b"".join(len(f).to_bytes(8, "big") + f for f in fields)
+
+
+def _associated_data(
+    group_id: bytes,
+    context: bytes,
+    sender_device_key_id: bytes,
+    sender_chain_id: bytes,
+    iteration: int,
+) -> bytes:
+    return _length_prefixed(
+        _AAD_DOMAIN,
+        group_id,
+        context,
+        sender_device_key_id,
+        sender_chain_id,
+        iteration.to_bytes(8, "big"),
+    )
+
+
+def _signature_transcript(associated_data: bytes, iv: bytes, ciphertext: bytes) -> bytes:
+    return _length_prefixed(_SIGNATURE_DOMAIN, associated_data, iv, ciphertext)
+
+
+class SenderHeaderMismatch(ValueError):
+    """The authenticated header names a device or chain the record does not.
+
+    A signature proves who signed; it does not prove the header labels agree
+    with the sender record independently established for that device.
+    """
+
+
+class ContextMismatch(ValueError):
+    """The message authenticates a different object context than expected.
+
+    Raised before any plaintext is returned, so a payload published for one
+    team, berth, or path cannot be accepted at another.
+    """
+
+
+class InvalidIteration(ValueError):
+    """The message iteration cannot be represented in the authenticated header."""
+
+
 # --- Data types ---
 
 
@@ -80,9 +138,10 @@ class GroupMessage:
     sender_device_key_id: bytes
     sender_chain_id: bytes
     iteration: int
+    context: bytes         # Opaque caller context, authenticated with the header
     iv: bytes              # 12-byte nonce for AES-256-GCM
     ciphertext: bytes      # AES-256-GCM ciphertext (includes auth tag)
-    signature: bytes       # Ed25519 signature over (iv + ciphertext)
+    signature: bytes       # Ed25519 signature over context + header + iv + ciphertext
 
 
 # --- Public API ---
@@ -154,10 +213,13 @@ def group_encrypt(
     group_id: bytes,
     my_sender_key: SenderKeyRecord,
     plaintext: bytes,
+    context: bytes,
 ) -> tuple[SenderKeyRecord, GroupMessage]:
-    """Encrypt a group message, advancing the sender chain.
+    """Encrypt a group message for one context, advancing the sender chain.
 
-    Returns (new_sender_key, message). Caller must persist new_sender_key.
+    `context` is opaque here and is authenticated together with the sender
+    header, so a reader that expects a different context cannot accept these
+    bytes. Returns (new_sender_key, message); caller must persist it.
     """
     if my_sender_key.signing_private_key is None:
         raise ValueError("Cannot encrypt with a received sender key (no private key)")
@@ -165,18 +227,26 @@ def group_encrypt(
     message_key = _derive_message_key(my_sender_key.chain_key)
     next_chain_key = _advance_chain_key(my_sender_key.chain_key)
 
+    associated_data = _associated_data(
+        group_id,
+        context,
+        my_sender_key.sender_device_key_id,
+        my_sender_key.chain_id,
+        my_sender_key.iteration,
+    )
+
     iv = os.urandom(12)
     aesgcm = AESGCM(message_key)
-    ciphertext = aesgcm.encrypt(iv, plaintext, group_id)
+    ciphertext = aesgcm.encrypt(iv, plaintext, associated_data)
 
-    # Sign (iv + ciphertext)
     private_key = Ed25519PrivateKey.from_private_bytes(my_sender_key.signing_private_key)
-    signature = private_key.sign(iv + ciphertext)
+    signature = private_key.sign(_signature_transcript(associated_data, iv, ciphertext))
 
     message = GroupMessage(
         sender_device_key_id=my_sender_key.sender_device_key_id,
         sender_chain_id=my_sender_key.chain_id,
         iteration=my_sender_key.iteration,
+        context=context,
         iv=iv,
         ciphertext=ciphertext,
         signature=signature,
@@ -194,16 +264,48 @@ def group_encrypt(
 def group_decrypt(
     message: GroupMessage,
     sender_key: SenderKeyRecord,
+    expected_context: bytes,
 ) -> tuple[SenderKeyRecord, bytes]:
     """Decrypt a group message using the stored sender key for that sender.
 
+    Every check that decides whether these bytes are acceptable happens before
+    the chain is walked, so an attacker-chosen iteration cannot drive key
+    derivation and a mismatched context cannot reach the AEAD.
+
     Returns (updated_sender_key, plaintext).
-    Raises cryptography.exceptions.InvalidSignature on signature failure.
-    Raises ValueError if the message key cannot be derived.
+    Raises cryptography.exceptions.InvalidSignature on signature failure,
+    SenderHeaderMismatch when the authenticated header disagrees with the
+    record, ContextMismatch when the object context is not the expected one,
+    InvalidIteration when the iteration is outside the header's range, and
+    ValueError if the message key cannot be derived.
     """
-    # Verify signature first (before any decryption attempt)
+    if not isinstance(message.iteration, int) or not 0 <= message.iteration <= _MAX_ITERATION:
+        raise InvalidIteration(f"Invalid iteration: {message.iteration!r}")
+
+    associated_data = _associated_data(
+        sender_key.group_id,
+        message.context,
+        message.sender_device_key_id,
+        message.sender_chain_id,
+        message.iteration,
+    )
+
+    # Verify signature first: nothing below may act on an unauthenticated field.
     public_key = Ed25519PublicKey.from_public_bytes(sender_key.signing_public_key)
-    public_key.verify(message.signature, message.iv + message.ciphertext)
+    public_key.verify(
+        message.signature, _signature_transcript(associated_data, message.iv, message.ciphertext)
+    )
+
+    if (
+        message.sender_device_key_id != sender_key.sender_device_key_id
+        or message.sender_chain_id != sender_key.chain_id
+    ):
+        raise SenderHeaderMismatch(
+            "Authenticated sender header disagrees with the established sender key record"
+        )
+
+    if message.context != expected_context:
+        raise ContextMismatch("Message authenticates a different object context")
 
     target_iteration = message.iteration
 
@@ -249,6 +351,6 @@ def group_decrypt(
 
     # Decrypt
     aesgcm = AESGCM(message_key)
-    plaintext = aesgcm.decrypt(message.iv, message.ciphertext, sender_key.group_id)
+    plaintext = aesgcm.decrypt(message.iv, message.ciphertext, associated_data)
 
     return new_key, plaintext

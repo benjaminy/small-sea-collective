@@ -7,6 +7,10 @@ import pytest
 from cryptography.exceptions import InvalidSignature
 
 from cuttlefish.group import group_decrypt, group_encrypt
+
+# These tests exercise sender-key distribution and rotation, not the publication
+# context; one fixed context stands in for whatever object is being published.
+CONTEXT = b"sender-key-fixture-context"
 from small_sea_manager.manager import TeamManager
 from small_sea_manager import provisioning
 from small_sea_manager.provisioning import (
@@ -291,7 +295,7 @@ def test_rotate_and_redistribute_round_trip_cross_teammate(playground_dir):
     )
     assert alice_sender_before is not None
     alice_sender_before, old_message = group_encrypt(
-        state["team_id"], alice_sender_before, b"before rotation"
+        state["team_id"], alice_sender_before, b"before rotation", CONTEXT
     )
 
     rotated = provisioning.rotate_team_sender_key(
@@ -326,13 +330,13 @@ def test_rotate_and_redistribute_round_trip_cross_teammate(playground_dir):
     )
     assert alice_sender_after is not None
     alice_sender_after, new_message = group_encrypt(
-        state["team_id"], alice_sender_after, b"after rotation"
+        state["team_id"], alice_sender_after, b"after rotation", CONTEXT
     )
-    bob_peer_for_alice, plaintext = group_decrypt(new_message, bob_peer_for_alice)
+    bob_peer_for_alice, plaintext = group_decrypt(new_message, bob_peer_for_alice, CONTEXT)
     assert plaintext == b"after rotation"
 
     with pytest.raises(InvalidSignature):
-        group_decrypt(old_message, bob_peer_for_alice)
+        group_decrypt(old_message, bob_peer_for_alice, CONTEXT)
 
 
 def test_remove_teammate_rejects_self_removal(playground_dir):

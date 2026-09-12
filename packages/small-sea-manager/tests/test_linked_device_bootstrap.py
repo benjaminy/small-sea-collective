@@ -10,6 +10,10 @@ from cryptography.exceptions import InvalidSignature
 from sqlalchemy import create_engine, text
 
 from cuttlefish.group import group_decrypt, group_encrypt
+
+# These tests exercise sender-key distribution and rotation, not the publication
+# context; one fixed context stands in for whatever object is being published.
+CONTEXT = b"sender-key-fixture-context"
 from small_sea_manager.manager import (
     TeamManager,
     bootstrap_existing_identity,
@@ -260,10 +264,10 @@ def test_linked_device_bootstrap_round_trip_same_teammate(playground_dir):
     assert root2_sender is not None
     assert root1_sender.sender_device_key_id != root2_sender.sender_device_key_id
 
-    root1_sender, message_to_b = group_encrypt(root1_sender.group_id, root1_sender, b"hello from A")
+    root1_sender, message_to_b = group_encrypt(root1_sender.group_id, root1_sender, b"hello from A", CONTEXT)
     root2_peer_for_a = load_peer_sender_key(local_db2, team_id, root1_sender.sender_device_key_id)
     assert root2_peer_for_a is not None
-    root2_peer_for_a, plaintext_to_b = group_decrypt(message_to_b, root2_peer_for_a)
+    root2_peer_for_a, plaintext_to_b = group_decrypt(message_to_b, root2_peer_for_a, CONTEXT)
     assert plaintext_to_b == b"hello from A"
 
     assert load_peer_sender_key(local_db1, team_id, root2_sender.sender_device_key_id) is None
@@ -279,8 +283,8 @@ def test_linked_device_bootstrap_round_trip_same_teammate(playground_dir):
 
     root1_peer_for_b = load_peer_sender_key(local_db1, team_id, root2_sender.sender_device_key_id)
     assert root1_peer_for_b is not None
-    root2_sender, message_to_a = group_encrypt(root2_sender.group_id, root2_sender, b"hello from B")
-    root1_peer_for_b, plaintext_to_a = group_decrypt(message_to_a, root1_peer_for_b)
+    root2_sender, message_to_a = group_encrypt(root2_sender.group_id, root2_sender, b"hello from B", CONTEXT)
+    root1_peer_for_b, plaintext_to_a = group_decrypt(message_to_a, root1_peer_for_b, CONTEXT)
     assert plaintext_to_a == b"hello from B"
 
     with sqlite3.connect(_team_db(root1, alice_hex, "ProjectX")) as conn:
@@ -510,9 +514,9 @@ def test_linked_device_bootstrap_peer_sender_keys_transferred(playground_dir):
 
     alice_peer_for_bob = load_peer_sender_key(local_db1, team_id, bob["device_key_id"])
     assert alice_peer_for_bob is not None
-    bob_sender, historical_bob_message = group_encrypt(team_id, bob_sender, b"before bootstrap")
+    bob_sender, historical_bob_message = group_encrypt(team_id, bob_sender, b"before bootstrap", CONTEXT)
     save_team_sender_key(bob["local_db"], team_id, bob_sender)
-    alice_peer_for_bob, plaintext = group_decrypt(historical_bob_message, alice_peer_for_bob)
+    alice_peer_for_bob, plaintext = group_decrypt(historical_bob_message, alice_peer_for_bob, CONTEXT)
     save_peer_sender_key(local_db1, team_id, alice_peer_for_bob)
     assert plaintext == b"before bootstrap"
 
@@ -537,13 +541,13 @@ def test_linked_device_bootstrap_peer_sender_keys_transferred(playground_dir):
     root2_peer_for_bob = load_peer_sender_key(local_db2, team_id, bob["device_key_id"])
     assert root2_peer_for_bob is not None
     with pytest.raises(ValueError):
-        group_decrypt(historical_bob_message, root2_peer_for_bob)
+        group_decrypt(historical_bob_message, root2_peer_for_bob, CONTEXT)
 
     bob_sender = load_team_sender_key(bob["local_db"], team_id)
     assert bob_sender is not None
-    bob_sender, bob_message = group_encrypt(team_id, bob_sender, b"hello from Bob")
+    bob_sender, bob_message = group_encrypt(team_id, bob_sender, b"hello from Bob", CONTEXT)
     save_team_sender_key(bob["local_db"], team_id, bob_sender)
-    root2_peer_for_bob, plaintext = group_decrypt(bob_message, root2_peer_for_bob)
+    root2_peer_for_bob, plaintext = group_decrypt(bob_message, root2_peer_for_bob, CONTEXT)
     assert plaintext == b"hello from Bob"
 
 
@@ -588,11 +592,11 @@ def test_linked_device_bootstrap_transfers_skipped_peer_sender_keys(playground_d
 
     alice_peer_for_bob = load_peer_sender_key(local_db1, team_id, bob["device_key_id"])
     assert alice_peer_for_bob is not None
-    bob_sender, first_bob_message = group_encrypt(team_id, bob_sender, b"first from Bob")
-    bob_sender, second_bob_message = group_encrypt(team_id, bob_sender, b"second from Bob")
+    bob_sender, first_bob_message = group_encrypt(team_id, bob_sender, b"first from Bob", CONTEXT)
+    bob_sender, second_bob_message = group_encrypt(team_id, bob_sender, b"second from Bob", CONTEXT)
     save_team_sender_key(bob["local_db"], team_id, bob_sender)
 
-    alice_peer_for_bob, plaintext = group_decrypt(second_bob_message, alice_peer_for_bob)
+    alice_peer_for_bob, plaintext = group_decrypt(second_bob_message, alice_peer_for_bob, CONTEXT)
     assert plaintext == b"second from Bob"
     assert alice_peer_for_bob.skipped_message_keys
     save_peer_sender_key(local_db1, team_id, alice_peer_for_bob)
@@ -613,7 +617,7 @@ def test_linked_device_bootstrap_transfers_skipped_peer_sender_keys(playground_d
     assert root2_peer_for_bob is not None
     assert root2_peer_for_bob.skipped_message_keys == alice_peer_for_bob.skipped_message_keys
 
-    root2_peer_for_bob, plaintext = group_decrypt(first_bob_message, root2_peer_for_bob)
+    root2_peer_for_bob, plaintext = group_decrypt(first_bob_message, root2_peer_for_bob, CONTEXT)
     assert plaintext == b"first from Bob"
 
 
@@ -658,9 +662,9 @@ def test_linked_device_bootstrap_exclusion_cuts_off_peer(playground_dir):
     alice_peer_for_bob = load_peer_sender_key(local_db1, team_id, bob["device_key_id"])
     assert alice_peer_for_bob is not None
 
-    bob_sender, initial_bob_message = group_encrypt(team_id, bob_sender, b"before bootstrap")
+    bob_sender, initial_bob_message = group_encrypt(team_id, bob_sender, b"before bootstrap", CONTEXT)
     save_team_sender_key(bob["local_db"], team_id, bob_sender)
-    alice_peer_for_bob, plaintext = group_decrypt(initial_bob_message, alice_peer_for_bob)
+    alice_peer_for_bob, plaintext = group_decrypt(initial_bob_message, alice_peer_for_bob, CONTEXT)
     save_peer_sender_key(local_db1, team_id, alice_peer_for_bob)
     assert plaintext == b"before bootstrap"
 
@@ -680,9 +684,9 @@ def test_linked_device_bootstrap_exclusion_cuts_off_peer(playground_dir):
     assert root2_peer_for_bob is not None
     bob_sender = load_team_sender_key(bob["local_db"], team_id)
     assert bob_sender is not None
-    bob_sender, readable_message = group_encrypt(team_id, bob_sender, b"readable after bootstrap")
+    bob_sender, readable_message = group_encrypt(team_id, bob_sender, b"readable after bootstrap", CONTEXT)
     save_team_sender_key(bob["local_db"], team_id, bob_sender)
-    root2_peer_for_bob, plaintext = group_decrypt(readable_message, root2_peer_for_bob)
+    root2_peer_for_bob, plaintext = group_decrypt(readable_message, root2_peer_for_bob, CONTEXT)
     save_peer_sender_key(local_db2, team_id, root2_peer_for_bob)
     assert plaintext == b"readable after bootstrap"
 
@@ -719,13 +723,13 @@ def test_linked_device_bootstrap_exclusion_cuts_off_peer(playground_dir):
 
     bob_sender = load_team_sender_key(bob["local_db"], team_id)
     assert bob_sender is not None
-    bob_sender, post_rotation_message = group_encrypt(team_id, bob_sender, b"after exclusion")
+    bob_sender, post_rotation_message = group_encrypt(team_id, bob_sender, b"after exclusion", CONTEXT)
     save_team_sender_key(bob["local_db"], team_id, bob_sender)
 
-    alice_peer_for_bob, plaintext = group_decrypt(post_rotation_message, alice_peer_for_bob)
+    alice_peer_for_bob, plaintext = group_decrypt(post_rotation_message, alice_peer_for_bob, CONTEXT)
     assert plaintext == b"after exclusion"
     with pytest.raises(InvalidSignature):
-        group_decrypt(post_rotation_message, root2_peer_for_bob)
+        group_decrypt(post_rotation_message, root2_peer_for_bob, CONTEXT)
 
 
 def test_linked_device_bootstrap_prepare_reentry_is_rejected(playground_dir):

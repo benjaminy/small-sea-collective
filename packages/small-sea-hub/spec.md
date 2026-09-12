@@ -441,7 +441,95 @@ Not yet implemented. The Hub will negotiate VPN connections between devices.
 
 ## Encryption Layer
 
-Not yet implemented. In production, the Hub will encrypt all outbound data and decrypt all inbound data, transparent to apps. See the top-level spec for context.
+Encrypted-mode sessions publish and read objects through Cuttlefish Sender Keys.
+The Hub encrypts on upload and decrypts on download, transparent to apps.
+Passthrough-mode sessions move raw bytes and receive none of the guarantees below.
+See the top-level spec for wider context.
+
+### The publication claim
+
+A successful encrypted read means: a device that the accepted team Core associates with the teammate this read expected published these exact bytes for this team, this berth, and this exact logical path.
+
+It does not mean that teammate performed the provider upload, that the provider served the object from its original location, or that this is the newest version.
+Copying identical bytes preserves their signatures.
+Freshness and provider equivocation are separate concerns (#265).
+
+### Authenticated publication context
+
+Every encrypted upload binds a publication context:
+
+```
+["small-sea/object-publication", 1, <team_id hex>, <berth_id hex>, <path>]
+```
+
+serialized as compact UTF-8 JSON.
+It is logical, not physical: the provider descriptor is deliberately absent, so an object copied to another authorized location keeps its identity and a retained candidate can be inspected at an old location.
+
+`path` is the exact string the Hub received after JSON body or query-parameter decoding, with no normalization.
+Two different strings are two different objects even where a provider treats them as aliases.
+A reader must present the same string.
+
+The context, the full sender header (device key id, chain id, iteration), the IV and the ciphertext are bound together by the sender signature under a domain-separated transcript, and the context and header are also the AEAD associated data.
+Signature and header verification precede all iteration-driven key derivation, including the Hub's retained-key calculation, so an attacker-chosen iteration cannot drive work before authentication.
+
+The envelope carries `"format": "small-sea/group-publication/1"`.
+Any other value is refused; there is no fallback to an older unbound envelope.
+
+### Expected publisher
+
+Object coordinates and device ownership are separate facts.
+The context carries no publisher identity; the header authenticates the signing device, and the Hub resolves that device's owner in the accepted team Core `team_device` projection.
+Sibling devices work without special handling because they resolve to the same teammate.
+A publisher label inside a payload never overrides that projection, and a key that happens to decrypt never chooses the expected publisher.
+
+| Read | Expected publisher |
+|---|---|
+| Own cloud read | The local teammate resolved from session management state |
+| Peer cloud read | The teammate the request named |
+| Retained-candidate inspection | The local teammate, using the logical path |
+
+Plaintext is returned and receiver sender-key state is committed only after the signature, header, context and ownership checks all succeed.
+A refused read leaves persisted receiver records and in-memory skipped-key maps unchanged.
+
+### Read outcomes
+
+Missing evidence and refused publications stay distinguishable, and neither may reach a client as success or as an absent object.
+
+| Outcome | HTTP | `error` |
+|---|---|---|
+| No sender key for the signing device yet | 409 | `sender_key_unavailable` |
+| No ownership projection for this session at all | 409 | `ownership_projection_absent` |
+| Projection present, no accepted row for the device | 409 | `device_ownership_unavailable` |
+| Device associated with more than one teammate | 409 | `device_ownership_ambiguous` |
+| The read cannot name an expected publisher | 409 | `expected_publisher_unknown` |
+| Bytes refused: bad signature, header, context, ciphertext or envelope | 502 | `publication_not_authentic` (with `reason`) |
+| Provider-confirmed absence | 404 | — |
+
+An iteration outside the unsigned 64-bit header range is rejected with reason `invalid_iteration`.
+Cod Sync's Hub stores preserve prerequisite codes in `PublicationPendingError.reason`; Manager's peer Core fetch preserves ownership prerequisite codes in `CorePublicationPendingError.reason` and keeps its distinct missing-sender-key error.
+
+The 409 outcomes are prerequisites, not verdicts.
+Ownership outcomes are reported only for bytes whose signature, header, and context already verify; altered bytes are refused with 502 even when ownership evidence is also missing.
+A missing sender key is reported before any check, since nothing can be verified without it.
+A new invitee's own read waits this way until its accepted ownership row reaches its Core snapshot; reads from an already recognized teammate continue meanwhile.
+Retrying is the caller's business — the Hub runs no polling, resolution, or recovery on its behalf.
+An empty ownership mapping never authorizes accepting a publication.
+
+### Routes that are raw transport
+
+These routes move bytes and make no publication claim.
+Do not describe transport success on any of them as authenticated publication.
+
+| Route | Contract | Who validates the contents |
+|---|---|---|
+| Any passthrough-mode own/peer/inspection read | Raw bytes, including NoteToSelf's existing use | The accepting app |
+| `GET /cloud_proxy` | Raw read for invitation acceptance; the NoteToSelf session grants transport permission, not the remote team's publication identity | Manager's `decrypt_invitation_bootstrap_payload`, using the invitation token's sender key. It has no team session and no Core, so it cannot check an expected context or device ownership — bootstrap trust is #262 |
+| `GET /bootstrap/cloud_file` | Descriptor- and token-bound bootstrap transport | The bootstrap consumer. Downloaded Core cannot establish its own trust anchor (#262) |
+| Runtime artifact own/peer reads | Deliberately outside group encryption: wrapping first sender-key delivery in group encryption would be circular | `receive_sender_key_distribution`, which has its own signature check. Its expected-source binding and prekey-consumption ordering are known gaps |
+| Notification signals | Hints, not authenticated object bodies | — |
+
+NoteToSelf has no `team_device` projection and no group sender key, so it is not an ordinary encrypted team; adding that lifecycle is separate work.
+An encrypted-mode read of NoteToSelf bytes is refused rather than silently downgraded to passthrough.
 
 ## HTTP API
 

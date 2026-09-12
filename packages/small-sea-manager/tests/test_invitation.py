@@ -3,6 +3,7 @@ import json
 import pathlib
 import sqlite3
 import subprocess
+from dataclasses import replace
 
 import pytest
 import small_sea_hub.backend as SmallSea
@@ -11,7 +12,14 @@ from small_sea_note_to_self.db import device_local_db_path
 from cod_sync.protocol import CodSync
 from cod_sync.store import SmallSeaStore
 from cod_sync.repo import Repo
+from cryptography.exceptions import InvalidSignature
+from cuttlefish.group import (
+    create_sender_key,
+    group_encrypt,
+    process_sender_key_distribution,
+)
 from fastapi.testclient import TestClient
+from small_sea_hub.crypto import serialize_group_message
 from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager
 from small_sea_manager.provisioning import (
@@ -571,3 +579,33 @@ def test_double_accept_rejected(playground_dir, minio_server_gen):
 
     with pytest.raises(ValueError, match="already finalized"):
         complete_invitation_acceptance(root, alice_hex, "ProjectX", carol_acceptance_b64)
+
+
+def test_bootstrap_decrypt_does_not_walk_the_chain_for_a_forged_iteration(monkeypatch):
+    team_id = b"t" * 16
+    inviter_key, distribution = create_sender_key(team_id, b"d" * 32)
+    acceptor_has_inviter = process_sender_key_distribution(distribution)
+    _, message = group_encrypt(team_id, inviter_key, b"bootstrap", b"context")
+
+    advances = []
+    real_advance = provisioning._advance_chain_key
+    monkeypatch.setattr(
+        provisioning,
+        "_advance_chain_key",
+        lambda chain_key: advances.append(chain_key) or real_advance(chain_key),
+    )
+
+    forged = serialize_group_message(replace(message, iteration=1_000_000))
+    with pytest.raises(InvalidSignature):
+        provisioning.decrypt_invitation_bootstrap_payload(acceptor_has_inviter, forged)
+    assert advances == []
+
+    # Control: the genuine bytes still read, twice, from the retained key.
+    state, plaintext = provisioning.decrypt_invitation_bootstrap_payload(
+        acceptor_has_inviter, serialize_group_message(message)
+    )
+    assert plaintext == b"bootstrap"
+    _, plaintext = provisioning.decrypt_invitation_bootstrap_payload(
+        state, serialize_group_message(message)
+    )
+    assert plaintext == b"bootstrap"

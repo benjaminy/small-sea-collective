@@ -4905,6 +4905,7 @@ def _deserialize_group_message(payload: bytes) -> GroupMessage:
         sender_device_key_id=bytes.fromhex(data["sender_device_key_id"]),
         sender_chain_id=bytes.fromhex(data["sender_chain_id"]),
         iteration=int(data["iteration"]),
+        context=bytes.fromhex(data["context"]),
         iv=bytes.fromhex(data["iv"]),
         ciphertext=bytes.fromhex(data["ciphertext"]),
         signature=bytes.fromhex(data["signature"]),
@@ -4945,8 +4946,21 @@ def decrypt_invitation_bootstrap_payload(
     except Exception:
         return inviter_sender_key, payload
 
+    # Known gap, not an oversight: this is the explicit /cloud_proxy raw
+    # transport route. The acceptor has no team session, no Core, and so no
+    # expected object context or accepted device ownership for the remote team
+    # — bootstrap trust is #262's subject. The envelope's own context is used
+    # so the AEAD binding still holds, which authenticates nothing about
+    # *which* object these bytes are. The invitation token's sender key is the
+    # only evidence here, and the acceptance flow is the consumer that has to
+    # validate what it clones.
+    expected_context = message.context
+    next_sender_key, plaintext = group_decrypt(
+        message, inviter_sender_key, expected_context
+    )
+    # Only after group_decrypt has verified the signature over the iteration,
+    # so a forged iteration cannot make this walk the chain.
     replay_message_key = _message_key_for(message, inviter_sender_key)
-    next_sender_key, plaintext = group_decrypt(message, inviter_sender_key)
     replayable_keys = dict(next_sender_key.skipped_message_keys)
     replayable_keys[message.iteration] = replay_message_key
     next_sender_key = next_sender_key.__class__(

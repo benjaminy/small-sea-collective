@@ -116,11 +116,30 @@ class PeerStorageUnknownError(StoreError):
     """
 
 
-class PeerSenderKeyUnavailableError(StoreError):
+class PublicationPendingError(StoreError):
+    """Local evidence is missing or ambiguous; `reason` identifies what to resolve."""
+
+    def __init__(self, reason: str, detail: str):
+        self.reason = reason
+        super().__init__(detail)
+
+
+class PeerSenderKeyUnavailableError(PublicationPendingError):
     """This device holds no sender key for the peer device that wrote the bytes.
 
     Also a retryable prerequisite: sender-key delivery is a separate exchange.
     """
+
+    def __init__(self, detail: str):
+        super().__init__("sender_key_unavailable", detail)
+
+
+_OWNERSHIP_PREREQUISITES = frozenset({
+    "ownership_projection_absent",
+    "device_ownership_unavailable",
+    "device_ownership_ambiguous",
+    "expected_publisher_unknown",
+})
 
 
 class PublicationOutcomeUnknownError(StoreError):
@@ -406,6 +425,10 @@ class _HubStore:
             error_code = resp.json().get("error")
         except Exception:
             error_code = None
+        if resp.status_code == 409 and error_code == "sender_key_unavailable":
+            return PeerSenderKeyUnavailableError(f"{cloud_path}: {detail}")
+        if resp.status_code == 409 and error_code in _OWNERSHIP_PREREQUISITES:
+            return PublicationPendingError(error_code, f"{cloud_path}: {detail}")
         if resp.status_code == 409 and error_code == "cas_conflict":
             return CasConflictError(f"{cloud_path}: {detail}")
         return StoreProviderError(f"{cloud_path}: HTTP {resp.status_code}: {detail}")
@@ -535,12 +558,10 @@ class PeerSmallSeaStore(_HubStore):
         super().__init__(session_hex, base_url, client=client, path_prefix=path_prefix)
         self.teammate_id_hex = teammate_id_hex
 
-    #: Hub 409 error codes that name a peer-read prerequisite rather than a
-    #: failure of the peer's storage. Only the peer endpoint returns them, so
-    #: only this store may read a 409 as anything but a CAS loss.
+    #: Storage discovery is specific to peer reads. Publication prerequisites
+    #: also apply to own and candidate reads and are classified by _HubStore.
     _PREREQUISITE_ERRORS = {
         "peer_storage_unknown": PeerStorageUnknownError,
-        "peer_sender_key_unavailable": PeerSenderKeyUnavailableError,
     }
 
     def _download_endpoint(self, cloud_path: str):

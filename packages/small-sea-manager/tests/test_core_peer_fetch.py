@@ -25,12 +25,14 @@ from cod_sync.repo import RefAdvanceContendedError, Repo, RepoError
 from cod_sync.store import (
     LocalFolderStore,
     PeerSenderKeyUnavailableError as StorePeerSenderKeyUnavailableError,
+    PublicationPendingError as StorePublicationPendingError,
     PeerStorageUnknownError as StorePeerStorageUnknownError,
     StoreProviderError,
 )
 from small_sea_client.client import SmallSeaError, SmallSeaHubUnavailable
 from small_sea_manager.manager import (
     CoreFetchRemoteError,
+    CorePublicationPendingError,
     CorePublicationMissingError,
     CoreRefPersistenceError,
     InvalidCoreChainError,
@@ -346,6 +348,10 @@ def test_a_teammate_that_has_not_published_is_its_own_failure(env):
     [
         (StorePeerStorageUnknownError("no route"), PeerStorageUnknownError),
         (StorePeerSenderKeyUnavailableError("no key"), PeerSenderKeyUnavailableError),
+        (StorePublicationPendingError("device_ownership_unavailable", "no owner"), CorePublicationPendingError),
+        (StorePublicationPendingError("device_ownership_ambiguous", "two owners"), CorePublicationPendingError),
+        (StorePublicationPendingError("ownership_projection_absent", "no projection"), CorePublicationPendingError),
+        (StorePublicationPendingError("expected_publisher_unknown", "no publisher"), CorePublicationPendingError),
         (StoreProviderError("provider is down"), CoreFetchRemoteError),
     ],
 )
@@ -353,9 +359,13 @@ def test_store_failures_keep_their_distinctions(env, monkeypatch, store_failure,
     _FailingPeerStore.failure = store_failure
     monkeypatch.setattr(manager_module, "PeerSmallSeaStore", _FailingPeerStore)
 
-    with pytest.raises(expected):
+    with pytest.raises(expected) as excinfo:
         env.manager.fetch_teammate_core(_TEAM, _BOB)
 
+    if isinstance(store_failure, StorePublicationPendingError) and not isinstance(
+        store_failure, StorePeerSenderKeyUnavailableError
+    ):
+        assert excinfo.value.reason == store_failure.reason
     assert _alice_repo(env).resolve_ref(core_peer_latest_ref(_BOB)) is None
 
 
