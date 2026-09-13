@@ -92,7 +92,9 @@ Manager's integration policy bounds the number of active tips.
 It assigns each newly core-verified event a local handling state only after assigning states to that event's parents; ordering among concurrently ready events remains a local choice.
 An arriving batch is not activated atomically from its final tips.
 When activating another branch would exceed that bound, Manager parks the branch and any later event whose ancestry includes it.
-Consequently, a batch containing more concurrent branches than the bound parks at least one branch before a descendant merge is considered.
+An activation that would exceed the current active-tip bound parks that branch before any descendant can activate.
+This bounds simultaneous active tips, not historical concurrency: rolling merges can keep the tip count small while incorporating further siblings.
+Separate intake, traversal, and storage budgets still limit the work a sender can cause.
 No received event reactivates parked ancestry — not even a multi-parent event that would bring the tip count back under the bound, because a flooding device can publish its own merge.
 Unparking is a local acceptance decision:
 a device that never parked the branches integrates such a merge as an ordinary collapse of its active parents, while a device that parked them surfaces the merge through the Hub as a proposed reconciliation to accept into a new bounded active view.
