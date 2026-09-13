@@ -48,3 +48,14 @@ Do not consume reset credits without explicit per-credit authorization.
 Prefer a direct local experiment over another discussion.
 Next useful experiment after committing prekey binding: demonstrate shared one-time-prekey consumption with two concurrent senders and a real receiver, then compare bounded local-policy alternatives without silently adding a central prekey service.
 The existing DAG search has sufficient evidence for its wording fix; do not repeat it just to occupy time.
+
+## 04:42 UTC checkpoint
+
+Prekey binding was committed as 9677925.
+New prekey_consumption experiment: three cases passed in 1.19 seconds.
+Distinct senders choose the same first prekey; two Manager distributions cannot both be received from the unchanged bundle; interruption between consumption and received-key persistence prevents retry.
+See prekey_consumption/README.md for limits and alternatives.
+Next narrow fix candidate: validate plaintext first, then atomically persist received sender key and prekey consumption in the same local DB transaction.
+Keep decentralized prekey allocation as a separate policy decision.
+Quota was 81% used; the five-hour window resets at 2026-09-13 08:20:14 UTC.
+Until then, do not open agents or broad reviews; check compact state and defer model-heavy work if below 20% remains.
