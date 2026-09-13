@@ -45,3 +45,14 @@ Git graft/config observations are local-control cases (11 passes, 2 expected fai
 
 Quota reset was confirmed at 08:27 UTC: 14% five-hour used, 33% weekly used before this checkpoint's work.
 Save a concise final report at the deadline and pause the heartbeat rather than starting more work.
+
+## 09:25 UTC checkpoint
+
+Atomic receipt is committed as 5ea84c7.
+The final design checkpoint corrects invitation ordering: an early offer precedes the request; the final authenticated commitment is constructed after fresh keys exist.
+It pins the exact request, selected snapshot and frontier, with admission and key release still separate local decisions.
+B4 assigns authority-chain interpretation to the Manager/extension rather than Constitution core.
+A short low-effort Opus review was assessed in reviews/invitation_ordering_assessment.md; three local links and diff whitespace were checked.
+No runtime invitation wiring or new wire format was implemented.
+Quota before this checkpoint was 60% of the five-hour window used.
+Next scheduled wake is after the 10:03:23 UTC deadline: close out only, inspect final git state, summarize verified results and limitations, and pause the heartbeat.

@@ -63,9 +63,16 @@ The compared value — call it the bootstrap commitment — must cover five thin
 
 1. the operation scope: which identity or which team, and which entry path;
 2. both parties' long-term public keys, including the newcomer's fresh device signing key;
-3. the trust root, meaning the team's technical origin and the genesis authority key that B4 will check against;
+3. the technical origin and the explicit authority anchor selected under the bootstrap extension that B4 will check against;
 4. the frontier: the exact set of Constitution event identifiers being offered;
 5. the digest of the snapshot bytes that will be delivered.
+
+Here, an authority anchor (called the trust root below) is an explicit input to the selected authority extension, distinct from the technical origin.
+Independent authentication means independent of the fetched data: the newcomer may learn this anchor through the authenticated introducer and explicitly choose to trust that introduction.
+It need not have known the anchor before the exchange, and the exchange does not establish the honesty of the introducer or anchor.
+
+The final commitment is created only after the introducer receives the newcomer's request and fresh keys.
+An invitation sent before that request is an offer to start the exchange, not a completed B1 commitment.
 
 Covering both directions matters.
 A commitment over only the introducer's response lets a relay substitute the newcomer's half, so the introducer authorizes a device its human never saw.
@@ -80,10 +87,10 @@ The device then holds an unauthenticated view: it may inspect the data, and ordi
 That acceptance is a local policy decision and leaves the authentication result exactly as it was — unproved.
 
 **Status: Contradicted.**
-`welcome_bundle_confirmation_string` (`packages/small-sea-note-to-self/small_sea_note_to_self/bootstrap.py:150`) covers the join-request artifact, the welcome bundle, and its signature.
+`welcome_bundle_confirmation_string` (`packages/small-sea-note-to-self/small_sea_note_to_self/bootstrap.py`) covers the join-request artifact, the welcome bundle, and its signature.
 It does not cover a trust root, a frontier, or a snapshot digest, so it authenticates who sent the bundle but not what history that bundle points at.
 Nothing stores the result: a repository-wide search finds no consumer of the string outside `provisioning.py` and `bootstrap.py`, where it is returned and displayed.
-On the invitation path there is no comparison at all; `create_invitation` (`packages/small-sea-manager/small_sea_manager/provisioning.py:5272`) hands out an unsigned base64 token.
+On the invitation path there is no comparison at all; `create_invitation` (`packages/small-sea-manager/small_sea_manager/provisioning.py`) hands out an unsigned base64 token.
 Both need to change.
 
 One open wire-format question belongs here.
@@ -106,9 +113,9 @@ An introducer who authenticates correctly and then offers a misleading snapshot 
 A digest mismatch is a delivery failure; stop and show it.
 
 **Status: Contradicted.**
-`accept_invitation` (`provisioning.py:5421`) clones from the URL in the token and checks out whatever head the store publishes.
+`accept_invitation` (`provisioning.py`) clones from the URL in the token and checks out whatever head the store publishes.
 It verifies no digest, because the token commits to none.
-`bootstrap_existing_identity` (`provisioning.py:2524`) fetches from the descriptor inside the welcome bundle with the same gap.
+`bootstrap_existing_identity` (`provisioning.py`) fetches from the descriptor inside the welcome bundle with the same gap.
 
 ## B3 — Core-verify the Constitution events
 
@@ -134,10 +141,14 @@ Today's records are SQL rows whose ordering comes from Git merges rather than fr
 **Inputs.** The core-verified events from B3, the frontier from the B1 commitment, and the trust root from the B1 commitment.
 **Provenance.** The events come from the untrusted snapshot; the frontier and root come from the authenticated exchange.
 **Check.** Two parts.
-First, the frontier present in the snapshot is exactly the event set the commitment named — no more, no fewer.
+First, the selected bootstrap frontier is exactly the tip set the commitment named, and its required closure is present and core-verified.
+The byte-exact snapshot checked at B2 may itself contain parked events outside that closure.
+B4 selects the committed frontier from that same snapshot; stored events outside its closure do not become part of the selected bootstrap view merely because they arrived in the same repository.
+B2 still requires the exact committed snapshot bytes; a newer head is not a substitute for that snapshot.
 Second, every authority chain the newcomer intends to rely on terminates at the root the commitment carried, through ancestry that is present and core-verified.
-**Policy owner.** The framework.
-This is a protocol rule, not an application choice.
+**Policy owner.** The Manager applies the selected bootstrap and authority extension.
+The framework checks origin, event integrity and ancestry; the extension decides what counts as an authority chain to the explicitly pinned anchor.
+A genesis authority key is one possible anchor for this extension, not a mandatory Constitution-core authority or an answer to its open origin-format questions.
 **Evidence recorded.** The root, the frontier, and the chain from each relied-upon key back to the root.
 **Default conclusion.** The authority this snapshot describes descends from the root the newcomer's human authenticated.
 **Not concluded.** That the described authority is correct or current.
@@ -148,14 +159,14 @@ A chain that does not reach the root is not a weaker chain; it is a chain to som
 This is the step that makes bootstrapping possible, and the step current code lacks entirely.
 
 **Status: Contradicted.**
-`trusted_device_keys_by_teammate` (`packages/wrasse-trust/wrasse_trust/identity.py:323`) seeds trust from any self-issued membership certificate:
+`trusted_device_keys_by_teammate` (`packages/wrasse-trust/wrasse_trust/identity.py`) seeds trust from any self-issued membership certificate:
 
 ```
 if cert.issuer_participant_id == admitted_teammate_id:
     issuer_keys = [cert.subject_public_key]
 ```
 
-It accepts as many roots as the snapshot happens to contain, and never asks which one is this team's genesis.
+It accepts as many roots as the snapshot happens to contain, and never asks which anchor the newcomer authenticated independently.
 An attacker who fabricates a team database fabricates its genesis membership along with it, and the graph resolves without a complaint.
 The required change: the resolver takes the root as an explicit parameter supplied by the caller from the exchange, and refuses to treat any certificate as a root unless it matches.
 Until that change lands, no amount of care in B5 or B6 means anything, because reconstruction and snapshot will agree by being the same forgery read twice.
@@ -183,10 +194,10 @@ At least three make a material difference:
    The Constitution protocol deliberately preserves concurrency rather than picking a winner, so this is a local choice every time.
 
 **Status: Contradicted.**
-The rules exist: `trusted_device_keys_by_teammate` resolves device keys, `_admission_status` (`provisioning.py:1353`) computes proposal status from which records exist, and `_constitution_snapshot` (`provisioning.py:4594`) assembles teammates, devices, and berth roles.
+The rules exist: `trusted_device_keys_by_teammate` resolves device keys, `_admission_status` (`provisioning.py`) computes proposal status from which records exist, and `_constitution_snapshot` (`provisioning.py`) assembles teammates, devices, and berth roles.
 Two inputs are not evidence-backed.
 Quorum comes from `team_setting`, an unsigned key-value table, so whoever wrote the snapshot also chose the threshold its own finalizations had to clear.
-Berths have no signed origin at all: `_ensure_team_app_activation` (`provisioning.py:5187`) inserts fresh `app` and `team_app_berth` rows with no record behind them, and signed records then refer to `berth_id` values that no signature establishes.
+Berths have no signed origin at all: `_ensure_team_app_activation` (`provisioning.py`) inserts fresh `app` and `team_app_berth` rows with no record behind them, and signed records then refer to `berth_id` values that no signature establishes.
 Both need signed records before reconstruction can mean anything.
 
 ## B6 — Compare the reconstruction against the delivered snapshot
@@ -258,7 +269,7 @@ No signed removal or exclusion record exists anywhere in the schema.
 `admission_revocation` is a mutable projection of a proposal the inviter abandoned, not evidence that a teammate was removed.
 So the removed-author case currently has no permanent evidence on either side, and [#263](https://github.com/benjaminy/small-sea-collective/issues/263) must supply it before this step can be enforced.
 
-Separately, `SshCommitVerifier.verify_history` (`packages/cod-sync/cod_sync/verify.py:87`) checks the head and every commit it reaches, raising on the first commit it does not accept.
+Separately, `SshCommitVerifier.verify_history` (`packages/cod-sync/cod_sync/verify.py`) checks the head and every commit it reaches, raising on the first commit it does not accept.
 That full-ancestry contract conflicts with a retention model that discards old Git contents: a device that pruned history cannot satisfy a verifier that demands all of it.
 Reconciling the two is a prerequisite for [#266](https://github.com/benjaminy/small-sea-collective/issues/266), not something this transcript resolves.
 Whatever replaces it must not silently drop required ancestors, and must not solve the problem by adding every fetched key to the verifier's allowed set.
@@ -277,7 +288,7 @@ A key authorized to sign for one berth is not thereby authorized for another, ev
 Scope is evidence, not preference.
 
 **Status: Contradicted.**
-`issue_membership_cert` and `issue_device_link_cert` (`packages/wrasse-trust/wrasse_trust/identity.py:220` and `:240`) bind `team_id` and `teammate_id` and nothing else.
+`issue_membership_cert` and `issue_device_link_cert` (`packages/wrasse-trust/wrasse_trust/identity.py` and `:240`) bind `team_id` and `teammate_id` and nothing else.
 There is no berth in a certificate and no purpose, so today a key trusted anywhere in a team is trusted everywhere in it.
 `packages/wrasse-trust/README.md` still describes the device-only, per-team direction.
 Supplying the missing scope is [#266](https://github.com/benjaminy/small-sea-collective/issues/266)'s work; this transcript's contribution is to state exactly which check has nothing to check against.
@@ -313,16 +324,35 @@ Shared one-time-prekey selection and local receipt persistence are separate conc
 
 A person who is not yet a teammate joins a team.
 
-B1's commitment is created when the inviter creates the invitation, and it freezes the offered view at that moment.
-The invitee therefore bootstraps at the exact view the inviter committed to, not at whatever head the store publishes when the invitee gets around to fetching.
-Team changes made after the invitation was issued arrive afterwards, through ordinary sync, and face B8 and B9 like any other incoming work.
+This path uses an offer followed by a request and a final response.
+The inviter cannot bind a commitment to a newcomer key that does not yet exist.
 
-This is what makes an asynchronous invitation workable.
-The two humans do not have to be present at the same moment: the inviter fixes the commitment, conveys it through a channel the invitee already trusts, and the invitee compares it whenever they fetch.
-What the two humans must not do is skip the comparison because the fetch succeeded.
+1. **Offer.** The inviter conveys the intended team and a way to continue the exchange through a channel the invitee already trusts.
+   The offer may name an invitation or proposal, but it does not complete B1, admit a device, authorize active history adoption, or release future encryption keys.
+2. **Request.** The invitee generates its fresh keys and sends a request identifying that offer and the operation scope.
+   The request includes an attempt identifier so the final response can be checked against this attempt rather than another pending join.
+3. **Final response.** After receiving the request, the inviter selects the snapshot, frontier and explicit authority anchor it is offering.
+   The final B1 commitment covers the offer reference, exact request, both parties' keys, operation scope, anchor, frontier and snapshot digest.
+   Both sides authenticate that same completed exchange through their trusted channel and record the comparison before treating the request as belonging to the intended person.
+4. **Delivery and decisions.** The invitee retrieves the committed snapshot and runs B2 through B9.
+   The inviter separately evaluates admission and device enrollment under its current local policy before B10 can release keys.
+   A matched exchange is evidence of what the parties agreed to discuss, not proof that admission or key distribution is authorized.
+   The inviter records the attempt and final commitment and applies its admission policy to expired offers, repeated requests and already completed attempts.
+   Replaying an offer or response does not by itself renew authority or trigger another key release; any new release needs a current local decision.
 
-The root in B4 is the team's genesis authority, carried in the commitment.
-The inviter's own key is not the root; it is a key whose authority the invitee checks by chaining back to the root like any other.
+These messages can be exchanged asynchronously; the two humans need not be present at the same time.
+This adds a return exchange before bootstrap completes.
+That cost is deliberate: an unsolicited offer alone cannot authenticate a fresh key chosen later.
+An alternative would authenticate a frozen snapshot in the offer and bind the device in a second ceremony, but it would need two separately tracked trust decisions and retention of the earlier snapshot.
+This transcript chooses the request-first final commitment to keep one complete bootstrap commitment.
+
+The invitee starts from the snapshot selected in the final response, not whatever head the store publishes when fetching begins.
+Later changes arrive through ordinary sync and receive their own checks and local acceptance decisions.
+If the pinned snapshot is unavailable, this attempt pauses; the parties can authenticate a new response instead of silently substituting newer bytes.
+
+The authority anchor is explicit in the exchange and interpreted by the selected extension.
+If that extension pins genesis authority, the inviter's key must chain to that anchor.
+Choosing a different anchor is an explicit local trust decision, not a core-verification result or a root inferred from the fetched roster.
 
 **Trusted to assert.** That this team is the team the invitee's human meant to join, and that this frontier is the team's history as the inviter sees it.
 **Not trusted to assert.** That the view is complete, that no teammate was concealed, and that no concurrent branch exists.
@@ -331,10 +361,10 @@ The Constitution protocol cannot prove that any peer disclosed everything it kne
 The bootstrap design does not solve this; it confines it to a party the invitee's human chose and can hold responsible.
 
 **Status: Contradicted.**
-`accept_invitation` (`provisioning.py:5421`) checks only that the token's `invitee_teammate_id` matches the teammate id it was given — a consistency check on the token against itself.
+`accept_invitation` (`provisioning.py`) checks only that the token's `invitee_teammate_id` matches the teammate id it was given — a consistency check on the token against itself.
 It does not check that the cloned history contains the proposal, that the proposal's signer is the named inviter, or that the head relates to anything in the token.
 Whoever controls the URL in the token controls what the invitee accepts as team history.
-The inviter's side is protected: `complete_invitation_acceptance` (`provisioning.py:5716`) verifies the acceptance signature, nonce, team id, and invitee id against its own proposal row.
+The inviter's side is protected: `complete_invitation_acceptance` (`provisioning.py`) verifies the acceptance signature, nonce, team id, and invitee id against its own proposal row.
 The protection runs in exactly one direction, and it is the wrong one for #262.
 
 ## Entry path: sibling device
@@ -355,7 +385,7 @@ The alternative — treating NoteToSelf as an authority-free convenience cache a
 
 **Stage 2: team join.** The new device joins one of the person's teams, generating a fresh team-device key and receiving a device-link certificate from a sibling.
 
-`finalize_linked_device_bootstrap` (`provisioning.py:2839`) checks the authorizer's team-device key against `get_trusted_device_keys_for_teammate`, read from the joiner's *local* team database.
+`finalize_linked_device_bootstrap` (`provisioning.py`) checks the authorizer's team-device key against `get_trusted_device_keys_for_teammate`, read from the joiner's *local* team database.
 Where that local team database comes from is unresolved.
 Every micro test in `test_linked_device_bootstrap.py` supplies it with `_copy_team_baseline`, which copies the authorizer's team folder and inserts the team row by hand.
 No production code path clones a team for a linked device.
@@ -391,8 +421,8 @@ That harms only that person, and it is a better outcome than a device guessing.
 These are consequences of the design above, not a review of unrelated defects.
 
 1. **Root the certificate graph.** `trusted_device_keys_by_teammate` must take the root as a caller-supplied parameter and reject self-issued certificates that do not match it (B4).
-2. **Widen and record the bootstrap commitment.** It must cover scope, both parties' keys, the root, the frontier, and the snapshot digest, in both directions, and the comparison result must be stored with the trust view (B1).
-3. **Give the invitation token a commitment and verify it.** `accept_invitation` must check the clone against the commitment before adopting anything (B1, B2).
+2. **Widen and record the bootstrap commitment.** Construct it after the newcomer request exists; cover scope, the offer and attempt, both parties' keys, the root, the frontier, and the snapshot digest, in both directions, and store the comparison result with the trust view (B1).
+3. **Carry and verify the final response commitment.** The early offer is not this commitment; `accept_invitation` must check the snapshot against the authenticated final response before adopting anything (B1, B2).
 4. **Make quorum evidence.** Admission quorum must come from a signed record, not from the unsigned `team_setting` table (B5).
 5. **Give berths a signed origin.** Signed records currently name `berth_id` values that no signature establishes (B5).
 6. **Add a signed removal record.** Until one exists, B8 has no evidence on either side ([#263](https://github.com/benjaminy/small-sea-collective/issues/263)).
@@ -401,7 +431,7 @@ These are consequences of the design above, not a review of unrelated defects.
    Implemented locally with a signed wrapper; freshness and B9 authority remain separate gaps.
 9. **Give NoteToSelf signed device-authority records** (sibling path, stage 1).
 10. **Reconcile the full-ancestry verifier with the intended retention model** ([#190](https://github.com/benjaminy/small-sea-collective/issues/190), [#266](https://github.com/benjaminy/small-sea-collective/issues/266)) (B8).
-11. **Decide whether Manager repositories sign commits.** `Repo.configure_signing` (`packages/cod-sync/cod_sync/repo.py:277`) has no call site outside cod-sync's own tests, so every Manager commit today is unsigned and Git contributes no authorship evidence at all.
+11. **Decide whether Manager repositories sign commits.** `Repo.configure_signing` (`packages/cod-sync/cod_sync/repo.py`) has no call site outside cod-sync's own tests, so every Manager commit today is unsigned and Git contributes no authorship evidence at all.
 
 ## Where this leaves the six questions
 
@@ -425,3 +455,20 @@ Until there is a mechanism, the sibling path's stage 2 has no authenticated star
 **Whether Git retains the ancestry the verifier demands.**
 B8's authorship check and the intended deletion of old Git contents pull in opposite directions.
 The resolution belongs to #190 and #266 together, and this transcript records the dependency rather than choosing.
+
+## Invitation ordering checks
+
+These are design walkthroughs, not claims that the current invitation code implements the sequence.
+
+| Case | Expected conclusion |
+| --- | --- |
+| Valid offer, request and authenticated final response | Both sides bind the same fresh device keys and snapshot; admission and local adoption still need their separate decisions. |
+| Offer arrives before installation | No device key is assumed; the offer can wait without completing B1 or granting authority. |
+| Relay replaces the request key | The newcomer rejects a final response naming a different request; a relay presenting different exchanges to the two sides is detected by the human comparison. The inviter alone cannot infer the newcomer's original request. |
+| Response belongs to another attempt | The offer/attempt and exact-request binding fails even if the signature and snapshot digest are individually valid. |
+| Store advances after the final response | Fetch the pinned snapshot; treat later events separately. A current head alone cannot satisfy B2. |
+| Inviter changes its local admission policy after responding | The response still authenticates the offered evidence; it does not force the inviter to admit the device or release keys. |
+| Pinned snapshot is missing | Pause this attempt or authenticate a new complete response; do not substitute a history by arrival order. |
+
+The remaining B1 wire-format and comparison-strength questions still need protocol review.
+This ordering correction does not implement the exchange or prove its short-authentication-string security.
