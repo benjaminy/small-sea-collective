@@ -793,11 +793,34 @@ def _ensure_device_prekey_bundle_table(conn) -> None:
     )
 
 
+def _signed_device_prekey_bundle(
+    *,
+    team_id: bytes,
+    device_key_id: bytes,
+    prekey_bundle: PrekeyBundle,
+    private_key: bytes,
+) -> dict:
+    payload = {
+        "version": 1,
+        "team_id": team_id.hex(),
+        "device_key_id": device_key_id.hex(),
+        "prekey_bundle": _serialize_prekey_bundle(prekey_bundle),
+    }
+    return {
+        "payload": payload,
+        "signature": _sign_bytes(private_key, _device_prekey_bundle_bytes(payload)).hex(),
+    }
+
+
+def _device_prekey_bundle_bytes(payload: dict) -> bytes:
+    return b"SmallSea/device-prekey-bundle/v1\x00" + _json_bytes(payload)
+
+
 def _upsert_device_prekey_bundle(
     conn,
     *,
     device_key_id: bytes,
-    prekey_bundle: PrekeyBundle,
+    signed_bundle: dict,
     published_at: str,
 ) -> None:
     _ensure_device_prekey_bundle_table(conn)
@@ -810,7 +833,7 @@ def _upsert_device_prekey_bundle(
         {
             "device_key_id": device_key_id,
             "prekey_bundle_json": json.dumps(
-                _serialize_prekey_bundle(prekey_bundle),
+                signed_bundle,
                 sort_keys=True,
             ),
             "published_at": published_at,
@@ -818,7 +841,9 @@ def _upsert_device_prekey_bundle(
     )
 
 
-def _load_device_prekey_bundle(conn, device_key_id: bytes) -> PrekeyBundle | None:
+def _load_device_prekey_bundle(
+    conn, device_key_id: bytes, *, team_id: bytes, trusted_public_key: bytes,
+) -> PrekeyBundle | None:
     _ensure_device_prekey_bundle_table(conn)
     row = conn.execute(
         text(
@@ -828,7 +853,28 @@ def _load_device_prekey_bundle(conn, device_key_id: bytes) -> PrekeyBundle | Non
     ).fetchone()
     if row is None:
         return None
-    return _deserialize_prekey_bundle(json.loads(row[0]))
+    try:
+        wrapper = json.loads(row[0])
+        payload = wrapper["payload"]
+        if (
+            type(payload["version"]) is not int
+            or payload["version"] != 1
+            or payload["team_id"] != team_id.hex()
+            or payload["device_key_id"] != device_key_id.hex()
+            or key_id_from_public(trusted_public_key) != device_key_id
+            or not _verify_signature(
+                trusted_public_key,
+                _device_prekey_bundle_bytes(payload),
+                bytes.fromhex(wrapper["signature"]),
+            )
+        ):
+            raise ValueError("Invalid device prekey bundle binding")
+        bundle = _deserialize_prekey_bundle(payload["prekey_bundle"])
+        if bundle.participant_id != device_key_id:
+            raise ValueError("Invalid device prekey bundle participant")
+        return bundle
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Invalid signed device prekey bundle") from exc
 
 
 _DEFAULT_ADMISSION_QUORUM = 1
@@ -1652,10 +1698,13 @@ def _publish_local_device_prekey_bundle(
 ) -> dict:
     if team_id is None:
         team_id, _teammate_id = _team_row(root_dir, participant_hex, team_name)
+    private_key, local_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
     if team_device_public_key is None:
-        _private_key, team_device_public_key = get_current_team_device_key(
-            root_dir, participant_hex, team_name
-        )
+        team_device_public_key = local_public_key
+    elif team_device_public_key != local_public_key:
+        raise ValueError("Cannot publish prekeys for another device")
     device_key_id = key_id_from_public(team_device_public_key)
     identity, signed_prekey, _signed_prekey_private_key, one_time_prekeys = (
         _ensure_redistribution_prekey_material(
@@ -1671,13 +1720,17 @@ def _publish_local_device_prekey_bundle(
         signed_prekey=signed_prekey,
         one_time_prekeys=[prekey for prekey, _private in one_time_prekeys],
     )
+    signed_bundle = _signed_device_prekey_bundle(
+        team_id=team_id, device_key_id=device_key_id,
+        prekey_bundle=bundle, private_key=private_key,
+    )
     published_at = _now_iso()
 
     if conn is not None:
         _upsert_device_prekey_bundle(
             conn,
             device_key_id=device_key_id,
-            prekey_bundle=bundle,
+            signed_bundle=signed_bundle,
             published_at=published_at,
         )
     else:
@@ -1690,7 +1743,7 @@ def _publish_local_device_prekey_bundle(
                 _upsert_device_prekey_bundle(
                     local_conn,
                     device_key_id=device_key_id,
-                    prekey_bundle=bundle,
+                    signed_bundle=signed_bundle,
                     published_at=published_at,
                 )
         finally:
@@ -4219,8 +4272,10 @@ def redistribute_sender_key(root_dir, participant_hex, team_name, target_device_
     skipped = []
     try:
         with engine.begin() as conn:
-            for device_key_id, _public_key in sorted(candidate_public_keys.items()):
-                bundle = _load_device_prekey_bundle(conn, device_key_id)
+            for device_key_id, public_key in sorted(candidate_public_keys.items()):
+                bundle = _load_device_prekey_bundle(
+                    conn, device_key_id, team_id=team_id, trusted_public_key=public_key,
+                )
                 if bundle is None:
                     skipped.append(device_key_id.hex())
                     continue

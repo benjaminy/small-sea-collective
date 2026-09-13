@@ -15,13 +15,17 @@ The architecture wording now states the narrower property.
 The one-hour run passed 614,400 exhaustive cases and 436,852 randomized trials.
 These counts test a model, not production enforcement or cryptography.
 
-## Demonstrated and still open
+## Prekey binding fixed; related questions remain
 
 **Stored prekey substitution discloses sender keys.**
 The reproduction decrypts the actual distribution with attacker-controlled keys while the artifact names a trusted recipient.
-A scoped fix is in progress: sign the full bundle and scope under the trusted team-device key, then verify before encryption.
+The scoped fix now signs the full bundle and scope under the trusted team-device key and verifies before encryption.
+The combined bootstrap, team-creation, rotation and prekey checks passed 51 cases in 28.32 seconds.
+Authentic stale-bundle replay and concurrent one-time-prekey consumption remain open.
 The X3DH and team signing keys are distinct by design.
 Checking equality would reject valid recipients; checking only a public device id would not authenticate the bundle.
+
+## Demonstrated and still open
 
 **Snapshot contents are not bound to the original confirmation.**
 A changed device label still passes with the original welcome and confirmation string.

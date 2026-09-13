@@ -18,9 +18,11 @@ Focused Manager/Hub/bootstrap validation passed 45 cases in 30.74 seconds with l
 Command is recorded in results/bootstrap-fix-validation.txt via task tools; selected files were manager test_identity_bootstrap.py, test_device_link.py, test_linked_device_bootstrap.py, hub test_session_flow.py, and Experiments/autonomous_bootstrap/adversarial/test_bootstrap_observations.py.
 Git global config is disabled for this run to avoid the user's GPG commit signing configuration affecting disposable repositories.
 
-A single low-effort subagent, prekey_binding_fix, is implementing the next change; check its status before editing provisioning.py or sender-key micro tests.
-Next: review and verify its fix for demonstrated prekey substitution by authenticating the complete bundle under the trusted team-device key, binding team and target scope; do not compare the intentionally separate X3DH and team keys for equality.
-Existing substitution reproduction is in prekey_binding/; it currently asserts unsafe behavior.
+The single low-effort prekey agent completed its patch and reported 30 focused passes plus 12 final targeted passes.
+Root reviewed the diff; combined fix/create-team validation passed 51 cases in 28.32 seconds, result file results/combined-fixes.txt.
+No agent is still editing files.
+Next: inspect the latest local commit and continue with the concurrent prekey-consumption experiment below.
+Existing substitution reproduction is in prekey_binding/; it now checks rejection and a legitimate decrypting recipient.
 Afterward address bootstrap transcript contradictions with concrete alternatives, avoiding broad untested architecture expansion.
 
 ## Earlier evidence
@@ -36,3 +38,13 @@ Treat that review as suggestions, not authority: several proposals would overcon
 Broad baseline reached 348 passes and two loopback sandbox errors, not a clean full-suite result.
 Use purpose-built local tests; escalate loopback permissions when needed rather than mistake sandbox denial for a code failure.
 No GitHub state has been changed.
+
+## Pacing
+
+At the last quota check, 59% of the five-hour window was used (41% remaining).
+Do not start another agent or broad model review in this checkpoint.
+At each scheduled wake, check quota once and do one bounded step; if under 20% remains, preserve state and defer model-heavy work until reset.
+Do not consume reset credits without explicit per-credit authorization.
+Prefer a direct local experiment over another discussion.
+Next useful experiment after committing prekey binding: demonstrate shared one-time-prekey consumption with two concurrent senders and a real receiver, then compare bounded local-policy alternatives without silently adding a central prekey service.
+The existing DAG search has sufficient evidence for its wording fix; do not repeat it just to occupy time.
