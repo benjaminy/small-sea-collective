@@ -15,6 +15,7 @@ import pathlib
 import secrets
 import sqlite3
 import sys
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -42,6 +43,11 @@ def _sqlite_engine(db_path) -> object:
     engine = create_engine(f"sqlite:///{db_path}")
     event.listen(engine, "connect", _enable_sqlite_foreign_keys)
     return engine
+
+from small_sea_note_to_self.bootstrap_status import (
+    assert_identity_bootstrap_trusted,
+    identity_bootstrap_status_path as _identity_bootstrap_status_path,
+)
 
 import cod_sync.protocol as CodSync
 import cod_sync.store as CodStore
@@ -274,17 +280,6 @@ def _bootstrap_pending_device_encryption_key_path(root_dir, device_id: bytes) ->
 
 def _bootstrap_pending_device_signing_key_path(root_dir, device_id: bytes) -> pathlib.Path:
     return _bootstrap_fake_enclave_dir(root_dir) / f"pending-device-{device_id.hex()}-sign.key"
-
-
-def _identity_bootstrap_status_path(root_dir, participant_hex: str) -> pathlib.Path:
-    return (
-        pathlib.Path(root_dir)
-        / "Participants"
-        / participant_hex
-        / "NoteToSelf"
-        / "Local"
-        / "identity_bootstrap_status.json"
-    )
 
 
 def _current_device_row(conn):
@@ -1752,16 +1747,6 @@ def _clear_identity_bootstrap_untrusted(root_dir, participant_hex: str) -> None:
         path.unlink()
 
 
-def assert_identity_bootstrap_trusted(root_dir, participant_hex: str) -> None:
-    path = _identity_bootstrap_status_path(root_dir, participant_hex)
-    if path.exists():
-        status = json.loads(path.read_text())
-        raise ValueError(
-            "Installation is blocked because identity bootstrap did not verify cleanly: "
-            f"{status.get('reason', 'unknown reason')}"
-        )
-
-
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -2427,6 +2412,11 @@ def prepare_identity_bootstrap(root_dir, welcome_bundle_b64):
         if shared_db.exists():
             raise ValueError(f"Participant {bundle.participant_hex} already exists locally")
 
+    _mark_identity_bootstrap_untrusted(
+        root_dir,
+        bundle.participant_hex,
+        reason="Identity bootstrap verification is pending",
+    )
     initialize_bootstrap_local_state(root_dir, bundle.participant_hex)
     (participant_dir / "FakeEnclave").mkdir(parents=True, exist_ok=True)
 
@@ -2483,7 +2473,7 @@ def finalize_identity_bootstrap(root_dir, prepared: dict):
     state = prepared["pending_state"]
     bundle_plaintext = serialize_welcome_bundle_plaintext(bundle)
     signature = bytes.fromhex(signed_bundle.signature_hex)
-    with sqlite3.connect(note_to_self_sync_db_path(root_dir, bundle.participant_hex)) as conn:
+    with closing(sqlite3.connect(note_to_self_sync_db_path(root_dir, bundle.participant_hex))) as conn:
         signer_row = conn.execute(
             "SELECT signing_key FROM user_device WHERE id = ?",
             (bytes.fromhex(signed_bundle.authorizing_device_id_hex),),
@@ -2499,6 +2489,22 @@ def finalize_identity_bootstrap(root_dir, prepared: dict):
             reason="Welcome bundle signature verification failed",
         )
         raise ValueError("Welcome bundle signature verification failed")
+    with closing(sqlite3.connect(note_to_self_sync_db_path(root_dir, bundle.participant_hex))) as conn:
+        joining_row = conn.execute(
+            "SELECT bootstrap_encryption_key, signing_key FROM user_device WHERE id = ?",
+            (bytes.fromhex(pending_artifact.device_id_hex),),
+        ).fetchone()
+    expected_joining_keys = (
+        bytes.fromhex(pending_artifact.device_encryption_public_key_hex),
+        bytes.fromhex(pending_artifact.device_signing_public_key_hex),
+    )
+    if joining_row != expected_joining_keys:
+        _mark_identity_bootstrap_untrusted(
+            root_dir,
+            bundle.participant_hex,
+            reason="Fetched joining device keys do not match the pending join request",
+        )
+        raise ValueError("Fetched joining device keys do not match the pending join request")
     _clear_identity_bootstrap_untrusted(root_dir, bundle.participant_hex)
 
     pending_encryption_key_path = pathlib.Path(state["encryption_private_key_ref"])

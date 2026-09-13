@@ -47,6 +47,10 @@ from small_sea_hub.crypto import (ExpectedPublisherUnavailableExn,
                                   decrypt_group_payload,
                                   prepare_encrypted_upload,
                                   publication_context)
+from small_sea_note_to_self.bootstrap_status import (
+    IdentityBootstrapBlockedError,
+    assert_identity_bootstrap_trusted,
+)
 from small_sea_note_to_self.berth_source import saved_route_for_candidate
 from small_sea_note_to_self.db import attached_note_to_self_connection
 from small_sea_note_to_self.ids import uuid7
@@ -402,6 +406,10 @@ class SmallSeaBackend:
             if d.name == nickname:
                 matching.append(d)
                 continue
+            try:
+                assert_identity_bootstrap_trusted(self.root_dir, d.name)
+            except IdentityBootstrapBlockedError:
+                continue
             conn = sqlite3.connect(str(d / "NoteToSelf" / "Sync" / "core.db"))
             try:
                 row = conn.execute(
@@ -425,6 +433,7 @@ class SmallSeaBackend:
         the NoteToSelf schema (team_app_berth has team_id) and the team DB
         schema (team_app_berth intentionally omits team_id).
         """
+        assert_identity_bootstrap_trusted(self.root_dir, participant_dir.name)
         note_to_self_db = str(participant_dir / "NoteToSelf" / "Sync" / "core.db")
         conn = sqlite3.connect(note_to_self_db)
         try:
@@ -929,6 +938,7 @@ class SmallSeaBackend:
             )
         if ss_session is None:
             raise SmallSeaSessionNotFoundExn(f"Session not found: {session_hex[:8]}")
+        assert_identity_bootstrap_trusted(self.root_dir, ss_session.participant_id.hex())
         ss_session.participant_path = (
             self.root_dir / "Participants" / ss_session.participant_id.hex()
         )
