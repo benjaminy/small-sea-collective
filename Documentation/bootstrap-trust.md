@@ -297,11 +297,17 @@ The Team Constitution states the principle directly: an extension that releases 
 This is also where the past-versus-future line from B8 becomes operational.
 Accepting a removed teammate's old commits is a statement about history; sending them a new sender key is a statement about the future, and B10 must never inherit its answer from B8.
 
-**Status: Contradicted.**
-`redistribute_sender_key` (`provisioning.py:4176`) selects a device key id from the certificate graph, loads the `device_prekey_bundle` row filed under that id, and calls `x3dh_send`.
-X3DH verifies the signed prekey against the `identity_signing_public_key` carried inside that same bundle (`packages/cuttlefish/cuttlefish/x3dh.py:114`), and nothing checks that key against the trusted device public key the row is filed under.
-Anyone who can write the team database can therefore redirect a redistributed sender key to a key of their choosing.
-The other caller, `create_linked_device_bootstrap` (`provisioning.py:2691`), takes its bundle from a signature-checked join request, so the gap is specific to the stored row.
+**Status: Partly implemented; berth-scoped authority remains unenforced.**
+`redistribute_sender_key` selects a device key from the current certificate graph.
+`_load_device_prekey_bundle` verifies a versioned, domain-separated signature under that selected key over the team id, target device id, and complete X3DH bundle before encryption.
+The team-device and X3DH identity signing keys remain distinct; the outer signature binds them without requiring equality.
+Unsigned or substituted rows are rejected.
+The implementation and decrypting valid control are exercised in [the prekey-binding micro tests](../Experiments/autonomous_bootstrap/prekey_binding/test_prekey_observations.py).
+`create_linked_device_bootstrap` separately takes its bundle from a signature-checked join request.
+
+This binding does not establish B9's missing berth scope or repair the certificate graph's bootstrap root.
+It also does not prove freshness: an older authentic bundle for the same team and device can still pass.
+Shared one-time-prekey selection and local receipt persistence are separate concerns described in [the consumption experiment](../Experiments/autonomous_bootstrap/prekey_consumption/README.md).
 
 ## Entry path: invitation
 
@@ -392,6 +398,7 @@ These are consequences of the design above, not a review of unrelated defects.
 6. **Add a signed removal record.** Until one exists, B8 has no evidence on either side ([#263](https://github.com/benjaminy/small-sea-collective/issues/263)).
 7. **Scope certificates to berth and purpose** ([#266](https://github.com/benjaminy/small-sea-collective/issues/266)) (B9).
 8. **Bind prekey bundles to the device key they are filed under** (B10).
+   Implemented locally with a signed wrapper; freshness and B9 authority remain separate gaps.
 9. **Give NoteToSelf signed device-authority records** (sibling path, stage 1).
 10. **Reconcile the full-ancestry verifier with the intended retention model** ([#190](https://github.com/benjaminy/small-sea-collective/issues/190), [#266](https://github.com/benjaminy/small-sea-collective/issues/266)) (B8).
 11. **Decide whether Manager repositories sign commits.** `Repo.configure_signing` (`packages/cod-sync/cod_sync/repo.py:277`) has no call site outside cod-sync's own tests, so every Manager commit today is unsigned and Git contributes no authorship evidence at all.

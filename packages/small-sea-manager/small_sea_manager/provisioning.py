@@ -666,25 +666,6 @@ def _replace_redistribution_one_time_prekeys(
         conn.commit()
 
 
-def _consume_redistribution_one_time_prekey(
-    root_dir,
-    participant_hex: str,
-    *,
-    team_id: bytes,
-    prekey_id: bytes,
-) -> None:
-    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
-        conn.execute(
-            """
-            UPDATE redistribution_one_time_prekey
-            SET private_key = NULL, consumed_at = ?
-            WHERE team_id = ? AND prekey_id = ?
-            """,
-            (_now_iso(), team_id, prekey_id),
-        )
-        conn.commit()
-
-
 def _redistribution_one_time_prekey_private(
     root_dir,
     participant_hex: str,
@@ -4431,23 +4412,33 @@ def receive_sender_key_distribution(root_dir, participant_hex, team_name, distri
         _deserialize_encrypted_message(payload["ratchet_message"]),
         associated_data=associated_data,
     )
-    if used_otp_id is not None:
-        _consume_redistribution_one_time_prekey(
-            root_dir,
-            participant_hex,
-            team_id=team_id,
-            prekey_id=used_otp_id,
-    )
     distribution = deserialize_distribution_message(json.loads(plaintext.decode("utf-8")))
     if distribution.sender_device_key_id != sender_device_key_id:
         raise ValueError("Distribution payload sender stream does not match decrypted sender key")
     if distribution.sender_chain_id.hex() != payload["sender_chain_id"]:
         raise ValueError("Distribution payload sender chain does not match decrypted sender key")
-    save_peer_sender_key(
-        device_local_db_path(root_dir, participant_hex),
-        team_id,
-        receiver_record_from_distribution(distribution),
-    )
+    if distribution.group_id != team_id:
+        raise ValueError("Distribution payload group does not match local team")
+    receiver_record = receiver_record_from_distribution(distribution)
+    db_path = device_local_db_path(root_dir, participant_hex)
+    conn = sqlite3.connect(db_path)
+    try:
+        with conn:
+            if used_otp_id is not None:
+                consumed = conn.execute(
+                    """
+                    UPDATE redistribution_one_time_prekey
+                    SET private_key = NULL, consumed_at = ?
+                    WHERE team_id = ? AND prekey_id = ?
+                      AND private_key IS NOT NULL AND consumed_at IS NULL
+                    """,
+                    (_now_iso(), team_id, used_otp_id),
+                )
+                if consumed.rowcount != 1:
+                    raise ValueError("Distribution payload consumed an unavailable one-time prekey")
+            save_peer_sender_key(db_path, team_id, receiver_record, connection=conn)
+    finally:
+        conn.close()
     return {
         "team_id_hex": team_id.hex(),
         "sender_device_key_id_hex": sender_device_key_id.hex(),

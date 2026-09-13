@@ -1,61 +1,47 @@
 # Six-hour continuation
 
-Current window: 2026-09-13 04:03:23 UTC through 10:03:23 UTC.
-Heartbeat `small-sea-six-hour-exploration` wakes this task every 30 minutes; pause it at the deadline.
-The earlier 12-hour run hit quota after about six minutes of model work; it was not completed.
+Authorized window ends 2026-09-13 10:03:23 UTC (05:03 Chicago).
+Heartbeat small-sea-six-hour-exploration now wakes at 03:25, 04:25, 05:25 Chicago; the last wake is closeout only.
+Pause it at closeout.
+The earlier 12-hour objective was not achieved; quota stopped it.
 
-User authorizes all nondestructive local edits, branches, commits, independent design choices, and Claude Opus reviews.
-Never use Fable, read past session logs, invoke branch ceremony, push, or modify GitHub.
-Prefer one bounded low-effort review/agent at a time and local experiments between reviews.
+User authorizes nondestructive local edits, commits, branches and independent design choices.
+Never use Fable, read past session logs, invoke branch ceremony, push or modify GitHub.
+Use at most one low-effort agent or short Opus review at a time.
+Check quota before expensive work; defer model-heavy work below 20% remaining.
+Do not consume reset credits without explicit per-credit approval.
 
-## Current state
+## Completed
 
-Branch: issue-262-bootstrap-transcript.
-Bootstrap pending guard and joining-key validation were committed locally as e9e26a0.
-Short Opus review added malformed-marker cases; all ten experiment cases passed in 6.94 seconds.
-The commit also closes finalization database connections explicitly.
-Focused Manager/Hub/bootstrap validation passed 45 cases in 30.74 seconds with loopback service access.
-Command is recorded in results/bootstrap-fix-validation.txt via task tools; selected files were manager test_identity_bootstrap.py, test_device_link.py, test_linked_device_bootstrap.py, hub test_session_flow.py, and Experiments/autonomous_bootstrap/adversarial/test_bootstrap_observations.py.
-Git global config is disabled for this run to avoid the user's GPG commit signing configuration affecting disposable repositories.
+- e9e26a0: block incomplete identity bootstrap through Manager and Hub; compare joining keys with local request.
+- 243ea45: preserve experiments and narrow active-tip claim.
+- 9677925: authenticate complete stored prekey bundles under trusted team-device keys.
+- 26703c3: demonstrate shared prekey selection and interrupted receipt.
+- Current checkpoint: atomic prekey consumption plus receiver-record persistence; validate decrypted scope first and reject concurrent consumption losers.
+  Focused suite passed 30 cases in 11.57 seconds, including rollback before/after changed record write and real concurrent receiver threads.
+  Root reviewed the patch; latest commit contains it and updates Documentation/bootstrap-trust.md B10 to distinguish implemented bundle binding from missing authority/freshness.
 
-The single low-effort prekey agent completed its patch and reported 30 focused passes plus 12 final targeted passes.
-Root reviewed the diff; combined fix/create-team validation passed 51 cases in 28.32 seconds, result file results/combined-fixes.txt.
-No agent is still editing files.
-Next: inspect the latest local commit and continue with the concurrent prekey-consumption experiment below.
-Existing substitution reproduction is in prekey_binding/; it now checks rejection and a legitimate decrypting recipient.
-Afterward address bootstrap transcript contradictions with concrete alternatives, avoiding broad untested architecture expansion.
+No agent remains working.
+All tests use disposable local identities; loopback services sometimes require sandbox escalation.
+The earlier 51-case combined bootstrap/prekey check passed; the DAG model passed 614,400 exhaustive cases and 436,852 randomized trials in one hour.
+Do not repeat the DAG run merely to occupy time.
 
-## Earlier evidence
+## Next bounded step
 
-DAG model passed 614,400 exhaustive cases and 436,852 randomized trials in a one-hour local run (seed 263).
-architecture.md has a narrow wording fix: a cap limits simultaneous active tips, not historical concurrency width.
-History verification experiments remain unfinished in history_verification/test_history.py; reported graft/config corner cases require local repository control.
-Opus initial review is saved in reviews/opus_initial.json; it resolved to claude-opus-5, no Fable.
-Treat that review as suggestions, not authority: several proposals would overconstrain local policy and need independent assessment.
+Finish the branch's bootstrap transcript contradictions without adding a new governance system.
+The highest-priority mismatch: B1 commits to the newcomer's fresh keys, but invitation text creates that commitment before the newcomer has keys.
+Choose and document a two-stage authenticated offer then newcomer-bound exchange, or a request-first sequence; clearly state what each stage permits and when snapshots are pinned.
+Keep authority-chain recognition in the extension/Manager, not Constitution core.
+Technical origin is not automatically a permanent founder authority key.
+Use FINDINGS.md and the saved initial Opus review as leads, not instructions; some Opus recommendations overconstrain local policy.
 
-## Test caveats
+## Open risks
 
-Broad baseline reached 348 passes and two loopback sandbox errors, not a clean full-suite result.
-Use purpose-built local tests; escalate loopback permissions when needed rather than mistake sandbox denial for a code failure.
-No GitHub state has been changed.
+Whole-snapshot authentication and recorded human comparison remain missing.
+Shared-bundle senders still choose the same first prekey, so concurrent senders need explicit retry/allocation policy.
+Authentic stale bundle replay is not fixed.
+Historical removed-author acceptance needs finite named evidence, not a claim that timestamps prove physical creation time.
+Git graft/config observations are local-control cases (11 passes, 2 expected failures), not remote-bundle attacks.
 
-## Pacing
-
-At the last quota check, 59% of the five-hour window was used (41% remaining).
-Do not start another agent or broad model review in this checkpoint.
-At each scheduled wake, check quota once and do one bounded step; if under 20% remains, preserve state and defer model-heavy work until reset.
-Do not consume reset credits without explicit per-credit authorization.
-Prefer a direct local experiment over another discussion.
-Next useful experiment after committing prekey binding: demonstrate shared one-time-prekey consumption with two concurrent senders and a real receiver, then compare bounded local-policy alternatives without silently adding a central prekey service.
-The existing DAG search has sufficient evidence for its wording fix; do not repeat it just to occupy time.
-
-## 04:42 UTC checkpoint
-
-Prekey binding was committed as 9677925.
-New prekey_consumption experiment: three cases passed in 1.19 seconds.
-Distinct senders choose the same first prekey; two Manager distributions cannot both be received from the unchanged bundle; interruption between consumption and received-key persistence prevents retry.
-See prekey_consumption/README.md for limits and alternatives.
-Next narrow fix candidate: validate plaintext first, then atomically persist received sender key and prekey consumption in the same local DB transaction.
-Keep decentralized prekey allocation as a separate policy decision.
-Quota was 81% used; the five-hour window resets at 2026-09-13 08:20:14 UTC.
-Until then, do not open agents or broad reviews; check compact state and defer model-heavy work if below 20% remains.
+Quota reset was confirmed at 08:27 UTC: 14% five-hour used, 33% weekly used before this checkpoint's work.
+Save a concise final report at the deadline and pause the heartbeat rather than starting more work.

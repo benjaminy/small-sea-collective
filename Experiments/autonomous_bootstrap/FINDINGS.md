@@ -57,3 +57,11 @@ Do not adopt the initial Opus review's self-parent or all-tips rules without tes
 
 A first-device authority anchor for NoteToSelf needs a recovery story, but that does not automatically justify making every team decision depend on a second identity DAG.
 Identity device enrollment and per-team device enrollment are intentionally separate decisions.
+
+## Atomic receipt checkpoint, 08:27 UTC
+
+The receiver now validates decrypted sender, chain and group, then consumes the available prekey and persists the received sender key in one SQLite transaction.
+Injected failures before and after writing a changed receiver record roll back both records and allow retry.
+Two receiver threads that both decrypt before consumption yield exactly one successful write.
+The focused rotation, binding and consumption suite passed 30 cases in 11.57 seconds.
+This does not solve concurrent senders selecting the same published prekey or establish freshness of an authentic old bundle.
