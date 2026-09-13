@@ -56,3 +56,10 @@ A short low-effort Opus review was assessed in reviews/invitation_ordering_asses
 No runtime invitation wiring or new wire format was implemented.
 Quota before this checkpoint was 60% of the five-hour window used.
 Next scheduled wake is after the 10:03:23 UTC deadline: close out only, inspect final git state, summarize verified results and limitations, and pause the heartbeat.
+
+## Closed at 10:25 UTC
+
+The deadline passed; no new exploration was started at this wake.
+The heartbeat is PAUSED.
+See FINAL.md for the final results, test limitations and open work.
+Do not resume automatically without a new user request.
