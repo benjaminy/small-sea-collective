@@ -237,6 +237,11 @@ artifact-version verification.
 It exists to make research and testing possible, not as a second trust mechanism.
 The exact persisted status shape and mismatch cleanup remain implementation decisions.
 
+The [target identity-authority policy](../../Documentation/bootstrap-trust.md#entry-path-sibling-device) uses retained signed delegation when it survives and permits an explicit, scoped local recognition decision when it does not.
+The decision cites the exact exchange and prior evidence and preserves missing or disputed history; it does not manufacture a verified chain.
+Other devices may decline that recognition, and it grants no team membership or enrollment power.
+This target policy and its durable decision records are not implemented by the unsigned `user_device` projection.
+
 After identity join, the new device knows about the participant's devices,
 teams, and apps through NoteToSelf, but it does **not** automatically join
 every team.
@@ -247,6 +252,14 @@ Per-team join remains a separate later flow:
 2. The device requests or records team participation.
 3. A device already participating in that team issues the necessary trust
    material (`membership` / `device_link`).
+
+The [bootstrap trust transcript](../../Documentation/bootstrap-trust.md#entry-path-sibling-device) specifies the target evidence delivery from an empty team store.
+After explicit team selection, a request signed by the newcomer's recognized identity-device key binds its fresh team-device key.
+The recognized sibling signs a response committing to that request, an explicit team-authority anchor, the selected Constitution frontier and exact snapshot digest.
+The newcomer retains that response before fetching through the Hub, then checks the sibling's team enrollment authority separately from the identity signature.
+A fresh per-team human comparison remains an alternative delivery authentication route.
+Neither an unsigned NoteToSelf team row nor identity recognition grants team authority.
+This target sequence is not implemented by the current linked-device flow below.
 
 #### Prepared recovery — target flow
 
