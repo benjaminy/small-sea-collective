@@ -1,8 +1,10 @@
 # The bootstrap trust transcript
 
-Status: draft under review on branch `issue-262-bootstrap-transcript` ([#262](https://github.com/benjaminy/small-sea-collective/issues/262)).
+Status: draft for human review ([#262](https://github.com/benjaminy/small-sea-collective/issues/262)).
 It describes the intended design.
 Several steps contradict what the code does today; those say so and name the change required.
+The branch also contains three runtime fixes: blocking incomplete identity bootstrap, authenticating stored prekey bundles, and committing prekey consumption with received-key persistence.
+Those fixes do not implement this transcript's exchange or authority reconstruction.
 
 A device that has never synced must end up trusting a particular team history and a particular set of signing keys.
 It cannot get there by checking a downloaded history against itself.
@@ -49,6 +51,7 @@ Each step carries an identifier, then the same seven labels.
 Each step is also marked with its implementation status:
 
 - **Implemented** — code enforces this, with the reference given.
+- **Partly implemented** — code enforces the named subset; the remaining checks are identified explicitly.
 - **Specified but unenforced** — a repository document states the rule and no code checks it.
 - **Proposed** — this transcript is where the rule is first stated.
 - **Contradicted** — current code does something incompatible, and the required change is named.
@@ -93,10 +96,16 @@ Nothing stores the result: a repository-wide search finds no consumer of the str
 On the invitation path there is no comparison at all; `create_invitation` (`packages/small-sea-manager/small_sea_manager/provisioning.py`) hands out an unsigned base64 token.
 Both need to change.
 
+The incomplete-bootstrap marker is a narrower implemented check.
+`prepare_identity_bootstrap` creates it before installing fetched state, and Manager and Hub refuse normal access while it exists.
+`finalize_identity_bootstrap` checks the welcome signature and matches the fetched joining-device keys to the local request, then clears the marker without a recorded human comparison.
+Thus completion of the current runtime checks does not establish B1 or enforce its missing-comparison pause.
+
 One open wire-format question belongs here.
 The current string is 64 bits.
-A relay that shapes both halves of an exchange can search for two exchanges sharing a string, which costs about half the bits, so the practical margin is nearer 2^32 than 2^64.
-Whether that margin is acceptable is a threat-model question this document does not settle; it should be reviewed against short-authentication-string practice in comparable protocols before the format is frozen.
+A generic collision search over attacker-controlled exchanges has a birthday bound near 2^32 trials, but that is not an established attack cost for the complete ceremony.
+Which fields a relay can choose, when each side commits, and how attempts are limited determine whether that search applies.
+The wire protocol and its comparison strength need review before the format is frozen; this transcript does not establish a security margin.
 
 ## B2 — Bind the delivered snapshot to the exchange
 
@@ -196,9 +205,13 @@ At least three make a material difference:
 **Status: Contradicted.**
 The rules exist: `trusted_device_keys_by_teammate` resolves device keys, `_admission_status` (`provisioning.py`) computes proposal status from which records exist, and `_constitution_snapshot` (`provisioning.py`) assembles teammates, devices, and berth roles.
 Two inputs are not evidence-backed.
-Quorum comes from `team_setting`, an unsigned key-value table, so whoever wrote the snapshot also chose the threshold its own finalizations had to clear.
+Quorum comes from `team_setting`, an unsigned key-value table, so the fetched snapshot supplies a value that must not silently become the newcomer's local policy.
+`_valid_finalization_exists` checks a finalization's signature and bindings but deliberately does not recount quorum against the current mutable threshold.
+It is not a historical replay under independently selected parameters.
 Berths have no signed origin at all: `_ensure_team_app_activation` (`provisioning.py`) inserts fresh `app` and `team_app_berth` rows with no record behind them, and signed records then refer to `berth_id` values that no signature establishes.
-Both need signed records before reconstruction can mean anything.
+Berth origins need signed evidence.
+Policy parameters need explicit provenance: the operator may choose them locally, or the selected extension may interpret signed policy events.
+If reconstruction claims that a threshold was in force at a particular historical point, it needs evidence for that claim; merely signing a policy value does not make it binding on every device.
 
 ## B6 — Compare the reconstruction against the delivered snapshot
 
@@ -239,6 +252,9 @@ This is a decision, not a check.
 **Default conclusion.** This device will treat this ancestry-closed view as its starting point.
 **Not concluded.** That any other device agrees, or that this view is canonical.
 A local ref is a local choice, like a Git branch.
+Selecting this Constitution view does not yet authorize integration of its transported Git history.
+That action still waits for B8's historical-authority and acceptance decision; B7 cannot bypass a later missing-evidence or removed-author pause.
+Recognition for new work remains a separate B9 decision, so a removed author's lack of current authority does not prevent explicit acceptance of their old work.
 **Override.** This step is the override; it is where a human decision legitimately enters.
 
 **Status: Contradicted.**
@@ -258,6 +274,8 @@ A teammate's later removal does not retroactively unsign their commits, and it d
 **Override.** For a newcomer encountering an author removed before it joined, the default is to pause its own integration for local review with the evidence preserved, rather than to accept or discard silently.
 A human may then accept the history.
 That acceptance covers the past only, is not permanent, and grants no authority over future work.
+Record the exact accepted commit set or head with its verified closure, the Constitution view, and the local decision.
+Acceptance of that finite history must not become an unrestricted authorization for later commits by the same signing key.
 
 Three distinctions carry the weight here.
 The inviter's earlier acceptance of an author is a fact about the inviter, not an instruction to the newcomer.
@@ -373,15 +391,19 @@ A person who is already a teammate adds another of their own devices.
 This path runs in two stages, and conflating them is why the current implementation has a hole in the middle.
 
 **Stage 1: identity join.** The new device and an existing device of the same person run B1, and the new device receives the person's NoteToSelf database.
-The root here is the authorizing device's signing key, pinned by the human comparison.
+The human comparison pins the authorizing device's signing key.
+That identifies the device making the introduction; it does not by itself select the identity-authority anchor.
 
 Stage 1 has a structural problem that no amount of care in the ceremony fixes.
 `shared_schema.sql` has no signature column in any table: `user_device`, `team`, `team_device_key`, `cloud_storage`, and `berth_cloud_allocation` are all unsigned rows.
 B4 needs authority chains that terminate at the root, and the identity snapshot contains no chains at all.
 Its bytes can be bound to the exchange by digest, and that is the whole of what B2 through B6 can do with it.
 
-The required change is to give NoteToSelf signed device-authority records, rooted at the person's first device key and pinned by B1's commitment, so that a newly joined device's authority is evidence rather than an assertion in a row.
-The alternative — treating NoteToSelf as an authority-free convenience cache and re-deriving everything from team Constitution evidence — is worse, because the person's device set is exactly the thing no team can establish for them.
+NoteToSelf needs signed device-authority records and an explicit identity-authority anchor, so that a newly joined device's authority is evidence rather than an assertion in a row.
+If the identity extension selects the person's first device key as that anchor, B1 must bind that key and B4 must check the introducer's chain to it.
+Alternatively, the operator could explicitly delegate introduction authority to the compared sibling key under a named policy.
+Which identity anchor and delegation policy to use remains a design blocker; the fetched device table cannot choose it.
+Treating NoteToSelf as an authority-free convenience cache would still require another source of identity-device authority: team membership alone does not establish the person's device set.
 
 **Stage 2: team join.** The new device joins one of the person's teams, generating a fresh team-device key and receiving a device-link certificate from a sibling.
 
@@ -423,7 +445,8 @@ These are consequences of the design above, not a review of unrelated defects.
 1. **Root the certificate graph.** `trusted_device_keys_by_teammate` must take the root as a caller-supplied parameter and reject self-issued certificates that do not match it (B4).
 2. **Widen and record the bootstrap commitment.** Construct it after the newcomer request exists; cover scope, the offer and attempt, both parties' keys, the root, the frontier, and the snapshot digest, in both directions, and store the comparison result with the trust view (B1).
 3. **Carry and verify the final response commitment.** The early offer is not this commitment; `accept_invitation` must check the snapshot against the authenticated final response before adopting anything (B1, B2).
-4. **Make quorum evidence.** Admission quorum must come from a signed record, not from the unsigned `team_setting` table (B5).
+4. **Record policy provenance.** Select quorum explicitly under local policy; historical claims about a threshold require evidence interpreted by the selected extension (B5).
+   Do not adopt the unsigned fetched `team_setting` value as the newcomer's policy implicitly.
 5. **Give berths a signed origin.** Signed records currently name `berth_id` values that no signature establishes (B5).
 6. **Add a signed removal record.** Until one exists, B8 has no evidence on either side ([#263](https://github.com/benjaminy/small-sea-collective/issues/263)).
 7. **Scope certificates to berth and purpose** ([#266](https://github.com/benjaminy/small-sea-collective/issues/266)) (B9).
@@ -446,7 +469,11 @@ These are consequences of the design above, not a review of unrelated defects.
 
 ## Open blockers
 
-Two questions remain open, and neither can be settled by writing more of this document.
+Three design questions remain open and block claims that both entry paths are complete.
+
+**Which identity-authority anchor the sibling ceremony authenticates.**
+The compared introducer key and a possible first-device anchor are different inputs.
+The identity extension must define the chain or explicit delegation the newcomer relies on; signed device rows alone do not settle that choice.
 
 **How team evidence reaches a sibling device.**
 A person's devices may deliberately join different subsets of their teams, so team evidence cannot simply ride along with the identity join.
