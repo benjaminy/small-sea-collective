@@ -15,6 +15,7 @@ import pathlib
 import secrets
 import sqlite3
 import sys
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -42,6 +43,11 @@ def _sqlite_engine(db_path) -> object:
     engine = create_engine(f"sqlite:///{db_path}")
     event.listen(engine, "connect", _enable_sqlite_foreign_keys)
     return engine
+
+from small_sea_note_to_self.bootstrap_status import (
+    assert_identity_bootstrap_trusted,
+    identity_bootstrap_status_path as _identity_bootstrap_status_path,
+)
 
 import cod_sync.protocol as CodSync
 import cod_sync.store as CodStore
@@ -274,17 +280,6 @@ def _bootstrap_pending_device_encryption_key_path(root_dir, device_id: bytes) ->
 
 def _bootstrap_pending_device_signing_key_path(root_dir, device_id: bytes) -> pathlib.Path:
     return _bootstrap_fake_enclave_dir(root_dir) / f"pending-device-{device_id.hex()}-sign.key"
-
-
-def _identity_bootstrap_status_path(root_dir, participant_hex: str) -> pathlib.Path:
-    return (
-        pathlib.Path(root_dir)
-        / "Participants"
-        / participant_hex
-        / "NoteToSelf"
-        / "Local"
-        / "identity_bootstrap_status.json"
-    )
 
 
 def _current_device_row(conn):
@@ -671,25 +666,6 @@ def _replace_redistribution_one_time_prekeys(
         conn.commit()
 
 
-def _consume_redistribution_one_time_prekey(
-    root_dir,
-    participant_hex: str,
-    *,
-    team_id: bytes,
-    prekey_id: bytes,
-) -> None:
-    with sqlite3.connect(device_local_db_path(root_dir, participant_hex)) as conn:
-        conn.execute(
-            """
-            UPDATE redistribution_one_time_prekey
-            SET private_key = NULL, consumed_at = ?
-            WHERE team_id = ? AND prekey_id = ?
-            """,
-            (_now_iso(), team_id, prekey_id),
-        )
-        conn.commit()
-
-
 def _redistribution_one_time_prekey_private(
     root_dir,
     participant_hex: str,
@@ -798,11 +774,34 @@ def _ensure_device_prekey_bundle_table(conn) -> None:
     )
 
 
+def _signed_device_prekey_bundle(
+    *,
+    team_id: bytes,
+    device_key_id: bytes,
+    prekey_bundle: PrekeyBundle,
+    private_key: bytes,
+) -> dict:
+    payload = {
+        "version": 1,
+        "team_id": team_id.hex(),
+        "device_key_id": device_key_id.hex(),
+        "prekey_bundle": _serialize_prekey_bundle(prekey_bundle),
+    }
+    return {
+        "payload": payload,
+        "signature": _sign_bytes(private_key, _device_prekey_bundle_bytes(payload)).hex(),
+    }
+
+
+def _device_prekey_bundle_bytes(payload: dict) -> bytes:
+    return b"SmallSea/device-prekey-bundle/v1\x00" + _json_bytes(payload)
+
+
 def _upsert_device_prekey_bundle(
     conn,
     *,
     device_key_id: bytes,
-    prekey_bundle: PrekeyBundle,
+    signed_bundle: dict,
     published_at: str,
 ) -> None:
     _ensure_device_prekey_bundle_table(conn)
@@ -815,7 +814,7 @@ def _upsert_device_prekey_bundle(
         {
             "device_key_id": device_key_id,
             "prekey_bundle_json": json.dumps(
-                _serialize_prekey_bundle(prekey_bundle),
+                signed_bundle,
                 sort_keys=True,
             ),
             "published_at": published_at,
@@ -823,7 +822,9 @@ def _upsert_device_prekey_bundle(
     )
 
 
-def _load_device_prekey_bundle(conn, device_key_id: bytes) -> PrekeyBundle | None:
+def _load_device_prekey_bundle(
+    conn, device_key_id: bytes, *, team_id: bytes, trusted_public_key: bytes,
+) -> PrekeyBundle | None:
     _ensure_device_prekey_bundle_table(conn)
     row = conn.execute(
         text(
@@ -833,7 +834,28 @@ def _load_device_prekey_bundle(conn, device_key_id: bytes) -> PrekeyBundle | Non
     ).fetchone()
     if row is None:
         return None
-    return _deserialize_prekey_bundle(json.loads(row[0]))
+    try:
+        wrapper = json.loads(row[0])
+        payload = wrapper["payload"]
+        if (
+            type(payload["version"]) is not int
+            or payload["version"] != 1
+            or payload["team_id"] != team_id.hex()
+            or payload["device_key_id"] != device_key_id.hex()
+            or key_id_from_public(trusted_public_key) != device_key_id
+            or not _verify_signature(
+                trusted_public_key,
+                _device_prekey_bundle_bytes(payload),
+                bytes.fromhex(wrapper["signature"]),
+            )
+        ):
+            raise ValueError("Invalid device prekey bundle binding")
+        bundle = _deserialize_prekey_bundle(payload["prekey_bundle"])
+        if bundle.participant_id != device_key_id:
+            raise ValueError("Invalid device prekey bundle participant")
+        return bundle
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Invalid signed device prekey bundle") from exc
 
 
 _DEFAULT_ADMISSION_QUORUM = 1
@@ -1657,10 +1679,13 @@ def _publish_local_device_prekey_bundle(
 ) -> dict:
     if team_id is None:
         team_id, _teammate_id = _team_row(root_dir, participant_hex, team_name)
+    private_key, local_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
     if team_device_public_key is None:
-        _private_key, team_device_public_key = get_current_team_device_key(
-            root_dir, participant_hex, team_name
-        )
+        team_device_public_key = local_public_key
+    elif team_device_public_key != local_public_key:
+        raise ValueError("Cannot publish prekeys for another device")
     device_key_id = key_id_from_public(team_device_public_key)
     identity, signed_prekey, _signed_prekey_private_key, one_time_prekeys = (
         _ensure_redistribution_prekey_material(
@@ -1676,13 +1701,17 @@ def _publish_local_device_prekey_bundle(
         signed_prekey=signed_prekey,
         one_time_prekeys=[prekey for prekey, _private in one_time_prekeys],
     )
+    signed_bundle = _signed_device_prekey_bundle(
+        team_id=team_id, device_key_id=device_key_id,
+        prekey_bundle=bundle, private_key=private_key,
+    )
     published_at = _now_iso()
 
     if conn is not None:
         _upsert_device_prekey_bundle(
             conn,
             device_key_id=device_key_id,
-            prekey_bundle=bundle,
+            signed_bundle=signed_bundle,
             published_at=published_at,
         )
     else:
@@ -1695,7 +1724,7 @@ def _publish_local_device_prekey_bundle(
                 _upsert_device_prekey_bundle(
                     local_conn,
                     device_key_id=device_key_id,
-                    prekey_bundle=bundle,
+                    signed_bundle=signed_bundle,
                     published_at=published_at,
                 )
         finally:
@@ -1750,16 +1779,6 @@ def _clear_identity_bootstrap_untrusted(root_dir, participant_hex: str) -> None:
     path = _identity_bootstrap_status_path(root_dir, participant_hex)
     if path.exists():
         path.unlink()
-
-
-def assert_identity_bootstrap_trusted(root_dir, participant_hex: str) -> None:
-    path = _identity_bootstrap_status_path(root_dir, participant_hex)
-    if path.exists():
-        status = json.loads(path.read_text())
-        raise ValueError(
-            "Installation is blocked because identity bootstrap did not verify cleanly: "
-            f"{status.get('reason', 'unknown reason')}"
-        )
 
 
 def _now_iso() -> str:
@@ -2427,6 +2446,11 @@ def prepare_identity_bootstrap(root_dir, welcome_bundle_b64):
         if shared_db.exists():
             raise ValueError(f"Participant {bundle.participant_hex} already exists locally")
 
+    _mark_identity_bootstrap_untrusted(
+        root_dir,
+        bundle.participant_hex,
+        reason="Identity bootstrap verification is pending",
+    )
     initialize_bootstrap_local_state(root_dir, bundle.participant_hex)
     (participant_dir / "FakeEnclave").mkdir(parents=True, exist_ok=True)
 
@@ -2483,7 +2507,7 @@ def finalize_identity_bootstrap(root_dir, prepared: dict):
     state = prepared["pending_state"]
     bundle_plaintext = serialize_welcome_bundle_plaintext(bundle)
     signature = bytes.fromhex(signed_bundle.signature_hex)
-    with sqlite3.connect(note_to_self_sync_db_path(root_dir, bundle.participant_hex)) as conn:
+    with closing(sqlite3.connect(note_to_self_sync_db_path(root_dir, bundle.participant_hex))) as conn:
         signer_row = conn.execute(
             "SELECT signing_key FROM user_device WHERE id = ?",
             (bytes.fromhex(signed_bundle.authorizing_device_id_hex),),
@@ -2499,6 +2523,22 @@ def finalize_identity_bootstrap(root_dir, prepared: dict):
             reason="Welcome bundle signature verification failed",
         )
         raise ValueError("Welcome bundle signature verification failed")
+    with closing(sqlite3.connect(note_to_self_sync_db_path(root_dir, bundle.participant_hex))) as conn:
+        joining_row = conn.execute(
+            "SELECT bootstrap_encryption_key, signing_key FROM user_device WHERE id = ?",
+            (bytes.fromhex(pending_artifact.device_id_hex),),
+        ).fetchone()
+    expected_joining_keys = (
+        bytes.fromhex(pending_artifact.device_encryption_public_key_hex),
+        bytes.fromhex(pending_artifact.device_signing_public_key_hex),
+    )
+    if joining_row != expected_joining_keys:
+        _mark_identity_bootstrap_untrusted(
+            root_dir,
+            bundle.participant_hex,
+            reason="Fetched joining device keys do not match the pending join request",
+        )
+        raise ValueError("Fetched joining device keys do not match the pending join request")
     _clear_identity_bootstrap_untrusted(root_dir, bundle.participant_hex)
 
     pending_encryption_key_path = pathlib.Path(state["encryption_private_key_ref"])
@@ -4213,8 +4253,10 @@ def redistribute_sender_key(root_dir, participant_hex, team_name, target_device_
     skipped = []
     try:
         with engine.begin() as conn:
-            for device_key_id, _public_key in sorted(candidate_public_keys.items()):
-                bundle = _load_device_prekey_bundle(conn, device_key_id)
+            for device_key_id, public_key in sorted(candidate_public_keys.items()):
+                bundle = _load_device_prekey_bundle(
+                    conn, device_key_id, team_id=team_id, trusted_public_key=public_key,
+                )
                 if bundle is None:
                     skipped.append(device_key_id.hex())
                     continue
@@ -4370,23 +4412,33 @@ def receive_sender_key_distribution(root_dir, participant_hex, team_name, distri
         _deserialize_encrypted_message(payload["ratchet_message"]),
         associated_data=associated_data,
     )
-    if used_otp_id is not None:
-        _consume_redistribution_one_time_prekey(
-            root_dir,
-            participant_hex,
-            team_id=team_id,
-            prekey_id=used_otp_id,
-    )
     distribution = deserialize_distribution_message(json.loads(plaintext.decode("utf-8")))
     if distribution.sender_device_key_id != sender_device_key_id:
         raise ValueError("Distribution payload sender stream does not match decrypted sender key")
     if distribution.sender_chain_id.hex() != payload["sender_chain_id"]:
         raise ValueError("Distribution payload sender chain does not match decrypted sender key")
-    save_peer_sender_key(
-        device_local_db_path(root_dir, participant_hex),
-        team_id,
-        receiver_record_from_distribution(distribution),
-    )
+    if distribution.group_id != team_id:
+        raise ValueError("Distribution payload group does not match local team")
+    receiver_record = receiver_record_from_distribution(distribution)
+    db_path = device_local_db_path(root_dir, participant_hex)
+    conn = sqlite3.connect(db_path)
+    try:
+        with conn:
+            if used_otp_id is not None:
+                consumed = conn.execute(
+                    """
+                    UPDATE redistribution_one_time_prekey
+                    SET private_key = NULL, consumed_at = ?
+                    WHERE team_id = ? AND prekey_id = ?
+                      AND private_key IS NOT NULL AND consumed_at IS NULL
+                    """,
+                    (_now_iso(), team_id, used_otp_id),
+                )
+                if consumed.rowcount != 1:
+                    raise ValueError("Distribution payload consumed an unavailable one-time prekey")
+            save_peer_sender_key(db_path, team_id, receiver_record, connection=conn)
+    finally:
+        conn.close()
     return {
         "team_id_hex": team_id.hex(),
         "sender_device_key_id_hex": sender_device_key_id.hex(),

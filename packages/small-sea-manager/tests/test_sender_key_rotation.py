@@ -15,7 +15,6 @@ from small_sea_manager.manager import TeamManager
 from small_sea_manager import provisioning
 from small_sea_manager.provisioning import (
     _publish_local_device_prekey_bundle,
-    _serialize_prekey_bundle,
     _store_team_certificate,
     _team_row,
     _team_sync_dir,
@@ -87,6 +86,7 @@ def _add_same_teammate_linked_device_bundle(root: pathlib.Path, participant_hex:
         participant_hex,
         team_name,
         linked_device_key.public_key,
+        _linked_device_private_key,
         issue_link_cert=True,
     )
 
@@ -96,6 +96,7 @@ def _publish_device_prekey_bundle_for_public_key(
     participant_hex: str,
     team_name: str,
     public_key: bytes,
+    private_key: bytes,
     *,
     issue_link_cert: bool = False,
 ):
@@ -129,7 +130,10 @@ def _publish_device_prekey_bundle_for_public_key(
             """,
             (
                 device_key_id,
-                json.dumps(_serialize_prekey_bundle(bundle), sort_keys=True),
+                json.dumps(provisioning._signed_device_prekey_bundle(
+                    team_id=team_id, device_key_id=device_key_id,
+                    prekey_bundle=bundle, private_key=private_key,
+                ), sort_keys=True),
                 "2026-04-13T00:00:00+00:00",
             ),
         )
@@ -283,8 +287,16 @@ def test_create_team_publishes_local_device_prekey_bundle(playground_dir):
         ).fetchone()
     assert row is not None
     assert len(row[0]) == 16
-    assert "signed_prekey" in row[1]
-    assert result["team_id_hex"]
+    wrapper = json.loads(row[1])
+    assert wrapper["payload"]["version"] == 1
+    assert wrapper["payload"]["team_id"] == result["team_id_hex"]
+    assert wrapper["payload"]["device_key_id"] == row[0].hex()
+    _, public_key = provisioning.get_current_team_device_key(root, alice_hex, "ProjectX")
+    assert provisioning._verify_signature(
+        public_key,
+        provisioning._device_prekey_bundle_bytes(wrapper["payload"]),
+        bytes.fromhex(wrapper["signature"]),
+    )
 
 
 def test_rotate_and_redistribute_round_trip_cross_teammate(playground_dir):
@@ -478,6 +490,7 @@ def test_reconcile_runtime_state_retries_after_bundle_publication(playground_dir
         alice_hex,
         "ProjectX",
         linked_device_key.public_key,
+        _linked_device_private_key,
     )
 
     second = provisioning.reconcile_runtime_state(root, alice_hex, "ProjectX")

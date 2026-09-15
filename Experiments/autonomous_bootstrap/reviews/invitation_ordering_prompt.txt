@@ -1,0 +1,120 @@
+Review this documentation diff for logical contradictions, in at most 400 words. Public local-first research project; user authorizes Claude review. No tools, agents or other models. Core verifies bytes/origin/ancestry; extensions and local Manager decide authority. Prior draft committed before newcomer keys existed. Scope is ordering and authority ownership, not new governance. Identify concrete flaws or missing checks only.
+diff --git a/Documentation/bootstrap-trust.md b/Documentation/bootstrap-trust.md
+index 65297c3..ac32494 100644
+--- a/Documentation/bootstrap-trust.md
++++ b/Documentation/bootstrap-trust.md
+@@ -63,10 +63,13 @@ The compared value — call it the bootstrap commitment — must cover five thin
+ 
+ 1. the operation scope: which identity or which team, and which entry path;
+ 2. both parties' long-term public keys, including the newcomer's fresh device signing key;
+-3. the trust root, meaning the team's technical origin and the genesis authority key that B4 will check against;
++3. the technical origin and the explicit authority anchor selected under the bootstrap extension that B4 will check against;
+ 4. the frontier: the exact set of Constitution event identifiers being offered;
+ 5. the digest of the snapshot bytes that will be delivered.
+ 
++The final commitment is created only after the introducer receives the newcomer's request and fresh keys.
++An invitation sent before that request is an offer to start the exchange, not a completed B1 commitment.
++
+ Covering both directions matters.
+ A commitment over only the introducer's response lets a relay substitute the newcomer's half, so the introducer authorizes a device its human never saw.
+ 
+@@ -134,10 +137,13 @@ Today's records are SQL rows whose ordering comes from Git merges rather than fr
+ **Inputs.** The core-verified events from B3, the frontier from the B1 commitment, and the trust root from the B1 commitment.
+ **Provenance.** The events come from the untrusted snapshot; the frontier and root come from the authenticated exchange.
+ **Check.** Two parts.
+-First, the frontier present in the snapshot is exactly the event set the commitment named — no more, no fewer.
++First, the selected bootstrap frontier is exactly the tip set the commitment named, and its required closure is present and core-verified.
++Stored events outside that closure do not become part of the selected bootstrap view merely because they arrived in the same repository.
++B2 still requires the exact committed snapshot bytes; a newer head is not a substitute for that snapshot.
+ Second, every authority chain the newcomer intends to rely on terminates at the root the commitment carried, through ancestry that is present and core-verified.
+-**Policy owner.** The framework.
+-This is a protocol rule, not an application choice.
++**Policy owner.** The Manager applies the selected bootstrap and authority extension.
++The framework checks origin, event integrity and ancestry; the extension decides what counts as an authority chain to the explicitly pinned anchor.
++A genesis authority key is one possible anchor for this extension, not a mandatory Constitution-core authority or an answer to its open origin-format questions.
+ **Evidence recorded.** The root, the frontier, and the chain from each relied-upon key back to the root.
+ **Default conclusion.** The authority this snapshot describes descends from the root the newcomer's human authenticated.
+ **Not concluded.** That the described authority is correct or current.
+@@ -155,7 +161,7 @@ if cert.issuer_participant_id == admitted_teammate_id:
+     issuer_keys = [cert.subject_public_key]
+ ```
+ 
+-It accepts as many roots as the snapshot happens to contain, and never asks which one is this team's genesis.
++It accepts as many roots as the snapshot happens to contain, and never asks which anchor the newcomer authenticated independently.
+ An attacker who fabricates a team database fabricates its genesis membership along with it, and the graph resolves without a complaint.
+ The required change: the resolver takes the root as an explicit parameter supplied by the caller from the exchange, and refuses to treat any certificate as a root unless it matches.
+ Until that change lands, no amount of care in B5 or B6 means anything, because reconstruction and snapshot will agree by being the same forgery read twice.
+@@ -313,16 +319,33 @@ Shared one-time-prekey selection and local receipt persistence are separate conc
+ 
+ A person who is not yet a teammate joins a team.
+ 
+-B1's commitment is created when the inviter creates the invitation, and it freezes the offered view at that moment.
+-The invitee therefore bootstraps at the exact view the inviter committed to, not at whatever head the store publishes when the invitee gets around to fetching.
+-Team changes made after the invitation was issued arrive afterwards, through ordinary sync, and face B8 and B9 like any other incoming work.
+-
+-This is what makes an asynchronous invitation workable.
+-The two humans do not have to be present at the same moment: the inviter fixes the commitment, conveys it through a channel the invitee already trusts, and the invitee compares it whenever they fetch.
+-What the two humans must not do is skip the comparison because the fetch succeeded.
+-
+-The root in B4 is the team's genesis authority, carried in the commitment.
+-The inviter's own key is not the root; it is a key whose authority the invitee checks by chaining back to the root like any other.
++This path uses an offer followed by a request and a final response.
++The inviter cannot bind a commitment to a newcomer key that does not yet exist.
++
++1. **Offer.** The inviter conveys the intended team and a way to continue the exchange through a channel the invitee already trusts.
++   The offer may name an invitation or proposal, but it does not complete B1, admit a device, authorize active history adoption, or release future encryption keys.
++2. **Request.** The invitee generates its fresh keys and sends a request identifying that offer and the operation scope.
++   The request includes an attempt identifier so the final response can be checked against this attempt rather than another pending join.
++3. **Final response.** After receiving the request, the inviter selects the snapshot, frontier and explicit authority anchor it is offering.
++   The final B1 commitment covers the offer reference, exact request, both parties' keys, operation scope, anchor, frontier and snapshot digest.
++   Both sides authenticate that same completed exchange through their trusted channel and record the comparison before treating the request as belonging to the intended person.
++4. **Delivery and decisions.** The invitee retrieves the committed snapshot and runs B2 through B9.
++   The inviter separately evaluates admission and device enrollment under its current local policy before B10 can release keys.
++   A matched exchange is evidence of what the parties agreed to discuss, not proof that admission or key distribution is authorized.
++
++These messages can be exchanged asynchronously; the two humans need not be present at the same time.
++This adds a return exchange before bootstrap completes.
++That cost is deliberate: an unsolicited offer alone cannot authenticate a fresh key chosen later.
++An alternative would authenticate a frozen snapshot in the offer and bind the device in a second ceremony, but it would need two separately tracked trust decisions and retention of the earlier snapshot.
++This transcript chooses the request-first final commitment to keep one complete bootstrap commitment.
++
++The invitee starts from the snapshot selected in the final response, not whatever head the store publishes when fetching begins.
++Later changes arrive through ordinary sync and receive their own checks and local acceptance decisions.
++If the pinned snapshot is unavailable, this attempt pauses; the parties can authenticate a new response instead of silently substituting newer bytes.
++
++The authority anchor is explicit in the exchange and interpreted by the selected extension.
++If that extension pins genesis authority, the inviter's key must chain to that anchor.
++Choosing a different anchor is an explicit local trust decision, not a core-verification result or a root inferred from the fetched roster.
+ 
+ **Trusted to assert.** That this team is the team the invitee's human meant to join, and that this frontier is the team's history as the inviter sees it.
+ **Not trusted to assert.** That the view is complete, that no teammate was concealed, and that no concurrent branch exists.
+@@ -391,7 +414,7 @@ That harms only that person, and it is a better outcome than a device guessing.
+ These are consequences of the design above, not a review of unrelated defects.
+ 
+ 1. **Root the certificate graph.** `trusted_device_keys_by_teammate` must take the root as a caller-supplied parameter and reject self-issued certificates that do not match it (B4).
+-2. **Widen and record the bootstrap commitment.** It must cover scope, both parties' keys, the root, the frontier, and the snapshot digest, in both directions, and the comparison result must be stored with the trust view (B1).
++2. **Widen and record the bootstrap commitment.** Construct it after the newcomer request exists; cover scope, the offer and attempt, both parties' keys, the root, the frontier, and the snapshot digest, in both directions, and store the comparison result with the trust view (B1).
+ 3. **Give the invitation token a commitment and verify it.** `accept_invitation` must check the clone against the commitment before adopting anything (B1, B2).
+ 4. **Make quorum evidence.** Admission quorum must come from a signed record, not from the unsigned `team_setting` table (B5).
+ 5. **Give berths a signed origin.** Signed records currently name `berth_id` values that no signature establishes (B5).
+@@ -425,3 +448,20 @@ Until there is a mechanism, the sibling path's stage 2 has no authenticated star
+ **Whether Git retains the ancestry the verifier demands.**
+ B8's authorship check and the intended deletion of old Git contents pull in opposite directions.
+ The resolution belongs to #190 and #266 together, and this transcript records the dependency rather than choosing.
++
++## Invitation ordering checks
++
++These are design walkthroughs, not claims that the current invitation code implements the sequence.
++
++| Case | Expected conclusion |
++| --- | --- |
++| Valid offer, request and authenticated final response | Both sides bind the same fresh device keys and snapshot; admission and local adoption still need their separate decisions. |
++| Offer arrives before installation | No device key is assumed; the offer can wait without completing B1 or granting authority. |
++| Relay replaces the request key | The final exchange differs from the newcomer's retained request; the comparison or exact-request check fails. |
++| Response belongs to another attempt | The offer/attempt and exact-request binding fails even if the signature and snapshot digest are individually valid. |
++| Store advances after the final response | Fetch the pinned snapshot; treat later events separately. A current head alone cannot satisfy B2. |
++| Inviter changes its local admission policy after responding | The response still authenticates the offered evidence; it does not force the inviter to admit the device or release keys. |
++| Pinned snapshot is missing | Pause this attempt or authenticate a new complete response; do not substitute a history by arrival order. |
++
++The remaining B1 wire-format and comparison-strength questions still need protocol review.
++This ordering correction does not implement the exchange or prove its short-authentication-string security.

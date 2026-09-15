@@ -111,8 +111,10 @@ def _save_record(
     table_name: str,
     team_id: bytes,
     record: SenderKeyRecord,
+    *,
+    connection: sqlite3.Connection | None = None,
 ) -> None:
-    conn = sqlite3.connect(str(db_path))
+    conn = connection if connection is not None else sqlite3.connect(str(db_path))
     try:
         conn.execute(
             f"""
@@ -140,17 +142,26 @@ def _save_record(
                 _serialize_skipped(record.skipped_message_keys),
             ),
         )
-        conn.commit()
+        if connection is None:
+            conn.commit()
     finally:
-        conn.close()
+        if connection is None:
+            conn.close()
 
 
 def save_team_sender_key(db_path: str | Path, team_id: bytes, record: SenderKeyRecord) -> None:
     _save_record(db_path, "team_sender_key", team_id, record)
 
 
-def save_peer_sender_key(db_path: str | Path, team_id: bytes, record: SenderKeyRecord) -> None:
-    _save_record(db_path, "peer_sender_key", team_id, record)
+def save_peer_sender_key(
+    db_path: str | Path,
+    team_id: bytes,
+    record: SenderKeyRecord,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    """Save a receiver record; a supplied connection owns its transaction."""
+    _save_record(db_path, "peer_sender_key", team_id, record, connection=connection)
 
 
 def load_team_sender_key(db_path: str | Path, team_id: bytes) -> SenderKeyRecord | None:

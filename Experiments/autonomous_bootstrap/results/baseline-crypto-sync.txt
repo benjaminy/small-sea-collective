@@ -1,0 +1,224 @@
+........................................................................ [ 20%]
+........................................................................ [ 40%]
+........................................................................ [ 61%]
+............................................................EEE
+==================================== ERRORS ====================================
+__________ ERROR at setup of test_publish_and_fetch_roundtrip_via_hub __________
+
+requested = [None, None]
+
+    def reserve_ports(requested):
+        """Bind the requested TCP ports at once and return the chosen numbers.
+    
+        Each entry is either an explicit port number or None, meaning "any free
+        port".  All sockets stay bound until every port has been selected, so the
+        returned ports cannot collide with each other.  They are released before
+        the service binds them, so allocation against other processes is advisory:
+        concurrent runs passing this check is evidence, not proof, of race freedom.
+    
+        An explicit port that is already occupied raises here, so a caller that
+        insists on a fixed port fails loudly instead of silently talking to
+        whatever else is listening there.
+        """
+        sockets = []
+        try:
+            for port in requested:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sockets.append(sock)
+                try:
+>                   sock.bind(("127.0.0.1", 0 if port is None else port))
+E                   PermissionError: [Errno 1] Operation not permitted
+
+test_support.py:124: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+minio_server_gen = <function minio_server_gen.<locals>.start_server at 0x10c5c3560>
+
+    @pytest.fixture(scope="module")
+    def minio(minio_server_gen):
+>       return minio_server_gen()
+               ^^^^^^^^^^^^^^^^^^
+
+packages/cod-sync/tests/test_smallsea_store.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+test_support.py:189: in start_server
+    port, console_port = reserve_ports([port, None])
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+requested = [None, None]
+
+    def reserve_ports(requested):
+        """Bind the requested TCP ports at once and return the chosen numbers.
+    
+        Each entry is either an explicit port number or None, meaning "any free
+        port".  All sockets stay bound until every port has been selected, so the
+        returned ports cannot collide with each other.  They are released before
+        the service binds them, so allocation against other processes is advisory:
+        concurrent runs passing this check is evidence, not proof, of race freedom.
+    
+        An explicit port that is already occupied raises here, so a caller that
+        insists on a fixed port fails loudly instead of silently talking to
+        whatever else is listening there.
+        """
+        sockets = []
+        try:
+            for port in requested:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sockets.append(sock)
+                try:
+                    sock.bind(("127.0.0.1", 0 if port is None else port))
+                except OSError as exc:
+>                   raise RuntimeError(f"Port {port} is not available: {exc}") from exc
+E                   RuntimeError: Port None is not available: [Errno 1] Operation not permitted
+
+test_support.py:126: RuntimeError
+____________ ERROR at setup of test_incremental_publication_via_hub ____________
+
+requested = [None, None]
+
+    def reserve_ports(requested):
+        """Bind the requested TCP ports at once and return the chosen numbers.
+    
+        Each entry is either an explicit port number or None, meaning "any free
+        port".  All sockets stay bound until every port has been selected, so the
+        returned ports cannot collide with each other.  They are released before
+        the service binds them, so allocation against other processes is advisory:
+        concurrent runs passing this check is evidence, not proof, of race freedom.
+    
+        An explicit port that is already occupied raises here, so a caller that
+        insists on a fixed port fails loudly instead of silently talking to
+        whatever else is listening there.
+        """
+        sockets = []
+        try:
+            for port in requested:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sockets.append(sock)
+                try:
+>                   sock.bind(("127.0.0.1", 0 if port is None else port))
+E                   PermissionError: [Errno 1] Operation not permitted
+
+test_support.py:124: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+minio_server_gen = <function minio_server_gen.<locals>.start_server at 0x10c5c3560>
+
+    @pytest.fixture(scope="module")
+    def minio(minio_server_gen):
+>       return minio_server_gen()
+               ^^^^^^^^^^^^^^^^^^
+
+packages/cod-sync/tests/test_smallsea_store.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+test_support.py:189: in start_server
+    port, console_port = reserve_ports([port, None])
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+requested = [None, None]
+
+    def reserve_ports(requested):
+        """Bind the requested TCP ports at once and return the chosen numbers.
+    
+        Each entry is either an explicit port number or None, meaning "any free
+        port".  All sockets stay bound until every port has been selected, so the
+        returned ports cannot collide with each other.  They are released before
+        the service binds them, so allocation against other processes is advisory:
+        concurrent runs passing this check is evidence, not proof, of race freedom.
+    
+        An explicit port that is already occupied raises here, so a caller that
+        insists on a fixed port fails loudly instead of silently talking to
+        whatever else is listening there.
+        """
+        sockets = []
+        try:
+            for port in requested:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sockets.append(sock)
+                try:
+                    sock.bind(("127.0.0.1", 0 if port is None else port))
+                except OSError as exc:
+>                   raise RuntimeError(f"Port {port} is not available: {exc}") from exc
+E                   RuntimeError: Port None is not available: [Errno 1] Operation not permitted
+
+test_support.py:126: RuntimeError
+_ ERROR at setup of test_an_empty_bucket_reports_absence_not_a_transport_failure _
+
+requested = [None, None]
+
+    def reserve_ports(requested):
+        """Bind the requested TCP ports at once and return the chosen numbers.
+    
+        Each entry is either an explicit port number or None, meaning "any free
+        port".  All sockets stay bound until every port has been selected, so the
+        returned ports cannot collide with each other.  They are released before
+        the service binds them, so allocation against other processes is advisory:
+        concurrent runs passing this check is evidence, not proof, of race freedom.
+    
+        An explicit port that is already occupied raises here, so a caller that
+        insists on a fixed port fails loudly instead of silently talking to
+        whatever else is listening there.
+        """
+        sockets = []
+        try:
+            for port in requested:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sockets.append(sock)
+                try:
+>                   sock.bind(("127.0.0.1", 0 if port is None else port))
+E                   PermissionError: [Errno 1] Operation not permitted
+
+test_support.py:124: PermissionError
+
+The above exception was the direct cause of the following exception:
+
+minio_server_gen = <function minio_server_gen.<locals>.start_server at 0x10c5c3560>
+
+    @pytest.fixture(scope="module")
+    def minio(minio_server_gen):
+>       return minio_server_gen()
+               ^^^^^^^^^^^^^^^^^^
+
+packages/cod-sync/tests/test_smallsea_store.py:24: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+test_support.py:189: in start_server
+    port, console_port = reserve_ports([port, None])
+                         ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+requested = [None, None]
+
+    def reserve_ports(requested):
+        """Bind the requested TCP ports at once and return the chosen numbers.
+    
+        Each entry is either an explicit port number or None, meaning "any free
+        port".  All sockets stay bound until every port has been selected, so the
+        returned ports cannot collide with each other.  They are released before
+        the service binds them, so allocation against other processes is advisory:
+        concurrent runs passing this check is evidence, not proof, of race freedom.
+    
+        An explicit port that is already occupied raises here, so a caller that
+        insists on a fixed port fails loudly instead of silently talking to
+        whatever else is listening there.
+        """
+        sockets = []
+        try:
+            for port in requested:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sockets.append(sock)
+                try:
+                    sock.bind(("127.0.0.1", 0 if port is None else port))
+                except OSError as exc:
+>                   raise RuntimeError(f"Port {port} is not available: {exc}") from exc
+E                   RuntimeError: Port None is not available: [Errno 1] Operation not permitted
+
+test_support.py:126: RuntimeError
+=========================== short test summary info ============================
+ERROR packages/cod-sync/tests/test_smallsea_store.py::test_publish_and_fetch_roundtrip_via_hub
+ERROR packages/cod-sync/tests/test_smallsea_store.py::test_incremental_publication_via_hub
+ERROR packages/cod-sync/tests/test_smallsea_store.py::test_an_empty_bucket_reports_absence_not_a_transport_failure
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 3 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+276 passed, 3 errors in 82.83s (0:01:22)
