@@ -72,3 +72,11 @@ The full review and response live in the voyage root.
 
 The focused review checkup reproduced the revised team and history models and found no remaining blockers in its scope.
 It leaves default ceremony routing for recognition-only identities as a policy follow-up; the draft records the inherited missing proof and makes no claim that repeating a comparison repairs it.
+
+## Bounded follow-up for #266
+
+[The authority-basis probe](../../Experiments/berth_authority_basis/README.md) uses real signed Git commits to compare historical-union keys, current-only keys and a contextual local decision.
+Run `.venv/bin/python Experiments/berth_authority_basis/probe.py`.
+It verifies seven signed commits and rejects a tampered control, reproduces both naive key-set failures through the actual verifier, and distinguishes accepted finite history from current authority and missing basis claims.
+This follow-up was inspected and reproduced by the orchestrator; it was not part of the earlier independent #262 review.
+Its authority and acceptance inputs remain simulated and it defines no approved runtime interface.

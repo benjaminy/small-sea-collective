@@ -31,3 +31,12 @@ The new models use real Ed25519 signatures but small generated schemas and full-
 They do not implement the wire ceremony, encrypted transport, general event-DAG policy, or runtime Manager provisioning.
 The historical-work model binds each work statement to an authority basis, which #266 still must specify for actual Git work.
 The local skill update records direct authorization of repository processing by the named cloud-agent provider as a preflight concern; it lives outside this Git repository.
+
+## Bounded #266 follow-up
+
+The actual SshCommitVerifier accepts a newly made backdated commit under the historical union of berth-A keys.
+Using only the current berth-A key rejects the current head because its accepted parent used the removed key.
+The contextual model retains exact finite acceptance separately from current local authority and treats the commit's signed basis citation as a claim, not proof of creation time.
+It distinguishes missing or ambiguous basis from bad signatures, rejects another berth's key, and shows that changing the local authority view changes a decision without changing the signature evidence.
+The first worker fixture reassigned a berth-B key to A; the orchestrator replaced it with removal of A's own current key to preserve berth-key separation.
+The probe and its simulated inputs are in `Experiments/berth_authority_basis/`; no runtime API or policy was implemented.

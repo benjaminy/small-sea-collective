@@ -19,7 +19,8 @@ Runtime verifier wiring and the broader removal policy remain in #266 and #263.
 4. Completed: independent review findings resolved; the focused checkup found no blockers in scope.
    The actual verifier confirms that missing file content differs from missing commit ancestry.
 5. Completed: review packet, local issue-update drafts and final commit-message draft prepared.
-6. Bounded follow-up: test #266's distinction between signed commit evidence, finite history acceptance and current local berth authority.
+6. Completed bounded follow-up: actual signed Git commits expose the failures of historical-union and current-only key sets.
+   The contextual model keeps finite accepted history separate from current local berth authority and missing basis evidence.
    No runtime API or verifier wiring is approved by this experiment.
 
 ## Evidence required
