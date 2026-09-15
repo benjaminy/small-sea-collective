@@ -1,6 +1,6 @@
 # Finish the bootstrap trust transcript
 
-Status: under way; the human explicitly authorized departure on 2026-09-15.
+Status: complete for human review; all work remains local.
 Preflight passed, including scheduled state recovery.
 The operating agreement and current orientation live in [the voyage README](../Voyages/Finish-262/README.md).
 The voyage root is intentionally ignored by Git; this tracked handoff does not replace it.
@@ -22,6 +22,9 @@ Runtime verifier wiring and the broader removal policy remain in #266 and #263.
 6. Completed bounded follow-up: actual signed Git commits expose the failures of historical-union and current-only key sets.
    The contextual model keeps finite accepted history separate from current local berth authority and missing basis evidence.
    No runtime API or verifier wiring is approved by this experiment.
+7. Completed bounded fetch follow-up: the actual fetch hook rejects simulated authority failures before pin movement, but cannot keep a captured view current after it returns.
+   A stale fetch verifies its exact observed head while retaining a preexisting descendant pin that this invocation did not verify.
+   These are #266 research results, not a runtime or API choice and not a condition of #262 readiness for human review.
 
 ## Evidence required
 

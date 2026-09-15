@@ -40,3 +40,23 @@ The contextual model retains exact finite acceptance separately from current loc
 It distinguishes missing or ambiguous basis from bad signatures, rejects another berth's key, and shows that changing the local authority view changes a decision without changing the signature evidence.
 The first worker fixture reassigned a berth-B key to A; the orchestrator replaced it with removal of A's own current key to preserve berth-key separation.
 The probe and its simulated inputs are in `Experiments/berth_authority_basis/`; no runtime API or policy was implemented.
+
+## Contextual fetch boundary
+
+The existing verifier hook can reject simulated authority failures before a peer pin moves.
+It cannot by itself establish that a view remains applicable after the hook returns.
+A deterministic injection at the actual `advance_ref` call reproduces that gap; a control changing the view before verifier return is rejected.
+The experiment's receipts and grants are fixed local simulated inputs, not a Constitution-derived or globally current policy view.
+It records a commit-to-fingerprint map and the captured view in memory; that map identifies which key signed each checked commit but is not a durable audit record or complete authority proof.
+The pin retains only an object id.
+This separates a decision under a named view from a guarantee about policy at a later action.
+The transport pin is not application acceptance or key-release authority.
+
+The retained-pin control sharpens the result.
+An old-store fetch verifies signed A as its exact `observed_head`, while `advance_ref` reports `stale` and leaves a preexisting descendant pin at B.
+The A-only verifier rejects B when asked to verify it directly, and a fresh-pin control points to verified A.
+No new unverified pin advancement occurs: the fixture presupposes an earlier operation that imported B and seeded the pin.
+
+Run `.venv/bin/python Experiments/contextual_git_fetch/probe.py` and `.venv/bin/python Experiments/contextual_git_fetch/retained_pin.py`.
+Both use temporary signed repositories and local stores; neither selects a runtime API, synchronization mechanism, integration decision or key-release policy.
+These bounded #266 findings do not change the transcript's readiness for human review, and no issue text has been published.

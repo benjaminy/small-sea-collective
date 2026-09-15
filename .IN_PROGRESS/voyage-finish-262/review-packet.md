@@ -32,6 +32,8 @@ Manager records the commitment before fetching through the Hub, then checks the 
 | Removed-author history accepted without future power | `bootstrap_history`: `removed_before_join`, `explicit_finite_acceptance`, `same_key_later_work` | Signed work records name a basis; #266 must define the actual Git authority binding. |
 | Missing authority ancestry, changed view, wrong berth, invalid signature despite override | `bootstrap_history`: corresponding cases | Special case of one grant and one removal child. |
 | Missing old content versus missing commit ancestry | `bootstrap_retention`: removes/restores old blob, old tree, parent commit | Actual SshCommitVerifier; no retention transport implementation. |
+| Fetch authority decision under a captured view | `contextual_git_fetch`: rejection controls and view changes before and after verifier return | Grants and receipts are fixed local simulated inputs; the fingerprint map is not complete audit evidence. |
+| Old observed head with a retained descendant pin | `contextual_git_fetch/retained_pin.py`: stale pin and fresh-pin controls | B was imported and pinned by an earlier simulated operation; no new unverified advancement occurs. |
 | Undisclosed events | `bootstrap_exchange`: `authentic_undisclosed_grant`; team probe holds an independent omitted grant | Successful authentication cannot establish global completeness. |
 
 ## Reproduce
@@ -44,6 +46,8 @@ Run from the repository root:
 .venv/bin/python Experiments/bootstrap_team_delivery/probe.py
 .venv/bin/python Experiments/bootstrap_history/probe.py
 .venv/bin/python Experiments/bootstrap_retention/probe.py
+.venv/bin/python Experiments/contextual_git_fetch/probe.py
+.venv/bin/python Experiments/contextual_git_fetch/retained_pin.py
 .venv/bin/python -m pytest packages/cod-sync/tests/test_verify.py -q
 git diff --check
 ```
@@ -58,6 +62,7 @@ Runtime authority records, event-DAG evaluation, Manager integration, encrypted 
 No model proves introducer honesty, global completeness, human identity or trusted time.
 Fresh team encryption-key release still requires B9/B10 authority; identity continuity alone cannot supply it.
 The transcript's readiness for human review is separate from human acceptance and GitHub issue closure.
+The contextual-fetch probes inform #266 and make no runtime or API choice; they are not an added gate on #262 readiness.
 
 ## Independent review resolution
 
@@ -78,5 +83,6 @@ It leaves default ceremony routing for recognition-only identities as a policy f
 [The authority-basis probe](../../Experiments/berth_authority_basis/README.md) uses real signed Git commits to compare historical-union keys, current-only keys and a contextual local decision.
 Run `.venv/bin/python Experiments/berth_authority_basis/probe.py`.
 It verifies seven signed commits and rejects a tampered control, reproduces both naive key-set failures through the actual verifier, and distinguishes accepted finite history from current authority and missing basis claims.
-This follow-up was inspected and reproduced by the orchestrator; it was not part of the earlier independent #262 review.
+This authority-basis follow-up was inspected and reproduced by the orchestrator after the earlier independent #262 review.
+The later narrow Sol review covered the contextual-fetch experiment and retained-pin result only; it was not a broad rereview of #262.
 Its authority and acceptance inputs remain simulated and it defines no approved runtime interface.

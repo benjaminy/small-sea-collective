@@ -53,3 +53,21 @@ Adding the signer key changes recognition to `G`, preserving the fingerprint.
 The conservative SshCommitVerifier still rejects both unrecognized and invalid cases with distinct errors.
 Investigate a separate evidence-report interface that preserves these distinctions before Manager applies berth, purpose and local-view policy.
 Do not weaken the existing acceptance contract by simply allowing `U`, and retain original-object, ancestry and configuration checks.
+
+## #266 — authority at the fetch boundary
+
+`Experiments/contextual_git_fetch` passes a research-only contextual verifier through the actual CodSync fetch path.
+Its grants and exact finite receipts are fixed local simulated inputs, not derived or globally current authority.
+Its commit-to-fingerprint map identifies the signing key observed for each commit; it is not complete or durable audit evidence.
+Unknown authority preserves the valid signature evidence while pausing the fetch.
+A local view change before the verifier returns is detected, but a change after return and before `advance_ref` still allows the pin to move.
+Specify whether a decision means acceptance under a captured view or requires that view to remain applicable at the later action.
+The experiment retains the captured view only in memory; the pin stores a commit id alone.
+
+The companion retained-pin probe distinguishes the fetched head from the resulting pin.
+The invocation verifies old head A, while a preexisting descendant pin B is retained as `stale`; direct verification shows that the A-only verifier rejects B.
+This is no new unverified advancement because the fixture presupposes an earlier operation that imported and pinned B.
+Run `.venv/bin/python Experiments/contextual_git_fetch/probe.py` and `.venv/bin/python Experiments/contextual_git_fetch/retained_pin.py`.
+A successful fetch is not evidence of app integration or permission to release keys.
+No runtime change or choice of synchronization mechanism is proposed here.
+This is #266 research; #262 can be ready for human review independently, and this draft remains unposted until a human publishes it.
