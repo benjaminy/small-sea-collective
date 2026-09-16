@@ -11,6 +11,9 @@ Resolve #262's identity-authority and sibling evidence-delivery decisions throug
 Preserve prior human choices recorded in `.IN_PROGRESS/issue-262-bootstrap-transcript/notes.md`.
 Runtime verifier wiring and the broader removal policy remain in #266 and #263.
 
+On 2026-09-16, the human prioritized compelling demos and asked to defer configurable policy work.
+[Configurable team policies](../../Documentation/configurable-team-policies.md) records that direction: use explicit fixed policies for demonstrated flows and defer the general framework.
+
 ## Next work
 
 1. Preflight completed; operating limits and the enduring-identity priority are recorded in the voyage README.
@@ -25,6 +28,9 @@ Runtime verifier wiring and the broader removal policy remain in #266 and #263.
 7. Completed bounded fetch follow-up: the actual fetch hook rejects simulated authority failures before pin movement, but cannot keep a captured view current after it returns.
    A stale fetch verifies its exact observed head while retaining a preexisting descendant pin that this invocation did not verify.
    These are #266 research results, not a runtime or API choice and not a condition of #262 readiness for human review.
+8. Completed: record configurable policy choices as deferred work and link the boundary from the architecture and bootstrap transcript.
+   Validate that the documents preserve evidence requirements, distinguish proposed policy from core rules, and avoid making the full research backlog a demo prerequisite.
+   Check local links and whitespace; no runtime behavior changes or micro tests are needed for this documentation update.
 
 ## Evidence required
 

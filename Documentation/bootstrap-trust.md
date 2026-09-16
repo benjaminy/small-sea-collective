@@ -572,6 +572,10 @@ These are consequences of the design above, not a review of unrelated defects.
 
 ## Selected rules and remaining implementation gaps
 
+The rules below describe the proposed bootstrap policy, not universal Constitution-core semantics.
+[Configurable team policies](configurable-team-policies.md) defers policy selection and the broader governance machinery so demos can implement a concrete supported flow first.
+The evidence requirements for that flow still apply; the full set of gaps below is not a checklist every demo must complete.
+
 Both entry paths now name their first authority input and evidence-delivery sequence.
 Invitation uses an independently compared complete exchange and an explicitly adopted team anchor.
 Sibling identity join uses retained signed delegation where available and permits a separately recorded local continuity decision when it is not.

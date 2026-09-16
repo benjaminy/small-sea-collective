@@ -2,6 +2,13 @@
 
 Nothing in this file has been posted to GitHub.
 
+## Priority after human review discussion — 2026-09-16
+
+The human asked to defer configurable policy work in favor of compelling demos.
+[Configurable team policies](../../Documentation/configurable-team-policies.md) holds the open choices without committing to a policy engine or universal defaults.
+The follow-ups below preserve research findings; they are not collectively prerequisites for demos.
+Select only the work required by a concrete demonstrated flow, keeping its evidence requirements and limits explicit.
+
 ## #262 — bootstrap transcript
 
 The branch specifies both first authority inputs and both entry sequences.
@@ -42,6 +49,7 @@ A complete removal extension and the mechanism for reconsidering and repairing a
 ## Identity ceremony policy follow-up
 
 The independent review leaves a policy question about choosing a fresh per-team comparison when stage 1 rests on local recognition rather than retained delegation.
+This choice is deferred under the demo priority above; it does not block use of the proposed default within its stated limits.
 The current draft permits the signed route and carries the missing proof forward; a repeated comparison with the same compromised claimant cannot establish continuity by itself.
 A later product review should distinguish a fresh independently known person/channel from merely rechecking the same claimant before changing the default.
 
