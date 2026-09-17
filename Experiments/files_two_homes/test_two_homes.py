@@ -1,7 +1,6 @@
 """Two independent Files homes exchanging one file through separate Hubs."""
 
 import json
-import hashlib
 import os
 import pathlib
 import subprocess
@@ -9,7 +8,6 @@ import sys
 import time
 
 import httpx
-import small_sea_hub.backend as hub_backend
 import small_sea_manager.provisioning as provisioning
 from small_sea_manager.manager import TeamManager, _CORE_APP
 from ssc_files import files, sync
@@ -17,7 +15,6 @@ from test_support import (
     accept_and_export,
     acceptance_record_from_courier,
     minio_server_gen,
-    publish_storage_announcement_for_session,
     reserve_ports,
 )
 
@@ -116,7 +113,11 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         provisioning.register_app_for_participant(root, participant, sync.HUB_APP_NAME)
 
     alice_process, alice_http = _start_hub(alice_root, alice_port)
-    bob_process, bob_http = _start_hub(bob_root, bob_port)
+    try:
+        bob_process, bob_http = _start_hub(bob_root, bob_port)
+    except Exception:
+        _stop(alice_process, alice_http)
+        raise
     first_bob_pid = bob_process.pid
     try:
         _session(alice_http, "Alice", "NoteToSelf", mode="passthrough")
@@ -132,7 +133,12 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
             alice_root, alice, alice_berth, alice_cloud, location=f"ss-{alice_berth[:16]}"
         )
         alice_http.post("/cloud/setup", headers={"Authorization": f"Bearer {alice_token}"}).raise_for_status()
-        publish_storage_announcement_for_session(hub_backend.SmallSeaBackend(alice_root), alice_token)
+        alice_manager = TeamManager(alice_root, alice, _http_client=alice_http)
+        alice_manager.publish_teammate_berth_storage_announcement(
+            TEAM,
+            alice_berth,
+            provisioning.get_berth_cloud_allocation_for_berth(alice_root, alice, alice_berth),
+        )
 
         alice_core = _session(alice_http, "Alice", TEAM, app_name=_CORE_APP)
         _push_core(alice_http, alice_root, alice_core, alice)
@@ -188,18 +194,33 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         (alice_checkout / "notes.txt").write_text(updated)
         files.publish(alice_files, alice, alice_context, "docs", alice_checkout, message="post-restart update")
         sync.push_via_hub(alice_files, alice, TEAM, "docs", _http_client=alice_http)
-        monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "bob-files.toml"))
-        sync.pull_via_hub(
-            bob_files, bob, TEAM, "docs", team["teammate_id_hex"], _http_client=bob_http
-        )
-
+        request = {
+            "team": TEAM,
+            "participant": bob,
+            "files_root": str(bob_files),
+            "checkout": str(bob_checkout),
+            "path": "notes.txt",
+            "niche": "docs",
+            "from_teammate_id": team["teammate_id_hex"],
+            "hub_port": bob_port,
+        }
+        fresh_env = os.environ.copy()
+        fresh_env["SMALL_SEA_FILES_CONFIG"] = str(tmp_path / "bob-files.toml")
         probe = subprocess.run(
-            [sys.executable, "-c", "import pathlib,sys; sys.stdout.write(pathlib.Path(sys.argv[1]).read_text())", str(bob_checkout / "notes.txt")],
+            [sys.executable, str(pathlib.Path(__file__).with_name("bob_after_restart.py")), json.dumps(request)],
             check=True,
             capture_output=True,
             text=True,
+            env=fresh_env,
         )
-        assert probe.stdout == updated
+        report = json.loads(probe.stdout)
+        assert report["pid"] != os.getpid()
+        assert report["content"] == updated
+        assert report["session_team_name"] == TEAM
+        assert report["session_participant_hex"] == bob
+        assert report["session_app_name"] == sync.HUB_APP_NAME
+        assert report["session_berth_id"] == bob_berth
+        assert report["context_team_id"] == bob_context.team_id
         print(json.dumps({
             "alice_hub_pid": alice_process.pid,
             "bob_hub_pid_before": first_bob_pid,
@@ -207,8 +228,7 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
             "alice_home": str(alice_root),
             "bob_home": str(bob_root),
             "retained_path": str(bob_checkout / "notes.txt"),
-            "retained_content": probe.stdout,
-            "retained_sha256": hashlib.sha256(probe.stdout.encode()).hexdigest(),
+            "fresh_process": report,
             "bob_teammate_id": bob_teammate,
         }, sort_keys=True))
     finally:
