@@ -1,6 +1,14 @@
-# Draft issue updates for human publication
+# Issue updates
 
-Nothing in this file has been posted to GitHub.
+Posted to GitHub on 2026-09-16, one comment per issue:
+
+- #262 — [comment](https://github.com/benjaminy/small-sea-collective/issues/262#issuecomment-5707378486), including the identity ceremony follow-up and the deferral note.
+- #266 — [comment](https://github.com/benjaminy/small-sea-collective/issues/266#issuecomment-5707378623), combining the three #266 sections below.
+- #263 — [comment](https://github.com/benjaminy/small-sea-collective/issues/263#issuecomment-5707378810).
+- #190 — [comment](https://github.com/benjaminy/small-sea-collective/issues/190#issuecomment-5707378985); the issue is closed and stays closed.
+
+#262 remains open; nobody closed it.
+The text below is the draft the comments were written from, not a verbatim copy.
 
 ## Priority after human review discussion — 2026-09-16
 
@@ -78,4 +86,4 @@ This is no new unverified advancement because the fixture presupposes an earlier
 Run `.venv/bin/python Experiments/contextual_git_fetch/probe.py` and `.venv/bin/python Experiments/contextual_git_fetch/retained_pin.py`.
 A successful fetch is not evidence of app integration or permission to release keys.
 No runtime change or choice of synchronization mechanism is proposed here.
-This is #266 research; #262 can be ready for human review independently, and this draft remains unposted until a human publishes it.
+This is #266 research; #262 can be ready for human review independently.
