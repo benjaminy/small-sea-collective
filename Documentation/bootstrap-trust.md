@@ -60,7 +60,9 @@ Each step is also marked with its implementation status:
 
 **Inputs.** The newcomer's joining request and the introducer's response.
 **Provenance.** Both are constructed locally by their own side; neither is trusted yet.
-**Check.** The two humans compare one short string, derived from the whole exchange, over a channel they already trust.
+**Check.** For invitation and initial identity join, the two humans compare one short string, derived from the whole exchange, over a channel they already trust.
+After identity join, the selected per-team sibling route can instead authenticate the complete exchange under the already recognized identity-device keys, as specified below.
+That route records its inherited identity-recognition basis rather than claiming a new human comparison.
 
 The compared value — call it the bootstrap commitment — must cover five things, in both directions:
 
@@ -81,8 +83,10 @@ Covering both directions matters.
 A commitment over only the introducer's response lets a relay substitute the newcomer's half, so the introducer authorizes a device its human never saw.
 
 **Policy owner.** The two humans, for the comparison itself; local policy, for what happens when no comparison is recorded.
-**Evidence recorded.** That a comparison was performed, that it matched, and the commitment value, stored alongside the resulting trust view.
-**Default conclusion.** The introducer named in the exchange is the party the newcomer's human meant to reach, and it has committed itself to exactly this root, this frontier, and these snapshot bytes.
+**Evidence recorded.** The authentication method, its result and the complete commitment, stored alongside the resulting trust view.
+For a human comparison, record that it occurred and matched; for the per-team signed route, retain the signatures and the prior identity-recognition decision used.
+**Default conclusion.** The exchange is bound to the compared introducer or previously recognized identity key, and that introducer committed to exactly this root, this frontier and these snapshot bytes.
+A key binding alone cannot establish that its current holder is still the intended person.
 **Not concluded.** Nothing about whether the introducer is honest, competent, or in possession of a complete view of the team.
 B1 authenticates who is speaking, not what they say.
 **Override.** A human may proceed with no recorded comparison.
@@ -162,8 +166,9 @@ A genesis authority key is one possible anchor for this extension, not a mandato
 **Default conclusion.** The authority this snapshot describes descends from the root the newcomer's human authenticated.
 **Not concluded.** That the described authority is correct or current.
 B4 establishes that the graph is the right graph, not that its contents are honest.
-**Override.** None.
-A chain that does not reach the root is not a weaker chain; it is a chain to somewhere else.
+**Override.** No decision can make a failed chain reach its claimed root.
+The identity policy below permits a separately recorded local recognition decision instead of a historical-chain conclusion; it preserves the failed or missing evidence.
+Changing an adopted anchor likewise creates a new local trust decision, not a successful verification of the old chain.
 
 This is the step that makes bootstrapping possible, and the step current code lacks entirely.
 
@@ -281,16 +286,34 @@ Three distinctions carry the weight here.
 The inviter's earlier acceptance of an author is a fact about the inviter, not an instruction to the newcomer.
 The newcomer's acceptance of past work is separate from its willingness to accept new work by the same author, which is B9's question.
 And a timestamp inside a record is signed metadata, not proof of when anyone acted; a malicious signer sets their own clock.
+A reference to an old authority view does not prove creation before removal either: a signer can cite that view after it has lost authority.
+The [finite-history probe](../Experiments/bootstrap_history/README.md) preserves this limit explicitly.
+It authenticates small work statements and their named grants, but reports creation-before-removal as unproved and accepts removed-author work only through an exact local decision.
+The actual binding between Git work and the Constitution basis used to judge it remains #266's responsibility.
+Without that evidence, the newcomer must retain an unknown historical-authority result rather than interpreting a present allowed-signers set as proof about the past.
 
-**Status: Proposed, with a known conflict.**
+**Status: Proposed; evidence and runtime integration remain incomplete.**
 No signed removal or exclusion record exists anywhere in the schema.
 `admission_revocation` is a mutable projection of a proposal the inviter abandoned, not evidence that a teammate was removed.
 So the removed-author case currently has no permanent evidence on either side, and [#263](https://github.com/benjaminy/small-sea-collective/issues/263) must supply it before this step can be enforced.
 
-Separately, `SshCommitVerifier.verify_history` (`packages/cod-sync/cod_sync/verify.py`) checks the head and every commit it reaches, raising on the first commit it does not accept.
-That full-ancestry contract conflicts with a retention model that discards old Git contents: a device that pruned history cannot satisfy a verifier that demands all of it.
-Reconciling the two is a prerequisite for [#266](https://github.com/benjaminy/small-sea-collective/issues/266), not something this transcript resolves.
-Whatever replaces it must not silently drop required ancestors, and must not solve the problem by adding every fetched key to the verifier's allowed set.
+The retention boundary distinguishes commit objects from file contents.
+`SshCommitVerifier.verify_history` (`packages/cod-sync/cod_sync/verify.py`) checks the head and every reachable commit object.
+Cod Sync's [live-data window](../packages/cod-sync/README.md#history-compaction) retains those commit identities and their parent links while allowing old file contents to become unavailable.
+A signed commit commits to a tree identifier; verifying its signature does not require reading every file in that tree.
+The [retention probe](../Experiments/bootstrap_retention/README.md) runs the actual verifier: removing an old blob or tree leaves both commit signatures verifiable, while reading the old file fails.
+Removing the parent commit makes verification unavailable; restoring it restores the valid control.
+
+Thus content removal alone does not conflict with the current signature-verifier contract.
+With all original commit objects and authorized signer evidence present, the newcomer can establish which keys signed those commits, even when some referenced contents cannot be inspected or restored.
+It cannot infer what unavailable bytes contained, whether copied content originated with that signer, or whether those contents agreed with a historical projection.
+If required Constitution evidence is missing, B4 through B6 pause the conclusions needing it even when every Git signature verifies.
+If a required commit object is missing or the repository is shallow, the current verifier cannot establish complete commit ancestry; B8 does not call that history verified.
+A local decision to inspect or accept an unproved view must preserve this missing-evidence result.
+
+[#190](https://github.com/benjaminy/small-sea-collective/issues/190) retains responsibility for verifier and retention behavior; [#266](https://github.com/benjaminy/small-sea-collective/issues/266) must supply historical, berth-scoped authority to the caller.
+The probe does not implement content pruning, bundle transport for partial histories, or Manager wiring.
+Neither a fetched signer list nor acceptance of finite old history supplies the missing authorization for future commits.
 
 ## B9 — Recognize a signing key for a berth and a purpose
 
@@ -300,8 +323,11 @@ Whatever replaces it must not silently drop required ancestors, and must not sol
 A key authorized to sign for one berth is not thereby authorized for another, even when it belongs to the same physical device and its signature verifies.
 **Policy owner.** The admission extension.
 **Evidence recorded.** The chain, and the scope each link in it carries.
-**Default conclusion.** This key may sign for this berth, for this purpose, now.
-**Not concluded.** That it may sign elsewhere, or that it still may tomorrow.
+**Default conclusion.** This device recognizes the key for this berth and purpose under its selected Constitution view and named policy.
+**Not concluded.** That the view is globally current, that no removal or conflicting grant exists elsewhere, or that another device recognizes the key.
+An absent removal in an introducer-selected frontier does not prove that nobody removed the author.
+B9 records the view and its known limits; it does not turn an incomplete view into a claim about the whole team.
+Known missing or disputed evidence pauses the decisions that require it, under the local policy.
 **Override.** None.
 Scope is evidence, not preference.
 
@@ -315,10 +341,14 @@ Supplying the missing scope is [#266](https://github.com/benjaminy/small-sea-col
 
 **Inputs.** A recognized key from B9, and its current prekey material.
 **Provenance.** The reconstructed authority state, for the key; the team database, for the prekey material.
-**Check.** The recipient must be recognized under B9 for the berth whose keys are being released, and the prekey material must be bound to that recognized key rather than merely filed under it.
+**Check.** The releasing device's Manager must recognize the recipient for this berth and key-distribution purpose under its own currently selected evidence and explicit local release policy.
+The newcomer's reconstructed bootstrap view cannot instruct the sibling to release keys.
+Known missing or disputed authority evidence pauses the release; B8's finite history acceptance and an identity-recognition decision are insufficient.
+The prekey material must also be bound to that recognized key rather than merely filed under it.
 **Policy owner.** The admission extension, under the strictest policy in this document.
-**Evidence recorded.** Which key material went to which recognized key, and on what basis.
-**Default conclusion.** This recipient will be able to read work encrypted from now on.
+**Evidence recorded.** Which key material went to which recognized key, the releasing device's selected Constitution view and policy, and its local release decision.
+**Default conclusion.** This recipient can read work encrypted with the released key material.
+The releasing device may still be unaware of a removal or compromise; the protocol does not prove global freshness or eliminate that local trust risk.
 **Override.** A human may refuse.
 A human should not be able to grant this without a recognized recipient, because the consequence is unrecoverable: key material, once sent, cannot be unsent.
 
@@ -390,31 +420,101 @@ The protection runs in exactly one direction, and it is the wrong one for #262.
 A person who is already a teammate adds another of their own devices.
 This path runs in two stages, and conflating them is why the current implementation has a hole in the middle.
 
-**Stage 1: identity join.** The new device and an existing device of the same person run B1, and the new device receives the person's NoteToSelf database.
-The human comparison pins the authorizing device's signing key.
-That identifies the device making the introduction; it does not by itself select the identity-authority anchor.
+**Stage 1: identity join.** The operator selects the person whose device set the newcomer is to join and independently authenticates the complete exchange with the introducing sibling under B1.
+The request binds the fresh newcomer keys and identity-operation scope; the response binds the exact NoteToSelf snapshot, selected authority evidence and introducing key.
+The compared sibling key identifies the introducer; it does not automatically become a permanent identifier for the person or the anchor for every authority claim.
 
-Stage 1 has a structural problem that no amount of care in the ceremony fixes.
-`shared_schema.sql` has no signature column in any table: `user_device`, `team`, `team_device_key`, `cloud_storage`, and `berth_cloud_allocation` are all unsigned rows.
-B4 needs authority chains that terminate at the root, and the identity snapshot contains no chains at all.
-Its bytes can be bound to the exchange by digest, and that is the whole of what B2 through B6 can do with it.
+The selected identity policy combines retained delegation with explicit local recognition.
+It follows the [identity comparison](../Experiments/bootstrap_identity/README.md), which preserves both candidates and their failure cases.
 
-NoteToSelf needs signed device-authority records and an explicit identity-authority anchor, so that a newly joined device's authority is evidence rather than an assertion in a row.
-If the identity extension selects the person's first device key as that anchor, B1 must bind that key and B4 must check the introducer's chain to it.
-Alternatively, the operator could explicitly delegate introduction authority to the compared sibling key under a named policy.
-Which identity anchor and delegation policy to use remains a design blocker; the fetched device table cannot choose it.
-Treating NoteToSelf as an authority-free convenience cache would still require another source of identity-device authority: team membership alone does not establish the person's device set.
+- **When delegation survives:** the operator explicitly adopts the authority anchor carried by the authenticated exchange.
+  Manager checks the retained signed path from that anchor to the sibling, including the authority to introduce this fresh key under the named identity extension.
+  Losing the first device's private key does not invalidate a path whose public anchor and signed evidence survive.
+  Each successor acts only within the powers the selected extension recognizes; a valid signature alone cannot enlarge that scope.
+  Record the chain and its verification result separately from the operator's adoption of the anchor.
+- **When evidence is missing or disputed:** pause the identity conclusions that depend on it, retain available records and any competing claims, and show what is missing.
+  The operator may make a new, scoped local decision recognizing this claimant as a continuation of the named identity and authorizing this compared sibling to introduce the fresh device.
+  Record the actor, prior identity/key references, exact exchange commitment, fresh key, scope, recognition basis or independent endorsements, missing evidence and competing claims.
+  This is a new recognition decision; it does not repair the chain, prove that an earlier key belonged to the same person, or turn an unproved comparison into a match.
+  New evidence may lead the operator to revise the recognition later.
 
-**Stage 2: team join.** The new device joins one of the person's teams, generating a fresh team-device key and receiving a device-link certificate from a sibling.
+Under either route, retain a signed device-introduction statement binding the fresh keys to this exchange and the authority or local recognition decision used.
+The local decision must remain distinguishable from signed historical delegation when synchronized or shown to another device.
+The introducer's signature authenticates its statement; local storage of the operator's decision records what this device chose.
+Neither supplies cryptographic proof that a human was present or honest.
+No globally authoritative person identifier is introduced by this policy.
 
-`finalize_linked_device_bootstrap` (`provisioning.py`) checks the authorizer's team-device key against `get_trusted_device_keys_for_teammate`, read from the joiner's *local* team database.
-Where that local team database comes from is unresolved.
-Every micro test in `test_linked_device_bootstrap.py` supplies it with `_copy_team_baseline`, which copies the authorizer's team folder and inserts the team row by hand.
-No production code path clones a team for a linked device.
-So the sibling path's trust in the authorizer rests entirely on a baseline that only a test fixture provides, and authenticating that baseline is precisely the question #262 exists to answer.
+An authenticated compromised sibling can satisfy the delegation route.
+The probe gives the same signed input to a legitimate claimant and a thief holding the same key; their cryptographic verdicts are identical.
+Human recognition or an independent endorsement can provide additional grounds for a present decision, but signatures cannot recover that missing distinction.
+If the operator cannot or will not make that decision, this device's affected identity use remains paused; other devices need not stop.
+Concurrent incompatible successor claims remain visible rather than being resolved by arrival order.
+A new local recognition can select a provisional path without deleting the rival evidence or requiring other participants to agree.
 
-The identity-join gap and the baseline gap are the same shape twice over: the fetched database is the only source of the key used to check the thing that pointed at the fetched database.
-B1 and B4 together are what break the circle, on both paths.
+These conclusions stay separate:
+
+1. A particular key signed a particular delegation or introduction.
+2. This device recognizes a successor as belonging to the same enduring identity.
+3. A team recognizes that successor for a specified teammate, berth and purpose.
+
+Stage 1 reaches at most the first two.
+Another device may refuse the recognition or require more evidence, and stage 2 must establish team authority separately.
+If every enrolled team key is lost and no prepared recovery capability survives, this identity decision does not bypass the Manager's [tier-two team recovery](../packages/small-sea-manager/spec.md#prepared-recovery--target-flow): fresh team admission uses a new team-local teammate UUID.
+That team-local change does not force the person to deny continuity of their broader identity.
+
+**Status: Proposed identity policy; signed evidence and local-decision storage are not implemented.**
+NoteToSelf's `shared_schema.sql` stores `user_device`, `team`, `team_device_key`, `cloud_storage` and `berth_cloud_allocation` as unsigned rows.
+Binding those bytes through B2 authenticates delivery, but the rows do not implement either the signed delegation route or the explicit recognition record above.
+The current welcome bundle signs the introduction payload without this authority policy or its durable evidence.
+The experiment uses a small linear delegation model and a full-digest comparison, not the intended event DAG, a general recovery system or the final wire ceremony.
+
+**Stage 2: team join.** The operator selects one team and an already recognized sibling that participates in it.
+The new device starts with an empty team store and generates a fresh team-device key.
+An unsigned NoteToSelf team row may help display candidates; it supplies neither team authority nor a trusted baseline.
+
+The selected delivery rule is an explicit per-team request and signed response through the identity-device relationship established in stage 1.
+The [delivery comparison](../Experiments/bootstrap_team_delivery/README.md) also retains a fresh per-team human comparison as an alternative when the operator wants an independent ceremony or no currently accepted identity binding is available.
+Both routes bind the same evidence and make the same team-authority checks.
+The signed route avoids another human comparison but inherits the locally recognized identity key's compromise risk; it does not provide an additional independent check of the person.
+If stage 1 used explicit local recognition because historical delegation was absent, retain that recognition decision and its missing-proof fields in the team bootstrap evidence.
+The signed team response authenticates delivery under that locally recognized key; it cannot upgrade the historical continuity claim.
+Stage 1 still requires its B1 comparison unless the operator explicitly accepts an unproved view under the recorded override policy.
+A fresh per-team comparison is available, but repeating a comparison with the same compromised claimant does not itself establish historical continuity.
+
+1. **Request.** Manager records the selected team, teammate, attempt, fresh team signing and encryption keys, and requested enrollment scope locally.
+   The request names the recognized sibling identity key and the identity-recognition decision under which it is contacted.
+   The newcomer signs the complete request with its identity-device key and proves possession of its fresh team-device signing key.
+   The sibling checks the requester against its own locally recognized identity-device evidence, not a key embedded in the request or a newly fetched device table.
+2. **Response.** The sibling selects the exact team snapshot and Constitution frontier, the authority anchor and named policy, and the evidence under which its team-device key may enroll the new device.
+   It signs the entire request and those commitments with its recognized identity-device key.
+   An explicit signed binding relates that identity key to its team-device key, team and teammate for this attempt.
+   Its team-device key separately signs the scoped enrollment statement for the newcomer's fresh key.
+   The response may carry that evidence or name its committed snapshot location; neither location nor successful decryption is an authority source.
+3. **Retain before fetch.** The newcomer checks the response against its exact locally recorded request and the sibling identity key it already recognizes.
+   It retains the request, signed response, identity-recognition basis including missing proof, anchor-selection decision and authentication result before asking the Hub to retrieve the selected snapshot.
+   That retained response supplies B1's delivery binding on this route.
+   The alternative route authenticates the same complete response through a fresh human comparison and records that comparison instead.
+4. **Verify from empty state.** Manager explicitly adopts the offered anchor and policy as the local starting authority inputs, then runs B2 through B6 over the delivered evidence.
+   It verifies the identity-to-team binding and the sibling team's authority to issue this enrollment under that anchor, team, teammate and scope.
+   The identity signature proves who delivered the binding; it cannot grant team enrollment authority.
+   The enrollment statement must cover the exact fresh key and request, and its signer must have the required enrollment power under the selected team policy.
+   B7 through B9 govern view adoption, old history and current berth authority separately.
+5. **Release and later updates.** The sibling independently evaluates current team policy before B10 releases any future key material.
+   The new device enrolls only in the selected team; repeat this flow for another team.
+   A missing pinned snapshot pauses the recorded attempt; retry those bytes or authenticate a new complete response.
+   Do not replace the pinned view with the current store head, transfer all team secrets during identity join, or infer future authority from a recorded past enrollment.
+
+The initial authority source is the operator's explicit adoption of the anchor delivered by a recognized sibling, followed by the independently checked team evidence rooted there.
+The fetched graph cannot select its own anchor.
+An authenticated malicious sibling can still propose a dishonest anchor or omit events; the operator's introduction decision bears that risk.
+A locally accepted identity successor receives no team authority from that identity decision alone.
+If no sibling has the required team evidence, pause this team's enrollment and use the separately specified team recovery or admission process.
+
+**Status: Proposed delivery design; current runtime still requires a supplied baseline.**
+`finalize_linked_device_bootstrap` (`provisioning.py`) checks the authorizer's team-device key against `get_trusted_device_keys_for_teammate`, read from the joiner's local team database.
+The micro tests prepare that database with `_copy_team_baseline`; no runtime path implements the evidence delivery above.
+The model begins with an empty store and exercises both delivery routes, but its single-anchor enrollment grants simplify Constitution ancestry and team policy.
+It does not implement encrypted transport, short-string protocol security, or runtime provisioning.
 
 **Trusted to assert.** That this device belongs to this person, and — in stage 2 — that this person holds the teammate identity the certificate names.
 **Not trusted to assert.** Which teams the new device should join.
@@ -427,12 +527,13 @@ Naming what stays permitted matters as much as naming what stops, because a paus
 
 | Situation | What pauses | What remains permitted | Who can resolve it |
 | --- | --- | --- | --- |
-| No recorded B1 comparison | Identity use, team joins, integration of fetched work, key distribution | Inspecting the fetched data locally | The newcomer's human, by comparing, or by accepting an unproved view explicitly |
+| No accepted B1 authentication method | Identity use, team joins, integration of fetched work, key distribution | Inspecting the fetched data locally | The newcomer's human, by comparing, or by accepting an unproved view explicitly |
 | B2 digest mismatch | Everything on this attempt | Retrying delivery | Nobody; the bytes are wrong, so fetch again |
 | B4 chain does not reach the root | Everything derived from that chain | Inspection; other chains that do reach the root | Nobody by decision — this is a failed binding, not a policy question |
 | B6 differs on evidence | Adoption of the view | Inspection, preserving both states | Nobody by decision; a human may proceed with an unproved view, recorded as such |
 | B6 differs under policy | Nothing automatically | Everything, under the recorded parameters | The operator, by choosing parameters |
 | B6 incomplete ancestry | Conclusions needing the missing closure | Everything not depending on it | Whoever can supply the missing events |
+| Known missing or disputed current authority evidence | This device's dependent B9 recognition and B10 key release | Inspection, unrelated scopes, preserving alternative views | The local operator or an authorized policy actor, using additional evidence or a separately recorded decision; no decision proves global completeness |
 | B8 removed author in relied-upon history | This newcomer's integration of that history | Inspection; unrelated berths; the rest of the team continues unaffected | The newcomer's human, for the past only |
 
 A person's own device may stay paused indefinitely if its human chooses not to resolve the pause.
@@ -452,36 +553,45 @@ These are consequences of the design above, not a review of unrelated defects.
 7. **Scope certificates to berth and purpose** ([#266](https://github.com/benjaminy/small-sea-collective/issues/266)) (B9).
 8. **Bind prekey bundles to the device key they are filed under** (B10).
    Implemented locally with a signed wrapper; freshness and B9 authority remain separate gaps.
-9. **Give NoteToSelf signed device-authority records** (sibling path, stage 1).
-10. **Reconcile the full-ancestry verifier with the intended retention model** ([#190](https://github.com/benjaminy/small-sea-collective/issues/190), [#266](https://github.com/benjaminy/small-sea-collective/issues/266)) (B8).
+9. **Give NoteToSelf signed device-authority records and separate local continuity decisions** (sibling path, stage 1).
+   Preserve the authentication result and missing historical proof; carry no implicit team authority.
+   Implement the stage-2 per-team evidence exchange before treating a fetched baseline as trusted.
+10. **Implement retention while preserving the required commit and Constitution evidence** ([#190](https://github.com/benjaminy/small-sea-collective/issues/190), [#266](https://github.com/benjaminy/small-sea-collective/issues/266)) (B8).
 11. **Decide whether Manager repositories sign commits.** `Repo.configure_signing` (`packages/cod-sync/cod_sync/repo.py`) has no call site outside cod-sync's own tests, so every Manager commit today is unsigned and Git contributes no authorship evidence at all.
 
 ## Where this leaves the six questions
 
 | Question | Answer |
 | --- | --- |
-| What is authenticated independently first? | The whole exchange, in B1, by two humans comparing one string. Not a descriptor, a team name, a decryptable payload, or a signer list. |
+| What is authenticated independently first? | The complete invitation or identity exchange, in B1, through the human channel. A later per-team sibling exchange uses the resulting identity binding or a fresh comparison. |
 | Adopted trust, validated anchor, or both? | Both, and they are different steps. B1 and B4 anchor the history to a root the human authenticated; B7 is the local decision to adopt a particular view. The anchor limits what a dishonest introducer can substitute; it does not make the introducer honest. |
-| What binds the ceremony to the exact history? | The frontier and snapshot digest inside the B1 commitment, checked at B2 and B4. On the sibling path this binding does not exist yet, because the baseline has no production delivery mechanism. |
+| What binds the ceremony to the exact history? | The frontier and snapshot digest inside the B1 commitment, checked at B2 and B4. The sibling delivery sequence specifies that binding; the current runtime still lacks it. |
 | How is a key recognized for a berth and purpose? | B9, which today has no scope to check against because certificates carry only team and teammate. |
 | What about an author removed before joining? | B8. Old signatures stay authentic; the newcomer pauses its own integration for human review; acceptance covers the past, is revisitable, and grants nothing about the future. |
-| What happens when evidence is missing or contradictory? | B6's four outcomes and the pause table above. Only "differs on evidence" is an authentication failure; the rest are pauses, and an override moves the device, not the verdict. |
+| What happens when evidence is missing or contradictory? | B6's four outcomes and the pause table above. An authenticated delivery can still differ on evidence; preserve that content discrepancy separately from authentication and local acceptance. |
 
-## Open blockers
+## Selected rules and remaining implementation gaps
 
-Three design questions remain open and block claims that both entry paths are complete.
+The rules below describe the proposed bootstrap policy, not universal Constitution-core semantics.
+[Configurable team policies](configurable-team-policies.md) defers policy selection and the broader governance machinery so demos can implement a concrete supported flow first.
+The evidence requirements for that flow still apply; the full set of gaps below is not a checklist every demo must complete.
 
-**Which identity-authority anchor the sibling ceremony authenticates.**
-The compared introducer key and a possible first-device anchor are different inputs.
-The identity extension must define the chain or explicit delegation the newcomer relies on; signed device rows alone do not settle that choice.
+Both entry paths now name their first authority input and evidence-delivery sequence.
+Invitation uses an independently compared complete exchange and an explicitly adopted team anchor.
+Sibling identity join uses retained signed delegation where available and permits a separately recorded local continuity decision when it is not.
+Each selected team then uses an authenticated per-team request and response, with team authority checked separately from identity recognition.
+The comparisons preserve the alternatives and show why none establishes an honest or globally complete view.
 
-**How team evidence reaches a sibling device.**
-A person's devices may deliberately join different subsets of their teams, so team evidence cannot simply ride along with the identity join.
-Until there is a mechanism, the sibling path's stage 2 has no authenticated starting point, and `_copy_team_baseline` remains a test fixture standing in for a design.
+The remaining gaps are implementation and protocol work, not permission to infer authority from a fetched roster:
 
-**Whether Git retains the ancestry the verifier demands.**
-B8's authorship check and the intended deletion of old Git contents pull in opposite directions.
-The resolution belongs to #190 and #266 together, and this transcript records the dependency rather than choosing.
+- Define and implement signed identity delegation/introduction records and local-recognition storage, including review of conflicting claims.
+- Implement per-team delivery from an empty store, persistence before fetch, complete request binding and the separate team-enrollment authority check.
+- Supply permanent authority and removal evidence, berth/purpose scope, and historical policy evaluation for B4 through B10 (#263 and #266).
+- Review the complete wire ceremony and short-string security; the experiments use full digests.
+- Implement and validate retention transport without dropping required commit ancestry or Constitution evidence (#190); absent historical file contents remain unavailable for inspection even when commit signatures verify.
+
+These models justify a research design choice, not a production security claim.
+The acceptable evidence for a disputed human continuity claim remains an explicit local decision; this transcript imposes no universal takeover-risk threshold.
 
 ## Invitation ordering checks
 

@@ -72,6 +72,9 @@ Extensions may define admission, device recovery, key distribution, integration 
 They may disagree and evolve independently so long as they preserve core objects and do not weaken core verification.
 An unknown extension event remains structurally verifiable and eligible for relay under local resource policy without acquiring local effect.
 
+[Configurable team policies](Documentation/configurable-team-policies.md) records deferred choices above this boundary.
+Demos may use explicit fixed policies without first building a general policy framework.
+
 ### Constitution Bases
 
 The core verifies events; it does not tell an application how to interpret them.
