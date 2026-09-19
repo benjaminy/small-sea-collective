@@ -1273,7 +1273,9 @@ dependencies = [
 [package.optional-dependencies]
 test = [
     { name = "boto3" },
+    { name = "botocore" },
     { name = "pytest" },
+    { name = "requests" },
     { name = "small-sea-hub" },
     { name = "small-sea-manager" },
 ]
@@ -1281,11 +1283,13 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "boto3", marker = "extra == 'test'", specifier = ">=1.40.53" },
+    { name = "botocore", marker = "extra == 'test'", specifier = ">=1.40.43" },
     { name = "click", specifier = ">=8.0" },
     { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.118.0" },
     { name = "jinja2", specifier = ">=3.1" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.4.2" },
+    { name = "requests", marker = "extra == 'test'", specifier = ">=2.32.5" },
     { name = "small-sea-client", editable = "packages/small-sea-client" },
     { name = "small-sea-hub", marker = "extra == 'test'", editable = "packages/small-sea-hub" },
     { name = "small-sea-manager", marker = "extra == 'test'", editable = "packages/small-sea-manager" },
