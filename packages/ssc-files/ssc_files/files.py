@@ -652,6 +652,7 @@ def _cod_fetch_self(git_dir, remote):
     repo.create_ref_immutable(CS.parked_ref_name(result.link_uid), result.observed_head)
     return result.observed_head
 
+
 # ---------------------------------------------------------------------------
 # Registry helpers (internal)
 # ---------------------------------------------------------------------------
@@ -993,6 +994,7 @@ def fetch_self_registry(files_root, participant_hex, context, remote):
     _ensure_registry(files_root, participant_hex, context)
     return _cod_fetch_self(_registry_git_dir(files_root, context), remote)
 
+
 def merge_registry(files_root, participant_hex, context, teammate_id):
     """Merge a previously parked registry ref from a peer."""
     context = _validate_context(participant_hex, context)
@@ -1111,6 +1113,7 @@ def fetch_self_niche(files_root, participant_hex, context, niche_name, remote):
         git_dir.mkdir(parents=True)
         _init_git_dir(git_dir)
     return _cod_fetch_self(git_dir, remote)
+
 
 def merge_niche(files_root, participant_hex, context, niche_name, teammate_id):
     """Merge a previously parked niche ref from a peer.

@@ -759,7 +759,7 @@ def merge_via_hub(
     )
 
 
-class SelfFetchPartialError(Exception):
+class SelfFetchPartialError(FilesSyncError):
     """The registry fetch finished but the niche fetch did not.
 
     The registry head stays parked; the two fetches are not atomic.
@@ -811,6 +811,7 @@ def fetch_self_via_hub(
     except Exception as exc:
         raise SelfFetchPartialError(registry_sha, exc) from exc
     return SelfFetchResult(registry_sha=registry_sha, niche_sha=niche_sha)
+
 
 def merge_self(
     files_root: str,

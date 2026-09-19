@@ -885,3 +885,160 @@ def test_push_succeeds_when_only_the_registry_is_unchanged(
     sync.push_via_hub(
         alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
     )
+
+
+def _record_hub_requests(http):
+    """Record (method, path) of every request sent through the TestClient."""
+    calls = []
+    real_get, real_post = http.get, http.post
+
+    def get(url, *a, **k):
+        calls.append(("GET", url))
+        return real_get(url, *a, **k)
+
+    def post(url, *a, **k):
+        calls.append(("POST", url))
+        return real_post(url, *a, **k)
+
+    http.get, http.post = get, post
+    return calls
+
+
+def _bucket_snapshot(minio, bucket):
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=minio["endpoint"],
+        aws_access_key_id=minio["access_key"],
+        aws_secret_access_key=minio["secret_key"],
+        config=BotoConfig(signature_version="s3v4"),
+        region_name="us-east-1",
+    )
+    objects = s3.list_objects_v2(Bucket=bucket).get("Contents", [])
+    return {o["Key"]: o["ETag"] for o in objects}
+
+
+def _git_out(git_dir, *args):
+    import subprocess
+
+    return subprocess.run(
+        ["git", "--git-dir", str(git_dir), *args], check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+
+def test_fetch_self_via_hub_parks_own_head_through_hub_and_minio(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    """Two Files roots for Alice share one in-process Hub and one MinIO store.
+
+    This is one backend with two local Files roots, not independent devices.
+    The HTTP transport is an ASGI TestClient, not real TCP. Publications are
+    unsigned, so the parked head shows what Alice's store held, not who wrote it.
+    """
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
+    root, http = env["root"], env["http"]
+    alice, bob = env["alice_hex"], env["bob_hex"]
+
+    # Bob publishes a different "docs" head to his own store: a control that
+    # Alice's own-store fetch must not pick up.
+    bob_root = str(root / "files-bob")
+    files.init_files(bob_root, bob)
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "bob-files.toml"))
+    bob_ctx = files.materialization_context_from_session_info(
+        sync.login_team(bob_root, "ProjectX", bob, _http_client=http, pin_reader=lambda _: "").session_info
+    )
+    files.create_niche(bob_root, bob, bob_ctx, "docs")
+    files.add_checkout(bob_root, bob, bob_ctx, "docs", str(root / "bob-checkout"))
+    (root / "bob-checkout" / "bob.txt").write_text("from Bob\n")
+    files.publish(bob_root, bob, bob_ctx, "docs", str(root / "bob-checkout"), message="bob")
+    sync.push_via_hub(bob_root, bob, "ProjectX", "docs", _http_client=http)
+    bob_head = _git_out(files._niche_git_dir(bob_root, bob_ctx, "docs"), "rev-parse", "HEAD")
+
+    # Alice device 1 publishes to her own store.
+    a1_root = str(root / "files-alice-1")
+    files.init_files(a1_root, alice)
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-1.toml"))
+    a1_ctx = files.materialization_context_from_session_info(
+        sync.login_team(a1_root, "ProjectX", alice, _http_client=http, pin_reader=lambda _: "").session_info
+    )
+    files.create_niche(a1_root, alice, a1_ctx, "docs")
+    files.add_checkout(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"))
+    (root / "a1-checkout" / "notes.txt").write_text("from A1\n")
+    files.publish(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"), message="a1")
+    sync.push_via_hub(a1_root, alice, "ProjectX", "docs", _http_client=http)
+    a1_niche = _git_out(files._niche_git_dir(a1_root, a1_ctx, "docs"), "rev-parse", "HEAD")
+    a1_registry = _git_out(files._registry_git_dir(a1_root, a1_ctx), "rev-parse", "HEAD")
+    assert a1_niche != bob_head
+
+    # Alice device 2: its own Files root, config and session token.
+    a2_root = str(root / "files-alice-2")
+    files.init_files(a2_root, alice)
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-2.toml"))
+    a2_ctx = files.materialization_context_from_session_info(
+        sync.login_team(a2_root, "ProjectX", alice, _http_client=http, pin_reader=lambda _: "").session_info
+    )
+    assert a2_ctx.team_id == a1_ctx.team_id
+
+    before = _bucket_snapshot(env["alice_minio"], env["team_bucket"])
+    calls = _record_hub_requests(http)
+    result = sync.fetch_self_via_hub(a2_root, alice, "ProjectX", "docs", _http_client=http)
+
+    assert (result.registry_sha, result.niche_sha) == (a1_registry, a1_niche)
+    assert calls and all(c == ("GET", "/cloud_file") for c in calls), calls
+    assert _bucket_snapshot(env["alice_minio"], env["team_bucket"]) == before
+
+    a2_niche_git = files._niche_git_dir(a2_root, a2_ctx, "docs")
+    parked = _git_out(a2_niche_git, "for-each-ref", "--format=%(objectname)", "refs/cod-sync/parked")
+    assert parked == a1_niche
+    # The niche came only through the fetch; no local branch exists until merge.
+    assert _git_out(a2_niche_git, "for-each-ref", "refs/heads") == ""
+
+    a2_checkout = root / "a2-checkout"
+    files.add_checkout(a2_root, alice, a2_ctx, "docs", str(a2_checkout))
+    assert not (a2_checkout / "notes.txt").exists()
+    merged = sync.merge_self(a2_root, alice, "ProjectX", "docs")
+    assert merged.niche_shas == [a1_niche]
+    assert (a2_checkout / "notes.txt").read_text() == "from A1\n"
+    assert not (a2_checkout / "bob.txt").exists()
+
+
+def test_fetch_self_via_hub_missing_niche_keeps_registry_parked(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    """A niche absent from real MinIO fails after the registry was parked."""
+    env = _setup_two_teammate_team(playground_dir, minio_server_gen)
+    root, http, alice = env["root"], env["http"], env["alice_hex"]
+
+    a1_root = str(root / "files-alice-1")
+    files.init_files(a1_root, alice)
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-1.toml"))
+    a1_ctx = files.materialization_context_from_session_info(
+        sync.login_team(a1_root, "ProjectX", alice, _http_client=http, pin_reader=lambda _: "").session_info
+    )
+    files.create_niche(a1_root, alice, a1_ctx, "docs")
+    files.add_checkout(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"))
+    (root / "a1-checkout" / "notes.txt").write_text("from A1\n")
+    files.publish(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"), message="a1")
+    sync.push_via_hub(a1_root, alice, "ProjectX", "docs", _http_client=http)
+    a1_registry = _git_out(files._registry_git_dir(a1_root, a1_ctx), "rev-parse", "HEAD")
+
+    a2_root = str(root / "files-alice-2")
+    files.init_files(a2_root, alice)
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-2.toml"))
+    a2_ctx = files.materialization_context_from_session_info(
+        sync.login_team(a2_root, "ProjectX", alice, _http_client=http, pin_reader=lambda _: "").session_info
+    )
+
+    before = _bucket_snapshot(env["alice_minio"], env["team_bucket"])
+    with pytest.raises(sync.SelfFetchPartialError) as exc_info:
+        sync.fetch_self_via_hub(a2_root, alice, "ProjectX", "never-pushed", _http_client=http)
+    assert isinstance(exc_info.value, sync.FilesSyncError)
+    assert exc_info.value.registry_sha == a1_registry
+    assert _bucket_snapshot(env["alice_minio"], env["team_bucket"]) == before
+
+    registry_git = files._registry_git_dir(a2_root, a2_ctx)
+    parked = _git_out(registry_git, "for-each-ref", "--format=%(objectname)", "refs/cod-sync/parked")
+    assert parked == a1_registry
+    # The failed niche fetch leaves an empty local git dir with no refs.
+    niche_git = files._niche_git_dir(a2_root, a2_ctx, "never-pushed")
+    assert niche_git.exists()
+    assert _git_out(niche_git, "for-each-ref") == ""

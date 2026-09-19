@@ -9,3 +9,7 @@
   In a fresh venv holding only Files and its runtime sibling wheels, Files test collection fails on `small_sea_hub`.
   After adding the `test` extra's sibling closure, the Files tests run 78 passed, 3 skipped.
   Third-party packages were again borrowed from the shared venv without `.pth` processing, and `test_support.py` was copied from the repo root.
+- Issue 235 component (leg 6): `fetch_self_via_hub` now has Hub micro tests with an in-process Hub (ASGI TestClient, not TCP) and local MinIO.
+  Two Files roots for Alice share one Hub and one store; this is not an independent-device capstone.
+  The fetch sent only `GET /cloud_file`, left Alice's bucket unchanged, parked Alice's head rather than Bob's, and moved nothing until `merge_self`.
+  `SelfFetchPartialError` now derives from `FilesSyncError`, like every other Files sync error.
