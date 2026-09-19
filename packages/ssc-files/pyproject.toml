@@ -10,12 +10,20 @@ dependencies = [
     "small-sea-client",
 ]
 
+[project.optional-dependencies]
+test = [
+    "small-sea-hub",
+    "small-sea-manager",
+]
+
 [project.scripts]
 ssc-files = "ssc_files.cli:cli"
 
 [tool.uv.sources]
 cod-sync = { workspace = true }
 small-sea-client = { workspace = true }
+small-sea-hub = { workspace = true }
+small-sea-manager = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
