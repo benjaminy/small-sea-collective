@@ -127,7 +127,11 @@ def status(job, inspect=False):
         how = "timed out" if record.get("timed_out") else f"exit {record['exit_code']}"
         state = f"finished, {how}, {elapsed} s"
     out = [f"{job.name}: {state}"]
-    act = activity(job / "stdout.jsonl")
+    stream = job / "stdout.jsonl"
+    if stream.is_file() and stream.stat().st_size == 0 and record["state"] != "queued":
+        out.append("  wrote nothing at all: Pi never started, rather than running slowly."
+                   " Check that whatever launched it gave Pi a stdin it will not wait on.")
+    act = activity(stream)
     if act:
         out.append(
             f"  {act['turns']} turns, {act['tools']} tool calls "

@@ -66,6 +66,29 @@ Use fresh job names for new attempts so earlier evidence remains available.
 The scripts record execution facts; record lessons about usefulness and checking effort in existing voyage notes, or `$BONSAI_JOBS_DIR/log.md` for standalone work, when they will inform later choices.
 No fixed per-job report is required.
 
+## When a job produces nothing
+
+A job that writes an empty `stdout.jsonl` did not run slowly; it never started.
+`pi-status.py` says so directly, and the distinction matters because the two look identical from the outside: both sit there until the timeout kills them.
+
+The cause, if you meet it elsewhere: Pi waits at startup for its standard input to reach EOF.
+A pipe or socket that is still open when Pi starts makes it wait for ever, and closing that pipe afterwards does not release it.
+A stdin that is already at EOF, a regular file, or `/dev/null` all work.
+Anything launching Pi from a harness or a background shell is likely to have exactly the stdin that hangs it, so `pi-run.py` gives Pi `/dev/null` rather than passing on what it inherited.
+
+Measured on 2026-09-19: six jobs through the unfixed runner produced zero bytes each, six through the fixed one ran normally, and the hung process sat idle in the node event loop rather than consuming any CPU.
+That last detail is what makes this worth recognising quickly — a stuck job looks exactly like an idle machine, so check `stdout.jsonl` and the server log's last write time before concluding that a job is merely slow.
+
+## Reading the clock, not the turn counter
+
+Jobs are slower than they look, and the cost is context rather than difficulty.
+The server processes prompts at roughly 60 tokens per second and generates at about 10 on a machine of this class, so a turn carrying a large tool result costs minutes before a single token comes back.
+One job read a 1349-line file, which put about 13,000 tokens into the next request and bought four minutes of silence.
+
+Two consequences for sizing work.
+Point the worker at one named file and one named symbol, so the tool result stays small.
+Set timeouts from the size of what the worker will read, not from how simple the question sounds.
+
 ## Use the evidence
 
 The worker writes `result.md` with at most the requested number of rows:

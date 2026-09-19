@@ -95,8 +95,14 @@ def run_job(job, prompt, cwd, timeout, env, max_rows):
         max_rows=max_rows, model=B.MODEL, harness="pi",
     )
     with (job / "stdout.jsonl").open("w") as out, (job / "stderr.txt").open("w") as err:
+        # Pi waits at startup for stdin to reach EOF. A pipe or socket that is
+        # still open when it starts makes it wait for ever: it writes nothing,
+        # never contacts the model, and closing the pipe afterwards does not
+        # release it. Callers under a harness usually have exactly that kind of
+        # stdin, so give Pi /dev/null rather than whatever we inherited.
         p = subprocess.Popen(
-            args, cwd=cwd, env=env, stdout=out, stderr=err, start_new_session=True,
+            args, cwd=cwd, env=env, stdout=out, stderr=err,
+            stdin=subprocess.DEVNULL, start_new_session=True,
         )
         record["pid"] = p.pid
         B.write_json(job / "process.json", record)
@@ -117,6 +123,9 @@ def run_job(job, prompt, cwd, timeout, env, max_rows):
                     pass
             p.wait()
     record.update(state="finished", exit_code=p.returncode, finished=time.time())
+    if (job / "stdout.jsonl").stat().st_size == 0:
+        # Not a slow job: Pi never emitted its opening event, so it never ran.
+        record["no_output"] = True
     B.write_json(job / "process.json", record)
     return record
 
