@@ -640,6 +640,19 @@ def _merge_parked_self_refs(git_dir, checkout):
     return merged
 
 
+def _cod_fetch_self(git_dir, remote):
+    """Fetch this participant's own store and park its head immutably.
+
+    Uses the same parked-ref name a refused publication would use, so
+    merge_self integrates it. Moves no branch and writes nothing to the store.
+    Returns the parked SHA.
+    """
+    repo = Repo(git_dir)
+    result = CS.CodSync(repo, remote).fetch()
+    repo.create_ref_immutable(CS.parked_ref_name(result.link_uid), result.observed_head)
+    return result.observed_head
+
+
 # ---------------------------------------------------------------------------
 # Registry helpers (internal)
 # ---------------------------------------------------------------------------
@@ -975,6 +988,13 @@ def fetch_registry(files_root, participant_hex, context, teammate_id, remote):
     return fetched_sha
 
 
+def fetch_self_registry(files_root, participant_hex, context, remote):
+    """Fetch the participant's own registry chain and park its head for merge_self."""
+    context = _validate_context(participant_hex, context)
+    _ensure_registry(files_root, participant_hex, context)
+    return _cod_fetch_self(_registry_git_dir(files_root, context), remote)
+
+
 def merge_registry(files_root, participant_hex, context, teammate_id):
     """Merge a previously parked registry ref from a peer."""
     context = _validate_context(participant_hex, context)
@@ -1080,6 +1100,19 @@ def fetch_niche(files_root, participant_hex, context, niche_name, teammate_id, r
             files_root, participant_hex, context, "niche", niche_name, teammate_id, fetched_sha
         )
     return fetched_sha
+
+
+def fetch_self_niche(files_root, participant_hex, context, niche_name, remote):
+    """Fetch the participant's own niche chain and park its head for merge_self.
+
+    Like fetch_niche, this leaves the checkout alone and works without one.
+    """
+    context = _validate_context(participant_hex, context)
+    git_dir = _niche_git_dir(files_root, context, niche_name)
+    if not git_dir.exists():
+        git_dir.mkdir(parents=True)
+        _init_git_dir(git_dir)
+    return _cod_fetch_self(git_dir, remote)
 
 
 def merge_niche(files_root, participant_hex, context, niche_name, teammate_id):

@@ -15,11 +15,13 @@ from ssc_files.files import (
     add_checkout,
     create_niche,
     fetch_niche,
+    fetch_self_niche,
     init_files,
     materialize_team,
     merge_niche,
     publish,
     push_niche,
+    push_registry,
 )
 
 PARTICIPANT = "bb" * 16
@@ -501,3 +503,233 @@ def test_cli_merge_from_self_reports_nothing_parked(monkeypatch, tmp_path):
 
     assert result.exit_code == 0, result.output
     assert "No parked changes" in result.output
+
+
+def _cli_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "files.toml"))
+    sync.save_config(
+        {"files_root": str(tmp_path / "files"), "participant_hex": PARTICIPANT}
+    )
+
+
+def test_cli_fetch_requires_exactly_one_source(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from ssc_files.cli import cli
+
+    _cli_config(monkeypatch, tmp_path)
+
+    def _unreachable(*_args, **_kwargs):
+        raise AssertionError("no fetch should run without a valid source")
+
+    monkeypatch.setattr(sync, "fetch_self_via_hub", _unreachable)
+    monkeypatch.setattr(sync, "fetch_via_hub", _unreachable)
+
+    runner = CliRunner()
+    neither = runner.invoke(cli, ["fetch", "ProjectX", "docs"])
+    both = runner.invoke(
+        cli, ["fetch", "ProjectX", "docs", "--from-self", "--from-teammate", "cc" * 16]
+    )
+
+    assert neither.exit_code != 0
+    assert both.exit_code != 0
+    assert "exactly one" in neither.output
+    assert "exactly one" in both.output
+
+
+def test_cli_fetch_from_self_reports_both_heads(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from ssc_files.cli import cli
+
+    _cli_config(monkeypatch, tmp_path)
+    calls = []
+
+    def _fetch(*args, **kwargs):
+        calls.append(args)
+        return sync.SelfFetchResult(registry_sha="a" * 40, niche_sha="b" * 40)
+
+    monkeypatch.setattr(sync, "fetch_self_via_hub", _fetch)
+    result = CliRunner().invoke(cli, ["fetch", "ProjectX", "docs", "--from-self"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [(str(tmp_path / "files"), PARTICIPANT, "ProjectX", "docs")]
+    assert "aaaaaaaa" in result.output
+    assert "bbbbbbbb" in result.output
+    assert "merge --from-self" in result.output
+
+
+def test_cli_fetch_from_self_partial_failure_says_registry_kept(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from ssc_files.cli import cli
+
+    _cli_config(monkeypatch, tmp_path)
+
+    def _partial(*_args, **_kwargs):
+        raise sync.SelfFetchPartialError("a" * 40, RuntimeError("the store publishes no head"))
+
+    monkeypatch.setattr(sync, "fetch_self_via_hub", _partial)
+    result = CliRunner().invoke(cli, ["fetch", "ProjectX", "docs", "--from-self"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "aaaaaaaa" in result.output
+    assert "kept" in result.output
+    assert "niche 'docs' failed" in result.output
+    assert "the store publishes no head" in result.output
+
+
+class _NoWriteStore:
+    """LocalFolderStore that fails any write, so a fetch provably writes nothing."""
+
+    def __init__(self, path):
+        self._inner = LocalFolderStore(path)
+
+    def __getattr__(self, name):
+        if name.startswith("put_"):
+            raise AssertionError(f"fetch wrote to the store via {name}")
+        return getattr(self._inner, name)
+
+
+def test_fetch_self_parks_a_sibling_head_without_writing_or_moving_head(playground_dir):
+    """Device B fetches device A's newer niche head from their shared own store.
+
+    Local-only witness: LocalFolderStore stands in for the Hub-backed store.
+    Files publications are unsigned, so this shows transport and integration,
+    not which device authored the head.
+    """
+    env = _two_device_conflict(playground_dir)
+    (env["checkout_a"] / "a.txt").write_text("from A\n")
+    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a")
+    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])))
+    a_head = _git(_niche_git_dir(env["root_a"], TEAM, "notes"), "rev-parse", "HEAD")
+
+    git_dir_b = _niche_git_dir(env["root_b"], TEAM, "notes")
+    b_head_before = _git(git_dir_b, "rev-parse", "HEAD")
+
+    fetched = fetch_self_niche(
+        env["root_b"], PARTICIPANT, TEAM, "notes", _NoWriteStore(str(env["cloud_dir"]))
+    )
+
+    assert fetched == a_head
+    assert _git(git_dir_b, "rev-parse", "HEAD") == b_head_before
+    assert not (env["checkout_b"] / "a.txt").exists()
+
+    # A fresh git process sees the parked ref: it is on disk, not in memory.
+    parked = _git(git_dir_b, "for-each-ref", "--format=%(objectname)", "refs/cod-sync/parked")
+    assert parked == a_head
+
+    # Refetching the same head verifies the immutable ref rather than failing.
+    assert fetch_self_niche(
+        env["root_b"], PARTICIPANT, TEAM, "notes", _NoWriteStore(str(env["cloud_dir"]))
+    ) == a_head
+
+    # A dirty checkout still blocks integration, and the parked head survives.
+    (env["checkout_b"] / "shared.txt").write_text("dirty\n")
+    with pytest.raises(sync.DirtyCheckoutError):
+        sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    assert _git(git_dir_b, "rev-parse", "HEAD") == b_head_before
+    (env["checkout_b"] / "shared.txt").write_text("v1\n")
+
+    result = sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    assert result.niche_shas == [a_head]
+    assert (env["checkout_b"] / "a.txt").read_text() == "from A\n"
+
+
+def test_fetch_self_via_hub_keeps_the_registry_when_the_niche_fails(playground_dir, monkeypatch):
+    """The registry and niche fetches are separate; a niche failure is reported
+    with the registry head already parked, not rolled back or hidden."""
+    env = _two_device_conflict(playground_dir)
+    registry_cloud = pathlib.Path(playground_dir) / "registry-cloud"
+    registry_cloud.mkdir()
+    push_registry(env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(registry_cloud)))
+    empty_niche_cloud = pathlib.Path(playground_dir) / "empty-niche-cloud"
+    empty_niche_cloud.mkdir()
+
+    monkeypatch.setattr(sync, "resolve_team_context", lambda *_a: TEAM)
+    monkeypatch.setattr(sync, "get_team_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        sync, "make_registry_remote", lambda _s: _NoWriteStore(str(registry_cloud))
+    )
+    monkeypatch.setattr(
+        sync, "make_niche_remote", lambda _n, _s: _NoWriteStore(str(empty_niche_cloud))
+    )
+
+    with pytest.raises(sync.SelfFetchPartialError) as exc_info:
+        sync.fetch_self_via_hub(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+
+    registry_git_b = _registry_git_dir(env["root_b"], TEAM)
+    parked = _git(
+        registry_git_b, "for-each-ref", "--format=%(objectname)", "refs/cod-sync/parked"
+    )
+    assert parked == exc_info.value.registry_sha
+
+
+class _GarbageLatestStore(_NoWriteStore):
+    """A store whose registry head exists but does not decode."""
+
+    def get_latest_link(self):
+        return b"not a link", "etag"
+
+
+def test_fetch_self_via_hub_does_not_treat_a_malformed_registry_as_absent(
+    playground_dir, monkeypatch
+):
+    env = _two_device_conflict(playground_dir)
+    niche_cloud = pathlib.Path(playground_dir) / "niche-cloud"
+    niche_cloud.mkdir()
+    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(niche_cloud)))
+    registry_cloud = pathlib.Path(playground_dir) / "registry-cloud"
+    registry_cloud.mkdir()
+
+    monkeypatch.setattr(sync, "resolve_team_context", lambda *_a: TEAM)
+    monkeypatch.setattr(sync, "get_team_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        sync, "make_registry_remote", lambda _s: _GarbageLatestStore(str(registry_cloud))
+    )
+    monkeypatch.setattr(sync, "make_niche_remote", lambda _n, _s: _NoWriteStore(str(niche_cloud)))
+
+    with pytest.raises(Exception) as exc_info:
+        sync.fetch_self_via_hub(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    assert not isinstance(exc_info.value, sync.NoPublishedHeadError)
+    # The niche was not fetched behind a registry failure.
+    niche_git_b = _niche_git_dir(env["root_b"], TEAM, "notes")
+    assert _git(niche_git_b, "for-each-ref", "refs/cod-sync/parked") == ""
+
+
+def test_cli_fetch_from_self_reports_missing_registry(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from ssc_files.cli import cli
+
+    _cli_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        sync,
+        "fetch_self_via_hub",
+        lambda *_a, **_k: sync.SelfFetchResult(registry_sha=None, niche_sha="b" * 40),
+    )
+    result = CliRunner().invoke(cli, ["fetch", "ProjectX", "docs", "--from-self"])
+
+    assert result.exit_code == 0, result.output
+    assert "bbbbbbbb" in result.output
+    assert "no published registry head" in result.output
+
+
+def test_cli_fetch_from_self_reports_cod_sync_errors_without_traceback(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+    from cod_sync.protocol import ChainError
+
+    from ssc_files.cli import cli
+
+    _cli_config(monkeypatch, tmp_path)
+
+    def _chain_error(*_a, **_k):
+        raise ChainError("injected malformed registry")
+
+    monkeypatch.setattr(sync, "fetch_self_via_hub", _chain_error)
+    result = CliRunner().invoke(cli, ["fetch", "ProjectX", "docs", "--from-self"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "injected malformed registry" in result.output

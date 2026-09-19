@@ -58,7 +58,7 @@ def test_merge_side_and_signed_control(history):
     assert set(verifier.verify_history(repo, good_merge)) == {signed_root, main, side, good_merge}
 
 
-@pytest.mark.parametrize("name,value", [pytest.param("log.showSignature", "true", marks=pytest.mark.xfail(strict=True, reason="signature prose contaminates machine-readable report")), ("log.decorate", "full"), ("log.showRoot", "false"), ("log.follow", "true"), ("format.pretty", "oneline"), ("gpg.minTrustLevel", "ultimate")])
+@pytest.mark.parametrize("name,value", [("log.showSignature", "true"), ("log.decorate", "full"), ("log.showRoot", "false"), ("log.follow", "true"), ("format.pretty", "oneline"), ("gpg.minTrustLevel", "ultimate")])
 def test_local_presentation_config(history, name, value):
     repo, verifier, unsigned, signed_root, head, tree = history
     repo.config(name, value)

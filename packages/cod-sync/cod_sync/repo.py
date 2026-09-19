@@ -401,6 +401,7 @@ class Repo:
                 "-c",
                 f"gpg.ssh.allowedSignersFile={allowed_signers_file}",
                 "log",
+                "--no-show-signature",
                 "--format=%H%x09%G?%x09%GF",
                 rev,
             ]

@@ -1,6 +1,7 @@
 """Click CLI for Small Sea Files."""
 
 import click
+from cod_sync.protocol import CodSyncError
 
 from ssc_files import files as files_core
 from ssc_files import sync
@@ -139,12 +140,16 @@ def push_cmd(team_name, niche_name, files_root, participant, hub_port):
 @cli.command("fetch")
 @click.argument("team_name")
 @click.argument("niche_name")
-@click.option("--from-teammate", "from_teammate", required=True, help="Peer teammate ID hex")
+@click.option("--from-teammate", "from_teammate", default=None, help="Peer teammate ID hex")
+@click.option(
+    "--from-self", "from_self", is_flag=True,
+    help="Fetch this participant's own cloud chain, published by another of your devices",
+)
 @click.option("--files-root", default=None, help="Override files root from config")
 @click.option("--participant", default=None, help="Override participant hex from config")
 @click.option("--hub-port", type=int, default=None, help="Override Hub port from config")
-def fetch_cmd(team_name, niche_name, from_teammate, files_root, participant, hub_port):
-    """Fetch updates from a peer without merging.
+def fetch_cmd(team_name, niche_name, from_teammate, from_self, files_root, participant, hub_port):
+    """Fetch updates without merging.
 
     Parks fetched content locally. No checkout is required. Use this as the
     first step of the join flow:
@@ -152,7 +157,17 @@ def fetch_cmd(team_name, niche_name, from_teammate, files_root, participant, hub
       1. fetch --from-teammate PEER_ID   (no checkout needed)
       2. checkout ... PATH             (attach a local directory)
       3. merge --from-teammate PEER_ID   (integrate fetched content)
+
+    With --from-self, fetch the registry and the named niche from your own
+    store, then integrate them with 'merge --from-self'. You must already know
+    the niche name. Files publications are unsigned, so a fetched head shows
+    what your store held, not which of your devices wrote it.
     """
+    if bool(from_teammate) == bool(from_self):
+        _die("Specify exactly one of --from-teammate or --from-self.")
+    if from_self:
+        _fetch_self(team_name, niche_name, files_root, participant, hub_port)
+        return
     files_root, participant, hub_port = _resolve_sync(files_root, participant, hub_port)
     try:
         files_root = sync.require_value(files_root, "files_root")
@@ -172,6 +187,37 @@ def fetch_cmd(team_name, niche_name, from_teammate, files_root, participant, hub
         click.echo(f"Fetched niche updates from {from_teammate} ({result.niche_sha[:8]}). Ready to merge.")
     else:
         click.echo(f"No new niche updates from {from_teammate}.")
+
+
+def _fetch_self(team_name, niche_name, files_root, participant, hub_port):
+    files_root, participant, hub_port = _resolve_sync(files_root, participant, hub_port)
+    try:
+        files_root = sync.require_value(files_root, "files_root")
+        participant = sync.require_value(participant, "participant_hex")
+        result = sync.fetch_self_via_hub(
+            files_root, participant, team_name, niche_name, hub_port=hub_port
+        )
+    except sync.SelfFetchPartialError as exc:
+        _die(
+            f"Fetched registry {exc.registry_sha[:8]} from your own store and kept it, "
+            f"but fetching niche '{niche_name}' failed: {exc.niche_error}"
+        )
+    except (sync.FilesSyncError, CodSyncError, OSError) as exc:
+        _die(str(exc))
+
+    if result.registry_sha is None:
+        click.echo(
+            f"Fetched niche '{niche_name}' {result.niche_sha[:8]} from your own store, "
+            f"but the store has no published registry head, so none was fetched. "
+            f"A push may have stopped after the niche. "
+            f"Run 'merge --from-self' to integrate the niche."
+        )
+        return
+    click.echo(
+        f"Fetched registry {result.registry_sha[:8]} and niche '{niche_name}' "
+        f"{result.niche_sha[:8]} from your own store. "
+        f"Run 'merge --from-self' to integrate them."
+    )
 
 
 @cli.command("merge")
