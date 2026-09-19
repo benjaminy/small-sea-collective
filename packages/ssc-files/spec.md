@@ -230,6 +230,7 @@ Those keys intentionally omit both friendly `team_name` and opaque Files
 | `pull_niche` | Fetch from a cloud remote and merge into the local niche repo. Requires a clean checkout if one is attached; refreshes it after merge. |
 | `fetch_niche` | Fetch from a peer and park the ref locally without merging. No checkout required. |
 | `merge_niche` | Merge a previously parked peer ref. Requires a clean attached checkout. |
+| `fetch_self` | Fetch this participant's own registry, then one named niche, and park both heads for `merge_self_niche`; CLI: `fetch --from-self`. The caller must already know the niche name; the registry is not read to find niches. The two fetches are not atomic: if the niche fails, the registry head stays parked and the error says so. Publications are unsigned, so a parked head shows what the store held, not which device wrote it. |
 | `merge_self_niche` | Merge every outstanding head Cod Sync parked from this participant's own niche chain, published by another of their devices. Purely local, and requires a clean attached checkout. |
 | `repair_niche` (target) | Append a forward restoration commit containing a selected earlier tree, then optionally replay chosen intervening work as new commits without resetting the shared branch. Files must describe what provenance, if any, supports the replay. |
 | `push_registry` | Publish the niche registry to a cloud store. Returns the `PublishResult`, on the same terms as `push_niche`. |

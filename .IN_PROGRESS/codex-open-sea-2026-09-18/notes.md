@@ -13,3 +13,6 @@
   Two Files roots for Alice share one Hub and one store; this is not an independent-device capstone.
   The fetch sent only `GET /cloud_file`, left Alice's bucket unchanged, parked Alice's head rather than Bob's, and moved nothing until `merge_self`.
   `SelfFetchPartialError` now derives from `FilesSyncError`, like every other Files sync error.
+- Issue 235 component (leg 7): the Files CLI exposes the own-store fetch as `fetch --from-self`, mirroring `merge --from-self`; `fetch` now requires exactly one of `--from-teammate` or `--from-self`.
+  A niche failure after the registry fetch exits 1 with a one-line message that names the kept registry head and the niche error.
+  The leg-6 Hub/MinIO test now records every `SmallSeaS3Adapter._upload` call and asserts none happened during the fetch, which catches rewrites of identical bytes that ETags would miss.

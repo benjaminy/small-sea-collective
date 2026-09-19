@@ -505,6 +505,81 @@ def test_cli_merge_from_self_reports_nothing_parked(monkeypatch, tmp_path):
     assert "No parked changes" in result.output
 
 
+def _cli_config(monkeypatch, tmp_path):
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "files.toml"))
+    sync.save_config(
+        {"files_root": str(tmp_path / "files"), "participant_hex": PARTICIPANT}
+    )
+
+
+def test_cli_fetch_requires_exactly_one_source(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from ssc_files.cli import cli
+
+    _cli_config(monkeypatch, tmp_path)
+
+    def _unreachable(*_args, **_kwargs):
+        raise AssertionError("no fetch should run without a valid source")
+
+    monkeypatch.setattr(sync, "fetch_self_via_hub", _unreachable)
+    monkeypatch.setattr(sync, "fetch_via_hub", _unreachable)
+
+    runner = CliRunner()
+    neither = runner.invoke(cli, ["fetch", "ProjectX", "docs"])
+    both = runner.invoke(
+        cli, ["fetch", "ProjectX", "docs", "--from-self", "--from-teammate", "cc" * 16]
+    )
+
+    assert neither.exit_code != 0
+    assert both.exit_code != 0
+    assert "exactly one" in neither.output
+    assert "exactly one" in both.output
+
+
+def test_cli_fetch_from_self_reports_both_heads(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from ssc_files.cli import cli
+
+    _cli_config(monkeypatch, tmp_path)
+    calls = []
+
+    def _fetch(*args, **kwargs):
+        calls.append(args)
+        return sync.SelfFetchResult(registry_sha="a" * 40, niche_sha="b" * 40)
+
+    monkeypatch.setattr(sync, "fetch_self_via_hub", _fetch)
+    result = CliRunner().invoke(cli, ["fetch", "ProjectX", "docs", "--from-self"])
+
+    assert result.exit_code == 0, result.output
+    assert calls == [(str(tmp_path / "files"), PARTICIPANT, "ProjectX", "docs")]
+    assert "aaaaaaaa" in result.output
+    assert "bbbbbbbb" in result.output
+    assert "merge --from-self" in result.output
+
+
+def test_cli_fetch_from_self_partial_failure_says_registry_kept(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from ssc_files.cli import cli
+
+    _cli_config(monkeypatch, tmp_path)
+
+    def _partial(*_args, **_kwargs):
+        raise sync.SelfFetchPartialError("a" * 40, RuntimeError("the store publishes no head"))
+
+    monkeypatch.setattr(sync, "fetch_self_via_hub", _partial)
+    result = CliRunner().invoke(cli, ["fetch", "ProjectX", "docs", "--from-self"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "aaaaaaaa" in result.output
+    assert "kept" in result.output
+    assert "niche 'docs' failed" in result.output
+    assert "the store publishes no head" in result.output
+
+
 class _NoWriteStore:
     """LocalFolderStore that fails any write, so a fetch provably writes nothing."""
 

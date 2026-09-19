@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 from ssc_files import sync, files
 from ssc_files.cli import cli
 from small_sea_client.client import SmallSeaClient, SmallSeaSession
+from small_sea_hub.adapters.s3 import SmallSeaS3Adapter
 from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager, _CORE_APP
 from test_support import (
@@ -938,6 +939,17 @@ def test_fetch_self_via_hub_parks_own_head_through_hub_and_minio(
     root, http = env["root"], env["http"]
     alice, bob = env["alice_hex"], env["bob_hex"]
 
+    # Record every provider write the Hub makes, so the fetch below can be
+    # checked for writes that ETags would miss (rewriting identical bytes).
+    provider_writes = []
+    real_upload = SmallSeaS3Adapter._upload
+
+    def _recording_upload(self, path, *args, **kwargs):
+        provider_writes.append(path)
+        return real_upload(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(SmallSeaS3Adapter, "_upload", _recording_upload)
+
     # Bob publishes a different "docs" head to his own store: a control that
     # Alice's own-store fetch must not pick up.
     bob_root = str(root / "files-bob")
@@ -979,8 +991,12 @@ def test_fetch_self_via_hub_parks_own_head_through_hub_and_minio(
     assert a2_ctx.team_id == a1_ctx.team_id
 
     before = _bucket_snapshot(env["alice_minio"], env["team_bucket"])
+    # Pushes above went through the recorder, so it is live.
+    assert provider_writes
+    writes_before_fetch = len(provider_writes)
     calls = _record_hub_requests(http)
     result = sync.fetch_self_via_hub(a2_root, alice, "ProjectX", "docs", _http_client=http)
+    assert provider_writes[writes_before_fetch:] == []
 
     assert (result.registry_sha, result.niche_sha) == (a1_registry, a1_niche)
     assert calls and all(c == ("GET", "/cloud_file") for c in calls), calls
