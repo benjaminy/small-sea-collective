@@ -383,3 +383,21 @@ def test_commit_tree_rejects_invalid_signing_config(scratch_dir):
     signed = repo.commit_tree(tree, [parent], "signed control")
     signers = _allowed_signers(root / "signers", {"alice@test": key})
     assert _verify(repo, signed, signers)[0] == "G"
+
+
+@pytest.mark.parametrize("show_signature", [False, True])
+def test_signature_report_ignores_log_show_signature(scratch_dir, show_signature):
+    root = pathlib.Path(scratch_dir)
+    key = _make_key(root, "alice")
+    repo = _signed_repo(root / "repo", key)
+    first = commit_file(repo, "a.txt", "a")
+    second = commit_file(repo, "b.txt", "b")
+    if show_signature:
+        repo.config("log.showSignature", "true")
+    signers = _allowed_signers(root / "signers", {"alice@test": key})
+    fingerprint = _verify(repo, second, signers)[1]
+    rows, _ = repo.signature_report(second, signers)
+    assert [(row.commit, row.status, row.fingerprint) for row in rows] == [
+        (second, "G", fingerprint),
+        (first, "G", fingerprint),
+    ]
