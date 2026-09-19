@@ -1,6 +1,7 @@
 """Click CLI for Small Sea Files."""
 
 import click
+from cod_sync.protocol import CodSyncError
 
 from ssc_files import files as files_core
 from ssc_files import sync
@@ -201,9 +202,17 @@ def _fetch_self(team_name, niche_name, files_root, participant, hub_port):
             f"Fetched registry {exc.registry_sha[:8]} from your own store and kept it, "
             f"but fetching niche '{niche_name}' failed: {exc.niche_error}"
         )
-    except (sync.FilesSyncError, OSError) as exc:
+    except (sync.FilesSyncError, CodSyncError, OSError) as exc:
         _die(str(exc))
 
+    if result.registry_sha is None:
+        click.echo(
+            f"Fetched niche '{niche_name}' {result.niche_sha[:8]} from your own store, "
+            f"but the store has no published registry head, so none was fetched. "
+            f"A push may have stopped after the niche. "
+            f"Run 'merge --from-self' to integrate the niche."
+        )
+        return
     click.echo(
         f"Fetched registry {result.registry_sha[:8]} and niche '{niche_name}' "
         f"{result.niche_sha[:8]} from your own store. "

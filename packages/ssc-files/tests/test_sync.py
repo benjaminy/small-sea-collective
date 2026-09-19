@@ -664,3 +664,72 @@ def test_fetch_self_via_hub_keeps_the_registry_when_the_niche_fails(playground_d
         registry_git_b, "for-each-ref", "--format=%(objectname)", "refs/cod-sync/parked"
     )
     assert parked == exc_info.value.registry_sha
+
+
+class _GarbageLatestStore(_NoWriteStore):
+    """A store whose registry head exists but does not decode."""
+
+    def get_latest_link(self):
+        return b"not a link", "etag"
+
+
+def test_fetch_self_via_hub_does_not_treat_a_malformed_registry_as_absent(
+    playground_dir, monkeypatch
+):
+    env = _two_device_conflict(playground_dir)
+    niche_cloud = pathlib.Path(playground_dir) / "niche-cloud"
+    niche_cloud.mkdir()
+    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(niche_cloud)))
+    registry_cloud = pathlib.Path(playground_dir) / "registry-cloud"
+    registry_cloud.mkdir()
+
+    monkeypatch.setattr(sync, "resolve_team_context", lambda *_a: TEAM)
+    monkeypatch.setattr(sync, "get_team_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        sync, "make_registry_remote", lambda _s: _GarbageLatestStore(str(registry_cloud))
+    )
+    monkeypatch.setattr(sync, "make_niche_remote", lambda _n, _s: _NoWriteStore(str(niche_cloud)))
+
+    with pytest.raises(Exception) as exc_info:
+        sync.fetch_self_via_hub(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    assert not isinstance(exc_info.value, sync.NoPublishedHeadError)
+    # The niche was not fetched behind a registry failure.
+    niche_git_b = _niche_git_dir(env["root_b"], TEAM, "notes")
+    assert _git(niche_git_b, "for-each-ref", "refs/cod-sync/parked") == ""
+
+
+def test_cli_fetch_from_self_reports_missing_registry(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from ssc_files.cli import cli
+
+    _cli_config(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        sync,
+        "fetch_self_via_hub",
+        lambda *_a, **_k: sync.SelfFetchResult(registry_sha=None, niche_sha="b" * 40),
+    )
+    result = CliRunner().invoke(cli, ["fetch", "ProjectX", "docs", "--from-self"])
+
+    assert result.exit_code == 0, result.output
+    assert "bbbbbbbb" in result.output
+    assert "no published registry head" in result.output
+
+
+def test_cli_fetch_from_self_reports_cod_sync_errors_without_traceback(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+    from cod_sync.protocol import ChainError
+
+    from ssc_files.cli import cli
+
+    _cli_config(monkeypatch, tmp_path)
+
+    def _chain_error(*_a, **_k):
+        raise ChainError("injected malformed registry")
+
+    monkeypatch.setattr(sync, "fetch_self_via_hub", _chain_error)
+    result = CliRunner().invoke(cli, ["fetch", "ProjectX", "docs", "--from-self"])
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert "injected malformed registry" in result.output

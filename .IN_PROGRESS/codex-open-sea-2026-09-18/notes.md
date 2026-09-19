@@ -16,3 +16,7 @@
 - Issue 235 component (leg 7): the Files CLI exposes the own-store fetch as `fetch --from-self`, mirroring `merge --from-self`; `fetch` now requires exactly one of `--from-teammate` or `--from-self`.
   A niche failure after the registry fetch exits 1 with a one-line message that names the kept registry head and the niche error.
   The leg-6 Hub/MinIO test now records every `SmallSeaS3Adapter._upload` call and asserts none happened during the fetch, which catches rewrites of identical bytes that ETags would miss.
+- Leg 8: `fetch_self_via_hub` treats only `NoPublishedHeadError` on the registry as absence; it still fetches the niche and returns `registry_sha=None`.
+  This covers a push that published the niche and stopped before the registry.
+  If the niche is also absent it raises `SelfFetchNoHeadError` and parks nothing; any other registry failure stops the fetch.
+  `fetch --from-self` now also reports Cod Sync errors as one line instead of a traceback.

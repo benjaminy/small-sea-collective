@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 from cod_sync.protocol import (
+    NoPublishedHeadError,
     PublicationFailedError,
     PublicationIntegrationRequiredError,
     PublicationOutcomeUnresolvedError,
@@ -773,9 +774,22 @@ class SelfFetchPartialError(FilesSyncError):
         self.niche_error = niche_error
 
 
+class SelfFetchNoHeadError(FilesSyncError):
+    """Neither the registry nor the niche has a published head in the own store."""
+
+    def __init__(self, niche_name: str):
+        super().__init__(
+            f"Your own store has no published registry and no published niche "
+            f"'{niche_name}'. Nothing was fetched."
+        )
+        self.niche_name = niche_name
+
+
 @dataclass
 class SelfFetchResult:
-    registry_sha: str
+    # None when the store has no registry head, e.g. after a push that
+    # published the niche and stopped before the registry.
+    registry_sha: Optional[str]
     niche_sha: str
 
 
@@ -794,19 +808,32 @@ def fetch_self_via_hub(
     is published and the checkout does not move. Cod Sync publications in Files
     are unsigned, so a parked head proves only what the store held, not which
     device wrote it.
+
+    A registry with no published head is not fatal: push publishes the niche
+    first, so an interrupted push can leave a niche without a registry. The
+    niche is still fetched and the result reports `registry_sha=None`. Any other
+    registry failure, including a malformed chain, stops the fetch.
     """
     context = resolve_team_context(files_root, participant_hex, team_name)
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
-    registry_sha = files.fetch_self_registry(
-        files_root, participant_hex, context, make_registry_remote(session)
-    )
+    try:
+        registry_sha = files.fetch_self_registry(
+            files_root, participant_hex, context, make_registry_remote(session)
+        )
+    except NoPublishedHeadError:
+        registry_sha = None
+    niche_remote = make_niche_remote(niche_name, session)
+    if registry_sha is None:
+        try:
+            niche_sha = files.fetch_self_niche(
+                files_root, participant_hex, context, niche_name, niche_remote
+            )
+        except NoPublishedHeadError as exc:
+            raise SelfFetchNoHeadError(niche_name) from exc
+        return SelfFetchResult(registry_sha=None, niche_sha=niche_sha)
     try:
         niche_sha = files.fetch_self_niche(
-            files_root,
-            participant_hex,
-            context,
-            niche_name,
-            make_niche_remote(niche_name, session),
+            files_root, participant_hex, context, niche_name, niche_remote
         )
     except Exception as exc:
         raise SelfFetchPartialError(registry_sha, exc) from exc
