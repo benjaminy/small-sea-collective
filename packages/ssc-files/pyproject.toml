@@ -12,6 +12,8 @@ dependencies = [
 
 [project.optional-dependencies]
 test = [
+    "boto3>=1.40.53",
+    "pytest>=8.4.2",
     "small-sea-hub",
     "small-sea-manager",
 ]
