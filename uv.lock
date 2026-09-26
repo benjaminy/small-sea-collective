@@ -1103,6 +1103,7 @@ version = "0.1.0"
 source = { editable = "packages/small-sea-hub" }
 dependencies = [
     { name = "botocore" },
+    { name = "cod-sync" },
     { name = "cuttlefish" },
     { name = "fastapi", extra = ["standard"] },
     { name = "httpx" },
@@ -1124,6 +1125,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "botocore", specifier = ">=1.40.43" },
+    { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "cuttlefish", editable = "packages/cuttlefish" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.118.0" },
     { name = "httpx", specifier = ">=0.27.0" },

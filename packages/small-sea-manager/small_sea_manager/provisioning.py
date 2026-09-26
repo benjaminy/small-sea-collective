@@ -5271,6 +5271,22 @@ def get_workhorse_signing_key(root_dir, participant_hex, berth_id: bytes) -> byt
     return _read_local_secret(path)
 
 
+class WorkhorseSigningKeyAbsentError(FileNotFoundError):
+    """This device has no workhorse key for the berth."""
+
+
+def read_workhorse_signing_key(root_dir, participant_hex, berth_id: bytes) -> bytes:
+    """Read this device's existing berth key without creating one."""
+    if isinstance(berth_id, str):
+        berth_id = bytes.fromhex(berth_id)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        device_id = _current_device_row(conn)[0]
+    path = _workhorse_signing_key_path(root_dir, participant_hex, device_id, berth_id)
+    if not path.exists():
+        raise WorkhorseSigningKeyAbsentError(f"No workhorse signing key for berth {berth_id.hex()}")
+    return _read_local_secret(path)
+
+
 def get_workhorse_signing_public_key(
     root_dir, participant_hex, berth_id: bytes
 ) -> str:

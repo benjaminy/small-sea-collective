@@ -1,6 +1,8 @@
 #
 
 import asyncio
+import base64
+import binascii
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -19,7 +21,10 @@ from small_sea_hub.backend import (
     SmallSeaBackend,
     SmallSeaNotFoundExn,
     SmallSeaSessionNotFoundExn,
+    SigningPurposeNotAllowedError,
 )
+from small_sea_manager.provisioning import WorkhorseSigningKeyAbsentError
+from cod_sync.work_context import WorkContextError
 from small_sea_hub.cloud_errors import CloudStorageRequiredExn
 from small_sea_hub.crypto import (PublicationExn, PublicationNotAuthenticExn,
                                   PublicationPendingExn)
@@ -891,11 +896,44 @@ async def session_info(session_hex: str = Depends(_require_session)):
     return {
         "participant_hex": ss_session.participant_id.hex(),
         "team_name": ss_session.team_name,
+        "team_id": ss_session.team_id.hex(),
         "app_name": ss_session.app_name,
         "berth_id": ss_session.berth_id.hex(),
         "client": ss_session.client,
         "mode": ss_session.mode,
     }
+
+
+class SignCommitReq(pydantic.BaseModel):
+    purpose: str
+    payload: str
+
+
+@app.get("/session/signing_key")
+async def session_signing_key(session_hex: str = Depends(_require_session)):
+    try:
+        private_bytes = app.state.backend.signing_key(session_hex)
+    except WorkhorseSigningKeyAbsentError:
+        raise HTTPException(status_code=409, detail={"code": "signing_key_absent"})
+    from cod_sync.sshsig import public_key_from_private
+    return {"public_key": public_key_from_private(private_bytes)}
+
+
+@app.post("/session/sign")
+async def session_sign(req: SignCommitReq, session_hex: str = Depends(_require_session)):
+    try:
+        payload = base64.b64decode(req.payload, validate=True)
+    except (ValueError, binascii.Error):
+        raise HTTPException(status_code=400, detail={"code": "invalid_commit"})
+    try:
+        signature, public_key = app.state.backend.sign_commit(session_hex, req.purpose, payload)
+    except SigningPurposeNotAllowedError:
+        raise HTTPException(status_code=403, detail={"code": "purpose_not_allowed"})
+    except WorkContextError:
+        raise HTTPException(status_code=400, detail={"code": "invalid_commit"})
+    except WorkhorseSigningKeyAbsentError:
+        raise HTTPException(status_code=409, detail={"code": "signing_key_absent"})
+    return {"signature": signature, "public_key": public_key}
 
 
 @app.get("/session/peers")

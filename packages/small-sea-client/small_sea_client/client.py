@@ -332,6 +332,18 @@ class SmallSeaSession:
         """Return metadata for this session: participant_hex, team_name, app_name, berth_id, client."""
         return self._client._get("/session/info", token=self._token)
 
+    def sign_commit(self, payload: bytes, purpose: str) -> str:
+        """Ask the Hub to sign an unsigned git commit body for this berth."""
+        result = self._client._post(
+            "/session/sign", {"purpose": purpose, "payload": base64.b64encode(payload).decode("ascii")},
+            token=self._token,
+        )
+        return result["signature"]
+
+    def signing_public_key(self) -> str:
+        """Return this session berth's workhorse public key."""
+        return self._client._get("/session/signing_key", token=self._token)["public_key"]
+
     def session_peers(self) -> list[dict]:
         """Return peers visible to this session, with best-effort labels."""
         result = self._client._get("/session/peers", token=self._token)

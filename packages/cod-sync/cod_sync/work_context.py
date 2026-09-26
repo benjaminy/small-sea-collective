@@ -93,7 +93,39 @@ def commit_message_with_context(message: str, context: WorkContext) -> str:
 def context_from_commit(repo, commit: str) -> WorkContext:
     """Read one context trailer from an original commit object; verify its signature separately."""
     raw = repo._run_binary(["cat-file", "commit", commit]).stdout
-    message = raw.partition(b"\n\n")[2]
+    return context_from_commit_bytes(raw)
+
+
+def context_from_commit_bytes(raw: bytes, *, unsigned: bool = False) -> WorkContext:
+    """Read the sole context from a git commit body, checking its header shape."""
+    if not isinstance(raw, bytes):
+        raise WorkContextError("invalid commit body")
+    headers, separator, message = raw.partition(b"\n\n")
+    lines = headers.split(b"\n")
+    if not separator or not message or not lines[0].startswith(b"tree ") or len(lines[0]) != 45:
+        raise WorkContextError("invalid commit body")
+    try:
+        int(lines[0][5:], 16)
+    except ValueError as exc:
+        raise WorkContextError("invalid commit tree") from exc
+    if sum(line.startswith(b"author ") for line in lines) != 1 or sum(line.startswith(b"committer ") for line in lines) != 1:
+        raise WorkContextError("invalid commit headers")
+    if next(i for i, line in enumerate(lines) if line.startswith(b"author ")) >= next(
+        i for i, line in enumerate(lines) if line.startswith(b"committer ")
+    ):
+        raise WorkContextError("invalid commit headers")
+    for line in lines[1:]:
+        if unsigned and (line.startswith(b"gpgsig ") or line.startswith(b"gpgsig-sha256 ")):
+            raise WorkContextError("commit already signed")
+        if not line or (not line.startswith(b" ") and (b" " not in line or not line.split(b" ", 1)[0].replace(b"-", b"").isalnum())):
+            raise WorkContextError("invalid commit headers")
+        if line.startswith(b"parent "):
+            if len(line) != 47:
+                raise WorkContextError("invalid commit parent")
+            try:
+                int(line[7:], 16)
+            except ValueError as exc:
+                raise WorkContextError("invalid commit parent") from exc
     trailers = [line[len(TRAILER):] for line in message.splitlines() if line.startswith(TRAILER)]
     if len(trailers) != 1:
         raise WorkContextError("commit must have exactly one context trailer")

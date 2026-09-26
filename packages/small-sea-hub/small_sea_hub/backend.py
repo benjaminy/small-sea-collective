@@ -54,6 +54,9 @@ from small_sea_note_to_self.bootstrap_status import (
 )
 from small_sea_note_to_self.berth_source import saved_route_for_candidate
 from small_sea_note_to_self.db import attached_note_to_self_connection
+from small_sea_manager.provisioning import read_workhorse_signing_key, WorkhorseSigningKeyAbsentError
+from cod_sync.work_context import WorkContextError, context_from_commit_bytes
+from cod_sync.sshsig import sign_git_commit
 from small_sea_note_to_self.ids import uuid7
 from wrasse_trust.keys import key_id_from_public
 from wrasse_trust.transport import (
@@ -105,6 +108,10 @@ class SmallSeaSessionNotFoundExn(SmallSeaNotFoundExn):
     """
 
 
+class SigningPurposeNotAllowedError(SmallSeaBackendExn):
+    """The session's app cannot sign for the requested purpose."""
+
+
 class SmallSeaAppBootstrapRequiredExn(SmallSeaBackendExn):
     def __init__(self, reason: str, app_name: str, team_name: str):
         self.reason = reason
@@ -141,7 +148,7 @@ class SmallSeaSession(Base):
 
     id = Column(LargeBinary, primary_key=True)
     token = Column(LargeBinary, nullable=False)
-    created_at = Column(DateTime, default=datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     duration_sec = Column(Integer)
     participant_id = Column(LargeBinary, nullable=False)
     team_id = Column(LargeBinary, nullable=False)
@@ -929,7 +936,10 @@ class SmallSeaBackend:
         return self.confirm_session(pending_id_hex, pin)
 
     def _lookup_session(self, session_hex):
-        session_token = bytes.fromhex(session_hex)
+        try:
+            session_token = bytes.fromhex(session_hex)
+        except ValueError as exc:
+            raise SmallSeaSessionNotFoundExn("Session not found") from exc
         engine_local = create_engine(f"sqlite:///{self.path_local_db}")
         with Session(engine_local) as session:
             ss_session = (
@@ -939,11 +949,40 @@ class SmallSeaBackend:
             )
         if ss_session is None:
             raise SmallSeaSessionNotFoundExn(f"Session not found: {session_hex[:8]}")
+        if ss_session.duration_sec is not None:
+            created_at = ss_session.created_at
+            if created_at.tzinfo is None:
+                created_at = created_at.replace(tzinfo=timezone.utc)
+            if created_at + timedelta(seconds=ss_session.duration_sec) < datetime.now(timezone.utc):
+                raise SmallSeaSessionNotFoundExn(f"Session not found: {session_hex[:8]}")
         assert_identity_bootstrap_trusted(self.root_dir, ss_session.participant_id.hex())
         ss_session.participant_path = (
             self.root_dir / "Participants" / ss_session.participant_id.hex()
         )
         return ss_session
+
+    def signing_key(self, session_hex):
+        ss_session = self._lookup_session(session_hex)
+        private_bytes = read_workhorse_signing_key(
+            self.root_dir, ss_session.participant_id.hex(), ss_session.berth_id
+        )
+        return private_bytes
+
+    def sign_commit(self, session_hex, purpose, payload):
+        ss_session = self._lookup_session(session_hex)
+        if ss_session.app_name == "SmallSeaFiles":
+            allowed = {"files-content", "files-registry", "files-merge"}
+        elif ss_session.app_name == "SmallSeaCollectiveCore":
+            allowed = {"note-to-self" if ss_session.team_name == "NoteToSelf" else "core"}
+        else:
+            allowed = set()
+        if purpose not in allowed:
+            raise SigningPurposeNotAllowedError("purpose_not_allowed")
+        context = context_from_commit_bytes(payload, unsigned=True)
+        if (context.origin != "commit" or context.team_id != ss_session.team_id.hex()
+                or context.berth_id != ss_session.berth_id.hex() or context.purpose != purpose):
+            raise WorkContextError("work context does not match session")
+        return sign_git_commit(payload, self.signing_key(session_hex))
 
     def create_bootstrap_session(
         self,

@@ -196,6 +196,7 @@ def test_session_info(playground_dir):
     info = resp.json()
     assert info["participant_hex"] == alice_hex
     assert info["team_name"] == "ProjectX"
+    assert len(info["team_id"]) == 32
     assert info["app_name"] == "SmallSeaCollectiveCore"
     assert len(info["berth_id"]) == 32  # 16 bytes hex
     assert info["client"] == "Smoke Tests"
