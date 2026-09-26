@@ -1,3 +1,4 @@
+from test_support import local_files_signer
 import json
 import pathlib
 
@@ -28,11 +29,11 @@ from ssc_files.files import (
 PARTICIPANT = "aa" * 16
 TEAM_NAME = "TestTeam"
 TEAM_ID = "11" * 16
-TEAM = FilesMaterializationContext(PARTICIPANT, TEAM_ID, TEAM_NAME)
+TEAM = FilesMaterializationContext(PARTICIPANT, TEAM_ID, TEAM_NAME, actual_team_id="22" * 16)
 
 
 def _team_for(participant_hex):
-    return FilesMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME)
+    return FilesMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME, actual_team_id="22" * 16)
 
 
 def _init(playground_dir):
@@ -41,7 +42,7 @@ def _init(playground_dir):
 
 def test_create_niche(playground_dir):
     _init(playground_dir)
-    niche_id = create_niche(playground_dir, PARTICIPANT, TEAM, "photos")
+    niche_id = create_niche(playground_dir, PARTICIPANT, TEAM, "photos", signer=local_files_signer(TEAM))
 
     assert len(niche_id) == 32  # 16 bytes -> 32 hex chars
 
@@ -67,11 +68,11 @@ def test_create_niche(playground_dir):
 
 def test_same_friendly_name_different_teams_do_not_share_storage(playground_dir):
     _init(playground_dir)
-    alpha = FilesMaterializationContext(PARTICIPANT, "11" * 16, TEAM_NAME)
-    beta = FilesMaterializationContext(PARTICIPANT, "22" * 16, TEAM_NAME)
+    alpha = FilesMaterializationContext(PARTICIPANT, "11" * 16, TEAM_NAME, actual_team_id="22" * 16)
+    beta = FilesMaterializationContext(PARTICIPANT, "22" * 16, TEAM_NAME, actual_team_id="22" * 16)
 
-    create_niche(playground_dir, PARTICIPANT, alpha, "docs")
-    create_niche(playground_dir, PARTICIPANT, beta, "docs")
+    create_niche(playground_dir, PARTICIPANT, alpha, "docs", signer=local_files_signer(alpha))
+    create_niche(playground_dir, PARTICIPANT, beta, "docs", signer=local_files_signer(beta))
 
     root = pathlib.Path(playground_dir) / "participants" / PARTICIPANT / "teams"
     assert (root / alpha.team_id / "registry" / "git").is_dir()
@@ -120,10 +121,10 @@ def test_same_friendly_name_different_teams_do_not_share_storage(playground_dir)
 
 def test_context_participant_mismatch_raises(playground_dir):
     _init(playground_dir)
-    wrong_participant = FilesMaterializationContext("bb" * 16, TEAM_ID, TEAM_NAME)
+    wrong_participant = FilesMaterializationContext("bb" * 16, TEAM_ID, TEAM_NAME, actual_team_id="22" * 16)
 
     with pytest.raises(ValueError, match="participant"):
-        create_niche(playground_dir, PARTICIPANT, wrong_participant, "docs")
+        create_niche(playground_dir, PARTICIPANT, wrong_participant, "docs", signer=local_files_signer(wrong_participant))
 
 
 def test_session_info_rejects_non_files_app_name():
@@ -131,6 +132,7 @@ def test_session_info_rejects_non_files_app_name():
         FilesMaterializationContext.from_session_info(
             {
                 "participant_hex": PARTICIPANT,
+                "team_id": "22" * 16,
                 "berth_id": TEAM_ID,
                 "team_name": TEAM_NAME,
                 "app_name": "OtherApp",
@@ -151,7 +153,7 @@ def test_iter_materialized_teams_skips_invalid_metadata(playground_dir):
 
     materialize_team(
         playground_dir,
-        FilesMaterializationContext(PARTICIPANT, good_id, "GoodTeam"),
+        FilesMaterializationContext(PARTICIPANT, good_id, "GoodTeam", actual_team_id="22" * 16),
     )
 
     teams_dir = (
@@ -196,7 +198,7 @@ def test_iter_materialized_teams_skips_invalid_metadata(playground_dir):
 
 def test_add_checkout(playground_dir):
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "docs")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "docs", signer=local_files_signer(TEAM))
 
     dest = pathlib.Path(playground_dir) / "checkout" / "docs"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "docs", str(dest))
@@ -212,7 +214,7 @@ def test_add_checkout(playground_dir):
 def test_add_checkout_twice_raises(playground_dir):
     """A second add_checkout for the same niche raises DuplicateCheckoutError."""
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "notes")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "notes", signer=local_files_signer(TEAM))
 
     dest_a = pathlib.Path(playground_dir) / "checkout-a"
     dest_b = pathlib.Path(playground_dir) / "checkout-b"
@@ -232,7 +234,7 @@ def test_add_checkout_twice_raises(playground_dir):
 def test_get_checkout(playground_dir):
     """get_checkout returns the path or None."""
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "notes")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "notes", signer=local_files_signer(TEAM))
 
     assert get_checkout(playground_dir, PARTICIPANT, TEAM, "notes") is None
 
@@ -246,14 +248,14 @@ def test_get_checkout(playground_dir):
 
 def test_publish_and_log(playground_dir):
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "notes")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "notes", signer=local_files_signer(TEAM))
     dest = pathlib.Path(playground_dir) / "checkout" / "notes"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest))
 
     (dest / "hello.txt").write_text("hello world")
     commit_hash = publish(
         playground_dir, PARTICIPANT, TEAM, "notes", str(dest), message="first note"
-    )
+    , signer=local_files_signer(TEAM))
 
     assert len(commit_hash) >= 7
 
@@ -264,7 +266,7 @@ def test_publish_and_log(playground_dir):
 
 def test_status(playground_dir):
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "pics")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "pics", signer=local_files_signer(TEAM))
     dest = pathlib.Path(playground_dir) / "checkout" / "pics"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "pics", str(dest))
 
@@ -274,14 +276,14 @@ def test_status(playground_dir):
     assert any(e["path"] == "cat.jpg" for e in entries)
 
     # Publish it — status should be clean
-    publish(playground_dir, PARTICIPANT, TEAM, "pics", str(dest), message="add cat")
+    publish(playground_dir, PARTICIPANT, TEAM, "pics", str(dest), message="add cat", signer=local_files_signer(TEAM))
     entries = status(playground_dir, PARTICIPANT, TEAM, "pics", str(dest))
     assert len(entries) == 0
 
 
 def test_selective_publish(playground_dir):
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "mixed")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "mixed", signer=local_files_signer(TEAM))
     dest = pathlib.Path(playground_dir) / "checkout" / "mixed"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "mixed", str(dest))
 
@@ -291,7 +293,7 @@ def test_selective_publish(playground_dir):
     publish(
         playground_dir, PARTICIPANT, TEAM, "mixed", str(dest),
         files=["a.txt"], message="only a",
-    )
+     signer=local_files_signer(TEAM))
 
     entries = status(playground_dir, PARTICIPANT, TEAM, "mixed", str(dest))
     paths = [e["path"] for e in entries]
@@ -305,7 +307,7 @@ def test_schema_version_recreates_db(playground_dir):
     from ssc_files.files import _CHECKOUTS_DB_VERSION, _checkouts_db_path
 
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "photos")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "photos", signer=local_files_signer(TEAM))
     dest = pathlib.Path(playground_dir) / "checkout"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "photos", str(dest))
 
@@ -341,11 +343,11 @@ def _two_files_setup(playground_dir):
 
     # Alice creates niche, writes a file, and pushes
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "shared")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "shared", signer=local_files_signer(TEAM))
     alice_co = playground / "checkout-alice"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "shared", str(alice_co))
     (alice_co / "hello.txt").write_text("hello\n")
-    publish(playground_dir, PARTICIPANT, TEAM, "shared", str(alice_co), message="init")
+    publish(playground_dir, PARTICIPANT, TEAM, "shared", str(alice_co), message="init", signer=local_files_signer(TEAM))
 
     cloud = playground / "cloud"
     cloud.mkdir()
@@ -369,11 +371,11 @@ def test_merge_without_checkout_raises(playground_dir):
 
     playground = pathlib.Path(playground_dir)
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "stuff")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "stuff", signer=local_files_signer(TEAM))
     alice_co = playground / "checkout-alice"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "stuff", str(alice_co))
     (alice_co / "a.txt").write_text("a\n")
-    publish(playground_dir, PARTICIPANT, TEAM, "stuff", str(alice_co), message="init")
+    publish(playground_dir, PARTICIPANT, TEAM, "stuff", str(alice_co), message="init", signer=local_files_signer(TEAM))
 
     cloud = playground / "cloud"
     cloud.mkdir()
@@ -385,7 +387,7 @@ def test_merge_without_checkout_raises(playground_dir):
 
     # Bob has a fetched ref but no checkout — merge must fail clearly
     with pytest.raises(NoCheckoutError):
-        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT)
+        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
 
 def test_merge_dirty_tracked_file_raises(playground_dir):
@@ -397,7 +399,7 @@ def test_merge_dirty_tracked_file_raises(playground_dir):
     (bob_co / "hello.txt").write_text("modified\n")
 
     with pytest.raises(DirtyCheckoutError) as exc_info:
-        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT)
+        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     assert "hello.txt" in exc_info.value.paths
 
@@ -414,7 +416,7 @@ def test_merge_dirty_untracked_file_raises(playground_dir):
     (bob_co / "untracked.txt").write_text("surprise\n")
 
     with pytest.raises(DirtyCheckoutError) as exc_info:
-        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT)
+        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     assert "untracked.txt" in exc_info.value.paths
 
@@ -424,7 +426,7 @@ def test_merge_clean_checkout_succeeds(playground_dir):
     playground, bob_root, bob_co = _two_files_setup(playground_dir)
 
     # Bob's checkout is clean; merge should succeed and deliver alice's file
-    result_sha = merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT)
+    result_sha = merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     assert result_sha is not None
     assert (bob_co / "hello.txt").exists()
@@ -439,7 +441,7 @@ def test_merge_clean_checkout_succeeds(playground_dir):
 def test_residency_remote_only(playground_dir):
     """A niche that exists in the registry but has no local git dir is REMOTE_ONLY."""
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "photos")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "photos", signer=local_files_signer(TEAM))
 
     # Simulate a second participant who has the registry but not the niche git dir.
     other = "bb" * 16
@@ -459,7 +461,7 @@ def test_residency_remote_only(playground_dir):
 def test_residency_cached(playground_dir):
     """A niche whose git dir exists but has no checkout registered is CACHED."""
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "docs")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "docs", signer=local_files_signer(TEAM))
     # create_niche creates the git dir but no checkout row.
     assert niche_residency(playground_dir, PARTICIPANT, TEAM, "docs") is NicheResidency.CACHED
 
@@ -467,7 +469,7 @@ def test_residency_cached(playground_dir):
 def test_residency_checked_out(playground_dir):
     """A niche with a registered checkout is CHECKED_OUT."""
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "notes")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "notes", signer=local_files_signer(TEAM))
     dest = pathlib.Path(playground_dir) / "co-notes"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "notes", str(dest))
     assert niche_residency(playground_dir, PARTICIPANT, TEAM, "notes") is NicheResidency.CHECKED_OUT
@@ -476,7 +478,7 @@ def test_residency_checked_out(playground_dir):
 def test_residency_cached_after_remove_checkout(playground_dir):
     """remove_checkout transitions a niche from CHECKED_OUT back to CACHED."""
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "archive")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "archive", signer=local_files_signer(TEAM))
     dest = pathlib.Path(playground_dir) / "co-archive"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "archive", str(dest))
     assert niche_residency(playground_dir, PARTICIPANT, TEAM, "archive") is NicheResidency.CHECKED_OUT
@@ -488,8 +490,8 @@ def test_residency_cached_after_remove_checkout(playground_dir):
 def test_list_niches_includes_residency(playground_dir):
     """list_niches includes a 'residency' key in each niche dict."""
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "alpha")
-    create_niche(playground_dir, PARTICIPANT, TEAM, "beta")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "alpha", signer=local_files_signer(TEAM))
+    create_niche(playground_dir, PARTICIPANT, TEAM, "beta", signer=local_files_signer(TEAM))
 
     dest = pathlib.Path(playground_dir) / "co-alpha"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "alpha", str(dest))
@@ -502,10 +504,10 @@ def test_list_niches_includes_residency(playground_dir):
 def test_no_checkout_error_cached_message(playground_dir):
     """NoCheckoutError for a CACHED niche tells the user to attach a checkout."""
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "stuff")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "stuff", signer=local_files_signer(TEAM))
 
     with pytest.raises(NoCheckoutError) as exc_info:
-        merge_niche(playground_dir, PARTICIPANT, TEAM, "stuff", "some-peer-id")
+        merge_niche(playground_dir, PARTICIPANT, TEAM, "stuff", "some-peer-id", signer=local_files_signer(TEAM))
 
     err = exc_info.value
     assert err.residency is NicheResidency.CACHED
@@ -524,7 +526,7 @@ def test_no_checkout_error_remote_only_message(playground_dir):
     # Files is initialised but "ghost" niche was never created locally —
     # there is no git dir, so residency is REMOTE_ONLY.
     with pytest.raises(NoCheckoutError) as exc_info:
-        merge_niche(playground_dir, PARTICIPANT, TEAM, "ghost", "some-peer-id")
+        merge_niche(playground_dir, PARTICIPANT, TEAM, "ghost", "some-peer-id", signer=local_files_signer(TEAM))
 
     err = exc_info.value
     assert err.residency is NicheResidency.REMOTE_ONLY
@@ -543,8 +545,8 @@ def test_cli_list_shows_residency_labels(playground_dir, monkeypatch):
     _init(playground_dir)
     from ssc_files.files import materialize_team
     materialize_team(playground_dir, TEAM)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "alpha")   # will be CHECKED_OUT
-    create_niche(playground_dir, PARTICIPANT, TEAM, "beta")    # stays CACHED
+    create_niche(playground_dir, PARTICIPANT, TEAM, "alpha", signer=local_files_signer(TEAM))   # will be CHECKED_OUT
+    create_niche(playground_dir, PARTICIPANT, TEAM, "beta", signer=local_files_signer(TEAM))    # stays CACHED
 
     dest = pathlib.Path(playground_dir) / "co-alpha"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "alpha", str(dest))
@@ -573,11 +575,11 @@ def _full_sync_setup(playground_dir):
 
     playground = pathlib.Path(playground_dir)
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "sync")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "sync", signer=local_files_signer(TEAM))
     alice_co = playground / "co-alice"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "sync", str(alice_co))
     (alice_co / "file.txt").write_text("v1\n")
-    publish(playground_dir, PARTICIPANT, TEAM, "sync", str(alice_co), message="v1")
+    publish(playground_dir, PARTICIPANT, TEAM, "sync", str(alice_co), message="v1", signer=local_files_signer(TEAM))
 
     cloud = playground / "cloud"
     cloud.mkdir()
@@ -600,7 +602,7 @@ def test_no_transit_dir_ever_created(playground_dir):
     fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT)
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     # Walk every files directory and assert no transit/ dir exists
     for files_root in [pathlib.Path(playground_dir), bob_root]:
@@ -652,13 +654,13 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
 
     playground = pathlib.Path(playground_dir)
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "history")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "history", signer=local_files_signer(TEAM))
     alice_co = playground / "co-alice"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co))
 
     # Alice: commit A, push
     (alice_co / "a.txt").write_text("a\n")
-    publish(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co), message="A")
+    publish(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co), message="A", signer=local_files_signer(TEAM))
     cloud = playground / "cloud"
     cloud.mkdir()
     push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)))
@@ -669,13 +671,13 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
     fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud)))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT)
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
     remove_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
     # Bob's niche is now CACHED with HEAD at A
 
     # Alice: commit B, push
     (alice_co / "b.txt").write_text("b\n")
-    publish(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co), message="B")
+    publish(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co), message="B", signer=local_files_signer(TEAM))
     push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)))
 
     # Bob: fetch B — parked_sha is B, HEAD is A, so _is_ancestor is exercised
@@ -689,7 +691,7 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
 
     # Bob re-registers, merges B, removes checkout again → already_merged=True
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT)
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
     remove_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
 
     status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "history", PARTICIPANT)
@@ -712,7 +714,7 @@ def test_initial_history_pull(playground_dir):
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
 
-    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(cloud)))
+    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     assert (bob_co / "file.txt").exists()
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -728,7 +730,7 @@ def test_initial_history_merge(playground_dir):
     )
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT)
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     assert (bob_co / "file.txt").exists()
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -743,11 +745,11 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
 
     # Alice and Bob both start from the same base commit
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "conflict")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "conflict", signer=local_files_signer(TEAM))
     alice_co = playground / "co-alice"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "conflict", str(alice_co))
     (alice_co / "shared.txt").write_text("base\n")
-    publish(playground_dir, PARTICIPANT, TEAM, "conflict", str(alice_co), message="base")
+    publish(playground_dir, PARTICIPANT, TEAM, "conflict", str(alice_co), message="base", signer=local_files_signer(TEAM))
 
     cloud = playground / "cloud"
     cloud.mkdir()
@@ -758,20 +760,20 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
     fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT)
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     # Both Alice and Bob modify the same file divergently and push/re-fetch
     (alice_co / "shared.txt").write_text("alice edit\n")
-    publish(playground_dir, PARTICIPANT, TEAM, "conflict", str(alice_co), message="alice")
+    publish(playground_dir, PARTICIPANT, TEAM, "conflict", str(alice_co), message="alice", signer=local_files_signer(TEAM))
     push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)))
 
     (bob_co / "shared.txt").write_text("bob edit\n")
-    publish(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co), message="bob")
+    publish(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co), message="bob", signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)))
 
     with pytest.raises(MergeConflictError):
-        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT)
+        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     conflict_files = niche_conflict_paths(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict")
     assert "shared.txt" in conflict_files
@@ -791,14 +793,14 @@ def test_stale_bundle_guard(playground_dir):
     _init_git_dir(git_dir)
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
-    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(cloud)))
+    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
     assert (bob_co / "file.txt").read_text() == "v1\n"
 
     # Now point pull at an empty store, which publishes no head at all.
     empty_cloud = playground / "cloud-empty"
     empty_cloud.mkdir()
     with pytest.raises(NoPublishedHeadError):
-        pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(empty_cloud)))
+        pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(empty_cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     # Checkout is unchanged
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -816,11 +818,11 @@ def test_niche_conflict_paths_stale_and_cached(playground_dir):
 
     playground = pathlib.Path(playground_dir)
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "cptest")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "cptest", signer=local_files_signer(TEAM))
     co = playground / "co-cptest"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "cptest", str(co))
     (co / "f.txt").write_text("x\n")
-    publish(playground_dir, PARTICIPANT, TEAM, "cptest", str(co), message="init")
+    publish(playground_dir, PARTICIPANT, TEAM, "cptest", str(co), message="init", signer=local_files_signer(TEAM))
     git_dir = _niche_git_dir(playground_dir, TEAM, "cptest")
 
     # Grab a valid commit SHA to use as a synthetic MERGE_HEAD
@@ -863,11 +865,11 @@ def test_cwd_preserved_across_files_operations(playground_dir):
 
     playground = pathlib.Path(playground_dir)
     _init(playground_dir)
-    create_niche(playground_dir, PARTICIPANT, TEAM, "cwdtest")
+    create_niche(playground_dir, PARTICIPANT, TEAM, "cwdtest", signer=local_files_signer(TEAM))
     alice_co = playground / "co-alice"
     add_checkout(playground_dir, PARTICIPANT, TEAM, "cwdtest", str(alice_co))
     (alice_co / "cwd.txt").write_text("cwd\n")
-    publish(playground_dir, PARTICIPANT, TEAM, "cwdtest", str(alice_co), message="init")
+    publish(playground_dir, PARTICIPANT, TEAM, "cwdtest", str(alice_co), message="init", signer=local_files_signer(TEAM))
 
     cloud_niche = playground / "cloud-niche"
     cloud_niche.mkdir()
@@ -890,7 +892,7 @@ def test_cwd_preserved_across_files_operations(playground_dir):
 
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT)
+    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
     assert os.getcwd() == cwd_before
 
     # pull_niche (initial pull path)
@@ -902,19 +904,19 @@ def test_cwd_preserved_across_files_operations(playground_dir):
     _init_git_dir(git_dir2)
     bob2_co = playground / "co-bob2"
     add_checkout(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", str(bob2_co))
-    pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderStore(str(cloud_niche)))
+    pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderStore(str(cloud_niche)), signer=local_files_signer(_team_for(PARTICIPANT_C)))
     assert os.getcwd() == cwd_before
 
     # merge_registry (covers _cod_merge_ref via registry path)
     from ssc_files.files import fetch_registry
     fetch_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, LocalFolderStore(str(cloud_reg)))
     assert os.getcwd() == cwd_before
-    merge_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT)
+    merge_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
     assert os.getcwd() == cwd_before
 
     # Failure path: pull_niche on an empty store raises but leaves CWD unchanged
     empty_cloud = playground / "cloud-empty"
     empty_cloud.mkdir()
     with pytest.raises(NoPublishedHeadError):
-        pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderStore(str(empty_cloud)))
+        pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderStore(str(empty_cloud)), signer=local_files_signer(_team_for(PARTICIPANT_C)))
     assert os.getcwd() == cwd_before

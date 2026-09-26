@@ -1,3 +1,4 @@
+from test_support import local_files_signer
 import pathlib
 
 import small_sea_hub.backend as SmallSea
@@ -178,9 +179,9 @@ def test_web_push_requires_cached_session(playground_dir, monkeypatch):
     files_root = f"{runner_root}/files"
     participant_hex = "aa" * 16
     files.init_files(files_root, participant_hex)
-    context = files.FilesMaterializationContext(participant_hex, "11" * 16, "ProjectX")
+    context = files.FilesMaterializationContext(participant_hex, "11" * 16, "ProjectX", actual_team_id="22" * 16)
     files.materialize_team(files_root, context)
-    files.create_niche(files_root, participant_hex, context, "docs")
+    files.create_niche(files_root, participant_hex, context, "docs", signer=local_files_signer(context))
 
     files_app = create_app(files_root, participant_hex)
     client = TestClient(files_app)
@@ -291,10 +292,10 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
     alice_login = sync.login_team(alice_files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     alice_context = files.materialization_context_from_session_info(alice_login.session_info)
-    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs")
+    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs", signer=local_files_signer(alice_context))
     files.add_checkout(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
     (alice_checkout / "notes.txt").write_text("hello from web\n")
-    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init")
+    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init", signer=local_files_signer(alice_context))
 
     alice_app = create_app(alice_files_root, env["alice_hex"], _http_client=http)
     alice_client = TestClient(alice_app)
@@ -330,7 +331,7 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     )
 
     (alice_checkout / "notes.txt").write_text("hello again\n")
-    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="update")
+    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="update", signer=local_files_signer(alice_context))
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
     push_resp = alice_client.post("/teams/ProjectX/niches/docs/push")
     assert push_resp.status_code == 200
@@ -369,9 +370,9 @@ def test_peer_panel_fragment_no_session(playground_dir, monkeypatch):
     files_root = f"{playground_dir}/files"
     participant_hex = "aa" * 16
     files.init_files(files_root, participant_hex)
-    context = files.FilesMaterializationContext(participant_hex, "11" * 16, "ProjectX")
+    context = files.FilesMaterializationContext(participant_hex, "11" * 16, "ProjectX", actual_team_id="22" * 16)
     files.materialize_team(files_root, context)
-    files.create_niche(files_root, participant_hex, context, "docs")
+    files.create_niche(files_root, participant_hex, context, "docs", signer=local_files_signer(context))
 
     files_app = create_app(files_root, participant_hex)
     client = TestClient(files_app)
@@ -393,7 +394,7 @@ def test_peer_panel_fragment_active_session(playground_dir, minio_server_gen, mo
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
     login = sync.login_team(files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     context = files.materialization_context_from_session_info(login.session_info)
-    files.create_niche(files_root, env["alice_hex"], context, "docs")
+    files.create_niche(files_root, env["alice_hex"], context, "docs", signer=local_files_signer(context))
 
     files_app = create_app(files_root, env["alice_hex"], _http_client=http)
     client = TestClient(files_app)
@@ -425,10 +426,10 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
     alice_login = sync.login_team(alice_files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
     alice_context = files.materialization_context_from_session_info(alice_login.session_info)
-    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs")
+    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs", signer=local_files_signer(alice_context))
     files.add_checkout(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
     (alice_checkout / "notes.txt").write_text("v1\n")
-    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init")
+    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init", signer=local_files_signer(alice_context))
 
     sync.push_via_hub(alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
@@ -445,7 +446,7 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     hub_app.state.peer_counts[(bob_berth_id_hex, env["alice_teammate_id_hex"])] = 3
 
     bob_context = files.materialization_context_from_session_info(bob_login.session_info)
-    files.create_niche(bob_files_root, env["bob_hex"], bob_context, "docs")
+    files.create_niche(bob_files_root, env["bob_hex"], bob_context, "docs", signer=local_files_signer(bob_context))
 
     bob_app = create_app(bob_files_root, env["bob_hex"], _http_client=http)
     bob_client = TestClient(bob_app)

@@ -215,7 +215,9 @@ def create_app(
         vr, ph = _vr(request), _ph(request)
         context = _team_context(request, team_name)
         try:
-            files.create_niche(vr, ph, context, niche_name)
+            files.create_niche(vr, ph, context, niche_name,
+                               signer=sync.commit_signer(team_name, _hub_port(request),
+                                                         _http_client=_http_client(request)))
             error = None
         except ValueError as e:
             error = str(e)
@@ -356,7 +358,9 @@ def create_app(
         context = _team_context(request, team_name)
         try:
             commit_hash = files.publish(
-                vr, ph, context, niche_name, checkout_path, message=message
+                vr, ph, context, niche_name, checkout_path, message=message,
+                signer=sync.commit_signer(team_name, _hub_port(request),
+                                          _http_client=_http_client(request)),
             )
             notice = f"Published {commit_hash[:8]}"
             error = None

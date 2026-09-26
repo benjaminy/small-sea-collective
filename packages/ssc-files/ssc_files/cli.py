@@ -248,7 +248,8 @@ def merge_cmd(team_name, niche_name, from_teammate, from_self, files_root, parti
         files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
         if from_self:
-            self_result = sync.merge_self(files_root, participant, team_name, niche_name)
+            self_result = sync.merge_self(files_root, participant, team_name, niche_name,
+                                          hub_port=hub_port)
         else:
             sync.merge_via_hub(
                 files_root,
@@ -363,7 +364,8 @@ def init_cmd(files_root, participant_hex):
 def create_cmd(files_root, participant_hex, team_name, niche_name):
     """Create a new niche."""
     context = _team_context(files_root, participant_hex, team_name)
-    niche_id = files_core.create_niche(files_root, participant_hex, context, niche_name)
+    niche_id = files_core.create_niche(files_root, participant_hex, context, niche_name,
+                                       signer=sync.commit_signer(team_name, _resolve_sync()[2]))
     click.echo(f"Created niche '{niche_name}' ({niche_id})")
 
 
@@ -444,6 +446,7 @@ def publish_cmd(files_root, participant_hex, team_name, niche_name, checkout_pat
         checkout_path,
         files=list(files) if files else None,
         message=message,
+        signer=sync.commit_signer(team_name, _resolve_sync()[2]),
     )
     click.echo(f"Published: {commit_hash[:8]}")
 

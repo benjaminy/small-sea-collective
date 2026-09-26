@@ -1,3 +1,4 @@
+from test_support import local_files_signer
 import pathlib
 
 import boto3
@@ -199,9 +200,9 @@ def test_signal_watermark_roundtrip(tmp_path, monkeypatch):
     root = str(tmp_path / "files")
     participant = "aa" * 16
     files.init_files(root, participant)
-    team_a = files.FilesMaterializationContext(participant, "11" * 16, "TeamA")
-    team_b = files.FilesMaterializationContext(participant, "22" * 16, "TeamB")
-    team_c = files.FilesMaterializationContext(participant, "33" * 16, "TeamC")
+    team_a = files.FilesMaterializationContext(participant, "11" * 16, "TeamA", actual_team_id="22" * 16)
+    team_b = files.FilesMaterializationContext(participant, "22" * 16, "TeamB", actual_team_id="22" * 16)
+    team_c = files.FilesMaterializationContext(participant, "33" * 16, "TeamC", actual_team_id="22" * 16)
 
     assert sync.get_signal_watermark(root, participant, team_a, "aa" * 16) == 0
 
@@ -233,7 +234,7 @@ def test_signal_watermark_persists_alongside_session_token(tmp_path, monkeypatch
     )
     root = str(tmp_path / "v")
     participant = "aa" * 16
-    team_a = files.FilesMaterializationContext(participant, "11" * 16, "TeamA")
+    team_a = files.FilesMaterializationContext(participant, "11" * 16, "TeamA", actual_team_id="22" * 16)
     files.init_files(root, participant)
     sync.set_signal_watermark(root, participant, team_a, "aa" * 16, 7)
 
@@ -250,12 +251,12 @@ def test_peer_update_status_has_unfetched_hint(tmp_path, monkeypatch, playground
     root = playground_dir
     participant = "bb" * 16
     teammate_id = "cc" * 16
-    team = files.FilesMaterializationContext(participant, "44" * 16, "HintTeam")
+    team = files.FilesMaterializationContext(participant, "44" * 16, "HintTeam", actual_team_id="22" * 16)
     niche = "files"
 
     files.init_files(root, participant)
     files.materialize_team(root, team)
-    files.create_niche(root, participant, team, niche)
+    files.create_niche(root, participant, team, niche, signer=local_files_signer(team))
 
     # No watermark set → current 3 > watermark 0 → hint True
     status = sync.peer_update_status(root, participant, team, niche, teammate_id,
@@ -291,10 +292,10 @@ def test_fetch_via_hub_advances_watermark(playground_dir, minio_server_gen, monk
     alice_context = files.materialization_context_from_session_info(alice_login.session_info)
 
     alice_checkout = root / "alice-checkout"
-    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs")
+    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs", signer=local_files_signer(alice_context))
     files.add_checkout(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
     (alice_checkout / "file.txt").write_text("hello\n")
-    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init")
+    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init", signer=local_files_signer(alice_context))
 
     sync.push_via_hub(alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
@@ -340,10 +341,10 @@ def test_fetch_via_hub_does_not_touch_other_peers_watermark(playground_dir, mini
     alice_context = files.materialization_context_from_session_info(alice_login.session_info)
 
     alice_checkout = root / "alice-checkout"
-    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs")
+    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs", signer=local_files_signer(alice_context))
     files.add_checkout(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
     (alice_checkout / "file.txt").write_text("hello\n")
-    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init")
+    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init", signer=local_files_signer(alice_context))
 
     sync.push_via_hub(alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
@@ -470,12 +471,7 @@ def test_cli_push_uses_config_defaults(monkeypatch, tmp_path):
 
 
 def test_cli_local_commands_resolve_offline_from_metadata(monkeypatch, tmp_path):
-    """Local CLI commands resolve friendly team_name to team_id from metadata.json.
-
-    No Hub call is required: once a team has been materialized (via login or
-    test-direct files.materialize_team), subsequent local operations read the
-    team_id from metadata.json offline.
-    """
+    """Read-only local CLI commands resolve the berth from metadata.json."""
     config_file = tmp_path / "files.toml"
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(config_file))
     participant = "aa" * 16
@@ -484,7 +480,7 @@ def test_cli_local_commands_resolve_offline_from_metadata(monkeypatch, tmp_path)
     files.init_files(str(files_root), participant)
     files.materialize_team(
         str(files_root),
-        files.FilesMaterializationContext(participant, team_id, "ProjectX"),
+        files.FilesMaterializationContext(participant, team_id, "ProjectX", actual_team_id="22" * 16),
     )
 
     def _fail(*_a, **_kw):
@@ -494,7 +490,11 @@ def test_cli_local_commands_resolve_offline_from_metadata(monkeypatch, tmp_path)
 
     runner = CliRunner()
     result = runner.invoke(cli, ["create", str(files_root), participant, "ProjectX", "docs"])
-    assert result.exit_code == 0, result.output
+    assert result.exit_code != 0
+
+    context = files.FilesMaterializationContext(participant, team_id, "ProjectX", actual_team_id="22" * 16)
+    files.create_niche(str(files_root), participant, context, "docs",
+                       signer=local_files_signer(context))
 
     checkout = tmp_path / "checkout"
     result = runner.invoke(
@@ -520,7 +520,6 @@ def test_cli_local_commands_resolve_offline_from_metadata(monkeypatch, tmp_path)
         / "teams"
         / "ProjectX"
     ).exists()
-    context = files.FilesMaterializationContext(participant, team_id, "ProjectX")
     assert files.get_checkout(str(files_root), participant, context, "docs") == str(checkout)
 
 
@@ -556,10 +555,10 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
     alice_checkout = root / "alice-checkout"
     bob_checkout = root / "bob-checkout"
 
-    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs")
+    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs", signer=local_files_signer(alice_context))
     files.add_checkout(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
     (alice_checkout / "notes.txt").write_text("v1\n")
-    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init")
+    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init", signer=local_files_signer(alice_context))
 
     sync.push_via_hub(alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
@@ -598,7 +597,7 @@ def test_hub_push_pull_refreshes_checkout(playground_dir, minio_server_gen, monk
 
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
     (alice_checkout / "notes.txt").write_text("v2\n")
-    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="update")
+    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="update", signer=local_files_signer(alice_context))
     sync.push_via_hub(alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
     # Subsequent pull: Bob already has a clean checkout, pull_via_hub works directly
@@ -631,10 +630,10 @@ def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monke
     alice_checkout = root / "alice-checkout"
     bob_checkout = root / "bob-checkout"
 
-    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs")
+    files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs", signer=local_files_signer(alice_context))
     files.add_checkout(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
     (alice_checkout / "shared.txt").write_text("base\n")
-    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="base")
+    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="base", signer=local_files_signer(alice_context))
 
     sync.push_via_hub(alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
@@ -662,11 +661,11 @@ def test_hub_pull_conflict_reports_paths(playground_dir, minio_server_gen, monke
 
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
     (alice_checkout / "shared.txt").write_text("alice change\n")
-    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="alice")
+    files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="alice", signer=local_files_signer(alice_context))
     sync.push_via_hub(alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
 
     (bob_checkout / "shared.txt").write_text("bob change\n")
-    files.publish(bob_files_root, env["bob_hex"], bob_context, "docs", str(bob_checkout), message="bob")
+    files.publish(bob_files_root, env["bob_hex"], bob_context, "docs", str(bob_checkout), message="bob", signer=local_files_signer(bob_context))
 
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "bob-files.toml"))
     with pytest.raises(sync.PullConflictError) as exc_info:
@@ -705,12 +704,12 @@ def test_push_with_no_new_commits_reports_nothing_to_push(
     context = files.materialization_context_from_session_info(login.session_info)
 
     checkout = root / "alice-checkout"
-    files.create_niche(alice_files_root, env["alice_hex"], context, "docs")
+    files.create_niche(alice_files_root, env["alice_hex"], context, "docs", signer=local_files_signer(context))
     files.add_checkout(alice_files_root, env["alice_hex"], context, "docs", str(checkout))
     (checkout / "notes.txt").write_text("v1\n")
     files.publish(
         alice_files_root, env["alice_hex"], context, "docs", str(checkout), message="init"
-    )
+    , signer=local_files_signer(context))
 
     sync.push_via_hub(
         alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
@@ -748,12 +747,12 @@ def test_push_preserves_every_typed_publication_state(
     context = files.materialization_context_from_session_info(login.session_info)
 
     checkout = root / "alice-checkout"
-    files.create_niche(alice_files_root, env["alice_hex"], context, "docs")
+    files.create_niche(alice_files_root, env["alice_hex"], context, "docs", signer=local_files_signer(context))
     files.add_checkout(alice_files_root, env["alice_hex"], context, "docs", str(checkout))
     (checkout / "notes.txt").write_text("v1\n")
     files.publish(
         alice_files_root, env["alice_hex"], context, "docs", str(checkout), message="init"
-    )
+    , signer=local_files_signer(context))
 
     cases = [
         (PublicationRetryableError, sync.PushRetryableError),
@@ -822,12 +821,12 @@ def test_push_repairs_a_registry_left_unpublished_by_an_earlier_failure(
     context = files.materialization_context_from_session_info(login.session_info)
 
     checkout = root / "alice-checkout"
-    files.create_niche(alice_files_root, env["alice_hex"], context, "docs")
+    files.create_niche(alice_files_root, env["alice_hex"], context, "docs", signer=local_files_signer(context))
     files.add_checkout(alice_files_root, env["alice_hex"], context, "docs", str(checkout))
     (checkout / "notes.txt").write_text("v1\n")
     files.publish(
         alice_files_root, env["alice_hex"], context, "docs", str(checkout), message="init"
-    )
+    , signer=local_files_signer(context))
 
     real_push_registry = files.push_registry
 
@@ -877,12 +876,12 @@ def test_push_succeeds_when_only_the_registry_is_unchanged(
     context = files.materialization_context_from_session_info(login.session_info)
 
     checkout = root / "alice-checkout"
-    files.create_niche(alice_files_root, env["alice_hex"], context, "docs")
+    files.create_niche(alice_files_root, env["alice_hex"], context, "docs", signer=local_files_signer(context))
     files.add_checkout(alice_files_root, env["alice_hex"], context, "docs", str(checkout))
     (checkout / "notes.txt").write_text("v1\n")
     files.publish(
         alice_files_root, env["alice_hex"], context, "docs", str(checkout), message="init"
-    )
+    , signer=local_files_signer(context))
     sync.push_via_hub(
         alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
     )
@@ -892,7 +891,7 @@ def test_push_succeeds_when_only_the_registry_is_unchanged(
     (checkout / "notes.txt").write_text("v2\n")
     files.publish(
         alice_files_root, env["alice_hex"], context, "docs", str(checkout), message="update"
-    )
+    , signer=local_files_signer(context))
     sync.push_via_hub(
         alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http
     )
@@ -968,10 +967,10 @@ def test_fetch_self_via_hub_parks_own_head_through_hub_and_minio(
     bob_ctx = files.materialization_context_from_session_info(
         sync.login_team(bob_root, "ProjectX", bob, _http_client=http, pin_reader=lambda _: "").session_info
     )
-    files.create_niche(bob_root, bob, bob_ctx, "docs")
+    files.create_niche(bob_root, bob, bob_ctx, "docs", signer=local_files_signer(bob_ctx))
     files.add_checkout(bob_root, bob, bob_ctx, "docs", str(root / "bob-checkout"))
     (root / "bob-checkout" / "bob.txt").write_text("from Bob\n")
-    files.publish(bob_root, bob, bob_ctx, "docs", str(root / "bob-checkout"), message="bob")
+    files.publish(bob_root, bob, bob_ctx, "docs", str(root / "bob-checkout"), message="bob", signer=local_files_signer(bob_ctx))
     sync.push_via_hub(bob_root, bob, "ProjectX", "docs", _http_client=http)
     bob_head = _git_out(files._niche_git_dir(bob_root, bob_ctx, "docs"), "rev-parse", "HEAD")
 
@@ -982,10 +981,10 @@ def test_fetch_self_via_hub_parks_own_head_through_hub_and_minio(
     a1_ctx = files.materialization_context_from_session_info(
         sync.login_team(a1_root, "ProjectX", alice, _http_client=http, pin_reader=lambda _: "").session_info
     )
-    files.create_niche(a1_root, alice, a1_ctx, "docs")
+    files.create_niche(a1_root, alice, a1_ctx, "docs", signer=local_files_signer(a1_ctx))
     files.add_checkout(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"))
     (root / "a1-checkout" / "notes.txt").write_text("from A1\n")
-    files.publish(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"), message="a1")
+    files.publish(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"), message="a1", signer=local_files_signer(a1_ctx))
     sync.push_via_hub(a1_root, alice, "ProjectX", "docs", _http_client=http)
     a1_niche = _git_out(files._niche_git_dir(a1_root, a1_ctx, "docs"), "rev-parse", "HEAD")
     a1_registry = _git_out(files._registry_git_dir(a1_root, a1_ctx), "rev-parse", "HEAD")
@@ -1021,7 +1020,7 @@ def test_fetch_self_via_hub_parks_own_head_through_hub_and_minio(
     a2_checkout = root / "a2-checkout"
     files.add_checkout(a2_root, alice, a2_ctx, "docs", str(a2_checkout))
     assert not (a2_checkout / "notes.txt").exists()
-    merged = sync.merge_self(a2_root, alice, "ProjectX", "docs")
+    merged = sync.merge_self(a2_root, alice, "ProjectX", "docs", _http_client=http)
     assert merged.niche_shas == [a1_niche]
     assert (a2_checkout / "notes.txt").read_text() == "from A1\n"
     assert not (a2_checkout / "bob.txt").exists()
@@ -1040,10 +1039,10 @@ def test_fetch_self_via_hub_missing_niche_keeps_registry_parked(
     a1_ctx = files.materialization_context_from_session_info(
         sync.login_team(a1_root, "ProjectX", alice, _http_client=http, pin_reader=lambda _: "").session_info
     )
-    files.create_niche(a1_root, alice, a1_ctx, "docs")
+    files.create_niche(a1_root, alice, a1_ctx, "docs", signer=local_files_signer(a1_ctx))
     files.add_checkout(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"))
     (root / "a1-checkout" / "notes.txt").write_text("from A1\n")
-    files.publish(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"), message="a1")
+    files.publish(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"), message="a1", signer=local_files_signer(a1_ctx))
     sync.push_via_hub(a1_root, alice, "ProjectX", "docs", _http_client=http)
     a1_registry = _git_out(files._registry_git_dir(a1_root, a1_ctx), "rev-parse", "HEAD")
 
@@ -1098,10 +1097,10 @@ def test_fetch_self_via_hub_fetches_a_niche_whose_registry_push_was_interrupted(
     a1_ctx = files.materialization_context_from_session_info(
         sync.login_team(a1_root, "ProjectX", alice, _http_client=http, pin_reader=lambda _: "").session_info
     )
-    files.create_niche(a1_root, alice, a1_ctx, "docs")
+    files.create_niche(a1_root, alice, a1_ctx, "docs", signer=local_files_signer(a1_ctx))
     files.add_checkout(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"))
     (root / "a1-checkout" / "notes.txt").write_text("from A1\n")
-    files.publish(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"), message="a1")
+    files.publish(a1_root, alice, a1_ctx, "docs", str(root / "a1-checkout"), message="a1", signer=local_files_signer(a1_ctx))
 
     real_push_registry = files.push_registry
 
@@ -1123,6 +1122,6 @@ def test_fetch_self_via_hub_fetches_a_niche_whose_registry_push_was_interrupted(
     assert _git_out(niche_git, "for-each-ref", "--format=%(objectname)", "refs/cod-sync/parked") == a1_niche
 
     files.add_checkout(a2_root, alice, a2_ctx, "docs", str(root / "a2-checkout"))
-    merged = sync.merge_self(a2_root, alice, "ProjectX", "docs")
+    merged = sync.merge_self(a2_root, alice, "ProjectX", "docs", _http_client=http)
     assert merged.niche_shas == [a1_niche]
     assert (root / "a2-checkout" / "notes.txt").read_text() == "from A1\n"

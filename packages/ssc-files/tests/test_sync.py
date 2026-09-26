@@ -1,3 +1,4 @@
+from test_support import local_files_signer
 import pathlib
 import shutil
 import subprocess
@@ -26,7 +27,7 @@ from ssc_files.files import (
 
 PARTICIPANT = "bb" * 16
 TEAM_ID = "33" * 16
-TEAM = FilesMaterializationContext(PARTICIPANT, TEAM_ID, "SyncTeam")
+TEAM = FilesMaterializationContext(PARTICIPANT, TEAM_ID, "SyncTeam", actual_team_id="22" * 16)
 
 
 def test_sync_niche_between_devices(playground_dir):
@@ -38,13 +39,13 @@ def test_sync_niche_between_devices(playground_dir):
     root_a = str(playground / "device-a")
     init_files(root_a, PARTICIPANT)
     materialize_team(root_a, TEAM)
-    create_niche(root_a, PARTICIPANT, TEAM, "photos")
+    create_niche(root_a, PARTICIPANT, TEAM, "photos", signer=local_files_signer(TEAM))
     checkout_a = str(playground / "checkout-a" / "photos")
     add_checkout(root_a, PARTICIPANT, TEAM, "photos", checkout_a)
 
     (pathlib.Path(checkout_a) / "sunset.jpg").write_bytes(b"fake-sunset-data")
     (pathlib.Path(checkout_a) / "beach.jpg").write_bytes(b"fake-beach-data")
-    publish(root_a, PARTICIPANT, TEAM, "photos", checkout_a, message="add photos")
+    publish(root_a, PARTICIPANT, TEAM, "photos", checkout_a, message="add photos", signer=local_files_signer(TEAM))
 
     push_niche(root_a, PARTICIPANT, TEAM, "photos", LocalFolderStore(str(cloud_dir)))
 
@@ -56,7 +57,7 @@ def test_sync_niche_between_devices(playground_dir):
 
     fetch_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, LocalFolderStore(str(cloud_dir)))
     add_checkout(root_b, PARTICIPANT, TEAM, "photos", checkout_b)
-    merge_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT)
+    merge_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, signer=local_files_signer(TEAM))
 
     # --- Assert both checkouts have the same files ---
     sunset_b = pathlib.Path(checkout_b) / "sunset.jpg"
@@ -84,7 +85,7 @@ def test_merge_via_hub_no_checkout_cached_preserves_residency(playground_dir, mo
     root = str(pathlib.Path(playground_dir) / "files")
     init_files(root, PARTICIPANT)
     materialize_team(root, TEAM)
-    create_niche(root, PARTICIPANT, TEAM, "files")
+    create_niche(root, PARTICIPANT, TEAM, "files", signer=local_files_signer(TEAM))
     # No add_checkout: niche git dir exists but no checkout row → CACHED.
 
     with pytest.raises(sync.NoCheckoutError) as exc_info:
@@ -139,11 +140,11 @@ def _two_device_conflict(playground_dir):
     root_a = str(playground / "device-a")
     init_files(root_a, PARTICIPANT)
     materialize_team(root_a, TEAM)
-    create_niche(root_a, PARTICIPANT, TEAM, "notes")
+    create_niche(root_a, PARTICIPANT, TEAM, "notes", signer=local_files_signer(TEAM))
     checkout_a = pathlib.Path(playground) / "checkout-a"
     add_checkout(root_a, PARTICIPANT, TEAM, "notes", str(checkout_a))
     (checkout_a / "shared.txt").write_text("v1\n")
-    publish(root_a, PARTICIPANT, TEAM, "notes", str(checkout_a), message="v1")
+    publish(root_a, PARTICIPANT, TEAM, "notes", str(checkout_a), message="v1", signer=local_files_signer(TEAM))
     push_niche(root_a, PARTICIPANT, TEAM, "notes", LocalFolderStore(str(cloud_dir)))
 
     root_b = str(playground / "device-b")
@@ -152,7 +153,7 @@ def _two_device_conflict(playground_dir):
     checkout_b = pathlib.Path(playground) / "checkout-b"
     fetch_niche(root_b, PARTICIPANT, TEAM, "notes", PARTICIPANT, LocalFolderStore(str(cloud_dir)))
     add_checkout(root_b, PARTICIPANT, TEAM, "notes", str(checkout_b))
-    merge_niche(root_b, PARTICIPANT, TEAM, "notes", PARTICIPANT)
+    merge_niche(root_b, PARTICIPANT, TEAM, "notes", PARTICIPANT, signer=local_files_signer(TEAM))
 
     return {
         "cloud_dir": cloud_dir,
@@ -166,11 +167,11 @@ def _two_device_conflict(playground_dir):
 def _diverge(env, *, a_text, b_text):
     """Give each device one new commit and let device A win the cloud head."""
     (env["checkout_a"] / "a.txt").write_text(a_text)
-    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a")
+    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a", signer=local_files_signer(TEAM))
     push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])))
 
     (env["checkout_b"] / "b.txt").write_text(b_text)
-    publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b")
+    publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError) as exc_info:
         push_niche(
             env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"]))
@@ -302,7 +303,7 @@ def test_merge_self_leaves_an_already_integrated_parked_ref_alone(playground_dir
     # Device B publishes the merge; device A gets ahead again.
     push_niche(env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])))
     (env["checkout_a"] / "a2.txt").write_text("from A again\n")
-    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a2")
+    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a2", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError):
         # Device A has not seen B's merge commit, so its own push is refused
         # and it parks B's head; pull it in so A can win the race again.
@@ -313,7 +314,7 @@ def test_merge_self_leaves_an_already_integrated_parked_ref_alone(playground_dir
     push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])))
 
     (env["checkout_b"] / "b2.txt").write_text("from B again\n")
-    publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b2")
+    publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b2", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError) as exc_info:
         push_niche(
             env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"]))
@@ -334,13 +335,13 @@ def test_merge_self_merges_a_descendant_before_its_parked_ancestor(playground_di
     env = _two_device_conflict(playground_dir)
 
     (env["checkout_a"] / "shared.txt").write_text("intermediate\n")
-    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a1")
+    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a1", signer=local_files_signer(TEAM))
     push_niche(
         env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"]))
     )
 
     (env["checkout_b"] / "shared.txt").write_text("resolved\n")
-    publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b")
+    publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError) as first_info:
         push_niche(
             env["root_b"], PARTICIPANT, TEAM, "notes",
@@ -348,7 +349,7 @@ def test_merge_self_merges_a_descendant_before_its_parked_ancestor(playground_di
         )
 
     (env["checkout_a"] / "shared.txt").write_text("resolved\n")
-    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a2")
+    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a2", signer=local_files_signer(TEAM))
     push_niche(
         env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"]))
     )
@@ -389,11 +390,11 @@ def test_merge_self_preflight_blocks_registry_when_niche_git_dir_is_missing(play
     root = str(playground / "device")
     init_files(root, PARTICIPANT)
     materialize_team(root, TEAM)
-    create_niche(root, PARTICIPANT, TEAM, "notes")
+    create_niche(root, PARTICIPANT, TEAM, "notes", signer=local_files_signer(TEAM))
     checkout = playground / "checkout"
     add_checkout(root, PARTICIPANT, TEAM, "notes", str(checkout))
     (checkout / "shared.txt").write_text("v1\n")
-    publish(root, PARTICIPANT, TEAM, "notes", str(checkout), message="v1")
+    publish(root, PARTICIPANT, TEAM, "notes", str(checkout), message="v1", signer=local_files_signer(TEAM))
 
     registry_git = _registry_git_dir(root, TEAM)
     registry_head = _git(registry_git, "rev-parse", "HEAD")
@@ -427,7 +428,7 @@ def test_merge_self_reports_every_unusable_checkout_state(playground_dir):
     assert exc_info.value.residency is NicheResidency.REMOTE_ONLY
 
     # Local history, no checkout attached.
-    create_niche(root, PARTICIPANT, TEAM, "notes")
+    create_niche(root, PARTICIPANT, TEAM, "notes", signer=local_files_signer(TEAM))
     with pytest.raises(sync.NoCheckoutError) as exc_info:
         sync.merge_self(root, PARTICIPANT, TEAM.team_name, "notes")
     assert exc_info.value.residency is NicheResidency.CACHED
@@ -435,7 +436,7 @@ def test_merge_self_reports_every_unusable_checkout_state(playground_dir):
     checkout = playground / "checkout"
     add_checkout(root, PARTICIPANT, TEAM, "notes", str(checkout))
     (checkout / "shared.txt").write_text("v1\n")
-    publish(root, PARTICIPANT, TEAM, "notes", str(checkout), message="v1")
+    publish(root, PARTICIPANT, TEAM, "notes", str(checkout), message="v1", signer=local_files_signer(TEAM))
 
     # Dirty checkout.
     (checkout / "shared.txt").write_text("uncommitted\n")
@@ -601,7 +602,7 @@ def test_fetch_self_parks_a_sibling_head_without_writing_or_moving_head(playgrou
     """
     env = _two_device_conflict(playground_dir)
     (env["checkout_a"] / "a.txt").write_text("from A\n")
-    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a")
+    publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a", signer=local_files_signer(TEAM))
     push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])))
     a_head = _git(_niche_git_dir(env["root_a"], TEAM, "notes"), "rev-parse", "HEAD")
 
@@ -671,7 +672,7 @@ def test_fetch_self_via_hub_can_fetch_registry_for_niche_discovery(playground_di
     env = _two_device_conflict(playground_dir)
     cloud = pathlib.Path(playground_dir) / "registry-cloud"
     cloud.mkdir()
-    create_niche(env["root_a"], PARTICIPANT, TEAM, "plans")
+    create_niche(env["root_a"], PARTICIPANT, TEAM, "plans", signer=local_files_signer(TEAM))
     push_registry(env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(cloud)))
 
     monkeypatch.setattr(sync, "resolve_team_context", lambda *_a: TEAM)
@@ -687,7 +688,7 @@ def test_fetch_self_via_hub_can_fetch_registry_for_niche_discovery(playground_di
     assert result.niche_sha is None
     from ssc_files.files import merge_self_registry
 
-    merge_self_registry(env["root_b"], PARTICIPANT, TEAM)
+    merge_self_registry(env["root_b"], PARTICIPANT, TEAM, signer=local_files_signer(TEAM))
     from ssc_files.files import list_niches
 
     assert "plans" in [

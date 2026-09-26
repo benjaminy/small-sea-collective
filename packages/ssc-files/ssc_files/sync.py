@@ -459,6 +459,11 @@ def get_team_session(
     return SmallSeaSession(client, token)
 
 
+def commit_signer(team_name, hub_port=SmallSeaClient.DEFAULT_PORT, *, _http_client=None):
+    session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+    return files.CommitSigner.from_session(session, f"http://127.0.0.1:{hub_port}")
+
+
 def list_team_peers(
     team_name: str,
     hub_port: int = SmallSeaClient.DEFAULT_PORT,
@@ -726,12 +731,15 @@ def merge_via_hub(
     if dirty_entries:
         raise DirtyCheckoutError([e["path"] for e in dirty_entries])
 
+    signer = commit_signer(team_name, hub_port, _http_client=_http_client)
+
     try:
         registry_sha = files.merge_registry(
             files_root,
             participant_hex,
             context,
             from_teammate_id,
+            signer=signer,
         )
     except files.MergeConflictError as exc:
         raise PullConflictError("registry", exc.paths) from exc
@@ -743,6 +751,7 @@ def merge_via_hub(
             context,
             niche_name,
             from_teammate_id,
+            signer=signer,
         )
     except files.MergeConflictError as exc:
         raise PullConflictError("niche", exc.paths) from exc
@@ -847,12 +856,15 @@ def merge_self(
     participant_hex: str,
     team_name: str,
     niche_name: str,
+    *,
+    hub_port: int = SmallSeaClient.DEFAULT_PORT,
+    _http_client=None,
 ) -> SelfMergeResult:
     """Integrate parked heads from this participant's own cloud chains.
 
     Cod Sync parks a competing self-store head during publication, so this
-    operation is purely local: it merges what is already validated and stored,
-    and never contacts the Hub. The person publishes again afterwards.
+    operation merges what is already validated and stored. It asks the Hub for
+    signing context before merging. The person publishes again afterwards.
 
     Preflights the niche checkout before merging anything, for the same reason
     merge_via_hub does: a blocked niche merge must not leave the registry
@@ -869,14 +881,17 @@ def merge_self(
     except files.StaleCheckoutError as exc:
         raise StaleCheckoutError(exc.team_name, exc.niche_name, exc.checkout_path) from exc
 
+    signer = commit_signer(team_name, hub_port, _http_client=_http_client)
+
     try:
-        registry_shas = files.merge_self_registry(files_root, participant_hex, context)
+        registry_shas = files.merge_self_registry(files_root, participant_hex, context,
+                                                  signer=signer)
     except files.MergeConflictError as exc:
         raise PullConflictError("registry", exc.paths) from exc
 
     try:
         niche_shas = files.merge_self_niche(
-            files_root, participant_hex, context, niche_name
+            files_root, participant_hex, context, niche_name, signer=signer
         )
     except files.MergeConflictError as exc:
         raise PullConflictError("niche", exc.paths) from exc

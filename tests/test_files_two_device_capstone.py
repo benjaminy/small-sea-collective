@@ -14,6 +14,8 @@ Every provider call is attributed to the Hub whose backend made it; see
 Not yet covered: Files publications and commits are unsigned (#266), so a
 fetched head proves what the store held, not which device wrote it.
 """
+from test_support import local_files_signer
+
 
 import importlib.util
 import inspect
@@ -257,12 +259,12 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
     mark = spy.mark()
     login_a = sync.login_team(a.files_root, TEAM, alice_hex, _http_client=a.http)
     ctx_a = files.materialization_context_from_session_info(login_a.session_info)
-    files.create_niche(a.files_root, alice_hex, ctx_a, NICHE)
+    files.create_niche(a.files_root, alice_hex, ctx_a, NICHE, signer=local_files_signer(ctx_a))
     checkout_a = a.root / "checkout"
     files.add_checkout(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a))
     original = b"tomatoes by the fence\n"
     (checkout_a / "beds.txt").write_bytes(original)
-    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A1")
+    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A1", signer=local_files_signer(ctx_a))
     sync.push_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
     spy.assert_only(mark, "A")
 
@@ -304,13 +306,14 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
     login_b = sync.login_team(b.files_root, TEAM, alice_hex, _http_client=b.http)
     ctx_b = files.materialization_context_from_session_info(login_b.session_info)
     assert ctx_b.team_id == ctx_a.team_id
+    monkeypatch.setattr(sync, "commit_signer", lambda *args, **kwargs: local_files_signer(ctx_b))
 
     # 11. Fetch B's own registry through the Hub, discover the niche, then fetch it.
     fetched_registry = sync.fetch_self_via_hub(
         b.files_root, alice_hex, TEAM, _http_client=b.http
     )
     assert fetched_registry.registry_sha
-    files.merge_self_registry(b.files_root, alice_hex, ctx_b)
+    files.merge_self_registry(b.files_root, alice_hex, ctx_b, signer=local_files_signer(ctx_b))
     discovered = [n["name"] for n in files.list_niches(b.files_root, alice_hex, ctx_b)]
     assert "plans" in discovered
     niche = discovered[0]
@@ -327,12 +330,13 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
     # 12. B changes the file and pushes through B's Hub.
     from_b = b"tomatoes by the fence\nbeans on the trellis\n"
     (checkout_b / "beds.txt").write_bytes(from_b)
-    files.publish(b.files_root, alice_hex, ctx_b, niche, str(checkout_b), message="B1")
+    files.publish(b.files_root, alice_hex, ctx_b, niche, str(checkout_b), message="B1", signer=local_files_signer(ctx_b))
     sync.push_via_hub(b.files_root, alice_hex, TEAM, niche, _http_client=b.http)
     spy.assert_only(mark, "B")
 
     # 13. A fetches and integrates B's change through A's Hub.
     a.use_files()
+    monkeypatch.setattr(sync, "commit_signer", lambda *args, **kwargs: local_files_signer(ctx_a))
     mark = spy.mark()
     sync.fetch_self_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
     sync.merge_self(a.files_root, alice_hex, TEAM, NICHE)
@@ -340,7 +344,7 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
 
     # 14. A publishes again on the converged history, with no conflict.
     (checkout_a / "beds.txt").write_bytes(from_b + b"squash in the corner\n")
-    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A2")
+    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A2", signer=local_files_signer(ctx_a))
     sync.push_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
     spy.assert_only(mark, "A")
     db_guard.assert_clean()

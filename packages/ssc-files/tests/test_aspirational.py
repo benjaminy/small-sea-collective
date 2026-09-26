@@ -17,6 +17,8 @@ important end-to-end behavior:
 Note: each niche has at most one checkout per device. Add/remove is the
 supported workflow for relocating a checkout.
 """
+from test_support import local_files_signer
+
 
 import pathlib
 
@@ -47,7 +49,7 @@ TEAM_ID = "11" * 16
 
 
 def _team(participant_hex):
-    return FilesMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME)
+    return FilesMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME, actual_team_id="22" * 16)
 
 
 # --- Helpers ---
@@ -93,20 +95,20 @@ def test_registry_propagation(playground_dir):
 
     # Alice creates a files, a niche, writes a file, and pushes everything
     alice_root = setup_files(playground, "alice", ALICE)
-    create_niche(str(alice_root), ALICE, _team(ALICE), "docs")
+    create_niche(str(alice_root), ALICE, _team(ALICE), "docs", signer=local_files_signer(_team(ALICE)))
 
     alice_co = playground / "checkout-alice-docs"
     add_checkout(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co))
 
     write(alice_co, "readme.txt", "Hello from Alice.\n")
-    publish(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co), message="initial commit")
+    publish(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co), message="initial commit", signer=local_files_signer(_team(ALICE)))
 
     push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(alice_reg_cloud)))
     push_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderStore(str(alice_niche_cloud)))
 
     # Bob starts with an empty files and pulls only the registry
     bob_root = setup_files(playground, "bob", BOB)
-    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(alice_reg_cloud)))
+    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(alice_reg_cloud)), signer=local_files_signer(_team(BOB)))
 
     niches = list_niches(str(bob_root), BOB, _team(BOB))
     niche_names = [n["name"] for n in niches]
@@ -120,7 +122,7 @@ def test_registry_propagation(playground_dir):
 
     bob_co = playground / "checkout-bob-docs"
     add_checkout(str(bob_root), BOB, _team(BOB), "docs", str(bob_co))
-    merge_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE)
+    merge_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE, signer=local_files_signer(_team(BOB)))
 
     assert exists(bob_co, "readme.txt"), "Bob's checkout should contain Alice's file"
     assert read(bob_co, "readme.txt") == "Hello from Alice.\n"
@@ -146,23 +148,23 @@ def test_concurrent_registry_additions(playground_dir):
 
     # Alice seeds the registry with an initial niche, pushes to seed cloud
     alice_root = setup_files(playground, "alice", ALICE)
-    create_niche(str(alice_root), ALICE, _team(ALICE), "seed")
+    create_niche(str(alice_root), ALICE, _team(ALICE), "seed", signer=local_files_signer(_team(ALICE)))
     push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(seed_cloud)))
 
     # Bob pulls from seed cloud before adding anything — establishes common history
     bob_root = setup_files(playground, "bob", BOB)
-    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(seed_cloud)))
+    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(seed_cloud)), signer=local_files_signer(_team(BOB)))
 
     # Now both add their own niches on top of the shared history
-    create_niche(str(alice_root), ALICE, _team(ALICE), "photos")
-    create_niche(str(bob_root), BOB, _team(BOB), "receipts")
+    create_niche(str(alice_root), ALICE, _team(ALICE), "photos", signer=local_files_signer(_team(ALICE)))
+    create_niche(str(bob_root), BOB, _team(BOB), "receipts", signer=local_files_signer(_team(BOB)))
 
     push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(alice_reg_cloud)))
     push_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(bob_reg_cloud)))
 
     # Cross-pull registries — clean merge because of the common seed history
-    pull_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(bob_reg_cloud)))
-    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(alice_reg_cloud)))
+    pull_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(bob_reg_cloud)), signer=local_files_signer(_team(ALICE)))
+    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(alice_reg_cloud)), signer=local_files_signer(_team(BOB)))
 
     alice_niches = {n["name"] for n in list_niches(str(alice_root), ALICE, _team(ALICE))}
     bob_niches = {n["name"] for n in list_niches(str(bob_root), BOB, _team(BOB))}
@@ -184,7 +186,7 @@ def test_one_checkout_per_niche(playground_dir):
     playground = pathlib.Path(playground_dir)
 
     alice_root = setup_files(playground, "alice", ALICE)
-    create_niche(str(alice_root), ALICE, _team(ALICE), "notes")
+    create_niche(str(alice_root), ALICE, _team(ALICE), "notes", signer=local_files_signer(_team(ALICE)))
 
     checkout_a = playground / "checkout-a"
     checkout_b = playground / "checkout-b"
@@ -193,7 +195,7 @@ def test_one_checkout_per_niche(playground_dir):
     assert get_checkout(str(alice_root), ALICE, _team(ALICE), "notes") == str(checkout_a)
 
     write(checkout_a, "ideas.txt", "Build something useful.\n")
-    publish(str(alice_root), ALICE, _team(ALICE), "notes", str(checkout_a), message="add ideas")
+    publish(str(alice_root), ALICE, _team(ALICE), "notes", str(checkout_a), message="add ideas", signer=local_files_signer(_team(ALICE)))
 
     # Second attach is refused
     with pytest.raises(DuplicateCheckoutError):
@@ -230,13 +232,13 @@ def test_full_join_flow(playground_dir):
 
     # Alice sets up the team
     alice_root = setup_files(playground, "alice", ALICE)
-    create_niche(str(alice_root), ALICE, _team(ALICE), "docs")
+    create_niche(str(alice_root), ALICE, _team(ALICE), "docs", signer=local_files_signer(_team(ALICE)))
 
     alice_co = playground / "checkout-alice"
     add_checkout(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co))
 
     write(alice_co, "guide.txt", "Getting started.\n")
-    publish(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co), message="add guide")
+    publish(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co), message="add guide", signer=local_files_signer(_team(ALICE)))
 
     push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(alice_reg_cloud)))
     push_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderStore(str(alice_niche_cloud)))
@@ -244,7 +246,7 @@ def test_full_join_flow(playground_dir):
     # Bob joins from scratch — empty files, no prior knowledge of niche names
     bob_root = setup_files(playground, "bob", BOB)
 
-    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(alice_reg_cloud)))
+    pull_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(alice_reg_cloud)), signer=local_files_signer(_team(BOB)))
     discovered = [n["name"] for n in list_niches(str(bob_root), BOB, _team(BOB))]
     assert "docs" in discovered
 
@@ -253,16 +255,16 @@ def test_full_join_flow(playground_dir):
 
     bob_co = playground / "checkout-bob"
     add_checkout(str(bob_root), BOB, _team(BOB), "docs", str(bob_co))
-    merge_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE)
+    merge_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE, signer=local_files_signer(_team(BOB)))
 
     assert exists(bob_co, "guide.txt")
     assert read(bob_co, "guide.txt") == "Getting started.\n"
 
     # Bob contributes back
     write(bob_co, "bob_notes.txt", "My contribution.\n")
-    publish(str(bob_root), BOB, _team(BOB), "docs", str(bob_co), message="add bob_notes")
+    publish(str(bob_root), BOB, _team(BOB), "docs", str(bob_co), message="add bob_notes", signer=local_files_signer(_team(BOB)))
     push_niche(str(bob_root), BOB, _team(BOB), "docs", LocalFolderStore(str(bob_niche_cloud)))
 
-    pull_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderStore(str(bob_niche_cloud)))
+    pull_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderStore(str(bob_niche_cloud)), signer=local_files_signer(_team(ALICE)))
     assert exists(alice_co, "bob_notes.txt"), "Alice should see Bob's contribution after pull"
     assert read(alice_co, "bob_notes.txt") == "My contribution.\n"

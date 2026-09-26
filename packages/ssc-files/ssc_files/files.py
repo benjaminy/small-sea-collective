@@ -14,9 +14,11 @@ See spec.md for the design. Key points:
 
 import enum
 import json
+import os
 import pathlib
 import re
 import secrets
+import shutil
 import sqlite3
 import struct
 import time
@@ -25,8 +27,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import cod_sync.protocol as CS
-from cod_sync.git import gitCmd
-from cod_sync.repo import Repo, RepoError
+from cod_sync.git import GitCmdFailed, gitCmd, signing_git_env
+from cod_sync.repo import Repo
+from cod_sync.work_context import WorkContext, commit_message_with_context
 
 
 class NicheResidency(enum.Enum):
@@ -140,12 +143,13 @@ class StaleCheckoutError(RuntimeError):
 
 @dataclass(frozen=True)
 class FilesMaterializationContext:
-    """Files-owned local materialization coordinates for one team."""
+    """Files-owned local coordinates; team_id is the Files berth's directory ID."""
 
     participant_hex: str
     team_id: str
     team_name: str
     app_name: str = "SmallSeaCollectiveFiles"
+    actual_team_id: str | None = None
 
     def __str__(self):
         return self.team_name
@@ -153,7 +157,7 @@ class FilesMaterializationContext:
     @classmethod
     def from_session_info(cls, info):
         missing = [
-            key for key in ("participant_hex", "berth_id", "team_name", "app_name")
+            key for key in ("participant_hex", "team_id", "berth_id", "team_name", "app_name")
             if not info.get(key)
         ]
         if missing:
@@ -171,7 +175,38 @@ class FilesMaterializationContext:
             team_id=str(info["berth_id"]),
             team_name=str(info["team_name"]),
             app_name=str(info["app_name"]),
+            actual_team_id=str(info["team_id"]),
         )
+
+
+@dataclass(frozen=True)
+class CommitSigner:
+    team_id: str
+    berth_id: str
+    authority_view: bytes
+    env: dict[str, str]
+
+    @classmethod
+    def from_session(cls, session, hub_url):
+        info = session.session_info()
+        program = shutil.which("small-sea-git-sign")
+        if program is None:
+            raise FileNotFoundError("small-sea-git-sign is not on PATH")
+        return cls(
+            info["team_id"], info["berth_id"], session.authority_view(),
+            signing_git_env(
+                os.environ, program=program, public_key=session.signing_public_key(),
+                extra_env={"SMALL_SEA_HUB_URL": hub_url,
+                           "SMALL_SEA_SESSION_TOKEN": session.token},
+            ),
+        )
+
+    def message(self, message, purpose):
+        return commit_message_with_context(
+            message, WorkContext("commit", self.team_id, self.berth_id,
+                                 purpose, self.authority_view)
+        )
+
 
 def materialization_context_from_session_info(info):
     return FilesMaterializationContext.from_session_info(info)
@@ -190,6 +225,16 @@ def _validate_context(participant_hex, context):
             f"participant {participant_hex!r}"
         )
     return context
+
+
+def _validate_signer(context, signer):
+    if not isinstance(signer, CommitSigner):
+        raise TypeError("Files commit operations require a CommitSigner")
+    if context.actual_team_id is None:
+        raise ValueError("Files materialization context lacks the team ID needed for signing")
+    if signer.berth_id != context.team_id or signer.team_id != context.actual_team_id:
+        raise ValueError("Files signer team or berth does not match materialization context")
+    return signer
 
 
 def uuid7():
@@ -246,6 +291,7 @@ def _write_team_metadata(files_root, context):
                 "team_id": context.team_id,
                 "team_name": context.team_name,
                 "app_name": context.app_name,
+                **({"actual_team_id": context.actual_team_id} if context.actual_team_id else {}),
             },
             indent=2,
             sort_keys=True,
@@ -296,6 +342,7 @@ def iter_materialized_teams(files_root, participant_hex):
             team_id=team_dir.name,
             team_name=str(team_name),
             app_name="SmallSeaCollectiveFiles",
+            actual_team_id=data.get("actual_team_id"),
         )
 
 
@@ -619,7 +666,7 @@ def _peer_ref_name(teammate_id, branch="main"):
     return f"refs/peers/{teammate_id}/{branch}"
 
 
-def _merge_parked_self_refs(git_dir, checkout):
+def _merge_parked_self_refs(git_dir, checkout, signer):
     """Merge every outstanding parked self-store ref into checkout.
 
     Returns the SHAs actually merged, in merge order, and an empty list when
@@ -635,7 +682,7 @@ def _merge_parked_self_refs(git_dir, checkout):
     for ref, sha in maximal:
         if _has_commits(git_dir) and _is_ancestor(git_dir, sha, "HEAD"):
             continue
-        _cod_merge_ref(git_dir, checkout, ref)
+        _cod_merge_ref(git_dir, checkout, ref, signer)
         merged.append(sha)
     return merged
 
@@ -690,7 +737,7 @@ def _cod_push(git_dir, remote):
     return CS.CodSync(Repo(git_dir), remote).publish()
 
 
-def _cod_pull(git_dir, checkout, remote):
+def _cod_pull(git_dir, checkout, remote, signer):
     """Fetch from remote and merge the observed head into the user checkout.
 
     The fetch itself needs no work tree and moves no ref; the merge names the
@@ -698,19 +745,16 @@ def _cod_pull(git_dir, checkout, remote):
     """
     result = CS.CodSync(Repo(git_dir), remote).fetch()
 
-    repo = Repo(git_dir, work_tree=checkout)
+    repo = Repo(git_dir, work_tree=checkout, env=signer.env)
     head_result = gitCmd(
         ["--git-dir", str(git_dir), "rev-parse", "--verify", "HEAD"],
         raise_on_error=False,
     )
-    try:
-        if head_result.returncode != 0:
-            # Unborn branch — adopt the fetched head as the initial local branch.
-            repo.checkout_branch("main", result.observed_head)
-        else:
-            repo.merge(result.observed_head)
-    except RepoError as exc:
-        raise MergeConflictError(_conflict_paths(git_dir, checkout)) from exc
+    if head_result.returncode != 0:
+        # Unborn branch — adopt the fetched head as the initial local branch.
+        repo.checkout_branch("main", result.observed_head)
+    else:
+        _cod_merge_ref(git_dir, checkout, result.observed_head, signer)
     return result
 
 
@@ -726,16 +770,21 @@ def _cod_fetch(git_dir, remote, pin_to_ref):
     return result.pinned_head
 
 
-def _cod_merge_ref(git_dir, checkout, ref_name):
+def _cod_merge_ref(git_dir, checkout, ref_name, signer):
     """Merge a parked peer ref into the user checkout.
 
     Uses explicit --git-dir/--work-tree flags throughout.
     """
     git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
     if _has_commits(git_dir):
-        result = gitCmd(git_prefix + ["merge", ref_name], raise_on_error=False)
+        command = git_prefix + ["merge", "-m", signer.message(
+            f"Merge {ref_name}", "files-merge"), ref_name]
+        result = gitCmd(command, raise_on_error=False, env=signer.env)
         if result.returncode != 0:
-            raise MergeConflictError(_conflict_paths(git_dir, checkout))
+            paths = _conflict_paths(git_dir, checkout)
+            if paths:
+                raise MergeConflictError(paths)
+            raise GitCmdFailed(command, result.returncode, result.stdout, result.stderr)
     else:
         # No local history: initialise the branch from the parked peer ref.
         # Content conflicts are impossible here; GitCmdFailed propagates as-is.
@@ -754,7 +803,7 @@ def init_files(files_root, participant_hex):
     conn.close()
 
 
-def create_niche(files_root, participant_hex, context, niche_name):
+def create_niche(files_root, participant_hex, context, niche_name, *, signer):
     """Create a niche and record it in the team's shared registry.
 
     Creates the niche git repo locally. The registry entry propagates to
@@ -763,6 +812,7 @@ def create_niche(files_root, participant_hex, context, niche_name):
     niche_name is canonicalized (NFC + casefold + slug) before use.
     """
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     niche_name = _canonical_name(niche_name)
     _ensure_registry(files_root, participant_hex, context)
 
@@ -793,7 +843,8 @@ def create_niche(files_root, participant_hex, context, niche_name):
 
     (registry_co / f"{niche_name}.json").write_text(json.dumps(record, indent=2))
     gitCmd(git_prefix + ["add", f"{niche_name}.json"])
-    gitCmd(git_prefix + ["commit", "-m", f"add niche {niche_name}"])
+    gitCmd(git_prefix + ["commit", "-m", signer.message(
+        f"add niche {niche_name}", "files-registry")], env=signer.env)
 
     return niche_id
 
@@ -905,9 +956,10 @@ def niche_residency(files_root, participant_hex, context, niche_name):
 
 
 def publish(files_root, participant_hex, context, niche_name, checkout_path,
-            files=None, message=None):
+            files=None, message=None, *, signer):
     """Stage changes in a checkout and commit. Returns commit hash."""
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     git_dir = _niche_git_dir(files_root, context, niche_name)
     checkout = pathlib.Path(checkout_path).resolve()
     git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
@@ -918,7 +970,9 @@ def publish(files_root, participant_hex, context, niche_name, checkout_path,
     else:
         gitCmd(git_prefix + ["add", "--all"])
 
-    gitCmd(git_prefix + ["commit", "-m", message or "Published changes"])
+    purpose = "files-merge" if _resolve_ref(git_dir, "MERGE_HEAD") else "files-content"
+    gitCmd(git_prefix + ["commit", "-m", signer.message(
+        message or "Published changes", purpose)], env=signer.env)
 
     result = gitCmd(git_prefix + ["rev-parse", "HEAD"])
     return result.stdout.strip()
@@ -965,13 +1019,14 @@ def push_registry(files_root, participant_hex, context, remote):
     return _cod_push(git_dir, remote)
 
 
-def pull_registry(files_root, participant_hex, context, remote):
+def pull_registry(files_root, participant_hex, context, remote, *, signer):
     """Pull the niche registry from cloud storage and merge."""
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     _ensure_registry(files_root, participant_hex, context)
     git_dir = _registry_git_dir(files_root, context)
     checkout = _registry_checkout_dir(files_root, context)
-    _cod_pull(git_dir, checkout, remote)
+    _cod_pull(git_dir, checkout, remote, signer)
 
 
 def fetch_registry(files_root, participant_hex, context, teammate_id, remote):
@@ -995,9 +1050,10 @@ def fetch_self_registry(files_root, participant_hex, context, remote):
     return _cod_fetch_self(_registry_git_dir(files_root, context), remote)
 
 
-def merge_registry(files_root, participant_hex, context, teammate_id):
+def merge_registry(files_root, participant_hex, context, teammate_id, *, signer):
     """Merge a previously parked registry ref from a peer."""
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     _ensure_registry(files_root, participant_hex, context)
     git_dir = _registry_git_dir(files_root, context)
     checkout = _registry_checkout_dir(files_root, context)
@@ -1010,14 +1066,14 @@ def merge_registry(files_root, participant_hex, context, teammate_id):
             files_root, participant_hex, context, "registry", None, teammate_id, parked_sha
         )
         return parked_sha
-    _cod_merge_ref(git_dir, checkout, ref_name)
+    _cod_merge_ref(git_dir, checkout, ref_name, signer)
     _record_peer_merge(
         files_root, participant_hex, context, "registry", None, teammate_id, parked_sha
     )
     return parked_sha
 
 
-def merge_self_registry(files_root, participant_hex, context):
+def merge_self_registry(files_root, participant_hex, context, *, signer):
     """Integrate parked self-store registry heads into the registry checkout.
 
     A parked head came from this participant's own registry chain, written by
@@ -1025,10 +1081,11 @@ def merge_self_registry(files_root, participant_hex, context):
     nothing was outstanding.
     """
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     _ensure_registry(files_root, participant_hex, context)
     git_dir = _registry_git_dir(files_root, context)
     checkout = _registry_checkout_dir(files_root, context)
-    return _merge_parked_self_refs(git_dir, checkout)
+    return _merge_parked_self_refs(git_dir, checkout, signer)
 
 
 def push_niche(files_root, participant_hex, context, niche_name, remote):
@@ -1059,7 +1116,7 @@ def _require_clean_checkout(files_root, participant_hex, context, niche_name):
     return checkout
 
 
-def pull_niche(files_root, participant_hex, context, niche_name, remote):
+def pull_niche(files_root, participant_hex, context, niche_name, remote, *, signer):
     """Pull a niche from cloud storage and merge into the user checkout.
 
     Requires a checkout to be attached and clean. This keeps pull semantics
@@ -1070,6 +1127,7 @@ def pull_niche(files_root, participant_hex, context, niche_name, remote):
     remote content, then add_checkout, then merge_niche.
     """
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     git_dir = _niche_git_dir(files_root, context, niche_name)
     if not git_dir.exists():
         git_dir.mkdir(parents=True)
@@ -1077,7 +1135,7 @@ def pull_niche(files_root, participant_hex, context, niche_name, remote):
 
     checkout = _require_clean_checkout(files_root, participant_hex, context, niche_name)
 
-    _cod_pull(git_dir, checkout, remote)
+    _cod_pull(git_dir, checkout, remote, signer)
 
 
 def fetch_niche(files_root, participant_hex, context, niche_name, teammate_id, remote):
@@ -1115,7 +1173,7 @@ def fetch_self_niche(files_root, participant_hex, context, niche_name, remote):
     return _cod_fetch_self(git_dir, remote)
 
 
-def merge_niche(files_root, participant_hex, context, niche_name, teammate_id):
+def merge_niche(files_root, participant_hex, context, niche_name, teammate_id, *, signer):
     """Merge a previously parked niche ref from a peer.
 
     Requires a checkout to be attached (raises NoCheckoutError if none).
@@ -1124,6 +1182,7 @@ def merge_niche(files_root, participant_hex, context, niche_name, teammate_id):
     the user checkout.
     """
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     git_dir = _niche_git_dir(files_root, context, niche_name)
     checkout = _require_clean_checkout(files_root, participant_hex, context, niche_name)
 
@@ -1136,7 +1195,7 @@ def merge_niche(files_root, participant_hex, context, niche_name, teammate_id):
             files_root, participant_hex, context, "niche", niche_name, teammate_id, parked_sha
         )
         return parked_sha
-    _cod_merge_ref(git_dir, checkout, ref_name)
+    _cod_merge_ref(git_dir, checkout, ref_name, signer)
     _record_peer_merge(
         files_root, participant_hex, context, "niche", niche_name, teammate_id, parked_sha
     )
@@ -1165,7 +1224,7 @@ def self_conflict_status(files_root, participant_hex, context, niche_name):
     return {"registry_shas": registry_shas, "niche_shas": niche_shas}
 
 
-def merge_self_niche(files_root, participant_hex, context, niche_name):
+def merge_self_niche(files_root, participant_hex, context, niche_name, *, signer):
     """Integrate parked self-store niche heads into the user checkout.
 
     Same checkout contract as merge_niche: a CACHED niche with no checkout, a
@@ -1173,9 +1232,10 @@ def merge_self_niche(files_root, participant_hex, context, niche_name):
     any merge writes into the user's files.
     """
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     git_dir = _niche_git_dir(files_root, context, niche_name)
     checkout = _require_clean_checkout(files_root, participant_hex, context, niche_name)
-    return _merge_parked_self_refs(git_dir, checkout)
+    return _merge_parked_self_refs(git_dir, checkout, signer)
 
 
 def registry_conflict_paths(files_root, participant_hex, context):

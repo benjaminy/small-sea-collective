@@ -129,6 +129,7 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         provisioning.activate_app_for_team(alice_root, alice, TEAM, sync.HUB_APP_NAME)
         alice_token = _session(alice_http, "Alice", TEAM)
         alice_berth = _berth(alice_http, alice_token)
+        provisioning.get_workhorse_signing_key(alice_root, alice, alice_berth)
         provisioning.add_berth_cloud_allocation_by_berth_id(
             alice_root, alice, alice_berth, alice_cloud, location=f"ss-{alice_berth[:16]}"
         )
@@ -154,6 +155,7 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         bob_teammate = acceptance_record_from_courier(acceptance)["author_teammate_id"]
         bob_token = _session(bob_http, "Bob", TEAM)
         bob_berth = _berth(bob_http, bob_token)
+        provisioning.get_workhorse_signing_key(bob_root, bob, bob_berth)
         provisioning.add_berth_cloud_allocation_by_berth_id(
             bob_root, bob, bob_berth, bob_cloud, location=f"ss-{bob_berth[:16]}"
         )
@@ -170,11 +172,13 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "alice-files.toml"))
         alice_login = sync.login_team(alice_files, TEAM, alice, _http_client=alice_http, pin_reader=lambda _: "")
         alice_context = files.materialization_context_from_session_info(alice_login.session_info)
-        files.create_niche(alice_files, alice, alice_context, "docs")
+        alice_signer = sync.commit_signer(TEAM, alice_port, _http_client=alice_http)
+        files.create_niche(alice_files, alice, alice_context, "docs", signer=alice_signer)
         files.add_checkout(alice_files, alice, alice_context, "docs", alice_checkout)
         retained = "two homes, one retained file\n"
         (alice_checkout / "notes.txt").write_text(retained)
-        files.publish(alice_files, alice, alice_context, "docs", alice_checkout, message="publish notes")
+        files.publish(alice_files, alice, alice_context, "docs", alice_checkout,
+                      message="publish notes", signer=alice_signer)
         sync.push_via_hub(alice_files, alice, TEAM, "docs", _http_client=alice_http)
 
         monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "bob-files.toml"))
@@ -182,7 +186,8 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         bob_context = files.materialization_context_from_session_info(bob_login.session_info)
         sync.fetch_via_hub(bob_files, bob, TEAM, "docs", team["teammate_id_hex"], _http_client=bob_http)
         files.add_checkout(bob_files, bob, bob_context, "docs", bob_checkout)
-        sync.merge_via_hub(bob_files, bob, TEAM, "docs", team["teammate_id_hex"], _http_client=bob_http)
+        sync.merge_via_hub(bob_files, bob, TEAM, "docs", team["teammate_id_hex"],
+                           hub_port=bob_port, _http_client=bob_http)
         assert (bob_checkout / "notes.txt").read_text() == retained
 
         _stop(bob_process, bob_http)
@@ -192,7 +197,8 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         updated = "two homes, usable after restart\n"
         monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "alice-files.toml"))
         (alice_checkout / "notes.txt").write_text(updated)
-        files.publish(alice_files, alice, alice_context, "docs", alice_checkout, message="post-restart update")
+        files.publish(alice_files, alice, alice_context, "docs", alice_checkout,
+                      message="post-restart update", signer=alice_signer)
         sync.push_via_hub(alice_files, alice, TEAM, "docs", _http_client=alice_http)
         request = {
             "team": TEAM,

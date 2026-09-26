@@ -12,6 +12,8 @@ These tests demonstrate progressively more interesting collaborative situations:
 Crypto is out of scope here; these tests focus purely on the sync and
 merge mechanics.
 """
+from test_support import local_files_signer
+
 
 import os
 import pathlib
@@ -38,7 +40,7 @@ NICHE = "docs"
 
 
 def _team(participant_hex):
-    return FilesMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME)
+    return FilesMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME, actual_team_id="22" * 16)
 
 
 # --- Helpers ---
@@ -51,7 +53,7 @@ def setup_participant(playground, name, participant_hex):
     ctx = _team(participant_hex)
     init_files(str(root), participant_hex)
     materialize_team(str(root), ctx)
-    create_niche(str(root), participant_hex, ctx, NICHE)
+    create_niche(str(root), participant_hex, ctx, NICHE, signer=local_files_signer(ctx))
     add_checkout(str(root), participant_hex, ctx, NICHE, str(checkout))
     return root, checkout
 
@@ -61,7 +63,7 @@ def do_push(root, participant_hex, cloud):
 
 
 def do_pull(root, participant_hex, cloud):
-    pull_niche(str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderStore(str(cloud)))
+    pull_niche(str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderStore(str(cloud)), signer=local_files_signer(_team(participant_hex)))
 
 
 def write(checkout, filename, content):
@@ -95,7 +97,7 @@ def test_two_participants_converge(playground_dir):
     # --- Initial shared state: Alice creates the niche and seeds it ---
     alice_root, alice_co = setup_participant(playground, "alice", ALICE)
     write(alice_co, "readme.txt", "Shared project docs.\n")
-    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="initial commit")
+    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="initial commit", signer=local_files_signer(_team(ALICE)))
     do_push(alice_root, ALICE, alice_cloud)
 
     # Bob clones from Alice's cloud
@@ -105,11 +107,11 @@ def test_two_participants_converge(playground_dir):
 
     # --- Concurrent independent work ---
     write(alice_co, "alice_notes.txt", "Alice's meeting notes.\n")
-    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="add alice_notes")
+    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="add alice_notes", signer=local_files_signer(_team(ALICE)))
     do_push(alice_root, ALICE, alice_cloud)
 
     write(bob_co, "bob_notes.txt", "Bob's design sketches.\n")
-    publish(str(bob_root), BOB, _team(BOB), NICHE, str(bob_co), message="add bob_notes")
+    publish(str(bob_root), BOB, _team(BOB), NICHE, str(bob_co), message="add bob_notes", signer=local_files_signer(_team(BOB)))
     do_push(bob_root, BOB, bob_cloud)
 
     # --- Convergence: each pulls from the other ---
@@ -148,7 +150,7 @@ def test_concurrent_text_edits_auto_merge(playground_dir):
 
     alice_root, alice_co = setup_participant(playground, "alice", ALICE)
     write(alice_co, "plan.txt", initial_content)
-    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="initial plan")
+    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="initial plan", signer=local_files_signer(_team(ALICE)))
     do_push(alice_root, ALICE, alice_cloud)
 
     bob_root, bob_co = setup_participant(playground, "bob", BOB)
@@ -166,7 +168,7 @@ def test_concurrent_text_edits_auto_merge(playground_dir):
         "TBD.\n"
     )
     write(alice_co, "plan.txt", alice_update)
-    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="clarify overview")
+    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="clarify overview", signer=local_files_signer(_team(ALICE)))
     do_push(alice_root, ALICE, alice_cloud)
 
     # Bob updates the Next Steps section (no conflict with Alice's edit)
@@ -182,7 +184,7 @@ def test_concurrent_text_edits_auto_merge(playground_dir):
         "2. Write more tests\n"
     )
     write(bob_co, "plan.txt", bob_update)
-    publish(str(bob_root), BOB, _team(BOB), NICHE, str(bob_co), message="fill in next steps")
+    publish(str(bob_root), BOB, _team(BOB), NICHE, str(bob_co), message="fill in next steps", signer=local_files_signer(_team(BOB)))
     do_push(bob_root, BOB, bob_cloud)
 
     # Converge
@@ -226,7 +228,7 @@ def test_rename_and_concurrent_edit(playground_dir):
 
     alice_root, alice_co = setup_participant(playground, "alice", ALICE)
     write(alice_co, "proposal.txt", original_content)
-    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="add proposal")
+    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="add proposal", signer=local_files_signer(_team(ALICE)))
     do_push(alice_root, ALICE, alice_cloud)
 
     bob_root, bob_co = setup_participant(playground, "bob", BOB)
@@ -237,13 +239,13 @@ def test_rename_and_concurrent_edit(playground_dir):
     new_path = alice_co / "final" / "proposal.txt"
     new_path.parent.mkdir()
     os.rename(old_path, new_path)
-    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="move proposal to final/")
+    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="move proposal to final/", signer=local_files_signer(_team(ALICE)))
     do_push(alice_root, ALICE, alice_cloud)
 
     # Bob adds a conclusion section to the original path (he doesn't know Alice renamed)
     bob_content = original_content + "\n## Conclusion\nThis is worth building.\n"
     write(bob_co, "proposal.txt", bob_content)
-    publish(str(bob_root), BOB, _team(BOB), NICHE, str(bob_co), message="add conclusion")
+    publish(str(bob_root), BOB, _team(BOB), NICHE, str(bob_co), message="add conclusion", signer=local_files_signer(_team(BOB)))
     do_push(bob_root, BOB, bob_cloud)
 
     # Alice merges Bob's changes
@@ -279,7 +281,7 @@ def test_three_participant_gossip(playground_dir):
     # Alice seeds
     alice_root, alice_co = setup_participant(playground, "alice", ALICE)
     write(alice_co, "shared_glossary.txt", "niche: a shared folder\n")
-    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="add glossary")
+    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="add glossary", signer=local_files_signer(_team(ALICE)))
     do_push(alice_root, ALICE, alice_cloud)
 
     # Bob syncs from Alice, adds his own file, pushes
@@ -288,7 +290,7 @@ def test_three_participant_gossip(playground_dir):
     assert exists(bob_co, "shared_glossary.txt"), "Bob should see Alice's file"
 
     write(bob_co, "architecture.txt", "Hub: local server\nManager: provisioning\n")
-    publish(str(bob_root), BOB, _team(BOB), NICHE, str(bob_co), message="add architecture notes")
+    publish(str(bob_root), BOB, _team(BOB), NICHE, str(bob_co), message="add architecture notes", signer=local_files_signer(_team(BOB)))
     do_push(bob_root, BOB, bob_cloud)
 
     # Carol syncs from Bob (who carries Alice's history) — no direct Alice contact
@@ -301,7 +303,7 @@ def test_three_participant_gossip(playground_dir):
 
     # Carol adds her own file and pushes
     write(carol_co, "carol_ideas.txt", "proximity-based key exchange\n")
-    publish(str(carol_root), CAROL, _team(CAROL), NICHE, str(carol_co), message="add carol's ideas")
+    publish(str(carol_root), CAROL, _team(CAROL), NICHE, str(carol_co), message="add carol's ideas", signer=local_files_signer(_team(CAROL)))
     do_push(carol_root, CAROL, carol_cloud)
 
     # Bob syncs from Carol to get the full three-way picture
@@ -321,7 +323,7 @@ def test_concurrent_edit_same_line_raises(playground_dir):
 
     alice_root, alice_co = setup_participant(playground, "alice", ALICE)
     write(alice_co, "title.txt", "Project Name: TBD\n")
-    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="initial title")
+    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="initial title", signer=local_files_signer(_team(ALICE)))
     do_push(alice_root, ALICE, alice_cloud)
 
     bob_root, bob_co = setup_participant(playground, "bob", BOB)
@@ -329,11 +331,11 @@ def test_concurrent_edit_same_line_raises(playground_dir):
 
     # Both edit the same line with different content
     write(alice_co, "title.txt", "Project Name: SmallSea\n")
-    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="name it SmallSea")
+    publish(str(alice_root), ALICE, _team(ALICE), NICHE, str(alice_co), message="name it SmallSea", signer=local_files_signer(_team(ALICE)))
     do_push(alice_root, ALICE, alice_cloud)
 
     write(bob_co, "title.txt", "Project Name: Wavelength\n")
-    publish(str(bob_root), BOB, _team(BOB), NICHE, str(bob_co), message="name it Wavelength")
+    publish(str(bob_root), BOB, _team(BOB), NICHE, str(bob_co), message="name it Wavelength", signer=local_files_signer(_team(BOB)))
     do_push(bob_root, BOB, bob_cloud)
 
     with pytest.raises(MergeConflictError) as exc_info:

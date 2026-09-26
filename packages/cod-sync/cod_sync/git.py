@@ -50,13 +50,14 @@ def _run(git_params, *, text, raise_on_error, env):
 
 
 def signing_git_env(base_env: Mapping[str, str], *, program: str,
-                    public_key: str, extra_env: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Return a child environment with SSH commit signing configured for Git."""
+                    public_key: str, extra_env: Mapping[str, str] | None = None,
+                    signing_key: str | None = None) -> dict[str, str]:
+    """Return SSH signing config; signing_key selects an on-disk test key."""
     env = dict(base_env)
     env.update(extra_env or {})
     count = int(env.get("GIT_CONFIG_COUNT", "0"))
     for key, value in (("gpg.format", "ssh"), ("gpg.ssh.program", program),
-                       ("user.signingkey", f"key::{public_key}"),
+                       ("user.signingkey", signing_key or f"key::{public_key}"),
                        ("commit.gpgsign", "true")):
         env[f"GIT_CONFIG_KEY_{count}"] = key
         env[f"GIT_CONFIG_VALUE_{count}"] = value

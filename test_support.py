@@ -6,6 +6,7 @@ importable from any package's tests via the root `pyproject.toml`'s
 """
 
 import contextlib
+from functools import lru_cache
 import os
 import secrets
 import shutil
@@ -19,6 +20,32 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import BotoCoreError, ClientError
 from botocore.parsers import ResponseParserError
 import pytest
+
+
+@lru_cache(maxsize=1)
+def _files_signing_key():
+    directory = tempfile.mkdtemp(prefix="files-test-signing-")
+    key_path = os.path.join(directory, "key")
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", key_path],
+                   check=True)
+    with open(key_path + ".pub") as public_file:
+        return key_path, public_file.read().strip()
+
+
+def local_files_signer(context):
+    """Sign Files micro test commits with an on-disk SSH key."""
+    from cod_sync.git import signing_git_env
+    from ssc_files.files import CommitSigner
+
+    key_path, public_key = _files_signing_key()
+    env = signing_git_env(
+        os.environ, program=shutil.which("ssh-keygen"), public_key=public_key,
+        signing_key=key_path,
+        extra_env={"GIT_AUTHOR_NAME": "Files Test", "GIT_AUTHOR_EMAIL": "files@test",
+                   "GIT_COMMITTER_NAME": "Files Test", "GIT_COMMITTER_EMAIL": "files@test"},
+    )
+    return CommitSigner(context.actual_team_id or "22" * 16, context.team_id,
+                        b"test-authority-view", env)
 
 
 def publish_storage_announcement_for_session(backend, session_hex) -> dict | None:

@@ -970,7 +970,7 @@ class SmallSeaBackend:
 
     def sign_commit(self, session_hex, purpose, payload):
         ss_session = self._lookup_session(session_hex)
-        if ss_session.app_name == "SmallSeaFiles":
+        if ss_session.app_name == "SmallSeaCollectiveFiles":
             allowed = {"files-content", "files-registry", "files-merge"}
         elif ss_session.app_name == "SmallSeaCollectiveCore":
             allowed = {"note-to-self" if ss_session.team_name == "NoteToSelf" else "core"}
