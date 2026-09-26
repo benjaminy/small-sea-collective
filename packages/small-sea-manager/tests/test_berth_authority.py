@@ -2,17 +2,23 @@
 
 import os
 import pathlib
+import sqlite3
 import subprocess
+
+import pytest
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import small_sea_manager.provisioning as provisioning
 from cod_sync.repo import Repo
+from small_sea_note_to_self.db import device_local_db_path
 from cod_sync.verify import SignatureEvidence, SignatureEvidenceKind, SshCommitVerifier
 from cod_sync.work_context import WorkContext, commit_message_with_context, context_from_commit
 from small_sea_manager.berth_authority import (
     AuthorityResult as R,
+    MissingAuthorityAnchor,
+    Standing,
     ModeChangeRecord,
     build_view,
     evaluate,
@@ -64,10 +70,10 @@ class Team:
         self.modes = []
         self.delegations = []
 
-    def view(self, anchor=None):
+    def view(self, anchor=None, berth_ids=(BERTH, OTHER_BERTH)):
         return build_view(team_id=TEAM, anchor_public_key=anchor or self.alice.public_key,
                           certs=self.certs, mode_changes=self.modes,
-                          delegations=self.delegations, berth_ids=[BERTH, OTHER_BERTH])
+                          delegations=self.delegations, berth_ids=berth_ids)
 
     def delegate(self, teammate_id, private, purposes, berth=BERTH):
         _private, public = _workhorse()
@@ -161,13 +167,17 @@ def test_manager_stores_self_delegation_in_team_core(playground_dir, monkeypatch
     provisioning.activate_app_for_team(root, participant, "ProjectX", "SmallSeaCollectiveFiles")
     berth = provisioning.derive_team_join_state(root, participant, "ProjectX", "SmallSeaCollectiveFiles")["berth_id"]
     berth = bytes.fromhex(berth) if isinstance(berth, str) else berth
-    _private, anchor = provisioning.get_current_team_device_key(root, participant, "ProjectX")
+    _private, genesis = provisioning.get_current_team_device_key(root, participant, "ProjectX")
     team_id, _ = provisioning._team_row(root, participant, "ProjectX")
+    anchor = provisioning.get_authority_anchor(root, participant, team_id)
+    assert anchor["anchor_public_key"] == genesis
+    assert anchor["adopted_via"] == "team-creation"
+    assert anchor["enrollment_completed_at"] is not None
 
-    before = provisioning.load_transitional_authority_view(root, participant, "ProjectX", anchor)
+    before = provisioning.load_transitional_authority_view(root, participant, "ProjectX")
     assert before.delegations == ()
-    provisioning.delegate_workhorse_purposes(root, participant, "ProjectX", berth, ["files-content"], anchor)
-    view = provisioning.load_transitional_authority_view(root, participant, "ProjectX", anchor)
+    provisioning.delegate_workhorse_purposes(root, participant, "ProjectX", berth, ["files-content"])
+    view = provisioning.load_transitional_authority_view(root, participant, "ProjectX")
     assert view.identifier != before.identifier
     status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True,
                             cwd=root / "Participants" / participant / "ProjectX" / "Sync").stdout
@@ -194,3 +204,68 @@ def test_manager_stores_self_delegation_in_team_core(playground_dir, monkeypatch
     assert decision.result is R.AUTHORIZED
     assert evaluate(view, context_from_commit(repo, sha), evidence, team_id=team_id,
                     berth_id=berth, purpose="files-merge").result is R.WRONG_SCOPE
+
+
+def test_self_grants_and_cycles_do_not_escape_ambiguity():
+    team = Team()
+    carol, carol_private = _device()
+    carol_id = b"C" * 16
+    team.certs.append(issue_membership_cert(carol, team.alice, team.alice_private, TEAM,
+                                            team.alice_id, carol_id))
+    grant = lambda author_id, author, private, to, mode: team.modes.append(
+        _mode(author_id, author, private, to, BERTH, mode))
+    grant(team.alice_id, team.alice, team.alice_private, team.bob_id, "automatic")
+    grant(team.alice_id, team.alice, team.alice_private, team.bob_id, "proposal-only")
+    grant(team.bob_id, team.bob, team.bob_private, carol_id, "automatic")
+    grant(carol_id, carol, carol_private, carol_id, "automatic")
+    # A cycle: Carol grants Bob back; Bob is still directly conflicted.
+    grant(carol_id, carol, carol_private, team.bob_id, "automatic")
+    carol_key = team.delegate(carol_id, carol_private, ["files-content"])
+    view = team.view()
+    assert view.holds(team.bob_id, BERTH) is Standing.AMBIGUOUS
+    assert view.holds(carol_id, BERTH) is Standing.AMBIGUOUS
+    assert _judge(view, carol_key).result is R.AMBIGUOUS_AUTHORITY
+
+
+def test_view_identifier_covers_the_berth_set():
+    team = Team()
+    assert team.view(berth_ids=()).identifier != team.view(berth_ids=(BERTH,)).identifier
+
+
+def test_absent_anchor_pauses(playground_dir):
+    root = pathlib.Path(playground_dir)
+    participant = provisioning.create_new_participant(root, "Alice")
+    provisioning.create_team(root, participant, "ProjectX")
+    team_id, _ = provisioning._team_row(root, participant, "ProjectX")
+    with sqlite3.connect(device_local_db_path(root, participant)) as conn:
+        conn.execute("DELETE FROM team_authority_anchor WHERE team_id = ?", (team_id,))
+    with pytest.raises(MissingAuthorityAnchor):
+        provisioning.load_transitional_authority_view(root, participant, "ProjectX")
+    berth = provisioning.derive_team_join_state(root, participant, "ProjectX")["berth_id"]
+    with pytest.raises(MissingAuthorityAnchor):
+        provisioning.delegate_workhorse_purposes(root, participant, "ProjectX", berth, ["core"])
+
+
+def test_linked_device_adopts_anchor_from_signed_bootstrap(playground_dir, minio_server_gen):
+    from test_linked_device_cold_start import TEAM as LINKED_TEAM, _discovered_team_on_device_b
+
+    root_a, root_b, alice_hex, manager_a, manager_b = _discovered_team_on_device_b(
+        pathlib.Path(playground_dir), minio_server_gen()
+    )
+    team_id, _ = provisioning._team_row(root_b, alice_hex, LINKED_TEAM)
+    assert provisioning.get_authority_anchor(root_b, alice_hex, team_id) is None
+    with pytest.raises(MissingAuthorityAnchor):
+        provisioning.delegate_workhorse_purposes(root_b, alice_hex, LINKED_TEAM, b"x" * 16, ["core"])
+
+    prepared = manager_b.prepare_linked_device_team_join(LINKED_TEAM)
+    created = manager_a.create_linked_device_bootstrap(LINKED_TEAM, prepared["join_request_bundle"])
+    manager_b.finalize_linked_device_bootstrap(LINKED_TEAM, created["bootstrap_bundle"])
+
+    adopted = provisioning.get_authority_anchor(root_b, alice_hex, team_id)
+    founder = provisioning.get_authority_anchor(root_a, alice_hex, team_id)
+    assert adopted["anchor_public_key"] == founder["anchor_public_key"]
+    assert adopted["adopted_via"] == "linked-device-bootstrap"
+    assert adopted["enrollment_completed_at"] is not None
+    view_a = provisioning.load_transitional_authority_view(root_a, alice_hex, LINKED_TEAM)
+    view_b = provisioning.load_transitional_authority_view(root_b, alice_hex, LINKED_TEAM)
+    assert view_a.identifier == view_b.identifier

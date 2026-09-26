@@ -185,3 +185,20 @@ CREATE TABLE IF NOT EXISTS berth_write_choice (
     evidence_json TEXT NOT NULL,
     decided_at TEXT NOT NULL
 );
+
+-- The berth-authority anchor this device adopted for one team (issue #266).
+-- Device-local because adoption is this device's own trust decision: a fetched
+-- or synced record must never choose it. Recorded before any fetched authority
+-- is verified against it. `view_policy` names the view rules the anchor feeds;
+-- `adopted_via` and `evidence_ref` say how the device learned the anchor.
+-- `enrollment_completed_at` is set separately, when the device's own team
+-- enrollment finishes.
+CREATE TABLE IF NOT EXISTS team_authority_anchor (
+    team_id BLOB PRIMARY KEY,
+    anchor_public_key BLOB NOT NULL,
+    view_policy TEXT NOT NULL,
+    adopted_via TEXT NOT NULL CHECK(adopted_via IN ('team-creation', 'linked-device-bootstrap')),
+    evidence_ref TEXT NOT NULL,
+    adopted_at TEXT NOT NULL,
+    enrollment_completed_at TEXT
+);

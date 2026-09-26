@@ -108,6 +108,13 @@ def context_from_commit(repo, commit: str) -> WorkContext:
 
 def check_work_context(context: WorkContext, *, origin: str, team_id: str,
                        berth_id: str, purpose: str, authority_view: bytes) -> None:
-    """Reject a signed context used outside its exact scope; dates are irrelevant."""
+    """Reject a signed context used outside its exact scope; dates are irrelevant.
+
+    This compares the full context, including `authority_view`, which names
+    the view the SIGNER selected. It is evidence only. Callers must not pass
+    the verifier's own current view as the expected signer view: judge
+    authority under the verifier's view separately (see
+    small_sea_manager.berth_authority).
+    """
     if context != WorkContext(origin, team_id, berth_id, purpose, authority_view):
         raise WorkContextError("work context does not match expected scope")

@@ -2762,7 +2762,7 @@ def prepare_linked_device_team_join(root_dir, participant_hex, team_name):
 
 # This versions the signed response JSON contract. The ratchet envelope has its
 # own version, while any HKDF info label only separates derived key uses.
-LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION = 2
+LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION = 3
 
 
 def _team_core_berth_id_from_db(team_db_path) -> bytes | None:
@@ -2953,6 +2953,9 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
         "x3dh_initial_message": _serialize_x3dh_initial_message(x3dh_result.initial_message),
         "ratchet_message": _serialize_encrypted_message(encrypted_message),
         "device_link_cert": _serialize_cert(cert),
+        # The authorizing sibling's adopted anchor, or None if it has none.
+        # The joining device adopts it only through this signed response.
+        "authority_anchor": _authority_anchor_offer(root_dir, participant_hex, team_id),
     }
     response_bytes = _json_bytes(response_body)
     response_body["team_device_signature"] = _sign_bytes(
@@ -3011,6 +3014,7 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         "x3dh_initial_message": response["x3dh_initial_message"],
         "ratchet_message": response["ratchet_message"],
         "device_link_cert": response["device_link_cert"],
+        "authority_anchor": response["authority_anchor"],
     }
     response_bytes = _json_bytes(response_body)
     bootstrap_id = bytes.fromhex(response["bootstrap_id"])
@@ -3058,6 +3062,25 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     if session_row["finalized_at"] is not None and session_row["response_payload_json"]:
         response_payload = json.loads(session_row["response_payload_json"])
         return response_payload
+
+    # Adopt the sibling's anchor from the authenticated response before any
+    # fetched authority is verified. Enrollment completion is recorded below.
+    offered_anchor = response["authority_anchor"]
+    if offered_anchor is not None:
+        if offered_anchor.get("view_policy") != berth_authority.VIEW_VERSION.decode():
+            raise ValueError("Bootstrap bundle offers an unsupported authority view policy")
+        _record_authority_anchor(
+            root_dir,
+            participant_hex,
+            team_id,
+            bytes.fromhex(offered_anchor["public_key"]),
+            adopted_via="linked-device-bootstrap",
+            evidence_ref=(
+                f"linked-bootstrap:{bootstrap_id.hex()}:"
+                f"{hashlib.sha256(response_bytes).hexdigest()}"
+            ),
+            enrollment_completed=False,
+        )
 
     identity = IdentityKeyPair(
         dh_public_key=session_row["x3dh_identity_dh_public_key"],
@@ -3236,6 +3259,7 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     response_payload = {
         "bootstrap_id_hex": bootstrap_id.hex(),
     }
+    _mark_authority_anchor_enrollment_completed(root_dir, participant_hex, team_id)
 
     _update_linked_team_bootstrap_session(
         root_dir,
@@ -5300,12 +5324,85 @@ def _load_transitional_view(conn, team_id: bytes, anchor_public_key: bytes):
     )
 
 
-def load_transitional_authority_view(root_dir, participant_hex, team_name, anchor_public_key: bytes):
+def _record_authority_anchor(
+    root_dir, participant_hex, team_id, anchor_public_key, *,
+    adopted_via, evidence_ref, enrollment_completed,
+):
+    """Record this device's adopted anchor for a team; refuse to silently change it."""
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute(
+            "SELECT anchor_public_key FROM local.team_authority_anchor WHERE team_id = ?",
+            (team_id,),
+        ).fetchone()
+        if row is not None:
+            if row[0] != anchor_public_key:
+                raise ValueError("A different authority anchor is already adopted for this team")
+            return
+        now = _now_iso()
+        conn.execute(
+            "INSERT INTO local.team_authority_anchor (team_id, anchor_public_key, view_policy, "
+            "adopted_via, evidence_ref, adopted_at, enrollment_completed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (team_id, anchor_public_key, berth_authority.VIEW_VERSION.decode(), adopted_via,
+             evidence_ref, now, now if enrollment_completed else None),
+        )
+        conn.commit()
+
+
+def _mark_authority_anchor_enrollment_completed(root_dir, participant_hex, team_id) -> None:
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        conn.execute(
+            "UPDATE local.team_authority_anchor SET enrollment_completed_at = ? "
+            "WHERE team_id = ? AND enrollment_completed_at IS NULL",
+            (_now_iso(), team_id),
+        )
+        conn.commit()
+
+
+def get_authority_anchor(root_dir, participant_hex, team_id: bytes):
+    """Return this device's adopted anchor record for a team, or None."""
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute(
+            "SELECT anchor_public_key, view_policy, adopted_via, evidence_ref, adopted_at, "
+            "enrollment_completed_at FROM local.team_authority_anchor WHERE team_id = ?",
+            (team_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    keys = ("anchor_public_key", "view_policy", "adopted_via", "evidence_ref",
+            "adopted_at", "enrollment_completed_at")
+    return dict(zip(keys, row))
+
+
+def _authority_anchor_offer(root_dir, participant_hex, team_id):
+    anchor = get_authority_anchor(root_dir, participant_hex, team_id)
+    if anchor is None:
+        return None
+    return {"public_key": anchor["anchor_public_key"].hex(), "view_policy": anchor["view_policy"]}
+
+
+def _adopted_anchor_or_pause(root_dir, participant_hex, team_id) -> bytes:
+    anchor = get_authority_anchor(root_dir, participant_hex, team_id)
+    if anchor is None:
+        raise berth_authority.MissingAuthorityAnchor(
+            "This device has adopted no authority anchor for the team"
+        )
+    if anchor["view_policy"] != berth_authority.VIEW_VERSION.decode():
+        raise berth_authority.MissingAuthorityAnchor(
+            f"Adopted anchor uses an unsupported view policy: {anchor['view_policy']}"
+        )
+    return anchor["anchor_public_key"]
+
+
+def load_transitional_authority_view(root_dir, participant_hex, team_name):
     """Compute the transitional berth-authority view from this team's Core records.
 
-    The caller supplies the adopted anchor key; the records never choose it.
+    The view is rooted at this device's stored, adopted anchor; the records
+    never choose it. Without an adopted anchor this raises
+    `MissingAuthorityAnchor`, a pause rather than a default.
     """
     team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
+    anchor_public_key = _adopted_anchor_or_pause(root_dir, participant_hex, team_id)
     engine = _sqlite_engine(_team_sync_dir(root_dir, participant_hex, team_name) / "core.db")
     try:
         with engine.begin() as conn:
@@ -5314,19 +5411,18 @@ def load_transitional_authority_view(root_dir, participant_hex, team_name, ancho
         engine.dispose()
 
 
-def delegate_workhorse_purposes(
-    root_dir, participant_hex, team_name, berth_id, purposes, anchor_public_key: bytes
-) -> bytes:
+def delegate_workhorse_purposes(root_dir, participant_hex, team_name, berth_id, purposes) -> bytes:
     """Sign and store a delegation of `purposes` on `berth_id` to this device's workhorse key.
 
     This device's team-device key signs it, and only if this device's teammate
-    holds the berth unambiguously under the view rooted at `anchor_public_key`.
-    The record goes into the team Core DB, so ordinary Core sync publishes it.
-    Returns the record ID.
+    holds the berth unambiguously under the view rooted at this device's
+    adopted anchor. The record goes into the team Core DB, so ordinary Core
+    sync publishes it. Returns the record ID.
     """
     if isinstance(berth_id, str):
         berth_id = bytes.fromhex(berth_id)
     team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+    anchor_public_key = _adopted_anchor_or_pause(root_dir, participant_hex, team_id)
     private_key, public_key = get_current_team_device_key(root_dir, participant_hex, team_name)
     delegation = berth_authority.sign_workhorse_delegation(
         team_id=team_id,
@@ -5413,6 +5509,16 @@ def create_team(root_dir, participant_hex, team_name):
         device_local_db_path(root_dir, participant_hex),
         team_id,
         key_id_from_public(team_keys["device_key"].public_key),
+    )
+    # The founder adopts its own genesis key before any authority is verified.
+    _record_authority_anchor(
+        root_dir,
+        participant_hex,
+        team_id,
+        team_keys["device_key"].public_key,
+        adopted_via="team-creation",
+        evidence_ref="genesis-membership:" + membership_cert.cert_id.hex(),
+        enrollment_completed=True,
     )
 
     # --- Create team directory and its core.db ---

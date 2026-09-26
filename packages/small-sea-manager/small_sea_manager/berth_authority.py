@@ -18,7 +18,18 @@ Rules of view version 1:
 - Without a Constitution DAG, records cannot be ordered.
   A teammate with both `automatic` and `proposal-only` records for a berth has
   ambiguous authority, and so does anyone whose only grants come from
-  ambiguous holders.
+  ambiguous holders. Self-grants and grant cycles never create standing:
+  unambiguous standing must chain from the anchor.
+- The anchor-teammate rule is an explicit transitional ASSUMPTION, not a
+  reconstruction. Today the founder's roles and app-activation roles are
+  unsigned `berth_role` rows, and there is no signed evidence of who
+  originated each berth (see the B5 status in Documentation/bootstrap-trust.md:
+  "Berths have no signed origin at all"). When signed founder roles exist, derive
+  standing from them instead.
+- Current authorization is not proof of historical authority. A view judges
+  work under the verifier's own current selection; it says nothing about
+  whether the signer had authority when the work was made. The signer's
+  `WorkContext.authority_view` is evidence only.
 - Enrollment grants no purposes.
   Only a workhorse delegation (decision D4) lets a workhorse key sign work, and
   only when a device of a teammate holding the berth signed it.
@@ -55,6 +66,13 @@ from wrasse_trust.keys import key_id_from_public
 
 VIEW_VERSION = b"ssc-transitional-authority-view/1"
 DELEGATION_VERSION = 1
+
+
+class MissingAuthorityAnchor(Exception):
+    """This device has adopted no usable anchor for the team.
+
+    Callers treat this as a MISSING_AUTHORITY pause, never as a default anchor.
+    """
 
 
 class DelegationError(ValueError):
@@ -298,26 +316,33 @@ def build_view(*, team_id, anchor_public_key, certs, mode_changes, delegations,
     used_modes = [
         r for r in verified_modes if r.author_teammate_id in holders.get(r.berth_id, set())
     ]
-    standing = {}
-    for berth, members in holders.items():
-        for teammate in members:
-            downgraded = any(
-                r.teammate_id == teammate and r.berth_id == berth and r.mode == "proposal-only"
-                for r in used_modes
-            )
-            standing[(teammate, berth)] = Standing.AMBIGUOUS if downgraded else Standing.HELD
-    # A teammate whose every grant comes from an ambiguous holder is ambiguous too.
+    # Unambiguous standing is a separate least fixed point rooted at the
+    # anchor. A directly conflicted teammate never enters it, a self-grant
+    # never counts, and a cycle cannot bootstrap itself because it needs an
+    # already-held author outside it.
+    conflicted = {
+        (r.teammate_id, r.berth_id) for r in used_modes if r.mode == "proposal-only"
+    }
+    held = {
+        (anchor_teammate, berth) for berth in berths
+        if anchor_teammate is not None and (anchor_teammate, berth) not in conflicted
+    }
     changed = True
     while changed:
         changed = False
-        for (teammate, berth), value in list(standing.items()):
-            if value is Standing.HELD and teammate != anchor_teammate and not any(
-                r.teammate_id == teammate and r.berth_id == berth and r.mode == "automatic"
-                and standing.get((r.author_teammate_id, berth)) is Standing.HELD
-                for r in used_modes
+        for r in used_modes:
+            key = (r.teammate_id, r.berth_id)
+            if (
+                r.mode == "automatic" and key not in held and key not in conflicted
+                and r.author_teammate_id != r.teammate_id
+                and (r.author_teammate_id, r.berth_id) in held
             ):
-                standing[(teammate, berth)] = Standing.AMBIGUOUS
+                held.add(key)
                 changed = True
+    standing = {
+        (teammate, berth): Standing.HELD if (teammate, berth) in held else Standing.AMBIGUOUS
+        for berth, members in holders.items() for teammate in members
+    }
     digests += [hashlib.sha256(b"mode" + r.canonical() + r.signature).digest() for r in used_modes]
 
     accepted = []
@@ -332,6 +357,9 @@ def build_view(*, team_id, anchor_public_key, certs, mode_changes, delegations,
             digests.append(hashlib.sha256(b"delegation" + d.canonical() + d.signature).digest())
 
     h = hashlib.sha256(VIEW_VERSION + b"\0" + team_id + anchor_public_key)
+    # The effective berth set changes the anchor's standing, so it is an input.
+    for berth in sorted(berths):
+        h.update(b"berth" + hashlib.sha256(berth).digest())
     for digest in sorted(set(digests)):
         h.update(digest)
     return TransitionalView(

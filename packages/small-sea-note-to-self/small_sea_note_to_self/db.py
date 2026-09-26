@@ -6,7 +6,7 @@ from pathlib import Path
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
 SHARED_SCHEMA_VERSION = 59
-LOCAL_SCHEMA_VERSION = 12
+LOCAL_SCHEMA_VERSION = 13
 
 
 class FutureNoteToSelfDatabaseVersionError(Exception):
