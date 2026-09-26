@@ -21,6 +21,7 @@ from cod_sync_test_helpers import (
 
 from cod_sync.protocol import MAIN_REF, PublicationIntegrationRequiredError
 from cod_sync.verify import (
+    SignatureEvidenceKind,
     SignatureInvalidError,
     SshCommitVerifier,
     UnknownSignerError,
@@ -40,6 +41,48 @@ PIN = "refs/peers/alice/main"
 
 def verifier_for(*keys):
     return SshCommitVerifier([public_key_text(key) for key in keys])
+
+
+def test_signature_evidence_distinguishes_unknown_bad_unsigned(scratch_dir):
+    scratch = pathlib.Path(scratch_dir)
+    known_key = make_ssh_key(scratch, "known")
+    unknown_key = make_ssh_key(scratch, "unknown")
+    verifier = verifier_for(known_key)
+
+    unsigned = publisher(scratch, name="unsigned")
+    unsigned_sha = commit_file(unsigned, "a.txt", "unsigned")
+
+    known = publisher(scratch, known_key, name="known")
+    known_sha = commit_file(known, "a.txt", "known")
+
+    unknown = publisher(scratch, unknown_key, name="unknown")
+    unknown_sha = commit_file(unknown, "a.txt", "unknown")
+
+    bad = publisher(scratch, known_key, name="bad")
+    original_sha = commit_file(bad, "a.txt", "original", message="original")
+    original = bad._run_binary(["cat-file", "commit", original_sha]).stdout
+    changed = subprocess.run(
+        ["git", "--git-dir", str(bad.git_dir), "hash-object", "-t", "commit", "-w", "--stdin"],
+        input=original.replace(b"original", b"tampered"),
+        capture_output=True,
+        check=True,
+    ).stdout.decode().strip()
+
+    actual = [
+        verifier.signature_evidence(repo, sha)[sha].kind
+        for repo, sha in [
+            (unsigned, unsigned_sha),
+            (unknown, unknown_sha),
+            (bad, changed),
+            (known, known_sha),
+        ]
+    ]
+    assert actual == [
+        SignatureEvidenceKind.UNSIGNED,
+        SignatureEvidenceKind.UNKNOWN_SIGNER,
+        SignatureEvidenceKind.INVALID,
+        SignatureEvidenceKind.KNOWN_KEY,
+    ]
 
 
 def publisher(scratch, key=None, name="alice"):

@@ -8,6 +8,8 @@ import base64
 import hashlib
 import pathlib
 import tempfile
+from dataclasses import dataclass
+from enum import Enum
 from typing import Dict, Iterable
 
 from cryptography.exceptions import UnsupportedAlgorithm
@@ -21,6 +23,23 @@ from cod_sync.repo import Repo, RepoError
 
 #: The only `%G?` status this package accepts.
 ACCEPTED_STATUS = "G"
+
+
+class SignatureEvidenceKind(Enum):
+    """What Git's signature report proves about one commit."""
+
+    UNSIGNED = "unsigned"
+    UNKNOWN_SIGNER = "unknown_signer"
+    INVALID = "invalid"
+    KNOWN_KEY = "known_key"
+
+
+@dataclass(frozen=True)
+class SignatureEvidence:
+    commit: str
+    kind: SignatureEvidenceKind
+    fingerprint: str
+    status: str
 
 
 class VerificationError(Exception):
@@ -90,33 +109,7 @@ class SshCommitVerifier:
         Returns {commit: signing key fingerprint} as the evidence of which key
         signed what, and raises on the first commit that is not accepted.
         """
-        try:
-            with tempfile.TemporaryDirectory(prefix="cod-sync-verify-") as work_dir:
-                signers_file = pathlib.Path(work_dir) / "allowed_signers"
-                signers_file.write_text(
-                    "".join(
-                        f"signer-{index}@cod-sync.invalid {key}\n"
-                        for index, key in enumerate(self.allowed_keys)
-                    )
-                )
-                rows, diagnostics = repo.signature_report(head, signers_file)
-        except (RepoError, OSError) as exc:
-            raise VerificationUnavailableError(
-                f"could not report signatures: {exc}", commit=head
-            ) from exc
-
-        if diagnostics.strip():
-            # We wrote the configuration this ran under, so a diagnostic means
-            # the verdicts below describe something other than the key set.
-            raise VerificationUnavailableError(
-                f"git reported a verification configuration problem: "
-                f"{diagnostics.strip()}",
-                commit=head,
-            )
-        if not rows:
-            raise VerificationUnavailableError(
-                "git reported no commits for the head to be accepted", commit=head
-            )
+        rows = self._signature_rows(repo, head)
 
         verified = {}
         for row in rows:
@@ -131,6 +124,58 @@ class SshCommitVerifier:
                 )
             verified[row.commit] = row.fingerprint
         return verified
+
+    def signature_evidence(self, repo: Repo, head: str) -> Dict[str, SignatureEvidence]:
+        """Return signature evidence for every commit reachable from head.
+
+        This reports evidence without applying the strict verifier's
+        authorization decision. Unknown keys and invalid signatures remain
+        distinct results.
+        """
+        evidence = {}
+        for row in self._signature_rows(repo, head):
+            if row.status == "N":
+                kind = SignatureEvidenceKind.UNSIGNED
+            elif row.status == "U":
+                kind = SignatureEvidenceKind.UNKNOWN_SIGNER
+            elif row.status == "B":
+                kind = SignatureEvidenceKind.INVALID
+            elif row.status == ACCEPTED_STATUS and row.fingerprint in self.fingerprints:
+                kind = SignatureEvidenceKind.KNOWN_KEY
+            elif row.status == ACCEPTED_STATUS:
+                kind = SignatureEvidenceKind.UNKNOWN_SIGNER
+            else:
+                raise _classify(row)
+            evidence[row.commit] = SignatureEvidence(
+                row.commit, kind, row.fingerprint, row.status
+            )
+        return evidence
+
+    def _signature_rows(self, repo: Repo, head: str):
+        try:
+            with tempfile.TemporaryDirectory(prefix="cod-sync-verify-") as work_dir:
+                signers_file = pathlib.Path(work_dir) / "allowed_signers"
+                signers_file.write_text(
+                    "".join(
+                        f"signer-{index}@cod-sync.invalid {key}\n"
+                        for index, key in enumerate(self.allowed_keys)
+                    )
+                )
+                rows, diagnostics = repo.signature_report(head, signers_file)
+        except (RepoError, OSError) as exc:
+            raise VerificationUnavailableError(
+                f"could not report signatures: {exc}", commit=head
+            ) from exc
+        if diagnostics.strip():
+            raise VerificationUnavailableError(
+                f"git reported a verification configuration problem: {diagnostics.strip()}",
+                commit=head,
+            )
+        if not rows:
+            raise VerificationUnavailableError(
+                "git reported no commits for the head to be accepted", commit=head
+            )
+        return rows
 
 
 def _classify(row) -> VerificationError:
