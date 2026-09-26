@@ -43,6 +43,7 @@ from small_sea_hub.cloud_errors import (
     provider_failure,
 )
 from small_sea_hub.crypto import (ExpectedPublisherUnavailableExn,
+                                  OwnershipProjectionAbsentExn,
                                   commit_encrypted_upload,
                                   decrypt_group_payload,
                                   prepare_encrypted_upload,
@@ -1830,7 +1831,9 @@ class SmallSeaBackend:
 
     def _device_public_keys_by_key_id(self, conn) -> dict[bytes, bytes]:
         if not self._table_exists(conn, "team_device"):
-            return {}
+            raise OwnershipProjectionAbsentExn(
+                "No accepted device-ownership projection for this session"
+            )
         rows = conn.execute("SELECT device_key_id, public_key FROM team_device").fetchall()
         return {row[0]: row[1] for row in rows}
 

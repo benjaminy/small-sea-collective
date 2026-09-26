@@ -996,6 +996,8 @@ async def upload_to_cloud(
         )
     except CloudStorageRequiredExn as exn:
         return _cloud_storage_required_response(exn)
+    except PublicationPendingExn as exn:
+        return _publication_failure_response(exn)
     if not ok:
         if getattr(msg, "cas_conflict", False):
             return JSONResponse(
