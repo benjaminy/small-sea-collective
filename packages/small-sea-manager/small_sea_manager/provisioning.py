@@ -5789,6 +5789,7 @@ def create_invitation(
         root_dir, participant_hex, team_name
     )
     inviter_device_key_id = key_id_from_public(inviter_device_public_key)
+    inviter_anchor = _adopted_anchor_or_pause(root_dir, participant_hex, team_id)
 
     inviter_core_cloud = _core_cloud_allocation_or_raise(
         root_dir, participant_hex, team_name
@@ -5871,6 +5872,7 @@ def create_invitation(
 
     # Build token with only the material the invitee needs to author acceptance.
     token_data = {
+        "payload_version": 2,
         "proposal_id": proposal_id.hex(),
         "invitation_id": proposal_id.hex(),
         "nonce": nonce.hex(),
@@ -5886,7 +5888,20 @@ def create_invitation(
         },
         "inviter_bucket": inviter_core_cloud["location"],
         "inviter_sender_key": serialize_sender_key_record(inviter_sender_key),
+        "authority_anchor": inviter_anchor.hex(),
     }
+    token_data["authority_anchor_signature"] = _sign_bytes(
+        inviter_private_key,
+        _json_bytes({
+            "payload_version": token_data["payload_version"],
+            "proposal_id": token_data["proposal_id"],
+            "nonce": token_data["nonce"],
+            "team_id": token_data["team_id"],
+            "inviter_teammate_id": token_data["inviter_teammate_id"],
+            "inviter_sender_key_id": inviter_sender_key.sender_device_key_id.hex(),
+            "authority_anchor": token_data["authority_anchor"],
+        }),
+    ).hex()
     token_b64 = _tokenize(token_data)
 
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
@@ -5930,6 +5945,9 @@ def accept_invitation(
     proposal_id = bytes.fromhex(token["proposal_id"])
     nonce = bytes.fromhex(token["nonce"])
     invitee_teammate_id = bytes.fromhex(token["invitee_teammate_id"])
+    if token.get("payload_version") != 2:
+        raise ValueError("Unsupported invitation payload version")
+    signed_anchor = bytes.fromhex(token["authority_anchor"])
 
     # Use pre-generated teammate ID if provided (required when acceptor_remote must
     # be constructed before this call, e.g. Dropbox folder-prefix naming).
@@ -6034,6 +6052,8 @@ def accept_invitation(
                 # The invitation still names the sender key used for its encrypted
                 # bootstrap; require that key to be in the verified inviter chain.
                 expected_inviter_key_id = inviter_sender_key.sender_device_key_id
+            if expected_inviter_key_id != inviter_sender_key.sender_device_key_id:
+                raise ValueError("Invitation proposal author does not match its signed sender key")
             matched = []
             for genesis in candidates:
                 _anchor_teammate, trusted, _digests = berth_authority._anchored_trust(
@@ -6047,6 +6067,29 @@ def accept_invitation(
                     "Invitation Core does not authenticate one unique team genesis for its inviter"
                 )
             adopted_genesis = matched[0]
+            _anchor_teammate, adopted_trust, _digests = berth_authority._anchored_trust(
+                certs, team_id, adopted_genesis.subject_public_key
+            )
+            inviter_key = next(
+                key for key in adopted_trust.get(inviter_teammate_id, set())
+                if key_id_from_public(key) == expected_inviter_key_id
+            )
+            signed_token_fields = {
+                "payload_version": token["payload_version"],
+                "proposal_id": token["proposal_id"],
+                "nonce": token["nonce"],
+                "team_id": token["team_id"],
+                "inviter_teammate_id": token["inviter_teammate_id"],
+                "inviter_sender_key_id": inviter_sender_key.sender_device_key_id.hex(),
+                "authority_anchor": token["authority_anchor"],
+            }
+            if not _verify_signature(
+                inviter_key, _json_bytes(signed_token_fields),
+                bytes.fromhex(token["authority_anchor_signature"]),
+            ):
+                raise ValueError("Invitation authority anchor signature is invalid")
+            if adopted_genesis.subject_public_key != signed_anchor:
+                raise ValueError("Invitation Core authority anchor does not match inviter signature")
     finally:
         core_engine.dispose()
 

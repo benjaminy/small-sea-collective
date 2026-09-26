@@ -1,6 +1,7 @@
 import base64
 import json
 import pathlib
+import shutil
 import sqlite3
 import subprocess
 from dataclasses import replace
@@ -10,7 +11,7 @@ import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as provisioning
 from small_sea_note_to_self.db import device_local_db_path
 from cod_sync.protocol import CodSync
-from cod_sync.store import SmallSeaStore
+from cod_sync.store import LocalFolderStore, SmallSeaStore
 from cod_sync.repo import Repo
 from cryptography.exceptions import InvalidSignature
 from cuttlefish.group import (
@@ -21,7 +22,11 @@ from cuttlefish.group import (
 from fastapi.testclient import TestClient
 from small_sea_hub.crypto import serialize_group_message
 from small_sea_hub.server import app
-from small_sea_manager.manager import TeamManager
+from small_sea_manager.manager import (
+    TeamManager,
+    bootstrap_existing_identity,
+    create_identity_join_request,
+)
 from small_sea_manager.provisioning import (
     complete_invitation_acceptance,
     create_invitation,
@@ -37,7 +42,8 @@ from test_support import (
     route_sidecar_from_courier,
 )
 from wrasse_trust.identity import verify_membership_cert
-from wrasse_trust.keys import key_id_from_public
+from wrasse_trust.identity import issue_membership_cert
+from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_public
 from wrasse_trust.transport import (
     TeammateBerthStorageAnnouncement,
     verify_teammate_berth_storage_announcement_signature,
@@ -112,6 +118,48 @@ def _core_allocation(root, participant_hex, team_result):
     return allocation
 
 
+def _localfolder_invitation(root, monkeypatch=None, forge_core=False):
+    cloud = pathlib.Path(root) / "alice-cloud"
+    cloud.mkdir()
+    alice = create_new_participant(root, "Alice")
+    bob = create_new_participant(root, "Bob")
+    provisioning.add_cloud_storage(root, alice, protocol="localfolder", url=str(cloud))
+    provisioning.create_team(root, alice, "ProjectX")
+    alice_sync = pathlib.Path(root) / "Participants" / alice / "ProjectX" / "Sync"
+    CodSync(Repo(alice_sync / ".git", alice_sync), LocalFolderStore(str(cloud))).publish()
+    token = create_invitation(
+        root, alice, "ProjectX", {"protocol": "localfolder", "url": str(cloud)}
+    )
+    CodSync(Repo(alice_sync / ".git", alice_sync), LocalFolderStore(str(cloud))).publish()
+    if monkeypatch is not None and forge_core:
+        original = provisioning._load_team_certificates
+
+        def forged_certificates(conn, team_id):
+            if pathlib.Path(conn.engine.url.database).parent.name == "Sync":
+                inviter_id = provisioning._team_row(root, alice, "ProjectX")[1]
+                inviter_public = conn.execute(
+                    provisioning.text("SELECT public_key FROM team_device WHERE teammate_id = :id"),
+                    {"id": inviter_id},
+                ).fetchone()[0]
+                attacker, attacker_private = generate_key_pair(ProtectionLevel.DAILY)
+                attacker_id = provisioning.uuid7()
+                genesis = issue_membership_cert(
+                    attacker, attacker, attacker_private, team_id, attacker_id, attacker_id
+                )
+                inviter_key = provisioning._participant_key_from_public(inviter_public)
+                forged_membership = issue_membership_cert(
+                    inviter_key, attacker, attacker_private, team_id, attacker_id, inviter_id
+                )
+                conn.execute(provisioning.text("DELETE FROM key_certificate"))
+                provisioning._upsert_teammate_row(conn, attacker_id, display_name="Mallory")
+                provisioning._store_team_certificate(conn, genesis, attacker_id)
+                provisioning._store_team_certificate(conn, forged_membership, attacker_id)
+            return original(conn, team_id)
+
+        monkeypatch.setattr(provisioning, "_load_team_certificates", forged_certificates)
+    return alice, bob, token, LocalFolderStore(str(cloud))
+
+
 def test_create_invitation(playground_dir):
     root = pathlib.Path(playground_dir)
 
@@ -166,7 +214,35 @@ def test_create_invitation_includes_bucket(playground_dir):
     ).hex()
 
 
-def test_full_invitation_flow(playground_dir, minio_server_gen):
+def test_invitation_rejects_token_with_invalid_anchor_signature(playground_dir):
+    root = pathlib.Path(playground_dir)
+    _alice, bob, token, inviter_store = _localfolder_invitation(root)
+    token_data = json.loads(base64.b64decode(token))
+    signature = bytearray.fromhex(token_data["authority_anchor_signature"])
+    signature[0] ^= 1
+    token_data["authority_anchor_signature"] = signature.hex()
+    tampered_token = base64.b64encode(
+        json.dumps(token_data, sort_keys=True, separators=(",", ":")).encode()
+    ).decode()
+
+    with pytest.raises(ValueError, match="anchor signature is invalid"):
+        provisioning.accept_invitation(root, bob, tampered_token, inviter_store)
+
+
+def test_invitation_rejects_core_with_forged_genesis(playground_dir, monkeypatch):
+    root = pathlib.Path(playground_dir)
+    _alice, bob, token, inviter_store = _localfolder_invitation(
+        root, monkeypatch=monkeypatch, forge_core=True
+    )
+    team_id = bytes.fromhex(json.loads(base64.b64decode(token))["team_id"])
+
+    with pytest.raises(ValueError, match="does not match inviter signature"):
+        provisioning.accept_invitation(root, bob, token, inviter_store)
+
+    assert provisioning.get_authority_anchor(root, bob, team_id) is None
+
+
+def _run_full_invitation_flow(playground_dir, minio_server_gen, *, link_invitee_device=False):
     """Full invitation flow routed through the Hub."""
     alice_minio = minio_server_gen()
     bob_minio = minio_server_gen()
@@ -511,6 +587,53 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     )
     assert ok, data
     assert data == b"hello from Bob"
+
+    if link_invitee_device:
+        shutil.copy2(alice_team_sync / "core.db", bob_sync / "core.db")
+        bob_device_root = root / "bob-install-b"
+        bob_device_root.mkdir()
+        join_request = create_identity_join_request(bob_device_root)
+        welcome = bob_manager.authorize_identity_join(join_request["join_request_artifact"])
+        bootstrap_existing_identity(
+            bob_device_root, welcome["welcome_bundle"], _http_client=http
+        )
+        bob_device_local = TeamManager(bob_device_root, bob_hex)
+        accounts = bob_device_local.list_cloud_storage()
+        bob_device_local.connect_cloud_storage_credentials(
+            accounts[0]["id"],
+            access_key=bob_minio["access_key"],
+            secret_key=bob_minio["secret_key"],
+        )
+        bob_manager.push_note_to_self()
+        linked_manager = TeamManager(bob_device_root, bob_hex, _http_client=http)
+        linked_manager.refresh_note_to_self()
+        prepared = linked_manager.prepare_linked_device_team_join("ProjectX")
+        created = bob_manager.create_linked_device_bootstrap(
+            "ProjectX", prepared["join_request_bundle"]
+        )
+        linked_manager.finalize_linked_device_bootstrap(
+            "ProjectX", created["bootstrap_bundle"]
+        )
+
+        team_id = bytes.fromhex(token_data["team_id"])
+        linked_anchor = provisioning.get_authority_anchor(bob_device_root, bob_hex, team_id)
+        assert linked_anchor is not None
+        assert linked_anchor["anchor_public_key"] == bob_anchor["anchor_public_key"]
+        invitee_view = provisioning.load_transitional_authority_view(
+            root, bob_hex, "ProjectX"
+        )
+        linked_view = provisioning.load_transitional_authority_view(
+            bob_device_root, bob_hex, "ProjectX"
+        )
+        assert linked_view.identifier == invitee_view.identifier
+
+
+def test_full_invitation_flow(playground_dir, minio_server_gen):
+    _run_full_invitation_flow(playground_dir, minio_server_gen)
+
+
+def test_linked_device_of_invitee_adopts_matching_anchor(playground_dir, minio_server_gen):
+    _run_full_invitation_flow(playground_dir, minio_server_gen, link_invitee_device=True)
 
 
 def test_double_accept_rejected(playground_dir, minio_server_gen):
