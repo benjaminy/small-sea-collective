@@ -284,15 +284,23 @@ already belongs to the same participant in that team. This is not a blanket
 Protocol/product boundary:
 
 - **Payload 0 prerequisite** — Before linked-team bootstrap begins, the joining
-  device must already know the team exists in shared NoteToSelf and must already
-  have a readable baseline clone of that team's repo. The current same-teammate
-  bootstrap flow does **not** solve team discovery or baseline delivery by
-  itself.
-  Evidence: `prepare_linked_device_team_join(...)` looks up the team from the
-  local NoteToSelf `team` row via `_team_row(...)` in
-  `small_sea_manager/provisioning.py`; the micro tests still prepare that team
-  baseline explicitly with `_copy_team_baseline(...)` in
-  `tests/test_linked_device_bootstrap.py`.
+  device must already know the team exists in shared NoteToSelf, normally
+  through NoteToSelf refresh.
+  It does not need a local clone of the team's Core.
+  The sibling's signed response names the Core berth and Core head, and its
+  encrypted payload carries a Git bundle of the sibling's Core `main` at that
+  head.
+  A joining device without a clone verifies the signer against the team device
+  keys in its NoteToSelf, imports the bundle into a fresh `Sync` dir, and
+  deletes that dir if the head, the berth, or the clone's own certificates
+  disagree with the signed response.
+  This is a cold start, not Core integration (#226/#228): the device has no
+  Core history to merge.
+  It also is not #190's signed-history verification, which is not wired up
+  yet; nothing checks who authored the commits behind the signed head.
+  Evidence: `create_linked_device_bootstrap(...)` and
+  `finalize_linked_device_bootstrap(...)` in
+  `small_sea_manager/provisioning.py`.
 - **Scope of the current slice** — The current flow bootstraps the new device
   into one team using a sibling device of the same teammate. As part of bootstrap,
   the sibling hands off its snapshot of peer sender keys, giving the new device
