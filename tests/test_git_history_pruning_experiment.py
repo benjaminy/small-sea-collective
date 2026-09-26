@@ -1,4 +1,8 @@
 import pathlib
+import re
+import subprocess
+
+import pytest
 
 from Experiments.git_history_pruning import run_experiment as exp
 
@@ -24,6 +28,15 @@ def test_compute_boundary_uses_dag_closure(tmp_path: pathlib.Path):
     assert legacy_feature not in window_commits
 
 
+
+def _git_version() -> tuple[int, int]:
+    out = subprocess.run(["git", "--version"], capture_output=True, text=True).stdout
+    match = re.search(r"(\d+)\.(\d+)", out)
+    return (int(match[1]), int(match[2])) if match else (0, 0)
+
+
+# `git repack --filter/--filter-to` first shipped in git 2.42.
+@pytest.mark.skipif(_git_version() < (2, 42), reason="needs git >= 2.42 for repack --filter")
 def test_filtered_finalize_preserves_missing_objects(tmp_path: pathlib.Path):
     source = exp.build_repo(tmp_path, "repo_c_large_files", 24, 303)
     boundary, _boundary_parent, _mainline_commits, window_commits, _old_commits = exp.compute_boundary(source, 5)
