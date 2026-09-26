@@ -117,7 +117,7 @@ from small_sea_note_to_self.bootstrap import (
     welcome_bundle_confirmation_string,
     welcome_bundle_aad,
 )
-from small_sea_manager import berth_source_decision
+from small_sea_manager import berth_authority, berth_source_decision
 from small_sea_manager import note_to_self_sync
 from small_sea_note_to_self.ids import uuid7
 from small_sea_note_to_self.sender_keys import (
@@ -2190,7 +2190,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 65
+USER_SCHEMA_VERSION = 66
 
 
 # ---- Provisioning functions ----
@@ -5257,6 +5257,118 @@ def get_workhorse_signing_public_key(
         serialization.Encoding.OpenSSH,
         serialization.PublicFormat.OpenSSH,
     ).decode("ascii")
+
+
+def _load_transitional_view(conn, team_id: bytes, anchor_public_key: bytes):
+    modes = [
+        berth_authority.ModeChangeRecord(*row)
+        for row in conn.execute(
+            text(
+                "SELECT author_teammate_id, author_device_key_id, created_at, anchor_commit, "
+                "constitution_digest, schema_version, teammate_id, berth_id, mode, signature "
+                "FROM integration_mode_change"
+            )
+        ).fetchall()
+    ]
+    delegations = []
+    for row in conn.execute(
+        text(
+            "SELECT schema_version, berth_id, purposes_json, workhorse_public_key, "
+            "delegator_teammate_id, delegator_public_key, signature FROM workhorse_delegation"
+        )
+    ).fetchall():
+        if row[0] != berth_authority.DELEGATION_VERSION:
+            continue
+        delegations.append(
+            berth_authority.WorkhorseDelegation(
+                team_id=team_id,
+                berth_id=row[1],
+                purposes=tuple(json.loads(row[2])),
+                workhorse_public_key=row[3],
+                delegator_teammate_id=row[4],
+                delegator_public_key=row[5],
+                signature=row[6],
+            )
+        )
+    return berth_authority.build_view(
+        team_id=team_id,
+        anchor_public_key=anchor_public_key,
+        certs=_load_team_certificates(conn, team_id),
+        mode_changes=modes,
+        delegations=delegations,
+        berth_ids=[row[0] for row in conn.execute(text("SELECT id FROM team_app_berth")).fetchall()],
+    )
+
+
+def load_transitional_authority_view(root_dir, participant_hex, team_name, anchor_public_key: bytes):
+    """Compute the transitional berth-authority view from this team's Core records.
+
+    The caller supplies the adopted anchor key; the records never choose it.
+    """
+    team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
+    engine = _sqlite_engine(_team_sync_dir(root_dir, participant_hex, team_name) / "core.db")
+    try:
+        with engine.begin() as conn:
+            return _load_transitional_view(conn, team_id, anchor_public_key)
+    finally:
+        engine.dispose()
+
+
+def delegate_workhorse_purposes(
+    root_dir, participant_hex, team_name, berth_id, purposes, anchor_public_key: bytes
+) -> bytes:
+    """Sign and store a delegation of `purposes` on `berth_id` to this device's workhorse key.
+
+    This device's team-device key signs it, and only if this device's teammate
+    holds the berth unambiguously under the view rooted at `anchor_public_key`.
+    The record goes into the team Core DB, so ordinary Core sync publishes it.
+    Returns the record ID.
+    """
+    if isinstance(berth_id, str):
+        berth_id = bytes.fromhex(berth_id)
+    team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+    private_key, public_key = get_current_team_device_key(root_dir, participant_hex, team_name)
+    delegation = berth_authority.sign_workhorse_delegation(
+        team_id=team_id,
+        berth_id=berth_id,
+        purposes=purposes,
+        workhorse_public_key=get_workhorse_signing_public_key(root_dir, participant_hex, berth_id),
+        delegator_teammate_id=self_in_team,
+        delegator_private_key=private_key,
+    )
+    team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    engine = _sqlite_engine(team_sync_dir / "core.db")
+    try:
+        with engine.begin() as conn:
+            view = _load_transitional_view(conn, team_id, anchor_public_key)
+            if public_key not in view.trusted_keys.get(self_in_team, ()):
+                raise ValueError("This device's team-device key is not trusted in the view")
+            if view.holds(self_in_team, berth_id) is not berth_authority.Standing.HELD:
+                raise ValueError("This device's teammate does not unambiguously hold the berth")
+            conn.execute(
+                text(
+                    "INSERT OR IGNORE INTO workhorse_delegation (record_id, schema_version, "
+                    "berth_id, purposes_json, workhorse_public_key, delegator_teammate_id, "
+                    "delegator_public_key, signature) VALUES (:record_id, :version, :berth_id, "
+                    ":purposes, :key, :delegator, :delegator_key, :signature)"
+                ),
+                {
+                    "record_id": delegation.record_id,
+                    "version": berth_authority.DELEGATION_VERSION,
+                    "berth_id": berth_id,
+                    "purposes": json.dumps(list(delegation.purposes)),
+                    "key": delegation.workhorse_public_key,
+                    "delegator": self_in_team,
+                    "delegator_key": public_key,
+                    "signature": delegation.signature,
+                },
+            )
+    finally:
+        engine.dispose()
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo.stage(["core.db"])
+    repo.commit(f"Delegate {', '.join(delegation.purposes)} on berth {berth_id.hex()} to workhorse key")
+    return delegation.record_id
 
 
 def create_team(root_dir, participant_hex, team_name):
