@@ -197,7 +197,9 @@ CREATE TABLE IF NOT EXISTS team_authority_anchor (
     team_id BLOB PRIMARY KEY,
     anchor_public_key BLOB NOT NULL,
     view_policy TEXT NOT NULL,
-    adopted_via TEXT NOT NULL CHECK(adopted_via IN ('team-creation', 'linked-device-bootstrap')),
+    adopted_via TEXT NOT NULL CHECK(adopted_via IN (
+        'team-creation', 'linked-device-bootstrap', 'invitation-acceptance'
+    )),
     evidence_ref TEXT NOT NULL,
     adopted_at TEXT NOT NULL,
     enrollment_completed_at TEXT

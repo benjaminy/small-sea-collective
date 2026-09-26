@@ -238,6 +238,20 @@ def test_full_invitation_flow(playground_dir, minio_server_gen):
     acceptance_b64 = accept_and_export(bob_manager, token)
 
     assert isinstance(acceptance_b64, str)
+    alice_anchor = provisioning.get_authority_anchor(
+        root, alice_hex, bytes.fromhex(token_data["team_id"])
+    )
+    bob_anchor = provisioning.get_authority_anchor(
+        root, bob_hex, bytes.fromhex(token_data["team_id"])
+    )
+    assert bob_anchor["anchor_public_key"] == alice_anchor["anchor_public_key"]
+    assert bob_anchor["adopted_via"] == "invitation-acceptance"
+    assert bob_anchor["enrollment_completed_at"] is not None
+    assert provisioning.load_transitional_authority_view(
+        root, bob_hex, "ProjectX"
+    ).identifier == provisioning.load_transitional_authority_view(
+        root, alice_hex, "ProjectX"
+    ).identifier
 
     acceptance = acceptance_record_from_courier(acceptance_b64)
     bob_teammate_id_hex = acceptance["author_teammate_id"]

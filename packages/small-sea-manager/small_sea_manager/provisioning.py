@@ -5988,6 +5988,80 @@ def accept_invitation(
 
     team_db_path = team_sync_dir / "core.db"
     ensure_team_db_schema(team_db_path)
+    # The cloned Core is an untrusted snapshot. Adopt an anchor only when its
+    # signed proposal author is reachable through a verified membership chain
+    # from exactly one self-issued genesis certificate.
+    core_engine = _sqlite_engine(team_db_path)
+    try:
+        with core_engine.begin() as core_conn:
+            proposal_row = core_conn.execute(
+                text(
+                    "SELECT record_id, author_teammate_id, author_device_key_id, created_at, "
+                    "anchor_commit, constitution_digest, constitution_snapshot_json, nonce, team_id, "
+                    "invitee_teammate_id, invitee_label_commitment, expires_at, signature, "
+                    "invitee_label_payload, mode_plan FROM admission_proposal WHERE record_id = :id"
+                ),
+                {"id": proposal_id},
+            ).fetchone()
+            if proposal_row is not None:
+                _verify_proposal_row(core_conn, proposal_row)
+                if (proposal_row[7], proposal_row[8], proposal_row[9], proposal_row[1]) != (
+                    nonce, team_id, invitee_teammate_id, inviter_teammate_id
+                ):
+                    raise ValueError("Invitation proposal does not match the token")
+            certs = _load_team_certificates(core_conn, team_id)
+            candidates = []
+            for cert in certs:
+                if cert.cert_type != CertType.MEMBERSHIP:
+                    continue
+                try:
+                    genesis_teammate_id = bytes.fromhex(cert.claims.get("teammate_id", ""))
+                except (TypeError, ValueError):
+                    continue
+                if cert.issuer_participant_id == genesis_teammate_id:
+                    candidates.append(cert)
+            author_device = None
+            if proposal_row is not None:
+                author_device = core_conn.execute(
+                    text("SELECT public_key, teammate_id FROM team_device WHERE device_key_id = :id"),
+                    {"id": proposal_row[2]},
+                ).fetchone()
+                if author_device is None or author_device[1] != inviter_teammate_id:
+                    raise ValueError("Invitation proposal is not signed by its named inviter")
+                expected_inviter_key_id = proposal_row[2]
+            else:
+                # Some invite flows publish the signed proposal after acceptance.
+                # The invitation still names the sender key used for its encrypted
+                # bootstrap; require that key to be in the verified inviter chain.
+                expected_inviter_key_id = inviter_sender_key.sender_device_key_id
+            matched = []
+            for genesis in candidates:
+                _anchor_teammate, trusted, _digests = berth_authority._anchored_trust(
+                    certs, team_id, genesis.subject_public_key
+                )
+                inviter_keys = trusted.get(inviter_teammate_id, set())
+                if any(key_id_from_public(key) == expected_inviter_key_id for key in inviter_keys):
+                    matched.append(genesis)
+            if len(matched) != 1:
+                raise ValueError(
+                    "Invitation Core does not authenticate one unique team genesis for its inviter"
+                )
+            adopted_genesis = matched[0]
+    finally:
+        core_engine.dispose()
+
+    _record_authority_anchor(
+        root_dir,
+        acceptor_participant_hex,
+        team_id,
+        adopted_genesis.subject_public_key,
+        adopted_via="invitation-acceptance",
+        evidence_ref=(
+            f"invitation:{proposal_id.hex()}:genesis-membership:{adopted_genesis.cert_id.hex()}"
+        ),
+        enrollment_completed=False,
+    )
+
     core_engine = _sqlite_engine(team_db_path)
     try:
         with core_engine.begin() as core_conn:
@@ -6073,6 +6147,9 @@ def accept_invitation(
         author_device_key_id=acceptor_device_key_id,
         acceptance_record_id=acceptance_record_id,
         acceptance_token=acceptance_token,
+    )
+    _mark_authority_anchor_enrollment_completed(
+        root_dir, acceptor_participant_hex, team_id
     )
     return acceptance_token
 
