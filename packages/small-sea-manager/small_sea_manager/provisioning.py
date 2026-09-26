@@ -15,6 +15,7 @@ import pathlib
 import secrets
 import sqlite3
 import sys
+import tempfile
 from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -2752,7 +2753,50 @@ def prepare_linked_device_team_join(root_dir, participant_hex, team_name):
 
 # This versions the signed response JSON contract. The ratchet envelope has its
 # own version, while any HKDF info label only separates derived key uses.
-LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION = 1
+LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION = 2
+
+
+def _team_core_berth_id_from_db(team_db_path) -> bytes | None:
+    engine = _sqlite_engine(team_db_path)
+    try:
+        with engine.begin() as conn:
+            return _core_berth_id(conn)
+    finally:
+        engine.dispose()
+
+
+def _nts_team_device_public_keys(root_dir, participant_hex: str, team_id: bytes) -> set[bytes]:
+    """Team-device public keys this participant's devices recorded in NoteToSelf."""
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        rows = conn.execute(
+            "SELECT public_key FROM team_device_key "
+            "WHERE team_id = ? AND revoked_at IS NULL",
+            (team_id,),
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+def _materialize_team_baseline(team_sync_dir: pathlib.Path, bundle_bytes: bytes, core_head: str) -> None:
+    """Create a fresh local team clone from a sibling's Core bundle.
+
+    The caller has already authenticated the bundle and the head it must name.
+    This raises if the bundle does not advertise exactly that head; the caller
+    removes the partial clone.
+    """
+    os.makedirs(team_sync_dir, exist_ok=False)
+    repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
+    bundle_path = team_sync_dir.parent / "linked-bootstrap-core.bundle"
+    bundle_path.write_bytes(bundle_bytes)
+    try:
+        heads = repo.import_bundle(bundle_path)
+    finally:
+        bundle_path.unlink()
+    if heads.get("refs/heads/main") != core_head:
+        raise ValueError("Bootstrap Core bundle does not carry the signed Core head")
+    repo.checkout_branch("main", start_point=core_head)
+    if repo.head() != core_head:
+        raise ValueError("Bootstrap Core baseline HEAD does not match the signed Core head")
+    _install_sqlite_merge_driver(team_sync_dir)
 
 
 def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_request_bundle):
@@ -2821,6 +2865,21 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
         proposed_team_device_public_key,
     )
 
+    # The joining device may have no local Core clone yet. The encrypted
+    # payload carries this device's committed Core history, and the signed
+    # response names the head and Core berth it must reproduce.
+    team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    core_head = _Repo(team_sync_dir / ".git", team_sync_dir).head()
+    core_berth_id = _team_core_berth_id_from_db(team_sync_dir / "core.db")
+    if core_head is None or core_berth_id is None:
+        raise ValueError(f"Team '{team_name}' has no committed Core baseline to hand off")
+    with tempfile.TemporaryDirectory(prefix="linked-bootstrap-") as temp_dir:
+        bundle_path = pathlib.Path(temp_dir) / "core.bundle"
+        _Repo(team_sync_dir / ".git", team_sync_dir).create_bundle_from_head(
+            bundle_path, core_head
+        )
+        core_bundle_b64 = base64.b64encode(bundle_path.read_bytes()).decode("ascii")
+
     prekey_bundle = _deserialize_prekey_bundle(request["x3dh_prekey_bundle"])
     sender_identity = generate_identity_key_pair()
     x3dh_result = x3dh_send(sender_identity, prekey_bundle)
@@ -2857,6 +2916,7 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
             "own_sender_distribution": serialize_distribution_message(sender_distribution),
             "peer_sender_distributions": peer_sender_distributions,
             "peer_sender_skipped_keys": peer_sender_skipped_keys,
+            "core_bundle": core_bundle_b64,
         }
     )
     associated_data = _json_bytes(
@@ -2879,6 +2939,8 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
         "team_id": team_id.hex(),
         "authorizing_team_device_public_key": authorizer_public_key.hex(),
         "active_sender_device_key_id": sender_distribution.sender_device_key_id.hex(),
+        "core_berth_id": core_berth_id.hex(),
+        "core_head": core_head,
         "x3dh_initial_message": _serialize_x3dh_initial_message(x3dh_result.initial_message),
         "ratchet_message": _serialize_encrypted_message(encrypted_message),
         "device_link_cert": _serialize_cert(cert),
@@ -2905,7 +2967,23 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
 
 
 def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, bootstrap_bundle):
-    """Finish a same-teammate bootstrap on the joining device."""
+    """Finish a same-teammate bootstrap on the joining device.
+
+    If this device has no local Core clone, the bootstrap creates one from the
+    Core bundle in the encrypted payload. This is a cold start, not Core
+    integration: there is no local Core history to merge, so the device adopts
+    exactly the head its sibling signed, or nothing. A device that already has
+    a clone keeps it and imports nothing.
+
+    This does not bypass #190, but it does not satisfy it either. #190's
+    signed-history verification is not wired up yet. What the device checks
+    here is narrower: the response is signed by a team device key that this
+    participant's own devices recorded in NoteToSelf, the bundle arrived inside
+    the authenticated ratchet message, its `main` equals the signed head, the
+    clone's Core berth matches the signed berth, and the clone's own
+    certificates trust the signer. The history behind that head is whatever the
+    sibling had committed; nothing checks who authored its earlier commits.
+    """
     root_dir = pathlib.Path(root_dir)
     response = _untokenize(bootstrap_bundle)
     if (
@@ -2919,6 +2997,8 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         "team_id": response["team_id"],
         "authorizing_team_device_public_key": response["authorizing_team_device_public_key"],
         "active_sender_device_key_id": response["active_sender_device_key_id"],
+        "core_berth_id": response["core_berth_id"],
+        "core_head": response["core_head"],
         "x3dh_initial_message": response["x3dh_initial_message"],
         "ratchet_message": response["ratchet_message"],
         "device_link_cert": response["device_link_cert"],
@@ -2934,9 +3014,17 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     if response_team_id != team_id:
         raise ValueError("Bootstrap bundle team_id does not match local team")
 
-    trusted_keys = get_trusted_device_keys_for_teammate(
-        root_dir, participant_hex, team_name, teammate_id
-    )
+    team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    has_clone = has_local_team_clone(root_dir, participant_hex, team_name)
+    if has_clone:
+        trusted_keys = get_trusted_device_keys_for_teammate(
+            root_dir, participant_hex, team_name, teammate_id
+        )
+    else:
+        # No Core yet: the signer must be a team device this participant's
+        # own devices recorded in NoteToSelf, which identity bootstrap and
+        # NoteToSelf refresh delivered.
+        trusted_keys = _nts_team_device_public_keys(root_dir, participant_hex, team_id)
     if authorizing_team_device_public_key not in trusted_keys:
         raise ValueError("Bootstrap bundle signer is not trusted for this teammate")
     if not _verify_signature(
@@ -3001,6 +3089,30 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         associated_data=associated_data,
     )
     decrypted_payload = json.loads(plaintext.decode("utf-8"))
+
+    if not has_clone:
+        try:
+            _materialize_team_baseline(
+                team_sync_dir,
+                base64.b64decode(decrypted_payload["core_bundle"], validate=True),
+                response["core_head"],
+            )
+            cloned_berth_id = _team_core_berth_id_from_db(team_sync_dir / "core.db")
+            if cloned_berth_id is None or cloned_berth_id.hex() != response["core_berth_id"]:
+                raise ValueError("Bootstrap Core baseline names a different Core berth")
+            if authorizing_team_device_public_key not in get_trusted_device_keys_for_teammate(
+                root_dir, participant_hex, team_name, teammate_id
+            ):
+                raise ValueError(
+                    "Bootstrap bundle signer is not trusted by the delivered Core baseline"
+                )
+        except Exception:
+            shutil.rmtree(team_sync_dir, ignore_errors=True)
+            try:
+                team_sync_dir.parent.rmdir()
+            except OSError:
+                pass
+            raise
     authorizer_distribution = deserialize_distribution_message(
         decrypted_payload["own_sender_distribution"]
     )
