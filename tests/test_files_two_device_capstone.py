@@ -19,7 +19,9 @@ Device B also knows the niche name in advance; cold niche discovery is open.
 import importlib.util
 import inspect
 import pathlib
+import sqlite3
 import sys
+from urllib.parse import unquote, urlsplit
 
 import boto3
 import pytest
@@ -125,6 +127,103 @@ def _git_head(git_dir):
     ).stdout.strip()
 
 
+class _ManagerDatabaseGuard:
+    """Track Manager-owned database opens made from Files code."""
+
+    def __init__(self, monkeypatch, devices, participant_hex):
+        import small_sea_manager.provisioning as Provisioning
+        from small_sea_note_to_self.db import (
+            device_local_db_path,
+            note_to_self_sync_db_path,
+        )
+
+        self.opens = []
+        self.protected_dirs = []
+        for device in devices:
+            self.protected_dirs.extend(
+                (
+                    note_to_self_sync_db_path(device.root, participant_hex).parent.parent,
+                    device_local_db_path(device.root, participant_hex).parent.parent,
+                    Provisioning._team_sync_dir(device.root, participant_hex, TEAM),
+                )
+            )
+        self.protected_dirs = [path.resolve() for path in self.protected_dirs]
+        real_connect = sqlite3.connect
+
+        def guarded_connect(database, *args, **kwargs):
+            path = _sqlite_database_path(database)
+            if path is not None:
+                stack = inspect.stack()
+                has_files_frame = any(
+                    (frame.frame.f_globals.get("__name__") or "").startswith(
+                        "ssc_files"
+                    )
+                    for frame in stack
+                )
+                has_hub_frame = any(
+                    (frame.frame.f_globals.get("__name__") or "").startswith(
+                        "small_sea_hub"
+                    )
+                    for frame in stack
+                )
+                if has_files_frame and not has_hub_frame:
+                    self.opens.append(path)
+            return real_connect(database, *args, **kwargs)
+
+        monkeypatch.setattr(sqlite3, "connect", guarded_connect)
+
+    def violations(self):
+        return [
+            opened
+            for opened in self.opens
+            if any(opened == root or root in opened.parents for root in self.protected_dirs)
+        ]
+
+    def assert_clean(self):
+        violations = self.violations()
+        assert not violations, f"Files opened Manager-owned SQLite databases: {violations}"
+
+
+def _sqlite_database_path(database):
+    """Convert sqlite3.connect's path argument, including file: URIs, to Path."""
+    if isinstance(database, bytes):
+        database = database.decode()
+    if isinstance(database, pathlib.Path):
+        return database.resolve()
+    if not isinstance(database, str) or database == ":memory:":
+        return None
+    if database.startswith("file:"):
+        parsed = urlsplit(database)
+        if parsed.path in ("", "/:memory:"):
+            return None
+        database = unquote(parsed.path)
+    return pathlib.Path(database).resolve()
+
+
+def test_files_database_guard_detects_manager_database_open(tmp_path, monkeypatch):
+    participant_hex = "ab" * 16
+    device = _Device("negative-check", tmp_path / "device", monkeypatch)
+    guard = _ManagerDatabaseGuard(monkeypatch, [device], participant_hex)
+    import small_sea_manager.provisioning as Provisioning
+
+    database_path = Provisioning._team_sync_dir(device.root, participant_hex, TEAM) / "core.db"
+    database_path.parent.mkdir(parents=True)
+    namespace = {
+        "__name__": "ssc_files.guard_self_check",
+        "sqlite3": sqlite3,
+        "database_path": database_path,
+    }
+    code = compile(
+        "def open_manager_database():\n    sqlite3.connect(database_path)\n",
+        "ssc_files_guard_self_check.py",
+        "exec",
+    )
+    exec(code, namespace)
+    namespace["open_manager_database"]()
+    with pytest.raises(AssertionError, match="Manager-owned SQLite databases"):
+        guard.assert_clean()
+
+
 def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_server_gen):
     minio = minio_server_gen()
     a = _Device("A", tmp_path / "device-a", monkeypatch)
@@ -151,6 +250,8 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
     assert manager_a.push_team(TEAM) == "published"
     manager_a.push_note_to_self()
     spy.assert_only(mark, "A")
+
+    db_guard = _ManagerDatabaseGuard(monkeypatch, [a, b], alice_hex)
 
     # 5. Files on A: login, niche, checkout, publish, push.
     a.use_files()
@@ -232,4 +333,5 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
     files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A2")
     sync.push_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
     spy.assert_only(mark, "A")
+    db_guard.assert_clean()
     assert all(owner in ("A", "B") for owner, _op, _bucket in spy.calls)
