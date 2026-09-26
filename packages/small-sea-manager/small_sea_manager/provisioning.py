@@ -2728,6 +2728,11 @@ def prepare_linked_device_team_join(root_dir, participant_hex, team_name):
     }
 
 
+# This versions the signed response JSON contract. The ratchet envelope has its
+# own version, while any HKDF info label only separates derived key uses.
+LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION = 1
+
+
 def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_request_bundle):
     """Authorize a same-teammate bootstrap and return the encrypted bootstrap payload."""
     root_dir = pathlib.Path(root_dir)
@@ -2847,6 +2852,7 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
         team_name,
     )
     response_body = {
+        "version": LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION,
         "bootstrap_id": bootstrap_id.hex(),
         "team_id": team_id.hex(),
         "authorizing_team_device_public_key": authorizer_public_key.hex(),
@@ -2880,7 +2886,13 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     """Finish a same-teammate bootstrap on the joining device."""
     root_dir = pathlib.Path(root_dir)
     response = _untokenize(bootstrap_bundle)
+    if (
+        type(response.get("version")) is not int
+        or response["version"] != LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION
+    ):
+        raise ValueError("Unsupported linked-team bootstrap payload version")
     response_body = {
+        "version": response["version"],
         "bootstrap_id": response["bootstrap_id"],
         "team_id": response["team_id"],
         "authorizing_team_device_public_key": response["authorizing_team_device_public_key"],

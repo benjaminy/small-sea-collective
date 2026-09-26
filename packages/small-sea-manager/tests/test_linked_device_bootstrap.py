@@ -310,6 +310,47 @@ def test_linked_device_bootstrap_round_trip_same_teammate(playground_dir):
         ).fetchone()[0] == 0
 
 
+@pytest.mark.parametrize("version", [None, True, "1", 2])
+def test_linked_device_bootstrap_rejects_invalid_payload_version_without_mutation(
+    playground_dir, version
+):
+    workspace = pathlib.Path(playground_dir)
+    root1, root2, cloud_dir = (workspace / name for name in ("install-a", "install-b", "cloud"))
+    root1.mkdir()
+    root2.mkdir()
+    cloud_dir.mkdir()
+    participant_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(root1, participant_hex, protocol="localfolder", url=str(cloud_dir))
+    join_request = create_identity_join_request(root2)
+    manager1 = TeamManager(root1, participant_hex)
+    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+    team = manager1.create_team("ProjectX")
+    team_id = bytes.fromhex(team["team_id_hex"])
+    teammate_id = bytes.fromhex(team["teammate_id_hex"])
+    _copy_team_baseline(root1, root2, participant_hex, participant_hex, "ProjectX", team_id, teammate_id)
+
+    manager2 = TeamManager(root2, participant_hex)
+    prepared = manager2.prepare_linked_device_team_join("ProjectX")
+    created = manager1.create_linked_device_bootstrap(
+        "ProjectX", prepared["join_request_bundle"]
+    )
+    response = provisioning._untokenize(created["bootstrap_bundle"])
+    if version is None:
+        response.pop("version")
+    else:
+        response["version"] = version
+    bundle = provisioning._tokenize(response)
+
+    local_db = device_local_db_path(root2, participant_hex)
+    team_db = _team_db(root2, participant_hex, "ProjectX")
+    shared_db = note_to_self_sync_db_path(root2, participant_hex)
+    before = {path: path.read_bytes() for path in (local_db, team_db, shared_db)}
+    with pytest.raises(ValueError, match="payload version"):
+        manager2.finalize_linked_device_bootstrap("ProjectX", bundle)
+    assert {path: path.read_bytes() for path in before} == before
+
+
 def test_linked_device_bootstrap_rejects_invalid_join_signatures(playground_dir):
     workspace = pathlib.Path(playground_dir)
     root1 = workspace / "install-a"
