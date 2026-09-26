@@ -38,11 +38,12 @@ def _open_session(http, nickname, team, mode="encrypted", app_name=sync.HUB_APP_
     return resp.json()
 
 
-def _push_team_repo_via_hub(http, session_hex, repo_dir):
+def _push_team_repo_via_hub(http, session_hex, repo_dir, manager, team_name):
     auth = {"Authorization": f"Bearer {session_hex}"}
     resp = http.post("/cloud/setup", headers=auth)
     assert resp.status_code == 200, resp.text
-    publish_storage_announcement_for_session(app.state.backend, session_hex)
+    report = manager.reconcile_team_route(team_name, app_name=_CORE_APP)
+    assert report["route"] == "ready", report
 
     from cod_sync.protocol import CodSync
     from cod_sync.repo import Repo
@@ -71,6 +72,7 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
 
     alice_hex = Provisioning.create_new_participant(root, "Alice")
     bob_hex = Provisioning.create_new_participant(root, "Bob")
+    alice_manager = TeamManager(root, alice_hex, _http_client=http)
     Provisioning.register_app_for_participant(root, alice_hex, sync.HUB_APP_NAME)
     Provisioning.register_app_for_participant(root, bob_hex, sync.HUB_APP_NAME)
 
@@ -114,10 +116,11 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
         headers={"Authorization": f"Bearer {alice_team_token}"},
     )
     assert resp.status_code == 200, resp.text
-    publish_storage_announcement_for_session(backend, alice_team_token)
+    report = alice_manager.reconcile_team_route("ProjectX", app_name=sync.HUB_APP_NAME)
+    assert report["route"] == "ready", report
 
     alice_core_team_token = _open_session(http, "Alice", "ProjectX", app_name=_CORE_APP)
-    _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync)
+    _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync, alice_manager, "ProjectX")
 
     token_b64 = Provisioning.create_invitation(
         root,
@@ -126,7 +129,7 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
         {"protocol": "s3", "url": alice_minio["endpoint"]},
         invitee_label="Bob",
     )
-    _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync)
+    _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync, alice_manager, "ProjectX")
 
     bob_manager = TeamManager(root, bob_hex, _http_client=http)
     acceptance_b64 = accept_and_export(bob_manager, token_b64)
@@ -147,6 +150,13 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
         headers={"Authorization": f"Bearer {bob_team_token}"},
     )
     assert resp.status_code == 200, resp.text
+    # Bob's local team clone is still pre-finalization here (he is admitted
+    # below), so `reconcile_team_route` correctly reports his route pending
+    # ("current_device_untrusted"). TeamManager has no operation for a
+    # participant to pull/merge their own team repo from cloud after being
+    # admitted elsewhere, so this announcement can't be produced through a
+    # real Manager operation at this point in the flow; kept as the test-only
+    # helper.
     publish_storage_announcement_for_session(backend, bob_team_token)
     Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
 
