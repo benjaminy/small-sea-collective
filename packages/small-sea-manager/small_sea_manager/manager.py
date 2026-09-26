@@ -959,7 +959,7 @@ class TeamManager:
             and observed["cloud_storage_id"] == expected["cloud_storage_id"]
         )
 
-    def _publish_core_route(
+    def _publish_berth_route(
         self, team_name, state, allocation, app_name=_CORE_APP
     ) -> tuple[dict, str | None]:
         """Session, materialize, reread, publish, read back, commit.
@@ -970,24 +970,23 @@ class TeamManager:
         a reread of that same allocation and account may be signed, so a
         replacement that landed mid-flight is reported rather than announced.
 
-        `app_name` picks the berth. Its route is materialized through a Hub
-        session for that app, since the Hub's cloud setup is session-scoped.
+        `app_name` picks the berth. Every berth is materialized through this
+        Manager's Core session; an app berth uses the Hub's Manager-only
+        per-berth setup, so the Manager never opens a session as that app.
 
         Returns `(state, route_reason)`; a `None` reason means ready.
         """
         berth_id = state["berth_id"]
         try:
-            if app_name == _CORE_APP:
-                session = self._get_or_open_session(team_name)
-            else:
-                session = self.client.open_session(
-                    self.participant_hex, app_name, team_name, "TeamManager"
-                )
+            session = self._get_or_open_session(team_name)
         except (SmallSeaHubUnavailable, SmallSeaError):
             return state, "hub_session_unavailable"
 
         try:
-            session.ensure_cloud_ready()
+            if app_name == _CORE_APP:
+                session.ensure_cloud_ready()
+            else:
+                session.ensure_berth_cloud_ready(berth_id.hex())
         except SmallSeaCloudStorageRequired as exc:
             return state, ROUTE_REASON_BY_CLOUD_REASON.get(
                 exc.reason, "route_preparation_error"
@@ -1088,7 +1087,7 @@ class TeamManager:
         if allocation is None:
             return self._report(state, route_reason="storage_not_configured")
 
-        state, route_reason = self._publish_core_route(team_name, state, allocation)
+        state, route_reason = self._publish_berth_route(team_name, state, allocation)
         return self._report(state, route_reason=route_reason)
 
     def reconcile_team_route(
@@ -1163,7 +1162,7 @@ class TeamManager:
                 )
             return self._route_report(state, route_reason=None)
 
-        state, route_reason = self._publish_core_route(
+        state, route_reason = self._publish_berth_route(
             team_name, state, allocation, app_name
         )
         return self._route_report(state, route_reason=route_reason)

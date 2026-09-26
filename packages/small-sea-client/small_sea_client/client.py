@@ -395,6 +395,12 @@ class SmallSeaSession:
         """
         self._client._post("/cloud/setup", {}, token=self._token)
 
+    def ensure_berth_cloud_ready(self, berth_id_hex: str) -> None:
+        """Manager sessions only: set up storage for another berth of this team."""
+        self._client._post(
+            f"/manager/berths/{berth_id_hex}/cloud/setup", {}, token=self._token
+        )
+
     def upload(self, path: str, data: bytes) -> str:
         """Unconditional upload. Creates or overwrites the file. Returns the etag."""
         result = self._client._post(
