@@ -86,14 +86,14 @@ class SandboxWorkspace:
     def _next_hub_port(self) -> int:
         used = {p.hub_port for p in self.participants}
         port = 11437
-        while port in used:
+        while port in used or is_port_in_use(port):
             port += 1
         return port
 
     def _next_manager_port(self) -> int:
         used = {p.manager_port for p in self.participants}
         port = 8001
-        while port in used:
+        while port in used or is_port_in_use(port):
             port += 1
         return port
 
@@ -101,10 +101,14 @@ class SandboxWorkspace:
         used_api = {s.api_port for s in self.minio_servers}
         used_console = {s.console_port for s in self.minio_servers}
         api_port = 9000
-        while api_port in used_api or api_port in used_console:
+        while api_port in used_api or api_port in used_console or is_port_in_use(api_port):
             api_port += 2
         console_port = api_port + 1
-        while console_port in used_console or console_port in used_api:
+        while (
+            console_port in used_console
+            or console_port in used_api
+            or is_port_in_use(console_port)
+        ):
             console_port += 2
         return api_port, console_port
 
