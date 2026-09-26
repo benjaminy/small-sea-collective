@@ -1185,7 +1185,62 @@ class SmallSeaBackend:
             raise CloudAllocationConflictExn()
 
     def materialize_for_session(self, session_hex):
+        return self._materialize(self._lookup_session(session_hex))
+
+    def materialize_berth_for_manager(self, session_hex, berth_id_hex):
+        """Materialize another berth of the Manager session's own team.
+
+        The Manager decides allocation for every berth; this lets it ask for
+        provider setup of an app berth without opening a session as that app.
+        Participant and team come from the session. The berth must belong to
+        that team, and its app must be registered for the participant,
+        activated for the team, and unambiguous by name -- the same checks a
+        session request for the app makes. The caller supplies no location.
+        """
         ss_session = self._lookup_session(session_hex)
+        berth_id = bytes.fromhex(berth_id_hex)
+        if ss_session.team_name == "NoteToSelf":
+            raise SmallSeaNotFoundExn("No app berths to set up in NoteToSelf")
+        team_db = str(ss_session.participant_path / ss_session.team_name / "Sync" / "core.db")
+        conn = sqlite3.connect(team_db)
+        try:
+            row = conn.execute(
+                "SELECT a.name FROM team_app_berth tab "
+                "JOIN app a ON a.id = tab.app_id WHERE tab.id = ?",
+                (berth_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        if row is None:
+            raise SmallSeaNotFoundExn(
+                f"Berth {berth_id_hex[:8]} not found in team '{ss_session.team_name}'"
+            )
+        app_name = row[0]
+        _team_id, app_id, resolved_berth_id = self._resolve_berth(
+            ss_session.participant_path, ss_session.team_name, app_name
+        )
+        if resolved_berth_id != berth_id:
+            raise SmallSeaAppBootstrapRequiredExn(
+                "app_friendly_name_ambiguous", app_name, ss_session.team_name
+            )
+        # A transient, unsaved view of the session scoped to the target berth,
+        # so materialization runs exactly as it does for that app's own session.
+        berth_view = SmallSeaSession(
+            id=ss_session.id,
+            token=ss_session.token,
+            participant_id=ss_session.participant_id,
+            team_id=ss_session.team_id,
+            team_name=ss_session.team_name,
+            app_id=app_id,
+            app_name=app_name,
+            berth_id=berth_id,
+            mode=ss_session.mode,
+            client=ss_session.client,
+        )
+        berth_view.participant_path = ss_session.participant_path
+        return self._materialize(berth_view)
+
+    def _materialize(self, ss_session):
         cloud = self._resolve_berth_cloud_or_raise(ss_session)
         adapter = self._make_storage_adapter_from_record(ss_session, cloud)
         outcome = adapter.materialize()

@@ -1085,6 +1085,35 @@ async def cloud_setup(session_hex: str = Depends(_require_session)):
     }
 
 
+@app.post("/manager/berths/{berth_id}/cloud/setup")
+async def manager_berth_cloud_setup(
+    berth_id: str, session_hex: str = Depends(_require_manager_session_hex)
+):
+    """Set up provider storage for another berth of the Manager session's team."""
+    try:
+        bytes.fromhex(berth_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="berth_id must be hex")
+    try:
+        outcome = app.state.backend.materialize_berth_for_manager(session_hex, berth_id)
+    except CloudStorageRequiredExn as exn:
+        return _cloud_storage_required_response(exn)
+    except SmallSeaAppBootstrapRequiredExn as exc:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": "app_bootstrap_required",
+                "reason": exc.reason,
+                "app": exc.app_name,
+                "team": exc.team_name,
+            },
+        )
+    return {
+        "status": outcome.status,
+        "location": outcome.final_location,
+    }
+
+
 @app.get("/peer_cloud_file")
 async def download_peer_cloud_file(
     teammate_id: str,

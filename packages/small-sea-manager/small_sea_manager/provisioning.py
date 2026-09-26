@@ -997,12 +997,21 @@ class MissingCoreBerthError(ValueError):
 
 
 def _single_berth_id_for_app(conn, app_name) -> bytes | None:
+    """Return the team berth of `app_name`, or None if the app has none.
+
+    Uniqueness is decided on app rows, not berths: two same-named apps are
+    ambiguous even when only one has a berth, which is how the Hub reads them.
+    """
+    app_rows = conn.execute(
+        text("SELECT id FROM app WHERE name = :name"), {"name": app_name}
+    ).fetchall()
+    if len(app_rows) > 1:
+        raise ValueError(f"App name '{app_name}' is ambiguous in this team")
+    if not app_rows:
+        return None
     rows = conn.execute(
-        text(
-            "SELECT tab.id FROM team_app_berth tab "
-            "JOIN app a ON a.id = tab.app_id WHERE a.name = :name"
-        ),
-        {"name": app_name},
+        text("SELECT id FROM team_app_berth WHERE app_id = :app_id"),
+        {"app_id": app_rows[0][0]},
     ).fetchall()
     if len(rows) > 1:
         raise ValueError(f"Multiple berths found for app '{app_name}'")
@@ -3852,6 +3861,16 @@ def derive_team_join_state(
                 core_berth_id = _core_berth_id(conn)
                 state["core_berth_id"] = core_berth_id
             else:
+                with attached_note_to_self_connection(
+                    root_dir, participant_hex
+                ) as nts_conn:
+                    registered = nts_conn.execute(
+                        "SELECT COUNT(*) FROM app WHERE name = ?", (app_name,)
+                    ).fetchone()[0]
+                if registered > 1:
+                    raise ValueError(
+                        f"App name '{app_name}' is ambiguous for this participant"
+                    )
                 core_berth_id = _single_berth_id_for_app(conn, app_name)
             state["berth_id"] = core_berth_id
             if core_berth_id is None:
