@@ -99,8 +99,8 @@ the storage layout preserves a participant layer so that switching
 participants (or having multiple) remains possible without a re-architecture.
 
 Within a participant, session-backed Files state is scoped by an opaque Files
-`team_id`.
-That `team_id` is sourced from Hub `/session/info["berth_id"]`, where the Hub
+`berth_id`.
+That `berth_id` is sourced from Hub `/session/info["berth_id"]`, where the Hub
 and Manager still use berth language because they model app/team bindings.
 Friendly names such as `team_name` remain display and selection labels.
 They are not local materialization coordinates once Files has a Hub session.
@@ -136,7 +136,7 @@ macOS, `%APPDATA%\SmallSea\Files` on Windows).
     {participant_hex}/
       checkouts.db            ← purely local: checkout path registrations
       teams/
-        {team_id}/
+        {berth_id}/
           metadata.json       ← local display metadata for this team
           registry/
             git/              ← niche registry bare git repo (shared)
@@ -193,7 +193,7 @@ for the current session.
 Files currently uses `registry/` for the registry chain and
 `niches/{niche_name}/` for each niche chain.
 Those keys intentionally omit both friendly `team_name` and opaque Files
-`team_id`; the Hub session supplies the storage boundary.
+`berth_id`; the Hub session supplies the storage boundary.
 
 ---
 

@@ -27,7 +27,7 @@ from ssc_files.files import (
 
 PARTICIPANT = "bb" * 16
 TEAM_ID = "33" * 16
-TEAM = FilesMaterializationContext(PARTICIPANT, TEAM_ID, "SyncTeam", actual_team_id="22" * 16)
+TEAM = FilesMaterializationContext(PARTICIPANT, TEAM_ID, "22" * 16, "SyncTeam")
 
 
 def test_sync_niche_between_devices(playground_dir):

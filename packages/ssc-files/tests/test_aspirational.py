@@ -49,7 +49,7 @@ TEAM_ID = "11" * 16
 
 
 def _team(participant_hex):
-    return FilesMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME, actual_team_id="22" * 16)
+    return FilesMaterializationContext(participant_hex, TEAM_ID, "22" * 16, TEAM_NAME)
 
 
 # --- Helpers ---

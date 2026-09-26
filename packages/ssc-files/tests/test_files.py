@@ -29,11 +29,11 @@ from ssc_files.files import (
 PARTICIPANT = "aa" * 16
 TEAM_NAME = "TestTeam"
 TEAM_ID = "11" * 16
-TEAM = FilesMaterializationContext(PARTICIPANT, TEAM_ID, TEAM_NAME, actual_team_id="22" * 16)
+TEAM = FilesMaterializationContext(PARTICIPANT, TEAM_ID, "22" * 16, TEAM_NAME)
 
 
 def _team_for(participant_hex):
-    return FilesMaterializationContext(participant_hex, TEAM_ID, TEAM_NAME, actual_team_id="22" * 16)
+    return FilesMaterializationContext(participant_hex, TEAM_ID, "22" * 16, TEAM_NAME)
 
 
 def _init(playground_dir):
@@ -68,19 +68,19 @@ def test_create_niche(playground_dir):
 
 def test_same_friendly_name_different_teams_do_not_share_storage(playground_dir):
     _init(playground_dir)
-    alpha = FilesMaterializationContext(PARTICIPANT, "11" * 16, TEAM_NAME, actual_team_id="22" * 16)
-    beta = FilesMaterializationContext(PARTICIPANT, "22" * 16, TEAM_NAME, actual_team_id="22" * 16)
+    alpha = FilesMaterializationContext(PARTICIPANT, "11" * 16, "22" * 16, TEAM_NAME)
+    beta = FilesMaterializationContext(PARTICIPANT, "22" * 16, "22" * 16, TEAM_NAME)
 
     create_niche(playground_dir, PARTICIPANT, alpha, "docs", signer=local_files_signer(alpha))
     create_niche(playground_dir, PARTICIPANT, beta, "docs", signer=local_files_signer(beta))
 
     root = pathlib.Path(playground_dir) / "participants" / PARTICIPANT / "teams"
-    assert (root / alpha.team_id / "registry" / "git").is_dir()
-    assert (root / beta.team_id / "registry" / "git").is_dir()
-    assert (root / alpha.team_id / "niches" / "docs" / "git").is_dir()
-    assert (root / beta.team_id / "niches" / "docs" / "git").is_dir()
+    assert (root / alpha.berth_id / "registry" / "git").is_dir()
+    assert (root / beta.berth_id / "registry" / "git").is_dir()
+    assert (root / alpha.berth_id / "niches" / "docs" / "git").is_dir()
+    assert (root / beta.berth_id / "niches" / "docs" / "git").is_dir()
     assert not (pathlib.Path(playground_dir) / "participants" / PARTICIPANT / TEAM_NAME).exists()
-    metadata = json.loads((root / alpha.team_id / "metadata.json").read_text())
+    metadata = json.loads((root / alpha.berth_id / "metadata.json").read_text())
     assert metadata["team_name"] == TEAM_NAME
 
     checkout_a = pathlib.Path(playground_dir) / "checkout-a"
@@ -121,7 +121,7 @@ def test_same_friendly_name_different_teams_do_not_share_storage(playground_dir)
 
 def test_context_participant_mismatch_raises(playground_dir):
     _init(playground_dir)
-    wrong_participant = FilesMaterializationContext("bb" * 16, TEAM_ID, TEAM_NAME, actual_team_id="22" * 16)
+    wrong_participant = FilesMaterializationContext("bb" * 16, TEAM_ID, "22" * 16, TEAM_NAME)
 
     with pytest.raises(ValueError, match="participant"):
         create_niche(playground_dir, PARTICIPANT, wrong_participant, "docs", signer=local_files_signer(wrong_participant))
@@ -153,7 +153,7 @@ def test_iter_materialized_teams_skips_invalid_metadata(playground_dir):
 
     materialize_team(
         playground_dir,
-        FilesMaterializationContext(PARTICIPANT, good_id, "GoodTeam", actual_team_id="22" * 16),
+        FilesMaterializationContext(PARTICIPANT, good_id, "22" * 16, "GoodTeam"),
     )
 
     teams_dir = (
@@ -164,16 +164,16 @@ def test_iter_materialized_teams_skips_invalid_metadata(playground_dir):
     (teams_dir / bad_app_id).mkdir(parents=True)
     (teams_dir / bad_app_id / "metadata.json").write_text(
         json.dumps(
-            {"team_id": bad_app_id, "team_name": "WrongApp", "app_name": "SomeOtherApp"}
+            {"berth_id": bad_app_id, "team_name": "WrongApp", "app_name": "SomeOtherApp"}
         )
     )
 
-    # team_id mismatch — metadata says one id but lives in a different directory
+    # berth_id mismatch — metadata says one id but lives in a different directory
     (teams_dir / mismatched_id).mkdir(parents=True)
     (teams_dir / mismatched_id / "metadata.json").write_text(
         json.dumps(
             {
-                "team_id": "ff" * 16,
+                "berth_id": "ff" * 16,
                 "team_name": "Mismatched",
                 "app_name": "SmallSeaCollectiveFiles",
             }
@@ -183,7 +183,7 @@ def test_iter_materialized_teams_skips_invalid_metadata(playground_dir):
     # empty team_name
     (teams_dir / no_name_id).mkdir(parents=True)
     (teams_dir / no_name_id / "metadata.json").write_text(
-        json.dumps({"team_id": no_name_id, "team_name": "", "app_name": "SmallSeaCollectiveFiles"})
+        json.dumps({"berth_id": no_name_id, "team_name": "", "app_name": "SmallSeaCollectiveFiles"})
     )
 
     # malformed JSON
@@ -192,7 +192,7 @@ def test_iter_materialized_teams_skips_invalid_metadata(playground_dir):
 
     contexts = list(iter_materialized_teams(playground_dir, PARTICIPANT))
     assert len(contexts) == 1
-    assert contexts[0].team_id == good_id
+    assert contexts[0].berth_id == good_id
     assert contexts[0].team_name == "GoodTeam"
 
 

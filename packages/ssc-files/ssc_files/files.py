@@ -143,13 +143,13 @@ class StaleCheckoutError(RuntimeError):
 
 @dataclass(frozen=True)
 class FilesMaterializationContext:
-    """Files-owned local coordinates; team_id is the Files berth's directory ID."""
+    """Files-owned local coordinates; berth_id is the Files berth's directory ID."""
 
     participant_hex: str
+    berth_id: str
     team_id: str
     team_name: str
     app_name: str = "SmallSeaCollectiveFiles"
-    actual_team_id: str | None = None
 
     def __str__(self):
         return self.team_name
@@ -172,10 +172,10 @@ class FilesMaterializationContext:
             )
         return cls(
             participant_hex=str(info["participant_hex"]),
-            team_id=str(info["berth_id"]),
+            berth_id=str(info["berth_id"]),
+            team_id=str(info["team_id"]),
             team_name=str(info["team_name"]),
             app_name=str(info["app_name"]),
-            actual_team_id=str(info["team_id"]),
         )
 
 
@@ -230,9 +230,7 @@ def _validate_context(participant_hex, context):
 def _validate_signer(context, signer):
     if not isinstance(signer, CommitSigner):
         raise TypeError("Files commit operations require a CommitSigner")
-    if context.actual_team_id is None:
-        raise ValueError("Files materialization context lacks the team ID needed for signing")
-    if signer.berth_id != context.team_id or signer.team_id != context.actual_team_id:
+    if signer.berth_id != context.berth_id or signer.team_id != context.team_id:
         raise ValueError("Files signer team or berth does not match materialization context")
     return signer
 
@@ -275,7 +273,7 @@ def _checkouts_db_path(files_root, participant_hex):
 
 
 def _team_dir(files_root, context):
-    return _participant_dir(files_root, context.participant_hex) / "teams" / context.team_id
+    return _participant_dir(files_root, context.participant_hex) / "teams" / context.berth_id
 
 
 def _team_metadata_path(files_root, context):
@@ -288,10 +286,10 @@ def _write_team_metadata(files_root, context):
     path.write_text(
         json.dumps(
             {
+                "berth_id": context.berth_id,
                 "team_id": context.team_id,
                 "team_name": context.team_name,
                 "app_name": context.app_name,
-                **({"actual_team_id": context.actual_team_id} if context.actual_team_id else {}),
             },
             indent=2,
             sort_keys=True,
@@ -305,7 +303,7 @@ def materialize_team(files_root, context):
 
     Writes metadata.json for the team so subsequent offline name→id resolution
     can find it. Called once at login time, after the Hub session has supplied
-    team_id via session_info. Idempotent: rewriting with the same content is
+    berth and team IDs via session_info. Idempotent: rewriting with the same content is
     a no-op for path resolvers.
     """
     _validate_context(context.participant_hex, context)
@@ -316,7 +314,7 @@ def iter_materialized_teams(files_root, participant_hex):
     """Yield FilesMaterializationContext for every team materialized for this participant.
 
     Entries whose metadata.json is missing, malformed, or fails Files'
-    integrity rules (app_name must be SmallSeaCollectiveFiles, team_id must match the
+    integrity rules (app_name must be SmallSeaCollectiveFiles, berth_id must match the
     directory name, team_name must be non-empty) are skipped silently.
     """
     teams_dir = _participant_dir(files_root, participant_hex) / "teams"
@@ -332,17 +330,17 @@ def iter_materialized_teams(files_root, participant_hex):
             continue
         if data.get("app_name") != "SmallSeaCollectiveFiles":
             continue
-        if data.get("team_id") != team_dir.name:
+        if data.get("berth_id") != team_dir.name:
             continue
         team_name = data.get("team_name")
         if not team_name:
             continue
         yield FilesMaterializationContext(
             participant_hex=participant_hex,
-            team_id=team_dir.name,
+            berth_id=team_dir.name,
+            team_id=data.get("team_id"),
             team_name=str(team_name),
             app_name="SmallSeaCollectiveFiles",
-            actual_team_id=data.get("actual_team_id"),
         )
 
 
@@ -363,7 +361,7 @@ def _niche_git_dir(files_root, context, niche_name):
 # SQLite helpers
 # ---------------------------------------------------------------------------
 
-_CHECKOUTS_DB_VERSION = 3
+_CHECKOUTS_DB_VERSION = 4
 
 _CHECKOUTS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -371,28 +369,28 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 CREATE TABLE IF NOT EXISTS checkout (
     id            BLOB PRIMARY KEY,
-    team_id      TEXT NOT NULL,
+    berth_id      TEXT NOT NULL,
     niche_name    TEXT NOT NULL,
     checkout_path TEXT NOT NULL,
     created_at    TEXT NOT NULL,
-    UNIQUE (team_id, niche_name)
+    UNIQUE (berth_id, niche_name)
 );
 CREATE TABLE IF NOT EXISTS peer_sync (
-    team_id         TEXT NOT NULL,
+    berth_id         TEXT NOT NULL,
     repo_kind        TEXT NOT NULL,
     niche_name       TEXT NOT NULL,
     teammate_id        TEXT NOT NULL,
     last_fetched_sha TEXT,
     last_merged_sha  TEXT,
     updated_at       TEXT NOT NULL,
-    PRIMARY KEY (team_id, repo_kind, niche_name, teammate_id)
+    PRIMARY KEY (berth_id, repo_kind, niche_name, teammate_id)
 );
 CREATE TABLE IF NOT EXISTS peer_signal_watermark (
-    team_id   TEXT NOT NULL,
+    berth_id   TEXT NOT NULL,
     teammate_id  TEXT NOT NULL,
     count      INTEGER NOT NULL,
     updated_at TEXT NOT NULL,
-    PRIMARY KEY (team_id, teammate_id)
+    PRIMARY KEY (berth_id, teammate_id)
 );
 """
 
@@ -447,16 +445,16 @@ def _record_peer_fetch(
     conn.execute(
         """
         INSERT INTO peer_sync (
-            team_id, repo_kind, niche_name, teammate_id,
+            berth_id, repo_kind, niche_name, teammate_id,
             last_fetched_sha, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?)
-        ON CONFLICT(team_id, repo_kind, niche_name, teammate_id)
+        ON CONFLICT(berth_id, repo_kind, niche_name, teammate_id)
         DO UPDATE SET
             last_fetched_sha = excluded.last_fetched_sha,
             updated_at = excluded.updated_at
         """,
         (
-            context.team_id,
+            context.berth_id,
             repo_kind,
             _peer_sync_niche_key(repo_kind, niche_name),
             teammate_id,
@@ -482,17 +480,17 @@ def _record_peer_merge(
     conn.execute(
         """
         INSERT INTO peer_sync (
-            team_id, repo_kind, niche_name, teammate_id,
+            berth_id, repo_kind, niche_name, teammate_id,
             last_fetched_sha, last_merged_sha, updated_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(team_id, repo_kind, niche_name, teammate_id)
+        ON CONFLICT(berth_id, repo_kind, niche_name, teammate_id)
         DO UPDATE SET
             last_fetched_sha = excluded.last_fetched_sha,
             last_merged_sha = excluded.last_merged_sha,
             updated_at = excluded.updated_at
         """,
         (
-            context.team_id,
+            context.berth_id,
             repo_kind,
             _peer_sync_niche_key(repo_kind, niche_name),
             teammate_id,
@@ -510,11 +508,11 @@ def _peer_sync_row(files_root, participant_hex, context, repo_kind, niche_name, 
     conn = _connect_checkouts(files_root, participant_hex)
     row = conn.execute(
         """
-        SELECT team_id, repo_kind, niche_name, teammate_id, last_fetched_sha, last_merged_sha
+        SELECT berth_id, repo_kind, niche_name, teammate_id, last_fetched_sha, last_merged_sha
         FROM peer_sync
-        WHERE team_id = ? AND repo_kind = ? AND niche_name = ? AND teammate_id = ?
+        WHERE berth_id = ? AND repo_kind = ? AND niche_name = ? AND teammate_id = ?
         """,
-        (context.team_id, repo_kind, _peer_sync_niche_key(repo_kind, niche_name), teammate_id),
+        (context.berth_id, repo_kind, _peer_sync_niche_key(repo_kind, niche_name), teammate_id),
     ).fetchone()
     conn.close()
     return row
@@ -524,8 +522,8 @@ def get_peer_signal_watermark(files_root, participant_hex, context, teammate_id)
     context = _validate_context(participant_hex, context)
     conn = _connect_checkouts(files_root, participant_hex)
     row = conn.execute(
-        "SELECT count FROM peer_signal_watermark WHERE team_id = ? AND teammate_id = ?",
-        (context.team_id, teammate_id),
+        "SELECT count FROM peer_signal_watermark WHERE berth_id = ? AND teammate_id = ?",
+        (context.berth_id, teammate_id),
     ).fetchone()
     conn.close()
     return int(row["count"]) if row else 0
@@ -536,13 +534,13 @@ def set_peer_signal_watermark(files_root, participant_hex, context, teammate_id,
     conn = _connect_checkouts(files_root, participant_hex)
     conn.execute(
         """
-        INSERT INTO peer_signal_watermark (team_id, teammate_id, count, updated_at)
+        INSERT INTO peer_signal_watermark (berth_id, teammate_id, count, updated_at)
         VALUES (?, ?, ?, ?)
-        ON CONFLICT(team_id, teammate_id)
+        ON CONFLICT(berth_id, teammate_id)
         DO UPDATE SET count = excluded.count, updated_at = excluded.updated_at
         """,
         (
-            context.team_id,
+            context.berth_id,
             teammate_id,
             int(count),
             datetime.now(timezone.utc).isoformat(),
@@ -556,8 +554,8 @@ def clear_peer_signal_watermark(files_root, participant_hex, context, teammate_i
     context = _validate_context(participant_hex, context)
     conn = _connect_checkouts(files_root, participant_hex)
     conn.execute(
-        "DELETE FROM peer_signal_watermark WHERE team_id = ? AND teammate_id = ?",
-        (context.team_id, teammate_id),
+        "DELETE FROM peer_signal_watermark WHERE berth_id = ? AND teammate_id = ?",
+        (context.berth_id, teammate_id),
     )
     conn.commit()
     conn.close()
@@ -894,11 +892,11 @@ def add_checkout(files_root, participant_hex, context, niche_name, dest_path):
 
     conn = _connect_checkouts(files_root, participant_hex)
     conn.execute(
-        "INSERT INTO checkout (id, team_id, niche_name, checkout_path, created_at) "
+        "INSERT INTO checkout (id, berth_id, niche_name, checkout_path, created_at) "
         "VALUES (?, ?, ?, ?, ?)",
         (
             uuid7(),
-            context.team_id,
+            context.berth_id,
             niche_name,
             str(pathlib.Path(dest_path)),
             datetime.now(timezone.utc).isoformat(),
@@ -913,8 +911,8 @@ def remove_checkout(files_root, participant_hex, context, niche_name, checkout_p
     context = _validate_context(participant_hex, context)
     conn = _connect_checkouts(files_root, participant_hex)
     conn.execute(
-        "DELETE FROM checkout WHERE team_id = ? AND niche_name = ? AND checkout_path = ?",
-        (context.team_id, niche_name, str(pathlib.Path(checkout_path))),
+        "DELETE FROM checkout WHERE berth_id = ? AND niche_name = ? AND checkout_path = ?",
+        (context.berth_id, niche_name, str(pathlib.Path(checkout_path))),
     )
     conn.commit()
     conn.close()
@@ -925,8 +923,8 @@ def get_checkout(files_root, participant_hex, context, niche_name):
     context = _validate_context(participant_hex, context)
     conn = _connect_checkouts(files_root, participant_hex)
     row = conn.execute(
-        "SELECT checkout_path FROM checkout WHERE team_id = ? AND niche_name = ?",
-        (context.team_id, niche_name),
+        "SELECT checkout_path FROM checkout WHERE berth_id = ? AND niche_name = ?",
+        (context.berth_id, niche_name),
     ).fetchone()
     conn.close()
     return row["checkout_path"] if row else None

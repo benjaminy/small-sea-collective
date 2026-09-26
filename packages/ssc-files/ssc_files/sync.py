@@ -496,7 +496,7 @@ def resolve_team_context(files_root: str, participant_hex: str, team_name: str):
     if len(matches) > 1:
         raise AmbiguousTeamNameError(
             f"Multiple materialized teams named {team_name!r}: "
-            + ", ".join(ctx.team_id for ctx in matches)
+            + ", ".join(ctx.berth_id for ctx in matches)
         )
     return matches[0]
 

@@ -28,7 +28,7 @@ PEER = "bb" * 16
 def _setup(tmp_path, test_signer):
     root = tmp_path / "files"
     checkout = tmp_path / "checkout"
-    context = files.FilesMaterializationContext(PARTICIPANT, BERTH, "Test", actual_team_id=TEAM)
+    context = files.FilesMaterializationContext(PARTICIPANT, BERTH, TEAM, "Test")
     signer = test_signer(context)
     files.init_files(root, PARTICIPANT)
     files.create_niche(root, PARTICIPANT, context, "docs", signer=signer)

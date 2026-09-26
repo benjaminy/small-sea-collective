@@ -179,7 +179,7 @@ def test_web_push_requires_cached_session(playground_dir, monkeypatch):
     files_root = f"{runner_root}/files"
     participant_hex = "aa" * 16
     files.init_files(files_root, participant_hex)
-    context = files.FilesMaterializationContext(participant_hex, "11" * 16, "ProjectX", actual_team_id="22" * 16)
+    context = files.FilesMaterializationContext(participant_hex, "11" * 16, "22" * 16, "ProjectX")
     files.materialize_team(files_root, context)
     files.create_niche(files_root, participant_hex, context, "docs", signer=local_files_signer(context))
 
@@ -370,7 +370,7 @@ def test_peer_panel_fragment_no_session(playground_dir, monkeypatch):
     files_root = f"{playground_dir}/files"
     participant_hex = "aa" * 16
     files.init_files(files_root, participant_hex)
-    context = files.FilesMaterializationContext(participant_hex, "11" * 16, "ProjectX", actual_team_id="22" * 16)
+    context = files.FilesMaterializationContext(participant_hex, "11" * 16, "22" * 16, "ProjectX")
     files.materialize_team(files_root, context)
     files.create_niche(files_root, participant_hex, context, "docs", signer=local_files_signer(context))
 

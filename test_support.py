@@ -44,7 +44,7 @@ def local_files_signer(context):
         extra_env={"GIT_AUTHOR_NAME": "Files Test", "GIT_AUTHOR_EMAIL": "files@test",
                    "GIT_COMMITTER_NAME": "Files Test", "GIT_COMMITTER_EMAIL": "files@test"},
     )
-    return CommitSigner(context.actual_team_id or "22" * 16, context.team_id,
+    return CommitSigner(context.team_id, context.berth_id,
                         b"test-authority-view", env)
 
 

@@ -200,9 +200,9 @@ def test_signal_watermark_roundtrip(tmp_path, monkeypatch):
     root = str(tmp_path / "files")
     participant = "aa" * 16
     files.init_files(root, participant)
-    team_a = files.FilesMaterializationContext(participant, "11" * 16, "TeamA", actual_team_id="22" * 16)
-    team_b = files.FilesMaterializationContext(participant, "22" * 16, "TeamB", actual_team_id="22" * 16)
-    team_c = files.FilesMaterializationContext(participant, "33" * 16, "TeamC", actual_team_id="22" * 16)
+    team_a = files.FilesMaterializationContext(participant, "11" * 16, "22" * 16, "TeamA")
+    team_b = files.FilesMaterializationContext(participant, "22" * 16, "22" * 16, "TeamB")
+    team_c = files.FilesMaterializationContext(participant, "33" * 16, "22" * 16, "TeamC")
 
     assert sync.get_signal_watermark(root, participant, team_a, "aa" * 16) == 0
 
@@ -234,7 +234,7 @@ def test_signal_watermark_persists_alongside_session_token(tmp_path, monkeypatch
     )
     root = str(tmp_path / "v")
     participant = "aa" * 16
-    team_a = files.FilesMaterializationContext(participant, "11" * 16, "TeamA", actual_team_id="22" * 16)
+    team_a = files.FilesMaterializationContext(participant, "11" * 16, "22" * 16, "TeamA")
     files.init_files(root, participant)
     sync.set_signal_watermark(root, participant, team_a, "aa" * 16, 7)
 
@@ -251,7 +251,7 @@ def test_peer_update_status_has_unfetched_hint(tmp_path, monkeypatch, playground
     root = playground_dir
     participant = "bb" * 16
     teammate_id = "cc" * 16
-    team = files.FilesMaterializationContext(participant, "44" * 16, "HintTeam", actual_team_id="22" * 16)
+    team = files.FilesMaterializationContext(participant, "44" * 16, "22" * 16, "HintTeam")
     niche = "files"
 
     files.init_files(root, participant)
@@ -480,7 +480,7 @@ def test_cli_local_commands_resolve_offline_from_metadata(monkeypatch, tmp_path)
     files.init_files(str(files_root), participant)
     files.materialize_team(
         str(files_root),
-        files.FilesMaterializationContext(participant, team_id, "ProjectX", actual_team_id="22" * 16),
+        files.FilesMaterializationContext(participant, team_id, "22" * 16, "ProjectX"),
     )
 
     def _fail(*_a, **_kw):
@@ -492,7 +492,7 @@ def test_cli_local_commands_resolve_offline_from_metadata(monkeypatch, tmp_path)
     result = runner.invoke(cli, ["create", str(files_root), participant, "ProjectX", "docs"])
     assert result.exit_code != 0
 
-    context = files.FilesMaterializationContext(participant, team_id, "ProjectX", actual_team_id="22" * 16)
+    context = files.FilesMaterializationContext(participant, team_id, "22" * 16, "ProjectX")
     files.create_niche(str(files_root), participant, context, "docs",
                        signer=local_files_signer(context))
 
