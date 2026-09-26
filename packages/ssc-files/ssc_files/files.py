@@ -664,7 +664,7 @@ def _init_git_dir(git_dir):
     immediately sets core.bare = false so that 'git checkout' and other
     work-tree commands succeed when run from a linked work tree.
     """
-    gitCmd(["init", "--bare", str(git_dir)])
+    gitCmd(["init", "--bare", "-b", "main", str(git_dir)])
     gitCmd(["--git-dir", str(git_dir), "config", "core.bare", "false"])
 
 
