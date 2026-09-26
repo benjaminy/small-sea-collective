@@ -10,7 +10,10 @@ from cod_sync.repo import Repo
 from small_sea_hub.server import app, _register_session_peers, _run_runtime_reconciliation_for_session
 from small_sea_manager import admission_events as AdmissionEvents
 from small_sea_manager import provisioning
-from small_sea_manager.provisioning import _serialize_prekey_bundle
+from small_sea_manager.provisioning import (
+    _signed_device_prekey_bundle,
+    _team_row,
+)
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_public
 
 
@@ -34,23 +37,31 @@ def _request_and_confirm(client, team="ProjectX", mode="encrypted"):
 
 
 def _add_same_teammate_linked_device_bundle(root: Path, participant_hex: str, team_name: str):
-    linked_device_key, _linked_device_private_key = generate_key_pair(ProtectionLevel.DAILY)
+    linked_device_key, linked_device_private_key = generate_key_pair(ProtectionLevel.DAILY)
     provisioning.issue_device_link_for_teammate(
         root,
         participant_hex,
         team_name,
         linked_device_key.public_key,
     )
+    device_key_id = key_id_from_public(linked_device_key.public_key)
+    team_id, _teammate_id = _team_row(root, participant_hex, team_name)
     identity = provisioning.generate_identity_key_pair()
     signed_prekey, _signed_prekey_private_key = provisioning.generate_signed_prekey(
         identity.signing_private_key
     )
     one_time_prekeys = provisioning.generate_one_time_prekeys(2)
     bundle = provisioning.build_prekey_bundle(
-        participant_id=key_id_from_public(linked_device_key.public_key),
+        participant_id=device_key_id,
         identity=identity,
         signed_prekey=signed_prekey,
         one_time_prekeys=[prekey for prekey, _private in one_time_prekeys],
+    )
+    signed_bundle = _signed_device_prekey_bundle(
+        team_id=team_id,
+        device_key_id=device_key_id,
+        prekey_bundle=bundle,
+        private_key=linked_device_private_key,
     )
     team_db = (
         root / "Participants" / participant_hex / team_name / "Sync" / "core.db"
@@ -63,13 +74,13 @@ def _add_same_teammate_linked_device_bundle(root: Path, participant_hex: str, te
             VALUES (?, ?, ?)
             """,
             (
-                key_id_from_public(linked_device_key.public_key),
-                json.dumps(_serialize_prekey_bundle(bundle), sort_keys=True),
+                device_key_id,
+                json.dumps(signed_bundle, sort_keys=True),
                 "2026-04-13T00:00:00+00:00",
             ),
         )
         conn.commit()
-    return key_id_from_public(linked_device_key.public_key)
+    return device_key_id
 
 
 def _push_to_localfolder(repo_dir: Path, cloud_dir: Path):
