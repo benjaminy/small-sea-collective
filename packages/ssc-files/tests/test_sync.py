@@ -666,6 +666,35 @@ def test_fetch_self_via_hub_keeps_the_registry_when_the_niche_fails(playground_d
     assert parked == exc_info.value.registry_sha
 
 
+def test_fetch_self_via_hub_can_fetch_registry_for_niche_discovery(playground_dir, monkeypatch):
+    """A device can park and list its registry before it knows a niche name."""
+    env = _two_device_conflict(playground_dir)
+    cloud = pathlib.Path(playground_dir) / "registry-cloud"
+    cloud.mkdir()
+    create_niche(env["root_a"], PARTICIPANT, TEAM, "plans")
+    push_registry(env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(cloud)))
+
+    monkeypatch.setattr(sync, "resolve_team_context", lambda *_a: TEAM)
+    monkeypatch.setattr(sync, "get_team_session", lambda *_a, **_k: None)
+    monkeypatch.setattr(sync, "make_registry_remote", lambda _s: LocalFolderStore(str(cloud)))
+    monkeypatch.setattr(
+        sync, "make_niche_remote",
+        lambda *_a: pytest.fail("registry-only fetch must not request a niche remote"),
+    )
+
+    result = sync.fetch_self_via_hub(env["root_b"], PARTICIPANT, TEAM.team_name)
+    assert result.registry_sha
+    assert result.niche_sha is None
+    from ssc_files.files import merge_self_registry
+
+    merge_self_registry(env["root_b"], PARTICIPANT, TEAM)
+    from ssc_files.files import list_niches
+
+    assert "plans" in [
+        item["name"] for item in list_niches(env["root_b"], PARTICIPANT, TEAM)
+    ]
+
+
 class _GarbageLatestStore(_NoWriteStore):
     """A store whose registry head exists but does not decode."""
 

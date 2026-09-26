@@ -790,19 +790,19 @@ class SelfFetchResult:
     # None when the store has no registry head, e.g. after a push that
     # published the niche and stopped before the registry.
     registry_sha: Optional[str]
-    niche_sha: str
+    niche_sha: str | None
 
 
 def fetch_self_via_hub(
     files_root: str,
     participant_hex: str,
     team_name: str,
-    niche_name: str,
+    niche_name: str | None = None,
     *,
     hub_port: int = SmallSeaClient.DEFAULT_PORT,
     _http_client=None,
 ) -> SelfFetchResult:
-    """Fetch this participant's own registry and niche chains through the Hub.
+    """Fetch this participant's own registry and, optionally, one niche through the Hub.
 
     Parks each observed head so `merge --from-self` can integrate it. Nothing
     is published and the checkout does not move. Cod Sync publications in Files
@@ -822,6 +822,8 @@ def fetch_self_via_hub(
         )
     except NoPublishedHeadError:
         registry_sha = None
+    if niche_name is None:
+        return SelfFetchResult(registry_sha=registry_sha, niche_sha=None)
     niche_remote = make_niche_remote(niche_name, session)
     if registry_sha is None:
         try:

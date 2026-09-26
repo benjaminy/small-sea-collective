@@ -13,7 +13,6 @@ Every provider call is attributed to the Hub whose backend made it; see
 
 Not yet covered: Files publications and commits are unsigned (#266), so a
 fetched head proves what the store held, not which device wrote it.
-Device B also knows the niche name in advance; cold niche discovery is open.
 """
 
 import importlib.util
@@ -306,19 +305,30 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
     ctx_b = files.materialization_context_from_session_info(login_b.session_info)
     assert ctx_b.team_id == ctx_a.team_id
 
-    # 11. Fetch own registry and niche through B's Hub, check out, merge.
-    fetched = sync.fetch_self_via_hub(b.files_root, alice_hex, TEAM, NICHE, _http_client=b.http)
-    assert fetched.niche_sha == _git_head(files._niche_git_dir(a.files_root, ctx_a, NICHE))
+    # 11. Fetch B's own registry through the Hub, discover the niche, then fetch it.
+    fetched_registry = sync.fetch_self_via_hub(
+        b.files_root, alice_hex, TEAM, _http_client=b.http
+    )
+    assert fetched_registry.registry_sha
+    files.merge_self_registry(b.files_root, alice_hex, ctx_b)
+    discovered = [n["name"] for n in files.list_niches(b.files_root, alice_hex, ctx_b)]
+    assert "plans" in discovered
+    niche = discovered[0]
+    assert niche == NICHE
+    fetched = sync.fetch_self_via_hub(
+        b.files_root, alice_hex, TEAM, niche, _http_client=b.http
+    )
+    assert fetched.niche_sha == _git_head(files._niche_git_dir(a.files_root, ctx_a, niche))
     checkout_b = b.root / "checkout"
-    files.add_checkout(b.files_root, alice_hex, ctx_b, NICHE, str(checkout_b))
-    sync.merge_self(b.files_root, alice_hex, TEAM, NICHE)
+    files.add_checkout(b.files_root, alice_hex, ctx_b, niche, str(checkout_b))
+    sync.merge_self(b.files_root, alice_hex, TEAM, niche)
     assert (checkout_b / "beds.txt").read_bytes() == original
 
     # 12. B changes the file and pushes through B's Hub.
     from_b = b"tomatoes by the fence\nbeans on the trellis\n"
     (checkout_b / "beds.txt").write_bytes(from_b)
-    files.publish(b.files_root, alice_hex, ctx_b, NICHE, str(checkout_b), message="B1")
-    sync.push_via_hub(b.files_root, alice_hex, TEAM, NICHE, _http_client=b.http)
+    files.publish(b.files_root, alice_hex, ctx_b, niche, str(checkout_b), message="B1")
+    sync.push_via_hub(b.files_root, alice_hex, TEAM, niche, _http_client=b.http)
     spy.assert_only(mark, "B")
 
     # 13. A fetches and integrates B's change through A's Hub.
