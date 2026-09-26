@@ -149,8 +149,7 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
     assert manager_a.reconcile_team_route(TEAM)["route"] == "ready"
     assert manager_a.reconcile_team_route(TEAM, app_name=FILES_APP)["route"] == "ready"
     assert manager_a.push_team(TEAM) == "published"
-    # NoteToSelf is published below by authorize_identity_join, which also
-    # allocates the NoteToSelf berth; push_note_to_self alone cannot yet.
+    manager_a.push_note_to_self()
     spy.assert_only(mark, "A")
 
     # 5. Files on A: login, niche, checkout, publish, push.

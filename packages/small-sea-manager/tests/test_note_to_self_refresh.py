@@ -142,6 +142,31 @@ def test_get_team_joined_locally_returns_full_detail(playground_dir):
 # ---------------------------------------------------------------------------
 
 
+def test_push_note_to_self_allocates_fresh_s3_berth(playground_dir, minio_server_gen):
+    minio = minio_server_gen()
+    root = pathlib.Path(playground_dir)
+    alice_hex = create_new_participant(root, "Alice")
+
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
+    app.state.backend = backend
+    http = TestClient(app)
+    manager = TeamManager(root, alice_hex, _http_client=http)
+    manager.add_cloud_storage(
+        protocol="s3",
+        url=minio["endpoint"],
+        access_key=minio["access_key"],
+        secret_key=minio["secret_key"],
+    )
+
+    manager.push_note_to_self()
+
+    session = manager._open_note_to_self_session(mode="passthrough")
+    allocation = Provisioning.get_berth_cloud_allocation_for_berth(
+        root, alice_hex, session.session_info()["berth_id"]
+    )
+    assert allocation is not None
+
+
 def _wire_device_b_credentials(root_b, alice_hex, minio):
     """After bootstrap, connect device B's credentials to the inherited account.
 

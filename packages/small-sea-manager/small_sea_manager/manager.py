@@ -385,6 +385,9 @@ class TeamManager:
         """
         session = self._open_note_to_self_session(mode="passthrough")
         berth_id, adopted = self._ensure_note_to_self_adopted_count(session)
+        provisioning._auto_allocate_berth_cloud_if_available(
+            self.root_dir, self.participant_hex, berth_id
+        )
         session.ensure_cloud_ready()
         repo_dir = self._note_to_self_repo_dir()
         nts_repo = _Repo(repo_dir / ".git", repo_dir)
