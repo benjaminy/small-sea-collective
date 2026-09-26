@@ -167,8 +167,11 @@ class SshCommitVerifier:
                 f"could not report signatures: {exc}", commit=head
             ) from exc
         if diagnostics.strip():
+            # We wrote the configuration this ran under, so a diagnostic means
+            # the verdicts below describe something other than the key set.
             raise VerificationUnavailableError(
-                f"git reported a verification configuration problem: {diagnostics.strip()}",
+                f"git reported a verification configuration problem: "
+                f"{diagnostics.strip()}",
                 commit=head,
             )
         if not rows:
