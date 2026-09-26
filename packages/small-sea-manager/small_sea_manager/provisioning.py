@@ -24,6 +24,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PrivateKey,
     Ed25519PublicKey,
 )
+from cryptography.hazmat.primitives import serialization
 from sqlalchemy import Column, LargeBinary, String, create_engine, event, text
 from sqlalchemy.orm import Session, declarative_base
 
@@ -264,6 +265,14 @@ def _bootstrap_state_path(root_dir) -> pathlib.Path:
 def _team_device_key_path(root_dir, participant_hex, team_id: bytes, device_id: bytes) -> pathlib.Path:
     return _fake_enclave_dir(root_dir, participant_hex) / (
         f"team-device-{team_id.hex()}-{device_id.hex()}.key"
+    )
+
+
+def _workhorse_signing_key_path(
+    root_dir, participant_hex, device_id: bytes, berth_id: bytes
+) -> pathlib.Path:
+    return _fake_enclave_dir(root_dir, participant_hex) / (
+        f"workhorse-{device_id.hex()}-{berth_id.hex()}.key"
     )
 
 
@@ -5215,6 +5224,39 @@ def get_current_team_device_key(root_dir, participant_hex, team_name):
     if row is None:
         raise ValueError(f"No current device key found for team '{team_name}'")
     return _read_local_secret(pathlib.Path(row[0])), row[1]
+
+
+def get_workhorse_signing_key(root_dir, participant_hex, berth_id: bytes) -> bytes:
+    """Return this device's independent Ed25519 signing key for a berth."""
+    if isinstance(berth_id, str):
+        berth_id = bytes.fromhex(berth_id)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        device_id = _current_device_row(conn)[0]
+
+    path = _workhorse_signing_key_path(
+        root_dir, participant_hex, device_id, berth_id
+    )
+    if not path.exists():
+        private_key = Ed25519PrivateKey.generate()
+        private_bytes = private_key.private_bytes(
+            serialization.Encoding.Raw,
+            serialization.PrivateFormat.Raw,
+            serialization.NoEncryption(),
+        )
+        _write_local_secret(path, private_bytes)
+    return _read_local_secret(path)
+
+
+def get_workhorse_signing_public_key(
+    root_dir, participant_hex, berth_id: bytes
+) -> str:
+    """Return this berth's workhorse public key in OpenSSH format."""
+    private_bytes = get_workhorse_signing_key(root_dir, participant_hex, berth_id)
+    private_key = Ed25519PrivateKey.from_private_bytes(private_bytes)
+    return private_key.public_key().public_bytes(
+        serialization.Encoding.OpenSSH,
+        serialization.PublicFormat.OpenSSH,
+    ).decode("ascii")
 
 
 def create_team(root_dir, participant_hex, team_name):
