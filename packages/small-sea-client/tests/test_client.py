@@ -39,6 +39,24 @@ def session(client):
 
 
 @respx.mock
+def test_session_sign_commit_returns_key(session):
+    respx.post(f"{BASE_URL}/session/sign").mock(
+        return_value=httpx.Response(200, json={"signature": "sig", "public_key": "ssh-ed25519 key"})
+    )
+    result = session.sign_commit(b"payload", "core")
+    assert result.signature == "sig"
+    assert result.public_key == "ssh-ed25519 key"
+
+
+@respx.mock
+def test_session_authority_view_decodes_bytes(session):
+    respx.get(f"{BASE_URL}/session/authority_view").mock(
+        return_value=httpx.Response(200, json={"authority_view": "AH8"})
+    )
+    assert session.authority_view() == b"\x00\x7f"
+
+
+@respx.mock
 def test_request_session(client):
     respx.post(f"{BASE_URL}/sessions/request").mock(
         return_value=httpx.Response(200, json={"pending_id": "pending123"})

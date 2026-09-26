@@ -3,8 +3,15 @@ name = "small-sea-client"
 version = "0.1.0"
 requires-python = ">=3.12"
 dependencies = [
+    "cod-sync",
     "httpx>=0.28",
 ]
+
+[project.scripts]
+small-sea-git-sign = "small_sea_client.git_signing:main"
+
+[tool.uv.sources]
+cod-sync = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

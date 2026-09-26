@@ -14,6 +14,7 @@ from cod_sync.work_context import WorkContext, encode_work_context
 from small_sea_hub.backend import SmallSeaBackend, SmallSeaSession
 from small_sea_hub.server import app
 import small_sea_manager.provisioning as provisioning
+from small_sea_manager.berth_authority import MissingAuthorityAnchor
 
 
 @pytest.fixture()
@@ -39,6 +40,27 @@ def _payload(session, **changes):
 def _sign(client, token, payload, purpose="note-to-self"):
     return client.post("/session/sign", headers={"Authorization": f"Bearer {token}"},
                        json={"purpose": purpose, "payload": base64.b64encode(payload).decode()})
+
+
+def test_session_authority_view(signing_env, monkeypatch):
+    backend, client, participant, _token, _session = signing_env
+    provisioning.create_team(backend.root_dir, participant, "ProjectX")
+    token = backend.open_session("alice", "SmallSeaCollectiveCore", "ProjectX", "Smoke Tests").hex()
+    response = client.get("/session/authority_view", headers={"Authorization": f"Bearer {token}"})
+    assert response.status_code == 200, response.text
+    encoded = response.json()["authority_view"]
+    assert "=" not in encoded
+    assert base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)) == (
+        provisioning.load_transitional_authority_view(backend.root_dir, participant, "ProjectX").identifier
+    )
+
+    def absent(*args):
+        raise MissingAuthorityAnchor("no adopted anchor")
+
+    monkeypatch.setattr(provisioning, "load_transitional_authority_view", absent)
+    missing = client.get("/session/authority_view", headers={"Authorization": f"Bearer {token}"})
+    assert missing.status_code == 409
+    assert missing.json()["detail"] == {"code": "authority_anchor_absent"}
 
 
 def test_signing_uses_session_scope(signing_env):

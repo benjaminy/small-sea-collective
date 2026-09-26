@@ -261,14 +261,16 @@ class Repo:
     """
 
     def __init__(
-        self, git_dir: Union[str, pathlib.Path], work_tree: Optional[Union[str, pathlib.Path]] = None
+        self, git_dir: Union[str, pathlib.Path], work_tree: Optional[Union[str, pathlib.Path]] = None,
+        env=None,
     ):
         self.git_dir = pathlib.Path(git_dir)
         self.work_tree = pathlib.Path(work_tree) if work_tree else None
+        self.env = dict(env) if env is not None else None
 
     def with_work_tree(self, work_tree: Union[str, pathlib.Path]) -> "Repo":
         """Return a new Repo instance with the same git_dir and a new work_tree."""
-        return Repo(self.git_dir, work_tree)
+        return Repo(self.git_dir, work_tree, env=self.env)
 
     def config(self, key: str, value: str):
         """Set a config value in the repository."""
@@ -309,14 +311,14 @@ class Repo:
     def _run(self, extra_args: List[str], raise_on_error: bool = True):
         """Run a git command with the repo's identity args prepended."""
         try:
-            return _gitCmd(self._base_args() + extra_args, raise_on_error=raise_on_error)
+            return _gitCmd(self._base_args() + extra_args, raise_on_error=raise_on_error, env=self.env)
         except GitCmdFailed as exc:
             raise RepoError(str(exc), cause=exc) from exc
 
     def _run_binary(self, extra_args: List[str]):
         """Run a git command whose stdout is bytes rather than text."""
         try:
-            return _gitCmdBinary(self._base_args() + extra_args)
+            return _gitCmdBinary(self._base_args() + extra_args, env=self.env)
         except GitCmdFailed as exc:
             raise RepoError(str(exc), cause=exc) from exc
 
@@ -328,6 +330,7 @@ class Repo:
             return _gitCmd(
                 self._base_args() + self._wt_args() + extra_args,
                 raise_on_error=raise_on_error,
+                env=self.env,
             )
         except GitCmdFailed as exc:
             raise RepoError(str(exc), cause=exc) from exc
@@ -337,7 +340,7 @@ class Repo:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def init(git_dir: Union[str, pathlib.Path], initial_branch: str = "main") -> "Repo":
+    def init(git_dir: Union[str, pathlib.Path], initial_branch: str = "main", env=None) -> "Repo":
         """Create a new repo at git_dir with core.bare=false.
 
         Uses bare-init so that git_dir IS the git directory (no .git/
@@ -345,11 +348,11 @@ class Repo:
         """
         git_dir = pathlib.Path(git_dir)
         try:
-            _gitCmd(["init", "--bare", "-b", initial_branch, str(git_dir)])
-            _gitCmd(["--git-dir", str(git_dir), "config", "core.bare", "false"])
+            _gitCmd(["init", "--bare", "-b", initial_branch, str(git_dir)], env=env)
+            _gitCmd(["--git-dir", str(git_dir), "config", "core.bare", "false"], env=env)
         except GitCmdFailed as exc:
             raise RepoError(str(exc), cause=exc) from exc
-        return Repo(git_dir)
+        return Repo(git_dir, env=env)
 
     # ------------------------------------------------------------------ #
     # Read-only introspection (safe in CACHED and CHECKED_OUT modes)
@@ -475,7 +478,8 @@ class Repo:
                         "--bare",
                         str(self.git_dir.resolve()),
                         str(snapshot_path),
-                    ]
+                    ],
+                    env=self.env,
                 )
             except GitCmdFailed as exc:
                 raise RepoError(str(exc), cause=exc) from exc
@@ -789,10 +793,11 @@ class Repo:
             args.append(start_point)
         self._run_wt(args, method_name="checkout_branch")
 
-    def merge(self, ref: str):
+    def merge(self, ref: str, message: Optional[str] = None):
         """Merge ref into the current branch. Raises ConflictError on conflicts."""
         result = self._run_wt(
-            ["merge", ref], raise_on_error=False, method_name="merge"
+            ["merge"] + (["-m", message] if message is not None else []) + [ref],
+            raise_on_error=False, method_name="merge"
         )
         if result.returncode != 0:
             paths = self.conflict_paths()

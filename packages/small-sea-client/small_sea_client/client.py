@@ -1,4 +1,5 @@
 import base64
+from dataclasses import dataclass
 from typing import Optional
 
 import httpx
@@ -10,6 +11,12 @@ class SmallSeaError(Exception):
 
 class SmallSeaHubUnavailable(Exception):
     """Could not connect to the Hub."""
+
+
+@dataclass(frozen=True)
+class CommitSignature:
+    signature: str
+    public_key: str
 
 
 class SmallSeaNotFound(SmallSeaError):
@@ -332,13 +339,18 @@ class SmallSeaSession:
         """Return metadata for this session: participant_hex, team_name, app_name, berth_id, client."""
         return self._client._get("/session/info", token=self._token)
 
-    def sign_commit(self, payload: bytes, purpose: str) -> str:
+    def sign_commit(self, payload: bytes, purpose: str) -> CommitSignature:
         """Ask the Hub to sign an unsigned git commit body for this berth."""
         result = self._client._post(
             "/session/sign", {"purpose": purpose, "payload": base64.b64encode(payload).decode("ascii")},
             token=self._token,
         )
-        return result["signature"]
+        return CommitSignature(result["signature"], result["public_key"])
+
+    def authority_view(self) -> bytes:
+        """Return the identifier of this session team's adopted authority view."""
+        token = self._client._get("/session/authority_view", token=self._token)["authority_view"]
+        return base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
 
     def signing_public_key(self) -> str:
         """Return this session berth's workhorse public key."""

@@ -24,6 +24,7 @@ from small_sea_hub.backend import (
     SigningPurposeNotAllowedError,
 )
 from small_sea_manager.provisioning import WorkhorseSigningKeyAbsentError
+from small_sea_manager.berth_authority import MissingAuthorityAnchor
 from cod_sync.work_context import WorkContextError
 from small_sea_hub.cloud_errors import CloudStorageRequiredExn
 from small_sea_hub.crypto import (PublicationExn, PublicationNotAuthenticExn,
@@ -917,6 +918,19 @@ async def session_signing_key(session_hex: str = Depends(_require_session)):
         raise HTTPException(status_code=409, detail={"code": "signing_key_absent"})
     from cod_sync.sshsig import public_key_from_private
     return {"public_key": public_key_from_private(private_bytes)}
+
+
+@app.get("/session/authority_view")
+async def session_authority_view(session_hex: str = Depends(_require_session)):
+    backend = app.state.backend
+    session = backend._lookup_session(session_hex)
+    try:
+        view = Provisioning.load_transitional_authority_view(
+            backend.root_dir, session.participant_id.hex(), session.team_name
+        )
+    except MissingAuthorityAnchor:
+        raise HTTPException(status_code=409, detail={"code": "authority_anchor_absent"})
+    return {"authority_view": base64.urlsafe_b64encode(view.identifier).decode("ascii").rstrip("=")}
 
 
 @app.post("/session/sign")
