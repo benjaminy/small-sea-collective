@@ -996,6 +996,19 @@ class MissingCoreBerthError(ValueError):
         super().__init__("core_berth_missing: no SmallSeaCollectiveCore berth row in team DB")
 
 
+def _single_berth_id_for_app(conn, app_name) -> bytes | None:
+    rows = conn.execute(
+        text(
+            "SELECT tab.id FROM team_app_berth tab "
+            "JOIN app a ON a.id = tab.app_id WHERE a.name = :name"
+        ),
+        {"name": app_name},
+    ).fetchall()
+    if len(rows) > 1:
+        raise ValueError(f"Multiple berths found for app '{app_name}'")
+    return rows[0][0] if rows else None
+
+
 def _core_berth_id(conn) -> bytes | None:
     rows = conn.execute(
         text(
@@ -3782,8 +3795,13 @@ def berth_placement_state(root_dir, participant_hex, berth_id) -> str:
     return "ambiguous" if live > 1 else "settled"
 
 
-def derive_team_join_state(root_dir, participant_hex, team_name) -> dict:
+def derive_team_join_state(
+    root_dir, participant_hex, team_name, app_name="SmallSeaCollectiveCore"
+) -> dict:
     """Derive local join, admission, and route state for one team.
+
+    Route, placement and allocation describe `app_name`'s berth, reported as
+    `berth_id`. `core_berth_id` is set only when that berth is Core's.
 
     Everything here is read back from the clone, the NoteToSelf `team` row, the
     team device key, the membership-cert view, and the announcement query --
@@ -3800,6 +3818,7 @@ def derive_team_join_state(root_dir, participant_hex, team_name) -> dict:
         "device_public_key": None,
         "device_key_id": None,
         "core_berth_id": None,
+        "berth_id": None,
         "allocation": None,
         "placement": "settled",
     }
@@ -3829,8 +3848,12 @@ def derive_team_join_state(root_dir, participant_hex, team_name) -> dict:
             )
             if public_key in trusted:
                 state["admission"] = "finalized"
-            core_berth_id = _core_berth_id(conn)
-            state["core_berth_id"] = core_berth_id
+            if app_name == "SmallSeaCollectiveCore":
+                core_berth_id = _core_berth_id(conn)
+                state["core_berth_id"] = core_berth_id
+            else:
+                core_berth_id = _single_berth_id_for_app(conn, app_name)
+            state["berth_id"] = core_berth_id
             if core_berth_id is None:
                 return state
             state["placement"] = berth_placement_state(

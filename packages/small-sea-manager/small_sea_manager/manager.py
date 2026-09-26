@@ -960,7 +960,7 @@ class TeamManager:
         )
 
     def _publish_core_route(
-        self, team_name, state, allocation
+        self, team_name, state, allocation, app_name=_CORE_APP
     ) -> tuple[dict, str | None]:
         """Session, materialize, reread, publish, read back, commit.
 
@@ -970,11 +970,19 @@ class TeamManager:
         a reread of that same allocation and account may be signed, so a
         replacement that landed mid-flight is reported rather than announced.
 
+        `app_name` picks the berth. Its route is materialized through a Hub
+        session for that app, since the Hub's cloud setup is session-scoped.
+
         Returns `(state, route_reason)`; a `None` reason means ready.
         """
-        berth_id = state["core_berth_id"]
+        berth_id = state["berth_id"]
         try:
-            session = self._get_or_open_session(team_name)
+            if app_name == _CORE_APP:
+                session = self._get_or_open_session(team_name)
+            else:
+                session = self.client.open_session(
+                    self.participant_hex, app_name, team_name, "TeamManager"
+                )
         except (SmallSeaHubUnavailable, SmallSeaError):
             return state, "hub_session_unavailable"
 
@@ -1030,7 +1038,7 @@ class TeamManager:
             return self._pending_route(state), "route_preparation_error"
 
         state = provisioning.derive_team_join_state(
-            self.root_dir, self.participant_hex, team_name
+            self.root_dir, self.participant_hex, team_name, app_name
         )
         if not self._same_allocation(allocation, state["allocation"]):
             # A replacement became visible after publication. This route is
@@ -1084,9 +1092,13 @@ class TeamManager:
         return self._report(state, route_reason=route_reason)
 
     def reconcile_team_route(
-        self, team_name, cloud_storage_id=None, new_location=False
+        self, team_name, cloud_storage_id=None, new_location=False, app_name=_CORE_APP
     ) -> dict:
-        """Reconcile and publish an established teammate's Core storage route.
+        """Reconcile and publish an established teammate's storage route for one berth.
+
+        `app_name` names the berth; the default is Core. Any other app must
+        already be activated for the team. Its allocation, placement pause and
+        route follow the same rules as Core's.
 
         Repairs a missing or unusable route, and carries out an intentional
         provider, account, or location change. No acceptance artifact is
@@ -1103,7 +1115,7 @@ class TeamManager:
         is deliberately no raw location parameter.
         """
         state = provisioning.derive_team_join_state(
-            self.root_dir, self.participant_hex, team_name
+            self.root_dir, self.participant_hex, team_name, app_name
         )
         if state["join"] != "complete":
             raise ValueError(f"Team '{team_name}' has no local join to reconcile")
@@ -1122,13 +1134,13 @@ class TeamManager:
                 self._pending_route(state), route_reason="current_device_untrusted"
             )
 
-        if state["core_berth_id"] is None:
+        if state["berth_id"] is None:
             return self._route_report(state, route_reason="storage_not_configured")
 
         allocation, reason = provisioning.resolve_berth_cloud_allocation_intent(
             self.root_dir,
             self.participant_hex,
-            state["core_berth_id"],
+            state["berth_id"],
             cloud_storage_id_hex=cloud_storage_id,
             new_location=new_location,
         )
@@ -1138,7 +1150,7 @@ class TeamManager:
         # Re-derived after the intent, so an already-ready old route cannot
         # suppress a requested provider or location change.
         state = provisioning.derive_team_join_state(
-            self.root_dir, self.participant_hex, team_name
+            self.root_dir, self.participant_hex, team_name, app_name
         )
         if not self._same_allocation(allocation, state["allocation"]):
             return self._route_report(
@@ -1151,7 +1163,9 @@ class TeamManager:
                 )
             return self._route_report(state, route_reason=None)
 
-        state, route_reason = self._publish_core_route(team_name, state, allocation)
+        state, route_reason = self._publish_core_route(
+            team_name, state, allocation, app_name
+        )
         return self._route_report(state, route_reason=route_reason)
 
     def core_storage_allocation(self, team_name) -> dict:
