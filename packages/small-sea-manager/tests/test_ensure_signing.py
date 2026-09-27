@@ -49,10 +49,6 @@ def test_existing_key_gets_delegation(playground_dir):
 def test_refusals(playground_dir):
     root = pathlib.Path(playground_dir)
     participant, berth = _setup(root)
-    with pytest.raises(provisioning.SigningSetupRefusedError) as exc:
-        provisioning.ensure_signing_is_set_up(root, participant, "ProjectX", b"x" * 16)
-    assert exc.value.code == "berth_not_held"
-    assert not list(root.rglob("workhorse-*.key"))
     team_id, _ = provisioning._team_row(root, participant, "ProjectX")
     with sqlite3.connect(device_local_db_path(root, participant)) as conn:
         conn.execute("DELETE FROM team_authority_anchor WHERE team_id = ?", (team_id,))

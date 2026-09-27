@@ -31,9 +31,20 @@ Files uses `SmallSeaCollectiveFiles/content`, `/registry` and `/merge`, defined 
 ## Keys and delegations appear on first use
 
 Before signing, an app asks for the berth's public key; Files does this when it builds its signer.
-That request, and any signing request, calls one Manager operation, "ensure signing is set up": reuse this device's workhorse key for the berth or create it, then add a delegation from this device's team-device key if none exists yet, provided this teammate holds the berth under the adopted-anchor view.
+That request, and any signing request, calls one Manager operation, "ensure signing is set up": reuse this device's workhorse key for the berth or create it, then add a delegation from this device's team-device key if none exists yet.
 An existing key without a delegation gets its delegation filled in.
-Otherwise the Hub refuses with a typed reason (`berth_not_held` or `authority_anchor_absent`), and the app can show it.
+The only refusal is `authority_anchor_absent`, when this device has not adopted an authority anchor for the team.
+
+Setup does not check berth standing or this device's enrollment in the local view (decision 2026-09-27, see [task43-analysis.md](task43-analysis.md)).
+Integration mode governs what peers incorporate, not who may sign (architecture.md, "Both modes may ... author signed changes").
+Every verifier, including this device, judges the delegator's enrollment and standing under its own view.
+An invitee's enrollment and grants are written into the inviter's Core at finalization and may not have reached the invitee yet.
+Until they do, the invitee can sign, and its own device reports its work as `missing_authority`.
+
+A delegation says "this device's key for this berth."
+It grants nothing by itself.
+A successful signature proves nothing about acceptance, on this device or any other, and a verdict can change as evidence arrives.
+Missing or ambiguous authority pauses acceptance, not signing.
 
 The delegation covers the whole berth for this key, not a list of purposes.
 Since there are no scopes inside an app, a purpose list in the delegation adds little: the berth already belongs to one app.
@@ -104,7 +115,7 @@ Revoking delegations stays deferred (task 35).
 
 1. Purpose labels: app-prefixed format in `work_context.py`; drop fixed app purposes there and in `berth_authority.py`; Hub checks the prefix; Files defines its own labels.
 2. Delegations cover a berth, not a purpose list (schema change; bump the version).
-3. First-use key and delegation setup via the Manager, with typed refusals.
+3. First-use key and delegation setup via the Manager.
 4. `POST /session/verify` and client method.
 5. Files verifies before it adopts or merges a fetched head (today it fetches with no verifier and merges; `files.py` `_cod_pull`, `_cod_merge_ref`).
 6. Session deletion in the Manager.

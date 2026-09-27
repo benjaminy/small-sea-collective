@@ -5159,7 +5159,7 @@ def ensure_signing_is_set_up(root_dir, participant_hex, team_name, berth_id) -> 
         berth_id = bytes.fromhex(berth_id)
     team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
     try:
-        anchor_public_key = _adopted_anchor_or_pause(root_dir, participant_hex, team_id)
+        _adopted_anchor_or_pause(root_dir, participant_hex, team_id)
     except berth_authority.MissingAuthorityAnchor as exc:
         raise SigningSetupRefusedError("authority_anchor_absent") from exc
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
@@ -5171,11 +5171,14 @@ def ensure_signing_is_set_up(root_dir, participant_hex, team_name, berth_id) -> 
         with engine.connect() as conn:
             conn.exec_driver_sql("BEGIN IMMEDIATE")
             try:
-                view = _load_transitional_view(conn, team_id, anchor_public_key)
+                # Setup checks neither berth standing nor enrollment in the local view.
+                # Integration mode governs what peers incorporate, not who may sign, and
+                # every verifier judges the delegator's enrollment and standing under its
+                # own view. An invitee's evidence may not have reached this device yet.
+                private_key, device_public_key = get_current_team_device_key(
+                    root_dir, participant_hex, team_name
+                )
                 if not path.exists():
-                    # Refuse before creating a key, so a berth we do not hold leaves no key file.
-                    if view.holds(self_in_team, berth_id) is not berth_authority.Standing.HELD:
-                        raise SigningSetupRefusedError("berth_not_held")
                     path.parent.mkdir(parents=True, exist_ok=True)
                     new_key = Ed25519PrivateKey.generate().private_bytes(
                         serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
@@ -5198,13 +5201,6 @@ def ensure_signing_is_set_up(root_dir, participant_hex, team_name, berth_id) -> 
                 ), {"berth_id": berth_id, "key": public_key}).first()
                 if existing:
                     return private_bytes
-                if view.holds(self_in_team, berth_id) is not berth_authority.Standing.HELD:
-                    raise SigningSetupRefusedError("berth_not_held")
-                private_key, device_public_key = get_current_team_device_key(
-                    root_dir, participant_hex, team_name
-                )
-                if device_public_key not in view.trusted_keys.get(self_in_team, ()):
-                    raise SigningSetupRefusedError("berth_not_held")
                 delegation = berth_authority.sign_workhorse_delegation(
                     team_id=team_id, berth_id=berth_id, workhorse_public_key=public_key,
                     delegator_teammate_id=self_in_team, delegator_private_key=private_key,
