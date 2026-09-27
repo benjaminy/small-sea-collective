@@ -32,6 +32,12 @@ from cod_sync.repo import Repo
 from cod_sync.work_context import WorkContext, commit_message_with_context
 
 
+_APP_NAME = "SmallSeaCollectiveFiles"
+CONTENT_PURPOSE = f"{_APP_NAME}/content"
+REGISTRY_PURPOSE = f"{_APP_NAME}/registry"
+MERGE_PURPOSE = f"{_APP_NAME}/merge"
+
+
 class NicheResidency(enum.Enum):
     """How much of a niche exists locally on this device.
 
@@ -149,7 +155,7 @@ class FilesMaterializationContext:
     berth_id: str
     team_id: str
     team_name: str
-    app_name: str = "SmallSeaCollectiveFiles"
+    app_name: str = _APP_NAME
 
     def __str__(self):
         return self.team_name
@@ -776,7 +782,7 @@ def _cod_merge_ref(git_dir, checkout, ref_name, signer):
     git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
     if _has_commits(git_dir):
         command = git_prefix + ["merge", "-m", signer.message(
-            f"Merge {ref_name}", "files-merge"), ref_name]
+            f"Merge {ref_name}", MERGE_PURPOSE), ref_name]
         result = gitCmd(command, raise_on_error=False, env=signer.env)
         if result.returncode != 0:
             paths = _conflict_paths(git_dir, checkout)
@@ -842,7 +848,7 @@ def create_niche(files_root, participant_hex, context, niche_name, *, signer):
     (registry_co / f"{niche_name}.json").write_text(json.dumps(record, indent=2))
     gitCmd(git_prefix + ["add", f"{niche_name}.json"])
     gitCmd(git_prefix + ["commit", "-m", signer.message(
-        f"add niche {niche_name}", "files-registry")], env=signer.env)
+        f"add niche {niche_name}", REGISTRY_PURPOSE)], env=signer.env)
 
     return niche_id
 
@@ -968,7 +974,7 @@ def publish(files_root, participant_hex, context, niche_name, checkout_path,
     else:
         gitCmd(git_prefix + ["add", "--all"])
 
-    purpose = "files-merge" if _resolve_ref(git_dir, "MERGE_HEAD") else "files-content"
+    purpose = MERGE_PURPOSE if _resolve_ref(git_dir, "MERGE_HEAD") else CONTENT_PURPOSE
     gitCmd(git_prefix + ["commit", "-m", signer.message(
         message or "Published changes", purpose)], env=signer.env)
 

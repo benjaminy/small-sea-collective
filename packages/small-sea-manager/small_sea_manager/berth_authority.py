@@ -53,7 +53,7 @@ from cryptography.hazmat.primitives.serialization import (
 )
 
 from cod_sync.verify import SignatureEvidence, SignatureEvidenceKind
-from cod_sync.work_context import PURPOSES, WorkContext
+from cod_sync.work_context import WorkContext, is_valid_purpose
 from wrasse_trust.constitution import canonical_constitution_bytes
 from wrasse_trust.identity import (
     CertType,
@@ -112,7 +112,8 @@ class WorkhorseDelegation:
 
     def canonical(self) -> bytes:
         purposes = list(self.purposes)
-        if not purposes or purposes != sorted(set(purposes)) or not set(purposes) <= PURPOSES:
+        if (not purposes or purposes != sorted(set(purposes))
+                or not all(is_valid_purpose(purpose) for purpose in purposes)):
             raise DelegationError("purposes must be a nonempty sorted set of known purposes")
         if self.workhorse_public_key != _normalized_ed25519_ssh_key(self.workhorse_public_key):
             raise DelegationError("workhorse key is not in normalized OpenSSH form")

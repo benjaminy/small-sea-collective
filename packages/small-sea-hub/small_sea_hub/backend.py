@@ -55,7 +55,9 @@ from small_sea_note_to_self.bootstrap_status import (
 from small_sea_note_to_self.berth_source import saved_route_for_candidate
 from small_sea_note_to_self.db import attached_note_to_self_connection
 from small_sea_manager.provisioning import read_workhorse_signing_key, WorkhorseSigningKeyAbsentError
-from cod_sync.work_context import WorkContextError, context_from_commit_bytes
+from cod_sync.work_context import (
+    FRAMEWORK_PURPOSES, WorkContextError, context_from_commit_bytes, purpose_app,
+)
 from cod_sync.sshsig import sign_git_commit
 from small_sea_note_to_self.ids import uuid7
 from wrasse_trust.keys import key_id_from_public
@@ -970,13 +972,15 @@ class SmallSeaBackend:
 
     def sign_commit(self, session_hex, purpose, payload):
         ss_session = self._lookup_session(session_hex)
-        if ss_session.app_name == "SmallSeaCollectiveFiles":
-            allowed = {"files-content", "files-registry", "files-merge"}
-        elif ss_session.app_name == "SmallSeaCollectiveCore":
-            allowed = {"note-to-self" if ss_session.team_name == "NoteToSelf" else "core"}
-        else:
-            allowed = set()
-        if purpose not in allowed:
+        framework_purpose = (
+            "note-to-self" if ss_session.team_name == "NoteToSelf" else "core"
+        )
+        own_app_purpose = purpose_app(purpose) == ss_session.app_name
+        own_framework_purpose = (
+            ss_session.app_name == "SmallSeaCollectiveCore"
+            and purpose == framework_purpose and purpose in FRAMEWORK_PURPOSES
+        )
+        if not (own_app_purpose or own_framework_purpose):
             raise SigningPurposeNotAllowedError("purpose_not_allowed")
         context = context_from_commit_bytes(payload, unsigned=True)
         if (context.origin != "commit" or context.team_id != ss_session.team_id.hex()

@@ -83,7 +83,7 @@ class Team:
         return public
 
 
-def _judge(view, workhorse_public, purpose="files-content", kind=SignatureEvidenceKind.KNOWN_KEY,
+def _judge(view, workhorse_public, purpose="SmallSeaCollectiveFiles/content", kind=SignatureEvidenceKind.KNOWN_KEY,
            context_berth=BERTH):
     evidence = SignatureEvidence("c0ffee", kind, ssh_fingerprint(workhorse_public), "G")
     context = WorkContext("commit", TEAM.hex(), context_berth.hex(), purpose, b"signer-view")
@@ -92,20 +92,20 @@ def _judge(view, workhorse_public, purpose="files-content", kind=SignatureEviden
 
 def test_bootstrap_grant_scope():
     team = Team()
-    alice_key = team.delegate(team.alice_id, team.alice_private, ["files-content"])
+    alice_key = team.delegate(team.alice_id, team.alice_private, ["SmallSeaCollectiveFiles/content"])
     # Identity-only enrollment: Bob is a trusted member but holds no berth.
-    bob_key = team.delegate(team.bob_id, team.bob_private, ["files-content"])
+    bob_key = team.delegate(team.bob_id, team.bob_private, ["SmallSeaCollectiveFiles/content"])
     view = team.view()
     assert _judge(view, alice_key).result is R.AUTHORIZED
     assert _judge(view, bob_key).result is R.MISSING_AUTHORITY
-    assert _judge(view, alice_key, purpose="files-registry").result is R.WRONG_SCOPE
+    assert _judge(view, alice_key, purpose="SmallSeaCollectiveFiles/registry").result is R.WRONG_SCOPE
 
     # A forged genesis: Mallory self-issues a membership and delegates to herself.
     mallory, mallory_private = _device()
     mallory_id = b"M" * 16
     team.certs.append(issue_membership_cert(mallory, mallory, mallory_private, TEAM,
                                             mallory_id, mallory_id))
-    mallory_key = team.delegate(mallory_id, mallory_private, ["files-content"])
+    mallory_key = team.delegate(mallory_id, mallory_private, ["SmallSeaCollectiveFiles/content"])
     assert _judge(team.view(), mallory_key).result is R.MISSING_AUTHORITY
     # Adopting a different anchor is a different view, not a verification of Alice's.
     assert team.view(anchor=mallory.public_key).identifier != team.view().identifier
@@ -113,8 +113,8 @@ def test_bootstrap_grant_scope():
 
 def test_each_result_is_reachable():
     team = Team()
-    alice_key = team.delegate(team.alice_id, team.alice_private, ["files-content"])
-    other_key = team.delegate(team.alice_id, team.alice_private, ["files-content"], berth=OTHER_BERTH)
+    alice_key = team.delegate(team.alice_id, team.alice_private, ["SmallSeaCollectiveFiles/content"])
+    other_key = team.delegate(team.alice_id, team.alice_private, ["SmallSeaCollectiveFiles/content"], berth=OTHER_BERTH)
     view = team.view()
     assert _judge(view, alice_key).result is R.AUTHORIZED
     for kind in (SignatureEvidenceKind.UNSIGNED, SignatureEvidenceKind.INVALID):
@@ -127,7 +127,7 @@ def test_each_result_is_reachable():
     # Alice grants Bob the berth, then a second record says proposal-only.
     # Without a Constitution DAG the two cannot be ordered: ambiguous.
     team.modes.append(_mode(team.alice_id, team.alice, team.alice_private, team.bob_id, BERTH, "automatic"))
-    bob_key = team.delegate(team.bob_id, team.bob_private, ["files-content"])
+    bob_key = team.delegate(team.bob_id, team.bob_private, ["SmallSeaCollectiveFiles/content"])
     assert _judge(team.view(), bob_key).result is R.AUTHORIZED
     team.modes.append(_mode(team.alice_id, team.alice, team.alice_private, team.bob_id, BERTH, "proposal-only"))
     decision = _judge(team.view(), bob_key)
@@ -137,17 +137,17 @@ def test_each_result_is_reachable():
 
 def test_view_identifier_tracks_only_relevant_records():
     team = Team()
-    team.delegate(team.alice_id, team.alice_private, ["files-content"])
+    team.delegate(team.alice_id, team.alice_private, ["SmallSeaCollectiveFiles/content"])
     before = team.view().identifier
     assert before.startswith(b"ssc-transitional-authority-view/1:")
     assert team.view().identifier == before
 
     # Records that do not enter the view leave its identifier alone.
-    team.delegate(team.bob_id, team.bob_private, ["files-content"])  # Bob holds nothing
+    team.delegate(team.bob_id, team.bob_private, ["SmallSeaCollectiveFiles/content"])  # Bob holds nothing
     mallory, mallory_private = _device()
     team.certs.append(issue_membership_cert(mallory, mallory, mallory_private, TEAM, b"M" * 16, b"M" * 16))
     tampered = team.delegations[0]
-    team.delegations.append(type(tampered)(**{**tampered.__dict__, "purposes": ("files-merge",)}))
+    team.delegations.append(type(tampered)(**{**tampered.__dict__, "purposes": ("SmallSeaCollectiveFiles/merge",)}))
     team.certs.reverse()
     assert team.view().identifier == before
 
@@ -176,7 +176,7 @@ def test_manager_stores_self_delegation_in_team_core(playground_dir, monkeypatch
 
     before = provisioning.load_transitional_authority_view(root, participant, "ProjectX")
     assert before.delegations == ()
-    provisioning.delegate_workhorse_purposes(root, participant, "ProjectX", berth, ["files-content"])
+    provisioning.delegate_workhorse_purposes(root, participant, "ProjectX", berth, ["SmallSeaCollectiveFiles/content"])
     view = provisioning.load_transitional_authority_view(root, participant, "ProjectX")
     assert view.identifier != before.identifier
     status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True,
@@ -195,15 +195,15 @@ def test_manager_stores_self_delegation_in_team_core(playground_dir, monkeypatch
     repo.configure_signing(key_path)
     (root / "repo" / "a.txt").write_text("a")
     repo.stage(["a.txt"])
-    context = WorkContext("commit", team_id.hex(), berth.hex(), "files-content", view.identifier)
+    context = WorkContext("commit", team_id.hex(), berth.hex(), "SmallSeaCollectiveFiles/content", view.identifier)
     sha = repo.commit(commit_message_with_context("write a", context))
 
     evidence = SshCommitVerifier(view.workhorse_public_keys()).signature_evidence(repo, sha)[sha]
     decision = evaluate(view, context_from_commit(repo, sha), evidence,
-                        team_id=team_id, berth_id=berth, purpose="files-content")
+                        team_id=team_id, berth_id=berth, purpose="SmallSeaCollectiveFiles/content")
     assert decision.result is R.AUTHORIZED
     assert evaluate(view, context_from_commit(repo, sha), evidence, team_id=team_id,
-                    berth_id=berth, purpose="files-merge").result is R.WRONG_SCOPE
+                    berth_id=berth, purpose="SmallSeaCollectiveFiles/merge").result is R.WRONG_SCOPE
 
 
 def test_self_grants_and_cycles_do_not_escape_ambiguity():
@@ -220,7 +220,7 @@ def test_self_grants_and_cycles_do_not_escape_ambiguity():
     grant(carol_id, carol, carol_private, carol_id, "automatic")
     # A cycle: Carol grants Bob back; Bob is still directly conflicted.
     grant(carol_id, carol, carol_private, team.bob_id, "automatic")
-    carol_key = team.delegate(carol_id, carol_private, ["files-content"])
+    carol_key = team.delegate(carol_id, carol_private, ["SmallSeaCollectiveFiles/content"])
     view = team.view()
     assert view.holds(team.bob_id, BERTH) is Standing.AMBIGUOUS
     assert view.holds(carol_id, BERTH) is Standing.AMBIGUOUS

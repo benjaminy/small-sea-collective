@@ -42,6 +42,50 @@ def _sign(client, token, payload, purpose="note-to-self"):
                        json={"purpose": purpose, "payload": base64.b64encode(payload).decode()})
 
 
+def _files_session(backend, client, participant):
+    provisioning.create_team(backend.root_dir, participant, "FilesTests")
+    provisioning.register_app_for_participant(
+        backend.root_dir, participant, "SmallSeaCollectiveFiles"
+    )
+    provisioning.activate_app_for_team(
+        backend.root_dir, participant, "FilesTests",
+        "SmallSeaCollectiveFiles",
+    )
+    token = backend.open_session(
+        "alice", "SmallSeaCollectiveFiles", "FilesTests", "Smoke Tests"
+    ).hex()
+    session = backend._lookup_session(token)
+    provisioning.get_workhorse_signing_key(backend.root_dir, participant, session.berth_id)
+    return token, session
+
+
+def test_sign_accepts_own_app_prefix(signing_env):
+    backend, client, participant, _token, _session = signing_env
+    token, session = _files_session(backend, client, participant)
+    purpose = "SmallSeaCollectiveFiles/content"
+    response = _sign(client, token, _payload(session, purpose=purpose), purpose)
+    assert response.status_code == 200, response.text
+
+
+def test_sign_refuses_other_app_prefix(signing_env):
+    backend, client, participant, _token, _session = signing_env
+    token, session = _files_session(backend, client, participant)
+    purpose = "AnotherApp/content"
+    response = _sign(client, token, _payload(session, purpose=purpose), purpose)
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "purpose_not_allowed"
+
+
+def test_sign_refuses_unprefixed_app_label(signing_env):
+    backend, client, participant, _token, _session = signing_env
+    token, session = _files_session(backend, client, participant)
+    purpose = "content"
+    payload = _payload(session, purpose="SmallSeaCollectiveFiles/content")
+    response = _sign(client, token, payload, purpose)
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "purpose_not_allowed"
+
+
 def test_session_authority_view(signing_env, monkeypatch):
     backend, client, participant, _token, _session = signing_env
     provisioning.create_team(backend.root_dir, participant, "ProjectX")

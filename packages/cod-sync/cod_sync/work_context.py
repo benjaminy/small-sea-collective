@@ -9,17 +9,35 @@ The caller must verify the signature before trusting a decoded context.
 
 import base64
 import json
+import re
 from dataclasses import dataclass
 
 
 TRAILER = b"Small-Sea-Work-Context: "
 ORIGINS = frozenset({"commit", "publication-link"})
-PURPOSES = frozenset({"files-content", "files-registry", "files-merge", "core", "note-to-self"})
+FRAMEWORK_PURPOSES = frozenset({"core", "note-to-self"})
+_PURPOSE_LABEL = re.compile(r"^[a-z0-9-]+$")
 _FIELDS = ("version", "origin", "team_id", "berth_id", "purpose", "authority_view")
 
 
 class WorkContextError(ValueError):
     """The context is missing, duplicated, or malformed."""
+
+
+def purpose_app(purpose: str) -> str | None:
+    """Return an app prefix, or None for a framework purpose or invalid label."""
+    if not isinstance(purpose, str) or purpose in FRAMEWORK_PURPOSES:
+        return None
+    app, separator, label = purpose.partition("/")
+    if separator and app and "/" not in label and _PURPOSE_LABEL.fullmatch(label):
+        return app
+    return None
+
+
+def is_valid_purpose(purpose: str) -> bool:
+    """Return whether a purpose is framework-owned or has a valid app label."""
+    return (isinstance(purpose, str)
+            and (purpose in FRAMEWORK_PURPOSES or purpose_app(purpose) is not None))
 
 
 @dataclass(frozen=True)
@@ -33,7 +51,7 @@ class WorkContext:
 
 def encode_work_context(context: WorkContext) -> str:
     """Return a canonical, unpadded base64url token for version 1."""
-    if context.origin not in ORIGINS or context.purpose not in PURPOSES:
+    if context.origin not in ORIGINS or not is_valid_purpose(context.purpose):
         raise WorkContextError("unknown origin or purpose")
     if not all(isinstance(value, str) and value for value in (context.team_id, context.berth_id)):
         raise WorkContextError("team and berth IDs must be nonempty strings")

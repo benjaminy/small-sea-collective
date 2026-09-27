@@ -9,7 +9,7 @@ import pytest
 from cod_sync.verify import SshCommitVerifier
 from cod_sync.work_context import (
     WorkContext, WorkContextError, check_work_context, commit_message_with_context,
-    context_from_commit, decode_work_context, encode_work_context,
+    context_from_commit, decode_work_context, encode_work_context, is_valid_purpose,
 )
 from cod_sync_test_helpers import (
     commit_file, isolated_git_config, make_repo, make_ssh_key, public_key_text,
@@ -20,13 +20,21 @@ pytestmark = pytest.mark.usefixtures("isolated_git_config")
 
 def _context(**changes):
     values = dict(origin="commit", team_id="team", berth_id="berth-a",
-                  purpose="files-content", authority_view=b"\x00view\xff")
+                  purpose="SmallSeaCollectiveFiles/content", authority_view=b"\x00view\xff")
     values.update(changes)
     return WorkContext(**values)
 
 
 def _token(payload):
     return base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=")
+
+
+def test_purpose_label_format():
+    for purpose in ("ExampleApp/content", "SmallSeaCollectiveFiles/merge-2",
+                    "core", "note-to-self"):
+        assert is_valid_purpose(purpose)
+    for purpose in ("", "content", "ExampleApp/Upper", "/content", "ExampleApp/a/b"):
+        assert not is_valid_purpose(purpose)
 
 
 def test_work_context_round_trip():
@@ -57,8 +65,8 @@ def test_work_context_rejects_cross_berth_and_cross_purpose(scratch_dir):
     assert SshCommitVerifier([public_key_text(key)]).verify_history(repo, sha)
     actual = context_from_commit(repo, sha)
     check_work_context(actual, origin="commit", team_id="team", berth_id="berth-a",
-                       purpose="files-content", authority_view=b"\x00view\xff")
-    for berth, purpose in (("berth-b", "files-content"), ("berth-a", "files-registry")):
+                       purpose="SmallSeaCollectiveFiles/content", authority_view=b"\x00view\xff")
+    for berth, purpose in (("berth-b", "SmallSeaCollectiveFiles/content"), ("berth-a", "SmallSeaCollectiveFiles/registry")):
         with pytest.raises(WorkContextError):
             check_work_context(actual, origin="commit", team_id="team", berth_id=berth,
                                purpose=purpose, authority_view=b"\x00view\xff")
@@ -76,4 +84,4 @@ def test_old_basis_is_not_creation_time(scratch_dir):
     assert context_from_commit(repo, sha).authority_view == b"old-view"
     assert "timestamp" not in decode_work_context(encode_work_context(context)).__dict__
     check_work_context(context_from_commit(repo, sha), origin="commit", team_id="team",
-                       berth_id="berth-a", purpose="files-content", authority_view=b"old-view")
+                       berth_id="berth-a", purpose="SmallSeaCollectiveFiles/content", authority_view=b"old-view")

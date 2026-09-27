@@ -57,7 +57,7 @@ def _verify(tmp_path, git_dir, commit, signer, purpose):
 
 
 def _side_commit(git_dir, checkout, signer, base, branch, filename,
-                 purpose="files-content"):
+                 purpose="SmallSeaCollectiveFiles/content"):
     _git(git_dir, checkout, "checkout", "-B", branch, base)
     (checkout / filename).write_text(branch)
     _git(git_dir, checkout, "add", filename)
@@ -71,28 +71,28 @@ def _side_commit(git_dir, checkout, signer, base, branch, filename,
 def test_files_registry_content_merge_signed(tmp_path, test_signer):
     root, checkout, git_dir, context, signer = _setup(tmp_path, test_signer)
     registry = files._registry_git_dir(root, context)
-    _verify(tmp_path, registry, "HEAD", signer, "files-registry")
+    _verify(tmp_path, registry, "HEAD", signer, "SmallSeaCollectiveFiles/registry")
     registry_checkout = files._registry_checkout_dir(root, context)
     registry_base = _git(registry, registry_checkout, "rev-parse", "HEAD")
     peer_registry = _side_commit(registry, registry_checkout, signer,
                                  registry_base, "peer-registry", "peer-note",
-                                 purpose="files-registry")
+                                 purpose="SmallSeaCollectiveFiles/registry")
     files.create_niche(root, PARTICIPANT, context, "other", signer=signer)
     _git(registry, registry_checkout, "update-ref",
          f"refs/peers/{PEER}/main", peer_registry)
     files.merge_registry(root, PARTICIPANT, context, PEER, signer=signer)
-    _verify(tmp_path, registry, "HEAD", signer, "files-merge")
+    _verify(tmp_path, registry, "HEAD", signer, "SmallSeaCollectiveFiles/merge")
 
     (checkout / "base").write_text("base")
     base = files.publish(root, PARTICIPANT, context, "docs", checkout, signer=signer)
-    _verify(tmp_path, git_dir, base, signer, "files-content")
+    _verify(tmp_path, git_dir, base, signer, "SmallSeaCollectiveFiles/content")
 
     peer = _side_commit(git_dir, checkout, signer, base, "peer", "peer-file")
     (checkout / "local-file").write_text("local")
     files.publish(root, PARTICIPANT, context, "docs", checkout, signer=signer)
     _git(git_dir, checkout, "update-ref", f"refs/peers/{PEER}/main", peer)
     files.merge_niche(root, PARTICIPANT, context, "docs", PEER, signer=signer)
-    _verify(tmp_path, git_dir, "HEAD", signer, "files-merge")
+    _verify(tmp_path, git_dir, "HEAD", signer, "SmallSeaCollectiveFiles/merge")
 
     base = _git(git_dir, checkout, "rev-parse", "HEAD")
     self_head = _side_commit(git_dir, checkout, signer, base, "self", "self-file")
@@ -100,7 +100,7 @@ def test_files_registry_content_merge_signed(tmp_path, test_signer):
     files.publish(root, PARTICIPANT, context, "docs", checkout, signer=signer)
     _git(git_dir, checkout, "update-ref", "refs/cod-sync/parked/self-test", self_head)
     files.merge_self_niche(root, PARTICIPANT, context, "docs", signer=signer)
-    _verify(tmp_path, git_dir, "HEAD", signer, "files-merge")
+    _verify(tmp_path, git_dir, "HEAD", signer, "SmallSeaCollectiveFiles/merge")
 
 
 def test_files_publish_completes_merge_as_files_merge(tmp_path, test_signer):
@@ -115,7 +115,7 @@ def test_files_publish_completes_merge_as_files_merge(tmp_path, test_signer):
         files.merge_niche(root, PARTICIPANT, context, "docs", PEER, signer=signer)
     (checkout / "same").write_text("resolved\n")
     files.publish(root, PARTICIPANT, context, "docs", checkout, signer=signer)
-    _verify(tmp_path, git_dir, "HEAD", signer, "files-merge")
+    _verify(tmp_path, git_dir, "HEAD", signer, "SmallSeaCollectiveFiles/merge")
 
 
 def test_files_signing_failure_preserves_head(tmp_path, test_signer):
@@ -210,7 +210,7 @@ def test_files_commit_signed_through_real_hub(tmp_path):
         signers.write_text(f"hub@test {session.signing_public_key()}\n")
         _git(registry, tmp_path, "-c", f"gpg.ssh.allowedSignersFile={signers}",
              "verify-commit", "HEAD")
-        assert context_from_commit(Repo(registry), "HEAD").purpose == "files-registry"
+        assert context_from_commit(Repo(registry), "HEAD").purpose == "SmallSeaCollectiveFiles/registry"
     finally:
         server.shutdown()
         thread.join()
