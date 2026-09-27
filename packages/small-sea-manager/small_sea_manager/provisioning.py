@@ -6495,6 +6495,91 @@ def complete_invitation_acceptance(
     }
 
 
+ADMISSION_PACKAGE_VERSION = 1
+
+
+class AdmissionPackageUnavailableError(ValueError):
+    """The acceptance is unknown here, or its admission is not finalized yet."""
+
+
+def _hex_row(keys, row) -> dict:
+    return {k: v.hex() if isinstance(v, bytes) else v for k, v in zip(keys, row)}
+
+
+def export_admission_package(
+    root_dir, participant_hex, team_name, acceptance_record_id: bytes
+) -> bytes:
+    """Return the signed records a finalized invitee needs to see their own admission.
+
+    The package carries every key certificate and every integration_mode_change
+    record in the inviter's team Core, including the invitee's membership
+    certificate and grants. Each record keeps its original fields and
+    signature, so the invitee verifies each one on its own.
+
+    The inviter's current team-device key signs the envelope. That signature
+    only says who delivered the package; it grants nothing.
+    """
+    root_dir = pathlib.Path(root_dir)
+    team_db_path = _team_db_path(root_dir, participant_hex, team_name)
+    engine = _sqlite_engine(team_db_path)
+    try:
+        with engine.connect() as conn:
+            acceptance = conn.execute(
+                text(
+                    "SELECT subject_record_id, invitee_device_public_key "
+                    "FROM admission_acceptance WHERE record_id = :rid"
+                ),
+                {"rid": acceptance_record_id},
+            ).fetchone()
+            if acceptance is None:
+                raise AdmissionPackageUnavailableError("Unknown admission acceptance")
+            proposal_id, invitee_device_public_key = acceptance
+            finalized = conn.execute(
+                text("SELECT 1 FROM finalization WHERE subject_record_id = :pid"),
+                {"pid": proposal_id},
+            ).fetchone()
+            if finalized is None:
+                raise AdmissionPackageUnavailableError("Admission is not finalized yet")
+            team_id = _load_proposal_row(conn, proposal_id)[8]
+
+            mode_keys = (
+                "record_id", "record_type", "author_teammate_id", "author_device_key_id",
+                "created_at", "anchor_commit", "constitution_digest", "schema_version",
+                "teammate_id", "berth_id", "mode", "signature",
+            )
+            # Every record, not a selection: a selection could hide a record
+            # (say, a later demotion) and leave the invitee with a view that
+            # differs from the inviter's for no reason.
+            modes = {row[0]: row for row in conn.execute(
+                text(f"SELECT {', '.join(mode_keys)} FROM integration_mode_change")
+            ).fetchall()}
+
+            cert_keys = (
+                "cert_id", "cert_type", "subject_key_id", "subject_public_key",
+                "issuer_key_id", "issuer_teammate_id", "issued_at", "claims", "signature",
+            )
+            certs = {row[0]: row for row in conn.execute(
+                text(f"SELECT {', '.join(cert_keys)} FROM key_certificate")
+            ).fetchall()}
+    finally:
+        engine.dispose()
+
+    sender_private_key, sender_public_key = get_current_team_device_key(
+        root_dir, participant_hex, team_name
+    )
+    body = {
+        "package_version": ADMISSION_PACKAGE_VERSION,
+        "team_id": team_id.hex(),
+        "acceptance_record_id": acceptance_record_id.hex(),
+        "invitee_device_public_key": invitee_device_public_key.hex(),
+        "sender_device_public_key": sender_public_key.hex(),
+        "certificates": [_hex_row(cert_keys, certs[k]) for k in sorted(certs)],
+        "integration_mode_changes": [_hex_row(mode_keys, modes[k]) for k in sorted(modes)],
+    }
+    signature = _sign_bytes(sender_private_key, _json_bytes(body))
+    return _json_bytes({"body": body, "signature": signature.hex()})
+
+
 def endorse_admission(root_dir, participant_hex, team_name, proposal_id_hex):
     """Append this teammate's `endorsement` of an admission proposal's acceptance.
 
