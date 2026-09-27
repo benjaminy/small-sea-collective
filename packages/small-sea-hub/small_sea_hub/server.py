@@ -25,7 +25,10 @@ from small_sea_hub.backend import (
 )
 from small_sea_manager.provisioning import WorkhorseSigningKeyAbsentError
 from small_sea_manager.berth_authority import MissingAuthorityAnchor
-from cod_sync.work_context import WorkContextError
+from small_sea_manager.berth_authority import AuthorityDecision, AuthorityResult, evaluate
+from cod_sync.repo import Repo
+from cod_sync.verify import SshCommitVerifier, VerificationUnavailableError
+from cod_sync.work_context import WorkContextError, context_from_commit
 from small_sea_hub.cloud_errors import CloudStorageRequiredExn
 from small_sea_hub.crypto import (PublicationExn, PublicationNotAuthenticExn,
                                   PublicationPendingExn)
@@ -910,6 +913,24 @@ class SignCommitReq(pydantic.BaseModel):
     payload: str
 
 
+class VerifyHistoryReq(pydantic.BaseModel):
+    git_dir: str
+    head: str
+
+
+def _allowed_app_directory(path: str, root_dir: pathlib.Path) -> pathlib.Path:
+    try:
+        candidate = pathlib.Path(path)
+        if not candidate.is_absolute():
+            raise ValueError("path is not absolute")
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_dir() or resolved.is_relative_to(pathlib.Path(root_dir).resolve(strict=True)):
+            raise ValueError("path is not allowed")
+        return resolved
+    except (OSError, ValueError):
+        raise HTTPException(status_code=400, detail={"code": "path_not_allowed"})
+
+
 @app.get("/session/signing_key")
 async def session_signing_key(session_hex: str = Depends(_require_session)):
     try:
@@ -948,6 +969,42 @@ async def session_sign(req: SignCommitReq, session_hex: str = Depends(_require_s
     except WorkhorseSigningKeyAbsentError:
         raise HTTPException(status_code=409, detail={"code": "signing_key_absent"})
     return {"signature": signature, "public_key": public_key}
+
+
+@app.post("/session/verify")
+async def session_verify(req: VerifyHistoryReq, session_hex: str = Depends(_require_session)):
+    backend = app.state.backend
+    session = backend._lookup_session(session_hex)
+    git_dir = _allowed_app_directory(req.git_dir, backend.root_dir)
+    try:
+        view = Provisioning.load_transitional_authority_view(
+            backend.root_dir, session.participant_id.hex(), session.team_name
+        )
+    except MissingAuthorityAnchor:
+        raise HTTPException(status_code=409, detail={"code": "authority_anchor_absent"})
+    repo = Repo(git_dir)
+    try:
+        evidence_by_commit = SshCommitVerifier(view.workhorse_public_keys()).signature_evidence(repo, req.head)
+    except VerificationUnavailableError:
+        raise HTTPException(status_code=400, detail={"code": "invalid_repository"})
+    commits = []
+    for commit, evidence in evidence_by_commit.items():
+        try:
+            context = context_from_commit(repo, commit)
+        except WorkContextError:
+            context = None
+        decision = evaluate(view, context, evidence, team_id=session.team_id,
+                            berth_id=session.berth_id, purpose=context.purpose if context else "")
+        # A context is trustworthy only once its signature and delegation check out.
+        if (decision.result is AuthorityResult.AUTHORIZED
+                and not backend.session_allows_purpose(session, context.purpose)):
+            decision = AuthorityDecision(AuthorityResult.WRONG_SCOPE, view.identifier,
+                                         "work purpose belongs to another app")
+        commits.append({"commit": commit, "result": decision.result.value,
+                        "reason": decision.reason,
+                        "delegation_ids": [record_id.hex() for record_id in decision.delegation_ids]})
+    return {"view_identifier": base64.urlsafe_b64encode(view.identifier).decode("ascii").rstrip("="),
+            "commits": commits}
 
 
 @app.get("/session/peers")

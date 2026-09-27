@@ -352,6 +352,15 @@ class SmallSeaSession:
         token = self._client._get("/session/authority_view", token=self._token)["authority_view"]
         return base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
 
+    def verify_history(self, git_dir, head: str) -> dict:
+        """Ask the Hub to judge every commit reachable from head."""
+        result = self._client._post(
+            "/session/verify", {"git_dir": str(git_dir), "head": head}, token=self._token,
+        )
+        token = result["view_identifier"]
+        result["view_identifier"] = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+        return result
+
     def signing_public_key(self) -> str:
         """Return this session berth's workhorse public key."""
         return self._client._get("/session/signing_key", token=self._token)["public_key"]

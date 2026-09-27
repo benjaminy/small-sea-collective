@@ -57,6 +57,16 @@ def test_session_authority_view_decodes_bytes(session):
 
 
 @respx.mock
+def test_session_verify_history_decodes_view(session, tmp_path):
+    route = respx.post(f"{BASE_URL}/session/verify").mock(
+        return_value=httpx.Response(200, json={"view_identifier": "AH8", "commits": []})
+    )
+    result = session.verify_history(tmp_path / ".git", "abc123")
+    assert result == {"view_identifier": b"\x00\x7f", "commits": []}
+    assert route.calls[0].request.read().decode().find('"head":"abc123"') >= 0
+
+
+@respx.mock
 def test_request_session(client):
     respx.post(f"{BASE_URL}/sessions/request").mock(
         return_value=httpx.Response(200, json={"pending_id": "pending123"})

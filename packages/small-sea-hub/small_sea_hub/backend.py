@@ -972,21 +972,20 @@ class SmallSeaBackend:
 
     def sign_commit(self, session_hex, purpose, payload):
         ss_session = self._lookup_session(session_hex)
-        framework_purpose = (
-            "note-to-self" if ss_session.team_name == "NoteToSelf" else "core"
-        )
-        own_app_purpose = purpose_app(purpose) == ss_session.app_name
-        own_framework_purpose = (
-            ss_session.app_name == "SmallSeaCollectiveCore"
-            and purpose == framework_purpose and purpose in FRAMEWORK_PURPOSES
-        )
-        if not (own_app_purpose or own_framework_purpose):
+        if not self.session_allows_purpose(ss_session, purpose):
             raise SigningPurposeNotAllowedError("purpose_not_allowed")
         context = context_from_commit_bytes(payload, unsigned=True)
         if (context.origin != "commit" or context.team_id != ss_session.team_id.hex()
                 or context.berth_id != ss_session.berth_id.hex() or context.purpose != purpose):
             raise WorkContextError("work context does not match session")
         return sign_git_commit(payload, self.signing_key(session_hex))
+
+    @staticmethod
+    def session_allows_purpose(ss_session, purpose):
+        framework_purpose = "note-to-self" if ss_session.team_name == "NoteToSelf" else "core"
+        return (purpose_app(purpose) == ss_session.app_name
+                or (ss_session.app_name == "SmallSeaCollectiveCore"
+                    and purpose == framework_purpose and purpose in FRAMEWORK_PURPOSES))
 
     def create_bootstrap_session(
         self,
