@@ -5147,20 +5147,85 @@ def get_workhorse_signing_key(root_dir, participant_hex, berth_id: bytes) -> byt
     return _read_local_secret(path)
 
 
-class WorkhorseSigningKeyAbsentError(FileNotFoundError):
-    """This device has no workhorse key for the berth."""
+class SigningSetupRefusedError(Exception):
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
 
 
-def read_workhorse_signing_key(root_dir, participant_hex, berth_id: bytes) -> bytes:
-    """Read this device's existing berth key without creating one."""
+def ensure_signing_is_set_up(root_dir, participant_hex, team_name, berth_id) -> bytes:
+    """Return this device's berth key after ensuring its Core delegation exists."""
     if isinstance(berth_id, str):
         berth_id = bytes.fromhex(berth_id)
+    team_id, self_in_team = _team_row(root_dir, participant_hex, team_name)
+    try:
+        anchor_public_key = _adopted_anchor_or_pause(root_dir, participant_hex, team_id)
+    except berth_authority.MissingAuthorityAnchor as exc:
+        raise SigningSetupRefusedError("authority_anchor_absent") from exc
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         device_id = _current_device_row(conn)[0]
     path = _workhorse_signing_key_path(root_dir, participant_hex, device_id, berth_id)
-    if not path.exists():
-        raise WorkhorseSigningKeyAbsentError(f"No workhorse signing key for berth {berth_id.hex()}")
-    return _read_local_secret(path)
+    team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    engine = _sqlite_engine(team_sync_dir / "core.db")
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                view = _load_transitional_view(conn, team_id, anchor_public_key)
+                if not path.exists():
+                    # Refuse before creating a key, so a berth we do not hold leaves no key file.
+                    if view.holds(self_in_team, berth_id) is not berth_authority.Standing.HELD:
+                        raise SigningSetupRefusedError("berth_not_held")
+                    path.parent.mkdir(parents=True, exist_ok=True)
+                    new_key = Ed25519PrivateKey.generate().private_bytes(
+                        serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
+                        serialization.NoEncryption(),
+                    )
+                    try:
+                        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                    except FileExistsError:
+                        pass
+                    else:
+                        with os.fdopen(fd, "wb") as key_file:
+                            key_file.write(new_key)
+                private_bytes = _read_local_secret(path)
+                public_key = Ed25519PrivateKey.from_private_bytes(private_bytes).public_key().public_bytes(
+                    serialization.Encoding.OpenSSH, serialization.PublicFormat.OpenSSH,
+                ).decode("ascii")
+                existing = conn.execute(text(
+                    "SELECT 1 FROM workhorse_delegation WHERE berth_id = :berth_id "
+                    "AND workhorse_public_key = :key LIMIT 1"
+                ), {"berth_id": berth_id, "key": public_key}).first()
+                if existing:
+                    return private_bytes
+                if view.holds(self_in_team, berth_id) is not berth_authority.Standing.HELD:
+                    raise SigningSetupRefusedError("berth_not_held")
+                private_key, device_public_key = get_current_team_device_key(
+                    root_dir, participant_hex, team_name
+                )
+                if device_public_key not in view.trusted_keys.get(self_in_team, ()):
+                    raise SigningSetupRefusedError("berth_not_held")
+                delegation = berth_authority.sign_workhorse_delegation(
+                    team_id=team_id, berth_id=berth_id, workhorse_public_key=public_key,
+                    delegator_teammate_id=self_in_team, delegator_private_key=private_key,
+                )
+                conn.execute(text(
+                    "INSERT INTO workhorse_delegation (record_id, schema_version, berth_id, "
+                    "workhorse_public_key, delegator_teammate_id, delegator_public_key, signature) "
+                    "VALUES (:record_id, :version, :berth_id, :key, :delegator, :delegator_key, :signature)"
+                ), {"record_id": delegation.record_id, "version": berth_authority.DELEGATION_VERSION,
+                    "berth_id": berth_id, "key": public_key, "delegator": self_in_team,
+                    "delegator_key": device_public_key, "signature": delegation.signature})
+                conn.commit()
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+                repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+                repo.stage(["core.db"])
+                repo.commit(f"Delegate berth {berth_id.hex()} to workhorse key")
+            finally:
+                conn.rollback()
+    finally:
+        engine.dispose()
+    return private_bytes
 
 
 def get_workhorse_signing_public_key(

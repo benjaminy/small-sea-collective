@@ -23,7 +23,7 @@ from small_sea_hub.backend import (
     SmallSeaSessionNotFoundExn,
     SigningPurposeNotAllowedError,
 )
-from small_sea_manager.provisioning import WorkhorseSigningKeyAbsentError
+from small_sea_manager.provisioning import SigningSetupRefusedError
 from small_sea_manager.berth_authority import MissingAuthorityAnchor
 from small_sea_manager.berth_authority import AuthorityDecision, AuthorityResult, evaluate
 from cod_sync.repo import Repo
@@ -935,8 +935,8 @@ def _allowed_app_directory(path: str, root_dir: pathlib.Path) -> pathlib.Path:
 async def session_signing_key(session_hex: str = Depends(_require_session)):
     try:
         private_bytes = app.state.backend.signing_key(session_hex)
-    except WorkhorseSigningKeyAbsentError:
-        raise HTTPException(status_code=409, detail={"code": "signing_key_absent"})
+    except SigningSetupRefusedError as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code})
     from cod_sync.sshsig import public_key_from_private
     return {"public_key": public_key_from_private(private_bytes)}
 
@@ -966,8 +966,8 @@ async def session_sign(req: SignCommitReq, session_hex: str = Depends(_require_s
         raise HTTPException(status_code=403, detail={"code": "purpose_not_allowed"})
     except WorkContextError:
         raise HTTPException(status_code=400, detail={"code": "invalid_commit"})
-    except WorkhorseSigningKeyAbsentError:
-        raise HTTPException(status_code=409, detail={"code": "signing_key_absent"})
+    except SigningSetupRefusedError as exc:
+        raise HTTPException(status_code=409, detail={"code": exc.code})
     return {"signature": signature, "public_key": public_key}
 
 

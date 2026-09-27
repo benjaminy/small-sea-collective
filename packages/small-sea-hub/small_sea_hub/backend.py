@@ -54,7 +54,7 @@ from small_sea_note_to_self.bootstrap_status import (
 )
 from small_sea_note_to_self.berth_source import saved_route_for_candidate
 from small_sea_note_to_self.db import attached_note_to_self_connection
-from small_sea_manager.provisioning import read_workhorse_signing_key, WorkhorseSigningKeyAbsentError
+from small_sea_manager.provisioning import ensure_signing_is_set_up
 from cod_sync.work_context import (
     FRAMEWORK_PURPOSES, WorkContextError, context_from_commit_bytes, purpose_app,
 )
@@ -965,8 +965,9 @@ class SmallSeaBackend:
 
     def signing_key(self, session_hex):
         ss_session = self._lookup_session(session_hex)
-        private_bytes = read_workhorse_signing_key(
-            self.root_dir, ss_session.participant_id.hex(), ss_session.berth_id
+        private_bytes = ensure_signing_is_set_up(
+            self.root_dir, ss_session.participant_id.hex(), ss_session.team_name,
+            ss_session.berth_id,
         )
         return private_bytes
 

@@ -167,8 +167,6 @@ def test_files_commit_signed_through_real_hub(tmp_path):
     provisioning.activate_app_for_team(backend.root_dir, participant, "ProjectX",
                                        "SmallSeaCollectiveFiles")
     token = backend.open_session("Alice", "SmallSeaCollectiveFiles", "ProjectX", "Smoke Tests").hex()
-    berth = backend._lookup_session(token).berth_id
-    provisioning.get_workhorse_signing_key(backend.root_dir, participant, berth)
     app.state.backend = backend
     client = TestClient(app)
 

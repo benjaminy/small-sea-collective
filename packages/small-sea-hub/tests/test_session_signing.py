@@ -55,7 +55,6 @@ def _files_session(backend, client, participant):
         "alice", "SmallSeaCollectiveFiles", "FilesTests", "Smoke Tests"
     ).hex()
     session = backend._lookup_session(token)
-    provisioning.get_workhorse_signing_key(backend.root_dir, participant, session.berth_id)
     return token, session
 
 
@@ -154,9 +153,10 @@ def test_signing_uses_session_scope(signing_env):
 
 def test_signing_exports_no_secret(signing_env, tmp_path):
     backend, client, participant, token, session = signing_env
+    token, session = _files_session(backend, client, participant)
     secret = provisioning.get_workhorse_signing_key(backend.root_dir, participant, session.berth_id)
-    payload = _payload(session)
-    response = _sign(client, token, payload)
+    payload = _payload(session, purpose="SmallSeaCollectiveFiles/content")
+    response = _sign(client, token, payload, "SmallSeaCollectiveFiles/content")
     assert response.status_code == 200, response.text
     result = response.json()
     key_response = client.get("/session/signing_key", headers={"Authorization": f"Bearer {token}"})
@@ -190,13 +190,26 @@ def test_signing_exports_no_secret(signing_env, tmp_path):
     assert git_verify.returncode == 0, git_verify.stderr
 
 
-def test_signing_key_absent_is_not_created(signing_env):
+def test_fresh_session_creates_key_and_can_sign(signing_env):
     backend, client, participant, token, session = signing_env
+    token, session = _files_session(backend, client, participant)
     before = list(pathlib.Path(backend.root_dir).rglob("workhorse-*.key"))
-    response = _sign(client, token, _payload(session))
-    assert response.status_code == 409
-    assert response.json()["detail"]["code"] == "signing_key_absent"
-    assert list(pathlib.Path(backend.root_dir).rglob("workhorse-*.key")) == before
+    response = _sign(client, token, _payload(session, purpose="SmallSeaCollectiveFiles/content"),
+                     "SmallSeaCollectiveFiles/content")
+    assert response.status_code == 200, response.text
+    assert len(list(pathlib.Path(backend.root_dir).rglob("workhorse-*.key"))) == len(before) + 1
+    view = provisioning.load_transitional_authority_view(backend.root_dir, participant, session.team_name)
+    assert len(view.delegations) == 1
+
+
+def test_signing_without_adopted_anchor_returns_typed_refusal(signing_env):
+    _backend, client, _participant, token, session = signing_env
+    headers = {"Authorization": f"Bearer {token}"}
+    key_response = client.get("/session/signing_key", headers=headers)
+    sign_response = _sign(client, token, _payload(session))
+    for response in (key_response, sign_response):
+        assert response.status_code == 409
+        assert response.json()["detail"] == {"code": "authority_anchor_absent"}
 
 
 def test_session_expiry_and_created_at(signing_env):

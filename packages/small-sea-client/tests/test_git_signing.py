@@ -20,10 +20,11 @@ import small_sea_manager.provisioning as provisioning
 def signing_hub(tmp_path):
     backend = SmallSeaBackend(root_dir=tmp_path / "hub")
     participant = provisioning.create_new_participant(backend.root_dir, "alice")
+    provisioning.create_team(backend.root_dir, participant, "ProjectX")
     app.state.backend = backend
-    token = backend.open_session("alice", "SmallSeaCollectiveCore", "NoteToSelf", "Smoke Tests").hex()
+    token = backend.open_session("alice", "SmallSeaCollectiveCore", "ProjectX", "Smoke Tests").hex()
     session = backend._lookup_session(token)
-    provisioning.get_workhorse_signing_key(backend.root_dir, participant, session.berth_id)
+    provisioning.ensure_signing_is_set_up(backend.root_dir, participant, "ProjectX", session.berth_id)
     client = TestClient(app)
 
     class Handler(BaseHTTPRequestHandler):
@@ -71,7 +72,7 @@ def _git_setup(tmp_path, signing_hub, *, token=None, public_key=None):
     (repo / "file").write_text("data")
     subprocess.run(["git", "-C", str(repo), "add", "file"], env=env, check=True)
     context = WorkContext("commit", session.team_id.hex(), session.berth_id.hex(),
-                          "note-to-self", b"view")
+                          "core", b"view")
     message = commit_message_with_context("message", context)
     return repo, key, env, message
 
