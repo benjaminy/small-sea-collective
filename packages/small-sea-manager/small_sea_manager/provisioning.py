@@ -2190,7 +2190,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 67
+TEAM_SCHEMA_VERSION = 67
 
 
 # ---- Provisioning functions ----
@@ -2614,18 +2614,6 @@ def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
 
 
 
-def _migrate_user_db(conn, from_version):
-    """Scaffold for future user DB migrations.
-
-    Pre-alpha databases older than the current schema are intentionally not
-    migrated. Delete and recreate the local workspace instead.
-    """
-    raise NotImplementedError(
-        "Pre-alpha NoteToSelf user DB migrations are not supported; "
-        f"delete/recreate this DB (schema {from_version} -> {USER_SCHEMA_VERSION})."
-    )
-
-
 def _migrate_team_db(conn, from_version):
     """Scaffold for future team DB migrations.
 
@@ -2634,7 +2622,7 @@ def _migrate_team_db(conn, from_version):
     """
     raise NotImplementedError(
         "Pre-alpha team DB migrations are not supported; "
-        f"delete/recreate this DB (schema {from_version} -> {USER_SCHEMA_VERSION})."
+        f"delete/recreate this DB (schema {from_version} -> {TEAM_SCHEMA_VERSION})."
     )
 
 
@@ -2644,17 +2632,17 @@ def ensure_team_db_schema(db_path):
     try:
         with engine.begin() as conn:
             user_version = conn.execute(text("PRAGMA user_version")).scalar()
-            if user_version == USER_SCHEMA_VERSION:
+            if user_version == TEAM_SCHEMA_VERSION:
                 return
-            if (0 != user_version) and (user_version < USER_SCHEMA_VERSION):
+            if user_version < TEAM_SCHEMA_VERSION:
                 _migrate_team_db(conn, user_version)
-                conn.execute(text(f"PRAGMA user_version = {USER_SCHEMA_VERSION}"))
+                conn.execute(text(f"PRAGMA user_version = {TEAM_SCHEMA_VERSION}"))
                 return
-            if user_version > USER_SCHEMA_VERSION:
+            if user_version > TEAM_SCHEMA_VERSION:
                 raise FutureTeamDatabaseVersionError(
                     db_path,
                     user_version,
-                    USER_SCHEMA_VERSION,
+                    TEAM_SCHEMA_VERSION,
                 )
     finally:
         engine.dispose()
@@ -3297,7 +3285,7 @@ def _init_team_db(db_path):
             statement = statement.strip()
             if statement:
                 conn.execute(text(statement))
-        conn.execute(text(f"PRAGMA user_version = {USER_SCHEMA_VERSION}"))
+        conn.execute(text(f"PRAGMA user_version = {TEAM_SCHEMA_VERSION}"))
     return engine
 
 

@@ -4,12 +4,12 @@ import sqlite3
 import subprocess
 
 import pytest
-from small_sea_note_to_self.db import device_local_db_path
+from small_sea_note_to_self.db import SHARED_SCHEMA_VERSION, device_local_db_path
 
 from small_sea_manager.provisioning import _deserialize_cert, _serialize_cert
 from small_sea_manager.provisioning import (
     FutureTeamDatabaseVersionError,
-    USER_SCHEMA_VERSION,
+    TEAM_SCHEMA_VERSION,
     activate_app_for_team,
     create_new_participant,
     create_team,
@@ -367,6 +367,8 @@ def test_create_team_produces_team_device_without_transport_columns(playground_d
     assert "protocol" not in columns
     assert "url" not in columns
     assert "bucket" not in columns
+    with sqlite3.connect(str(_team_db(root, alice_hex, "ProjectX"))) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == TEAM_SCHEMA_VERSION
 
 
 def test_old_team_db_version_requires_recreate(playground_dir):
@@ -375,7 +377,7 @@ def test_old_team_db_version_requires_recreate(playground_dir):
     alice_hex = create_new_participant(root, "Alice")
     create_team(root, alice_hex, "ProjectX")
     team_db = _team_db(root, alice_hex, "ProjectX")
-    old_version = USER_SCHEMA_VERSION - 1
+    old_version = TEAM_SCHEMA_VERSION - 1
 
     with sqlite3.connect(str(team_db)) as conn:
         conn.execute(f"PRAGMA user_version = {old_version}")
@@ -387,7 +389,7 @@ def test_old_team_db_version_requires_recreate(playground_dir):
     message = str(exc_info.value)
     assert "Pre-alpha team DB migrations are not supported" in message
     assert str(old_version) in message
-    assert str(USER_SCHEMA_VERSION) in message
+    assert str(TEAM_SCHEMA_VERSION) in message
     with sqlite3.connect(str(team_db)) as conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     assert version == old_version
@@ -398,7 +400,7 @@ def test_future_team_db_version_fails_fast(playground_dir):
     alice_hex = create_new_participant(root, "Alice")
     create_team(root, alice_hex, "ProjectX")
     team_db = _team_db(root, alice_hex, "ProjectX")
-    future_version = USER_SCHEMA_VERSION + 1
+    future_version = TEAM_SCHEMA_VERSION + 1
 
     with sqlite3.connect(str(team_db)) as conn:
         conn.execute(f"PRAGMA user_version = {future_version}")
@@ -410,8 +412,51 @@ def test_future_team_db_version_fails_fast(playground_dir):
     message = str(exc_info.value)
     assert str(team_db) in message
     assert str(future_version) in message
-    assert str(USER_SCHEMA_VERSION) in message
+    assert str(TEAM_SCHEMA_VERSION) in message
 
     with sqlite3.connect(str(team_db)) as conn:
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     assert version == future_version
+
+
+def test_zero_version_team_db_requires_recreate(tmp_path):
+    team_db = tmp_path / "core.db"
+    sqlite3.connect(str(team_db)).close()
+
+    with pytest.raises(NotImplementedError, match="Pre-alpha team DB migrations are not supported"):
+        ensure_team_db_schema(team_db)
+
+
+@pytest.mark.parametrize("old_version", range(1, TEAM_SCHEMA_VERSION))
+def test_every_old_team_db_version_requires_recreate(tmp_path, old_version):
+    team_db = tmp_path / f"core-{old_version}.db"
+    with sqlite3.connect(str(team_db)) as conn:
+        conn.execute(f"PRAGMA user_version = {old_version}")
+
+    with pytest.raises(NotImplementedError, match="Pre-alpha team DB migrations are not supported"):
+        ensure_team_db_schema(team_db)
+
+    with sqlite3.connect(str(team_db)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == old_version
+
+
+def test_current_team_db_passes_unchanged(tmp_path):
+    team_db = tmp_path / "core.db"
+    with sqlite3.connect(str(team_db)) as conn:
+        conn.execute("CREATE TABLE sentinel (value TEXT)")
+        conn.execute("INSERT INTO sentinel VALUES ('kept')")
+        conn.execute(f"PRAGMA user_version = {TEAM_SCHEMA_VERSION}")
+
+    ensure_team_db_schema(team_db)
+
+    with sqlite3.connect(str(team_db)) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == TEAM_SCHEMA_VERSION
+        assert conn.execute("SELECT value FROM sentinel").fetchone()[0] == "kept"
+
+
+def test_note_to_self_schema_marker_is_independent(playground_dir):
+    root = pathlib.Path(playground_dir)
+    participant_hex = create_new_participant(root, "Alice")
+
+    with sqlite3.connect(str(_note_to_self_db(root, participant_hex))) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SHARED_SCHEMA_VERSION
