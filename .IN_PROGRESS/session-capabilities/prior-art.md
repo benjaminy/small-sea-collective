@@ -208,4 +208,6 @@ Prefer something simple and sensible now; defer richer ideas.
 
 Deferred: per-feature or per-client scopes, per-use confirmation, grants remembered beyond sessions, authenticating the executable behind an app name.
 
-Still open: what revocation rejects (unseen old work, future work, or both), and which encryption operations apps need (task 39 inventory).
+Revocation, for now: the user can delete a session, which ends its access. Revoking delegations and deciding what happens to old signed work are deferred (task 35).
+
+Still open: which encryption operations apps need (task 39 inventory).
