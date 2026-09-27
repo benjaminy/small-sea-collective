@@ -50,7 +50,7 @@ Running it twice must change nothing the second time.
 
 ## Verification
 
-`POST /session/verify` takes a list of raw commit objects (the bytes `git cat-file commit` prints, including any `gpgsig` header) and returns one decision per commit:
+`POST /session/verify` takes the path of the app's git directory and a head commit ID, and returns one decision per commit reachable from that head:
 
 - `authorized`, with the signer's teammate and device and the delegation that authorized the key;
 - or a refusal: `unsigned`, `bad_signature`, `wrong_scope`, `missing_authority`, `ambiguous_authority`, with the evaluator's reason.
@@ -65,13 +65,21 @@ It checks that team and berth match the session and that the purpose carries the
 It returns decisions and changes nothing.
 The app decides what to do with them, such as refusing to merge a parked head whose commits are not all authorized.
 
-The Hub needs no access to the app's repository, and the app needs no Core access.
+The Hub runs `git` read-only in the app's git directory; the app needs no Core access.
 The Hub does not see trees or file contents; each signature covers its tree hash, and the app still checks content and merge results itself.
 Exact team and berth checks stop a commit from another berth being replayed here; a replay within the same berth proves nothing about freshness or placement, so the receiving app checks placement using the purpose.
 
-To start simply, an app checks the whole history reachable from a fetched head, through every merge parent, as the existing Cod Sync verifier does.
-Sending only the commits added since the last accepted head is a later optimization.
+To start simply, the Hub checks the whole history reachable from the head, through every merge parent, as the existing Cod Sync verifier does.
+Skipping history the app already accepted is a later optimization.
 Results are bound to commit IDs, and the app merges exactly the head it checked.
+
+## Passing paths instead of copies
+
+Apps and the Hub run on the same machine, so when data is already a file, the app sends its path rather than its bytes.
+The Hub reads the path with its own access, so it must not become a way for an app to reach files it should not.
+Rule: the Hub refuses any app-supplied path inside Small Sea's own directories (participant data, keys, Hub state), after resolving symlinks.
+Operations that only return decisions, such as verification, are low risk; operations that send file contents elsewhere, such as uploads, must apply the rule strictly.
+Signing keeps sending bytes, because git hands the shim a buffer, not a repository path.
 
 ## Manager lists known apps
 
