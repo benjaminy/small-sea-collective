@@ -690,6 +690,7 @@ def test_sidecar_delivers_the_route_and_finalizes_admission(playground_dir):
     )
 
     result = provisioning.complete_invitation_acceptance(root, alice_hex, TEAM, courier)
+    assert result.pop("admission_package") is not None
     assert result == {
         "route_delivery": "imported",
         "route_reason": None,
@@ -789,6 +790,7 @@ def test_a_signed_non_utf8_sidecar_never_costs_admission(playground_dir):
             lambda route: _resign(root, bob_hex, route, protocol="\ud800"),
         ),
     )
+    assert result.pop("admission_package") is not None
     assert result == {
         "route_delivery": "invalid",
         "route_reason": "malformed",
@@ -946,6 +948,7 @@ def test_a_route_less_acceptance_still_completes(playground_dir):
     result = provisioning.complete_invitation_acceptance(
         root, alice_hex, TEAM, base_token
     )
+    assert result.pop("admission_package") is not None
     assert result == {
         "route_delivery": "missing",
         "route_reason": "absent",

@@ -1760,6 +1760,15 @@ class TeamManager:
             self.root_dir, self.participant_hex, team_name, acceptance_b64
         )
 
+    def import_admission_package(self, team_name, package_bytes) -> bool:
+        """Store the admission package the inviter delivered after finalizing.
+
+        Returns True when new records were stored, False when it was a no-op.
+        """
+        return provisioning.import_admission_package(
+            self.root_dir, self.participant_hex, team_name, package_bytes
+        )
+
     def endorse_admission(self, team_name, proposal_id):
         """Record this teammate's endorsement of an admission proposal."""
         provisioning.endorse_admission(

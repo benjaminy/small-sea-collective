@@ -379,6 +379,7 @@ def _run_full_invitation_flow(playground_dir, minio_server_gen, *, link_invitee_
     completion = complete_invitation_acceptance(
         root, alice_hex, "ProjectX", acceptance_b64
     )
+    assert completion.pop("admission_package") is not None
     assert completion == {
         "route_delivery": "imported",
         "route_reason": None,

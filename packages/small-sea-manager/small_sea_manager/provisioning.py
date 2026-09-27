@@ -6282,9 +6282,11 @@ def complete_invitation_acceptance(
     describe local processing only, and say nothing about whether the invitee's
     storage is reachable now.
 
-    Returns `{"route_delivery", "route_reason", "admission"}` where
-    `route_delivery` is `imported`, `missing`, `invalid`, or `conflict` and
-    `admission` is `finalized` or `pending`.
+    Returns `{"route_delivery", "route_reason", "admission",
+    "admission_package"}` where `route_delivery` is `imported`, `missing`,
+    `invalid`, or `conflict` and `admission` is `finalized` or `pending`.
+    `admission_package` holds the bytes from export_admission_package for the
+    inviter to deliver to the invitee, or None while admission is pending.
     """
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
@@ -6494,10 +6496,16 @@ def complete_invitation_acceptance(
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
     repo.commit("Recorded admission acceptance")
+    package = None
+    if admission == "finalized":
+        package = export_admission_package(
+            root_dir, participant_hex, team_name, acceptance_record_id
+        )
     return {
         "route_delivery": route_delivery,
         "route_reason": route_reason,
         "admission": admission,
+        "admission_package": package,
     }
 
 

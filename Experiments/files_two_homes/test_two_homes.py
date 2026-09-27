@@ -160,7 +160,8 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
             bob_root, bob, bob_berth, bob_cloud, location=f"ss-{bob_berth[:16]}"
         )
         bob_http.post("/cloud/setup", headers={"Authorization": f"Bearer {bob_token}"}).raise_for_status()
-        provisioning.complete_invitation_acceptance(alice_root, alice, TEAM, acceptance)
+        completion = provisioning.complete_invitation_acceptance(alice_root, alice, TEAM, acceptance)
+        assert manager.import_admission_package(TEAM, completion["admission_package"])
 
         alice_files = tmp_path / "alice-files"
         bob_files = tmp_path / "bob-files"
@@ -227,6 +228,28 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         assert report["session_app_name"] == sync.HUB_APP_NAME
         assert report["session_berth_id"] == bob_berth
         assert report["context_team_id"] == bob_context.team_id
+
+        # Bob publishes a signed commit of his own, then asks his own Hub to
+        # judge his Files history.
+        monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "bob-files.toml"))
+        (bob_checkout / "bob.txt").write_text("from bob\n")
+        bob_signer = sync.commit_signer(TEAM, bob_port, _http_client=bob_http)
+        files.publish(bob_files, bob, bob_context, "docs", bob_checkout,
+                      message="bob's note", signer=bob_signer)
+        bob_git_dir = files._niche_git_dir(bob_files, bob_context, "docs")
+        bob_head = subprocess.run(
+            ["git", "--git-dir", str(bob_git_dir), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        bob_session = sync.get_team_session(TEAM, bob_port, _http_client=bob_http)
+        verdicts = bob_session.verify_history(bob_git_dir, bob_head)
+        by_commit = {v["commit"]: v for v in verdicts["commits"]}
+        assert by_commit[bob_head]["result"] == "authorized", by_commit[bob_head]
+        # Bob's merges fast-forwarded, so his head is his only commit. Alice's
+        # two commits come back missing_authority ("signing key has no
+        # delegation in this view"): her workhorse delegation lives only in
+        # her own Core until Core integration (gh #228) exists.
+        assert {v["result"] for c, v in by_commit.items() if c != bob_head} == {"missing_authority"}
         print(json.dumps({
             "alice_hub_pid": alice_process.pid,
             "bob_hub_pid_before": first_bob_pid,
