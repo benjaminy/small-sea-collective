@@ -25,7 +25,7 @@ from small_sea_manager.provisioning import (
 
 ALICE_CLOUD = {
     "protocol": "localfolder",
-    "url": "file:///tmp/fake-alice",
+    "url": "/tmp/fake-alice",
     "access_key": None,
     "secret_key": None,
 }
