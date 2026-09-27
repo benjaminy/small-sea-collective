@@ -35,10 +35,7 @@ CREATE TABLE IF NOT EXISTS invitation (
     role TEXT NOT NULL DEFAULT 'steward',
     created_at TEXT NOT NULL,
     accepted_at TEXT,
-    accepted_by BLOB,
-    acceptor_device_key_id BLOB,
-    acceptor_protocol TEXT,
-    acceptor_url TEXT
+    accepted_by BLOB
 );
 
 CREATE TABLE IF NOT EXISTS team_setting (

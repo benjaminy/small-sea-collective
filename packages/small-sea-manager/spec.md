@@ -763,11 +763,6 @@ route presence part of the acceptance protocol. For now, stripping and stale
 valid replay are surfaced denial-of-service risks; the stronger association and
 a repair path are follow-up work.
 
-The vestigial `invitation.acceptor_protocol`, `acceptor_url`, and
-`acceptor_device_key_id` columns are the fossil of the pre-announcement
-first-contact route channel. The sidecar supersedes them; removing them is
-separate cleanup.
-
 #### Complete invitation transcript (inviter side)
 
 Takes the invitee's out-of-band acceptance blob. The inviter:
