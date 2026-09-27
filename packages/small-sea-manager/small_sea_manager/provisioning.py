@@ -25,10 +25,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
     Ed25519PublicKey,
 )
 from cryptography.hazmat.primitives import serialization
-from sqlalchemy import Column, LargeBinary, String, create_engine, event, text
-from sqlalchemy.orm import Session, declarative_base
-
-Base = declarative_base()
+from sqlalchemy import create_engine, event, text
 
 import shutil
 
@@ -2085,109 +2082,6 @@ def _store_from_descriptor(remote_descriptor: dict):
     )
 
 
-# ---- SQLAlchemy models for per-user core.db ----
-
-
-class UserDevice(Base):
-    __tablename__ = "user_device"
-
-    id = Column(LargeBinary, primary_key=True)
-    bootstrap_encryption_key = Column(LargeBinary, nullable=False)
-    signing_key = Column(LargeBinary, nullable=False)
-
-    def __repr__(self):
-        return f"<UserDevice(id='{self.id.hex()}')>"
-
-
-class Nickname(Base):
-    __tablename__ = "nickname"
-
-    id = Column(LargeBinary, primary_key=True)
-    name = Column(String, nullable=False)
-
-    def __repr__(self):
-        return f"<Nickname(id='{self.id.hex()}')>"
-
-
-class Team(Base):
-    __tablename__ = "team"
-
-    id = Column(LargeBinary, primary_key=True)
-    name = Column(String, nullable=False)
-    self_in_team = Column(LargeBinary, nullable=False)
-
-    def __repr__(self):
-        return f"<Team(id='{self.id.hex()}')>"
-
-
-class App(Base):
-    __tablename__ = "app"
-
-    id = Column(LargeBinary, primary_key=True)
-    name = Column(String, nullable=False)
-
-    def __repr__(self):
-        return f"<App(id='{self.id.hex()}')>"
-
-
-class TeamAppBerth(Base):
-    __tablename__ = "team_app_berth"
-
-    id = Column(LargeBinary, primary_key=True)
-    team_id = Column(LargeBinary, nullable=False)
-    app_id = Column(LargeBinary, nullable=False)
-
-    def __repr__(self):
-        return f"<TeamAppBerth(id='{self.id.hex()}')>"
-
-
-class NotificationService(Base):
-    __tablename__ = "notification_service"
-
-    id = Column(LargeBinary, primary_key=True)
-    protocol = Column(String, nullable=False)
-    url = Column(String, nullable=False)
-    access_key = Column(String, nullable=True)   # Gotify app token; ntfy auth token
-    access_token = Column(String, nullable=True)  # Gotify client token
-
-    def __repr__(self):
-        return f"<NotificationService(id='{self.id.hex()}')>"
-
-
-# ---- SQLAlchemy models for per-team core.db ----
-
-
-class Invitation(Base):
-    __tablename__ = "invitation"
-
-    id = Column(LargeBinary, primary_key=True)
-    nonce = Column(LargeBinary, nullable=False)
-    status = Column(String, nullable=False, default="pending")
-    invitee_label = Column(String)
-    role = Column(String, nullable=False, default="steward")
-    created_at = Column(String, nullable=False)
-    accepted_at = Column(String)
-    accepted_by = Column(LargeBinary)
-    acceptor_device_key_id = Column(LargeBinary)
-    acceptor_protocol = Column(String)
-    acceptor_url = Column(String)
-
-    def __repr__(self):
-        return f"<Invitation(id='{self.id.hex()}', status='{self.status}')>"
-
-
-class TeamDevice(Base):
-    __tablename__ = "team_device"
-
-    device_key_id = Column(LargeBinary, primary_key=True)
-    teammate_id = Column(LargeBinary, nullable=False)
-    public_key = Column(LargeBinary, nullable=False)
-    created_at = Column(String, nullable=False)
-
-    def __repr__(self):
-        return f"<TeamDevice(device_key_id='{self.device_key_id.hex()}')>"
-
-
 # ---- Constants ----
 
 TEAM_SCHEMA_VERSION = 67
@@ -2660,12 +2554,6 @@ def migrate_participant_team_dbs(root_dir, participant_hex):
         )
         if team_db_path.exists():
             ensure_team_db_schema(team_db_path)
-
-
-def _initialize_core_note_to_self_schema(conn):
-    raise NotImplementedError(
-        "NoteToSelf shared-schema initialization now lives in small_sea_note_to_self.db"
-    )
 
 
 def make_device_link_invitation(session):
