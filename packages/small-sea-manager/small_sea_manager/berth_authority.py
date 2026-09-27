@@ -30,7 +30,7 @@ Rules of view version 1:
   work under the verifier's own current selection; it says nothing about
   whether the signer had authority when the work was made. The signer's
   `WorkContext.authority_view` is evidence only.
-- Enrollment grants no purposes.
+- Enrollment grants no workhorse signing authority.
   Only a workhorse delegation (decision D4) lets a workhorse key sign work, and
   only when a device of a teammate holding the berth signed it.
 """
@@ -65,7 +65,7 @@ from wrasse_trust.keys import key_id_from_public
 
 
 VIEW_VERSION = b"ssc-transitional-authority-view/1"
-DELEGATION_VERSION = 1
+DELEGATION_VERSION = 2
 
 
 class MissingAuthorityAnchor(Exception):
@@ -97,24 +97,19 @@ def _normalized_ed25519_ssh_key(key: str) -> str:
 
 @dataclass(frozen=True)
 class WorkhorseDelegation:
-    """A team-device key grants purposes on one berth to a workhorse key.
+    """A team-device key grants one workhorse key authority on a berth.
 
     The record carries no timestamp: a date cannot establish authority.
     """
 
     team_id: bytes
     berth_id: bytes
-    purposes: tuple
     workhorse_public_key: str
     delegator_teammate_id: bytes
     delegator_public_key: bytes
     signature: bytes = b""
 
     def canonical(self) -> bytes:
-        purposes = list(self.purposes)
-        if (not purposes or purposes != sorted(set(purposes))
-                or not all(is_valid_purpose(purpose) for purpose in purposes)):
-            raise DelegationError("purposes must be a nonempty sorted set of known purposes")
         if self.workhorse_public_key != _normalized_ed25519_ssh_key(self.workhorse_public_key):
             raise DelegationError("workhorse key is not in normalized OpenSSH form")
         return json.dumps(
@@ -123,7 +118,6 @@ class WorkhorseDelegation:
                 "version": DELEGATION_VERSION,
                 "team_id": self.team_id.hex(),
                 "berth_id": self.berth_id.hex(),
-                "purposes": purposes,
                 "workhorse_public_key": self.workhorse_public_key,
                 "delegator_teammate_id": self.delegator_teammate_id.hex(),
                 "delegator_public_key": self.delegator_public_key.hex(),
@@ -148,14 +142,13 @@ class WorkhorseDelegation:
 
 
 def sign_workhorse_delegation(
-    *, team_id, berth_id, purposes, workhorse_public_key,
+    *, team_id, berth_id, workhorse_public_key,
     delegator_teammate_id, delegator_private_key,
 ) -> WorkhorseDelegation:
     private_key = Ed25519PrivateKey.from_private_bytes(delegator_private_key)
     unsigned = WorkhorseDelegation(
         team_id=team_id,
         berth_id=berth_id,
-        purposes=tuple(sorted(set(purposes))),
         workhorse_public_key=_normalized_ed25519_ssh_key(workhorse_public_key),
         delegator_teammate_id=delegator_teammate_id,
         delegator_public_key=private_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw),
@@ -411,6 +404,9 @@ def evaluate(view: TransitionalView, context: WorkContext | None, evidence: Sign
     ):
         return decide(AuthorityResult.WRONG_SCOPE, "signed context names a different scope")
 
+    if not is_valid_purpose(context.purpose):
+        return decide(AuthorityResult.WRONG_SCOPE, "invalid work purpose")
+
     keyed = [d for d in view.delegations if ssh_fingerprint(d.workhorse_public_key) == evidence.fingerprint]
     here = [d for d in keyed if d.team_id == team_id and d.berth_id == berth_id]
     if not here:
@@ -421,10 +417,7 @@ def evaluate(view: TransitionalView, context: WorkContext | None, evidence: Sign
     ids = [d.record_id for d in here]
     if len({d.delegator_teammate_id for d in here}) > 1:
         return decide(AuthorityResult.AMBIGUOUS_AUTHORITY, "several teammates delegated this key", ids)
-    covering = [d for d in here if purpose in d.purposes]
-    if not covering:
-        return decide(AuthorityResult.WRONG_SCOPE, "no delegation covers this purpose", ids)
-    if all(view.holds(d.delegator_teammate_id, berth_id) is not Standing.HELD for d in covering):
+    if all(view.holds(d.delegator_teammate_id, berth_id) is not Standing.HELD for d in here):
         return decide(AuthorityResult.AMBIGUOUS_AUTHORITY, "delegator's berth authority is ambiguous", ids)
     return decide(AuthorityResult.AUTHORIZED, "delegated by a berth holder",
-                  [d.record_id for d in covering])
+                  ids)

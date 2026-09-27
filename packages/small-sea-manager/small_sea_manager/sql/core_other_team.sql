@@ -243,7 +243,7 @@ CREATE TABLE IF NOT EXISTS device_prekey_bundle (
     FOREIGN KEY (device_key_id) REFERENCES team_device(device_key_id) ON DELETE CASCADE
 );
 
--- A team-device key's grant of purposes on one berth to its own device's
+-- A team-device key's grant of one berth to its own device's
 -- workhorse signing key (issue #266, D4). Signed and verified by
 -- small_sea_manager.berth_authority. team_id is implicit in a team DB but
 -- is part of the signed bytes. Append-only: there is no revocation yet.
@@ -251,7 +251,6 @@ CREATE TABLE IF NOT EXISTS workhorse_delegation (
     record_id BLOB PRIMARY KEY,
     schema_version INTEGER NOT NULL,
     berth_id BLOB NOT NULL,
-    purposes_json TEXT NOT NULL,
     workhorse_public_key TEXT NOT NULL,
     delegator_teammate_id BLOB NOT NULL,
     delegator_public_key BLOB NOT NULL,

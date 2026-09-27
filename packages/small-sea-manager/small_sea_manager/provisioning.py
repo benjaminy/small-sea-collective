@@ -2190,7 +2190,7 @@ class TeamDevice(Base):
 
 # ---- Constants ----
 
-USER_SCHEMA_VERSION = 66
+USER_SCHEMA_VERSION = 67
 
 
 # ---- Provisioning functions ----
@@ -5313,7 +5313,7 @@ def _load_transitional_view(conn, team_id: bytes, anchor_public_key: bytes):
     delegations = []
     for row in conn.execute(
         text(
-            "SELECT schema_version, berth_id, purposes_json, workhorse_public_key, "
+            "SELECT schema_version, berth_id, workhorse_public_key, "
             "delegator_teammate_id, delegator_public_key, signature FROM workhorse_delegation"
         )
     ).fetchall():
@@ -5323,11 +5323,10 @@ def _load_transitional_view(conn, team_id: bytes, anchor_public_key: bytes):
             berth_authority.WorkhorseDelegation(
                 team_id=team_id,
                 berth_id=row[1],
-                purposes=tuple(json.loads(row[2])),
-                workhorse_public_key=row[3],
-                delegator_teammate_id=row[4],
-                delegator_public_key=row[5],
-                signature=row[6],
+                workhorse_public_key=row[2],
+                delegator_teammate_id=row[3],
+                delegator_public_key=row[4],
+                signature=row[5],
             )
         )
     return berth_authority.build_view(
@@ -5427,8 +5426,8 @@ def load_transitional_authority_view(root_dir, participant_hex, team_name):
         engine.dispose()
 
 
-def delegate_workhorse_purposes(root_dir, participant_hex, team_name, berth_id, purposes) -> bytes:
-    """Sign and store a delegation of `purposes` on `berth_id` to this device's workhorse key.
+def delegate_workhorse_key(root_dir, participant_hex, team_name, berth_id) -> bytes:
+    """Sign and store a delegation of `berth_id` to this device's workhorse key.
 
     This device's team-device key signs it, and only if this device's teammate
     holds the berth unambiguously under the view rooted at this device's
@@ -5443,7 +5442,6 @@ def delegate_workhorse_purposes(root_dir, participant_hex, team_name, berth_id, 
     delegation = berth_authority.sign_workhorse_delegation(
         team_id=team_id,
         berth_id=berth_id,
-        purposes=purposes,
         workhorse_public_key=get_workhorse_signing_public_key(root_dir, participant_hex, berth_id),
         delegator_teammate_id=self_in_team,
         delegator_private_key=private_key,
@@ -5460,15 +5458,14 @@ def delegate_workhorse_purposes(root_dir, participant_hex, team_name, berth_id, 
             conn.execute(
                 text(
                     "INSERT OR IGNORE INTO workhorse_delegation (record_id, schema_version, "
-                    "berth_id, purposes_json, workhorse_public_key, delegator_teammate_id, "
+                    "berth_id, workhorse_public_key, delegator_teammate_id, "
                     "delegator_public_key, signature) VALUES (:record_id, :version, :berth_id, "
-                    ":purposes, :key, :delegator, :delegator_key, :signature)"
+                    ":key, :delegator, :delegator_key, :signature)"
                 ),
                 {
                     "record_id": delegation.record_id,
                     "version": berth_authority.DELEGATION_VERSION,
                     "berth_id": berth_id,
-                    "purposes": json.dumps(list(delegation.purposes)),
                     "key": delegation.workhorse_public_key,
                     "delegator": self_in_team,
                     "delegator_key": public_key,
@@ -5479,7 +5476,7 @@ def delegate_workhorse_purposes(root_dir, participant_hex, team_name, berth_id, 
         engine.dispose()
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
-    repo.commit(f"Delegate {', '.join(delegation.purposes)} on berth {berth_id.hex()} to workhorse key")
+    repo.commit(f"Delegate berth {berth_id.hex()} to workhorse key")
     return delegation.record_id
 
 

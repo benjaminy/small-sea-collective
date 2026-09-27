@@ -1,6 +1,7 @@
 """Micro tests for the transitional berth-authority view and evaluator (#266)."""
 
 import os
+import json
 import pathlib
 import sqlite3
 import subprocess
@@ -17,6 +18,7 @@ from cod_sync.verify import SignatureEvidence, SignatureEvidenceKind, SshCommitV
 from cod_sync.work_context import WorkContext, commit_message_with_context, context_from_commit
 from small_sea_manager.berth_authority import (
     AuthorityResult as R,
+    DELEGATION_VERSION,
     MissingAuthorityAnchor,
     Standing,
     ModeChangeRecord,
@@ -75,10 +77,10 @@ class Team:
                           certs=self.certs, mode_changes=self.modes,
                           delegations=self.delegations, berth_ids=berth_ids)
 
-    def delegate(self, teammate_id, private, purposes, berth=BERTH):
+    def delegate(self, teammate_id, private, berth=BERTH):
         _private, public = _workhorse()
         self.delegations.append(sign_workhorse_delegation(
-            team_id=TEAM, berth_id=berth, purposes=purposes, workhorse_public_key=public,
+            team_id=TEAM, berth_id=berth, workhorse_public_key=public,
             delegator_teammate_id=teammate_id, delegator_private_key=private))
         return public
 
@@ -92,29 +94,60 @@ def _judge(view, workhorse_public, purpose="SmallSeaCollectiveFiles/content", ki
 
 def test_bootstrap_grant_scope():
     team = Team()
-    alice_key = team.delegate(team.alice_id, team.alice_private, ["SmallSeaCollectiveFiles/content"])
+    alice_key = team.delegate(team.alice_id, team.alice_private)
     # Identity-only enrollment: Bob is a trusted member but holds no berth.
-    bob_key = team.delegate(team.bob_id, team.bob_private, ["SmallSeaCollectiveFiles/content"])
+    bob_key = team.delegate(team.bob_id, team.bob_private)
     view = team.view()
     assert _judge(view, alice_key).result is R.AUTHORIZED
     assert _judge(view, bob_key).result is R.MISSING_AUTHORITY
-    assert _judge(view, alice_key, purpose="SmallSeaCollectiveFiles/registry").result is R.WRONG_SCOPE
 
     # A forged genesis: Mallory self-issues a membership and delegates to herself.
     mallory, mallory_private = _device()
     mallory_id = b"M" * 16
     team.certs.append(issue_membership_cert(mallory, mallory, mallory_private, TEAM,
                                             mallory_id, mallory_id))
-    mallory_key = team.delegate(mallory_id, mallory_private, ["SmallSeaCollectiveFiles/content"])
+    mallory_key = team.delegate(mallory_id, mallory_private)
     assert _judge(team.view(), mallory_key).result is R.MISSING_AUTHORITY
     # Adopting a different anchor is a different view, not a verification of Alice's.
     assert team.view(anchor=mallory.public_key).identifier != team.view().identifier
 
 
+def test_delegation_authorizes_any_valid_purpose_on_berth():
+    team = Team()
+    key = team.delegate(team.alice_id, team.alice_private)
+    view = team.view()
+    assert _judge(view, key, purpose="SmallSeaCollectiveFiles/content").result is R.AUTHORIZED
+    assert _judge(view, key, purpose="SmallSeaCollectiveFiles/registry").result is R.AUTHORIZED
+    assert _judge(view, key, purpose="invalid purpose").result is R.WRONG_SCOPE
+
+
+def test_delegation_does_not_cover_other_berth():
+    team = Team()
+    key = team.delegate(team.alice_id, team.alice_private, berth=OTHER_BERTH)
+    assert _judge(team.view(), key).result is R.WRONG_SCOPE
+
+
+def test_delegation_signed_bytes_have_no_purposes():
+    team = Team()
+    team.delegate(team.alice_id, team.alice_private)
+    delegation = team.delegations[0]
+    signed = json.loads(delegation.canonical())
+    assert "purposes" not in signed
+    assert signed["version"] == DELEGATION_VERSION
+    assert delegation.signature_valid()
+    signed["version"] += 1
+    public = Ed25519PrivateKey.from_private_bytes(team.alice_private).public_key()
+    from cryptography.exceptions import InvalidSignature
+    with pytest.raises(InvalidSignature):
+        public.verify(delegation.signature, json.dumps(
+            signed, sort_keys=True, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii"))
+
+
 def test_each_result_is_reachable():
     team = Team()
-    alice_key = team.delegate(team.alice_id, team.alice_private, ["SmallSeaCollectiveFiles/content"])
-    other_key = team.delegate(team.alice_id, team.alice_private, ["SmallSeaCollectiveFiles/content"], berth=OTHER_BERTH)
+    alice_key = team.delegate(team.alice_id, team.alice_private)
+    other_key = team.delegate(team.alice_id, team.alice_private, berth=OTHER_BERTH)
     view = team.view()
     assert _judge(view, alice_key).result is R.AUTHORIZED
     for kind in (SignatureEvidenceKind.UNSIGNED, SignatureEvidenceKind.INVALID):
@@ -127,7 +160,7 @@ def test_each_result_is_reachable():
     # Alice grants Bob the berth, then a second record says proposal-only.
     # Without a Constitution DAG the two cannot be ordered: ambiguous.
     team.modes.append(_mode(team.alice_id, team.alice, team.alice_private, team.bob_id, BERTH, "automatic"))
-    bob_key = team.delegate(team.bob_id, team.bob_private, ["SmallSeaCollectiveFiles/content"])
+    bob_key = team.delegate(team.bob_id, team.bob_private)
     assert _judge(team.view(), bob_key).result is R.AUTHORIZED
     team.modes.append(_mode(team.alice_id, team.alice, team.alice_private, team.bob_id, BERTH, "proposal-only"))
     decision = _judge(team.view(), bob_key)
@@ -137,17 +170,17 @@ def test_each_result_is_reachable():
 
 def test_view_identifier_tracks_only_relevant_records():
     team = Team()
-    team.delegate(team.alice_id, team.alice_private, ["SmallSeaCollectiveFiles/content"])
+    team.delegate(team.alice_id, team.alice_private)
     before = team.view().identifier
     assert before.startswith(b"ssc-transitional-authority-view/1:")
     assert team.view().identifier == before
 
     # Records that do not enter the view leave its identifier alone.
-    team.delegate(team.bob_id, team.bob_private, ["SmallSeaCollectiveFiles/content"])  # Bob holds nothing
+    team.delegate(team.bob_id, team.bob_private)  # Bob holds nothing
     mallory, mallory_private = _device()
     team.certs.append(issue_membership_cert(mallory, mallory, mallory_private, TEAM, b"M" * 16, b"M" * 16))
     tampered = team.delegations[0]
-    team.delegations.append(type(tampered)(**{**tampered.__dict__, "purposes": ("SmallSeaCollectiveFiles/merge",)}))
+    team.delegations.append(type(tampered)(**{**tampered.__dict__, "berth_id": OTHER_BERTH,}))
     team.certs.reverse()
     assert team.view().identifier == before
 
@@ -176,7 +209,7 @@ def test_manager_stores_self_delegation_in_team_core(playground_dir, monkeypatch
 
     before = provisioning.load_transitional_authority_view(root, participant, "ProjectX")
     assert before.delegations == ()
-    provisioning.delegate_workhorse_purposes(root, participant, "ProjectX", berth, ["SmallSeaCollectiveFiles/content"])
+    provisioning.delegate_workhorse_key(root, participant, "ProjectX", berth)
     view = provisioning.load_transitional_authority_view(root, participant, "ProjectX")
     assert view.identifier != before.identifier
     status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True,
@@ -220,7 +253,7 @@ def test_self_grants_and_cycles_do_not_escape_ambiguity():
     grant(carol_id, carol, carol_private, carol_id, "automatic")
     # A cycle: Carol grants Bob back; Bob is still directly conflicted.
     grant(carol_id, carol, carol_private, team.bob_id, "automatic")
-    carol_key = team.delegate(carol_id, carol_private, ["SmallSeaCollectiveFiles/content"])
+    carol_key = team.delegate(carol_id, carol_private)
     view = team.view()
     assert view.holds(team.bob_id, BERTH) is Standing.AMBIGUOUS
     assert view.holds(carol_id, BERTH) is Standing.AMBIGUOUS
@@ -243,7 +276,7 @@ def test_absent_anchor_pauses(playground_dir):
         provisioning.load_transitional_authority_view(root, participant, "ProjectX")
     berth = provisioning.derive_team_join_state(root, participant, "ProjectX")["berth_id"]
     with pytest.raises(MissingAuthorityAnchor):
-        provisioning.delegate_workhorse_purposes(root, participant, "ProjectX", berth, ["core"])
+        provisioning.delegate_workhorse_key(root, participant, "ProjectX", berth)
 
 
 def test_linked_device_adopts_anchor_from_signed_bootstrap(playground_dir, minio_server_gen):
@@ -255,7 +288,7 @@ def test_linked_device_adopts_anchor_from_signed_bootstrap(playground_dir, minio
     team_id, _ = provisioning._team_row(root_b, alice_hex, LINKED_TEAM)
     assert provisioning.get_authority_anchor(root_b, alice_hex, team_id) is None
     with pytest.raises(MissingAuthorityAnchor):
-        provisioning.delegate_workhorse_purposes(root_b, alice_hex, LINKED_TEAM, b"x" * 16, ["core"])
+        provisioning.delegate_workhorse_key(root_b, alice_hex, LINKED_TEAM, b"x" * 16)
 
     prepared = manager_b.prepare_linked_device_team_join(LINKED_TEAM)
     created = manager_a.create_linked_device_bootstrap(LINKED_TEAM, prepared["join_request_bundle"])
