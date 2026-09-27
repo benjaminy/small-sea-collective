@@ -5,6 +5,6 @@
      hx-swap="outerHTML"
      style="display:none">
 </div>
-<div id="admission-events-{{ team_name }}" hx-swap-oob="outerHTML">
+{% with oob = true %}
   {% include "fragments/admission_events.html" %}
-</div>
+{% endwith %}

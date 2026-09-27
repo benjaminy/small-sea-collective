@@ -337,6 +337,18 @@ def test_admission_watch_endpoint_stays_fast_when_hub_wait_succeeds(playground_d
     assert 'load delay:0.2s' in response.text
 
 
+def test_admission_watch_response_has_one_oob_events_root(playground_dir):
+    participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_team(playground_dir, participant_hex, "ProjectX")
+    client = TestClient(create_app(playground_dir, participant_hex))
+
+    response = client.get("/teams/ProjectX/admission-events/watch")
+
+    assert response.status_code == 200
+    assert response.text.count('id="admission-events-ProjectX"') == 1
+    assert '<div id="admission-events-ProjectX" hx-swap-oob="outerHTML">' in response.text
+
+
 def test_cloud_storage_listing_survives_the_device_local_credential_join(playground_dir):
     """Regression: `ORDER BY rowid` was ambiguous once the query joined
     `local.cloud_storage_credential`, so the whole panel — provider list and
