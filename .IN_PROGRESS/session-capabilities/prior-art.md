@@ -197,3 +197,15 @@ When authority is missing or disputed, Small Sea can preserve the work and pause
 - Who may delegate an app-defined purpose, and what does the approval display promise about its meaning?
 - Does revocation reject previously unseen old work, future work, or both?
 - Which concrete encryption operations do apps need?
+## Owner decisions (2026-09-26)
+
+Prefer something simple and sensible now; defer richer ideas.
+
+- **An app is identified by its name.** The name is not a secret and proves nothing about the executable. Instead, the Manager shows the user every app it knows about, so a lookalike name stands out.
+- **No capability scopes inside an app, for now.** An approved session for an app on a team can use every crypto operation the framework offers on that app's berth. Different sessions of one app do not get different permissions.
+- **Consent stays where it is: the session PIN approval.** No separate grant step and no per-use confirmation.
+- **Purpose labels are the app's business.** The framework checks only that a label belongs to the session's app (for example, that it is namespaced by the app name), not what it means.
+
+Deferred: per-feature or per-client scopes, per-use confirmation, grants remembered beyond sessions, authenticating the executable behind an app name.
+
+Still open: what revocation rejects (unseen old work, future work, or both), and which encryption operations apps need (task 39 inventory).
