@@ -319,6 +319,25 @@ class SmallSeaClient:
         _check_response(resp)
         return resp.json()
 
+    def _delete(
+        self,
+        path: str,
+        *,
+        token: Optional[str] = None,
+    ):
+        headers = {}
+        if token is not None:
+            headers["Authorization"] = f"Bearer {token}"
+        try:
+            if self._http_client is not None:
+                resp = self._http_client.delete(path, headers=headers)
+            else:
+                resp = httpx.delete(f"{self._base_url}{path}", headers=headers)
+        except httpx.ConnectError:
+            raise SmallSeaHubUnavailable()
+        _check_response(resp)
+        return resp.json()
+
 
 class SmallSeaSession:
     """An authenticated session with the Hub, scoped to one berth."""
@@ -334,6 +353,23 @@ class SmallSeaSession:
         return self._token
 
     # ---- Session info ----
+
+    def list_sessions(self) -> list[dict]:
+        """List this participant's confirmed Hub sessions, without tokens.
+
+        Only a caller whose own session is on NoteToSelf may call this;
+        other sessions raise SmallSeaError with code "session_admin_not_allowed".
+        """
+        return self._client._get("/sessions/confirmed", token=self._token)
+
+    def delete_session(self, session_id: str) -> None:
+        """Delete one of this participant's confirmed Hub sessions by id.
+
+        Raises SmallSeaNotFound if the id names no session belonging to this
+        participant. Only a caller whose own session is on NoteToSelf may
+        call this.
+        """
+        self._client._delete(f"/sessions/confirmed/{session_id}", token=self._token)
 
     def session_info(self) -> dict:
         """Return metadata for this session: participant_hex, team_name, app_name, berth_id, client."""

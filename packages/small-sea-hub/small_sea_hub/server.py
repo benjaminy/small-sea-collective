@@ -908,6 +908,35 @@ async def session_info(session_hex: str = Depends(_require_session)):
     }
 
 
+def _require_note_to_self_session(session_hex: str = Depends(_require_session)):
+    """Require the caller's own session to be on NoteToSelf.
+
+    Dev shortcut (issue #282): only a participant's NoteToSelf session may
+    list or delete that participant's confirmed sessions.
+    """
+    ss_session = app.state.backend._lookup_session(session_hex)
+    if ss_session.team_name != "NoteToSelf":
+        raise HTTPException(status_code=403, detail={"code": "session_admin_not_allowed"})
+    return ss_session
+
+
+@app.get("/sessions/confirmed")
+async def list_confirmed_sessions(ss_session=Depends(_require_note_to_self_session)):
+    return app.state.backend.list_confirmed_sessions(ss_session.participant_id)
+
+
+@app.delete("/sessions/confirmed/{session_id}")
+async def delete_confirmed_session(
+    session_id: str, ss_session=Depends(_require_note_to_self_session)
+):
+    deleted = app.state.backend.delete_confirmed_session(
+        ss_session.participant_id, session_id
+    )
+    if not deleted:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found"})
+    return {"ok": True}
+
+
 class SignCommitReq(pydantic.BaseModel):
     purpose: str
     payload: str

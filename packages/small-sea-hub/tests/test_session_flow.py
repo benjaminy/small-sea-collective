@@ -406,3 +406,144 @@ def test_session_peers(playground_dir):
     assert peers[0]["teammate_id"] == bob_teammate_id.hex()
     assert peers[0]["name"] == "Bob"
     assert peers[0]["label"] == "Bob"
+
+
+def test_list_confirmed_sessions_via_note_to_self(playground_dir):
+    """A participant's NoteToSelf session can list their confirmed sessions, without tokens."""
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    Provisioning.create_new_participant(playground_dir, "alice")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    nts_session_hex = _request_and_confirm(client, mode="passthrough")
+
+    resp = client.get(
+        "/sessions/confirmed",
+        headers={"Authorization": f"Bearer {nts_session_hex}"},
+    )
+    assert resp.status_code == 200
+    sessions = resp.json()
+    assert len(sessions) == 1
+    row = sessions[0]
+    assert set(row.keys()) == {
+        "id", "team_name", "app_name", "client", "mode", "created_at", "duration_sec",
+    }
+    assert row["team_name"] == "NoteToSelf"
+    assert nts_session_hex not in str(row)  # no token anywhere in the response
+
+
+def test_delete_confirmed_session_makes_token_unknown(playground_dir):
+    """Deleting a confirmed session makes its token behave as unknown afterward."""
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    alice_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    nts_session_hex = _request_and_confirm(client, mode="passthrough")
+    other_session_hex = _request_and_confirm(client, team="ProjectX", mode="passthrough")
+
+    sessions = client.get(
+        "/sessions/confirmed",
+        headers={"Authorization": f"Bearer {nts_session_hex}"},
+    ).json()
+    target = next(s for s in sessions if s["team_name"] == "ProjectX")
+
+    resp = client.delete(
+        f"/sessions/confirmed/{target['id']}",
+        headers={"Authorization": f"Bearer {nts_session_hex}"},
+    )
+    assert resp.status_code == 200
+
+    resp = client.get(
+        "/session/info",
+        headers={"Authorization": f"Bearer {other_session_hex}"},
+    )
+    assert resp.status_code == 401
+
+
+def test_confirmed_sessions_require_note_to_self_session(playground_dir):
+    """A caller whose own session is not on NoteToSelf gets 403 on list and delete."""
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    alice_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    project_session_hex = _request_and_confirm(client, team="ProjectX", mode="passthrough")
+
+    resp = client.get(
+        "/sessions/confirmed",
+        headers={"Authorization": f"Bearer {project_session_hex}"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "session_admin_not_allowed"
+
+    resp = client.delete(
+        f"/sessions/confirmed/{'00' * 16}",
+        headers={"Authorization": f"Bearer {project_session_hex}"},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["detail"]["code"] == "session_admin_not_allowed"
+
+
+def test_delete_unknown_confirmed_session_is_404(test_env):
+    """Deleting an id that names no session gives 404 session_not_found."""
+    client = test_env["client"]
+    nts_session_hex = _request_and_confirm(client, mode="passthrough")
+
+    resp = client.delete(
+        f"/sessions/confirmed/{'00' * 16}",
+        headers={"Authorization": f"Bearer {nts_session_hex}"},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "session_not_found"
+
+
+def test_cannot_delete_another_participants_session(playground_dir):
+    """A participant's NoteToSelf session cannot delete another participant's session."""
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_new_participant(playground_dir, "bob")
+    app.state.backend = backend
+    client = TestClient(app)
+
+    alice_nts_hex = _request_and_confirm(client, participant="alice", mode="passthrough")
+    bob_nts_hex = _request_and_confirm(client, participant="bob", mode="passthrough")
+
+    bob_sessions = client.get(
+        "/sessions/confirmed",
+        headers={"Authorization": f"Bearer {bob_nts_hex}"},
+    ).json()
+    bob_session_id = bob_sessions[0]["id"]
+
+    resp = client.delete(
+        f"/sessions/confirmed/{bob_session_id}",
+        headers={"Authorization": f"Bearer {alice_nts_hex}"},
+    )
+    assert resp.status_code == 404
+    assert resp.json()["detail"]["code"] == "session_not_found"
+
+
+def test_list_sessions_via_client(playground_dir):
+    """SmallSeaSession.list_sessions()/delete_session() wrap the confirmed-sessions endpoints."""
+    from small_sea_client.client import SmallSeaClient, SmallSeaSession
+
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    Provisioning.create_new_participant(playground_dir, "alice")
+    app.state.backend = backend
+    http = TestClient(app)
+
+    session_hex = _request_and_confirm(http, mode="passthrough")
+    sc = SmallSeaClient(_http_client=http)
+    session = SmallSeaSession(sc, session_hex)
+
+    sessions = session.list_sessions()
+    assert len(sessions) == 1
+    session.delete_session(sessions[0]["id"])
+
+    info_resp = http.get(
+        "/session/info",
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+    assert info_resp.status_code == 401

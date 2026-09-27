@@ -925,6 +925,60 @@ class SmallSeaBackend:
                 for r in rows
             ]
 
+    def list_confirmed_sessions(self, participant_id: bytes) -> list[dict]:
+        """List this participant's confirmed sessions, without tokens.
+
+        The id field lets a caller name one session to delete; it never
+        reveals the token, so returning this list cannot let anyone use a
+        session.
+        """
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+        with Session(engine_local) as sess:
+            rows = (
+                sess.query(SmallSeaSession)
+                .filter(SmallSeaSession.participant_id == participant_id)
+                .all()
+            )
+            return [
+                {
+                    "id": r.id.hex(),
+                    "team_name": r.team_name,
+                    "app_name": r.app_name,
+                    "client": r.client,
+                    "mode": r.mode,
+                    "created_at": r.created_at.isoformat(),
+                    "duration_sec": r.duration_sec,
+                }
+                for r in rows
+            ]
+
+    def delete_confirmed_session(self, participant_id: bytes, session_id_hex: str) -> bool:
+        """Delete a confirmed session belonging to this participant.
+
+        Returns True if a session was deleted, False if the id names no
+        session belonging to this participant (whether the id is unknown or
+        belongs to someone else).
+        """
+        try:
+            session_id = bytes.fromhex(session_id_hex)
+        except ValueError:
+            return False
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+        with Session(engine_local) as sess:
+            row = (
+                sess.query(SmallSeaSession)
+                .filter(
+                    SmallSeaSession.id == session_id,
+                    SmallSeaSession.participant_id == participant_id,
+                )
+                .first()
+            )
+            if row is None:
+                return False
+            sess.delete(row)
+            sess.commit()
+            return True
+
     def open_session(
         self, nickname, app, team, client, mode: Optional[str] = None
     ) -> bytes:
