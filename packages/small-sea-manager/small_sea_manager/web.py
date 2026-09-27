@@ -188,6 +188,24 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     def _mgr(request: Request) -> TeamManager:
         return request.app.state.manager
 
+    def _other_hub_sessions(mgr: TeamManager):
+        """List this participant's other confirmed Hub sessions, or None.
+
+        None means either there is no active NoteToSelf session to ask with,
+        or the Hub could not be asked; either way the card shows nothing new.
+        """
+        session = mgr.note_to_self_session_if_active()
+        if session is None:
+            return None
+        try:
+            own_id = session.session_info()["session_id"]
+            sessions = session.list_sessions()
+        except Exception:
+            return None
+        # Hide only this Manager's current session. Older Manager sessions
+        # stay listed: confirmed sessions never expire, so they pile up.
+        return [s for s in sessions if s["id"] != own_id]
+
     def _hub_connection_ctx(request: Request, error: str = None):
         mgr = _mgr(request)
         return templates.TemplateResponse(
@@ -197,6 +215,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "session_status": mgr.session_state(_NTS_TEAM, _PASSTHROUGH),
                 "session_error": error,
                 "session_mode_badge": _mode_badge(_PASSTHROUGH),
+                "other_sessions": _other_hub_sessions(mgr),
             },
         )
 
@@ -382,6 +401,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "teams": _teams_with_status(mgr),
                 "session_status": mgr.session_state(_NTS_TEAM, _PASSTHROUGH),
                 "session_error": None,
+                "other_sessions": _other_hub_sessions(mgr),
                 "sightings": None,
                 "nts_sources": mgr.note_to_self_conflict_status(),
                 "nts_notice": None,
@@ -437,6 +457,18 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     async def session_close(request: Request):
         mgr = _mgr(request)
         mgr.clear_session(_NTS_TEAM, mode=_PASSTHROUGH)
+        return _hub_connection_ctx(request)
+
+    @app.post("/session/other/{session_id}/delete", response_class=HTMLResponse)
+    async def session_delete_other(request: Request, session_id: str):
+        mgr = _mgr(request)
+        session = mgr.note_to_self_session_if_active()
+        if session is None:
+            return _hub_connection_ctx(request)
+        try:
+            session.delete_session(session_id)
+        except Exception as e:
+            return _hub_connection_ctx(request, error=str(e))
         return _hub_connection_ctx(request)
 
     # ------------------------------------------------------------------ #

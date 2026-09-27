@@ -898,6 +898,7 @@ async def session_info(session_hex: str = Depends(_require_session)):
     """
     ss_session = app.state.backend._lookup_session(session_hex)
     return {
+        "session_id": ss_session.id.hex(),
         "participant_hex": ss_session.participant_id.hex(),
         "team_name": ss_session.team_name,
         "team_id": ss_session.team_id.hex(),

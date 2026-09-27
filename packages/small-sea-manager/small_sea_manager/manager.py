@@ -291,6 +291,14 @@ class TeamManager:
     def get_pending_id(self, team: str, mode: str = "encrypted") -> str | None:
         return self._pending.get((team, mode))
 
+    def note_to_self_session_if_active(self):
+        """Return the confirmed NoteToSelf/passthrough session, or None.
+
+        Listing and deleting this participant's Hub sessions requires this
+        session, per the Hub's #282 shortcut.
+        """
+        return self._sessions.get(("NoteToSelf", "passthrough"))
+
     def _get_or_open_session(self, team: str, mode: str = "encrypted") -> "SmallSeaSession":
         """Return a confirmed session for (team, mode).
 

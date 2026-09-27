@@ -6,6 +6,9 @@
   <div class="hub-connection-body">
 
   {% if session_status == "active" %}
+    {% if session_error %}
+    <p class="notice notice-err" style="font-size:0.8rem; margin-bottom:0.35rem;">{{ session_error }}</p>
+    {% endif %}
     <div class="row">
       <span class="badge badge-green" style="font-size:0.72rem;">connected</span>
       {% if session_mode_badge %}
@@ -49,6 +52,22 @@
           hx-swap="outerHTML">
       <button class="btn btn-primary btn-sm">Connect</button>
     </form>
+  {% endif %}
+
+  {% if other_sessions %}
+  <div style="margin-top:0.5rem; border-top:1px solid #e7e5e4; padding-top:0.4rem;">
+    <div style="font-size:0.68rem; text-transform:uppercase; color:#78716c; margin-bottom:0.25rem;">Other sessions</div>
+    {% for s in other_sessions %}
+    <div class="row" style="font-size:0.78rem; margin-bottom:0.2rem;">
+      <span class="muted">{{ s.team_name }} / {{ s.app_name }} ({{ s.client }})</span>
+      <form hx-post="/session/other/{{ s.id }}/delete"
+            hx-target="#hub-connection"
+            hx-swap="outerHTML">
+        <button class="btn btn-secondary btn-sm" type="submit">Delete</button>
+      </form>
+    </div>
+    {% endfor %}
+  </div>
   {% endif %}
 
   </div>
