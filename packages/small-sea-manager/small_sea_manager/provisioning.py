@@ -6285,8 +6285,9 @@ def complete_invitation_acceptance(
     Returns `{"route_delivery", "route_reason", "admission",
     "admission_package"}` where `route_delivery` is `imported`, `missing`,
     `invalid`, or `conflict` and `admission` is `finalized` or `pending`.
-    `admission_package` holds the bytes from export_admission_package for the
-    inviter to deliver to the invitee, or None while admission is pending.
+    `admission_package` holds a copy-paste token wrapping the bytes from
+    export_admission_package for the inviter to deliver to the invitee, or
+    None while admission is pending.
     """
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
@@ -6496,16 +6497,17 @@ def complete_invitation_acceptance(
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
     repo.commit("Recorded admission acceptance")
-    package = None
+    package_token = None
     if admission == "finalized":
         package = export_admission_package(
             root_dir, participant_hex, team_name, acceptance_record_id
         )
+        package_token = encode_admission_package_token(package)
     return {
         "route_delivery": route_delivery,
         "route_reason": route_reason,
         "admission": admission,
-        "admission_package": package,
+        "admission_package": package_token,
     }
 
 
@@ -6592,6 +6594,46 @@ def export_admission_package(
     }
     signature = _sign_bytes(sender_private_key, _json_bytes(body))
     return _json_bytes({"body": body, "signature": signature.hex()})
+
+
+ADMISSION_PACKAGE_TOKEN_ENVELOPE = "admission_package_token"
+
+
+def encode_admission_package_token(package_bytes: bytes) -> str:
+    """Wrap a package's exported bytes as a copy-paste token.
+
+    Mirrors how an acceptance record travels as a token: the bytes and
+    signature inside are carried verbatim, base64-encoded so the whole thing
+    is one line of text.
+    """
+    return _tokenize(
+        {
+            "envelope": ADMISSION_PACKAGE_TOKEN_ENVELOPE,
+            "package": base64.b64encode(package_bytes).decode("ascii"),
+        }
+    )
+
+
+class AdmissionPackageTokenError(ValueError):
+    """A pasted string is not a well-formed admission package token."""
+
+
+def decode_admission_package_token(token: str) -> bytes:
+    """Return the package bytes a token was built from.
+
+    Raises `AdmissionPackageTokenError` for anything that is not a token in
+    this envelope; it does not check the package itself, which
+    `import_admission_package` verifies.
+    """
+    try:
+        envelope = _untokenize(token)
+        if envelope.get("envelope") != ADMISSION_PACKAGE_TOKEN_ENVELOPE:
+            raise AdmissionPackageTokenError("Not an admission package token")
+        return base64.b64decode(envelope["package"])
+    except AdmissionPackageTokenError:
+        raise
+    except Exception as exc:
+        raise AdmissionPackageTokenError(str(exc)) from exc
 
 
 class AdmissionPackageRejectedError(ValueError):
@@ -6855,6 +6897,12 @@ def endorse_admission(root_dir, participant_hex, team_name, proposal_id_hex):
 
 
 def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
+    """Finalize a quorum-met admission proposal as its inviter.
+
+    Returns `{"admission_package"}`, a copy-paste token wrapping the signed
+    records the invitee needs to see their own admission, for the inviter to
+    deliver to them the same way `complete_invitation_acceptance` does.
+    """
     root_dir = pathlib.Path(root_dir)
     proposal_id = bytes.fromhex(proposal_id_hex)
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
@@ -6932,6 +6980,11 @@ def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)
     repo.stage(["core.db"])
     repo.commit("Finalized admission proposal")
+    acceptance_record_id = acceptance_row[0]
+    package = export_admission_package(
+        root_dir, participant_hex, team_name, acceptance_record_id
+    )
+    return {"admission_package": encode_admission_package_token(package)}
 
 
 def add_notification_service(

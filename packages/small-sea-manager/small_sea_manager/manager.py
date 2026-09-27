@@ -1760,11 +1760,12 @@ class TeamManager:
             self.root_dir, self.participant_hex, team_name, acceptance_b64
         )
 
-    def import_admission_package(self, team_name, package_bytes) -> bool:
-        """Store the admission package the inviter delivered after finalizing.
+    def import_admission_package(self, team_name, package_token) -> bool:
+        """Store the admission package token the inviter delivered after finalizing.
 
         Returns True when new records were stored, False when it was a no-op.
         """
+        package_bytes = provisioning.decode_admission_package_token(package_token)
         return provisioning.import_admission_package(
             self.root_dir, self.participant_hex, team_name, package_bytes
         )
@@ -1778,9 +1779,13 @@ class TeamManager:
             proposal_id,
         )
 
-    def finalize_admission(self, team_name, proposal_id):
-        """Finalize a quorum-met admission proposal as the inviter."""
-        provisioning.finalize_admission(
+    def finalize_admission(self, team_name, proposal_id) -> dict:
+        """Finalize a quorum-met admission proposal as the inviter.
+
+        Returns provisioning's `{"admission_package"}`, a token for the
+        inviter to deliver to the invitee.
+        """
+        return provisioning.finalize_admission(
             self.root_dir,
             self.participant_hex,
             team_name,

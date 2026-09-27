@@ -24,6 +24,17 @@
   <p class="notice notice-err">{{ team_error }}</p>
 </div>
 {% endif %}
+{% if admission_package_token %}
+<div class="detail-section" style="padding-top:0.4rem; padding-bottom:0.4rem;">
+  <div style="border:1px solid #d6d3d1; border-radius:4px; padding:0.75rem; background:#fafaf9">
+    <p class="token-instruction"><strong>Admission package ready.</strong> Send this token to the invitee:</p>
+    <div class="token-box">{{ admission_package_token }}</div>
+    <p class="token-instruction" style="color:#78716c">
+      The invitee pastes this into the "Import admission package" form on their side to see their own admission.
+    </p>
+  </div>
+</div>
+{% endif %}
 <div class="detail-section" style="padding-top:0.4rem; padding-bottom:0.4rem;">
   {% include "fragments/team_session.html" %}
 </div>

@@ -2,10 +2,12 @@
 
 import json
 import pathlib
+import shutil
 import sqlite3
 import subprocess
 
 import pytest
+from cod_sync.store import LocalFolderStore
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 import small_sea_manager.provisioning as provisioning
@@ -15,6 +17,7 @@ from wrasse_trust.identity import verify_membership_cert
 from wrasse_trust.keys import key_id_from_public
 from wrasse_trust.transport import key_certificate_from_team_db_record
 
+from test_admission_proposals import _bootstrap_existing_steward_clone, _push_to_localfolder
 from test_admission_records import _admit, _setup_team
 
 
@@ -218,3 +221,79 @@ def test_conflicting_record_id_is_refused(playground_dir):
             ),
         )
     _refused(root, bob_hex, raw, "conflicting_record")
+
+
+# --------------------------------------------------------------------------- #
+# The package's copy-paste token form
+# --------------------------------------------------------------------------- #
+
+
+def test_package_token_round_trips_the_exact_bytes(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex, bob_hex, cloud, _ = _setup_team(root)
+    acceptance = _admit(root, alice_hex, bob_hex, cloud)
+    raw = provisioning.export_admission_package(
+        root, alice_hex, "ProjectX", bytes.fromhex(acceptance["record_id"])
+    )
+
+    token = provisioning.encode_admission_package_token(raw)
+    assert provisioning.decode_admission_package_token(token) == raw
+
+    with pytest.raises(provisioning.AdmissionPackageTokenError):
+        provisioning.decode_admission_package_token("not a real token")
+
+
+def test_finalize_admission_returns_a_package_bob_can_import(playground_dir):
+    """Issue #266: an endorser's finalize_admission also hands back a package,
+    just like complete_invitation_acceptance does when it finalizes inline."""
+    root = pathlib.Path(playground_dir)
+    alice_cloud = root / "alice-cloud"
+    alice_cloud.mkdir()
+
+    alice_hex = provisioning.create_new_participant(root, "Alice")
+    bob_hex = provisioning.create_new_participant(root, "Bob")
+    carol_hex = provisioning.create_new_participant(root, "Carol")
+    provisioning.add_cloud_storage(root, alice_hex, protocol="localfolder", url=str(alice_cloud))
+    provisioning.create_team(root, alice_hex, "ProjectX")
+    provisioning.set_team_admission_policy(root, alice_hex, "ProjectX", quorum=2)
+
+    alice_sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
+    _push_to_localfolder(alice_sync, alice_cloud)
+
+    _bootstrap_existing_steward_clone(
+        root, inviter_hex=alice_hex, invitee_hex=carol_hex,
+        team_name="ProjectX", display_name="Carol",
+    )
+    carol_sync = root / "Participants" / carol_hex / "ProjectX" / "Sync"
+    shutil.copy2(alice_sync / "core.db", carol_sync / "core.db")
+
+    token = provisioning.create_invitation(
+        root, alice_hex, "ProjectX",
+        {"protocol": "localfolder", "url": str(alice_cloud)},
+        invitee_label="Bob",
+    )
+    _push_to_localfolder(alice_sync, alice_cloud)
+    acceptance = provisioning.accept_invitation(
+        root, bob_hex, token, inviter_store=LocalFolderStore(str(alice_cloud)),
+    )
+    provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
+    proposal_id = provisioning.list_invitations(root, alice_hex, "ProjectX")[0]["id"]
+
+    shutil.copy2(alice_sync / "core.db", carol_sync / "core.db")
+    provisioning.endorse_admission(root, carol_hex, "ProjectX", proposal_id)
+    shutil.copy2(carol_sync / "core.db", alice_sync / "core.db")
+
+    result = provisioning.finalize_admission(root, alice_hex, "ProjectX", proposal_id)
+    package_token = result["admission_package"]
+    assert package_token is not None
+
+    package_bytes = provisioning.decode_admission_package_token(package_token)
+    assert provisioning.import_admission_package(root, bob_hex, "ProjectX", package_bytes) is True
+
+    view = provisioning.load_transitional_authority_view(root, bob_hex, "ProjectX")
+    bob_teammate = bytes.fromhex(provisioning.derive_team_join_state(
+        root, bob_hex, "ProjectX"
+    )["self_in_team"].hex())
+    berth_ids = _berth_ids(root, alice_hex)
+    for berth_id in berth_ids:
+        assert view.holds(bob_teammate, berth_id) == berth_authority.Standing.HELD

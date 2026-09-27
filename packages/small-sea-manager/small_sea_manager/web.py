@@ -21,6 +21,10 @@ from small_sea_manager.manager import (
     TeamManager,
     _CORE_APP,
 )
+from small_sea_manager.provisioning import (
+    AdmissionPackageRejectedError,
+    AdmissionPackageTokenError,
+)
 
 _template_dir = pathlib.Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=_template_dir)
@@ -249,7 +253,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             teammates.append(teammate)
         return teammates
 
-    def _team_detail_context(mgr: TeamManager, team_name: str, *, notice: str = None, error: str = None):
+    def _team_detail_context(
+        mgr: TeamManager, team_name: str, *,
+        notice: str = None, error: str = None, admission_package_token: str = None,
+    ):
         team = mgr.get_team(team_name)
         if not team.get("joined_locally"):
             return {
@@ -264,6 +271,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "team_session_mode_badge": None,
                 "team_notice": notice,
                 "team_error": error,
+                "admission_package_token": admission_package_token,
             }
         return {
             "team_name": team_name,
@@ -286,13 +294,23 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "offer_reconcile": False,
             "team_notice": notice,
             "team_error": error,
+            "admission_package_token": admission_package_token,
         }
 
-    def _render_team_detail(request: Request, team_name: str, *, notice: str = None, error: str = None):
+    def _render_team_detail(
+        request: Request, team_name: str, *,
+        notice: str = None, error: str = None, admission_package_token: str = None,
+    ):
         mgr = _mgr(request)
         return templates.TemplateResponse(
             "fragments/team_detail.html",
-            {"request": request, **_team_detail_context(mgr, team_name, notice=notice, error=error)},
+            {
+                "request": request,
+                **_team_detail_context(
+                    mgr, team_name, notice=notice, error=error,
+                    admission_package_token=admission_package_token,
+                ),
+            },
         )
 
     def _render_admission_events(request: Request, team_name: str, *, notice: str = None, error: str = None):
@@ -1030,16 +1048,41 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         request: Request, team_name: str, acceptance_token: str = Form(...)
     ):
         mgr = _mgr(request)
+        admission_package_token = None
         try:
             result = mgr.complete_invitation_acceptance(team_name, acceptance_token)
             notice = "Acceptance recorded. " + _ROUTE_DELIVERY_NOTICE[
                 result["route_delivery"]
             ]
+            admission_package_token = result.get("admission_package")
             error = None
         except Exception as e:
             notice = None
             error = str(e)
-        return _render_team_detail(request, team_name, notice=notice, error=error)
+        return _render_team_detail(
+            request, team_name, notice=notice, error=error,
+            admission_package_token=admission_package_token,
+        )
+
+    @app.post("/teams/{team_name}/import-admission-package", response_class=HTMLResponse)
+    async def import_admission_package(
+        request: Request, team_name: str, package_token: str = Form(...)
+    ):
+        mgr = _mgr(request)
+        try:
+            mgr.import_admission_package(team_name, package_token.strip())
+            notice = "Admission package imported."
+            error = None
+        except (AdmissionPackageRejectedError, AdmissionPackageTokenError) as e:
+            notice = None
+            error = f"Package rejected: {e}"
+        except Exception as e:
+            notice = None
+            error = str(e)
+        return templates.TemplateResponse(
+            "fragments/admission_package_import_result.html",
+            {"request": request, "notice": notice, "error": error},
+        )
 
     @app.post("/teams/{team_name}/teammates/{teammate_id}/remove", response_class=HTMLResponse)
     async def remove_teammate(request: Request, team_name: str, teammate_id: str):

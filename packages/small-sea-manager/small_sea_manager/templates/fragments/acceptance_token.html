@@ -37,6 +37,19 @@
   </p>
 </div>
 
+<div style="border:1px solid #d6d3d1; border-radius:4px; padding:0.75rem; background:#fafaf9; margin-top:0.5rem">
+  <p class="token-instruction">
+    Once the inviter finalizes your admission, they send you a package token. Paste it here to see your own admission:
+  </p>
+  <div id="import-package-result"></div>
+  <form hx-post="/teams/{{ team_name }}/import-admission-package"
+        hx-target="#import-package-result"
+        hx-swap="innerHTML">
+    <textarea name="package_token" placeholder="Paste admission package token here…" required></textarea>
+    <button class="btn btn-primary" type="submit">Import admission package</button>
+  </form>
+</div>
+
 {# OOB: add the new team to the sidebar immediately #}
 <div id="sidebar-teams" hx-swap-oob="true">
   {% for team in teams %}
