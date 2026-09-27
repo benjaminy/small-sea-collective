@@ -142,6 +142,7 @@ from wrasse_trust.identity import (
     issue_device_link_cert,
     issue_membership_cert,
     parse_cert_type,
+    verify_cert,
     trusted_device_keys_by_teammate as resolve_trusted_device_keys_by_teammate,
     trusted_device_keys_for_teammate as resolve_trusted_device_keys_for_teammate,
     verify_device_link_cert,
@@ -4854,7 +4855,6 @@ def _append_integration_mode_change(
     snapshot = _constitution_snapshot(conn)
     digest = _constitution_digest(snapshot)
     now = _now_iso()
-    new_role = _role_value_for_mode(mode)
 
     signed_fields = {
         "record_type": "integration_mode_change",
@@ -4901,6 +4901,13 @@ def _append_integration_mode_change(
         },
     )
 
+    _project_berth_role(conn, teammate_id, berth_id, mode)
+    return record_id
+
+
+def _project_berth_role(conn, teammate_id: bytes, berth_id: bytes, mode: str) -> None:
+    """Set the `berth_role` projection row for one teammate and berth."""
+    new_role = _role_value_for_mode(mode)
     existing_role_row = conn.execute(
         text(
             "SELECT id FROM berth_role WHERE teammate_id = :teammate_id AND berth_id = :berth_id"
@@ -4925,7 +4932,6 @@ def _append_integration_mode_change(
             text("UPDATE berth_role SET role = :role WHERE id = :id"),
             {"role": new_role, "id": existing_role_row[0]},
         )
-    return record_id
 
 
 def issue_device_link_for_teammate(root_dir, participant_hex, team_name, linked_device_public_key):
@@ -6545,7 +6551,7 @@ def export_admission_package(
             mode_keys = (
                 "record_id", "record_type", "author_teammate_id", "author_device_key_id",
                 "created_at", "anchor_commit", "constitution_digest", "schema_version",
-                "teammate_id", "berth_id", "mode", "signature",
+                "teammate_id", "berth_id", "mode", "signature", "constitution_snapshot_json",
             )
             # Every record, not a selection: a selection could hide a record
             # (say, a later demotion) and leave the invitee with a view that
@@ -6578,6 +6584,201 @@ def export_admission_package(
     }
     signature = _sign_bytes(sender_private_key, _json_bytes(body))
     return _json_bytes({"body": body, "signature": signature.hex()})
+
+
+class AdmissionPackageRejectedError(ValueError):
+    """An admission package failed a check; nothing was written."""
+
+    def __init__(self, code: str, detail: str = ""):
+        self.code = code
+        super().__init__(f"{code}: {detail}" if detail else code)
+
+
+def import_admission_package(root_dir, participant_hex, team_name, package_bytes: bytes) -> bool:
+    """Store the records of an admission package in this device's team Core.
+
+    The envelope must name this team, this device's own acceptance, and this
+    device's current team-device key. Every record must carry a valid
+    signature from a key the package itself certifies. Whether those keys are
+    trusted is decided later, by the view rooted at the adopted anchor.
+
+    Records already present with identical content are skipped. A record id
+    already present with different content refuses the whole package.
+    Returns True when it committed new records, False for a no-op.
+    """
+    root_dir = pathlib.Path(root_dir)
+    reject = AdmissionPackageRejectedError
+    try:
+        package = json.loads(package_bytes)
+        body = package["body"]
+        sender_public_key = bytes.fromhex(body["sender_device_public_key"])
+        envelope_ok = _verify_signature(
+            sender_public_key, _json_bytes(body), bytes.fromhex(package["signature"])
+        )
+    except (ValueError, KeyError, TypeError) as exc:
+        raise reject("bad_envelope", str(exc)) from exc
+    if not envelope_ok:
+        raise reject("bad_envelope", "envelope signature is invalid")
+    if body.get("package_version") != ADMISSION_PACKAGE_VERSION:
+        raise reject("bad_envelope", "unsupported package version")
+
+    team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
+    if body["team_id"] != team_id.hex():
+        raise reject("bad_envelope", "package names a different team")
+    _, own_public_key = get_current_team_device_key(root_dir, participant_hex, team_name)
+    own_acceptances = {
+        a["acceptance_record_id"]
+        for a in list_admission_acceptance_artifacts(root_dir, participant_hex, team_id)
+        if a["author_device_key_id"] == key_id_from_public(own_public_key)
+    }
+    if bytes.fromhex(body["acceptance_record_id"]) not in own_acceptances:
+        raise reject("wrong_acceptance")
+    if body["invitee_device_public_key"] != own_public_key.hex():
+        raise reject("wrong_device")
+
+    try:
+        certs = [
+            key_certificate_from_team_db_record(
+                team_id=team_id,
+                cert_id=bytes.fromhex(c["cert_id"]),
+                cert_type=c["cert_type"],
+                subject_key_id=bytes.fromhex(c["subject_key_id"]),
+                subject_public_key=bytes.fromhex(c["subject_public_key"]),
+                issuer_key_id=bytes.fromhex(c["issuer_key_id"]),
+                issuer_teammate_id=bytes.fromhex(c["issuer_teammate_id"]),
+                issued_at=c["issued_at"],
+                claims_json=c["claims"],
+                signature=bytes.fromhex(c["signature"]),
+            )
+            for c in body["certificates"]
+        ]
+        modes = [
+            (
+                bytes.fromhex(m["record_id"]),
+                berth_authority.ModeChangeRecord(
+                    author_teammate_id=bytes.fromhex(m["author_teammate_id"]),
+                    author_device_key_id=bytes.fromhex(m["author_device_key_id"]),
+                    created_at=m["created_at"],
+                    anchor_commit=m["anchor_commit"],
+                    constitution_digest=bytes.fromhex(m["constitution_digest"]),
+                    schema_version=m["schema_version"],
+                    teammate_id=bytes.fromhex(m["teammate_id"]),
+                    berth_id=bytes.fromhex(m["berth_id"]),
+                    mode=m["mode"],
+                    signature=bytes.fromhex(m["signature"]),
+                ),
+                m["constitution_snapshot_json"],
+            )
+            for m in body["integration_mode_changes"]
+        ]
+    except (ValueError, KeyError, TypeError) as exc:
+        raise reject("bad_record", str(exc)) from exc
+
+    # Signatures only: each record must be signed by the key it names. The
+    # package's own certificates supply the public keys for those key ids.
+    keys_by_id = {c.subject_key_id: c.subject_public_key for c in certs}
+    for cert in certs:
+        issuer_key = keys_by_id.get(cert.issuer_key_id)
+        if issuer_key is None or not verify_cert(cert, issuer_key):
+            raise reject("bad_record_signature", f"certificate {cert.cert_id.hex()}")
+    for record_id, record, snapshot_json in modes:
+        author_key = keys_by_id.get(record.author_device_key_id)
+        canonical = record.canonical()
+        if (
+            author_key is None
+            or derive_record_id(canonical) != record_id
+            or not verify_constitution_record(author_key, canonical, record.signature)
+            or _constitution_digest(json.loads(snapshot_json)) != record.constitution_digest
+        ):
+            raise reject("bad_record_signature", f"mode change {record_id.hex()}")
+
+    team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    engine = _sqlite_engine(team_sync_dir / "core.db")
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                new_certs = []
+                for cert in certs:
+                    row = conn.execute(text(
+                        "SELECT cert_type, subject_key_id, subject_public_key, issuer_key_id, "
+                        "issuer_teammate_id, issued_at, claims, signature "
+                        "FROM key_certificate WHERE cert_id = :cert_id"
+                    ), {"cert_id": cert.cert_id}).fetchone()
+                    if row is None:
+                        new_certs.append(cert)
+                    elif not _same_team_certificate_row(row, cert, cert.issuer_participant_id):
+                        raise reject("conflicting_record", f"certificate {cert.cert_id.hex()}")
+                new_modes = []
+                for record_id, record, snapshot_json in modes:
+                    row = conn.execute(text(
+                        "SELECT author_teammate_id, author_device_key_id, created_at, "
+                        "anchor_commit, constitution_digest, schema_version, teammate_id, "
+                        "berth_id, mode, signature, constitution_snapshot_json "
+                        "FROM integration_mode_change WHERE record_id = :record_id"
+                    ), {"record_id": record_id}).fetchone()
+                    if row is None:
+                        new_modes.append((record_id, record, snapshot_json))
+                    elif (
+                        berth_authority.ModeChangeRecord(*row[:10]) != record
+                        or row[10] != snapshot_json
+                    ):
+                        raise reject("conflicting_record", f"mode change {record_id.hex()}")
+                if not new_certs and not new_modes:
+                    return False
+
+                for cert in new_certs:
+                    teammate_id = bytes.fromhex(cert.claims["teammate_id"])
+                    _upsert_teammate_row(conn, cert.issuer_participant_id)
+                    _upsert_teammate_row(conn, teammate_id)
+                    _store_team_certificate(conn, cert, cert.issuer_participant_id)
+                    _upsert_team_device_row(conn, teammate_id, cert.subject_public_key)
+                for record_id, record, snapshot_json in new_modes:
+                    _upsert_teammate_row(conn, record.author_teammate_id)
+                    _upsert_teammate_row(conn, record.teammate_id)
+                    conn.execute(text(
+                        "INSERT INTO integration_mode_change ("
+                        "record_id, record_type, author_teammate_id, author_device_key_id, "
+                        "created_at, anchor_commit, constitution_digest, constitution_snapshot_json, "
+                        "schema_version, teammate_id, berth_id, mode, signature"
+                        ") VALUES ("
+                        ":record_id, 'integration_mode_change', :author_teammate_id, "
+                        ":author_device_key_id, :created_at, :anchor_commit, :constitution_digest, "
+                        ":constitution_snapshot_json, :schema_version, :teammate_id, :berth_id, "
+                        ":mode, :signature)"
+                    ), {
+                        "record_id": record_id,
+                        "author_teammate_id": record.author_teammate_id,
+                        "author_device_key_id": record.author_device_key_id,
+                        "created_at": record.created_at,
+                        "anchor_commit": record.anchor_commit,
+                        "constitution_digest": record.constitution_digest,
+                        "constitution_snapshot_json": snapshot_json,
+                        "schema_version": record.schema_version,
+                        "teammate_id": record.teammate_id,
+                        "berth_id": record.berth_id,
+                        "mode": record.mode,
+                        "signature": record.signature,
+                    })
+                # The projection follows the newest record per teammate and
+                # berth, whichever device wrote it.
+                for teammate_id, berth_id in {(r.teammate_id, r.berth_id) for _, r, _ in new_modes}:
+                    (mode,) = conn.execute(text(
+                        "SELECT mode FROM integration_mode_change "
+                        "WHERE teammate_id = :teammate_id AND berth_id = :berth_id "
+                        "ORDER BY created_at DESC, record_id DESC LIMIT 1"
+                    ), {"teammate_id": teammate_id, "berth_id": berth_id}).fetchone()
+                    _project_berth_role(conn, teammate_id, berth_id, mode)
+                conn.commit()
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+                repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+                repo.stage(["core.db"])
+                repo.commit("Imported admission package")
+            finally:
+                conn.rollback()
+    finally:
+        engine.dispose()
+    return True
 
 
 def endorse_admission(root_dir, participant_hex, team_name, proposal_id_hex):

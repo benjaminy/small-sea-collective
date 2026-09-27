@@ -3,11 +3,13 @@
 import json
 import pathlib
 import sqlite3
+import subprocess
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 import small_sea_manager.provisioning as provisioning
+from small_sea_manager import berth_authority
 from small_sea_manager.berth_authority import ModeChangeRecord
 from wrasse_trust.identity import verify_membership_cert
 from wrasse_trust.keys import key_id_from_public
@@ -107,3 +109,112 @@ def test_unfinalized_acceptance_is_refused(playground_dir):
         provisioning.export_admission_package(
             root, alice_hex, "ProjectX", bytes.fromhex(acceptance["record_id"])
         )
+
+
+# --------------------------------------------------------------------------- #
+# Bob imports the package
+# --------------------------------------------------------------------------- #
+
+
+def _steward_package(root):
+    alice_hex, bob_hex, cloud, _ = _setup_team(root)
+    acceptance = _admit(
+        root, alice_hex, bob_hex, cloud,
+        mode_plan=provisioning.mode_plan_for_preset("steward"),
+    )
+    raw = provisioning.export_admission_package(
+        root, alice_hex, "ProjectX", bytes.fromhex(acceptance["record_id"])
+    )
+    return alice_hex, bob_hex, acceptance, raw
+
+
+def _resign(root, alice_hex, body) -> bytes:
+    alice_private, _ = provisioning.get_current_team_device_key(root, alice_hex, "ProjectX")
+    signature = provisioning._sign_bytes(alice_private, provisioning._json_bytes(body))
+    return provisioning._json_bytes({"body": body, "signature": signature.hex()})
+
+
+def _bob_state(root, bob_hex):
+    sync = root / "Participants" / bob_hex / "ProjectX" / "Sync"
+    head = subprocess.run(
+        ["git", "-C", str(sync), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    return head, (sync / "core.db").read_bytes()
+
+
+def test_bob_sees_his_own_admission_after_import(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex, bob_hex, acceptance, raw = _steward_package(root)
+    head_before, _ = _bob_state(root, bob_hex)
+
+    assert provisioning.import_admission_package(root, bob_hex, "ProjectX", raw) is True
+    head_after, db_after = _bob_state(root, bob_hex)
+    assert head_after != head_before
+
+    view = provisioning.load_transitional_authority_view(root, bob_hex, "ProjectX")
+    bob_teammate = bytes.fromhex(acceptance["author_teammate_id"])
+    bob_device = bytes.fromhex(acceptance["invitee_device_public_key"])
+    assert bob_device in view.trusted_keys[bob_teammate]
+    for berth_id in _berth_ids(root, alice_hex):
+        assert view.holds(bob_teammate, berth_id) == berth_authority.Standing.HELD
+
+    assert provisioning.import_admission_package(root, bob_hex, "ProjectX", raw) is False
+    assert _bob_state(root, bob_hex) == (head_after, db_after)
+
+
+def _refused(root, bob_hex, raw, code):
+    before = _bob_state(root, bob_hex)
+    with pytest.raises(provisioning.AdmissionPackageRejectedError) as info:
+        provisioning.import_admission_package(root, bob_hex, "ProjectX", raw)
+    assert info.value.code == code
+    assert _bob_state(root, bob_hex) == before
+
+
+def test_tampered_or_misaddressed_packages_are_refused(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex, bob_hex, _acceptance, raw = _steward_package(root)
+    body = json.loads(raw)["body"]
+
+    # A record altered after signing, even inside a validly signed envelope.
+    tampered = json.loads(raw)["body"]
+    for m in tampered["integration_mode_changes"]:
+        m["mode"] = "proposal-only" if m["mode"] == "automatic" else "automatic"
+    _refused(root, bob_hex, _resign(root, alice_hex, tampered), "bad_record_signature")
+
+    package = json.loads(raw)
+    package["signature"] = "00" * 64
+    _refused(root, bob_hex, provisioning._json_bytes(package), "bad_envelope")
+
+    other = dict(body, acceptance_record_id="11" * 32)
+    _refused(root, bob_hex, _resign(root, alice_hex, other), "wrong_acceptance")
+
+    other = dict(body, invitee_device_public_key="22" * 32)
+    _refused(root, bob_hex, _resign(root, alice_hex, other), "wrong_device")
+
+
+def test_conflicting_record_id_is_refused(playground_dir):
+    root = pathlib.Path(playground_dir)
+    _alice_hex, bob_hex, acceptance, raw = _steward_package(root)
+    body = json.loads(raw)["body"]
+    bob_mode = next(
+        m for m in body["integration_mode_changes"]
+        if m["teammate_id"] == acceptance["author_teammate_id"]
+    )
+
+    db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
+    with sqlite3.connect(db) as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            "INSERT INTO integration_mode_change (record_id, author_teammate_id, "
+            "author_device_key_id, created_at, anchor_commit, constitution_digest, "
+            "constitution_snapshot_json, schema_version, teammate_id, berth_id, mode, signature) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'proposal-only', ?)",
+            tuple(
+                bytes.fromhex(bob_mode[k]) if k not in ("created_at", "anchor_commit",
+                                                         "constitution_snapshot_json") else bob_mode[k]
+                for k in ("record_id", "author_teammate_id", "author_device_key_id",
+                          "created_at", "anchor_commit", "constitution_digest",
+                          "constitution_snapshot_json", "teammate_id", "berth_id", "signature")
+            ),
+        )
+    _refused(root, bob_hex, raw, "conflicting_record")
