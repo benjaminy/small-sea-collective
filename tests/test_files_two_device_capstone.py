@@ -18,9 +18,11 @@ and the test asks the Hub to verify each device's final Files history.
 The one test shortcut is that the key is exported to a file for `ssh-keygen`,
 because the Hub's signing program is not installed here.
 
-Not yet covered: commits that should be refused (unsigned, wrong berth,
-missing or ambiguous authority).
+`test_signed_capstone_refuses_bad_history` covers histories A must refuse:
+unsigned, wrong-berth key, missing authority, ambiguous authority.
+Not yet covered: a changed authority view (needs the action guard, #286).
 """
+from dataclasses import replace
 import importlib.util
 import inspect
 import os
@@ -28,6 +30,7 @@ import pathlib
 import shutil
 import sqlite3
 import sys
+from types import SimpleNamespace
 from urllib.parse import unquote, urlsplit
 
 import boto3
@@ -37,6 +40,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
 from cod_sync.git import signing_git_env
+from cod_sync.repo import Repo
 import small_sea_hub.backend as SmallSea
 from small_sea_manager.manager import (
     TeamManager,
@@ -77,19 +81,24 @@ class _Device:
         app.state.backend = self.backend
         self.http = TestClient(app)
 
-    def signer(self, team_name, hub_port=11437, *, _http_client=None):
-        """A CommitSigner using this session's real workhorse key and the Hub's verifier."""
+    def signer(self, team_name, hub_port=11437, *, _http_client=None, key_session=None):
+        """A CommitSigner using this session's real workhorse key and the Hub's verifier.
+
+        `key_session` names another session whose workhorse key signs instead,
+        for tests that sign with a key scoped to a different berth.
+        """
         session = sync.get_team_session(team_name, hub_port, _http_client=_http_client)
         info = session.session_info()
-        seed = self.backend.signing_key(session.token)
-        key_path = self.root.parent / f"{self.root.name}-key-{session.token[:8]}"
+        key_owner = key_session or session
+        seed = self.backend.signing_key(key_owner.token)
+        key_path = self.root.parent / f"{self.root.name}-key-{key_owner.token[:8]}"
         key_path.write_bytes(Ed25519PrivateKey.from_private_bytes(seed).private_bytes(
             serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
             serialization.NoEncryption()))
         key_path.chmod(0o600)
         env = signing_git_env(
             os.environ, program=shutil.which("ssh-keygen"),
-            public_key=session.signing_public_key(), signing_key=str(key_path),
+            public_key=key_owner.signing_public_key(), signing_key=str(key_path),
             extra_env={"GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@t",
                        "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t"},
         )
@@ -254,7 +263,8 @@ def test_files_database_guard_detects_manager_database_open(tmp_path, monkeypatc
         guard.assert_clean()
 
 
-def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen):
+def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
+    """Steps 1-11: both devices set up, B holds A's Files niche in a checkout."""
     minio = minio_server_gen()
     a = _Device("A", tmp_path / "device-a", monkeypatch)
     b = _Device("B", tmp_path / "device-b", monkeypatch)
@@ -358,6 +368,20 @@ def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen):
     sync.merge_self(b.files_root, alice_hex, TEAM, niche, _http_client=b.http)
     assert (checkout_b / "beds.txt").read_bytes() == original
 
+    return SimpleNamespace(
+        a=a, b=b, spy=spy, mark=mark, db_guard=db_guard, alice_hex=alice_hex,
+        manager_a=manager_a, manager_b=manager_b, ctx_a=ctx_a, ctx_b=ctx_b,
+        checkout_a=checkout_a, checkout_b=checkout_b, original=original, niche=niche,
+    )
+
+
+def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen):
+    env = _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen)
+    a, b, spy, mark, db_guard = env.a, env.b, env.spy, env.mark, env.db_guard
+    alice_hex, manager_a, manager_b = env.alice_hex, env.manager_a, env.manager_b
+    ctx_a, ctx_b, checkout_a, checkout_b, niche = (
+        env.ctx_a, env.ctx_b, env.checkout_a, env.checkout_b, env.niche)
+
     # 12. B changes the file and pushes through B's Hub.
     from_b = b"tomatoes by the fence\nbeans on the trellis\n"
     (checkout_b / "beds.txt").write_bytes(from_b)
@@ -397,3 +421,84 @@ def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen):
         assert verdicts, f"no commits verified on {device.name}"
         assert {v["result"] for v in verdicts} == {"authorized"}, verdicts
     assert all(owner in ("A", "B") for owner, _op, _bucket in spy.calls)
+
+
+def _refusals(error):
+    """The Hub's refused-commit rows from a fetch failure, unwrapping a partial fetch."""
+    if isinstance(error, sync.SelfFetchPartialError):
+        error = error.niche_error
+    assert isinstance(error, files.UnauthorizedHistoryError), repr(error)
+    return error.refusals
+
+
+@pytest.mark.parametrize("case, expected", [
+    ("unsigned", "bad_signature"),
+    ("wrong_berth", "wrong_scope"),
+    ("missing_authority", "missing_authority"),
+    ("ambiguous_authority", "ambiguous_authority"),
+])
+def test_signed_capstone_refuses_bad_history(
+    tmp_path, monkeypatch, minio_server_gen, case, expected
+):
+    env = _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen)
+    a, b, alice_hex, niche = env.a, env.b, env.alice_hex, env.niche
+    import small_sea_manager.provisioning as Provisioning
+    from small_sea_client.client import SmallSeaClient, SmallSeaSession
+
+    # B commits something A must refuse.
+    # B's own Hub would refuse to publish it, so B's verifier is replaced by one that accepts everything.
+    b.use_files()
+    key_session = None
+    if case == "wrong_berth":
+        token = b.backend.open_session(
+            "Alice", "SmallSeaCollectiveCore", TEAM, "Smoke Tests").hex()
+        key_session = SmallSeaSession(SmallSeaClient(_http_client=b.http), token)
+    signer = b.signer(TEAM, _http_client=b.http, key_session=key_session)
+    if case == "unsigned":
+        signer = replace(signer, env={
+            k: v for k, v in os.environ.items() if not k.startswith("GIT_CONFIG_")
+        } | {"GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@t",
+             "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t"})
+    rogue = replace(signer, verify=lambda _git_dir, sha: {
+        "commits": [{"commit": sha, "result": "authorized", "reason": "test"}],
+        "view_identifier": b""})
+    monkeypatch.setattr(sync, "commit_signer", lambda *_a, **_k: rogue)
+    (env.checkout_b / "beds.txt").write_bytes(b"bad change\n")
+    files.publish(b.files_root, alice_hex, env.ctx_b, niche, str(env.checkout_b),
+                  message="B-bad", signer=rogue)
+    sync.push_via_hub(b.files_root, alice_hex, TEAM, niche, _http_client=b.http)
+    bad_head = _git_head(files._niche_git_dir(b.files_root, env.ctx_b, niche))
+
+    # A learns B's delegations, except in the missing-authority case.
+    if case != "missing_authority":
+        env.manager_b.push_team(TEAM)
+        (participant,) = env.manager_a.list_teammates(TEAM)
+        env.manager_a.fetch_teammate_core(TEAM, participant["id"])
+        env.manager_a.integrate_core_sources(TEAM)
+    if case == "ambiguous_authority":
+        # Two records that grant and then restrict the same standing cannot be ordered.
+        _team_id, teammate_id = Provisioning._team_row(a.root, alice_hex, TEAM)
+        berth_id = sync.get_team_session(TEAM, _http_client=b.http).session_info()["berth_id"]
+        for mode in ("automatic", "proposal-only"):
+            Provisioning.set_teammate_integration_mode(
+                a.root, alice_hex, TEAM, teammate_id, berth_id, mode)
+
+    a.use_files()
+    monkeypatch.setattr(sync, "commit_signer", a.signer)
+    git_dir = files._niche_git_dir(a.files_root, env.ctx_a, niche)
+    refs_before = Repo(git_dir).list_refs("refs/")
+    head_before = _git_head(git_dir)
+    content_before = (env.checkout_a / "beds.txt").read_bytes()
+
+    with pytest.raises((files.UnauthorizedHistoryError, sync.SelfFetchPartialError)) as caught:
+        sync.fetch_self_via_hub(a.files_root, alice_hex, TEAM, niche, _http_client=a.http)
+    refusals = _refusals(caught.value)
+    if case != "ambiguous_authority":
+        # Every A and B commit is ambiguous in that case, so the registry is refused before the niche.
+        assert bad_head in {row["commit"] for row in refusals}, refusals
+    assert expected in {row["result"] for row in refusals}, refusals
+
+    assert Repo(git_dir).list_refs("refs/") == refs_before
+    assert bad_head not in Repo(git_dir).list_refs("refs/").values()
+    assert _git_head(git_dir) == head_before
+    assert (env.checkout_a / "beds.txt").read_bytes() == content_before
