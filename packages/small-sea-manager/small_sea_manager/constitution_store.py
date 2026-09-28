@@ -10,6 +10,7 @@ from wrasse_trust.events import (
     ConstitutionEvent,
     decode_event,
     encode_event,
+    make_event,
     verify_event,
 )
 
@@ -31,7 +32,8 @@ def _parents_stored(conn: Connection, event: ConstitutionEvent) -> bool:
     )
 
 
-def _promote_pending(conn: Connection) -> None:
+def _promote_pending(conn: Connection) -> list[ConstitutionEvent]:
+    promoted_events = []
     while True:
         rows = conn.execute(
             text(
@@ -56,11 +58,14 @@ def _promote_pending(conn: Connection) -> None:
                 {"event_id": event_id},
             )
             promoted = True
+            promoted_events.append(event)
         if not promoted:
-            return
+            return promoted_events
 
 
-def add_event(conn: Connection, event: ConstitutionEvent) -> str:
+def add_event(
+    conn: Connection, event: ConstitutionEvent
+) -> tuple[str, list[ConstitutionEvent]]:
     verify_event(event)
     encoded = encode_event(event)
     existing = []
@@ -74,7 +79,7 @@ def add_event(conn: Connection, event: ConstitutionEvent) -> str:
     if any(existing_encoded != encoded for existing_encoded in existing):
         raise EventConflictError(event.event_id)
     if existing:
-        return "already_present"
+        return "already_present", []
 
     if not _parents_stored(conn, event):
         conn.execute(
@@ -84,7 +89,7 @@ def add_event(conn: Connection, event: ConstitutionEvent) -> str:
             ),
             {"event_id": event.event_id, "encoded": encoded},
         )
-        return "pending"
+        return "pending", []
 
     conn.execute(
         text(
@@ -93,8 +98,25 @@ def add_event(conn: Connection, event: ConstitutionEvent) -> str:
         ),
         {"event_id": event.event_id, "event_type": event.event_type, "encoded": encoded},
     )
-    _promote_pending(conn)
-    return "stored"
+    return "stored", [event, *_promote_pending(conn)]
+
+
+def current_heads(conn: Connection) -> list[bytes]:
+    events = list_events(conn)
+    parents = {parent for event in events for parent in event.parents}
+    return sorted(event.event_id for event in events if event.event_id not in parents)
+
+
+def append_local_event(
+    conn: Connection,
+    event_type: str,
+    payload: dict,
+    signer_private_key: bytes,
+) -> list[ConstitutionEvent]:
+    """Sign a new event on top of the current heads and store it; return the newly stored events."""
+    event = make_event(event_type, payload, tuple(current_heads(conn)), signer_private_key)
+    _status, newly_stored = add_event(conn, event)
+    return newly_stored
 
 
 def get_event(conn: Connection, event_id: bytes) -> ConstitutionEvent | None:

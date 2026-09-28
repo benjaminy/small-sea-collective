@@ -149,6 +149,28 @@ def test_core_team_activation_is_idempotent(playground_dir):
     assert _app_and_berth_counts(db_path, CORE_APP) == (1, 1)
 
 
+def test_team_creation_records_certificate_event(playground_dir):
+    from small_sea_manager.constitution_store import list_events
+    from small_sea_manager.provisioning import _sqlite_engine
+
+    root = pathlib.Path(playground_dir)
+    participant = create_new_participant(root, "Alice")
+    create_team(root, participant, "ProjectX")
+    engine = _sqlite_engine(_team_db(root, participant, "ProjectX"))
+    try:
+        with engine.connect() as conn:
+            from sqlalchemy import text
+            cert_ids = {row[0].hex() for row in conn.execute(text("SELECT cert_id FROM key_certificate"))}
+            event_cert_ids = {
+                event.payload["cert_id"]
+                for event in list_events(conn)
+                if event.event_type == "key_certificate"
+            }
+    finally:
+        engine.dispose()
+    assert cert_ids == event_cert_ids
+
+
 def test_create_team(playground_dir):
     root = pathlib.Path(playground_dir)
 

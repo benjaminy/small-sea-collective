@@ -186,8 +186,7 @@ CREATE TABLE IF NOT EXISTS key_certificate (
     issuer_teammate_id BLOB NOT NULL,
     issued_at TEXT NOT NULL,
     claims TEXT NOT NULL,
-    signature BLOB NOT NULL,
-    FOREIGN KEY (issuer_teammate_id) REFERENCES teammate(id) ON DELETE CASCADE
+    signature BLOB NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS teammate_berth_storage_announcement (

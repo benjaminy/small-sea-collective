@@ -116,6 +116,7 @@ from small_sea_note_to_self.bootstrap import (
 )
 from small_sea_manager import berth_authority, berth_source_decision
 from small_sea_manager import note_to_self_sync
+from small_sea_manager.constitution_projection import record_key_certificate
 from small_sea_note_to_self.ids import uuid7
 from small_sea_note_to_self.sender_keys import (
     deserialize_distribution_message,
@@ -2085,7 +2086,7 @@ def _store_from_descriptor(remote_descriptor: dict):
 
 # ---- Constants ----
 
-TEAM_SCHEMA_VERSION = 69
+TEAM_SCHEMA_VERSION = 70
 
 
 # ---- Provisioning functions ----
@@ -3222,6 +3223,14 @@ def _initialize_team_sender_key_state(user_db_path, team_id, sender_device_key_i
     return distribution
 
 def _store_team_certificate(conn, cert: KeyCertificate, issuer_teammate_id: bytes) -> None:
+    existing = conn.execute(
+        text("SELECT cert_type, subject_key_id, subject_public_key, issuer_key_id, issuer_teammate_id, issued_at, claims, signature FROM key_certificate WHERE cert_id = :cert_id"),
+        {"cert_id": cert.cert_id},
+    ).first()
+    if existing is not None:
+        if not _same_team_certificate_row(existing, cert, issuer_teammate_id):
+            raise ValueError("Certificate id already exists with different content")
+        return
     conn.execute(
         text(
             "INSERT INTO key_certificate ("
@@ -4975,7 +4984,7 @@ def issue_device_link_for_teammate(root_dir, participant_hex, team_name, linked_
     engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
-            _store_team_certificate(conn, cert, issuer_teammate_id=teammate_id)
+            record_key_certificate(conn, cert, teammate_id, issuer_private_key)
             _upsert_team_device_row(
                 conn,
                 teammate_id,
@@ -5503,7 +5512,7 @@ def create_team(root_dir, participant_hex, team_name):
             teammate_id,
             team_keys["device_key"].public_key,
         )
-        _store_team_certificate(conn, membership_cert, issuer_teammate_id=teammate_id)
+        record_key_certificate(conn, membership_cert, teammate_id, team_keys["device_private_key"])
         _publish_local_device_prekey_bundle(
             root_dir,
             participant_hex,
@@ -6464,7 +6473,7 @@ def complete_invitation_acceptance(
             endorsement_count = _count_valid_endorsements(conn, proposal_row, acceptance_row)
             if endorsement_count >= _proposal_quorum(conn):
                 _upsert_teammate_row(conn, invitee_teammate_id, display_name=proposal_row[13])
-                _store_team_certificate(conn, membership_cert, issuer_teammate_id=inviter_teammate_id)
+                record_key_certificate(conn, membership_cert, inviter_teammate_id, inviter_private_key)
                 stored_device_key_id = _upsert_team_device_row(
                     conn, invitee_teammate_id, invitee_device_public_key
                 )
@@ -6953,7 +6962,7 @@ def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
                     admitted_teammate_id=invitee_teammate_id,
                 )
                 _upsert_teammate_row(conn, invitee_teammate_id, display_name=proposal_row[13])
-                _store_team_certificate(conn, membership_cert, issuer_teammate_id=self_teammate_id)
+                record_key_certificate(conn, membership_cert, self_teammate_id, inviter_private_key)
                 _upsert_team_device_row(conn, invitee_teammate_id, invitee_device_public_key)
                 _append_finalization(
                     conn,

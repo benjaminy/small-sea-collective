@@ -115,6 +115,33 @@ def _create_shared_team_with_bob(root: pathlib.Path):
     return alice_hex, bob_hex
 
 
+def test_acceptance_records_membership_certificate_event(playground_dir):
+    from small_sea_manager.constitution_store import list_events
+    from sqlalchemy import text
+
+    root = pathlib.Path(playground_dir)
+    alice_hex, _bob_hex = _create_shared_team_with_bob(root)
+    db_path = root / "Participants" / alice_hex / "ProjectX" / "Sync" / "core.db"
+    engine = Provisioning._sqlite_engine(db_path)
+    try:
+        with engine.connect() as conn:
+            certificates = {
+                row[0].hex()
+                for row in conn.execute(text(
+                    "SELECT cert_id FROM key_certificate WHERE cert_type = 'membership'"
+                ))
+            }
+            recorded = {
+                event.payload["cert_id"]
+                for event in list_events(conn)
+                if event.event_type == "key_certificate"
+            }
+    finally:
+        engine.dispose()
+    assert len(certificates) >= 2
+    assert certificates <= recorded
+
+
 def _insert_teammate_linked_device_event(root: pathlib.Path, observer_hex: str, teammate_hex: str):
     team_id, teammate_teammate_id = Provisioning._team_row(root, teammate_hex, "ProjectX")
     teammate_private_key, teammate_public_key = Provisioning.get_current_team_device_key(
