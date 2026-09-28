@@ -13,17 +13,31 @@ It answers questions like:
 Wrasse Trust does not handle message transport or session encryption.
 That work lives elsewhere, especially in `cuttlefish`.
 
-## Current Reality
+## Keys Today
 
-The code currently implements an earlier **layered** model:
+Each device holds one signing key per team, its **team-device key**.
+There is no per-team identity key above it.
+A `membership` certificate admits a teammate and names their first device key.
+A `device_link` certificate adds another device key for the same teammate.
+A device trusts these certificates only when they chain back to the team's authority anchor, a public key the device adopted out of band when it created or joined the team.
 
-- each teammate has a per-team identity key
-- each device has a separate per-team device key
-- `device_binding` certs link device keys to the per-team identity key
-- wrapped private identity-key material is stored via `NoteToSelf`
+Three kinds of history are signed, each by a different key:
 
-That shape was a useful first slice, but it is no longer the intended
-long-term model.
+- **Core commits** are signed by the committing device's team-device key.
+  The Manager signs them locally.
+  A receiving Manager checks every commit against the device keys that the certificates establish, and requires the first commit to be signed by the anchor key (`small_sea_manager/git_verification.py`).
+- **App commits**, such as Files, are signed by a **workhorse key**, one per device and berth.
+  A team-device key authorizes a workhorse key for one berth with a signed workhorse delegation.
+  The app never holds the private key: it asks the Hub to sign, and the Hub asks the same way to verify (`/session/verify`).
+  The Hub accepts a commit only if its workhorse key is delegated for that berth and the delegating teammate holds that berth.
+- **NoteToSelf commits** are signed by the device's NoteToSelf signing key.
+  Nothing verifies them yet (#294).
+
+Authority is judged by each device from the records it holds, in a *transitional view* (`small_sea_manager/berth_authority.py`, decision D3 of #266).
+The view reports each commit as authorized, or refused with a reason: bad signature, wrong scope (a real key used on a berth it was not delegated for), missing authority, or ambiguous authority.
+Removing a teammate stops their future authority, but commits they signed earlier still verify (#295 tracks commits made after a removal).
+
+The earlier layered model, with a per-team identity key and `device_binding` certificates, survives only in `wrasse_trust/identity.py` and its tests; no other package uses it.
 
 ## Current Direction
 
@@ -58,9 +72,7 @@ Wrasse Trust already provides useful building blocks that survive the rethink:
 - ceremony serialization helpers used by Manager
 - trust-graph traversal primitives
 
-Some of the currently implemented cert families and key structures will change
-as the device-only model is pushed into code. Pre-alpha rules apply here:
-clarity beats compatibility.
+Pre-alpha rules apply here: clarity beats compatibility.
 
 ## Where To Read Next
 
