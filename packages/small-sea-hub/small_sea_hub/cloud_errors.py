@@ -38,6 +38,12 @@ class CloudAllocationConflictExn(CloudStorageRequiredExn):
     reason = "cloud_allocation_conflict"
 
 
+class CloudValidatorMissingExn(Exception):
+    """A successful storage operation returned no usable concurrency token."""
+
+    reason = "cloud_validator_missing"
+
+
 class CloudBerthSourcePausedExn(CloudStorageRequiredExn):
     """The Manager holds an unresolved question about this berth's placement.
 

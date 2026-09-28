@@ -4,7 +4,12 @@ from typing import Optional
 import httpx
 
 from .base import SmallSeaStorageAdapter
-from small_sea_hub.cloud_errors import absent, cas_conflict, provider_failure
+from small_sea_hub.cloud_errors import (
+    CloudValidatorMissingExn,
+    absent,
+    cas_conflict,
+    provider_failure,
+)
 
 DROPBOX_CONTENT = "https://content.dropboxapi.com/2"
 
@@ -59,7 +64,9 @@ class SmallSeaDropboxAdapter(SmallSeaStorageAdapter):
         # Dropbox returns file metadata in the Dropbox-API-Result header
         result_header = resp.headers.get("Dropbox-API-Result", "{}")
         result = json.loads(result_header)
-        rev = result.get("rev", "")
+        rev = result.get("rev")
+        if not rev:
+            raise CloudValidatorMissingExn("Dropbox returned no revision")
         return True, resp.content, rev
 
     def _upload(
@@ -112,5 +119,7 @@ class SmallSeaDropboxAdapter(SmallSeaStorageAdapter):
 
         resp.raise_for_status()
         result = resp.json()
-        rev = result.get("rev", "")
+        rev = result.get("rev")
+        if not rev:
+            raise CloudValidatorMissingExn("Dropbox returned no revision")
         return True, rev, "Object updated successfully"

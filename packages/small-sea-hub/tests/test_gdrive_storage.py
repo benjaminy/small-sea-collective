@@ -5,6 +5,7 @@ import pytest
 import respx
 from small_sea_hub.adapters.gdrive import (DRIVE_API, DRIVE_UPLOAD,
                                            SmallSeaGDriveAdapter)
+from small_sea_hub.cloud_errors import CloudValidatorMissingExn
 
 TOKEN = "test-access-token"
 
@@ -21,18 +22,20 @@ def test_download_success():
     file_id = "abc123"
     adapter = make_adapter({"greeting.txt": file_id})
 
-    respx.get(f"{DRIVE_API}/files/{file_id}").mock(
+    respx.get(f"{DRIVE_API}/files/{file_id}", params={"alt": "media"}).mock(
         return_value=httpx.Response(
             200,
             content=b"hello world",
-            headers={"ETag": '"etag1"'},
         )
+    )
+    respx.get(f"{DRIVE_API}/files/{file_id}", params={"fields": "version"}).mock(
+        return_value=httpx.Response(200, json={"version": "11"})
     )
 
     ok, data, etag = adapter.download("greeting.txt")
     assert ok
     assert data == b"hello world"
-    assert etag == "etag1"
+    assert etag == "11"
 
 
 @respx.mock
@@ -77,14 +80,14 @@ def test_upload_overwrite_create():
     respx.post(f"{DRIVE_UPLOAD}/files").mock(
         return_value=httpx.Response(
             200,
-            json={"id": "new-file-id", "name": "data.bin"},
+            json={"id": "new-file-id", "name": "data.bin", "version": "12"},
             headers={"ETag": '"etag-new"'},
         )
     )
 
     ok, etag, msg = adapter.upload_overwrite("data.bin", b"content")
     assert ok
-    assert etag == "etag-new"
+    assert etag == "12"
     assert adapter.path_ids["data.bin"] == "new-file-id"
 
 
@@ -96,14 +99,13 @@ def test_upload_overwrite_update():
     respx.patch(f"{DRIVE_UPLOAD}/files/{file_id}").mock(
         return_value=httpx.Response(
             200,
-            json={"id": file_id, "name": "data.bin"},
-            headers={"ETag": '"etag-v2"'},
+            json={"id": file_id, "name": "data.bin", "version": "12"},
         )
     )
 
     ok, etag, msg = adapter.upload_overwrite("data.bin", b"updated")
     assert ok
-    assert etag == "etag-v2"
+    assert etag == "12"
 
 
 # ---- Upload fresh ----
@@ -119,14 +121,13 @@ def test_upload_fresh_success():
     respx.post(f"{DRIVE_UPLOAD}/files").mock(
         return_value=httpx.Response(
             200,
-            json={"id": "fresh-id", "name": "new.txt"},
-            headers={"ETag": '"etag-fresh"'},
+            json={"id": "fresh-id", "name": "new.txt", "version": "12"},
         )
     )
 
     ok, etag, msg = adapter.upload_fresh("new.txt", b"brand new")
     assert ok
-    assert etag == "etag-fresh"
+    assert etag == "12"
 
 
 @respx.mock
@@ -151,14 +152,17 @@ def test_upload_if_match_success():
     respx.patch(f"{DRIVE_UPLOAD}/files/{file_id}").mock(
         return_value=httpx.Response(
             200,
-            json={"id": file_id, "name": "file.txt"},
-            headers={"ETag": '"etag-v3"'},
+            json={"id": file_id, "name": "file.txt", "version": "13"},
         )
     )
+    respx.get(f"{DRIVE_API}/files/{file_id}", params={"fields": "version"}).mock(
+        return_value=httpx.Response(200, json={"version": "12"}, headers={"ETag": '"drive-http-etag"'})
+    )
 
-    ok, etag, msg = adapter.upload_if_match("file.txt", b"new data", "etag-v2")
+    ok, etag, msg = adapter.upload_if_match("file.txt", b"new data", "12")
     assert ok
-    assert etag == "etag-v3"
+    assert etag == "13"
+    assert respx.calls.last.request.headers["If-Match"] == "drive-http-etag"
 
 
 @respx.mock
@@ -168,6 +172,9 @@ def test_upload_if_match_stale_etag():
 
     respx.patch(f"{DRIVE_UPLOAD}/files/{file_id}").mock(
         return_value=httpx.Response(412)
+    )
+    respx.get(f"{DRIVE_API}/files/{file_id}", params={"fields": "version"}).mock(
+        return_value=httpx.Response(200, json={"version": "12"}, headers={"ETag": '"current"'})
     )
 
     ok, etag, msg = adapter.upload_if_match("file.txt", b"conflict", "old-etag")
@@ -187,3 +194,68 @@ def test_path_metadata_roundtrip():
     # Mutations to the returned dict don't affect the adapter
     recovered["c.txt"] = "id-c"
     assert "c.txt" not in adapter.path_ids
+
+
+@respx.mock
+def test_gdrive_head_read_returns_nonempty_etag():
+    adapter = make_adapter({"chains/latest-link.yaml": "head-id"})
+    respx.get(f"{DRIVE_API}/files/head-id", params={"alt": "media"}).mock(
+        return_value=httpx.Response(200, content=b"head")
+    )
+    respx.get(f"{DRIVE_API}/files/head-id", params={"fields": "version"}).mock(
+        return_value=httpx.Response(200, json={"version": "42"})
+    )
+    ok, _, etag = adapter.download("chains/latest-link.yaml")
+    assert ok and etag == "42"
+
+
+@respx.mock
+def test_gdrive_head_write_returns_nonempty_etag():
+    adapter = make_adapter()
+    respx.get(f"{DRIVE_API}/files").mock(
+        return_value=httpx.Response(200, json={"files": []})
+    )
+    respx.post(f"{DRIVE_UPLOAD}/files").mock(
+        return_value=httpx.Response(200, json={"id": "head-id", "version": "43"})
+    )
+    ok, etag, _ = adapter.upload_overwrite("chains/latest-link.yaml", b"head")
+    assert ok and etag == "43"
+
+
+@respx.mock
+def test_gdrive_missing_validator_raises_instead_of_empty_etag():
+    adapter = make_adapter({"chains/latest-link.yaml": "head-id"})
+    respx.get(f"{DRIVE_API}/files/head-id", params={"alt": "media"}).mock(
+        return_value=httpx.Response(200, content=b"head")
+    )
+    respx.get(f"{DRIVE_API}/files/head-id", params={"fields": "version"}).mock(
+        return_value=httpx.Response(200, json={})
+    )
+    with pytest.raises(CloudValidatorMissingExn):
+        adapter.download("chains/latest-link.yaml")
+
+
+@respx.mock
+def test_gdrive_conditional_write_uses_returned_etag():
+    adapter = make_adapter({"chains/latest-link.yaml": "head-id"})
+    respx.get(f"{DRIVE_API}/files/head-id", params={"fields": "version"}).mock(
+        return_value=httpx.Response(200, json={"version": "newer"}, headers={"ETag": '"drive-etag"'})
+    )
+    ok, _, msg = adapter.upload_if_match("chains/latest-link.yaml", b"head", "stale")
+    assert not ok and msg.cas_conflict
+
+
+@respx.mock
+def test_gdrive_download_refuses_when_file_changes_mid_read():
+    adapter = make_adapter({"chains/latest-link.yaml": "head-id"})
+    respx.get(f"{DRIVE_API}/files/head-id", params={"alt": "media"}).mock(
+        return_value=httpx.Response(200, content=b"old head")
+    )
+    respx.get(f"{DRIVE_API}/files/head-id", params={"fields": "version"}).mock(
+        side_effect=[
+            httpx.Response(200, json={"version": "42"}),
+            httpx.Response(200, json={"version": "43"}),
+        ]
+    )
+    ok, data, _outcome = adapter.download("chains/latest-link.yaml")
+    assert not ok and data is None

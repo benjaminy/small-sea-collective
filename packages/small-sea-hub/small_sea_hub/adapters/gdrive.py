@@ -9,6 +9,7 @@ from small_sea_hub.cloud_errors import (
     absent,
     cas_conflict,
     provider_failure,
+    CloudValidatorMissingExn,
 )
 
 DRIVE_API = "https://www.googleapis.com/drive/v3"
@@ -54,6 +55,20 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
         """Return current path→ID map for persistence."""
         return dict(self.path_ids)
 
+    def _get_version(self, file_id: str) -> tuple[str, Optional[str]]:
+        resp = httpx.get(
+            f"{DRIVE_API}/files/{file_id}",
+            headers=self._headers(),
+            params={"fields": "version"},
+        )
+        resp.raise_for_status()
+        version = resp.json().get("version")
+        if version is None or str(version) == "":
+            raise CloudValidatorMissingExn("Drive returned no file version")
+        etag_header = resp.headers.get("ETag")
+        etag = etag_header.strip('"') if etag_header else None
+        return str(version), etag
+
     def _find_file_id(self, path: str) -> str | None:
         """Look up a file ID by path, checking the cache then querying Drive."""
         if path in self.path_ids:
@@ -81,6 +96,17 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
         if file_id is None:
             return False, None, absent("File not found")
 
+        # Drive cannot pin a media read to a version, so read the version on
+        # both sides of the download. If it moved, the content may not match
+        # the version, and returning that pair could let a later conditional
+        # write overwrite a change the caller never saw.
+        try:
+            before, _ = self._get_version(file_id)
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code != 404:
+                raise
+            self.path_ids.pop(path, None)
+            return False, None, absent("File not found")
         resp = httpx.get(
             f"{DRIVE_API}/files/{file_id}",
             headers=self._headers(),
@@ -93,9 +119,10 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
             return False, None, provider_failure(
                 f"Download failed: HTTP {resp.status_code}"
             )
-
-        etag = resp.headers.get("ETag", "").strip('"')
-        return True, resp.content, etag
+        after, _ = self._get_version(file_id)
+        if after != before:
+            return False, None, provider_failure("File changed during download")
+        return True, resp.content, after
 
     def _upload(
         self,
@@ -113,18 +140,25 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
             return self._create_file(path, data, content_type)
 
         if file_id is None:
+            if expected_etag is not None:
+                return False, None, cas_conflict("File does not exist")
             # File doesn't exist yet — create it
             return self._create_file(path, data, content_type)
 
         # Update existing file
         headers = self._headers({"Content-Type": content_type})
         if expected_etag is not None:
-            headers["If-Match"] = expected_etag
+            current_version, drive_etag = self._get_version(file_id)
+            if current_version != expected_etag:
+                return False, None, cas_conflict("ETag mismatch - object was modified")
+            if not drive_etag:
+                raise CloudValidatorMissingExn("Drive returned no HTTP ETag for conditional write")
+            headers["If-Match"] = drive_etag
 
         resp = httpx.patch(
             f"{DRIVE_UPLOAD}/files/{file_id}",
             headers=headers,
-            params={"uploadType": "media"},
+            params={"uploadType": "media", "fields": "id,version"},
             content=data,
         )
 
@@ -133,9 +167,11 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
 
         resp.raise_for_status()
         body = resp.json()
-        new_etag = resp.headers.get("ETag", "").strip('"')
+        new_etag = body.get("version")
+        if new_etag is None or str(new_etag) == "":
+            raise CloudValidatorMissingExn("Drive returned no file version")
         self.path_ids[path] = body["id"]
-        return True, new_etag, "Object updated successfully"
+        return True, str(new_etag), "Object updated successfully"
 
     def _create_file(self, path: str, data: bytes, content_type: str):
         metadata = json.dumps({"name": path, "parents": ["appDataFolder"]})
@@ -161,11 +197,13 @@ class SmallSeaGDriveAdapter(SmallSeaStorageAdapter):
                     "Content-Type": f"multipart/related; boundary={boundary}",
                 }
             ),
-            params={"uploadType": "multipart"},
+            params={"uploadType": "multipart", "fields": "id,version"},
             content=body,
         )
         resp.raise_for_status()
         result = resp.json()
-        new_etag = resp.headers.get("ETag", "").strip('"')
+        new_etag = result.get("version")
+        if new_etag is None or str(new_etag) == "":
+            raise CloudValidatorMissingExn("Drive returned no file version")
         self.path_ids[path] = result["id"]
-        return True, new_etag, "Object updated successfully"
+        return True, str(new_etag), "Object updated successfully"

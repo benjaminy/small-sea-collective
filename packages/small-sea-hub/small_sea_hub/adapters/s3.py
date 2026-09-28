@@ -6,6 +6,7 @@ from botocore.exceptions import ClientError
 from .base import SmallSeaStorageAdapter
 from small_sea_hub.cloud_errors import (
     MaterializationOutcome,
+    CloudValidatorMissingExn,
     absent,
     cas_conflict,
     provider_failure,
@@ -51,7 +52,11 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
     def download(self, path: str):
         try:
             response = self.s3.get_object(Bucket=self.bucket_name, Key=path)
-            return True, response["Body"].read(), response["ETag"].strip('"')
+            etag_header = response.get("ETag")
+            etag = etag_header.strip('"') if etag_header else None
+            if not etag:
+                raise CloudValidatorMissingExn("S3 returned no ETag")
+            return True, response["Body"].read(), etag
         except ClientError as exn:
             error_code = exn.response["Error"]["Code"]
             detail = f"Download failed: {error_code}"
@@ -90,7 +95,10 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
                     ContentType=content_type,
                     IfMatch=expected_etag,
                 )
-            new_etag = response["ETag"].strip('"')
+            etag_header = response.get("ETag")
+            new_etag = etag_header.strip('"') if etag_header else None
+            if not new_etag:
+                raise CloudValidatorMissingExn("S3 returned no ETag")
             return True, new_etag, "Object updated successfully"
         except ClientError as exn:
             error_code = exn.response["Error"]["Code"]
