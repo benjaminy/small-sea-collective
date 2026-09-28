@@ -199,11 +199,34 @@ It does not guarantee that every event in the named closure remains available fo
 
 ## Current Implementation
 
-The shared signed envelope exists only in partial form.
-Several current record families look up signer standing through mutable membership tables, and the current admission implementation contains proposal anchors, endorsement thresholds, and an inviter-published `finalization` record.
+A minimal event DAG exists, enough for the multi-device Files demo (#174, #228).
+Its format is `v0` and deliberately not frozen: research data may be discarded when it changes (#173).
+
+- **Events.** An event carries a type, a payload, its parent event IDs, the signer's public key, and a signature.
+  Its ID is the SHA-256 of the signed body, encoded as sorted-key JSON (`wrasse_trust/events.py`).
+- **Storage.** Team Core holds a grow-only `constitution_event` table with no delete path.
+  An event whose parents are missing waits in `constitution_event_pending` and is promoted when they arrive.
+  An ID that arrives with different bytes is refused.
+- **Record kinds.** Key certificates, workhorse delegations, integration-mode changes, and teammate removals are events.
+  Each keeps its own inner signature; the Manager checks that inner record before storing or parking the event.
+  The older tables (`key_certificate` and others) are projections of these events, kept unfiltered as evidence.
+- **Convergence.** A device integrates a teammate's parked Core by adding every event it lacks, in one SQLite transaction followed by a Git commit.
+  One malformed or conflicting event refuses that source's whole batch; other sources proceed.
+  Teammates who hold the same events hold the same Constitution.
+- **Judgment is local.** Whether an event's author had authority is not checked on arrival.
+  Each device computes membership and authority as a view from the events it holds and the anchor it adopted.
+  Conflicting authentic events are both kept, and the view reports ambiguity instead of choosing a winner.
+- **Removal.** A teammate removal is a signed event, effective only where the receiving device's view finds its author authorized.
+  Removals that undermine each other's authority, or that remove the anchor, pause for an explicit local decision.
+  A late-arriving certificate cannot restore a removed teammate, and readmission will link a new identity rather than revive the old one (#289).
+
+Not yet built: size limits, genesis and origin rules, requesting missing parents from teammates, active-tip parking, and retention.
+The current integration assumes every copy of Core keeps every event; that is stronger than this document requires, and retention rules may relax it.
+Other Core data (app registrations, berth roles, settings) is still unsigned and not integrated; what it must agree on is open (#226).
+Admission records (proposals, endorsements, the inviter-published `finalization`) are not events yet, and several of them still look up signer standing through mutable membership tables.
 Those are current application-policy choices, not settled core protocol rules.
 
-The envelope migration should proceed only on properties needed by the narrow core: canonical bytes, full content digests, exact version and type pinning, origin binding, signature verification, parent references where the core format adopts them, and hostile-input-safe parsing.
+Further envelope work should proceed only on properties needed by the narrow core: canonical bytes, full content digests, exact version and type pinning, origin binding, signature verification, parent references, and hostile-input-safe parsing.
 It should not add admission thresholds, effective-membership rules, one accepted frontier, analyzer taxonomies, receipt families, or projection-provenance schemes to the core envelope.
 
 ## Open Core Questions
