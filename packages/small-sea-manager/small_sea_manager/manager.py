@@ -39,6 +39,7 @@ from small_sea_client.client import (
 )
 from small_sea_manager import admission_events
 from small_sea_manager import berth_source_decision
+from small_sea_manager import git_signing
 from small_sea_manager import note_to_self_sync
 from small_sea_manager import provisioning
 from small_sea_note_to_self.db import attached_note_to_self_connection
@@ -399,7 +400,9 @@ class TeamManager:
         )
         session.ensure_cloud_ready()
         repo_dir = self._note_to_self_repo_dir()
-        nts_repo = _Repo(repo_dir / ".git", repo_dir)
+        nts_repo = git_signing.nts_signed_repo(
+            self.root_dir, self.participant_hex, _Repo(repo_dir / ".git", repo_dir)
+        )
         with note_to_self_sync.write_reservation(
             self.root_dir, self.participant_hex
         ) as conn:
@@ -984,7 +987,7 @@ class TeamManager:
     def _commit_prepared_route(self, team_name) -> bool:
         """Commit a ready route. False means the caller should report a retry."""
         try:
-            self._team_repo(team_name).commit_paths(
+            self._signing_team_repo(team_name).commit_paths(
                 ["core.db"], "Announce berth storage"
             )
         except Exception:
@@ -1553,6 +1556,11 @@ class TeamManager:
         repo_dir = self._team_repo_dir(team_name)
         return _Repo(repo_dir / ".git", repo_dir)
 
+    def _signing_team_repo(self, team_name: str) -> _Repo:
+        return git_signing.core_signed_repo(
+            self.root_dir, self.participant_hex, team_name, self._team_repo(team_name)
+        )
+
     def _push_status_file(self, team_name: str) -> pathlib.Path:
         # Stored alongside (not inside) the Sync git repo to avoid polluting it.
         return self.root_dir / "Participants" / self.participant_hex / team_name / ".ss_last_push"
@@ -1609,7 +1617,7 @@ class TeamManager:
         """
         repo_dir = self._team_repo_dir(team_name)
         repo = self._team_repo(team_name)
-        repo.commit_paths(["core.db"], "Update team Core")
+        self._signing_team_repo(team_name).commit_paths(["core.db"], "Update team Core")
         # Capture the head being published before the remote operation, so the
         # marker names the exact state Cod Sync was handed.
         intended_head = repo.head()
