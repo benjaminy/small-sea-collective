@@ -351,12 +351,12 @@ def _two_files_setup(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "shared", LocalFolderStore(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "shared", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
 
     # Bob gets an empty files and fetches from alice
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, LocalFolderStore(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     bob_co = playground / "checkout-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", str(bob_co))
@@ -379,11 +379,11 @@ def test_merge_without_checkout_raises(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "stuff", LocalFolderStore(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "stuff", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT, LocalFolderStore(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     # Bob has a fetched ref but no checkout — merge must fail clearly
     with pytest.raises(NoCheckoutError):
@@ -583,7 +583,7 @@ def _full_sync_setup(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "sync", LocalFolderStore(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "sync", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
@@ -599,7 +599,7 @@ def test_no_transit_dir_ever_created(playground_dir):
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     # Bob: fetch → add_checkout → merge
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
     merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
@@ -617,7 +617,8 @@ def test_fetch_without_checkout_pins_ref(playground_dir):
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     fetched_sha = fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)),
+        signer=local_files_signer(_team_for(PARTICIPANT_B)),
     )
 
     assert fetched_sha is not None
@@ -638,7 +639,8 @@ def test_peer_update_status_cached_resolve_ref_path(playground_dir):
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
     fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)),
+        signer=local_files_signer(_team_for(PARTICIPANT_B)),
     )
 
     status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "sync", PARTICIPANT)
@@ -663,12 +665,12 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
     publish(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co), message="A", signer=local_files_signer(TEAM))
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
 
     # Bob: fetch A, add checkout, merge A (creates local HEAD at A), then unregister checkout
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
     merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
@@ -678,11 +680,12 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
     # Alice: commit B, push
     (alice_co / "b.txt").write_text("b\n")
     publish(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co), message="B", signer=local_files_signer(TEAM))
-    push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
 
     # Bob: fetch B — parked_sha is B, HEAD is A, so _is_ancestor is exercised
     sha_B = fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud)),
+        signer=local_files_signer(_team_for(PARTICIPANT_B)),
     )
     status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "history", PARTICIPANT)
     assert status_info["parked_sha"] == sha_B
@@ -726,7 +729,8 @@ def test_initial_history_merge(playground_dir):
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud))
+        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)),
+        signer=local_files_signer(_team_for(PARTICIPANT_B)),
     )
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
@@ -753,11 +757,11 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co))
     merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
@@ -765,12 +769,12 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
     # Both Alice and Bob modify the same file divergently and push/re-fetch
     (alice_co / "shared.txt").write_text("alice edit\n")
     publish(playground_dir, PARTICIPANT, TEAM, "conflict", str(alice_co), message="alice", signer=local_files_signer(TEAM))
-    push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
 
     (bob_co / "shared.txt").write_text("bob edit\n")
     publish(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co), message="bob", signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
     with pytest.raises(MergeConflictError):
         merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
@@ -878,16 +882,16 @@ def test_cwd_preserved_across_files_operations(playground_dir):
 
     cwd_before = os.getcwd()
 
-    push_niche(playground_dir, PARTICIPANT, TEAM, "cwdtest", LocalFolderStore(str(cloud_niche)))
+    push_niche(playground_dir, PARTICIPANT, TEAM, "cwdtest", LocalFolderStore(str(cloud_niche)), signer=local_files_signer(TEAM))
     assert os.getcwd() == cwd_before
 
-    push_registry(playground_dir, PARTICIPANT, TEAM, LocalFolderStore(str(cloud_reg)))
+    push_registry(playground_dir, PARTICIPANT, TEAM, LocalFolderStore(str(cloud_reg)), signer=local_files_signer(TEAM))
     assert os.getcwd() == cwd_before
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
 
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT, LocalFolderStore(str(cloud_niche)))
+    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT, LocalFolderStore(str(cloud_niche)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
     assert os.getcwd() == cwd_before
 
     bob_co = playground / "co-bob"
@@ -909,7 +913,7 @@ def test_cwd_preserved_across_files_operations(playground_dir):
 
     # merge_registry (covers _cod_merge_ref via registry path)
     from ssc_files.files import fetch_registry
-    fetch_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, LocalFolderStore(str(cloud_reg)))
+    fetch_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, LocalFolderStore(str(cloud_reg)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
     assert os.getcwd() == cwd_before
     merge_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
     assert os.getcwd() == cwd_before

@@ -103,8 +103,8 @@ def test_registry_propagation(playground_dir):
     write(alice_co, "readme.txt", "Hello from Alice.\n")
     publish(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co), message="initial commit", signer=local_files_signer(_team(ALICE)))
 
-    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(alice_reg_cloud)))
-    push_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderStore(str(alice_niche_cloud)))
+    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(alice_reg_cloud)), signer=local_files_signer(_team(ALICE)))
+    push_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderStore(str(alice_niche_cloud)), signer=local_files_signer(_team(ALICE)))
 
     # Bob starts with an empty files and pulls only the registry
     bob_root = setup_files(playground, "bob", BOB)
@@ -118,7 +118,7 @@ def test_registry_propagation(playground_dir):
     # Fetch parks Alice's content under a peer ref without advancing HEAD.
     # add_checkout then creates an empty checkout. merge_niche integrates the
     # parked ref and refreshes the checkout with Alice's files.
-    fetch_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE, LocalFolderStore(str(alice_niche_cloud)))
+    fetch_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE, LocalFolderStore(str(alice_niche_cloud)), signer=local_files_signer(_team(BOB)))
 
     bob_co = playground / "checkout-bob-docs"
     add_checkout(str(bob_root), BOB, _team(BOB), "docs", str(bob_co))
@@ -149,7 +149,7 @@ def test_concurrent_registry_additions(playground_dir):
     # Alice seeds the registry with an initial niche, pushes to seed cloud
     alice_root = setup_files(playground, "alice", ALICE)
     create_niche(str(alice_root), ALICE, _team(ALICE), "seed", signer=local_files_signer(_team(ALICE)))
-    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(seed_cloud)))
+    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(seed_cloud)), signer=local_files_signer(_team(ALICE)))
 
     # Bob pulls from seed cloud before adding anything — establishes common history
     bob_root = setup_files(playground, "bob", BOB)
@@ -159,8 +159,8 @@ def test_concurrent_registry_additions(playground_dir):
     create_niche(str(alice_root), ALICE, _team(ALICE), "photos", signer=local_files_signer(_team(ALICE)))
     create_niche(str(bob_root), BOB, _team(BOB), "receipts", signer=local_files_signer(_team(BOB)))
 
-    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(alice_reg_cloud)))
-    push_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(bob_reg_cloud)))
+    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(alice_reg_cloud)), signer=local_files_signer(_team(ALICE)))
+    push_registry(str(bob_root), BOB, _team(BOB), LocalFolderStore(str(bob_reg_cloud)), signer=local_files_signer(_team(BOB)))
 
     # Cross-pull registries — clean merge because of the common seed history
     pull_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(bob_reg_cloud)), signer=local_files_signer(_team(ALICE)))
@@ -240,8 +240,8 @@ def test_full_join_flow(playground_dir):
     write(alice_co, "guide.txt", "Getting started.\n")
     publish(str(alice_root), ALICE, _team(ALICE), "docs", str(alice_co), message="add guide", signer=local_files_signer(_team(ALICE)))
 
-    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(alice_reg_cloud)))
-    push_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderStore(str(alice_niche_cloud)))
+    push_registry(str(alice_root), ALICE, _team(ALICE), LocalFolderStore(str(alice_reg_cloud)), signer=local_files_signer(_team(ALICE)))
+    push_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderStore(str(alice_niche_cloud)), signer=local_files_signer(_team(ALICE)))
 
     # Bob joins from scratch — empty files, no prior knowledge of niche names
     bob_root = setup_files(playground, "bob", BOB)
@@ -251,7 +251,7 @@ def test_full_join_flow(playground_dir):
     assert "docs" in discovered
 
     # 3-step join flow: fetch → attach checkout → merge
-    fetch_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE, LocalFolderStore(str(alice_niche_cloud)))
+    fetch_niche(str(bob_root), BOB, _team(BOB), "docs", ALICE, LocalFolderStore(str(alice_niche_cloud)), signer=local_files_signer(_team(BOB)))
 
     bob_co = playground / "checkout-bob"
     add_checkout(str(bob_root), BOB, _team(BOB), "docs", str(bob_co))
@@ -263,7 +263,7 @@ def test_full_join_flow(playground_dir):
     # Bob contributes back
     write(bob_co, "bob_notes.txt", "My contribution.\n")
     publish(str(bob_root), BOB, _team(BOB), "docs", str(bob_co), message="add bob_notes", signer=local_files_signer(_team(BOB)))
-    push_niche(str(bob_root), BOB, _team(BOB), "docs", LocalFolderStore(str(bob_niche_cloud)))
+    push_niche(str(bob_root), BOB, _team(BOB), "docs", LocalFolderStore(str(bob_niche_cloud)), signer=local_files_signer(_team(BOB)))
 
     pull_niche(str(alice_root), ALICE, _team(ALICE), "docs", LocalFolderStore(str(bob_niche_cloud)), signer=local_files_signer(_team(ALICE)))
     assert exists(alice_co, "bob_notes.txt"), "Alice should see Bob's contribution after pull"

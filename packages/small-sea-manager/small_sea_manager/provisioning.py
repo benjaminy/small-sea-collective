@@ -5287,7 +5287,7 @@ def get_workhorse_signing_public_key(
     ).decode("ascii")
 
 
-def _load_transitional_view(conn, team_id: bytes, anchor_public_key: bytes):
+def _load_transitional_view(conn, team_id: bytes, anchor_public_key: bytes, *, ignore_removals=False):
     modes = [
         berth_authority.ModeChangeRecord(*row)
         for row in conn.execute(
@@ -5335,7 +5335,7 @@ def _load_transitional_view(conn, team_id: bytes, anchor_public_key: bytes):
         anchor_public_key=anchor_public_key,
         certs=_load_team_certificates(conn, team_id),
         mode_changes=modes,
-        removals=removals,
+        removals=[] if ignore_removals else removals,
         core_berth_id=_core_berth_id(conn),
         delegations=delegations,
         berth_ids=[row[0] for row in conn.execute(text("SELECT id FROM team_app_berth")).fetchall()],
@@ -5412,8 +5412,12 @@ def _adopted_anchor_or_pause(root_dir, participant_hex, team_id) -> bytes:
     return anchor["anchor_public_key"]
 
 
-def load_transitional_authority_view(root_dir, participant_hex, team_name):
+def load_transitional_authority_view(root_dir, participant_hex, team_name, *, ignore_removals=False):
     """Compute the transitional berth-authority view from this team's Core records.
+
+    With `ignore_removals`, the view is the historical one: removed teammates
+    keep the delegations they made. It judges commits made before a removal,
+    never who may act now.
 
     The view is rooted at this device's stored, adopted anchor; the records
     never choose it. Without an adopted anchor this raises
@@ -5424,7 +5428,9 @@ def load_transitional_authority_view(root_dir, participant_hex, team_name):
     engine = _sqlite_engine(_team_sync_dir(root_dir, participant_hex, team_name) / "core.db")
     try:
         with engine.begin() as conn:
-            return _load_transitional_view(conn, team_id, anchor_public_key)
+            return _load_transitional_view(
+                conn, team_id, anchor_public_key, ignore_removals=ignore_removals,
+            )
     finally:
         engine.dispose()
 

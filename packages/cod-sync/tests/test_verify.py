@@ -586,3 +586,23 @@ def test_link_signature_cannot_authorize_unsigned_commits(scratch_dir):
     with pytest.raises(UnsignedCommitError):
         make_cod_sync(bob, make_store(publication), verifier_for(key)).fetch(pin_to_ref=PIN)
     assert bob.resolve_ref(PIN) is None
+
+
+def test_retained_pin_requires_own_acceptance(scratch_dir):
+    scratch = pathlib.Path(scratch_dir)
+    key = make_ssh_key(scratch, "alice")
+    alice = publisher(scratch, key)
+    observed = commit_file(alice, "a.txt", "accepted")
+    store = make_store(scratch / "publication")
+    make_cod_sync(alice, store).publish()
+    bob = make_repo(scratch / "bob", "bob")
+    make_cod_sync(bob, store, verifier_for(key)).fetch(pin_to_ref=PIN)
+    bob.checkout_branch("main", observed)
+    retained = commit_file(bob, "b.txt", "unsigned retained descendant")
+    bob.advance_ref(PIN, retained)
+
+    with pytest.raises(UnsignedCommitError) as caught:
+        make_cod_sync(bob, store, verifier_for(key)).fetch(pin_to_ref=PIN)
+
+    assert caught.value.commit == retained
+    assert bob.resolve_ref(PIN) == retained

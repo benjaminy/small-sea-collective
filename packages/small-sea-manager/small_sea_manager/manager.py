@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal, Optional
 
+from cod_sync.verify import VerificationError as _VerificationError
 from cod_sync.repo import (
     Repo as _Repo,
     RepoError as _RepoError,
@@ -37,6 +38,7 @@ from small_sea_client.client import (
     SmallSeaError,
     SmallSeaHubUnavailable,
 )
+from small_sea_manager.git_verification import core_history_verifier
 from small_sea_manager import admission_events
 from small_sea_manager import berth_source_decision
 from small_sea_manager import git_signing
@@ -1382,13 +1384,16 @@ class TeamManager:
             )
             # Import and verify outside the writer reservation. Publishing a
             # ref makes this evidence visible and belongs with the report.
-            result = CodSync(repo, store).fetch()
+            result = CodSync(repo, store, verifier=core_history_verifier(
+                self.root_dir, self.participant_hex, team_name
+            )).fetch()
         except _NoPublishedHeadError as exc:
             observation.update(disposition="empty", detail=str(exc))
         except (
             _ChainError,
             _LinkFormatError,
             _UnsupportedLinkVersionError,
+            _VerificationError,
             _StoreError,
             SmallSeaHubUnavailable,
             SmallSeaError,
@@ -1636,7 +1641,8 @@ class TeamManager:
             base_url=self.client._base_url,
             client=self.client._http_client,
         )
-        result = CodSync(_Repo(repo_dir / ".git", repo_dir), store).publish()
+        verifier = core_history_verifier(self.root_dir, self.participant_hex, team_name)
+        result = CodSync(_Repo(repo_dir / ".git", repo_dir), store, verifier=verifier).publish()
         # Both ordinary dispositions mean the cloud holds this head — under
         # already_present it may hold a descendant of it — so the marker is
         # written for both. Every other disposition raised before this point
@@ -1688,7 +1694,9 @@ class TeamManager:
                 base_url=self.client._base_url,
                 client=self.client._http_client,
             )
-            result = CodSync(repo, store).fetch(pin_to_ref=latest_ref)
+            result = CodSync(repo, store, verifier=core_history_verifier(
+                self.root_dir, self.participant_hex, team_name
+            )).fetch(pin_to_ref=latest_ref)
         except _PinIntegrationRequiredError as exc:
             return self._record_core_divergence(repo, teammate_id, latest_ref, exc)
         except _NoPublishedHeadError as exc:
@@ -1699,6 +1707,7 @@ class TeamManager:
             _ChainError,
             _LinkFormatError,
             _UnsupportedLinkVersionError,
+            _VerificationError,
         ) as exc:
             # Cod Sync raises its link-decoding errors outside CodSyncError, so
             # they are named here rather than reached through a base class.

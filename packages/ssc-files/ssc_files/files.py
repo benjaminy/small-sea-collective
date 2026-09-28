@@ -203,6 +203,10 @@ class CommitSigner:
     env: dict[str, str]
     verify: Callable[[pathlib.Path | str, str], dict]
 
+    def verify_history(self, repo, head):
+        """Let Cod Sync use the same Hub decision as Files integration."""
+        return _authorize_history(repo.git_dir, head, self)
+
     @classmethod
     def from_session(cls, session, hub_url):
         info = session.session_info()
@@ -702,7 +706,7 @@ def _merge_parked_self_refs(git_dir, checkout, signer):
     return merged
 
 
-def _cod_fetch_self(git_dir, remote):
+def _cod_fetch_self(git_dir, remote, signer):
     """Fetch this participant's own store and park its head immutably.
 
     Uses the same parked-ref name a refused publication would use, so
@@ -710,7 +714,7 @@ def _cod_fetch_self(git_dir, remote):
     Returns the parked SHA.
     """
     repo = Repo(git_dir)
-    result = CS.CodSync(repo, remote).fetch()
+    result = CS.CodSync(repo, remote, verifier=signer).fetch()
     repo.create_ref_immutable(CS.parked_ref_name(result.link_uid), result.observed_head)
     return result.observed_head
 
@@ -747,9 +751,9 @@ def _ensure_registry(files_root, participant_hex, context):
 # Cod Sync push/pull primitives
 # ---------------------------------------------------------------------------
 
-def _cod_push(git_dir, remote):
+def _cod_push(git_dir, remote, signer):
     """Publish git_dir to remote via Cod Sync bundle transfer."""
-    return CS.CodSync(Repo(git_dir), remote).publish()
+    return CS.CodSync(Repo(git_dir), remote, verifier=signer).publish()
 
 
 def _cod_pull(git_dir, checkout, remote, signer):
@@ -758,7 +762,7 @@ def _cod_pull(git_dir, checkout, remote, signer):
     The fetch itself needs no work tree and moves no ref; the merge names the
     fetched SHA explicitly.
     """
-    result = CS.CodSync(Repo(git_dir), remote).fetch()
+    result = CS.CodSync(Repo(git_dir), remote, verifier=signer).fetch()
 
     repo = Repo(git_dir, work_tree=checkout, env=signer.env)
     head_result = gitCmd(
@@ -774,13 +778,13 @@ def _cod_pull(git_dir, checkout, remote, signer):
     return result
 
 
-def _cod_fetch(git_dir, remote, pin_to_ref):
+def _cod_fetch(git_dir, remote, pin_to_ref, signer):
     """Fetch from remote and pin the result to a local ref.
 
     Operates on git_dir directly — no work tree needed for fetch operations.
     Safe to call when no checkout is registered (CACHED state).
     """
-    result = CS.CodSync(Repo(git_dir), remote).fetch(pin_to_ref=pin_to_ref)
+    result = CS.CodSync(Repo(git_dir), remote, verifier=signer).fetch(pin_to_ref=pin_to_ref)
     # The pin may be newer than this observation if a later fetch already
     # landed, and callers must record what is actually parked.
     return result.pinned_head
@@ -1039,12 +1043,13 @@ def log(files_root, participant_hex, context, niche_name, limit=20):
     return entries
 
 
-def push_registry(files_root, participant_hex, context, remote):
+def push_registry(files_root, participant_hex, context, remote, *, signer):
     """Push the niche registry to cloud storage via Cod Sync."""
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     _ensure_registry(files_root, participant_hex, context)
     git_dir = _registry_git_dir(files_root, context)
-    return _cod_push(git_dir, remote)
+    return _cod_push(git_dir, remote, signer)
 
 
 def pull_registry(files_root, participant_hex, context, remote, *, signer):
@@ -1057,13 +1062,14 @@ def pull_registry(files_root, participant_hex, context, remote, *, signer):
     _cod_pull(git_dir, checkout, remote, signer)
 
 
-def fetch_registry(files_root, participant_hex, context, teammate_id, remote):
+def fetch_registry(files_root, participant_hex, context, teammate_id, remote, *, signer):
     """Fetch the registry from a peer and pin it to a durable local ref."""
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     _ensure_registry(files_root, participant_hex, context)
     git_dir = _registry_git_dir(files_root, context)
     ref_name = _peer_ref_name(teammate_id)
-    fetched_sha = _cod_fetch(git_dir, remote, ref_name)
+    fetched_sha = _cod_fetch(git_dir, remote, ref_name, signer)
     if fetched_sha is not None:
         _record_peer_fetch(
             files_root, participant_hex, context, "registry", None, teammate_id, fetched_sha
@@ -1071,11 +1077,12 @@ def fetch_registry(files_root, participant_hex, context, teammate_id, remote):
     return fetched_sha
 
 
-def fetch_self_registry(files_root, participant_hex, context, remote):
+def fetch_self_registry(files_root, participant_hex, context, remote, *, signer):
     """Fetch the participant's own registry chain and park its head for merge_self."""
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     _ensure_registry(files_root, participant_hex, context)
-    return _cod_fetch_self(_registry_git_dir(files_root, context), remote)
+    return _cod_fetch_self(_registry_git_dir(files_root, context), remote, signer)
 
 
 def merge_registry(files_root, participant_hex, context, teammate_id, *, signer):
@@ -1116,11 +1123,12 @@ def merge_self_registry(files_root, participant_hex, context, *, signer):
     return _merge_parked_self_refs(git_dir, checkout, signer)
 
 
-def push_niche(files_root, participant_hex, context, niche_name, remote):
+def push_niche(files_root, participant_hex, context, niche_name, remote, *, signer):
     """Push a niche to cloud storage via Cod Sync."""
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     git_dir = _niche_git_dir(files_root, context, niche_name)
-    return _cod_push(git_dir, remote)
+    return _cod_push(git_dir, remote, signer)
 
 
 def _require_clean_checkout(files_root, participant_hex, context, niche_name):
@@ -1166,7 +1174,7 @@ def pull_niche(files_root, participant_hex, context, niche_name, remote, *, sign
     _cod_pull(git_dir, checkout, remote, signer)
 
 
-def fetch_niche(files_root, participant_hex, context, niche_name, teammate_id, remote):
+def fetch_niche(files_root, participant_hex, context, niche_name, teammate_id, remote, *, signer):
     """Fetch a niche from a peer and pin it to a durable local ref.
 
     Fetch does not modify the user's checkout, so no clean-checkout guard
@@ -1174,13 +1182,14 @@ def fetch_niche(files_root, participant_hex, context, niche_name, teammate_id, r
     (no checkout registered).
     """
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     git_dir = _niche_git_dir(files_root, context, niche_name)
     if not git_dir.exists():
         git_dir.mkdir(parents=True)
         _init_git_dir(git_dir)
 
     ref_name = _peer_ref_name(teammate_id)
-    fetched_sha = _cod_fetch(git_dir, remote, ref_name)
+    fetched_sha = _cod_fetch(git_dir, remote, ref_name, signer)
     if fetched_sha is not None:
         _record_peer_fetch(
             files_root, participant_hex, context, "niche", niche_name, teammate_id, fetched_sha
@@ -1188,17 +1197,18 @@ def fetch_niche(files_root, participant_hex, context, niche_name, teammate_id, r
     return fetched_sha
 
 
-def fetch_self_niche(files_root, participant_hex, context, niche_name, remote):
+def fetch_self_niche(files_root, participant_hex, context, niche_name, remote, *, signer):
     """Fetch the participant's own niche chain and park its head for merge_self.
 
     Like fetch_niche, this leaves the checkout alone and works without one.
     """
     context = _validate_context(participant_hex, context)
+    _validate_signer(context, signer)
     git_dir = _niche_git_dir(files_root, context, niche_name)
     if not git_dir.exists():
         git_dir.mkdir(parents=True)
         _init_git_dir(git_dir)
-    return _cod_fetch_self(git_dir, remote)
+    return _cod_fetch_self(git_dir, remote, signer)
 
 
 def merge_niche(files_root, participant_hex, context, niche_name, teammate_id, *, signer):

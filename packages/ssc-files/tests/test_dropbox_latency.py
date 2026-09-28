@@ -486,10 +486,10 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     add_checkout(files0, p0_hex, team, NICHE, str(co0))
     (co0 / "init.txt").write_text("initialised\n")
     publish(files0, p0_hex, team, NICHE, str(co0), message="init", signer=local_files_signer(team))
-    push_niche(files0, p0_hex, team, NICHE, niche_remote0)
+    push_niche(files0, p0_hex, team, NICHE, niche_remote0, signer=local_files_signer(team))
 
     # p0 pushes registry; p1 discovers via registry pull
-    push_registry(files0, p0_hex, team, reg_remote0)
+    push_registry(files0, p0_hex, team, reg_remote0, signer=local_files_signer(team))
     pull_registry(files1, p1_hex, team, p1_reads_p0_reg, signer=local_files_signer(team))
 
     # p1 clones the niche (now has at least one commit) and sets up its checkout
@@ -505,7 +505,7 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
     t_start = time.time()
     (co0 / "ping.txt").write_text(f"ping {t_start}\n")
     publish(files0, p0_hex, team, NICHE, str(co0), message="ping", signer=local_files_signer(team))
-    push_niche(files0, p0_hex, team, NICHE, niche_remote0)
+    push_niche(files0, p0_hex, team, NICHE, niche_remote0, signer=local_files_signer(team))
 
     # ---- p1 detects, pulls, writes pong, pushes ----
     _poll_for_signal_change(ep1, tok1, p0_teammate_id, etag_p0_before)
@@ -516,7 +516,7 @@ def test_dropbox_ping_pong(dropbox_env, tmp_path):
 
     (co1 / "pong.txt").write_text(f"pong {t_p1_received}\n")
     publish(files1, p1_hex, team, NICHE, str(co1), message="pong", signer=local_files_signer(team))
-    push_niche(files1, p1_hex, team, NICHE, niche_remote1)
+    push_niche(files1, p1_hex, team, NICHE, niche_remote1, signer=local_files_signer(team))
 
     # ---- p0 detects and pulls pong ----
     _poll_for_signal_change(ep0, tok0, p1_teammate_id, etag_p1_before)
@@ -580,9 +580,9 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     add_checkout(files0, p0_hex, team, niche_name, str(co0))
     (co0 / "init.txt").write_text("initialised\n")
     publish(files0, p0_hex, team, niche_name, str(co0), message="init", signer=local_files_signer(team))
-    push_niche(files0, p0_hex, team, niche_name, niche_remote0)
+    push_niche(files0, p0_hex, team, niche_name, niche_remote0, signer=local_files_signer(team))
 
-    push_registry(files0, p0_hex, team, reg_remote0)
+    push_registry(files0, p0_hex, team, reg_remote0, signer=local_files_signer(team))
     pull_registry(files1, p1_hex, team, p1_reads_p0_reg, signer=local_files_signer(team))
 
     pull_niche(files1, p1_hex, team, niche_name, p1_reads_p0_niche, signer=local_files_signer(team))
@@ -597,7 +597,7 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
     t_start = time.time()
     (co0 / "ping.txt").write_text(f"ping {t_start}\n")
     publish(files0, p0_hex, team, niche_name, str(co0), message="ping", signer=local_files_signer(team))
-    push_niche(files0, p0_hex, team, niche_name, niche_remote0)
+    push_niche(files0, p0_hex, team, niche_name, niche_remote0, signer=local_files_signer(team))
 
     # ---- p1 waits for Hub push notification, then pulls and pongs ----
     _wait_for_notification(ep1, tok1, p0_teammate_id, count_p0_before_ping)
@@ -608,7 +608,7 @@ def test_dropbox_ping_pong_push(dropbox_env, tmp_path):
 
     (co1 / "pong.txt").write_text(f"pong {t_p1_received}\n")
     publish(files1, p1_hex, team, niche_name, str(co1), message="pong", signer=local_files_signer(team))
-    push_niche(files1, p1_hex, team, niche_name, niche_remote1)
+    push_niche(files1, p1_hex, team, niche_name, niche_remote1, signer=local_files_signer(team))
 
     # ---- p0 waits for push notification of pong ----
     _wait_for_notification(ep0, tok0, p1_teammate_id, count_p1_before_pong)
@@ -674,9 +674,9 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     add_checkout(files0, p0_hex, team, niche_name, str(co0))
     (co0 / "init.txt").write_text("initialised\n")
     publish(files0, p0_hex, team, niche_name, str(co0), message="init", signer=local_files_signer(team))
-    push_niche(files0, p0_hex, team, niche_name, niche_remote0)
+    push_niche(files0, p0_hex, team, niche_name, niche_remote0, signer=local_files_signer(team))
 
-    push_registry(files0, p0_hex, team, reg_remote0)
+    push_registry(files0, p0_hex, team, reg_remote0, signer=local_files_signer(team))
     pull_registry(files1, p1_hex, team, p1_reads_p0_reg, signer=local_files_signer(team))
 
     pull_niche(files1, p1_hex, team, niche_name, p1_reads_p0_niche, signer=local_files_signer(team))
@@ -695,7 +695,7 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     publish(files0, p0_hex, team, niche_name, str(co0), message="ping", signer=local_files_signer(team))
 
     t0 = time.time()
-    push_niche(files0, p0_hex, team, niche_name, niche_remote0)
+    push_niche(files0, p0_hex, team, niche_name, niche_remote0, signer=local_files_signer(team))
     t_push_done = time.time()
 
     # ---- p1 waits for ntfy-driven notification ----
@@ -711,7 +711,7 @@ def test_dropbox_ping_pong_ntfy(dropbox_ntfy_env, tmp_path):
     publish(files1, p1_hex, team, niche_name, str(co1), message="pong", signer=local_files_signer(team))
 
     t2 = time.time()
-    push_niche(files1, p1_hex, team, niche_name, niche_remote1)
+    push_niche(files1, p1_hex, team, niche_name, niche_remote1, signer=local_files_signer(team))
     t_pong_push_done = time.time()
 
     # ---- p0 waits for ntfy-driven notification of pong ----

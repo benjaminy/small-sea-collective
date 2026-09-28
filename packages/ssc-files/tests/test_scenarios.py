@@ -59,7 +59,7 @@ def setup_participant(playground, name, participant_hex):
 
 
 def do_push(root, participant_hex, cloud):
-    push_niche(str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderStore(str(cloud)))
+    push_niche(str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderStore(str(cloud)), signer=local_files_signer(_team(participant_hex)))
 
 
 def do_pull(root, participant_hex, cloud):

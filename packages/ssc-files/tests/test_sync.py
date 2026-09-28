@@ -47,7 +47,7 @@ def test_sync_niche_between_devices(playground_dir):
     (pathlib.Path(checkout_a) / "beach.jpg").write_bytes(b"fake-beach-data")
     publish(root_a, PARTICIPANT, TEAM, "photos", checkout_a, message="add photos", signer=local_files_signer(TEAM))
 
-    push_niche(root_a, PARTICIPANT, TEAM, "photos", LocalFolderStore(str(cloud_dir)))
+    push_niche(root_a, PARTICIPANT, TEAM, "photos", LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM))
 
     # --- Device B: join flow: fetch → attach checkout → merge ---
     root_b = str(playground / "device-b")
@@ -55,7 +55,7 @@ def test_sync_niche_between_devices(playground_dir):
     materialize_team(root_b, TEAM)
     checkout_b = str(playground / "checkout-b" / "photos")
 
-    fetch_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, LocalFolderStore(str(cloud_dir)))
+    fetch_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM))
     add_checkout(root_b, PARTICIPANT, TEAM, "photos", checkout_b)
     merge_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, signer=local_files_signer(TEAM))
 
@@ -145,13 +145,13 @@ def _two_device_conflict(playground_dir):
     add_checkout(root_a, PARTICIPANT, TEAM, "notes", str(checkout_a))
     (checkout_a / "shared.txt").write_text("v1\n")
     publish(root_a, PARTICIPANT, TEAM, "notes", str(checkout_a), message="v1", signer=local_files_signer(TEAM))
-    push_niche(root_a, PARTICIPANT, TEAM, "notes", LocalFolderStore(str(cloud_dir)))
+    push_niche(root_a, PARTICIPANT, TEAM, "notes", LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM))
 
     root_b = str(playground / "device-b")
     init_files(root_b, PARTICIPANT)
     materialize_team(root_b, TEAM)
     checkout_b = pathlib.Path(playground) / "checkout-b"
-    fetch_niche(root_b, PARTICIPANT, TEAM, "notes", PARTICIPANT, LocalFolderStore(str(cloud_dir)))
+    fetch_niche(root_b, PARTICIPANT, TEAM, "notes", PARTICIPANT, LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM))
     add_checkout(root_b, PARTICIPANT, TEAM, "notes", str(checkout_b))
     merge_niche(root_b, PARTICIPANT, TEAM, "notes", PARTICIPANT, signer=local_files_signer(TEAM))
 
@@ -168,13 +168,14 @@ def _diverge(env, *, a_text, b_text):
     """Give each device one new commit and let device A win the cloud head."""
     (env["checkout_a"] / "a.txt").write_text(a_text)
     publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a", signer=local_files_signer(TEAM))
-    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])))
+    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM))
 
     (env["checkout_b"] / "b.txt").write_text(b_text)
     publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError) as exc_info:
         push_niche(
-            env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"]))
+            env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])),
+            signer=local_files_signer(TEAM),
         )
     return exc_info.value
 
@@ -301,23 +302,25 @@ def test_merge_self_leaves_an_already_integrated_parked_ref_alone(playground_dir
     sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
 
     # Device B publishes the merge; device A gets ahead again.
-    push_niche(env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])))
+    push_niche(env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM))
     (env["checkout_a"] / "a2.txt").write_text("from A again\n")
     publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a2", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError):
         # Device A has not seen B's merge commit, so its own push is refused
         # and it parks B's head; pull it in so A can win the race again.
         push_niche(
-            env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"]))
+            env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])),
+            signer=local_files_signer(TEAM),
         )
     sync.merge_self(env["root_a"], PARTICIPANT, TEAM.team_name, "notes")
-    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])))
+    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM))
 
     (env["checkout_b"] / "b2.txt").write_text("from B again\n")
     publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b2", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError) as exc_info:
         push_niche(
-            env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"]))
+            env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])),
+            signer=local_files_signer(TEAM),
         )
     second = exc_info.value
 
@@ -337,7 +340,8 @@ def test_merge_self_merges_a_descendant_before_its_parked_ancestor(playground_di
     (env["checkout_a"] / "shared.txt").write_text("intermediate\n")
     publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a1", signer=local_files_signer(TEAM))
     push_niche(
-        env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"]))
+        env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])),
+        signer=local_files_signer(TEAM),
     )
 
     (env["checkout_b"] / "shared.txt").write_text("resolved\n")
@@ -346,17 +350,20 @@ def test_merge_self_merges_a_descendant_before_its_parked_ancestor(playground_di
         push_niche(
             env["root_b"], PARTICIPANT, TEAM, "notes",
             LocalFolderStore(str(env["cloud_dir"])),
+            signer=local_files_signer(TEAM),
         )
 
     (env["checkout_a"] / "shared.txt").write_text("resolved\n")
     publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a2", signer=local_files_signer(TEAM))
     push_niche(
-        env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"]))
+        env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])),
+        signer=local_files_signer(TEAM),
     )
     with pytest.raises(PublicationIntegrationRequiredError) as second_info:
         push_niche(
             env["root_b"], PARTICIPANT, TEAM, "notes",
             LocalFolderStore(str(env["cloud_dir"])),
+            signer=local_files_signer(TEAM),
         )
 
     first = first_info.value
@@ -603,14 +610,15 @@ def test_fetch_self_parks_a_sibling_head_without_writing_or_moving_head(playgrou
     env = _two_device_conflict(playground_dir)
     (env["checkout_a"] / "a.txt").write_text("from A\n")
     publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a", signer=local_files_signer(TEAM))
-    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])))
+    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM))
     a_head = _git(_niche_git_dir(env["root_a"], TEAM, "notes"), "rev-parse", "HEAD")
 
     git_dir_b = _niche_git_dir(env["root_b"], TEAM, "notes")
     b_head_before = _git(git_dir_b, "rev-parse", "HEAD")
 
     fetched = fetch_self_niche(
-        env["root_b"], PARTICIPANT, TEAM, "notes", _NoWriteStore(str(env["cloud_dir"]))
+        env["root_b"], PARTICIPANT, TEAM, "notes", _NoWriteStore(str(env["cloud_dir"])),
+        signer=local_files_signer(TEAM),
     )
 
     assert fetched == a_head
@@ -623,7 +631,8 @@ def test_fetch_self_parks_a_sibling_head_without_writing_or_moving_head(playgrou
 
     # Refetching the same head verifies the immutable ref rather than failing.
     assert fetch_self_niche(
-        env["root_b"], PARTICIPANT, TEAM, "notes", _NoWriteStore(str(env["cloud_dir"]))
+        env["root_b"], PARTICIPANT, TEAM, "notes", _NoWriteStore(str(env["cloud_dir"])),
+        signer=local_files_signer(TEAM),
     ) == a_head
 
     # A dirty checkout still blocks integration, and the parked head survives.
@@ -644,7 +653,7 @@ def test_fetch_self_via_hub_keeps_the_registry_when_the_niche_fails(playground_d
     env = _two_device_conflict(playground_dir)
     registry_cloud = pathlib.Path(playground_dir) / "registry-cloud"
     registry_cloud.mkdir()
-    push_registry(env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(registry_cloud)))
+    push_registry(env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(registry_cloud)), signer=local_files_signer(TEAM))
     empty_niche_cloud = pathlib.Path(playground_dir) / "empty-niche-cloud"
     empty_niche_cloud.mkdir()
 
@@ -673,7 +682,7 @@ def test_fetch_self_via_hub_can_fetch_registry_for_niche_discovery(playground_di
     cloud = pathlib.Path(playground_dir) / "registry-cloud"
     cloud.mkdir()
     create_niche(env["root_a"], PARTICIPANT, TEAM, "plans", signer=local_files_signer(TEAM))
-    push_registry(env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(cloud)))
+    push_registry(env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
 
     monkeypatch.setattr(sync, "resolve_team_context", lambda *_a: TEAM)
     monkeypatch.setattr(sync, "get_team_session", lambda *_a, **_k: None)
@@ -709,7 +718,7 @@ def test_fetch_self_via_hub_does_not_treat_a_malformed_registry_as_absent(
     env = _two_device_conflict(playground_dir)
     niche_cloud = pathlib.Path(playground_dir) / "niche-cloud"
     niche_cloud.mkdir()
-    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(niche_cloud)))
+    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(niche_cloud)), signer=local_files_signer(TEAM))
     registry_cloud = pathlib.Path(playground_dir) / "registry-cloud"
     registry_cloud.mkdir()
 

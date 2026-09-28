@@ -580,6 +580,7 @@ def push_via_hub(
     context = resolve_team_context(files_root, participant_hex, team_name)
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
     session.ensure_cloud_ready()
+    signer = commit_signer(team_name, hub_port, _http_client=_http_client)
     merge_hint = f"`ssc-files merge --from-self {team_name} {niche_name}`"
     niche_result = _publish(
         "niche",
@@ -590,6 +591,7 @@ def push_via_hub(
             context,
             niche_name,
             make_niche_remote(niche_name, session),
+            signer=signer,
         ),
     )
     registry_result = _publish(
@@ -600,6 +602,7 @@ def push_via_hub(
             participant_hex,
             context,
             make_registry_remote(session),
+            signer=signer,
         ),
     )
     if (
@@ -671,6 +674,7 @@ def fetch_via_hub(
     """Fetch a registry and niche from a peer through the Hub without merging."""
     context = resolve_team_context(files_root, participant_hex, team_name)
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+    signer = commit_signer(team_name, hub_port, _http_client=_http_client)
 
     # Observe signal_count BEFORE fetching. If the peer pushes again during
     # the fetch, we intentionally record the pre-second-push count so the
@@ -691,6 +695,7 @@ def fetch_via_hub(
         context,
         from_teammate_id,
         make_peer_registry_remote(from_teammate_id, session),
+        signer=signer,
     )
     niche_sha = files.fetch_niche(
         files_root,
@@ -699,6 +704,7 @@ def fetch_via_hub(
         niche_name,
         from_teammate_id,
         make_peer_niche_remote(niche_name, from_teammate_id, session),
+        signer=signer,
     )
 
     # Advance the watermark now that the fetch succeeded.
@@ -831,9 +837,8 @@ def fetch_self_via_hub(
     """Fetch this participant's own registry and, optionally, one niche through the Hub.
 
     Parks each observed head so `merge --from-self` can integrate it. Nothing
-    is published and the checkout does not move. Cod Sync publications in Files
-    are unsigned, so a parked head proves only what the store held, not which
-    device wrote it.
+    is published and the checkout does not move. The Hub verifies the fetched
+    history before Files parks its head.
 
     A registry with no published head is not fatal: push publishes the niche
     first, so an interrupted push can leave a niche without a registry. The
@@ -842,9 +847,11 @@ def fetch_self_via_hub(
     """
     context = resolve_team_context(files_root, participant_hex, team_name)
     session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
+    signer = commit_signer(team_name, hub_port, _http_client=_http_client)
     try:
         registry_sha = files.fetch_self_registry(
-            files_root, participant_hex, context, make_registry_remote(session)
+            files_root, participant_hex, context, make_registry_remote(session),
+            signer=signer,
         )
     except NoPublishedHeadError:
         registry_sha = None
@@ -854,14 +861,16 @@ def fetch_self_via_hub(
     if registry_sha is None:
         try:
             niche_sha = files.fetch_self_niche(
-                files_root, participant_hex, context, niche_name, niche_remote
+                files_root, participant_hex, context, niche_name, niche_remote,
+                signer=signer,
             )
         except NoPublishedHeadError as exc:
             raise SelfFetchNoHeadError(niche_name) from exc
         return SelfFetchResult(registry_sha=None, niche_sha=niche_sha)
     try:
         niche_sha = files.fetch_self_niche(
-            files_root, participant_hex, context, niche_name, niche_remote
+            files_root, participant_hex, context, niche_name, niche_remote,
+            signer=signer,
         )
     except Exception as exc:
         raise SelfFetchPartialError(registry_sha, exc) from exc

@@ -851,6 +851,7 @@ def test_push_repairs_a_registry_left_unpublished_by_an_earlier_failure(
         env["alice_hex"],
         context,
         sync.make_registry_remote(session),
+        signer=local_files_signer(context),
     )
     assert repaired.disposition == "already_present"
 
@@ -1008,7 +1009,10 @@ def test_fetch_self_via_hub_parks_own_head_through_hub_and_minio(
     assert provider_writes[writes_before_fetch:] == []
 
     assert (result.registry_sha, result.niche_sha) == (a1_registry, a1_niche)
-    assert calls and all(c == ("GET", "/cloud_file") for c in calls), calls
+    # One /session/info builds the commit signer; everything else is storage reads.
+    assert calls.count(("GET", "/session/info")) == 1, calls
+    other = [c for c in calls if c != ("GET", "/session/info")]
+    assert other and all(c == ("GET", "/cloud_file") for c in other), calls
     assert _bucket_snapshot(env["alice_minio"], env["team_bucket"]) == before
 
     a2_niche_git = files._niche_git_dir(a2_root, a2_ctx, "docs")

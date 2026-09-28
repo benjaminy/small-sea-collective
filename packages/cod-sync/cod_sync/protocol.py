@@ -370,7 +370,6 @@ class CodSync:
         """verifier is optional, and absent means signatures are not checked.
 
         A verifier implements verify_history(repo, head).
-        No runtime caller supplies one yet; Manager wiring is separate work.
         """
         self.repo = repo
         self.store = store
@@ -830,6 +829,9 @@ class CodSync:
                 ) from exc
             pinned_head = advance.current_sha
             disposition = advance.disposition
+            # A retained descendant needs its own acceptance decision.
+            if pinned_head != observed_head:
+                self._require_verified(pinned_head)
 
         return FetchResult(
             observed_head=observed_head,

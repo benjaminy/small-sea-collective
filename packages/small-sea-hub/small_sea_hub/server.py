@@ -1024,7 +1024,16 @@ async def session_verify(req: VerifyHistoryReq, session_hex: str = Depends(_requ
         raise HTTPException(status_code=409, detail={"code": "authority_anchor_absent"})
     repo = Repo(git_dir)
     try:
-        evidence_by_commit = SshCommitVerifier(view.workhorse_public_keys()).signature_evidence(repo, req.head)
+        # Removing a teammate stops their future commits, not the ones they made
+        # before. Git order cannot show which side of the removal a commit falls on,
+        # so a key whose delegation the current view lacks gets a second look under
+        # the same records with removals ignored.
+        history_view = Provisioning.load_transitional_authority_view(
+            backend.root_dir, session.participant_id.hex(), session.team_name,
+            ignore_removals=True,
+        )
+        keys = sorted(set(view.workhorse_public_keys()) | set(history_view.workhorse_public_keys()))
+        evidence_by_commit = SshCommitVerifier(keys).signature_evidence(repo, req.head)
     except VerificationUnavailableError:
         raise HTTPException(status_code=400, detail={"code": "invalid_repository"})
     commits = []
@@ -1035,6 +1044,12 @@ async def session_verify(req: VerifyHistoryReq, session_hex: str = Depends(_requ
             context = None
         decision = evaluate(view, context, evidence, team_id=session.team_id,
                             berth_id=session.berth_id, purpose=context.purpose if context else "")
+        if decision.result is AuthorityResult.MISSING_AUTHORITY:
+            past = evaluate(history_view, context, evidence, team_id=session.team_id,
+                            berth_id=session.berth_id, purpose=context.purpose if context else "")
+            if past.result is AuthorityResult.AUTHORIZED:
+                decision = AuthorityDecision(past.result, view.identifier, past.reason,
+                                             past.delegation_ids)
         # A context is trustworthy only once its signature and delegation check out.
         if (decision.result is AuthorityResult.AUTHORIZED
                 and not backend.session_allows_purpose(session, context.purpose)):

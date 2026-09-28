@@ -57,7 +57,8 @@ class _Device:
     def __init__(self, name, root, monkeypatch):
         self.name = name
         self.root = root
-        self.files_root = str(root / "files")
+        # The Hub refuses git dirs inside the Small Sea root, so Files data lives beside it.
+        self.files_root = str(root.parent / f"{root.name}-files")
         self.config = root / "ssc-files.toml"
         self.monkeypatch = monkeypatch
         self.backend = SmallSea.SmallSeaBackend(
@@ -230,6 +231,15 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
     a = _Device("A", tmp_path / "device-a", monkeypatch)
     b = _Device("B", tmp_path / "device-b", monkeypatch)
     spy = _ProviderSpy(monkeypatch, [a, b])
+
+    # Commits use a local test key, like the in-process Files tests, because the
+    # Hub's signing program is not installed here.
+    def in_process_signer(team_name, hub_port=11437, *, _http_client=None):
+        session = sync.get_team_session(team_name, hub_port, _http_client=_http_client)
+        context = files.materialization_context_from_session_info(session.session_info())
+        return local_files_signer(context)
+
+    monkeypatch.setattr(sync, "commit_signer", in_process_signer)
 
     # 1. Participant and MinIO-backed cloud account on A, through Manager.
     import small_sea_manager.provisioning as Provisioning

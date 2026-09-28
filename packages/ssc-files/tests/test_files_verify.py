@@ -33,7 +33,7 @@ def _setup(playground_dir):
                   signer=local_files_signer(TEAM))
     cloud = root / "cloud"
     cloud.mkdir()
-    files.push_niche(str(source), PARTICIPANT, TEAM, "docs", LocalFolderStore(str(cloud)))
+    files.push_niche(str(source), PARTICIPANT, TEAM, "docs", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
 
     dest = root / "dest"
     files.init_files(str(dest), PEER)
@@ -42,7 +42,9 @@ def _setup(playground_dir):
     checkout = root / "dest-checkout"
     files.add_checkout(str(dest), PEER, PEER_TEAM, "docs", str(checkout))
     fetched = files.fetch_niche(str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT,
-                                LocalFolderStore(str(cloud)))
+                                LocalFolderStore(str(cloud)),
+        signer=local_files_signer(PEER_TEAM),
+    )
     return root, source, dest, checkout, cloud, fetched
 
 
@@ -160,3 +162,27 @@ def test_sync_merge_via_hub_surfaces_refusal(playground_dir, monkeypatch):
                         _verifying_signer(PEER_TEAM, _history("unsigned", "no signature")))
     with pytest.raises(sync.UnauthorizedHistoryError, match="1 commit.*unsigned: no signature"):
         sync.merge_via_hub(str(dest), PEER, "VerifyTeam", "docs", PARTICIPANT)
+
+
+@pytest.mark.parametrize("operation", ["fetch", "fetch_self", "publish"])
+@pytest.mark.parametrize("verdict", ["unsigned", "bad_signature", "missing_authority"])
+def test_files_transfer_refuses_unaccepted_history(playground_dir, operation, verdict):
+    from cod_sync.repo import Repo
+
+    root, source, dest, _, cloud, _ = _setup(playground_dir)
+    source_git = files._niche_git_dir(str(source), TEAM, "docs")
+    dest_git = files._niche_git_dir(str(dest), PEER_TEAM, "docs")
+    before = Repo(dest_git).list_refs("refs/")
+    signer = _verifying_signer(PEER_TEAM, _history(verdict, "refused"))
+    with pytest.raises(files.UnauthorizedHistoryError):
+        if operation == "fetch":
+            files._cod_fetch(dest_git, LocalFolderStore(str(cloud)), "refs/peers/new/main", signer)
+        elif operation == "fetch_self":
+            files._cod_fetch_self(dest_git, LocalFolderStore(str(cloud)), signer)
+        else:
+            unpublished = root / "unpublished"
+            unpublished.mkdir()
+            files._cod_push(source_git, LocalFolderStore(str(unpublished)), signer)
+    assert Repo(dest_git).list_refs("refs/") == before
+    if operation == "publish":
+        assert not list(unpublished.iterdir())

@@ -33,6 +33,13 @@ def inspection(playground_dir, monkeypatch):
     (root / "cloud").mkdir()
     store = LocalFolderStore(root / "cloud")
     CodSync(nts_repo, store).publish()
+    # These observation probes transport NoteToSelf-shaped test histories.
+    # Supply their known root key while exercising real signature verification.
+    from small_sea_manager.git_verification import CoreHistoryVerifier
+    with attached_note_to_self_connection(root, participant) as conn:
+        root_key = conn.execute("SELECT signing_key FROM user_device").fetchone()[0]
+    monkeypatch.setattr(manager_module, "core_history_verifier",
+                        lambda *args: CoreHistoryVerifier(root_key, {root_key}))
     team_repo = Repo.init(root / "inspection" / ".git")
     state = {"core_berth_id": fixtures._BERTH_ID, "placement": "paused"}
     monkeypatch.setattr(manager_module.provisioning, "derive_team_join_state", lambda *args: state)

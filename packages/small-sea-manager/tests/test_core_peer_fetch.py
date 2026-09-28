@@ -146,6 +146,9 @@ def _publish(env, teammate_id_hex, files, work_name=None, publication_name=None)
         repo = Repo.init(work / ".git").with_work_tree(work)
         repo.config("user.email", "peer@test")
         repo.config("user.name", "peer")
+    # These transport probes use a recognized key, including at each root.
+    from small_sea_manager.git_signing import core_signed_repo
+    repo = core_signed_repo(env.root, env.alice_hex, _TEAM, repo)
     for name, content in files.items():
         (work / name).write_text(content)
         repo.stage([name])
@@ -525,3 +528,22 @@ def test_containment_in_local_main_is_reported(env):
 
     assert before == [False]
     assert after == [True]
+
+
+def test_core_fetch_refuses_unsigned_descendant(env):
+    from cod_sync.verify import UnsignedCommitError
+
+    accepted = _publish(env, _BOB, {"data": "accepted"})
+    repo = Repo(env.root / "peer-bbbb" / ".git", env.root / "peer-bbbb")
+    repo.config("commit.gpgsign", "false")
+    (repo.work_tree / "data").write_text("unsigned")
+    repo.stage(["data"])
+    rejected = repo.commit("unsigned descendant")
+    CodSync(repo, LocalFolderStore(str(_publication(env, _BOB)))).publish()
+
+    with pytest.raises(InvalidCoreChainError) as caught:
+        env.manager.fetch_teammate_core(_TEAM, _BOB)
+    assert isinstance(caught.value.__cause__, UnsignedCommitError)
+    assert caught.value.__cause__.commit == rejected
+    assert _alice_repo(env).resolve_ref(core_peer_latest_ref(_BOB)) is None
+    assert accepted != rejected
