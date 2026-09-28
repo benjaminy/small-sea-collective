@@ -277,6 +277,8 @@ def merge_cmd(team_name, niche_name, from_teammate, from_self, files_root, parti
             for path in exc.paths:
                 click.echo(f"  {path}", err=True)
         raise SystemExit(1)
+    except sync.UnauthorizedHistoryError as exc:
+        _die(str(exc))
     except (sync.FilesSyncError, OSError) as exc:
         _die(str(exc))
 
@@ -334,6 +336,8 @@ def pull_cmd(team_name, niche_name, from_teammate, files_root, participant, hub_
             for path in exc.paths:
                 click.echo(f"  {path}", err=True)
         raise SystemExit(1)
+    except sync.UnauthorizedHistoryError as exc:
+        _die(str(exc))
     except (sync.FilesSyncError, OSError) as exc:
         _die(str(exc))
 

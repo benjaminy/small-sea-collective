@@ -33,7 +33,10 @@ def _files_signing_key():
 
 
 def local_files_signer(context):
-    """Sign Files micro test commits with an on-disk SSH key."""
+    """Sign Files micro test commits with an on-disk SSH key.
+
+    Test-only: its verifier approves every fetched history without asking a Hub.
+    """
     from cod_sync.git import signing_git_env
     from ssc_files.files import CommitSigner
 
@@ -44,8 +47,20 @@ def local_files_signer(context):
         extra_env={"GIT_AUTHOR_NAME": "Files Test", "GIT_AUTHOR_EMAIL": "files@test",
                    "GIT_COMMITTER_NAME": "Files Test", "GIT_COMMITTER_EMAIL": "files@test"},
     )
+    def approve_history(git_dir, sha):
+        commits = subprocess.check_output(
+            ["git", "--git-dir", str(git_dir), "rev-list", sha], text=True
+        ).splitlines()
+        return {
+            "commits": [
+                {"commit": commit, "result": "authorized", "reason": "test verifier"}
+                for commit in commits
+            ],
+            "view_identifier": "test",
+        }
+
     return CommitSigner(context.team_id, context.berth_id,
-                        b"test-authority-view", env)
+                        b"test-authority-view", env, approve_history)
 
 
 def publish_storage_announcement_for_session(backend, session_hex) -> dict | None:

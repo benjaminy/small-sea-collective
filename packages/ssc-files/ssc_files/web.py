@@ -148,6 +148,8 @@ def create_app(
                     + ", ".join(exc.paths)
                 )
             return f"Merge left unresolved conflicts in the {exc.scope}."
+        if isinstance(exc, sync.UnauthorizedHistoryError):
+            return str(exc)
         return str(exc)
 
     def _niche_detail_response(

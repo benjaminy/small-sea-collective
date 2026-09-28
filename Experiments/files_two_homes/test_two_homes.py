@@ -185,6 +185,13 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "bob-files.toml"))
         bob_login = sync.login_team(bob_files, TEAM, bob, _http_client=bob_http, pin_reader=lambda _: "")
         bob_context = files.materialization_context_from_session_info(bob_login.session_info)
+        # Bob must integrate Alice's Core authority events before the Hub can
+        # authorize Alice's signed Files history.
+        _push_core(alice_http, alice_root, alice_core, alice)
+        bob_manager = TeamManager(bob_root, bob, _http_client=bob_http)
+        bob_manager.fetch_teammate_core(TEAM, team["teammate_id_hex"])
+        outcomes = bob_manager.integrate_core_sources(TEAM)
+        assert [o["outcome"] for o in outcomes] == ["integrated"], outcomes
         sync.fetch_via_hub(bob_files, bob, TEAM, "docs", team["teammate_id_hex"], _http_client=bob_http)
         files.add_checkout(bob_files, bob, bob_context, "docs", bob_checkout)
         sync.merge_via_hub(bob_files, bob, TEAM, "docs", team["teammate_id_hex"],
@@ -241,13 +248,6 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
             ["git", "--git-dir", str(bob_git_dir), "rev-parse", "HEAD"],
             check=True, capture_output=True, text=True,
         ).stdout.strip()
-        # Alice's workhorse delegation lives in her Core. Bob learns it by
-        # fetching her Core chain and integrating its Constitution events.
-        _push_core(alice_http, alice_root, alice_core, alice)
-        bob_manager = TeamManager(bob_root, bob, _http_client=bob_http)
-        bob_manager.fetch_teammate_core(TEAM, team["teammate_id_hex"])
-        outcomes = bob_manager.integrate_core_sources(TEAM)
-        assert [o["outcome"] for o in outcomes] == ["integrated"], outcomes
 
         bob_session = sync.get_team_session(TEAM, bob_port, _http_client=bob_http)
         verdicts = bob_session.verify_history(bob_git_dir, bob_head)

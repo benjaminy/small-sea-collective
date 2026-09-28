@@ -25,6 +25,7 @@ import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Callable
 
 import cod_sync.protocol as CS
 from cod_sync.git import GitCmdFailed, gitCmd, signing_git_env
@@ -63,6 +64,15 @@ class MergeConflictError(RuntimeError):
     def __init__(self, paths):
         self.paths = paths
         super().__init__("Merge conflict during pull")
+
+
+class UnauthorizedHistoryError(RuntimeError):
+    """Raised when fetched history contains commits the Hub did not authorize."""
+
+    def __init__(self, sha, refusals):
+        self.sha = sha
+        self.refusals = refusals
+        super().__init__(f"Fetched history at {sha} contains unauthorized commits")
 
 
 class DuplicateCheckoutError(ValueError):
@@ -191,6 +201,7 @@ class CommitSigner:
     berth_id: str
     authority_view: bytes
     env: dict[str, str]
+    verify: Callable[[pathlib.Path | str, str], dict]
 
     @classmethod
     def from_session(cls, session, hub_url):
@@ -204,7 +215,7 @@ class CommitSigner:
                 os.environ, program=program, public_key=session.signing_public_key(),
                 extra_env={"SMALL_SEA_HUB_URL": hub_url,
                            "SMALL_SEA_SESSION_TOKEN": session.token},
-            ),
+            ), session.verify_history,
         )
 
     def message(self, message, purpose):
@@ -756,7 +767,8 @@ def _cod_pull(git_dir, checkout, remote, signer):
     )
     if head_result.returncode != 0:
         # Unborn branch — adopt the fetched head as the initial local branch.
-        repo.checkout_branch("main", result.observed_head)
+        checked_sha = _authorize_history(git_dir, result.observed_head, signer)
+        repo.checkout_branch("main", checked_sha)
     else:
         _cod_merge_ref(git_dir, checkout, result.observed_head, signer)
     return result
@@ -780,9 +792,10 @@ def _cod_merge_ref(git_dir, checkout, ref_name, signer):
     Uses explicit --git-dir/--work-tree flags throughout.
     """
     git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
+    checked_sha = _authorize_history(git_dir, ref_name, signer)
     if _has_commits(git_dir):
         command = git_prefix + ["merge", "-m", signer.message(
-            f"Merge {ref_name}", MERGE_PURPOSE), ref_name]
+            f"Merge {checked_sha}", MERGE_PURPOSE), checked_sha]
         result = gitCmd(command, raise_on_error=False, env=signer.env)
         if result.returncode != 0:
             paths = _conflict_paths(git_dir, checkout)
@@ -792,7 +805,18 @@ def _cod_merge_ref(git_dir, checkout, ref_name, signer):
     else:
         # No local history: initialise the branch from the parked peer ref.
         # Content conflicts are impossible here; GitCmdFailed propagates as-is.
-        gitCmd(git_prefix + ["checkout", "-B", "main", ref_name])
+        gitCmd(git_prefix + ["checkout", "-B", "main", checked_sha])
+
+
+def _authorize_history(git_dir, ref, signer):
+    sha = _resolve_ref(git_dir, ref)
+    if sha is None:
+        raise ValueError(f"Fetched ref {ref!r} does not resolve to a commit")
+    result = signer.verify(git_dir, sha)
+    refusals = [entry for entry in result["commits"] if entry["result"] != "authorized"]
+    if refusals:
+        raise UnauthorizedHistoryError(sha, refusals)
+    return sha
 
 
 # ---------------------------------------------------------------------------

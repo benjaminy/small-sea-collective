@@ -126,6 +126,19 @@ class PullConflictError(FilesSyncError):
         super().__init__(f"{scope} merge conflict: {path_text}")
 
 
+class UnauthorizedHistoryError(FilesSyncError):
+    """A fetched head contains commits rejected by the Hub verifier."""
+
+    def __init__(self, refusal):
+        self.refusal = refusal
+        self.refusals = refusal.refusals
+        first = self.refusals[0]
+        super().__init__(
+            f"Fetched history refused for {len(self.refusals)} commit(s): "
+            f"{first['result']}: {first.get('reason', '')}"
+        )
+
+
 class DirtyCheckoutError(FilesSyncError):
     """Merge rejected because the checkout has uncommitted changes.
 
@@ -743,6 +756,8 @@ def merge_via_hub(
         )
     except files.MergeConflictError as exc:
         raise PullConflictError("registry", exc.paths) from exc
+    except files.UnauthorizedHistoryError as exc:
+        raise UnauthorizedHistoryError(exc) from exc
 
     try:
         niche_sha = files.merge_niche(
@@ -755,6 +770,8 @@ def merge_via_hub(
         )
     except files.MergeConflictError as exc:
         raise PullConflictError("niche", exc.paths) from exc
+    except files.UnauthorizedHistoryError as exc:
+        raise UnauthorizedHistoryError(exc) from exc
     except files.DirtyCheckoutError as exc:
         raise DirtyCheckoutError(exc.paths) from exc
     except files.NoCheckoutError as exc:
@@ -888,6 +905,8 @@ def merge_self(
                                                   signer=signer)
     except files.MergeConflictError as exc:
         raise PullConflictError("registry", exc.paths) from exc
+    except files.UnauthorizedHistoryError as exc:
+        raise UnauthorizedHistoryError(exc) from exc
 
     try:
         niche_shas = files.merge_self_niche(
@@ -895,6 +914,8 @@ def merge_self(
         )
     except files.MergeConflictError as exc:
         raise PullConflictError("niche", exc.paths) from exc
+    except files.UnauthorizedHistoryError as exc:
+        raise UnauthorizedHistoryError(exc) from exc
     except files.DirtyCheckoutError as exc:
         raise DirtyCheckoutError(exc.paths) from exc
     except files.NoCheckoutError as exc:
