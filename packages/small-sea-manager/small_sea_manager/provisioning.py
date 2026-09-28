@@ -6847,7 +6847,6 @@ def integrate_core_events(root_dir, participant_hex, team_name, head_sha) -> dic
             return {"outcome": "refused", "code": "bad_event", "new_events": 0}
 
     engine = _sqlite_engine(team_sync_dir / "core.db")
-    touched_modes = set()
     new_events = 0
     try:
         with engine.connect() as conn:
@@ -6867,13 +6866,6 @@ def integrate_core_events(root_dir, participant_hex, team_name, head_sha) -> dic
                         return {"outcome": "refused", "code": "bad_projection", "new_events": 0}
                     if status != "already_present":
                         new_events += 1
-                    for stored_event in stored:
-                        if stored_event.event_type == "integration_mode_change":
-                            try:
-                                touched_modes.add((bytes.fromhex(stored_event.payload["teammate_id"]), bytes.fromhex(stored_event.payload["berth_id"])))
-                            except (KeyError, TypeError, ValueError):
-                                pass
-                _reproject_berth_roles(conn, touched_modes)
                 if new_events == 0:
                     conn.rollback()
                     if repo.work_tree_paths_differ_from_head(["core.db"]):

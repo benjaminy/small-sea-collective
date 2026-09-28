@@ -98,6 +98,17 @@ def test_promoted_pending_events_are_projected(team_db):
     assert _row_count(team_db) == 1
 
 
+def test_bad_inner_event_with_missing_parent_is_refused_not_pending(team_db):
+    cert, teammate, private, _ = _cert()
+    cert = replace(cert, signature=b"\x00" * 64)
+    parent = make_event("unknown", {}, (), private)
+    event = _event(cert, teammate, private, (parent.event_id,))
+    with pytest.raises(ProjectionError, match="bad_certificate_signature"):
+        store_and_project(team_db, event)
+    assert team_db.execute(text("SELECT count(*) FROM constitution_event_pending")).scalar_one() == 0
+    assert team_db.execute(text("SELECT count(*) FROM constitution_event")).scalar_one() == 0
+
+
 def test_append_local_event_uses_current_heads(team_db):
     private = Ed25519PrivateKey.generate().private_bytes_raw()
     [first] = append_local_event(team_db, "unknown", {"n": 1}, private)
@@ -175,6 +186,34 @@ def test_delegation_event_with_bad_inner_signature_is_refused(team_db):
     event = make_event("workhorse_delegation", payload, (), private)
     with pytest.raises(ProjectionError, match="bad_delegation_signature"):
         apply_event(team_db, event)
+
+
+def test_delegation_payload_missing_team_id_is_refused(team_db):
+    private, _, payload = _delegation()
+    payload.pop("team_id")
+    event = make_event("workhorse_delegation", payload, (), private)
+    with pytest.raises(ProjectionError, match="bad_delegation_payload"):
+        store_and_project(team_db, event)
+
+
+@pytest.mark.parametrize("event_type,mutate", [
+    ("workhorse_delegation", lambda p: p.update(schema_version="one")),
+    ("integration_mode_change", lambda p: p.update(teammate_id=7)),
+    ("key_certificate", lambda p: p.update(claims=[])),
+])
+def test_malformed_payload_field_types_are_refused(team_db, event_type, mutate):
+    if event_type == "workhorse_delegation":
+        private, _, payload = _delegation()
+    elif event_type == "integration_mode_change":
+        private, _, payload = _mode()
+    else:
+        cert, teammate, private, _ = _cert()
+        payload = encode_certificate(cert, teammate)
+    mutate(payload)
+    event = make_event(event_type, payload, (), private)
+    with pytest.raises(ProjectionError):
+        store_and_project(team_db, event)
+    assert team_db.execute(text("SELECT count(*) FROM constitution_event_pending")).scalar_one() == 0
 
 
 def test_ensure_signing_records_one_delegation_event(playground_dir):

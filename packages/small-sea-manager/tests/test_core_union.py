@@ -2,13 +2,14 @@
 
 import pathlib
 import sqlite3
+from dataclasses import replace
 
 from sqlalchemy import create_engine
 
 from cod_sync.repo import Repo
 from small_sea_manager import provisioning
-from small_sea_manager.constitution_projection import store_and_project
-from test_constitution_projection import _delegation, _mode
+from small_sea_manager.constitution_projection import encode_certificate, store_and_project
+from test_constitution_projection import _cert, _delegation, _mode
 from test_admission_records import _setup_team
 from wrasse_trust.events import encode_event, make_event
 from wrasse_trust.constitution import canonical_constitution_bytes, derive_record_id, sign_constitution_record
@@ -16,7 +17,7 @@ from wrasse_trust.keys import key_id_from_public
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
-def _source(root, alice_hex, event=None, *, corrupt=False, non_sqlite=False, conflict=False, source_ref=None):
+def _source(root, alice_hex, event=None, *, corrupt=False, non_sqlite=False, conflict=False, source_ref=None, raw_event=False):
     sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
     db = sync / "core.db"
     repo = Repo(sync / ".git", sync)
@@ -28,7 +29,12 @@ def _source(root, alice_hex, event=None, *, corrupt=False, non_sqlite=False, con
         engine = create_engine(f"sqlite:///{db}")
         with engine.begin() as conn:
             if event is not None:
-                if conflict:
+                if raw_event:
+                    conn.exec_driver_sql(
+                        "INSERT INTO constitution_event(event_id,event_type,encoded) VALUES(?,?,?)",
+                        (event.event_id, event.event_type, encode_event(event)),
+                    )
+                elif conflict:
                     existing = conn.exec_driver_sql("SELECT event_id FROM constitution_event LIMIT 1").scalar_one()
                     conn.exec_driver_sql("DELETE FROM constitution_event WHERE event_id=?", (existing,))
                     conn.exec_driver_sql(
@@ -139,13 +145,14 @@ def test_union_one_bad_source_does_not_block_another(playground_dir):
     assert {item["outcome"] for item in result} >= {"refused", "integrated"}
 
 
-def test_union_mode_change_updates_berth_role(playground_dir):
+def test_union_does_not_change_berth_roles(playground_dir):
     private, row, payload = _mode()
     root = pathlib.Path(playground_dir)
     alice_hex, _bob_hex, _cloud, sync = _setup_team(root)
     with sqlite3.connect(sync / "core.db") as conn:
         teammate_id = conn.execute("SELECT id FROM teammate LIMIT 1").fetchone()[0]
         berth_id = conn.execute("SELECT id FROM team_app_berth LIMIT 1").fetchone()[0]
+        role_before = conn.execute("SELECT role FROM berth_role WHERE teammate_id=? AND berth_id=?", (teammate_id, berth_id)).fetchone()[0]
     fields = {k: payload[k] for k in ("record_type", "author_teammate_id", "author_device_key_id", "created_at", "anchor_commit", "constitution_digest", "schema_version", "teammate_id", "berth_id", "mode")}
     fields["teammate_id"], fields["berth_id"] = teammate_id.hex(), berth_id.hex()
     canonical = canonical_constitution_bytes(fields)
@@ -158,5 +165,19 @@ def test_union_mode_change_updates_berth_role(playground_dir):
     result = _integrate(args)
     assert result["outcome"] == "integrated"
     with sqlite3.connect(args[2] / "core.db") as conn:
-        role = conn.execute("SELECT role FROM berth_role WHERE teammate_id=? AND berth_id=?", (row["teammate_id"], row["berth_id"])).fetchone()[0]
-        assert role == "read-write"
+        role_after = conn.execute("SELECT role FROM berth_role WHERE teammate_id=? AND berth_id=?", (row["teammate_id"], row["berth_id"])).fetchone()[0]
+        assert role_after == role_before
+        assert conn.execute("SELECT count(*) FROM integration_mode_change WHERE record_id=?", (row["record_id"],)).fetchone()[0] == 1
+
+
+def test_bad_pending_event_does_not_block_other_source(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex, _bob_hex, _cloud, _sync = _setup_team(root)
+    cert, teammate_id, private, _ = _cert()
+    cert = replace(cert, signature=b"\x00" * 64)
+    parent = make_event("unknown_parent", {}, (), private)
+    bad = make_event("key_certificate", encode_certificate(cert, teammate_id), (parent.event_id,), private)
+    _bad_repo, bad_sha, _ = _source(root, alice_hex, bad, raw_event=True, source_ref="refs/small-sea/core-peer/" + "cd" * 32 + "/observations/bad")
+    assert provisioning.integrate_core_events(root, alice_hex, "ProjectX", bad_sha)["code"] == "bad_projection"
+    _good_repo, good_sha, _ = _source(root, alice_hex, parent, source_ref="refs/small-sea/core-peer/" + "cd" * 32 + "/observations/good")
+    assert provisioning.integrate_core_events(root, alice_hex, "ProjectX", good_sha) == {"outcome": "integrated", "code": None, "new_events": 1}
