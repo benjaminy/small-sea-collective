@@ -1216,3 +1216,38 @@ def test_the_couriered_row_merges_cleanly_with_the_invitees_own_history(
     assert merged == _stored_announcements(
         _sync_dir(root, bob_hex) / "core.db", bob_state["self_in_team"]
     )
+
+
+def test_accept_retries_after_inviter_had_not_published(playground_dir):
+    """A failed clone leaves nothing behind, so accepting again succeeds."""
+    root = pathlib.Path(playground_dir)
+    alice_cloud = root / "alice-cloud"
+    alice_cloud.mkdir()
+    alice_hex = provisioning.create_new_participant(root, "Alice")
+    bob_hex = provisioning.create_new_participant(root, "Bob")
+    provisioning.add_cloud_storage(
+        root, alice_hex, protocol="localfolder", url=str(alice_cloud)
+    )
+    provisioning.create_team(root, alice_hex, TEAM)
+    token = provisioning.create_invitation(
+        root, alice_hex, TEAM,
+        {"protocol": "localfolder", "url": str(alice_cloud)},
+        invitee_label="Bob",
+    )
+
+    with pytest.raises(RuntimeError, match="publishes no team repo"):
+        _accept_locally(root, bob_hex, token, alice_cloud)
+    assert not _sync_dir(root, bob_hex).exists()
+
+    _push(_sync_dir(root, alice_hex), alice_cloud)
+    assert _accept_locally(root, bob_hex, token, alice_cloud)
+
+
+def test_create_team_refuses_existing_directory_before_writing(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex = provisioning.create_new_participant(root, "Alice")
+    _sync_dir(root, alice_hex).mkdir(parents=True)
+
+    with pytest.raises(ValueError, match="already exists"):
+        provisioning.create_team(root, alice_hex, TEAM)
+    assert TEAM not in [t["name"] for t in provisioning.list_teams(root, alice_hex)]

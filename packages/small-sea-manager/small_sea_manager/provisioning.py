@@ -5477,6 +5477,8 @@ def create_team(root_dir, participant_hex, team_name):
     """
     root_dir = pathlib.Path(root_dir)
     participant_dir = root_dir / "Participants" / participant_hex
+    if (participant_dir / team_name).exists():
+        raise ValueError(f"A directory for team '{team_name}' already exists")
 
     team_id = uuid7()
     teammate_id = uuid7()
@@ -5965,18 +5967,23 @@ def accept_invitation(
     # init + fetch + checkout: every path is named explicitly, so this works
     # when the workspace lives inside an existing git repo and needs no cwd.
 
-    repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
-
+    # Nothing else is written until the clone succeeds, so a failed clone
+    # removes the directory and the invitee can simply retry.
     try:
-        result = CodSync.CodSync(repo, inviter_store).fetch()
-    except CodSync.NoPublishedHeadError as exc:
-        inviter_url = (
-            f"{inviter_cloud['protocol']}://{inviter_cloud['url']}/{inviter_bucket}"
-        )
-        raise RuntimeError(
-            f"The inviter's cloud publishes no team repo ({inviter_url})"
-        ) from exc
-    repo.checkout_branch("main", start_point=result.observed_head)
+        repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
+        try:
+            result = CodSync.CodSync(repo, inviter_store).fetch()
+        except CodSync.NoPublishedHeadError as exc:
+            inviter_url = (
+                f"{inviter_cloud['protocol']}://{inviter_cloud['url']}/{inviter_bucket}"
+            )
+            raise RuntimeError(
+                f"The inviter's cloud publishes no team repo ({inviter_url})"
+            ) from exc
+        repo.checkout_branch("main", start_point=result.observed_head)
+    except BaseException:
+        shutil.rmtree(team_sync_dir)
+        raise
 
     # --- Install sqlite merge driver ---
     _install_sqlite_merge_driver(team_sync_dir)
