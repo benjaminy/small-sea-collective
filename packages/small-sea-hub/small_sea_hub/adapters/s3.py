@@ -1,7 +1,15 @@
 import json
 from typing import Optional
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import (
+    ClientError,
+    ConnectTimeoutError,
+    ConnectionClosedError,
+    EndpointConnectionError,
+    NoCredentialsError,
+    PartialCredentialsError,
+    ReadTimeoutError,
+)
 
 from .base import SmallSeaStorageAdapter
 from small_sea_hub.cloud_errors import (
@@ -9,6 +17,8 @@ from small_sea_hub.cloud_errors import (
     CloudValidatorMissingExn,
     absent,
     cas_conflict,
+    never_applied,
+    outcome_unknown,
     provider_failure,
 )
 
@@ -71,6 +81,8 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
         expected_etag: Optional[str],
         content_type: str = "application/octet-stream",
     ):
+        # Only conditional writes are compare-and-swap; classify their outcome.
+        classify_head_outcome = expected_etag is not None
         try:
             if expected_etag is None:
                 response = self.s3.put_object(
@@ -102,10 +114,41 @@ class SmallSeaS3Adapter(SmallSeaStorageAdapter):
             return True, new_etag, "Object updated successfully"
         except ClientError as exn:
             error_code = exn.response["Error"]["Code"]
-            if error_code in ("PreconditionFailed", "ConditionalRequestConflict"):
+            status = exn.response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if (
+                error_code in ("PreconditionFailed", "ConditionalRequestConflict")
+                or status in (409, 412)
+            ):
                 return False, None, cas_conflict(
                     "Object already exists"
                     if expected_etag == "*"
                     else "ETag mismatch - object was modified"
                 )
+            if not classify_head_outcome:
+                return False, None, f"Operation failed: {exn}"
+            if status is not None and 400 <= status < 500:
+                return False, None, never_applied(f"Conditional upload rejected (HTTP {status})")
+            return False, None, outcome_unknown(f"Conditional upload failed (HTTP {status})")
+        except (
+            EndpointConnectionError,
+            ConnectTimeoutError,
+            NoCredentialsError,
+            PartialCredentialsError,
+        ) as exn:
+            if classify_head_outcome:
+                return False, None, never_applied(
+                    f"Conditional upload could not be sent: {type(exn).__name__}"
+                )
             return False, None, f"Operation failed: {exn}"
+        except (ReadTimeoutError, ConnectionClosedError) as exn:
+            if classify_head_outcome:
+                return False, None, outcome_unknown(
+                    f"Conditional upload response was lost: {type(exn).__name__}"
+                )
+            return False, None, f"Operation failed: {exn}"
+        except Exception as exn:
+            if classify_head_outcome:
+                return False, None, outcome_unknown(
+                    f"Conditional upload failed: {type(exn).__name__}"
+                )
+            raise

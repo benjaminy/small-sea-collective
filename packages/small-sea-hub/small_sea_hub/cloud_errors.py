@@ -74,6 +74,8 @@ DOWNLOAD_PROVIDER_FAILURE = "provider_failure"
 
 #: A conditional upload definitely lost its compare-and-swap race.
 UPLOAD_CAS_CONFLICT = "cas_conflict"
+UPLOAD_NEVER_APPLIED = "never_applied"
+UPLOAD_OUTCOME_UNKNOWN = "outcome_unknown"
 
 
 @dataclass(frozen=True)
@@ -116,9 +118,25 @@ class CloudUploadFailure:
     def cas_conflict(self) -> bool:
         return self.kind == UPLOAD_CAS_CONFLICT
 
+    @property
+    def never_applied(self) -> bool:
+        return self.kind == UPLOAD_NEVER_APPLIED
+
+    @property
+    def outcome_unknown(self) -> bool:
+        return self.kind == UPLOAD_OUTCOME_UNKNOWN
+
     def __str__(self) -> str:
         return self.detail
 
 
 def cas_conflict(detail: str) -> CloudUploadFailure:
     return CloudUploadFailure(UPLOAD_CAS_CONFLICT, detail)
+
+
+def never_applied(detail: str) -> CloudUploadFailure:
+    return CloudUploadFailure(UPLOAD_NEVER_APPLIED, detail)
+
+
+def outcome_unknown(detail: str) -> CloudUploadFailure:
+    return CloudUploadFailure(UPLOAD_OUTCOME_UNKNOWN, detail)

@@ -9,6 +9,11 @@
 
 import boto3
 import pytest
+from botocore.exceptions import (
+    ClientError,
+    EndpointConnectionError,
+    ReadTimeoutError,
+)
 from botocore.config import Config
 from small_sea_hub.adapters import SmallSeaS3Adapter
 
@@ -34,6 +39,51 @@ def make_adapter(minio_info, bucket):
     )
     s3.create_bucket(Bucket=bucket)
     return SmallSeaS3Adapter(s3, bucket)
+
+
+def _raising_adapter(exc):
+    class Client:
+        def put_object(self, **kwargs):
+            raise exc
+
+    return SmallSeaS3Adapter(Client(), "bucket")
+
+
+def _client_error(code, status):
+    return ClientError(
+        {"Error": {"Code": code}, "ResponseMetadata": {"HTTPStatusCode": status}},
+        "PutObject",
+    )
+
+
+def test_s3_conditional_write_connection_refused_is_never_applied():
+    adapter = _raising_adapter(EndpointConnectionError(endpoint_url="http://s3.invalid"))
+    ok, _, failure = adapter.upload_if_match("latest-link.yaml", b"data", "e1")
+    assert not ok and failure.never_applied
+
+
+def test_s3_conditional_write_access_denied_is_never_applied():
+    adapter = _raising_adapter(_client_error("AccessDenied", 403))
+    ok, _, failure = adapter.upload_if_match("latest-link.yaml", b"data", "e1")
+    assert not ok and failure.never_applied
+
+
+def test_s3_conditional_write_read_timeout_is_outcome_unknown():
+    adapter = _raising_adapter(ReadTimeoutError(endpoint_url="http://s3.invalid"))
+    ok, _, failure = adapter.upload_if_match("latest-link.yaml", b"data", "e1")
+    assert not ok and failure.outcome_unknown
+
+
+def test_s3_conditional_write_5xx_is_outcome_unknown():
+    adapter = _raising_adapter(_client_error("InternalError", 500))
+    ok, _, failure = adapter.upload_if_match("latest-link.yaml", b"data", "e1")
+    assert not ok and failure.outcome_unknown
+
+
+def test_s3_precondition_failed_still_cas_conflict():
+    adapter = _raising_adapter(_client_error("PreconditionFailed", 412))
+    ok, _, failure = adapter.upload_if_match("latest-link.yaml", b"data", "e1")
+    assert not ok and failure.cas_conflict
 
 
 # ---- Tests ----
@@ -129,3 +179,10 @@ def test_multiple_keys(minio):
     assert data_a == b"aaa"
     assert data_b == b"bbb"
     assert data_c == b"ccc"
+
+
+def test_s3_prefixed_chain_head_write_is_classified():
+    # Real chains live under a prefix, e.g. chains/<id>/latest-link.yaml.
+    adapter = _raising_adapter(EndpointConnectionError(endpoint_url="http://s3.invalid"))
+    ok, _, failure = adapter.upload_if_match("chains/abc/latest-link.yaml", b"data", "e1")
+    assert not ok and failure.never_applied

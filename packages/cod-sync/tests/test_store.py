@@ -451,6 +451,18 @@ def test_a_head_write_conflict_is_a_conflict_not_an_unknown_outcome():
         store.put_latest_link(b"bytes", expected_etag="e1")
 
 
+def test_store_maps_never_applied_to_write_closed_error():
+    from cod_sync.store import WriteNeverAppliedError
+
+    client = FakeHubClient(
+        FakeResponse(502, {"error": "write_never_applied", "detail": "offline"})
+    )
+    store = SmallSeaStore("session", client=client)
+    with pytest.raises(WriteNeverAppliedError) as exc:
+        store.put_latest_link(b"bytes", expected_etag="e1")
+    assert exc.value.write_closed is True
+
+
 def test_a_non_cas_409_is_a_provider_failure():
     client = FakeHubClient(
         FakeResponse(409, {"error": "peer_storage_unknown", "detail": "no route"})

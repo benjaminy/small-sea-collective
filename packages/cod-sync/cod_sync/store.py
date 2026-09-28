@@ -91,6 +91,12 @@ class StoreProviderError(StoreError):
     """
 
 
+class WriteNeverAppliedError(StoreProviderError):
+    """The Hub proved a conditional write never reached the provider."""
+
+    write_closed = True
+
+
 class StoreTransportError(StoreError):
     """The request did not complete: connection, timeout, or similar."""
 
@@ -452,6 +458,10 @@ class _HubStore:
             return PublicationPendingError(error_code, f"{cloud_path}: {detail}")
         if resp.status_code == 409 and error_code == "cas_conflict":
             return CasConflictError(f"{cloud_path}: {detail}")
+        if error_code == "write_never_applied":
+            return WriteNeverAppliedError(f"{cloud_path}: {detail}")
+        if error_code == "write_outcome_unknown":
+            return StoreProviderError(f"{cloud_path}: {detail}")
         return StoreProviderError(f"{cloud_path}: HTTP {resp.status_code}: {detail}")
 
     def _send(self, send, *args, **kwargs):

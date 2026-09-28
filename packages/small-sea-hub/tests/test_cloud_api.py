@@ -12,7 +12,12 @@ import boto3
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-from small_sea_hub.cloud_errors import MaterializationOutcome, cas_conflict
+from small_sea_hub.cloud_errors import (
+    MaterializationOutcome,
+    cas_conflict,
+    never_applied,
+    outcome_unknown,
+)
 from botocore.config import Config as BotoConfig
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
@@ -256,6 +261,32 @@ def test_upload_cas_failure_returns_a_structured_conflict(test_env, monkeypatch)
         "error": "cas_conflict",
         "detail": "ETag mismatch - object was modified",
     }
+
+
+def test_upload_endpoint_returns_typed_never_applied_and_unknown(test_env, monkeypatch):
+    client = test_env["client"]
+    session_hex = _open_session(client)
+
+    for failure, expected_status, expected_code in (
+        (never_applied("offline"), 502, "write_never_applied"),
+        (outcome_unknown("response lost"), 504, "write_outcome_unknown"),
+    ):
+        monkeypatch.setattr(
+            test_env["backend"],
+            "upload_to_cloud",
+            lambda *args, failure=failure, **kwargs: (False, None, failure),
+        )
+        resp = client.post(
+            "/cloud_file",
+            json={
+                "path": "latest-link.yaml",
+                "data": base64.b64encode(b"link").decode(),
+                "expected_etag": "previous-etag",
+            },
+            headers={"Authorization": f"Bearer {session_hex}"},
+        )
+        assert resp.status_code == expected_status
+        assert resp.json()["error"] == expected_code
 
 
 def test_non_files_team_path_uses_encryption(test_env):

@@ -622,6 +622,33 @@ def test_an_unreadable_pass_leaves_a_conclusive_failure_retryable(alice):
     assert_within_envelope(scripted)
 
 
+def test_never_applied_head_write_settles_retryable_even_when_observation_fails(alice):
+    repo, store, _first = ready_to_extend(alice)
+    from cod_sync.store import WriteNeverAppliedError
+
+    scripted = ScriptedStore(
+        store,
+        head_write=refuse(lambda: WriteNeverAppliedError("request rejected")),
+        reads=[None, unreadable],
+    )
+    with pytest.raises(PublicationRetryableError) as exc:
+        make_cod_sync(repo, scripted).publish()
+    assert isinstance(exc.value.cause, WriteNeverAppliedError)
+    assert isinstance(exc.value.observation_failure, StoreProviderError)
+    assert_within_envelope(scripted)
+
+
+def test_unknown_head_write_stays_outcome_unresolved_when_observation_fails(alice):
+    repo, store, _first = ready_to_extend(alice)
+    scripted = ScriptedStore(
+        store, head_write=refuse(inconclusive), reads=[None, unreadable]
+    )
+    with pytest.raises(PublicationOutcomeUnresolvedError) as exc:
+        make_cod_sync(repo, scripted).publish()
+    assert isinstance(exc.value.observation_failure, StoreProviderError)
+    assert_within_envelope(scripted)
+
+
 def test_an_unreadable_pass_leaves_an_inconclusive_failure_unresolved(alice):
     repo, store, _first = ready_to_extend(alice)
     scripted = ScriptedStore(

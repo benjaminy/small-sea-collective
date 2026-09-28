@@ -1153,6 +1153,17 @@ async def upload_to_cloud(
                 status_code=409,
                 content={"error": "cas_conflict", "detail": str(msg)},
             )
+        if req.expected_etag is not None:
+            if getattr(msg, "never_applied", False):
+                return JSONResponse(
+                    status_code=502,
+                    content={"error": "write_never_applied", "detail": str(msg)},
+                )
+            if getattr(msg, "outcome_unknown", False):
+                return JSONResponse(
+                    status_code=504,
+                    content={"error": "write_outcome_unknown", "detail": str(msg)},
+                )
         raise HTTPException(status_code=500, detail=str(msg))
     if req.notify:
         _logger = getattr(app.state, "logger", None)
