@@ -281,7 +281,11 @@ def list_cloud_storage(ctx):
         click.echo("No cloud storage configured.", err=True)
         return
     for provider in providers:
-        click.echo(f"{provider['id']}  {provider['protocol']}  {provider['url']}")
+        status = (
+            "connected on this device" if provider["credentials_on_this_device"]
+            else "no credentials on this device"
+        )
+        click.echo(f"{provider['id']}  {provider['protocol']}  {provider['url']}  {status}")
 
 
 @cli.command("reconcile-route")

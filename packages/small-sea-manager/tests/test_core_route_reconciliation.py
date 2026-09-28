@@ -766,6 +766,23 @@ def test_cli_lists_registered_storage_ids(playground_dir):
     assert storage_id in result.stdout
 
 
+def test_cli_storage_listing_shows_credential_status(playground_dir, monkeypatch):
+    root = pathlib.Path(playground_dir)
+    alice_hex = _established_alice(root)
+    accounts = [
+        {"id": "aaa", "protocol": "s3", "url": "http://one", "credentials_on_this_device": True},
+        {"id": "bbb", "protocol": "s3", "url": "http://two", "credentials_on_this_device": False},
+    ]
+    monkeypatch.setattr(TeamManager, "list_cloud_storage", lambda self: accounts)
+
+    result = _cli(root, alice_hex, "cloud-storage")
+
+    assert result.exit_code == 0
+    lines = result.stdout.splitlines()
+    assert any(line.startswith("aaa") and "connected on this device" in line for line in lines)
+    assert any(line.startswith("bbb") and "no credentials on this device" in line for line in lines)
+
+
 def test_cli_reconcile_reports_a_ready_route(playground_dir, fake_session):
     root = pathlib.Path(playground_dir)
     alice_hex = _established_alice(root)
