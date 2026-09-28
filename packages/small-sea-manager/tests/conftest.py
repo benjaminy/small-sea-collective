@@ -27,12 +27,7 @@ def safe_cwd():
 
 
 @pytest.fixture()
-def playground_dir(monkeypatch):
-    # Git's automatic maintenance can keep writing pack files after a test
-    # finishes, racing with removal of its temporary repositories.
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
-    monkeypatch.setenv("GIT_CONFIG_KEY_0", "gc.auto")
-    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "0")
+def playground_dir():
     dir_name = tempfile.mkdtemp()
 
     yield dir_name
