@@ -223,10 +223,7 @@ CREATE TABLE IF NOT EXISTS integration_mode_change (
     teammate_id BLOB NOT NULL,
     berth_id BLOB NOT NULL,
     mode TEXT NOT NULL CHECK(mode IN ('automatic', 'proposal-only')),
-    signature BLOB NOT NULL,
-    FOREIGN KEY (author_teammate_id) REFERENCES teammate(id) ON DELETE CASCADE,
-    FOREIGN KEY (teammate_id) REFERENCES teammate(id) ON DELETE CASCADE,
-    FOREIGN KEY (berth_id) REFERENCES team_app_berth(id) ON DELETE CASCADE
+    signature BLOB NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_integration_mode_change_scan

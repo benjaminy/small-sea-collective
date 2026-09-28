@@ -1,20 +1,26 @@
 import pathlib
 import sqlite3
+from dataclasses import replace
 
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from sqlalchemy import create_engine, text
+from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
 
+from small_sea_manager import berth_authority, provisioning
 from small_sea_manager.constitution_projection import (
     ProjectionError,
     apply_event,
     encode_certificate,
+    record_workhorse_delegation,
     store_and_project,
 )
-from small_sea_manager.constitution_store import append_local_event, current_heads
+from small_sea_manager.constitution_store import add_event, append_local_event, current_heads
+from small_sea_note_to_self.ids import uuid7
 from wrasse_trust.events import make_event
 from wrasse_trust.identity import CertType, issue_cert
 from wrasse_trust.keys import ParticipantKey, ProtectionLevel, key_id_from_public
+from wrasse_trust.constitution import canonical_constitution_bytes, derive_record_id, sign_constitution_record
 
 
 @pytest.fixture
@@ -75,8 +81,6 @@ def test_certificate_event_with_wrong_signer_is_refused(team_db):
 
 
 def test_certificate_event_with_bad_inner_signature_is_refused(team_db):
-    from dataclasses import replace
-
     cert, teammate, private, _ = _cert()
     cert = replace(cert, signature=b"\x00" * 64)
     event = _event(cert, teammate, private)
@@ -106,8 +110,6 @@ def test_current_heads_with_concurrent_branches(team_db):
     [root] = append_local_event(team_db, "unknown", {}, private)
     left = make_event("unknown", {"branch": "left"}, (root.event_id,), private)
     right = make_event("unknown", {"branch": "right"}, (root.event_id,), private)
-    from small_sea_manager.constitution_store import add_event
-
     add_event(team_db, left)
     add_event(team_db, right)
     assert current_heads(team_db) == sorted([left.event_id, right.event_id])
@@ -118,3 +120,126 @@ def test_unknown_event_type_is_ignored(team_db):
     event = make_event("future_kind", {"anything": True}, (), private)
     apply_event(team_db, event)
     assert _row_count(team_db) == 0
+
+
+def _delegation(private=None):
+    private = private or Ed25519PrivateKey.generate().private_bytes_raw()
+    key = Ed25519PrivateKey.from_private_bytes(private)
+    workhorse = Ed25519PrivateKey.generate().public_key().public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH).decode()
+    record = berth_authority.sign_workhorse_delegation(
+        team_id=b"team", berth_id=b"berth", workhorse_public_key=workhorse,
+        delegator_teammate_id=b"delegator", delegator_private_key=private,
+    )
+    row = {"record_id": record.record_id, "schema_version": berth_authority.DELEGATION_VERSION,
+           "berth_id": record.berth_id, "workhorse_public_key": record.workhorse_public_key,
+           "delegator_teammate_id": record.delegator_teammate_id,
+           "delegator_public_key": record.delegator_public_key, "signature": record.signature}
+    payload = {k: (v.hex() if isinstance(v, bytes) else v) for k, v in row.items()}
+    payload["team_id"] = b"team".hex()
+    return private, row, payload
+
+
+def _mode(private=None):
+    private = private or Ed25519PrivateKey.generate().private_bytes_raw()
+    public = Ed25519PrivateKey.from_private_bytes(private).public_key().public_bytes_raw()
+    fields = {"record_type": "integration_mode_change", "author_teammate_id": b"author".hex(),
+              "author_device_key_id": key_id_from_public(public).hex(), "created_at": "now",
+              "anchor_commit": None, "constitution_digest": b"digest".hex(), "schema_version": 1,
+              "teammate_id": b"member".hex(), "berth_id": b"berth".hex(), "mode": "automatic"}
+    canonical = canonical_constitution_bytes(fields)
+    row = {"record_id": derive_record_id(canonical), **fields, "constitution_snapshot_json": "{}",
+           "constitution_digest": b"digest", "author_teammate_id": b"author",
+           "author_device_key_id": key_id_from_public(public), "teammate_id": b"member", "berth_id": b"berth",
+           "signature": sign_constitution_record(private, canonical)}
+    payload = {k: (v.hex() if isinstance(v, bytes) else v) for k, v in row.items()}
+    return private, row, payload
+
+
+def test_delegation_event_projects_row(team_db):
+    private, row, payload = _delegation()
+    event = make_event("workhorse_delegation", payload, (), private)
+    assert store_and_project(team_db, event)[0] == "stored"
+    assert team_db.execute(text("SELECT record_id FROM workhorse_delegation")).scalar_one() == row["record_id"]
+
+
+def test_delegation_event_with_wrong_signer_is_refused(team_db):
+    _, _, payload = _delegation()
+    event = make_event("workhorse_delegation", payload, (), Ed25519PrivateKey.generate().private_bytes_raw())
+    with pytest.raises(ProjectionError, match="wrong_delegation_signer"):
+        apply_event(team_db, event)
+
+
+def test_delegation_event_with_bad_inner_signature_is_refused(team_db):
+    private, _, payload = _delegation()
+    payload["signature"] = (b"x" * 64).hex()
+    event = make_event("workhorse_delegation", payload, (), private)
+    with pytest.raises(ProjectionError, match="bad_delegation_signature"):
+        apply_event(team_db, event)
+
+
+def test_ensure_signing_records_one_delegation_event(playground_dir):
+    root = pathlib.Path(playground_dir)
+    participant = provisioning.create_new_participant(root, "Alice")
+    provisioning.create_team(root, participant, "ProjectX")
+    berth = provisioning.derive_team_join_state(root, participant, "ProjectX")["berth_id"]
+    if isinstance(berth, str):
+        berth = bytes.fromhex(berth)
+    provisioning.ensure_signing_is_set_up(root, participant, "ProjectX", berth)
+    provisioning.ensure_signing_is_set_up(root, participant, "ProjectX", berth)
+    db = root / "Participants" / participant / "ProjectX" / "Sync" / "core.db"
+    with sqlite3.connect(db) as conn:
+        count = conn.execute("SELECT count(*) FROM constitution_event WHERE event_type='workhorse_delegation'").fetchone()[0]
+    assert count == 1
+
+
+def test_mode_change_event_projects_row(team_db):
+    private, row, payload = _mode()
+    event = make_event("integration_mode_change", payload, (), private)
+    assert store_and_project(team_db, event)[0] == "stored"
+    assert team_db.execute(text("SELECT record_id FROM integration_mode_change")).scalar_one() == row["record_id"]
+
+
+def test_mode_change_event_with_wrong_signer_is_refused(team_db):
+    _, _, payload = _mode()
+    event = make_event("integration_mode_change", payload, (), Ed25519PrivateKey.generate().private_bytes_raw())
+    with pytest.raises(ProjectionError, match="wrong_mode_change_signer"):
+        apply_event(team_db, event)
+
+
+def test_mode_change_event_with_bad_inner_signature_is_refused(team_db):
+    private, _, payload = _mode()
+    payload["signature"] = (b"x" * 64).hex()
+    event = make_event("integration_mode_change", payload, (), private)
+    with pytest.raises(ProjectionError, match="bad_mode_change_signature"):
+        apply_event(team_db, event)
+
+
+def test_mode_change_author_site_records_event(playground_dir):
+    root = pathlib.Path(playground_dir)
+    participant = provisioning.create_new_participant(root, "Alice")
+    provisioning.create_team(root, participant, "ProjectX")
+    db = root / "Participants" / participant / "ProjectX" / "Sync" / "core.db"
+    with sqlite3.connect(db) as conn:
+        berth = conn.execute("SELECT id FROM team_app_berth LIMIT 1").fetchone()[0]
+        teammate = uuid7()
+        conn.execute("INSERT INTO teammate (id, display_name) VALUES (?, 'Bob')", (teammate,))
+        conn.commit()
+    provisioning.set_teammate_integration_mode(root, participant, "ProjectX", teammate, berth, "proposal-only")
+    with sqlite3.connect(db) as conn:
+        count = conn.execute("SELECT count(*) FROM constitution_event WHERE event_type='integration_mode_change'").fetchone()[0]
+    assert count == 1
+
+
+def test_delegate_workhorse_key_twice_records_one_event(playground_dir):
+    root = pathlib.Path(playground_dir)
+    participant = provisioning.create_new_participant(root, "Alice")
+    provisioning.create_team(root, participant, "ProjectX")
+    berth = provisioning.derive_team_join_state(root, participant, "ProjectX")["berth_id"]
+    if isinstance(berth, str):
+        berth = bytes.fromhex(berth)
+    provisioning.delegate_workhorse_key(root, participant, "ProjectX", berth)
+    provisioning.delegate_workhorse_key(root, participant, "ProjectX", berth)
+    db = root / "Participants" / participant / "ProjectX" / "Sync" / "core.db"
+    with sqlite3.connect(db) as conn:
+        count = conn.execute("SELECT count(*) FROM constitution_event WHERE event_type='workhorse_delegation'").fetchone()[0]
+    assert count == 1

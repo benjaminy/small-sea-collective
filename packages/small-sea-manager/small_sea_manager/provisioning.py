@@ -116,7 +116,11 @@ from small_sea_note_to_self.bootstrap import (
 )
 from small_sea_manager import berth_authority, berth_source_decision
 from small_sea_manager import note_to_self_sync
-from small_sea_manager.constitution_projection import record_key_certificate
+from small_sea_manager.constitution_projection import (
+    record_integration_mode_change,
+    record_key_certificate,
+    record_workhorse_delegation,
+)
 from small_sea_note_to_self.ids import uuid7
 from small_sea_note_to_self.sender_keys import (
     deserialize_distribution_message,
@@ -2086,7 +2090,7 @@ def _store_from_descriptor(remote_descriptor: dict):
 
 # ---- Constants ----
 
-TEAM_SCHEMA_VERSION = 70
+TEAM_SCHEMA_VERSION = 71
 
 
 # ---- Provisioning functions ----
@@ -4881,19 +4885,7 @@ def _append_integration_mode_change(
     record_id = derive_record_id(canonical)
     signature = sign_constitution_record(author_private_key, canonical)
 
-    conn.execute(
-        text(
-            "INSERT INTO integration_mode_change ("
-            "record_id, record_type, author_teammate_id, author_device_key_id, "
-            "created_at, anchor_commit, constitution_digest, constitution_snapshot_json, "
-            "schema_version, teammate_id, berth_id, mode, signature"
-            ") VALUES ("
-            ":record_id, :record_type, :author_teammate_id, :author_device_key_id, "
-            ":created_at, :anchor_commit, :constitution_digest, :constitution_snapshot_json, "
-            ":schema_version, :teammate_id, :berth_id, :mode, :signature"
-            ")"
-        ),
-        {
+    record_integration_mode_change(conn, {
             "record_id": record_id,
             "record_type": "integration_mode_change",
             "author_teammate_id": author_teammate_id,
@@ -4907,8 +4899,7 @@ def _append_integration_mode_change(
             "berth_id": berth_id,
             "mode": mode,
             "signature": signature,
-        },
-    )
+        }, author_private_key)
 
     _project_berth_role(conn, teammate_id, berth_id, mode)
     return record_id
@@ -5220,13 +5211,7 @@ def ensure_signing_is_set_up(root_dir, participant_hex, team_name, berth_id) -> 
                     team_id=team_id, berth_id=berth_id, workhorse_public_key=public_key,
                     delegator_teammate_id=self_in_team, delegator_private_key=private_key,
                 )
-                conn.execute(text(
-                    "INSERT INTO workhorse_delegation (record_id, schema_version, berth_id, "
-                    "workhorse_public_key, delegator_teammate_id, delegator_public_key, signature) "
-                    "VALUES (:record_id, :version, :berth_id, :key, :delegator, :delegator_key, :signature)"
-                ), {"record_id": delegation.record_id, "version": berth_authority.DELEGATION_VERSION,
-                    "berth_id": berth_id, "key": public_key, "delegator": self_in_team,
-                    "delegator_key": device_public_key, "signature": delegation.signature})
+                record_workhorse_delegation(conn, delegation, private_key)
                 conn.commit()
                 conn.exec_driver_sql("BEGIN IMMEDIATE")
                 repo = _Repo(team_sync_dir / ".git", team_sync_dir)
@@ -5407,23 +5392,7 @@ def delegate_workhorse_key(root_dir, participant_hex, team_name, berth_id) -> by
                 raise ValueError("This device's team-device key is not trusted in the view")
             if view.holds(self_in_team, berth_id) is not berth_authority.Standing.HELD:
                 raise ValueError("This device's teammate does not unambiguously hold the berth")
-            conn.execute(
-                text(
-                    "INSERT OR IGNORE INTO workhorse_delegation (record_id, schema_version, "
-                    "berth_id, workhorse_public_key, delegator_teammate_id, "
-                    "delegator_public_key, signature) VALUES (:record_id, :version, :berth_id, "
-                    ":key, :delegator, :delegator_key, :signature)"
-                ),
-                {
-                    "record_id": delegation.record_id,
-                    "version": berth_authority.DELEGATION_VERSION,
-                    "berth_id": berth_id,
-                    "key": delegation.workhorse_public_key,
-                    "delegator": self_in_team,
-                    "delegator_key": public_key,
-                    "signature": delegation.signature,
-                },
-            )
+            record_workhorse_delegation(conn, delegation, private_key)
     finally:
         engine.dispose()
     repo = _Repo(team_sync_dir / ".git", team_sync_dir)

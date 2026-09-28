@@ -128,11 +128,11 @@ def test_store_has_no_delete_function():
     assert not any(name.startswith(("delete", "remove")) for name in vars(store))
 
 
-def test_new_team_db_has_schema_version_70(playground_dir):
+def test_new_team_db_has_schema_version_71(playground_dir):
     root = pathlib.Path(playground_dir)
     participant_hex = create_new_participant(root, "Alice")
     create_team(root, participant_hex, "ProjectX")
     db_path = root / "Participants" / participant_hex / "ProjectX" / "Sync" / "core.db"
     with sqlite3.connect(db_path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 70
-    assert TEAM_SCHEMA_VERSION == 70
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 71
+    assert TEAM_SCHEMA_VERSION == 71
