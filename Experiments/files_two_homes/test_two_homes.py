@@ -241,15 +241,21 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
             ["git", "--git-dir", str(bob_git_dir), "rev-parse", "HEAD"],
             check=True, capture_output=True, text=True,
         ).stdout.strip()
+        # Alice's workhorse delegation lives in her Core. Bob learns it by
+        # fetching her Core chain and integrating its Constitution events.
+        _push_core(alice_http, alice_root, alice_core, alice)
+        bob_manager = TeamManager(bob_root, bob, _http_client=bob_http)
+        bob_manager.fetch_teammate_core(TEAM, team["teammate_id_hex"])
+        outcomes = bob_manager.integrate_core_sources(TEAM)
+        assert [o["outcome"] for o in outcomes] == ["integrated"], outcomes
+
         bob_session = sync.get_team_session(TEAM, bob_port, _http_client=bob_http)
         verdicts = bob_session.verify_history(bob_git_dir, bob_head)
         by_commit = {v["commit"]: v for v in verdicts["commits"]}
-        assert by_commit[bob_head]["result"] == "authorized", by_commit[bob_head]
-        # Bob's merges fast-forwarded, so his head is his only commit. Alice's
-        # two commits come back missing_authority ("signing key has no
-        # delegation in this view"): her workhorse delegation lives only in
-        # her own Core until Core integration (gh #228) exists.
-        assert {v["result"] for c, v in by_commit.items() if c != bob_head} == {"missing_authority"}
+        # Bob's merges fast-forwarded, so the history holds Alice's two
+        # commits and Bob's one. All three are authorized in Bob's view.
+        assert len(by_commit) == 3, by_commit
+        assert {c: v["result"] for c, v in by_commit.items()} == {c: "authorized" for c in by_commit}
         print(json.dumps({
             "alice_hub_pid": alice_process.pid,
             "bob_hub_pid_before": first_bob_pid,
