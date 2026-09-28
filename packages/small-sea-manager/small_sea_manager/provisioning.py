@@ -2085,7 +2085,7 @@ def _store_from_descriptor(remote_descriptor: dict):
 
 # ---- Constants ----
 
-TEAM_SCHEMA_VERSION = 68
+TEAM_SCHEMA_VERSION = 69
 
 
 # ---- Provisioning functions ----

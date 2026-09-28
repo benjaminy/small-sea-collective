@@ -253,3 +253,15 @@ CREATE TABLE IF NOT EXISTS workhorse_delegation (
     delegator_public_key BLOB NOT NULL,
     signature BLOB NOT NULL
 );
+
+-- Signed Team Constitution DAG events are grow-only. Events with missing parents wait in the pending table.
+CREATE TABLE IF NOT EXISTS constitution_event (
+    event_id BLOB PRIMARY KEY,
+    event_type TEXT NOT NULL,
+    encoded BLOB NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS constitution_event_pending (
+    event_id BLOB PRIMARY KEY,
+    encoded BLOB NOT NULL
+);
