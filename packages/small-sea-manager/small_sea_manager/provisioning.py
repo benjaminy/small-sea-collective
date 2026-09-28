@@ -26,9 +26,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from cryptography.hazmat.primitives import serialization
 from sqlalchemy import create_engine, event, text
-from wrasse_trust.events import EventInvalidError, decode_event
+from wrasse_trust.events import EventInvalidError, decode_event, verify_event
 from small_sea_manager.constitution_store import EventConflictError
-from small_sea_manager.constitution_projection import ProjectionError, store_and_project
+from small_sea_manager.constitution_projection import ProjectionError, check_event, store_and_project
 
 import shutil
 
@@ -150,7 +150,6 @@ from wrasse_trust.identity import (
     issue_device_link_cert,
     issue_membership_cert,
     parse_cert_type,
-    verify_cert,
     trusted_device_keys_by_teammate as resolve_trusted_device_keys_by_teammate,
     trusted_device_keys_for_teammate as resolve_trusted_device_keys_for_teammate,
     verify_device_link_cert,
@@ -6510,19 +6509,14 @@ class AdmissionPackageUnavailableError(ValueError):
     """The acceptance is unknown here, or its admission is not finalized yet."""
 
 
-def _hex_row(keys, row) -> dict:
-    return {k: v.hex() if isinstance(v, bytes) else v for k, v in zip(keys, row)}
-
-
 def export_admission_package(
     root_dir, participant_hex, team_name, acceptance_record_id: bytes
 ) -> bytes:
     """Return the signed records a finalized invitee needs to see their own admission.
 
-    The package carries every key certificate and every integration_mode_change
-    record in the inviter's team Core, including the invitee's membership
-    certificate and grants. Each record keeps its original fields and
-    signature, so the invitee verifies each one on its own.
+    The package carries every Constitution event in the inviter's team Core.
+    This gives the invitee the same signed history, including the invitee's
+    membership certificate and grants.
 
     The inviter's current team-device key signs the envelope. That signature
     only says who delivered the package; it grants nothing.
@@ -6550,25 +6544,12 @@ def export_admission_package(
                 raise AdmissionPackageUnavailableError("Admission is not finalized yet")
             team_id = _load_proposal_row(conn, proposal_id)[8]
 
-            mode_keys = (
-                "record_id", "record_type", "author_teammate_id", "author_device_key_id",
-                "created_at", "anchor_commit", "constitution_digest", "schema_version",
-                "teammate_id", "berth_id", "mode", "signature", "constitution_snapshot_json",
-            )
-            # Every record, not a selection: a selection could hide a record
+            # Every event, not a selection: a selection could hide a record
             # (say, a later demotion) and leave the invitee with a view that
             # differs from the inviter's for no reason.
-            modes = {row[0]: row for row in conn.execute(
-                text(f"SELECT {', '.join(mode_keys)} FROM integration_mode_change")
-            ).fetchall()}
-
-            cert_keys = (
-                "cert_id", "cert_type", "subject_key_id", "subject_public_key",
-                "issuer_key_id", "issuer_teammate_id", "issued_at", "claims", "signature",
-            )
-            certs = {row[0]: row for row in conn.execute(
-                text(f"SELECT {', '.join(cert_keys)} FROM key_certificate")
-            ).fetchall()}
+            events = [row[0] for row in conn.execute(
+                text("SELECT encoded FROM constitution_event ORDER BY event_id")
+            ).fetchall()]
     finally:
         engine.dispose()
 
@@ -6581,8 +6562,7 @@ def export_admission_package(
         "acceptance_record_id": acceptance_record_id.hex(),
         "invitee_device_public_key": invitee_device_public_key.hex(),
         "sender_device_public_key": sender_public_key.hex(),
-        "certificates": [_hex_row(cert_keys, certs[k]) for k in sorted(certs)],
-        "integration_mode_changes": [_hex_row(mode_keys, modes[k]) for k in sorted(modes)],
+        "constitution_events": [encoded.hex() for encoded in events],
     }
     signature = _sign_bytes(sender_private_key, _json_bytes(body))
     return _json_bytes({"body": body, "signature": signature.hex()})
@@ -6637,16 +6617,12 @@ class AdmissionPackageRejectedError(ValueError):
 
 
 def import_admission_package(root_dir, participant_hex, team_name, package_bytes: bytes) -> bool:
-    """Store the records of an admission package in this device's team Core.
+    """Store the events of an admission package in this device's team Core.
 
     The envelope must name this team, this device's own acceptance, and this
-    device's current team-device key. Every record must carry a valid
-    signature from a key the package itself certifies. Whether those keys are
-    trusted is decided later, by the view rooted at the adopted anchor.
-
-    Records already present with identical content are skipped. A record id
-    already present with different content refuses the whole package.
-    Returns True when it committed new records, False for a no-op.
+    device's current team-device key. Every event signature and projection is
+    checked before the package writes to the database.
+    Returns True when it committed new events, False for a no-op.
     """
     root_dir = pathlib.Path(root_dir)
     reject = AdmissionPackageRejectedError
@@ -6679,60 +6655,16 @@ def import_admission_package(root_dir, participant_hex, team_name, package_bytes
         raise reject("wrong_device")
 
     try:
-        certs = [
-            key_certificate_from_team_db_record(
-                team_id=team_id,
-                cert_id=bytes.fromhex(c["cert_id"]),
-                cert_type=c["cert_type"],
-                subject_key_id=bytes.fromhex(c["subject_key_id"]),
-                subject_public_key=bytes.fromhex(c["subject_public_key"]),
-                issuer_key_id=bytes.fromhex(c["issuer_key_id"]),
-                issuer_teammate_id=bytes.fromhex(c["issuer_teammate_id"]),
-                issued_at=c["issued_at"],
-                claims_json=c["claims"],
-                signature=bytes.fromhex(c["signature"]),
-            )
-            for c in body["certificates"]
-        ]
-        modes = [
-            (
-                bytes.fromhex(m["record_id"]),
-                berth_authority.ModeChangeRecord(
-                    author_teammate_id=bytes.fromhex(m["author_teammate_id"]),
-                    author_device_key_id=bytes.fromhex(m["author_device_key_id"]),
-                    created_at=m["created_at"],
-                    anchor_commit=m["anchor_commit"],
-                    constitution_digest=bytes.fromhex(m["constitution_digest"]),
-                    schema_version=m["schema_version"],
-                    teammate_id=bytes.fromhex(m["teammate_id"]),
-                    berth_id=bytes.fromhex(m["berth_id"]),
-                    mode=m["mode"],
-                    signature=bytes.fromhex(m["signature"]),
-                ),
-                m["constitution_snapshot_json"],
-            )
-            for m in body["integration_mode_changes"]
-        ]
-    except (ValueError, KeyError, TypeError) as exc:
+        events = [decode_event(bytes.fromhex(encoded)) for encoded in body["constitution_events"]]
+    except (EventInvalidError, ValueError, KeyError, TypeError) as exc:
         raise reject("bad_record", str(exc)) from exc
-
-    # Signatures only: each record must be signed by the key it names. The
-    # package's own certificates supply the public keys for those key ids.
-    keys_by_id = {c.subject_key_id: c.subject_public_key for c in certs}
-    for cert in certs:
-        issuer_key = keys_by_id.get(cert.issuer_key_id)
-        if issuer_key is None or not verify_cert(cert, issuer_key):
-            raise reject("bad_record_signature", f"certificate {cert.cert_id.hex()}")
-    for record_id, record, snapshot_json in modes:
-        author_key = keys_by_id.get(record.author_device_key_id)
-        canonical = record.canonical()
-        if (
-            author_key is None
-            or derive_record_id(canonical) != record_id
-            or not verify_constitution_record(author_key, canonical, record.signature)
-            or _constitution_digest(json.loads(snapshot_json)) != record.constitution_digest
-        ):
-            raise reject("bad_record_signature", f"mode change {record_id.hex()}")
+    for event in events:
+        try:
+            verify_event(event)
+            check_event(event)
+        except (EventInvalidError, ProjectionError) as exc:
+            raise reject("bad_record_signature", str(exc)) from exc
+    package_event_ids = {event.event_id for event in events}
 
     team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
     engine = _sqlite_engine(team_sync_dir / "core.db")
@@ -6740,72 +6672,33 @@ def import_admission_package(root_dir, participant_hex, team_name, package_bytes
         with engine.connect() as conn:
             conn.exec_driver_sql("BEGIN IMMEDIATE")
             try:
-                new_certs = []
-                for cert in certs:
-                    row = conn.execute(text(
-                        "SELECT cert_type, subject_key_id, subject_public_key, issuer_key_id, "
-                        "issuer_teammate_id, issued_at, claims, signature "
-                        "FROM key_certificate WHERE cert_id = :cert_id"
-                    ), {"cert_id": cert.cert_id}).fetchone()
-                    if row is None:
-                        new_certs.append(cert)
-                    elif not _same_team_certificate_row(row, cert, cert.issuer_participant_id):
-                        raise reject("conflicting_record", f"certificate {cert.cert_id.hex()}")
-                new_modes = []
-                for record_id, record, snapshot_json in modes:
-                    row = conn.execute(text(
-                        "SELECT author_teammate_id, author_device_key_id, created_at, "
-                        "anchor_commit, constitution_digest, schema_version, teammate_id, "
-                        "berth_id, mode, signature, constitution_snapshot_json "
-                        "FROM integration_mode_change WHERE record_id = :record_id"
-                    ), {"record_id": record_id}).fetchone()
-                    if row is None:
-                        new_modes.append((record_id, record, snapshot_json))
-                    elif (
-                        berth_authority.ModeChangeRecord(*row[:10]) != record
-                        or row[10] != snapshot_json
-                    ):
-                        raise reject("conflicting_record", f"mode change {record_id.hex()}")
-                if not new_certs and not new_modes:
+                changed = False
+                newly_projected = []
+                try:
+                    for event in events:
+                        status, stored = store_and_project(conn, event)
+                        changed = changed or status != "already_present"
+                        newly_projected.extend(stored)
+                except EventConflictError as exc:
+                    raise reject("conflicting_record", str(exc)) from exc
+                except ProjectionError as exc:
+                    raise reject("conflicting_record", str(exc)) from exc
+                if not changed:
+                    conn.rollback()
                     return False
-
-                for cert in new_certs:
-                    teammate_id = bytes.fromhex(cert.claims["teammate_id"])
-                    _upsert_teammate_row(conn, cert.issuer_participant_id)
-                    _upsert_teammate_row(conn, teammate_id)
-                    _store_team_certificate(conn, cert, cert.issuer_participant_id)
-                    _upsert_team_device_row(conn, teammate_id, cert.subject_public_key)
-                for record_id, record, snapshot_json in new_modes:
-                    _upsert_teammate_row(conn, record.author_teammate_id)
-                    _upsert_teammate_row(conn, record.teammate_id)
-                    conn.execute(text(
-                        "INSERT INTO integration_mode_change ("
-                        "record_id, record_type, author_teammate_id, author_device_key_id, "
-                        "created_at, anchor_commit, constitution_digest, constitution_snapshot_json, "
-                        "schema_version, teammate_id, berth_id, mode, signature"
-                        ") VALUES ("
-                        ":record_id, 'integration_mode_change', :author_teammate_id, "
-                        ":author_device_key_id, :created_at, :anchor_commit, :constitution_digest, "
-                        ":constitution_snapshot_json, :schema_version, :teammate_id, :berth_id, "
-                        ":mode, :signature)"
-                    ), {
-                        "record_id": record_id,
-                        "author_teammate_id": record.author_teammate_id,
-                        "author_device_key_id": record.author_device_key_id,
-                        "created_at": record.created_at,
-                        "anchor_commit": record.anchor_commit,
-                        "constitution_digest": record.constitution_digest,
-                        "constitution_snapshot_json": snapshot_json,
-                        "schema_version": record.schema_version,
-                        "teammate_id": record.teammate_id,
-                        "berth_id": record.berth_id,
-                        "mode": record.mode,
-                        "signature": record.signature,
-                    })
+                touched_modes = [
+                    event for event in newly_projected
+                    if event.event_type == "integration_mode_change"
+                    and event.event_id in package_event_ids
+                ]
                 # The projection follows the newest record per teammate and
                 # berth, whichever device wrote it.
                 _reproject_berth_roles(
-                    conn, {(record.teammate_id, record.berth_id) for _, record, _ in new_modes}
+                    conn,
+                    {
+                        (bytes.fromhex(event.payload["teammate_id"]), bytes.fromhex(event.payload["berth_id"]))
+                        for event in touched_modes
+                    },
                 )
                 conn.commit()
                 conn.exec_driver_sql("BEGIN IMMEDIATE")

@@ -1,3 +1,4 @@
+import hashlib
 import pathlib
 import sqlite3
 from dataclasses import replace
@@ -150,16 +151,19 @@ def _delegation(private=None):
     return private, row, payload
 
 
+_EMPTY_SNAPSHOT_DIGEST = hashlib.sha256(b"{}").digest()
+
+
 def _mode(private=None):
     private = private or Ed25519PrivateKey.generate().private_bytes_raw()
     public = Ed25519PrivateKey.from_private_bytes(private).public_key().public_bytes_raw()
     fields = {"record_type": "integration_mode_change", "author_teammate_id": b"author".hex(),
               "author_device_key_id": key_id_from_public(public).hex(), "created_at": "now",
-              "anchor_commit": None, "constitution_digest": b"digest".hex(), "schema_version": 1,
+              "anchor_commit": None, "constitution_digest": _EMPTY_SNAPSHOT_DIGEST.hex(), "schema_version": 1,
               "teammate_id": b"member".hex(), "berth_id": b"berth".hex(), "mode": "automatic"}
     canonical = canonical_constitution_bytes(fields)
     row = {"record_id": derive_record_id(canonical), **fields, "constitution_snapshot_json": "{}",
-           "constitution_digest": b"digest", "author_teammate_id": b"author",
+           "constitution_digest": _EMPTY_SNAPSHOT_DIGEST, "author_teammate_id": b"author",
            "author_device_key_id": key_id_from_public(public), "teammate_id": b"member", "berth_id": b"berth",
            "signature": sign_constitution_record(private, canonical)}
     payload = {k: (v.hex() if isinstance(v, bytes) else v) for k, v in row.items()}
@@ -282,3 +286,28 @@ def test_delegate_workhorse_key_twice_records_one_event(playground_dir):
     with sqlite3.connect(db) as conn:
         count = conn.execute("SELECT count(*) FROM constitution_event WHERE event_type='workhorse_delegation'").fetchone()[0]
     assert count == 1
+
+
+def test_mode_change_with_swapped_snapshot_is_refused(team_db):
+    private, _, payload = _mode()
+    payload["constitution_snapshot_json"] = '{"swapped": true}'
+    event = make_event("integration_mode_change", payload, (), private)
+    with pytest.raises(ProjectionError, match="bad_mode_change_snapshot"):
+        store_and_project(team_db, event)
+    assert team_db.execute(text("SELECT count(*) FROM constitution_event")).scalar_one() == 0
+
+
+def test_certificate_event_derives_teammate_and_device_rows(team_db):
+    cert, teammate, private, _ = _cert()
+    admitted = b"admitted-teammate"
+    cert.claims["teammate_id"] = admitted.hex()
+    # Re-sign after changing a signed claim.
+    issuer_public = Ed25519PrivateKey.from_private_bytes(private).public_key().public_bytes_raw()
+    issuer_key = ParticipantKey(cert.issuer_key_id, issuer_public, ProtectionLevel.DAILY, "now")
+    subject = ParticipantKey(cert.subject_key_id, cert.subject_public_key, ProtectionLevel.DAILY, "now")
+    cert = issue_cert(subject, issuer_key, private, b"teammate", CertType.MEMBERSHIP, b"team", {"teammate_id": admitted.hex()})
+    store_and_project(team_db, _event(cert, teammate, private))
+    ids = {row[0] for row in team_db.execute(text("SELECT id FROM teammate"))}
+    assert {teammate, admitted} <= ids
+    device = team_db.execute(text("SELECT teammate_id, public_key FROM team_device WHERE device_key_id = :k"), {"k": cert.subject_key_id}).one()
+    assert tuple(device) == (admitted, cert.subject_public_key)

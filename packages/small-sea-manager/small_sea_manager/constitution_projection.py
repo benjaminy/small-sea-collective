@@ -1,5 +1,6 @@
 """Project selected Constitution events into existing Core views."""
 
+import hashlib
 import json
 
 from sqlalchemy import text
@@ -117,6 +118,25 @@ def _write_certificate(conn: Connection, event) -> None:
             raise ProjectionError("certificate_conflict")
         return
     conn.execute(text("INSERT INTO key_certificate (cert_id, cert_type, subject_key_id, subject_public_key, issuer_key_id, issuer_teammate_id, issued_at, claims, signature) VALUES (:cert_id, :cert_type, :subject_key_id, :subject_public_key, :issuer_key_id, :issuer_teammate_id, :issued_at, :claims, :signature)"), values)
+    # Teammate and device rows are derived from certificates, so every path
+    # that stores one (local authoring, admission import, Core union) agrees.
+    _ensure_teammate(conn, values["issuer_teammate_id"])
+    subject_teammate = json.loads(values["claims"]).get("teammate_id")
+    if isinstance(subject_teammate, str):
+        try:
+            subject_teammate_id = bytes.fromhex(subject_teammate)
+        except ValueError:
+            return
+        _ensure_teammate(conn, subject_teammate_id)
+        conn.execute(text(
+            "INSERT OR IGNORE INTO team_device (device_key_id, teammate_id, public_key, created_at) "
+            "VALUES (:device_key_id, :teammate_id, :public_key, :created_at)"
+        ), {"device_key_id": values["subject_key_id"], "teammate_id": subject_teammate_id,
+            "public_key": values["subject_public_key"], "created_at": values["issued_at"]})
+
+
+def _ensure_teammate(conn, teammate_id: bytes) -> None:
+    conn.execute(text("INSERT OR IGNORE INTO teammate (id) VALUES (:id)"), {"id": teammate_id})
 
 
 _DELEGATION_COLUMNS = ("record_id", "schema_version", "berth_id", "workhorse_public_key", "delegator_teammate_id", "delegator_public_key", "signature")
@@ -192,6 +212,15 @@ def _check_integration_mode_change(event):
         raise ProjectionError("wrong_mode_change_signer")
     if derive_record_id(canonical) != values["record_id"] or not verify_constitution_record(event.signer_public_key, canonical, record.signature):
         raise ProjectionError("bad_mode_change_signature")
+    # The snapshot is not signed itself; the signed digest binds it.
+    try:
+        snapshot_digest = hashlib.sha256(json.dumps(
+            json.loads(values["constitution_snapshot_json"]), sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")).digest()
+    except (TypeError, ValueError):
+        raise ProjectionError("bad_mode_change_payload") from None
+    if snapshot_digest != values["constitution_digest"]:
+        raise ProjectionError("bad_mode_change_snapshot")
     return values
 
 
@@ -204,6 +233,8 @@ def _write_integration_mode_change(conn, event):
             raise ProjectionError("mode_change_conflict")
         return
     conn.execute(text("INSERT INTO integration_mode_change (record_id, record_type, author_teammate_id, author_device_key_id, created_at, anchor_commit, constitution_digest, constitution_snapshot_json, schema_version, teammate_id, berth_id, mode, signature) VALUES (:record_id, :record_type, :author_teammate_id, :author_device_key_id, :created_at, :anchor_commit, :constitution_digest, :constitution_snapshot_json, :schema_version, :teammate_id, :berth_id, :mode, :signature)"), values)
+    _ensure_teammate(conn, values["author_teammate_id"])
+    _ensure_teammate(conn, values["teammate_id"])
 
 
 def record_workhorse_delegation(conn, delegation, delegator_private_key):

@@ -12,10 +12,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 import small_sea_manager.provisioning as provisioning
 from small_sea_manager import berth_authority
-from small_sea_manager.berth_authority import ModeChangeRecord
-from wrasse_trust.identity import verify_membership_cert
-from wrasse_trust.keys import key_id_from_public
-from wrasse_trust.transport import key_certificate_from_team_db_record
+from wrasse_trust.events import decode_event
+from small_sea_manager.constitution_projection import decode_certificate
 
 from test_admission_proposals import _bootstrap_existing_steward_clone, _push_to_localfolder
 from test_admission_records import _admit, _setup_team
@@ -27,7 +25,7 @@ def _berth_ids(root, alice_hex):
         return {row[0] for row in conn.execute("SELECT id FROM team_app_berth")}
 
 
-def test_package_carries_verifiable_records_bound_to_the_acceptance(playground_dir):
+def test_package_carries_every_constitution_event(playground_dir):
     root = pathlib.Path(playground_dir)
     alice_hex, bob_hex, cloud, _ = _setup_team(root)
     acceptance = _admit(root, alice_hex, bob_hex, cloud)
@@ -48,53 +46,15 @@ def test_package_carries_verifiable_records_bound_to_the_acceptance(playground_d
         bytes.fromhex(package["signature"]), provisioning._json_bytes(body)
     )
 
-    team_id = bytes.fromhex(body["team_id"])
-    certs = {
-        c["cert_id"]: key_certificate_from_team_db_record(
-            team_id=team_id,
-            cert_id=bytes.fromhex(c["cert_id"]),
-            cert_type=c["cert_type"],
-            subject_key_id=bytes.fromhex(c["subject_key_id"]),
-            subject_public_key=bytes.fromhex(c["subject_public_key"]),
-            issuer_key_id=bytes.fromhex(c["issuer_key_id"]),
-            issuer_teammate_id=bytes.fromhex(c["issuer_teammate_id"]),
-            issued_at=c["issued_at"],
-            claims_json=c["claims"],
-            signature=bytes.fromhex(c["signature"]),
-        )
-        for c in body["certificates"]
-    }
-    bob_device = bytes.fromhex(acceptance["invitee_device_public_key"])
-    bob_teammate = bytes.fromhex(acceptance["author_teammate_id"])
-    alice_teammate = bytes.fromhex(body["integration_mode_changes"][0]["author_teammate_id"])
-    bob_certs = [c for c in certs.values() if c.subject_public_key == bob_device]
-    assert len(bob_certs) == 1
-    assert verify_membership_cert(
-        bob_certs[0], alice_public, team_id, alice_teammate, bob_teammate, bob_device
-    )
-    # The anchor's self-issued genesis cert closes the chain.
-    assert any(c.subject_public_key == alice_public for c in certs.values())
-
-    bob_modes = [m for m in body["integration_mode_changes"] if m["teammate_id"] == bob_teammate.hex()]
-    assert {bytes.fromhex(m["berth_id"]) for m in bob_modes} == _berth_ids(root, alice_hex)
-    assert len(bob_modes) == len(_berth_ids(root, alice_hex))
-    for m in body["integration_mode_changes"]:
-        record = ModeChangeRecord(
-            author_teammate_id=bytes.fromhex(m["author_teammate_id"]),
-            author_device_key_id=bytes.fromhex(m["author_device_key_id"]),
-            created_at=m["created_at"],
-            anchor_commit=m["anchor_commit"],
-            constitution_digest=bytes.fromhex(m["constitution_digest"]),
-            schema_version=m["schema_version"],
-            teammate_id=bytes.fromhex(m["teammate_id"]),
-            berth_id=bytes.fromhex(m["berth_id"]),
-            mode=m["mode"],
-            signature=bytes.fromhex(m["signature"]),
-        )
-        assert record.author_device_key_id == key_id_from_public(alice_public)
-        Ed25519PublicKey.from_public_bytes(alice_public).verify(
-            record.signature, record.canonical()
-        )
+    source_db = provisioning._team_db_path(root, alice_hex, "ProjectX")
+    with sqlite3.connect(source_db) as conn:
+        expected = [row[0].hex() for row in conn.execute(
+            "SELECT encoded FROM constitution_event ORDER BY event_id"
+        )]
+    assert body["constitution_events"] == expected
+    assert body["constitution_events"]
+    events = [decode_event(bytes.fromhex(encoded)) for encoded in body["constitution_events"]]
+    assert {event.event_type for event in events} >= {"key_certificate", "integration_mode_change"}
 
 
 def test_unknown_acceptance_is_refused(playground_dir):
@@ -165,6 +125,68 @@ def test_bob_sees_his_own_admission_after_import(playground_dir):
     assert _bob_state(root, bob_hex) == (head_after, db_after)
 
 
+def test_import_stores_events_and_projects_rows(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex, bob_hex, acceptance, raw = _steward_package(root)
+    source_db = provisioning._team_db_path(root, alice_hex, "ProjectX")
+    with sqlite3.connect(source_db) as conn:
+        source_events = [decode_event(row[0]) for row in conn.execute(
+            "SELECT encoded FROM constitution_event"
+        )]
+    alice_event_ids = {event.event_id for event in source_events}
+    certificates = [
+        decode_certificate(event.payload)[0]
+        for event in source_events
+        if event.event_type == "key_certificate"
+    ]
+    alice_device = provisioning.get_current_team_device_key(root, alice_hex, "ProjectX")[1]
+    expected_certs = {
+        cert.cert_id: cert.subject_public_key
+        for cert in certificates
+        if cert.subject_public_key in (alice_device, bytes.fromhex(acceptance["invitee_device_public_key"]))
+    }
+    assert set(expected_certs.values()) == {
+        alice_device, bytes.fromhex(acceptance["invitee_device_public_key"])
+    }
+    assert provisioning.import_admission_package(root, bob_hex, "ProjectX", raw) is True
+
+    bob_db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
+    with sqlite3.connect(bob_db) as conn:
+        assert {
+            row[0] for row in conn.execute("SELECT event_id FROM constitution_event")
+        } == alice_event_ids
+        projected_certs = {
+            row[0]: row[1]
+            for row in conn.execute("SELECT cert_id, subject_public_key FROM key_certificate")
+        }
+    assert all(projected_certs[cert_id] == public_key for cert_id, public_key in expected_certs.items())
+
+
+def test_import_then_core_union_is_noop(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex, bob_hex, _acceptance, raw = _steward_package(root)
+    assert provisioning.import_admission_package(root, bob_hex, "ProjectX", raw) is True
+    sync = root / "Participants" / alice_hex / "ProjectX" / "Sync"
+    alice_head = subprocess.run(
+        ["git", "-C", str(sync), "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    bob_sync = root / "Participants" / bob_hex / "ProjectX" / "Sync"
+    subprocess.run(
+        ["git", "-C", str(bob_sync), "fetch", "--no-tags", str(sync), alice_head],
+        capture_output=True, text=True, check=True,
+    )
+    assert provisioning.integrate_core_events(root, bob_hex, "ProjectX", alice_head) == {
+        "outcome": "no_change", "code": None, "new_events": 0
+    }
+
+
+def test_reimport_returns_false(playground_dir):
+    root = pathlib.Path(playground_dir)
+    _alice_hex, bob_hex, _acceptance, raw = _steward_package(root)
+    assert provisioning.import_admission_package(root, bob_hex, "ProjectX", raw) is True
+    assert provisioning.import_admission_package(root, bob_hex, "ProjectX", raw) is False
+
+
 def _refused(root, bob_hex, raw, code):
     before = _bob_state(root, bob_hex)
     with pytest.raises(provisioning.AdmissionPackageRejectedError) as info:
@@ -173,16 +195,26 @@ def _refused(root, bob_hex, raw, code):
     assert _bob_state(root, bob_hex) == before
 
 
-def test_tampered_or_misaddressed_packages_are_refused(playground_dir):
+def test_tampered_event_refuses_whole_package_and_writes_nothing(playground_dir):
     root = pathlib.Path(playground_dir)
     alice_hex, bob_hex, _acceptance, raw = _steward_package(root)
     body = json.loads(raw)["body"]
 
-    # A record altered after signing, even inside a validly signed envelope.
     tampered = json.loads(raw)["body"]
-    for m in tampered["integration_mode_changes"]:
-        m["mode"] = "proposal-only" if m["mode"] == "automatic" else "automatic"
+    encoded = tampered["constitution_events"][0]
+    event_body = json.loads(bytes.fromhex(encoded))
+    signature = event_body["signature"]
+    event_body["signature"] = ("0" if signature[-1] != "0" else "1") + signature[:-1]
+    tampered["constitution_events"][0] = json.dumps(
+        event_body, sort_keys=True, separators=(",", ":")
+    ).encode().hex()
     _refused(root, bob_hex, _resign(root, alice_hex, tampered), "bad_record_signature")
+
+
+def test_tampered_or_misaddressed_packages_are_refused(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice_hex, bob_hex, _acceptance, raw = _steward_package(root)
+    body = json.loads(raw)["body"]
 
     package = json.loads(raw)
     package["signature"] = "00" * 64
@@ -200,8 +232,9 @@ def test_conflicting_record_id_is_refused(playground_dir):
     _alice_hex, bob_hex, acceptance, raw = _steward_package(root)
     body = json.loads(raw)["body"]
     bob_mode = next(
-        m for m in body["integration_mode_changes"]
-        if m["teammate_id"] == acceptance["author_teammate_id"]
+        event.payload for event in (decode_event(bytes.fromhex(encoded)) for encoded in body["constitution_events"])
+        if event.event_type == "integration_mode_change"
+        and event.payload["teammate_id"] == acceptance["author_teammate_id"]
     )
 
     db = root / "Participants" / bob_hex / "ProjectX" / "Sync" / "core.db"
@@ -213,8 +246,10 @@ def test_conflicting_record_id_is_refused(playground_dir):
             "constitution_snapshot_json, schema_version, teammate_id, berth_id, mode, signature) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 'proposal-only', ?)",
             tuple(
-                bytes.fromhex(bob_mode[k]) if k not in ("created_at", "anchor_commit",
-                                                         "constitution_snapshot_json") else bob_mode[k]
+                bytes.fromhex(bob_mode[k]) if k in {
+                    "record_id", "author_teammate_id", "author_device_key_id",
+                    "constitution_digest", "teammate_id", "berth_id", "signature",
+                } else bob_mode[k]
                 for k in ("record_id", "author_teammate_id", "author_device_key_id",
                           "created_at", "anchor_commit", "constitution_digest",
                           "constitution_snapshot_json", "teammate_id", "berth_id", "signature")
