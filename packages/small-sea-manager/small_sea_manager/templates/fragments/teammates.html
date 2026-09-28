@@ -11,6 +11,7 @@
     <thead>
       <tr>
         <th>Teammate</th>
+        <th>Status</th>
         <th>Core berth role</th>
         <th>Core route</th>
         <th></th>
@@ -28,6 +29,7 @@
           {% endif %}
           {% if m.is_self %}<span class="badge badge-self" style="margin-left:0.5rem">you</span>{% endif %}
         </td>
+        <td>{{ m.status }}</td>
         <td>
           {% if m.core_role == "read-write" %}
             <span class="badge badge-green">read-write</span>

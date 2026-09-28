@@ -376,7 +376,7 @@ def test_remove_teammate_requires_core_write_permission(playground_dir):
         manager.remove_teammate("ProjectX", state["bob_teammate_id"].hex())
 
 
-def test_remove_teammate_purges_local_receiver_state_and_subject_side_certs(playground_dir):
+def test_remove_teammate_purges_local_receiver_state_but_preserves_evidence(playground_dir):
     state = _bootstrap_remote_teammate_installation(pathlib.Path(playground_dir))
     manager = TeamManager(state["alice_root"], state["alice_hex"])
     result = manager.remove_teammate("ProjectX", state["bob_teammate_id"].hex())
@@ -390,19 +390,19 @@ def test_remove_teammate_purges_local_receiver_state_and_subject_side_certs(play
             "SELECT 1 FROM teammate WHERE id = ?",
             (state["bob_teammate_id"],),
         ).fetchone()
-        assert teammate_row is None
+        assert teammate_row is not None
         team_device_row = conn.execute(
             "SELECT 1 FROM team_device WHERE teammate_id = ?",
             (state["bob_teammate_id"],),
         ).fetchone()
-        assert team_device_row is None
+        assert team_device_row is not None
         prekey_row = conn.execute(
             "SELECT 1 FROM device_prekey_bundle WHERE device_key_id = ?",
             (state["bob_device_key_id"],),
         ).fetchone()
-        assert prekey_row is None
+        assert prekey_row is not None
         cert_rows = conn.execute("SELECT claims FROM key_certificate").fetchall()
-    assert all(json.loads(row[0]).get("teammate_id") != state["bob_teammate_id"].hex() for row in cert_rows)
+    assert any(json.loads(row[0]).get("teammate_id") == state["bob_teammate_id"].hex() for row in cert_rows)
 
     peer_sender = load_peer_sender_key(
         device_local_db_path(state["alice_root"], state["alice_hex"]),
@@ -612,3 +612,109 @@ def test_remove_teammate_records_removal_event(playground_dir):
         version=1, team_id=team_id.hex(), author_teammate_id=author.hex(),
         teammate_id=state["bob_teammate_id"].hex(),
     )
+
+
+def test_removal_arrival_order_independent(playground_dir):
+    from itertools import permutations
+    from small_sea_manager.constitution_projection import encode_certificate, store_and_project
+    from small_sea_manager.constitution_store import current_heads
+    from wrasse_trust.events import make_event
+
+    state = _bootstrap_remote_teammate_installation(pathlib.Path(playground_dir))
+    root, participant = state["alice_root"], state["alice_hex"]
+    private, public = get_current_team_device_key(root, participant, "ProjectX")
+    team_id, author = _team_row(root, participant, "ProjectX")
+    target = state["bob_teammate_id"]
+    engine = create_engine(f"sqlite:///{state['alice_team_db']}")
+    with engine.connect() as conn:
+        parents = tuple(current_heads(conn))
+    engine.dispose()
+    parent = make_event("teammate_removed", dict(
+        version=1, team_id=team_id.hex(), author_teammate_id=author.hex(),
+        teammate_id=target.hex(),
+    ), parents, private)
+    late_key, _ = generate_key_pair(ProtectionLevel.DAILY)
+    late_cert = issue_membership_cert(
+        subject_key=late_key, issuer_key=provisioning._participant_key_from_public(public),
+        issuer_private_key=private, team_id=team_id, issuer_teammate_id=author,
+        admitted_teammate_id=target,
+    )
+    child = make_event("key_certificate", encode_certificate(late_cert, author), (parent.event_id,), private)
+    # A concurrent second removal remains separate evidence.
+    sibling = make_event("teammate_removed", dict(parent.payload), (), private)
+    expected = None
+    saw_pending = False
+    for index, order in enumerate(permutations((parent, child, sibling))):
+        db = pathlib.Path(playground_dir) / f"replay-{index}.db"
+        shutil.copy2(state["alice_team_db"], db)
+        engine = create_engine(f"sqlite:///{db}")
+        with engine.begin() as conn:
+            for event in order:
+                status, _ = store_and_project(conn, event)
+                saw_pending |= status == "pending"
+                assert store_and_project(conn, event) == ("already_present", [])
+            assert conn.execute(text("SELECT count(*) FROM constitution_event_pending")).scalar_one() == 0
+            view = provisioning._load_transitional_view(conn, team_id, public)
+            assert target not in view.trusted_keys
+            assert set(view.effective_removals) == {parent.event_id, sibling.event_id}
+            if expected is None:
+                expected = view
+            assert view == expected
+        engine.dispose()
+    assert saw_pending
+
+
+@pytest.mark.parametrize("outcome,status", [("effective_removals", "removed"), ("disputed_removals", "disputed"), ("anchor_removals_pending", "active")])
+def test_membership_status_uses_only_removal_outcomes(playground_dir, monkeypatch, outcome, status):
+    from dataclasses import replace
+    from small_sea_manager import berth_authority
+    from small_sea_manager.constitution_projection import record_teammate_removal
+    from small_sea_manager.constitution_store import list_events
+
+    state = _bootstrap_remote_teammate_installation(pathlib.Path(playground_dir))
+    args = (state["alice_root"], state["alice_hex"], "ProjectX")
+    private, _ = get_current_team_device_key(*args)
+    engine = create_engine(f"sqlite:///{state['alice_team_db']}")
+    with engine.begin() as conn:
+        record_teammate_removal(conn, state["team_id"], state["alice_teammate_id"], state["bob_teammate_id"], private)
+        event = next(e for e in list_events(conn) if e.event_type == "teammate_removed")
+    engine.dispose()
+    view = provisioning.load_transitional_authority_view(*args)
+    # Inject outcomes at the view boundary: mode ambiguity must never set status.
+    view = replace(view, effective_removals=(), disputed_removals=(), anchor_removals_pending=(),
+                   standing={key: berth_authority.Standing.AMBIGUOUS for key in view.standing})
+    view = replace(view, **{outcome: (event.event_id,)})
+    monkeypatch.setattr(provisioning, "_load_transitional_view", lambda *args: view)
+    members = {m["id"]: m["status"] for m in provisioning.list_teammates(*args, include_removed=True)}
+    assert members == {state["alice_teammate_id"].hex(): "active", state["bob_teammate_id"].hex(): status}
+    recipients = provisioning.get_current_recipient_device_keys_by_teammate(*args)
+    assert (state["bob_teammate_id"] in recipients) == (status != "removed")
+
+
+@pytest.mark.parametrize("anchor", [None, {"view_policy": "unsupported"}])
+def test_current_readers_keep_historical_behavior_without_supported_anchor(playground_dir, monkeypatch, anchor):
+    state = _bootstrap_remote_teammate_installation(pathlib.Path(playground_dir))
+    args = (state["alice_root"], state["alice_hex"], "ProjectX")
+    provisioning.remove_teammate(*args, state["bob_teammate_id"])
+    monkeypatch.setattr(provisioning, "get_authority_anchor", lambda *args: anchor)
+    assert provisioning.get_current_recipient_device_keys_by_teammate(*args) == provisioning.get_trusted_device_keys_by_teammate(*args)
+    assert {m["status"] for m in provisioning.list_teammates(*args)} == {"active"}
+    assert state["bob_teammate_id"].hex() in {m["id"] for m in provisioning.list_teammates(*args)}
+
+
+def test_reconciliation_excludes_retained_removed_teammate(playground_dir):
+    from small_sea_manager.constitution_projection import record_teammate_removal
+
+    state = _bootstrap_remote_teammate_installation(pathlib.Path(playground_dir))
+    args = (state["alice_root"], state["alice_hex"], "ProjectX")
+    provisioning.reconcile_runtime_state(*args)
+    private, _ = get_current_team_device_key(*args)
+    engine = create_engine(f"sqlite:///{state['alice_team_db']}")
+    with engine.begin() as conn:
+        record_teammate_removal(conn, state["team_id"], state["alice_teammate_id"], state["bob_teammate_id"], private)
+    engine.dispose()
+    result = provisioning.reconcile_runtime_state(*args)
+    assert result["rotated"]
+    assert result["removed_teammate_ids_hex"] == [state["bob_teammate_id"].hex()]
+    assert result["redistribution_artifacts"] == []
+    assert result["skipped_device_key_ids_hex"] == []

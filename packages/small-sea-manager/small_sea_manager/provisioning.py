@@ -3530,6 +3530,48 @@ def get_trusted_device_keys_by_teammate(root_dir, participant_hex, team_name):
     return resolve_trusted_device_keys_by_teammate(certs, team_id)
 
 
+def _removal_statuses(conn, root_dir, participant_hex, team_id):
+    """Return removal outcomes by teammate; unavailable views leave members active."""
+    try:
+        anchor = _adopted_anchor_or_pause(root_dir, participant_hex, team_id)
+    except berth_authority.MissingAuthorityAnchor:
+        return {}
+    try:
+        if _core_berth_id(conn) is None:
+            return {}
+    except AmbiguousCoreBerthError:
+        return {}
+    view = _load_transitional_view(conn, team_id, anchor)
+    effective = set(view.effective_removals)
+    disputed = set(view.disputed_removals)
+    statuses = {}
+    for event_id, encoded in conn.execute(text(
+        "SELECT event_id, encoded FROM constitution_event WHERE event_type = 'teammate_removed'"
+    )):
+        target = bytes.fromhex(decode_event(encoded).payload["teammate_id"])
+        if event_id in effective:
+            statuses[target] = "removed"
+        elif event_id in disputed and statuses.get(target) != "removed":
+            statuses[target] = "disputed"
+    return statuses
+
+
+def get_current_recipient_device_keys_by_teammate(root_dir, participant_hex, team_name):
+    """Choose sender-key recipients, excluding only effective teammate removals."""
+    team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
+    engine = _sqlite_engine(_team_db_path(root_dir, participant_hex, team_name))
+    try:
+        with engine.begin() as conn:
+            keys = resolve_trusted_device_keys_by_teammate(
+                _load_team_certificates(conn, team_id), team_id,
+            )
+            statuses = _removal_statuses(conn, root_dir, participant_hex, team_id)
+            return {teammate: public_keys for teammate, public_keys in keys.items()
+                    if statuses.get(teammate) != "removed"}
+    finally:
+        engine.dispose()
+
+
 def _team_sync_dir(root_dir, participant_hex, team_name) -> pathlib.Path:
     team_name = _validate_team_name(team_name)
     return pathlib.Path(root_dir) / "Participants" / participant_hex / team_name / "Sync"
@@ -4327,7 +4369,7 @@ def redistribute_sender_key(root_dir, participant_hex, team_name, target_device_
             for target in target_device_key_ids
         }
 
-    trusted_public_keys_by_teammate = get_trusted_device_keys_by_teammate(
+    trusted_public_keys_by_teammate = get_current_recipient_device_keys_by_teammate(
         root_dir, participant_hex, team_name
     )
     candidate_public_keys: dict[bytes, bytes] = {}
@@ -4547,7 +4589,7 @@ def reconcile_runtime_state(root_dir, participant_hex, team_name):
         root_dir, participant_hex, team_name
     )
     local_device_key_id = key_id_from_public(local_team_device_public_key)
-    trusted_public_keys_by_teammate = get_trusted_device_keys_by_teammate(
+    trusted_public_keys_by_teammate = get_current_recipient_device_keys_by_teammate(
         root_dir,
         participant_hex,
         team_name,
@@ -4677,21 +4719,6 @@ def remove_teammate(root_dir, participant_hex, team_name, teammate):
                 raise ValueError("Removing a teammate requires a trusted team-device key")
             record_teammate_removal(
                 conn, team_id, self_in_team, removed_teammate_id, private_key,
-            )
-            certs = _load_team_certificates(conn, team_id)
-            cert_ids_to_delete = [
-                cert.cert_id
-                for cert in certs
-                if cert.claims.get("teammate_id") == removed_teammate_id.hex()
-            ]
-            for cert_id in cert_ids_to_delete:
-                conn.execute(
-                    text("DELETE FROM key_certificate WHERE cert_id = :cert_id"),
-                    {"cert_id": cert_id},
-                )
-            conn.execute(
-                text("DELETE FROM teammate WHERE id = :teammate_id"),
-                {"teammate_id": removed_teammate_id},
             )
             _publish_local_device_prekey_bundle(
                 root_dir,
@@ -7748,14 +7775,19 @@ def get_self_in_team(root_dir, participant_hex, team_name):
     return row[0].hex() if row is not None else None
 
 
-def list_teammates(root_dir, participant_hex, team_name):
-    """List teammates of a team with their berth roles. Returns list of dicts."""
+def list_teammates(root_dir, participant_hex, team_name, *, include_removed=False):
+    """List current members with removal status and berth roles.
+
+    Set include_removed to inspect retained metadata for removed teammates too.
+    Status describes removal outcomes only, not other authority disputes.
+    """
     root_dir = pathlib.Path(root_dir)
     team_id, _self_in_team = _team_row(root_dir, participant_hex, team_name)
     team_db_path = _team_db_path(root_dir, participant_hex, team_name)
     engine = _sqlite_engine(team_db_path)
 
     with engine.begin() as conn:
+        statuses = _removal_statuses(conn, root_dir, participant_hex, team_id)
         teammates = conn.execute(text("SELECT id, display_name FROM teammate")).fetchall()
         role_rows = conn.execute(
             text("SELECT teammate_id, berth_id, role FROM berth_role")
@@ -7778,6 +7810,9 @@ def list_teammates(root_dir, participant_hex, team_name):
     result = []
     for row in teammates:
         teammate_id = row[0]
+        status = statuses.get(teammate_id, "active")
+        if status == "removed" and not include_removed:
+            continue
         route = core_route_by_teammate[teammate_id]
         route_dict = None
         if route.transport is not None:
@@ -7790,6 +7825,7 @@ def list_teammates(root_dir, participant_hex, team_name):
             {
                 "id": teammate_id.hex(),
                 "display_name": row[1],
+                "status": status,
                 "berth_roles": roles_by_teammate.get(teammate_id.hex(), []),
                 "core_route_status": route.status,
                 "effective_core_route": route_dict,

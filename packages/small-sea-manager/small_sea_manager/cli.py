@@ -137,7 +137,7 @@ def list_teammates(ctx, team_name):
     for teammate in teammates:
         roles = teammate.get("berth_roles", [])
         role_str = roles[0]["role"] if roles else "no role"
-        click.echo(f"  {teammate['id'][:12]}…  {role_str}")
+        click.echo(f"  {teammate['id'][:12]}…  {teammate['status']}  {role_str}")
 
 
 @cli.command("invite")

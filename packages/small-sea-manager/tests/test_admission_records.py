@@ -1063,3 +1063,51 @@ def test_tampered_proposal_author_does_not_enable_finalization(playground_dir):
         assert conn.execute(
             "SELECT COUNT(*) FROM teammate WHERE display_name = 'Bob'"
         ).fetchone()[0] == 0
+
+
+def test_removal_rebuild_preserves_evidence(playground_dir):
+    root = pathlib.Path(playground_dir)
+    alice, bob, cloud, alice_sync = _setup_team(root)
+    bob_cloud = root / "bob-cloud"
+    bob_cloud.mkdir()
+    provisioning.add_cloud_storage(root, bob, protocol="localfolder", url=str(bob_cloud))
+    _admit(root, alice, bob, cloud)
+    team_id, bob_id = provisioning._team_row(root, bob, "ProjectX")
+    bob_sync = root / "Participants" / bob / "ProjectX" / "Sync"
+    with sqlite3.connect(alice_sync / "core.db") as conn:
+        core_berth = conn.execute("SELECT berth_id FROM berth_role LIMIT 1").fetchone()[0]
+    provisioning.set_teammate_integration_mode(root, alice, "ProjectX", bob_id, core_berth, "automatic")
+    # Bob authors a signed proposal, whose foreign key used to cascade on removal.
+    shutil.copy2(alice_sync / "core.db", bob_sync / "core.db")
+    provisioning.create_invitation(
+        root, bob, "ProjectX",
+        invitee_label="Carol",
+    )
+    provisioning.delegate_workhorse_key(root, bob, "ProjectX", core_berth)
+    shutil.copy2(bob_sync / "core.db", alice_sync / "core.db")
+    tables = (
+        "constitution_event", "teammate", "team_device", "key_certificate",
+        "workhorse_delegation", "integration_mode_change", "admission_proposal",
+        "admission_acceptance", "endorsement", "finalization",
+    )
+    with sqlite3.connect(alice_sync / "core.db") as conn:
+        before = {table: set(conn.execute(f"SELECT * FROM {table}")) for table in tables}
+        assert conn.execute(
+            "SELECT 1 FROM admission_proposal WHERE author_teammate_id = ?", (bob_id,),
+        ).fetchone()
+    assert all(before.values()), [table for table, rows in before.items() if not rows]
+    args = (root, alice, "ProjectX")
+    assert bob_id in provisioning.get_current_recipient_device_keys_by_teammate(*args)
+    result = provisioning.remove_teammate(*args, bob_id)
+    with sqlite3.connect(alice_sync / "core.db") as conn:
+        for table in tables:
+            after = set(conn.execute(f"SELECT * FROM {table}"))
+            assert before[table] <= after, table
+    assert bob_id.hex() not in {m["id"] for m in provisioning.list_teammates(*args)}
+    statuses = {m["id"]: m["status"] for m in provisioning.list_teammates(*args, include_removed=True)}
+    assert statuses[bob_id.hex()] == "removed"
+    assert set(statuses.values()) == {"active", "removed"}
+    assert bob_id not in provisioning.get_current_recipient_device_keys_by_teammate(*args)
+    assert bob_id in provisioning.get_trusted_device_keys_by_teammate(*args)
+    assert result["redistribution_artifacts"] == []
+    assert provisioning.redistribute_sender_key(*args)["artifacts"] == []
