@@ -1750,6 +1750,22 @@ class TeamManager:
             )
         return sorted(heads, key=lambda head: head.ref_name)
 
+    def integrate_core_sources(self, team_name) -> list[dict]:
+        """Integrate each maximal teammate Core source independently."""
+        results = []
+        for head in self.list_core_source_heads(team_name):
+            if not head.is_maximal:
+                continue
+            result = provisioning.integrate_core_events(
+                self.root_dir, self.participant_hex, team_name, head.head_sha
+            )
+            results.append({
+                **result,
+                "ref_name": head.ref_name,
+                "teammate_id": head.teammate_id,
+            })
+        return results
+
     def complete_invitation_acceptance(self, team_name, acceptance_b64) -> dict:
         """Record invitee acceptance and finalize when quorum is met.
 

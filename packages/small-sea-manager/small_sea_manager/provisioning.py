@@ -26,6 +26,9 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from cryptography.hazmat.primitives import serialization
 from sqlalchemy import create_engine, event, text
+from wrasse_trust.events import EventInvalidError, decode_event
+from small_sea_manager.constitution_store import EventConflictError
+from small_sea_manager.constitution_projection import ProjectionError, store_and_project
 
 import shutil
 
@@ -4934,6 +4937,17 @@ def _project_berth_role(conn, teammate_id: bytes, berth_id: bytes, mode: str) ->
         )
 
 
+def _reproject_berth_roles(conn, touched_pairs) -> None:
+    for teammate_id, berth_id in set(touched_pairs):
+        row = conn.execute(text(
+            "SELECT mode FROM integration_mode_change "
+            "WHERE teammate_id = :teammate_id AND berth_id = :berth_id "
+            "ORDER BY created_at DESC, record_id DESC LIMIT 1"
+        ), {"teammate_id": teammate_id, "berth_id": berth_id}).fetchone()
+        if row is not None:
+            _project_berth_role(conn, teammate_id, berth_id, row[0])
+
+
 def issue_device_link_for_teammate(root_dir, participant_hex, team_name, linked_device_public_key):
     """Issue and store a device_link cert for an externally generated public key."""
     if isinstance(linked_device_public_key, str):
@@ -6790,13 +6804,9 @@ def import_admission_package(root_dir, participant_hex, team_name, package_bytes
                     })
                 # The projection follows the newest record per teammate and
                 # berth, whichever device wrote it.
-                for teammate_id, berth_id in {(r.teammate_id, r.berth_id) for _, r, _ in new_modes}:
-                    (mode,) = conn.execute(text(
-                        "SELECT mode FROM integration_mode_change "
-                        "WHERE teammate_id = :teammate_id AND berth_id = :berth_id "
-                        "ORDER BY created_at DESC, record_id DESC LIMIT 1"
-                    ), {"teammate_id": teammate_id, "berth_id": berth_id}).fetchone()
-                    _project_berth_role(conn, teammate_id, berth_id, mode)
+                _reproject_berth_roles(
+                    conn, {(record.teammate_id, record.berth_id) for _, record, _ in new_modes}
+                )
                 conn.commit()
                 conn.exec_driver_sql("BEGIN IMMEDIATE")
                 repo = _Repo(team_sync_dir / ".git", team_sync_dir)
@@ -6807,6 +6817,90 @@ def import_admission_package(root_dir, participant_hex, team_name, package_bytes
     finally:
         engine.dispose()
     return True
+
+
+def integrate_core_events(root_dir, participant_hex, team_name, head_sha) -> dict:
+    """Union the signed Constitution events stored in one parked Core commit."""
+    root_dir = pathlib.Path(root_dir)
+    team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
+    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    with tempfile.NamedTemporaryFile() as source_file:
+        try:
+            repo.blob_at(head_sha, "core.db", source_file.name)
+            source = sqlite3.connect(f"file:{source_file.name}?mode=ro", uri=True)
+            try:
+                columns = {row[1] for row in source.execute("PRAGMA table_info(constitution_event)")}
+                if not {"event_id", "event_type", "encoded"} <= columns:
+                    return {"outcome": "refused", "code": "bad_source_db", "new_events": 0}
+                encoded_rows = source.execute(
+                    "SELECT encoded FROM constitution_event"
+                ).fetchall()
+            finally:
+                source.close()
+        except Exception:
+            # Repo errors and malformed SQLite files both make this source unusable.
+            return {"outcome": "refused", "code": "bad_source_db", "new_events": 0}
+
+        try:
+            events = [decode_event(row[0]) for row in encoded_rows]
+        except (EventInvalidError, TypeError, ValueError):
+            return {"outcome": "refused", "code": "bad_event", "new_events": 0}
+
+    engine = _sqlite_engine(team_sync_dir / "core.db")
+    touched_modes = set()
+    new_events = 0
+    try:
+        with engine.connect() as conn:
+            conn.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                for event in events:
+                    try:
+                        status, stored = store_and_project(conn, event)
+                    except EventInvalidError:
+                        conn.rollback()
+                        return {"outcome": "refused", "code": "bad_event", "new_events": 0}
+                    except EventConflictError:
+                        conn.rollback()
+                        return {"outcome": "refused", "code": "event_conflict", "new_events": 0}
+                    except ProjectionError:
+                        conn.rollback()
+                        return {"outcome": "refused", "code": "bad_projection", "new_events": 0}
+                    if status != "already_present":
+                        new_events += 1
+                    for stored_event in stored:
+                        if stored_event.event_type == "integration_mode_change":
+                            try:
+                                touched_modes.add((bytes.fromhex(stored_event.payload["teammate_id"]), bytes.fromhex(stored_event.payload["berth_id"])))
+                            except (KeyError, TypeError, ValueError):
+                                pass
+                _reproject_berth_roles(conn, touched_modes)
+                if new_events == 0:
+                    conn.rollback()
+                    if repo.work_tree_paths_differ_from_head(["core.db"]):
+                        conn.exec_driver_sql("BEGIN IMMEDIATE")
+                        try:
+                            repo.stage(["core.db"])
+                            repo.commit("Record uncommitted Core database")
+                        except Exception:
+                            return {"outcome": "no_change", "code": "git_record_failed", "new_events": 0}
+                        finally:
+                            conn.rollback()
+                    return {"outcome": "no_change", "code": None, "new_events": 0}
+                conn.commit()
+                conn.exec_driver_sql("BEGIN IMMEDIATE")
+                try:
+                    repo.stage(["core.db"])
+                    repo.commit(f"Integrated Constitution events from {head_sha[:12]}")
+                except Exception:
+                    return {"outcome": "integrated", "code": "git_record_failed", "new_events": new_events}
+                finally:
+                    conn.rollback()
+            except Exception:
+                conn.rollback()
+                raise
+    finally:
+        engine.dispose()
+    return {"outcome": "integrated", "code": None, "new_events": new_events}
 
 
 def endorse_admission(root_dir, participant_hex, team_name, proposal_id_hex):
