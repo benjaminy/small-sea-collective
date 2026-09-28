@@ -111,5 +111,5 @@ def test_local_provision_then_hub_roundtrip(playground_dir, minio_server_gen):
     # ---- 6. Download and verify round-trip ----
     resp = client.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)
     assert resp.status_code == 200
-    downloaded = base64.b64decode(resp.json()["data"])
+    downloaded = resp.content
     assert downloaded == content

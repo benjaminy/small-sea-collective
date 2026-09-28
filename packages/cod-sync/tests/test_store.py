@@ -7,6 +7,7 @@ existed. And archived objects must be write-once, because a link's predecessor
 pointer is only meaningful if the bytes it names cannot change afterwards.
 """
 
+import base64
 import pathlib
 
 import pytest
@@ -15,6 +16,7 @@ from cod_sync.store import (
     LATEST_LINK_PATH,
     CasConflictError,
     CandidateInspectionStore,
+    DownloadTooLargeError,
     LocalFolderStore,
     MalformedStoreResponseError,
     ObjectNotFoundError,
@@ -235,6 +237,17 @@ class FakeResponse:
         self.status_code = status_code
         self._body = body
         self.text = text
+        self.headers = {}
+        self._chunks = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def iter_bytes(self, chunk_size=None):
+        return iter(self._chunks)
 
     def json(self):
         if self._body is None:
@@ -256,11 +269,117 @@ class FakeHubClient:
             raise self.raises
         return self.response
 
+    def stream(self, method, path, **kwargs):
+        self.calls.append((method, path, kwargs))
+        response = self.response
+        if response.status_code == 200:
+            try:
+                body = response.json()
+                content = base64.b64decode(body["data"])
+                response.headers.update({"etag": body.get("etag", "")})
+                response._chunks = [content]
+            except Exception:
+                pass
+        return response
+
     def post(self, path, **kwargs):
         self.calls.append(("POST", path, kwargs))
         if self.raises is not None:
             raise self.raises
         return self.response
+
+
+class StreamingResponse:
+    def __init__(self, chunks, headers=None, status_code=200, body_read=None, body=None):
+        self.chunks = chunks
+        self.headers = {"content-type": "application/octet-stream", **(headers or {})}
+        self.status_code = status_code
+        self.body_read = body_read
+        self._body = body
+        self.text = ""
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def iter_bytes(self, chunk_size=None):
+        for chunk in self.chunks:
+            if self.body_read is not None:
+                self.body_read()
+            yield chunk
+
+    def json(self):
+        if self._body is None:
+            raise ValueError("no JSON")
+        return self._body
+
+
+class StreamingHubClient:
+    def __init__(self, response):
+        self.response = response
+
+    def stream(self, method, path, **kwargs):
+        return self.response
+
+    def get(self, path, **kwargs):
+        return self.response
+
+    def post(self, path, **kwargs):
+        raise AssertionError("unexpected POST")
+
+
+def test_download_refuses_object_over_ceiling_by_content_length():
+    response = StreamingResponse(
+        [b"must not read"],
+        headers={"content-length": "9", "etag": "e"},
+        body_read=lambda: pytest.fail("body was read"),
+    )
+    store = SmallSeaStore(
+        "session", client=StreamingHubClient(response), max_download_bytes=8
+    )
+    with pytest.raises(DownloadTooLargeError) as exc:
+        store.get_link("large")
+    assert exc.value.path == link_path("large")
+    assert exc.value.limit == 8
+
+
+def test_download_refuses_stream_that_exceeds_ceiling_without_content_length():
+    response = StreamingResponse([b"1234", b"5678", b"9"])
+    store = SmallSeaStore(
+        "session", client=StreamingHubClient(response), max_download_bytes=8
+    )
+    with pytest.raises(DownloadTooLargeError):
+        store.get_link("large")
+
+
+def test_truncated_stream_is_transport_error_not_absence():
+    response = StreamingResponse(
+        [b"short"], headers={"content-length": "10"}
+    )
+    store = SmallSeaStore("session", client=StreamingHubClient(response))
+    with pytest.raises(StoreTransportError):
+        store.get_link("truncated")
+
+
+def test_missing_object_still_reported_as_missing():
+    response = StreamingResponse(
+        [], status_code=404, body={"detail": "missing"}
+    )
+    store = SmallSeaStore("session", client=StreamingHubClient(response))
+    with pytest.raises(ObjectNotFoundError):
+        store.get_link("missing")
+
+
+def test_download_bundle_streams_to_local_path(scratch_dir):
+    response = StreamingResponse(
+        [b"first", b" second"], headers={"content-length": "12"}
+    )
+    store = SmallSeaStore("session", client=StreamingHubClient(response))
+    output = pathlib.Path(scratch_dir) / "bundle"
+    store.download_bundle("B1", output)
+    assert output.read_bytes() == b"first second"
 
 
 @pytest.mark.parametrize(

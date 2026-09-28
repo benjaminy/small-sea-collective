@@ -246,7 +246,7 @@ def test_exact_logical_path_strings_survive_the_http_boundary(routed):
     for path in paths:
         response = get(env, token, "/cloud_file", path=path)
         assert response.status_code == 200
-        assert base64.b64decode(response.json()["data"]) == f"object at {path}".encode()
+        assert response.content == f"object at {path}".encode()
 
     # Two strings a provider might treat as aliases are two different objects.
     env.stored["café"] = env.stored["café"]
@@ -270,7 +270,7 @@ def test_a_peer_read_expects_the_teammate_the_request_named(routed):
         teammate_id=env.alice_teammate.hex(),
     )
     assert accepted.status_code == 200
-    assert base64.b64decode(accepted.json()["data"]) == b"Alice's object"
+    assert accepted.content == b"Alice's object"
 
     # The same bytes, offered as another teammate's publication.
     refused = get(
@@ -380,7 +380,7 @@ def test_a_new_invitee_waits_for_its_own_accepted_ownership_row(routed):
     _record_ownership(env.bob_db, device, env.bob_teammate)
     resolved = get(env, bob_token, "/cloud_file", path=OBJECT_PATH)
     assert resolved.status_code == 200
-    assert base64.b64decode(resolved.json()["data"]) == b"Bob's object"
+    assert resolved.content == b"Bob's object"
 
 
 def test_a_contradicted_association_still_prevents_acceptance(routed):
@@ -410,7 +410,7 @@ def test_note_to_self_keeps_its_separate_passthrough_contract(routed):
     )
     assert put(env, passthrough, OBJECT_PATH, b"raw bytes").status_code == 200
     response = get(env, passthrough, "/cloud_file", path=OBJECT_PATH)
-    assert base64.b64decode(response.json()["data"]) == b"raw bytes"
+    assert response.content == b"raw bytes"
 
     # There is no ownership projection to consult, which the Hub reports as its
     # own outcome rather than as an empty mapping that would wave reads through.

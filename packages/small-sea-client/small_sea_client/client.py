@@ -517,10 +517,22 @@ class SmallSeaSession:
 
         Raises SmallSeaNotFound if no file exists at path.
         """
-        result = self._client._get(
-            "/cloud_file", params={"path": path}, token=self._token
-        )
-        return base64.b64decode(result["data"]), result["etag"]
+        headers = {"Authorization": f"Bearer {self._token}"}
+        try:
+            if self._client._http_client is not None:
+                resp = self._client._http_client.get(
+                    "/cloud_file", params={"path": path}, headers=headers
+                )
+            else:
+                resp = httpx.get(
+                    f"{self._client._base_url}/cloud_file",
+                    params={"path": path},
+                    headers=headers,
+                )
+        except httpx.ConnectError:
+            raise SmallSeaHubUnavailable()
+        _check_response(resp)
+        return resp.content, resp.headers["etag"]
 
     # ---- Sync notifications ----
 

@@ -752,10 +752,8 @@ Errors:
 
 **`GET /cloud_file?path=<remote path>`** — Download a file.
 
-Response:
-```json
-{ "ok": true, "data": "<base64>", "etag": "<etag>" }
-```
+Response: the object bytes as `application/octet-stream`, with the object's
+etag in the `ETag` header.
 
 Errors:
 
@@ -775,7 +773,8 @@ teammate's readable location solely through the newest valid
 `teammate_berth_storage_announcement` for `(teammate_id, session.berth_id)`.
 There is no `team_device` transport fallback.
 
-Response: same as `GET /cloud_file`.
+Response: the object bytes as `application/octet-stream`, with the object's
+etag in the `ETag` header.
 
 Errors: `404` if peer not found or file not found.
 

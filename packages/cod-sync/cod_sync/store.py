@@ -95,6 +95,15 @@ class StoreTransportError(StoreError):
     """The request did not complete: connection, timeout, or similar."""
 
 
+class DownloadTooLargeError(StoreError):
+    """The named object exceeds the configured download byte ceiling."""
+
+    def __init__(self, path: str, limit: int):
+        self.path = path
+        self.limit = limit
+        super().__init__(f"{path}: download exceeds byte limit of {limit}")
+
+
 class MalformedStoreResponseError(StoreError):
     """The transport answered, but not with something this store can read."""
 
@@ -382,16 +391,28 @@ class _HubStore:
     single place where a status code becomes a typed result.
     """
 
-    def __init__(self, session_hex: str, base_url: str, client=None, path_prefix: str = ""):
+    def __init__(
+        self,
+        session_hex: str,
+        base_url: str,
+        client=None,
+        path_prefix: str = "",
+        max_download_bytes: int = 256 * 1024 * 1024,
+    ):
         self.session_hex = session_hex
         self._auth = {"Authorization": f"Bearer {session_hex}"}
         self._path_prefix = path_prefix
+        self._max_download_bytes = max_download_bytes
         if client is not None:
             self._http_get = client.get
             self._http_post = client.post
+            self._http_stream = lambda path, **kw: client.stream("GET", path, **kw)
         else:
             self._http_get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
             self._http_post = lambda path, **kw: requests.post(f"{base_url}{path}", **kw)
+            self._http_stream = lambda path, **kw: requests.get(
+                f"{base_url}{path}", stream=True, **kw
+            )
 
     # -- endpoint hooks -- #
 
@@ -442,19 +463,48 @@ class _HubStore:
             raise StoreTransportError(f"request failed: {exc}") from exc
 
     def _download(self, cloud_path: str) -> Tuple[bytes, Optional[str]]:
+        data = bytearray()
+        etag = self._read_download(cloud_path, lambda chunk: data.extend(chunk))
+        return self._transform_download(bytes(data)), etag
+
+    def _read_download(self, cloud_path: str, write_chunk) -> Optional[str]:
         endpoint, params = self._download_endpoint(cloud_path)
-        resp = self._send(self._http_get, endpoint, params=params, headers=self._auth)
-        if resp.status_code != 200:
-            raise self._classify(resp, cloud_path)
         try:
-            body = resp.json()
-            data = base64.b64decode(body["data"])
-            etag = body.get("etag")
+            with self._send(
+                self._http_stream, endpoint, params=params, headers=self._auth
+            ) as resp:
+                if resp.status_code != 200:
+                    if hasattr(resp, "read"):
+                        resp.read()
+                    raise self._classify(resp, cloud_path)
+                content_type = resp.headers.get("content-type", "").split(";", 1)[0]
+                if content_type != "application/octet-stream":
+                    raise MalformedStoreResponseError(
+                        f"{cloud_path}: expected application/octet-stream, got {content_type!r}"
+                    )
+                length = resp.headers.get("content-length")
+                expected = int(length) if length is not None else None
+                if expected is not None and expected > self._max_download_bytes:
+                    raise DownloadTooLargeError(cloud_path, self._max_download_bytes)
+                total = 0
+                if hasattr(resp, "iter_bytes"):
+                    chunks = resp.iter_bytes(chunk_size=64 * 1024)
+                else:
+                    chunks = resp.iter_content(chunk_size=64 * 1024)
+                for chunk in chunks:
+                    total += len(chunk)
+                    if total > self._max_download_bytes:
+                        raise DownloadTooLargeError(cloud_path, self._max_download_bytes)
+                    write_chunk(chunk)
+                if expected is not None and total != expected:
+                    raise StoreTransportError(
+                        f"{cloud_path}: response ended at {total} of {expected} bytes"
+                    )
+                return resp.headers.get("etag")
+        except StoreError:
+            raise
         except Exception as exc:
-            raise MalformedStoreResponseError(
-                f"{cloud_path}: unreadable Hub response: {exc}"
-            ) from exc
-        return self._transform_download(data), etag
+            raise StoreTransportError(f"{cloud_path}: download failed: {exc}") from exc
 
     # -- reads -- #
 
@@ -465,9 +515,14 @@ class _HubStore:
         return self._download(link_path(link_uid))[0]
 
     def download_bundle(self, bundle_uid: str, local_path) -> None:
-        data, _etag = self._download(bundle_path(bundle_uid))
+        cloud_path = bundle_path(bundle_uid)
+        chunks = [] if getattr(self, "_download_transform", None) is not None else None
         with open(local_path, "wb") as handle:
-            handle.write(data)
+            if chunks is None:
+                self._read_download(cloud_path, handle.write)
+            else:
+                self._read_download(cloud_path, chunks.append)
+                handle.write(self._transform_download(b"".join(chunks)))
 
 
 class SmallSeaStore(_HubStore):
@@ -483,8 +538,15 @@ class SmallSeaStore(_HubStore):
         base_url: str = "http://localhost:11437",
         client=None,
         path_prefix: str = "",
+        max_download_bytes: int = 256 * 1024 * 1024,
     ):
-        super().__init__(session_hex, base_url, client=client, path_prefix=path_prefix)
+        super().__init__(
+            session_hex,
+            base_url,
+            client=client,
+            path_prefix=path_prefix,
+            max_download_bytes=max_download_bytes,
+        )
 
     def _download_endpoint(self, cloud_path: str):
         return "/cloud_file", {"path": self._path_prefix + cloud_path}

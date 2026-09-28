@@ -380,11 +380,8 @@ def test_download_returns_data_and_etag(session):
     respx.get(f"{BASE_URL}/cloud_file").mock(
         return_value=httpx.Response(
             200,
-            json={
-                "ok": True,
-                "data": base64.b64encode(content).decode(),
-                "etag": "etag-xyz",
-            },
+            content=content,
+            headers={"etag": "etag-xyz"},
         )
     )
     data, etag = session.download("notes/hello.txt")
@@ -405,8 +402,7 @@ def test_download_not_found(session):
 def test_download_sends_path_param(session):
     route = respx.get(f"{BASE_URL}/cloud_file").mock(
         return_value=httpx.Response(
-            200,
-            json={"ok": True, "data": base64.b64encode(b"x").decode(), "etag": "e"},
+            200, content=b"x", headers={"etag": "e"}
         )
     )
     session.download("sub/dir/file.txt")

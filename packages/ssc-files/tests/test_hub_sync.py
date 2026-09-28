@@ -900,7 +900,7 @@ def test_push_succeeds_when_only_the_registry_is_unchanged(
 def _record_hub_requests(http):
     """Record (method, path) of every request sent through the TestClient."""
     calls = []
-    real_get, real_post = http.get, http.post
+    real_get, real_post, real_stream = http.get, http.post, http.stream
 
     def get(url, *a, **k):
         calls.append(("GET", url))
@@ -910,7 +910,11 @@ def _record_hub_requests(http):
         calls.append(("POST", url))
         return real_post(url, *a, **k)
 
-    http.get, http.post = get, post
+    def stream(method, url, *a, **k):
+        calls.append((method.upper(), url))
+        return real_stream(method, url, *a, **k)
+
+    http.get, http.post, http.stream = get, post, stream
     return calls
 
 

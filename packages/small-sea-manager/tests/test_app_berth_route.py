@@ -74,7 +74,7 @@ def test_files_berth_route_lets_a_files_session_write_and_read(
     assert resp.json()["ok"] is True
     resp = http.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)
     assert resp.status_code == 200, resp.text
-    assert base64.b64decode(resp.json()["data"]) == content
+    assert resp.content == content
 
 
 def _pin_session(http, app_name, team, mode="encrypted"):
@@ -135,7 +135,7 @@ def test_pin_confirmed_core_session_sets_up_the_files_berth(
     )
     assert resp.status_code == 200, resp.text
     resp = http.get("/cloud_file", params={"path": "a.txt"}, headers=auth)
-    assert base64.b64decode(resp.json()["data"]) == b"pin"
+    assert resp.content == b"pin"
 
 
 def test_manager_berth_setup_rejects_a_berth_from_another_team(

@@ -12,7 +12,7 @@ import pathlib
 
 import pydantic
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 from small_sea_manager import admission_events as AdmissionEvents
 import small_sea_manager.provisioning as Provisioning
@@ -585,6 +585,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+
+def _object_response(data: bytes, etag: Optional[str]):
+    headers = {"ETag": etag} if etag is not None else {}
+    return Response(content=data, media_type="application/octet-stream", headers=headers)
 
 
 @app.exception_handler(SmallSeaNotFoundExn)
@@ -1176,8 +1181,6 @@ async def upload_to_cloud(
 
 @app.get("/cloud_file")
 async def download_from_cloud(path: str, session_hex: str = Depends(_require_session)):
-    import base64
-
     small_sea = app.state.backend
     try:
         ok, data, etag = small_sea.download_from_cloud(session_hex, path)
@@ -1187,7 +1190,7 @@ async def download_from_cloud(path: str, session_hex: str = Depends(_require_ses
         return _publication_failure_response(exn)
     if not ok:
         return _download_failure_response(path, etag)
-    return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
+    return _object_response(data, etag)
 
 
 @app.get("/berth_source/inspect")
@@ -1203,8 +1206,6 @@ async def inspect_berth_source_candidate(
     from this device's own retained evidence, so this endpoint cannot be
     pointed at a location nobody announced.
     """
-    import base64
-
     small_sea = app.state.backend
     try:
         ok, data, etag = small_sea.inspect_berth_source_candidate(
@@ -1216,7 +1217,7 @@ async def inspect_berth_source_candidate(
         return _publication_failure_response(exn)
     if not ok:
         return _download_failure_response(path, etag)
-    return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
+    return _object_response(data, etag)
 
 
 @app.post("/cloud/setup")
@@ -1266,8 +1267,6 @@ async def download_peer_cloud_file(
     path: str,
     session_hex: str = Depends(_require_session),
 ):
-    import base64
-
     small_sea = app.state.backend
     try:
         ok, data, etag = small_sea.download_from_peer(session_hex, teammate_id, path)
@@ -1282,7 +1281,7 @@ async def download_peer_cloud_file(
         return _publication_failure_response(exn)
     if not ok:
         return _download_failure_response(path, etag)
-    return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
+    return _object_response(data, etag)
 
 
 @app.get("/cloud_proxy")
@@ -1300,13 +1299,11 @@ async def proxy_cloud_file(
     Hub authenticates and uses its own credentials — the client never talks to
     cloud storage directly.
     """
-    import base64
-
     small_sea = app.state.backend
     ok, data, etag = small_sea.proxy_cloud_file(session_hex, protocol, url, bucket, path)
     if not ok:
         return _download_failure_response(path, etag)
-    return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
+    return _object_response(data, etag)
 
 
 @app.get("/bootstrap/cloud_file")
@@ -1314,12 +1311,10 @@ async def bootstrap_cloud_file(
     path: str,
     session_hex: str = Depends(_require_bootstrap_session),
 ):
-    import base64
-
     ok, data, etag = app.state.backend.bootstrap_cloud_file(session_hex, path)
     if not ok:
         return _download_failure_response(path, etag)
-    return {"ok": True, "data": base64.b64encode(data).decode(), "etag": etag}
+    return _object_response(data, etag)
 
 
 @app.get("/peer_signal")

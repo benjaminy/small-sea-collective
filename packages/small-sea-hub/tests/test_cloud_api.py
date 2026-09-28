@@ -97,6 +97,26 @@ def _derive_bucket_name(playground_dir, session_hex):
     return allocation["location"]
 
 
+def test_hub_cloud_file_returns_raw_bytes_and_etag_header(test_env, monkeypatch):
+    session_hex = _open_session(test_env["client"])
+    monkeypatch.setattr(
+        test_env["backend"],
+        "download_from_cloud",
+        lambda *_: (True, b"raw object bytes", '"etag-1"'),
+    )
+
+    response = test_env["client"].get(
+        "/cloud_file",
+        params={"path": "object"},
+        headers={"Authorization": f"Bearer {session_hex}"},
+    )
+
+    assert response.status_code == 200
+    assert response.content == b"raw object bytes"
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert response.headers["etag"] == '"etag-1"'
+
+
 def _create_bucket(minio, bucket_name):
     s3 = boto3.client(
         "s3",
@@ -166,9 +186,9 @@ def test_upload_and_download(test_env):
     # 5. Download the file
     resp = client.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)
     assert resp.status_code == 200
-    dl_result = resp.json()
-    assert dl_result["ok"] is True
-    downloaded = base64.b64decode(dl_result["data"])
+    downloaded = resp.content
+    assert resp.headers["content-type"] == "application/octet-stream"
+    assert resp.headers["etag"] == upload_result["etag"]
     assert downloaded == content
 
     # 6. Upload a second file, download both
@@ -184,10 +204,10 @@ def test_upload_and_download(test_env):
     assert resp.status_code == 200
 
     resp = client.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)
-    assert base64.b64decode(resp.json()["data"]) == content
+    assert resp.content == content
 
     resp = client.get("/cloud_file", params={"path": "notes/todo.txt"}, headers=auth)
-    assert base64.b64decode(resp.json()["data"]) == content2
+    assert resp.content == content2
 
     # 7. Overwrite first file, verify new content
     new_content = b"updated greeting"
@@ -202,7 +222,7 @@ def test_upload_and_download(test_env):
     assert resp.status_code == 200
 
     resp = client.get("/cloud_file", params={"path": "greeting.txt"}, headers=auth)
-    assert base64.b64decode(resp.json()["data"]) == new_content
+    assert resp.content == new_content
 
     raw = _read_bucket_object(minio, bucket_name, "greeting.txt")
     assert raw == new_content
@@ -1028,7 +1048,7 @@ def test_hub_own_storage_accepts_a_repaired_and_a_replaced_allocation(test_env):
         assert upload.status_code == 200, upload.text
         download = client.get("/cloud_file", params={"path": "core.txt"}, headers=auth)
         assert download.status_code == 200
-        return base64.b64decode(download.json()["data"])
+        return download.content
 
     assert _publish_and_round_trip(b"first") == b"first"
 
