@@ -54,6 +54,7 @@ from small_sea_note_to_self.db import (
     note_to_self_sync_db_path,
 )
 from small_sea_manager import berth_source_decision
+from small_sea_manager.git_signing import nts_signed_repo
 from splice_merge.core import (
     AmbiguousRowKeyError,
     apply_delta,
@@ -191,6 +192,7 @@ def commit_core_db(root_dir, participant_hex, repo: Repo, message: str) -> Optio
     produced these rows, and its own transaction, finished before this call.
     """
     with write_reservation(root_dir, participant_hex):
+        repo = nts_signed_repo(root_dir, participant_hex, repo)
         repo.stage([SHARED_DB_FILENAME])
         return repo.commit(message)
 
@@ -590,6 +592,7 @@ def _record_merge(root_dir, participant_hex, repo: Repo, local_head: str, source
     ref movement happen after the reservation is released; a Hub write that
     lands then is preserved as the next ordinary local change.
     """
+    repo = nts_signed_repo(root_dir, participant_hex, repo)
     with write_reservation(root_dir, participant_hex):
         repo.stage([SHARED_DB_FILENAME])
         tree = repo.write_tree()

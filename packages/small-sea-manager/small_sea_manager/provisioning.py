@@ -119,6 +119,7 @@ from small_sea_note_to_self.bootstrap import (
 )
 from small_sea_manager import berth_authority, berth_source_decision
 from small_sea_manager import note_to_self_sync
+from small_sea_manager.git_signing import core_signed_repo
 from small_sea_manager.constitution_projection import (
     record_integration_mode_change,
     record_key_certificate,
@@ -1768,7 +1769,7 @@ def _publish_local_device_prekey_bundle(
         finally:
             engine.dispose()
         if commit_message is not None:
-            repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+            repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
             repo.stage(["core.db"])
             repo.commit(commit_message)
 
@@ -3137,7 +3138,7 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     finally:
         engine.dispose()
     if cert_inserted:
-        repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+        repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
         repo.stage(["core.db"])
         repo.commit("Received device link cert from bootstrap")
 
@@ -4732,7 +4733,7 @@ def remove_teammate(root_dir, participant_hex, team_name, teammate):
         engine.dispose()
 
     team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     repo.stage(["core.db"])
     repo.commit(f"Removed teammate {removed_teammate_id.hex()}")
 
@@ -4878,7 +4879,7 @@ def set_teammate_integration_mode(
     finally:
         engine.dispose()
 
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     repo.stage(["core.db"])
     repo.commit(f"Set integration mode for teammate {teammate_id.hex()} on berth {berth_id.hex()}")
 
@@ -5034,7 +5035,7 @@ def issue_device_link_for_teammate(root_dir, participant_hex, team_name, linked_
     finally:
         engine.dispose()
 
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     repo.stage(["core.db"])
     repo.commit("Linked additional team device")
     return cert
@@ -5264,7 +5265,7 @@ def ensure_signing_is_set_up(root_dir, participant_hex, team_name, berth_id) -> 
                 record_workhorse_delegation(conn, delegation, private_key)
                 conn.commit()
                 conn.exec_driver_sql("BEGIN IMMEDIATE")
-                repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+                repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
                 repo.stage(["core.db"])
                 repo.commit(f"Delegate berth {berth_id.hex()} to workhorse key")
             finally:
@@ -5460,7 +5461,7 @@ def delegate_workhorse_key(root_dir, participant_hex, team_name, berth_id) -> by
             record_workhorse_delegation(conn, delegation, private_key)
     finally:
         engine.dispose()
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     repo.stage(["core.db"])
     repo.commit(f"Delegate berth {berth_id.hex()} to workhorse key")
     return delegation.record_id
@@ -5575,7 +5576,10 @@ def create_team(root_dir, participant_hex, team_name):
             )
 
     # --- Git init ---
-    repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
+    repo = core_signed_repo(
+        root_dir, participant_hex, team_name,
+        _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir),
+    )
     _install_sqlite_merge_driver(team_sync_dir)
     repo.stage(["core.db", ".gitattributes"])
     repo.commit(f"New team: {team_name}")
@@ -5741,7 +5745,7 @@ def activate_app_for_team(root_dir, participant_hex, team_name, app_name):
     engine.dispose()
 
     if changed:
-        repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+        repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
         repo.stage(["core.db"])
         repo.commit(f"Activated app {app_name}")
 
@@ -5905,7 +5909,7 @@ def create_invitation(
     ).hex()
     token_b64 = _tokenize(token_data)
 
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     repo.stage(["core.db"])
     repo.commit("Created admission proposal")
 
@@ -6544,7 +6548,7 @@ def complete_invitation_acceptance(
     if failure_reason is not None:
         raise ValueError(failure_reason)
 
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     repo.stage(["core.db"])
     repo.commit("Recorded admission acceptance")
     package_token = None
@@ -6761,7 +6765,7 @@ def import_admission_package(root_dir, participant_hex, team_name, package_bytes
                 )
                 conn.commit()
                 conn.exec_driver_sql("BEGIN IMMEDIATE")
-                repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+                repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
                 repo.stage(["core.db"])
                 repo.commit("Imported admission package")
             finally:
@@ -6775,7 +6779,7 @@ def integrate_core_events(root_dir, participant_hex, team_name, head_sha) -> dic
     """Union the signed Constitution events stored in one parked Core commit."""
     root_dir = pathlib.Path(root_dir)
     team_sync_dir = _team_sync_dir(root_dir, participant_hex, team_name)
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     with tempfile.NamedTemporaryFile() as source_file:
         try:
             repo.blob_at(head_sha, "core.db", source_file.name)
@@ -6907,7 +6911,7 @@ def endorse_admission(root_dir, participant_hex, team_name, proposal_id_hex):
         engine.dispose()
     if failure_reason is not None:
         raise ValueError(failure_reason)
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     repo.stage(["core.db"])
     repo.commit("Recorded admission endorsement")
 
@@ -6993,7 +6997,7 @@ def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
         engine.dispose()
     if failure_reason is not None:
         raise ValueError(failure_reason)
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     repo.stage(["core.db"])
     repo.commit("Finalized admission proposal")
     acceptance_record_id = acceptance_row[0]
@@ -7747,7 +7751,7 @@ def revoke_invitation(root_dir, participant_hex, team_name, invitation_id_hex):
         )
     engine.dispose()
     team_sync_dir = root_dir / "Participants" / participant_hex / team_name / "Sync"
-    repo = _Repo(team_sync_dir / ".git", team_sync_dir)
+    repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     repo.stage(["core.db"])
     repo.commit("Revoked admission proposal")
 
