@@ -98,3 +98,21 @@ def test_posting_a_garbage_token_shows_a_notice_not_a_500(playground_dir):
     )
     assert response.status_code == 200
     assert "Package rejected" in response.text
+
+
+def test_web_completion_accepts_the_invitee_managers_courier_token(playground_dir):
+    """The token Bob's Manager hands out (courier with route) completes on Alice's page."""
+    from test_invitation_route_delivery import _invite, _prepared_bob, _setup
+
+    root = pathlib.Path(playground_dir)
+    alice_hex, bob_hex, alice_cloud = _setup(root)
+    token = _invite(root, alice_hex, alice_cloud)
+    courier = _prepared_bob(root, alice_cloud, alice_hex, bob_hex, token)
+
+    client = TestClient(create_app(root, alice_hex))
+    response = client.post(
+        f"/teams/{TEAM}/complete-acceptance", data={"acceptance_token": courier}
+    )
+    assert response.status_code == 200
+    package_token = _token_box_text(response.text)
+    assert provisioning.decode_admission_package_token(package_token) is not None
