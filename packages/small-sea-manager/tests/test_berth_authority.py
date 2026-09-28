@@ -413,3 +413,200 @@ def test_removal_changes_view_identifier():
     assert team.view(removals=[first]).identifier != team.view().identifier
     assert team.view(removals=[first]).identifier != team.view(removals=[second]).identifier
     assert team.view(removals=[first, second]) == team.view(removals=[second, first, first])
+
+
+def _grant_both(team, author_id, author, private, target):
+    for berth in (BERTH, OTHER_BERTH):
+        team.modes.append(_mode(author_id, author, private, target, berth, "automatic"))
+
+
+def _enroll(team, teammate_id, issuer_id=None, issuer=None, private=None):
+    key, secret = _device()
+    team.certs.append(issue_membership_cert(
+        key, issuer or team.alice, private or team.alice_private, TEAM,
+        issuer_id or team.alice_id, teammate_id,
+    ))
+    return key, secret
+
+
+def test_mutual_removal_is_disputed_and_pauses_both():
+    team = Team()
+    _grant_both(team, team.alice_id, team.alice, team.alice_private, team.bob_id)
+    removals = [_removal(team), _removal(
+        team, team.bob_id, team.bob.public_key, team.alice_id, b"S" * 32)]
+    keys = [team.delegate(team.alice_id, team.alice_private),
+            team.delegate(team.bob_id, team.bob_private)]
+    view = team.view(removals=removals)
+    assert view.effective_removals == ()
+    assert view.disputed_removals == tuple(r.event_id for r in removals)
+    assert view.anchor_removals_pending == (removals[1].event_id,)
+    assert view.trusted_keys == team.view().trusted_keys
+    for teammate in (team.alice_id, team.bob_id):
+        for berth in (BERTH, OTHER_BERTH):
+            assert view.holds(teammate, berth) is Standing.AMBIGUOUS
+    for key in keys:
+        assert _judge(view, key).result is R.AMBIGUOUS_AUTHORITY
+
+
+def test_removal_undermining_its_own_author_is_disputed():
+    team = Team()
+    carol_id = b"C" * 16
+    carol, _ = _enroll(team, carol_id)
+    _grant_both(team, team.alice_id, team.alice, team.alice_private, team.bob_id)
+    _grant_both(team, team.bob_id, team.bob, team.bob_private, carol_id)
+    removal = _removal(team, carol_id, carol.public_key, team.bob_id)
+    assert team.view().holds(carol_id, OTHER_BERTH) is Standing.HELD
+    view = team.view(removals=[removal])
+    assert view.effective_removals == ()
+    assert view.disputed_removals == (removal.event_id,)
+    assert view.anchor_removals_pending == ()
+    for teammate in (team.bob_id, carol_id):
+        for berth in (BERTH, OTHER_BERTH):
+            assert view.holds(teammate, berth) is Standing.AMBIGUOUS
+    assert view.holds(team.alice_id, OTHER_BERTH) is Standing.HELD
+
+
+def test_independent_removals_both_take_effect():
+    team = Team()
+    _grant_both(team, team.alice_id, team.alice, team.alice_private, team.bob_id)
+    carol_id, dan_id = b"C" * 16, b"D" * 16
+    for target in (carol_id, dan_id):
+        _enroll(team, target)
+    removals = [_removal(team, target=carol_id),
+                _removal(team, team.bob_id, team.bob.public_key, dan_id, b"S" * 32)]
+    view = team.view(removals=removals)
+    assert view.effective_removals == tuple(r.event_id for r in removals)
+    assert view.disputed_removals == view.anchor_removals_pending == ()
+    assert carol_id not in view.trusted_keys
+    assert dan_id not in view.trusted_keys
+    for author in (team.alice_id, team.bob_id):
+        assert view.holds(author, OTHER_BERTH) is Standing.HELD
+
+
+def test_anchor_removal_needs_local_resolution():
+    team = Team()
+    _grant_both(team, team.alice_id, team.alice, team.alice_private, team.bob_id)
+    removal = _removal(team, team.bob_id, team.bob.public_key, team.alice_id)
+    before = team.view()
+    view = team.view(removals=[removal])
+    assert view.effective_removals == view.disputed_removals == ()
+    assert view.anchor_removals_pending == (removal.event_id,)
+    assert view.trusted_keys == before.trusted_keys
+    for berth in (BERTH, OTHER_BERTH):
+        assert view.holds(team.alice_id, berth) is Standing.AMBIGUOUS
+    assert view.identifier != before.identifier
+    other = _removal(team, team.bob_id, team.bob.public_key, team.alice_id, b"S" * 32)
+    assert team.view(removals=[other]).identifier != view.identifier
+    # Existing local anchor selection changes which teammate needs resolution.
+    team.certs.append(issue_membership_cert(
+        team.bob, team.bob, team.bob_private, TEAM, team.bob_id, team.bob_id))
+    resolved = team.view(anchor=team.bob.public_key, removals=[removal])
+    assert resolved.anchor_removals_pending == ()
+    assert resolved.effective_removals == (removal.event_id,)
+    assert resolved.holds(team.bob_id, OTHER_BERTH) is Standing.HELD
+
+
+def test_berth_may_end_without_integrator():
+    team = Team()
+    _grant_both(team, team.alice_id, team.alice, team.alice_private, team.bob_id)
+    # The anchor is already ambiguous on Files; Bob has an independent Core grant.
+    team.modes.append(_mode(team.alice_id, team.alice, team.alice_private,
+                            team.alice_id, BERTH, "proposal-only"))
+    removal = _removal(team)
+    view = team.view(removals=[removal])
+    assert view.effective_removals == (removal.event_id,)
+    assert view.disputed_removals == ()
+    assert view.holds(team.bob_id, BERTH) is None
+    assert not any(berth == BERTH and standing is Standing.HELD
+                   for (_, berth), standing in view.standing.items())
+
+
+def test_dispute_result_is_order_independent():
+    from itertools import permutations
+    team = Team()
+    carol_id, dan_id, eve_id = b"C" * 16, b"D" * 16, b"E" * 16
+    carol, _ = _enroll(team, carol_id)
+    for target in (dan_id, eve_id):
+        _enroll(team, target)
+    for target in (team.bob_id, carol_id):
+        _grant_both(team, team.alice_id, team.alice, team.alice_private, target)
+    removals = [
+        _removal(team, team.bob_id, team.bob.public_key, carol_id),
+        _removal(team, carol_id, carol.public_key, team.bob_id, b"S" * 32),
+        _removal(team, team.bob_id, team.bob.public_key, dan_id, b"U" * 32),
+        _removal(team, target=eve_id, event_id=b"V" * 32),
+    ]
+    expected = team.view(removals=removals)
+    assert expected.disputed_removals == tuple(r.event_id for r in removals[:3])
+    assert expected.effective_removals == (removals[3].event_id,)
+    assert expected.holds(dan_id, BERTH) is None  # A dispute grants no new standing.
+    for ordered in permutations(removals):
+        assert team.view(removals=ordered) == expected
+    assert team.view(removals=removals + removals) == expected
+
+
+def test_disputed_removals_change_view_identifier():
+    team = Team()
+    _grant_both(team, team.alice_id, team.alice, team.alice_private, team.bob_id)
+    first = _removal(team)
+    second = _removal(team, team.bob_id, team.bob.public_key, team.alice_id, b"S" * 32)
+    view = team.view(removals=[first, second])
+    assert view.identifier != team.view().identifier
+    replacement = _removal(team, event_id=b"U" * 32)
+    other = team.view(removals=[replacement, second])
+    assert other.standing == view.standing
+    assert other.trusted_keys == view.trusted_keys
+    assert other.identifier != view.identifier
+
+
+def test_removal_losing_only_its_signer_trust_is_disputed():
+    team = Team()
+    carol_id = b"C" * 16
+    carol, _ = _enroll(team, carol_id, team.bob_id, team.bob, team.bob_private)
+    # Another Carol key survives independently, so standing alone would pass.
+    other_carol, _ = _enroll(team, carol_id)
+    _grant_both(team, team.alice_id, team.alice, team.alice_private, carol_id)
+    removal = _removal(team, carol_id, carol.public_key, team.bob_id)
+    surviving_signer = _removal(team, carol_id, other_carol.public_key, team.bob_id)
+    assert team.view(removals=[surviving_signer]).effective_removals == (removal.event_id,)
+    view = team.view(removals=[removal])
+    assert view.effective_removals == ()
+    assert view.disputed_removals == (removal.event_id,)
+    assert view.holds(carol_id, OTHER_BERTH) is Standing.AMBIGUOUS
+
+
+def test_removal_targeting_a_disputed_author_joins_the_dispute():
+    team = Team()
+    carol_id = b"C" * 16
+    carol, _ = _enroll(team, carol_id)
+    for target in (team.bob_id, carol_id):
+        _grant_both(team, team.alice_id, team.alice, team.alice_private, target)
+    removals = [
+        _removal(team, team.bob_id, team.bob.public_key, carol_id),
+        _removal(team, carol_id, carol.public_key, team.bob_id, b"S" * 32),
+        _removal(team, event_id=b"U" * 32),
+    ]
+    view = team.view(removals=removals)
+    # Alice survives the trial removal, but she targets a failing author.
+    assert view.effective_removals == ()
+    assert view.disputed_removals == tuple(r.event_id for r in removals)
+    assert view.holds(team.alice_id, OTHER_BERTH) is Standing.AMBIGUOUS
+
+
+def test_removal_rechecks_authors_paused_by_an_earlier_iteration():
+    team = Team()
+    carol_id, dan_id = b"C" * 16, b"D" * 16
+    dependent_key, _ = _enroll(team, carol_id, team.bob_id, team.bob, team.bob_private)
+    independent_key, _ = _enroll(team, carol_id)
+    _enroll(team, dan_id)
+    _grant_both(team, team.alice_id, team.alice, team.alice_private, carol_id)
+    removals = [
+        _removal(team, carol_id, dependent_key.public_key, team.bob_id),
+        _removal(team, carol_id, independent_key.public_key, dan_id, b"S" * 32),
+    ]
+    # Only the first loses its signer in the initial trial; the second works alone.
+    assert team.view(removals=[removals[1]]).effective_removals == (removals[1].event_id,)
+    view = team.view(removals=removals)
+    assert view.effective_removals == ()
+    assert view.disputed_removals == tuple(r.event_id for r in removals)
+    assert dan_id in view.trusted_keys

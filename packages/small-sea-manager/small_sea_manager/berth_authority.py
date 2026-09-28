@@ -30,10 +30,10 @@ Rules of view version 1:
   work under the verifier's own current selection; it says nothing about
   whether the signer had authority when the work was made. The signer's
   `WorkContext.authority_view` is evidence only.
-- A trusted team device may remove another teammate when its author holds
-  unambiguous Core standing in the view before removals.
-  Rebuild trust and standing without the targets or the grants they issued.
-  Self-removals have no effect, and later certificates cannot restore a target.
+- A removal requires a trusted signer and HELD Core standing both before removals and after rebuilding trust without candidate targets or their grants.
+  Dependent or competing removals are disputed and have no effect; their authors and targets pause wherever they would otherwise hold standing.
+  Removing the anchor needs explicit local resolution and pauses its standing.
+  Self-removals have no effect, later certificates cannot restore an effectively removed target, and a berth may have no remaining holder.
 - Enrollment grants no workhorse signing authority.
   Only a workhorse delegation (decision D4) lets a workhorse key sign work, and
   only when a device of a teammate holding the berth signed it.
@@ -212,6 +212,9 @@ class TransitionalView:
     trusted_keys: dict          # teammate_id -> frozenset of team-device public keys
     standing: dict              # (teammate_id, berth_id) -> Standing
     delegations: tuple          # accepted WorkhorseDelegation records
+    effective_removals: tuple   # event ids
+    disputed_removals: tuple    # event ids
+    anchor_removals_pending: tuple  # event ids needing local resolution
 
     def holds(self, teammate_id: bytes, berth_id: bytes):
         return self.standing.get((teammate_id, berth_id))
@@ -295,18 +298,57 @@ def build_view(*, team_id, anchor_public_key, certs, mode_changes, delegations,
     berth_ids = set(berth_ids)
     if core_berth_id is not None:
         berth_ids.add(core_berth_id)
-    candidates = []
-    if removals and core_berth_id is not None:
-        before = build_view(
+
+    def rebuild(effective=(), disputed=(), pending=()):
+        return _build_view(
             team_id=team_id, anchor_public_key=anchor_public_key, certs=certs,
             mode_changes=mode_changes, delegations=delegations, berth_ids=berth_ids,
+            candidates=effective, disputed=disputed, pending=pending,
         )
-        candidates = [
-            r for r in removals
-            if r.author_teammate_id != r.teammate_id
-            and r.signer_public_key in before.trusted_keys.get(r.author_teammate_id, ())
-            and before.holds(r.author_teammate_id, core_berth_id) is Standing.HELD
-        ]
+
+    if not removals or core_berth_id is None:
+        return rebuild()
+    before = rebuild()
+    candidates = {
+        r for r in removals
+        if r.author_teammate_id != r.teammate_id
+        and r.signer_public_key in before.trusted_keys.get(r.author_teammate_id, ())
+        and before.holds(r.author_teammate_id, core_berth_id) is Standing.HELD
+    }
+    anchor_teammate = next(
+        (t for t, keys in before.trusted_keys.items() if anchor_public_key in keys), None,
+    )
+    pending = {r for r in candidates if r.teammate_id == anchor_teammate}
+    disputed = set()
+    while candidates:
+        after = rebuild(candidates - pending, disputed, pending)
+        failing = {
+            r for r in candidates
+            if after.holds(r.author_teammate_id, core_berth_id) is not Standing.HELD
+            or r.signer_public_key not in after.trusted_keys.get(r.author_teammate_id, ())
+        }
+        if not failing:
+            break
+        # Close the dispute in both directions along target/author links.
+        connected = set(failing)
+        while True:
+            authors = {r.author_teammate_id for r in connected}
+            targets = {r.teammate_id for r in connected}
+            expanded = connected | {
+                r for r in candidates
+                if r.teammate_id in authors or r.author_teammate_id in targets
+            }
+            if expanded == connected:
+                break
+            connected = expanded
+        disputed.update(connected)
+        candidates.difference_update(connected)
+    return rebuild(candidates - pending, disputed, pending)
+
+
+def _build_view(*, team_id, anchor_public_key, certs, mode_changes, delegations,
+                berth_ids, candidates, disputed, pending):
+    """Rebuild authority from evidence with the selected removal outcomes."""
     targets = {r.teammate_id for r in candidates}
     target_hex = {t.hex() for t in targets}
     certs = [
@@ -319,7 +361,9 @@ def build_view(*, team_id, anchor_public_key, certs, mode_changes, delegations,
     ]
     delegations = [d for d in delegations if d.delegator_teammate_id not in targets]
     anchor_teammate, trusted, digests = _anchored_trust(certs, team_id, anchor_public_key)
-    digests += [hashlib.sha256(b"removal" + r.event_id).digest() for r in candidates]
+    for tag, records in ((b"removal", candidates), (b"disputed-removal", disputed),
+                         (b"anchor-removal-pending", pending)):
+        digests += [hashlib.sha256(tag + r.event_id).digest() for r in records]
 
     verified_modes = []
     for record in mode_changes:
@@ -382,6 +426,12 @@ def build_view(*, team_id, anchor_public_key, certs, mode_changes, delegations,
         (teammate, berth): Standing.HELD if (teammate, berth) in held else Standing.AMBIGUOUS
         for berth, members in holders.items() for teammate in members
     }
+    paused = {t for r in disputed for t in (r.author_teammate_id, r.teammate_id)}
+    paused.update(r.teammate_id for r in pending)
+    standing = {
+        key: Standing.AMBIGUOUS if key[0] in paused else value
+        for key, value in standing.items()
+    }
     digests += [hashlib.sha256(b"mode" + r.canonical() + r.signature).digest() for r in used_modes]
 
     accepted = []
@@ -407,6 +457,9 @@ def build_view(*, team_id, anchor_public_key, certs, mode_changes, delegations,
         trusted_keys={t: frozenset(k) for t, k in trusted.items()},
         standing=standing,
         delegations=tuple(sorted(accepted, key=lambda d: d.record_id)),
+        effective_removals=tuple(sorted({r.event_id for r in candidates})),
+        disputed_removals=tuple(sorted({r.event_id for r in disputed})),
+        anchor_removals_pending=tuple(sorted({r.event_id for r in pending})),
     )
 
 
