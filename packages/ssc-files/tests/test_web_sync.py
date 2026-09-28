@@ -12,7 +12,6 @@ from small_sea_manager.manager import TeamManager, _CORE_APP
 from test_support import (
     accept_and_export,
     acceptance_record_from_courier,
-    publish_storage_announcement_for_session,
 )
 
 
@@ -151,15 +150,12 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
         headers={"Authorization": f"Bearer {bob_team_token}"},
     )
     assert resp.status_code == 200, resp.text
-    # Bob's local team clone is still pre-finalization here (he is admitted
-    # below), so `reconcile_team_route` correctly reports his route pending
-    # ("current_device_untrusted"). TeamManager has no operation for a
-    # participant to pull/merge their own team repo from cloud after being
-    # admitted elsewhere, so this announcement can't be produced through a
-    # real Manager operation at this point in the flow; kept as the test-only
-    # helper.
-    publish_storage_announcement_for_session(backend, bob_team_token)
     Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
+    _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync, alice_manager, "ProjectX")
+    bob_manager.fetch_teammate_core("ProjectX", alice_teammate_id_hex)
+    bob_manager.integrate_core_sources("ProjectX")
+    report = bob_manager.reconcile_team_route("ProjectX", app_name=sync.HUB_APP_NAME)
+    assert report["route"] == "ready", report
 
     return {
         "root": root,
