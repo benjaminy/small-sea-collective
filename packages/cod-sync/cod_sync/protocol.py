@@ -420,6 +420,10 @@ class CodSync:
                     observation_failure=exc,
                 ) from exc
 
+            # Before any upload, a verifier must accept the local history just
+            # as `_observe` made it accept the stored history.
+            self._require_verified(attempted_head)
+
             if observed.head is None:
                 link = Link(
                     link_id=new_uid(),

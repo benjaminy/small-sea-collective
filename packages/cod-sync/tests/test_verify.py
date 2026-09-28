@@ -19,7 +19,26 @@ from cod_sync_test_helpers import (
     public_key_text,
 )
 
-from cod_sync.protocol import MAIN_REF, PublicationIntegrationRequiredError
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from cryptography.hazmat.primitives.serialization import (
+    Encoding,
+    NoEncryption,
+    PrivateFormat,
+    PublicFormat,
+)
+
+from cod_sync.format import (
+    SIGNATURES_KEY,
+    canonical_link_bytes,
+    decode_link,
+    verify_link_signature,
+)
+from cod_sync.protocol import (
+    MAIN_REF,
+    PublicationFailedError,
+    PublicationIntegrationRequiredError,
+)
+from cod_sync.store import StoreProviderError
 from cod_sync.verify import (
     SignatureEvidenceKind,
     SignatureInvalidError,
@@ -258,6 +277,7 @@ def test_merge_side_ancestry_is_verified(scratch_dir, operation):
 
     bob = make_repo(scratch / "bob", "bob")
     store = make_store(scratch / "publication")
+    bob.configure_signing(alice_key)
     commit_file(bob, "local.txt", "local")
     sync = make_cod_sync(bob, store, verifier_for(alice_key))
     before = all_refs(bob)
@@ -487,3 +507,82 @@ def test_good_verdict_from_another_key_set_is_not_accepted(scratch_dir, monkeypa
     with pytest.raises(UnknownSignerError):
         verifier_for(other).verify_history(repo, head)
     assert verifier_for(key).verify_history(repo, head)[head]
+
+
+def test_publish_verifies_local_and_observed_history(scratch_dir):
+    scratch = pathlib.Path(scratch_dir)
+    key = make_ssh_key(scratch, "alice")
+    publication = scratch / "publication"
+
+    # Empty store: an unsigned local history is refused before any upload.
+    unsigned = publisher(scratch, name="unsigned")
+    commit_file(unsigned, "a.txt", "a")
+    with pytest.raises(UnsignedCommitError):
+        make_cod_sync(unsigned, make_store(publication), verifier_for(key)).publish()
+    assert stored_files(publication) == []
+
+    # Empty store: a signed local history publishes.
+    alice = publisher(scratch, key)
+    commit_file(alice, "a.txt", "a")
+    head = make_cod_sync(alice, make_store(publication), verifier_for(key)).publish()
+    assert head.disposition == "published"
+
+    # Store that already holds the objects: the local history is still checked.
+    assert (
+        make_cod_sync(alice, make_store(publication), verifier_for(key)).publish().disposition
+        == "already_present"
+    )
+    with pytest.raises(UnknownSignerError):
+        make_cod_sync(
+            alice, make_store(publication), verifier_for(make_ssh_key(scratch, "other"))
+        ).publish()
+
+    # Retry after a failed head write: the retry verifies again and succeeds.
+    commit_file(alice, "b.txt", "b")
+    sync = make_cod_sync(alice, make_store(publication), verifier_for(key))
+    real_put = sync.store.put_latest_link
+
+    def fail(*args, **kwargs):
+        raise StoreProviderError("head write failed")
+
+    sync.store.put_latest_link = fail
+    with pytest.raises(PublicationFailedError):
+        sync.publish()
+    sync.store.put_latest_link = real_put
+    assert sync.publish().disposition == "published"
+
+    # A later unsigned commit is refused, and the store keeps its files.
+    alice.config("commit.gpgsign", "false")
+    commit_file(alice, "c.txt", "c")
+    before = stored_files(publication)
+    with pytest.raises(UnsignedCommitError):
+        sync.publish()
+    assert stored_files(publication) == before
+
+
+def test_link_signature_cannot_authorize_unsigned_commits(scratch_dir):
+    scratch = pathlib.Path(scratch_dir)
+    key = make_ssh_key(scratch, "alice")
+    publication = scratch / "publication"
+    alice = publisher(scratch)
+    commit_file(alice, "a.txt", "a")
+    device_key = Ed25519PrivateKey.generate()
+    raw = device_key.private_bytes(
+        Encoding.Raw, PrivateFormat.Raw, NoEncryption()
+    )
+    public = device_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+    make_cod_sync(alice, make_store(publication)).publish(
+        signing_key=raw, teammate_id="alice", device_public_key=public
+    )
+
+    # The stored link carries a valid signature.
+    link = decode_link(make_store(publication).get_latest_link()[0])
+    entry = link.extensions[SIGNATURES_KEY]["alice"]
+    assert verify_link_signature(
+        public, entry["signature"], canonical_link_bytes(link)
+    )
+
+    bob = make_repo(scratch / "bob", "bob")
+    with pytest.raises(UnsignedCommitError):
+        make_cod_sync(bob, make_store(publication), verifier_for(key)).fetch(pin_to_ref=PIN)
+    assert bob.resolve_ref(PIN) is None
