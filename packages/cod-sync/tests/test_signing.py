@@ -401,3 +401,42 @@ def test_signature_report_ignores_log_show_signature(scratch_dir, show_signature
         (second, "G", fingerprint),
         (first, "G", fingerprint),
     ]
+
+
+def test_signature_report_ignores_quiet_graft(scratch_dir):
+    """A graft that hides the unsigned ancestor must not hide it from the report."""
+    root = pathlib.Path(scratch_dir)
+    key = _make_key(root, "alice")
+    repo = make_repo(root / "repo")
+    unsigned = commit_file(repo, "a.txt", "a")
+    repo.configure_signing(key)
+    signed = commit_file(repo, "b.txt", "b")
+    (repo.git_dir / "info" / "grafts").write_text(signed + "\n")
+    repo.config("advice.graftFileDeprecated", "false")
+    signers = _allowed_signers(root / "signers", {"alice@test": key})
+
+    rows, diagnostics = repo.signature_report(signed, signers)
+
+    assert not diagnostics.strip()
+    assert {row.commit for row in rows} == {signed, unsigned}
+    assert {row.commit: row.status for row in rows}[unsigned] == "N"
+
+
+def test_signature_report_ignores_inherited_graft_file(scratch_dir, monkeypatch):
+    """GIT_GRAFT_FILE in the caller's environment must not hide an ancestor either."""
+    root = pathlib.Path(scratch_dir)
+    key = _make_key(root, "alice")
+    repo = make_repo(root / "repo")
+    unsigned = commit_file(repo, "a.txt", "a")
+    repo.configure_signing(key)
+    signed = commit_file(repo, "b.txt", "b")
+    other_graft = root / "other-grafts"
+    other_graft.write_text(signed + "\n")
+    monkeypatch.setenv("GIT_GRAFT_FILE", str(other_graft))
+    repo.config("advice.graftFileDeprecated", "false")
+    signers = _allowed_signers(root / "signers", {"alice@test": key})
+
+    rows, diagnostics = repo.signature_report(signed, signers)
+
+    assert not diagnostics.strip()
+    assert {row.commit for row in rows} == {signed, unsigned}

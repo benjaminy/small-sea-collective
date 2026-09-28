@@ -7,6 +7,7 @@ work_tree=None means CACHED mode (bare-style, no checkout files).
 Work-tree-requiring methods raise NoWorkTreeError in that mode.
 """
 
+import os
 import pathlib
 import tempfile
 from dataclasses import dataclass
@@ -396,19 +397,35 @@ class Repo:
         if self._run(["rev-parse", "--is-shallow-repository"]).stdout.strip() == "true":
             raise RepoError("signature verification requires a non-shallow repository")
         pathlib.Path(allowed_signers_file).read_bytes()
-        result = self._run(
-            [
-                "--no-replace-objects",
-                "-c",
-                "gpg.format=ssh",
-                "-c",
-                f"gpg.ssh.allowedSignersFile={allowed_signers_file}",
-                "log",
-                "--no-show-signature",
-                "--format=%H%x09%G?%x09%GF",
-                rev,
-            ]
-        )
+        # A graft file (.git/info/grafts, or GIT_GRAFT_FILE in the caller's
+        # environment) rewrites parent links and could hide an ancestor from
+        # this traversal, so force it off.
+        env = dict(self.env) if self.env is not None else dict(os.environ)
+        env["GIT_GRAFT_FILE"] = os.devnull
+        try:
+            result = _gitCmd(
+                self._base_args()
+                + [
+                    "--no-replace-objects",
+                    "-c",
+                    "gpg.format=ssh",
+                    "-c",
+                    f"gpg.ssh.allowedSignersFile={allowed_signers_file}",
+                    # Setting GIT_GRAFT_FILE above makes Git print its graft
+                    # deprecation hint on every call, not just grafted ones;
+                    # silence that expected hint so real diagnostics still
+                    # surface in stderr.
+                    "-c",
+                    "advice.graftFileDeprecated=false",
+                    "log",
+                    "--no-show-signature",
+                    "--format=%H%x09%G?%x09%GF",
+                    rev,
+                ],
+                env=env,
+            )
+        except GitCmdFailed as exc:
+            raise RepoError(str(exc), cause=exc) from exc
         rows = []
         for line in result.stdout.splitlines():
             if not line.strip():

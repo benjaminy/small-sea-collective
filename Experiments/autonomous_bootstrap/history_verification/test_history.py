@@ -29,7 +29,7 @@ def history(tmp_path, monkeypatch):
     return repo, verifier, unsigned, signed_root, head, tree
 
 
-@pytest.mark.parametrize("override", ["replace", "graft", pytest.param("graft_quiet", marks=pytest.mark.xfail(strict=True, reason="quiet legacy graft hides original parent")), "shallow", "missing_parent"])
+@pytest.mark.parametrize("override", ["replace", "graft", "graft_quiet", "shallow", "missing_parent"])
 def test_ancestry_override(history, override):
     repo, verifier, unsigned, signed_root, head, tree = history
     if override == "replace":
