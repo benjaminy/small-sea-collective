@@ -73,6 +73,22 @@ def check_event(event) -> None:
         _check_integration_mode_change(event)
     elif event.event_type == "key_certificate":
         _check_certificate(event)
+    elif event.event_type == "teammate_removed":
+        _check_teammate_removal(event)
+
+
+def _check_teammate_removal(event) -> None:
+    try:
+        payload = event.payload
+        if set(payload) != {"version", "team_id", "author_teammate_id", "teammate_id"}:
+            raise ValueError
+        if type(payload["version"]) is not int or payload["version"] != 1:
+            raise ValueError
+        for field in ("team_id", "author_teammate_id", "teammate_id"):
+            if not bytes.fromhex(payload[field]):
+                raise ValueError
+    except (KeyError, TypeError, ValueError):
+        raise ProjectionError("bad_removal_payload") from None
 
 
 def _check_certificate(event) -> dict:
@@ -272,3 +288,19 @@ def record_key_certificate(conn: Connection, cert: KeyCertificate, issuer_teamma
     )
     for stored_event in newly_stored:
         apply_event(conn, stored_event)
+
+
+def record_teammate_removal(
+    conn, team_id, author_teammate_id, target_teammate_id,
+    author_team_device_private_key,
+):
+    """Append removal evidence without changing projection rows."""
+    payload = {
+        "version": 1, "team_id": team_id.hex(),
+        "author_teammate_id": author_teammate_id.hex(),
+        "teammate_id": target_teammate_id.hex(),
+    }
+    for stored in append_local_event(
+        conn, "teammate_removed", payload, author_team_device_private_key,
+    ):
+        apply_event(conn, stored)

@@ -30,6 +30,10 @@ Rules of view version 1:
   work under the verifier's own current selection; it says nothing about
   whether the signer had authority when the work was made. The signer's
   `WorkContext.authority_view` is evidence only.
+- A trusted team device may remove another teammate when its author holds
+  unambiguous Core standing in the view before removals.
+  Rebuild trust and standing without the targets or the grants they issued.
+  Self-removals have no effect, and later certificates cannot restore a target.
 - Enrollment grants no workhorse signing authority.
   Only a workhorse delegation (decision D4) lets a workhorse key sign work, and
   only when a device of a teammate holding the berth signed it.
@@ -186,6 +190,16 @@ class ModeChangeRecord:
         })
 
 
+@dataclass(frozen=True)
+class TeammateRemoval:
+    """An authenticated removal envelope; the caller checks its team scope."""
+
+    author_teammate_id: bytes
+    signer_public_key: bytes
+    teammate_id: bytes
+    event_id: bytes
+
+
 class Standing(Enum):
     HELD = "held"
     AMBIGUOUS = "ambiguous"
@@ -268,13 +282,44 @@ def _author_key(trusted, teammate_id, device_key_id):
 
 
 def build_view(*, team_id, anchor_public_key, certs, mode_changes, delegations,
-               berth_ids=()) -> TransitionalView:
+               berth_ids=(), removals=(), core_berth_id=None) -> TransitionalView:
     """Compute the view from records; only records that pass checks affect it.
 
     `berth_ids` lists the team's berths, so the anchor teammate holds them
     even before any record mentions them.
+    A supplied Core berth also joins that set.
+    Without a Core berth, removals have no effect.
+    The caller verifies removal envelopes and their team scope before passing them.
     """
+    certs, mode_changes, delegations = list(certs), list(mode_changes), list(delegations)
+    berth_ids = set(berth_ids)
+    if core_berth_id is not None:
+        berth_ids.add(core_berth_id)
+    candidates = []
+    if removals and core_berth_id is not None:
+        before = build_view(
+            team_id=team_id, anchor_public_key=anchor_public_key, certs=certs,
+            mode_changes=mode_changes, delegations=delegations, berth_ids=berth_ids,
+        )
+        candidates = [
+            r for r in removals
+            if r.author_teammate_id != r.teammate_id
+            and r.signer_public_key in before.trusted_keys.get(r.author_teammate_id, ())
+            and before.holds(r.author_teammate_id, core_berth_id) is Standing.HELD
+        ]
+    targets = {r.teammate_id for r in candidates}
+    target_hex = {t.hex() for t in targets}
+    certs = [
+        c for c in certs if c.issuer_participant_id not in targets
+        and c.claims.get("teammate_id") not in target_hex
+    ]
+    mode_changes = [
+        r for r in mode_changes
+        if r.author_teammate_id not in targets and r.teammate_id not in targets
+    ]
+    delegations = [d for d in delegations if d.delegator_teammate_id not in targets]
     anchor_teammate, trusted, digests = _anchored_trust(certs, team_id, anchor_public_key)
+    digests += [hashlib.sha256(b"removal" + r.event_id).digest() for r in candidates]
 
     verified_modes = []
     for record in mode_changes:

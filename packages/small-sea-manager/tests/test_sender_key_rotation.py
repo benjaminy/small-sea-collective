@@ -365,8 +365,11 @@ def test_remove_teammate_rejects_self_removal(playground_dir):
 def test_remove_teammate_requires_core_write_permission(playground_dir):
     state = _bootstrap_remote_teammate_installation(pathlib.Path(playground_dir))
     with sqlite3.connect(state["alice_team_db"]) as conn:
-        conn.execute("UPDATE berth_role SET role = 'read-only'")
-        conn.commit()
+        core = conn.execute("SELECT id FROM team_app_berth LIMIT 1").fetchone()[0]
+    _, alice_id = _team_row(state["alice_root"], state["alice_hex"], "ProjectX")
+    provisioning.set_teammate_integration_mode(
+        state["alice_root"], state["alice_hex"], "ProjectX", alice_id, core, "proposal-only",
+    )
 
     manager = TeamManager(state["alice_root"], state["alice_hex"])
     with pytest.raises(ValueError, match="Core berth"):
@@ -583,3 +586,29 @@ def test_parallel_device_prekey_bundle_rows_merge(playground_dir):
     device_key_ids = {row[0] for row in rows}
     assert b"a" * 16 in device_key_ids
     assert b"b" * 16 in device_key_ids
+
+
+def test_remove_teammate_records_removal_event(playground_dir):
+    from small_sea_manager.constitution_store import current_heads, list_events
+    from wrasse_trust.events import verify_event
+
+    state = _bootstrap_remote_teammate_installation(pathlib.Path(playground_dir))
+    engine = create_engine(f"sqlite:///{state['alice_team_db']}")
+    with engine.connect() as conn:
+        heads = tuple(current_heads(conn))
+    root, participant = state["alice_root"], state["alice_hex"]
+    team_id, author = _team_row(root, participant, "ProjectX")
+    _, public = get_current_team_device_key(root, participant, "ProjectX")
+    TeamManager(root, participant).remove_teammate("ProjectX", state["bob_teammate_id"].hex())
+    with engine.connect() as conn:
+        removals = [e for e in list_events(conn) if e.event_type == "teammate_removed"]
+    engine.dispose()
+    assert len(removals) == 1
+    event = removals[0]
+    verify_event(event)
+    assert event.signer_public_key == public
+    assert event.parents == heads
+    assert event.payload == dict(
+        version=1, team_id=team_id.hex(), author_teammate_id=author.hex(),
+        teammate_id=state["bob_teammate_id"].hex(),
+    )

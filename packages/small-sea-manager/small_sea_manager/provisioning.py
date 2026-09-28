@@ -123,6 +123,7 @@ from small_sea_manager.constitution_projection import (
     record_integration_mode_change,
     record_key_certificate,
     record_workhorse_delegation,
+    record_teammate_removal,
 )
 from small_sea_note_to_self.ids import uuid7
 from small_sea_note_to_self.sender_keys import (
@@ -4665,9 +4666,18 @@ def remove_teammate(root_dir, participant_hex, team_name, teammate):
             ).fetchone()
             if teammate_exists is None:
                 raise ValueError(f"Teammate '{removed_teammate_id.hex()}' not found")
-            role = _core_berth_role(conn, self_in_team)
-            if role != "read-write":
-                raise ValueError("Removing a teammate requires read-write permission on the Core berth")
+            anchor = _adopted_anchor_or_pause(root_dir, participant_hex, team_id)
+            view = _load_transitional_view(conn, team_id, anchor)
+            if view.holds(self_in_team, _core_berth_id(conn)) is not berth_authority.Standing.HELD:
+                raise ValueError("Removing a teammate requires unambiguous standing on the Core berth")
+            private_key, public_key = get_current_team_device_key(
+                root_dir, participant_hex, team_name
+            )
+            if public_key not in view.trusted_keys.get(self_in_team, ()):
+                raise ValueError("Removing a teammate requires a trusted team-device key")
+            record_teammate_removal(
+                conn, team_id, self_in_team, removed_teammate_id, private_key,
+            )
             certs = _load_team_certificates(conn, team_id)
             cert_ids_to_delete = [
                 cert.cert_id
@@ -5279,11 +5289,26 @@ def _load_transitional_view(conn, team_id: bytes, anchor_public_key: bytes):
                 signature=row[5],
             )
         )
+    removals = []
+    for (encoded,) in conn.execute(text(
+        "SELECT encoded FROM constitution_event WHERE event_type = 'teammate_removed'"
+    )):
+        event = decode_event(encoded)
+        check_event(event)
+        if bytes.fromhex(event.payload["team_id"]) == team_id:
+            removals.append(berth_authority.TeammateRemoval(
+                bytes.fromhex(event.payload["author_teammate_id"]),
+                event.signer_public_key,
+                bytes.fromhex(event.payload["teammate_id"]),
+                event.event_id,
+            ))
     return berth_authority.build_view(
         team_id=team_id,
         anchor_public_key=anchor_public_key,
         certs=_load_team_certificates(conn, team_id),
         mode_changes=modes,
+        removals=removals,
+        core_berth_id=_core_berth_id(conn),
         delegations=delegations,
         berth_ids=[row[0] for row in conn.execute(text("SELECT id FROM team_app_berth")).fetchall()],
     )

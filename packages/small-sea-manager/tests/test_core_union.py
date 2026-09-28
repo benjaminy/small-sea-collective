@@ -181,3 +181,56 @@ def test_bad_pending_event_does_not_block_other_source(playground_dir):
     assert provisioning.integrate_core_events(root, alice_hex, "ProjectX", bad_sha)["code"] == "bad_projection"
     _good_repo, good_sha, _ = _source(root, alice_hex, parent, source_ref="refs/small-sea/core-peer/" + "cd" * 32 + "/observations/good")
     assert provisioning.integrate_core_events(root, alice_hex, "ProjectX", good_sha) == {"outcome": "integrated", "code": None, "new_events": 1}
+
+
+def test_removal_event_travels_by_core_union(playground_dir):
+    from test_sender_key_rotation import _bootstrap_remote_teammate_installation
+    from small_sea_manager.constitution_projection import record_key_certificate
+    from wrasse_trust.identity import issue_membership_cert
+    from wrasse_trust.keys import ProtectionLevel, generate_key_pair
+
+    state = _bootstrap_remote_teammate_installation(pathlib.Path(playground_dir))
+    alice_root, alice = state["alice_root"], state["alice_hex"]
+    bob_root, bob = state["bob_root"], state["bob_hex"]
+    team_id, alice_id = provisioning._team_row(alice_root, alice, "ProjectX")
+    private, public = provisioning.get_current_team_device_key(alice_root, alice, "ProjectX")
+    provisioning._record_authority_anchor(
+        bob_root, bob, team_id, public, adopted_via="invitation-acceptance",
+        evidence_ref="shared baseline", enrollment_completed=True,
+    )
+    carol_id = b"C" * 16
+    carol, _ = generate_key_pair(ProtectionLevel.DAILY)
+    cert = issue_membership_cert(
+        carol, provisioning._participant_key_from_public(public),
+        private, team_id, alice_id, carol_id,
+    )
+    alice_sync = provisioning._team_sync_dir(alice_root, alice, "ProjectX")
+    alice_repo = Repo(alice_sync / ".git", alice_sync)
+    bob_sync = provisioning._team_sync_dir(bob_root, bob, "ProjectX")
+    engine = create_engine(f"sqlite:///{alice_sync / 'core.db'}")
+    with engine.begin() as conn:
+        record_key_certificate(conn, cert, alice_id, private)
+    engine.dispose()
+    alice_repo.stage(["core.db"])
+    alice_repo.commit("Enroll Carol")
+    # Fetch Alice's commits into Bob's repository before each Core union.
+    import subprocess
+    def integrate_alice():
+        subprocess.run(
+            ["git", "-C", str(bob_sync), "fetch", str(alice_sync), "HEAD"],
+            check=True, capture_output=True,
+        )
+        return provisioning.integrate_core_events(bob_root, bob, "ProjectX", alice_repo.head())
+
+    assert integrate_alice()["outcome"] == "integrated"
+    before = provisioning.load_transitional_authority_view(bob_root, bob, "ProjectX")
+    assert carol.public_key in before.trusted_keys[carol_id]
+    provisioning.remove_teammate(alice_root, alice, "ProjectX", carol_id)
+    assert integrate_alice()["outcome"] == "integrated"
+    after = provisioning.load_transitional_authority_view(bob_root, bob, "ProjectX")
+    assert carol_id not in after.trusted_keys
+    assert after.identifier != before.identifier
+    with sqlite3.connect(bob_sync / "core.db") as conn:
+        # Bob retains Carol's certificate: the view, not row deletion, removes trust.
+        assert conn.execute("SELECT 1 FROM key_certificate WHERE cert_id=?", (cert.cert_id,)).fetchone()
+        assert conn.execute("SELECT count(*) FROM constitution_event WHERE event_type='teammate_removed'").fetchone()[0] == 1
