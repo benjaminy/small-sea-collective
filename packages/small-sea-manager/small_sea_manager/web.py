@@ -9,6 +9,7 @@ from typing import Any
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from markupsafe import Markup, escape
 
 from cod_sync.protocol import (
     PublicationIntegrationRequiredError,
@@ -80,6 +81,29 @@ _RECONCILABLE_ROUTE_REASONS = frozenset(
 #: NoteToSelf push and refresh both need the passthrough session; integration
 #: does not, because it reads only local refs and the local database.
 _CONNECT_TO_HUB_FIRST = "Connect to Hub above before pushing or refreshing NoteToSelf."
+
+
+def _route_reason_guidance(route_reason, route_reason_cloud_storage_id, providers) -> str:
+    """The help text for one route reason, naming the account when known.
+
+    `credentials_missing` names the account that needs credentials, in the
+    same protocol/URL form the Cloud Storage panel uses for its rows, and
+    links to that row's connect form. If the account is not among `providers`
+    (already removed, or the reason came from a path with no account list),
+    this falls back to the generic guidance.
+    """
+    if route_reason == "credentials_missing" and route_reason_cloud_storage_id is not None:
+        account = next(
+            (p for p in providers if p["id"] == route_reason_cloud_storage_id), None
+        )
+        if account is not None:
+            return Markup(
+                f"The account {escape(account['protocol'])} — {escape(account['url'])} "
+                "has no credentials saved on this device. Connect it under "
+                f'<a href="#cloud-storage-{escape(account["id"])}">Cloud Storage below</a>, '
+                "then retry."
+            )
+    return _ROUTE_HELP.get(route_reason, "Retry.")
 
 
 def _conflict_key_text(key) -> str:
@@ -290,7 +314,6 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             ),
             "core_storage": mgr.core_storage_allocation(team_name),
             "cloud_providers": mgr.list_cloud_storage(),
-            "route_help": _ROUTE_HELP,
             "core_route": None,
             "core_route_error": None,
             "offer_reconcile": False,
@@ -962,6 +985,13 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     # ------------------------------------------------------------------ #
 
     def _acceptance_fragment(request, mgr, team_name, report, error=None):
+        route_reason_guidance = None
+        if report and report.get("route_reason"):
+            route_reason_guidance = _route_reason_guidance(
+                report["route_reason"],
+                report.get("route_reason_cloud_storage_id"),
+                mgr.list_cloud_storage(),
+            )
         # Pass updated teams list so acceptance_token.html can OOB-update #sidebar-teams
         return templates.TemplateResponse(
             "fragments/acceptance_token.html",
@@ -970,7 +1000,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "team_name": team_name,
                 "report": report,
                 "acceptance_token": (report or {}).get("acceptance_token"),
-                "route_help": _ROUTE_HELP,
+                "route_reason_guidance": route_reason_guidance,
                 "error": error,
                 "teams": _teams_with_status(mgr) if report else [],
             },
@@ -1007,14 +1037,22 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
 
     def _core_storage_fragment(request, team_name, *, report=None, error=None):
         mgr = _mgr(request)
+        cloud_providers = mgr.list_cloud_storage()
+        route_reason_guidance = None
+        if report and report.get("route_reason"):
+            route_reason_guidance = _route_reason_guidance(
+                report["route_reason"],
+                report.get("route_reason_cloud_storage_id"),
+                cloud_providers,
+            )
         return templates.TemplateResponse(
             "fragments/core_storage.html",
             {
                 "request": request,
                 "team_name": team_name,
                 "core_storage": mgr.core_storage_allocation(team_name),
-                "cloud_providers": mgr.list_cloud_storage(),
-                "route_help": _ROUTE_HELP,
+                "cloud_providers": cloud_providers,
+                "route_reason_guidance": route_reason_guidance,
                 "core_route": report,
                 "core_route_error": error,
                 "offer_reconcile": (

@@ -15,7 +15,7 @@
     </thead>
     <tbody>
       {% for p in providers %}
-      <tr>
+      <tr id="cloud-storage-{{ p.id }}">
         <td><span class="badge badge-blue">{{ p.protocol }}</span></td>
         <td class="mono">{{ p.url }}</td>
         <td style="color:#a8a29e; font-size:0.82rem">

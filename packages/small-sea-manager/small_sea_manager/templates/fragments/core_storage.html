@@ -26,7 +26,7 @@
     {% else %}
     <p class="notice notice-err">
       Route pending ({{ core_route.route_reason }}).
-      {{ route_help.get(core_route.route_reason, "Retry.") }}
+      {{ route_reason_guidance }}
     </p>
     {% if offer_reconcile %}
     {# Deliberately posts no change intent: a retry resumes the current

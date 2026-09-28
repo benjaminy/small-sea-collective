@@ -131,6 +131,49 @@ def test_credentials_missing_does_not_offer_the_reconcile_repair():
     assert "storage_not_configured" not in web_module._RECONCILABLE_ROUTE_REASONS
 
 
+def test_credentials_missing_guidance_names_the_account(playground_dir, monkeypatch):
+    root = pathlib.Path(playground_dir)
+    alice_hex = provisioning.create_new_participant(root, "Alice")
+    first_dir = root / "alice-cloud-a"
+    first_dir.mkdir()
+    second_dir = root / "alice-cloud-b"
+    second_dir.mkdir()
+    provisioning.add_cloud_storage(root, alice_hex, protocol="localfolder", url=str(first_dir))
+    second_id = provisioning.add_cloud_storage(
+        root, alice_hex, protocol="localfolder", url=str(second_dir)
+    )
+    provisioning.create_team(root, alice_hex, TEAM)
+    monkeypatch.setattr(
+        TeamManager,
+        "_get_or_open_session",
+        lambda self, team, mode="encrypted": _CloudRefusingSession("cloud_credentials_missing"),
+    )
+
+    body = _web(root, alice_hex).post(
+        f"/teams/{TEAM}/reconcile-route", data={"cloud_storage_id": second_id}
+    ).text
+
+    # Names the selected account, not the other registered one, in the
+    # guidance sentence itself (the reconcile form's account picker also
+    # lists both, so this reads out the notice paragraph rather than the
+    # whole body).
+    guidance = body.split("Route pending")[1].split("</p>")[0]
+    assert str(second_dir) in guidance
+    assert str(first_dir) not in guidance
+    # Points at that account's own row in the Cloud Storage panel.
+    assert f"#cloud-storage-{second_id}" in guidance
+
+
+def test_credentials_missing_guidance_falls_back_when_account_unknown():
+    providers = [{"id": "some-other-id", "protocol": "s3", "url": "http://example.test"}]
+
+    guidance = web_module._route_reason_guidance(
+        "credentials_missing", "not-a-registered-id", providers
+    )
+
+    assert str(guidance) == web_module._ROUTE_HELP["credentials_missing"]
+
+
 # --------------------------------------------------------------------------- #
 # Push explains a refused cloud precondition
 # --------------------------------------------------------------------------- #

@@ -21,7 +21,7 @@
   {% if report.route_reason %}
   <p class="token-instruction" style="color:#78716c">
     Storage route pending ({{ report.route_reason }}).
-    {{ route_help.get(report.route_reason, "Retry.") }}
+    {{ route_reason_guidance }}
   </p>
   {% else %}
   <p class="token-instruction" style="color:#78716c">

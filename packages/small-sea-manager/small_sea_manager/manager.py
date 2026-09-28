@@ -929,19 +929,30 @@ class TeamManager:
     # Route preparation and acceptance export
     # ------------------------------------------------------------------ #
 
-    def _route_report(self, state, *, route_reason) -> dict:
+    def _route_report(
+        self, state, *, route_reason, route_reason_cloud_storage_id=None
+    ) -> dict:
         """Build the route-only report: what happened to the storage route.
+
+        `route_reason_cloud_storage_id` names the account a `credentials_missing`
+        reason is about, so guidance can say which one; it is `None` whenever
+        that account is not known at this point.
 
         The established-teammate operation uses this directly. The invitation
         path extends it with join, admission, and acceptance fields.
         """
         route = state["route"]
-        return {
+        report = {
             "route": route,
             "route_reason": None if route == "ready" else route_reason,
         }
+        if route != "ready" and route_reason_cloud_storage_id is not None:
+            report["route_reason_cloud_storage_id"] = route_reason_cloud_storage_id
+        return report
 
-    def _report(self, state, *, route_reason) -> dict:
+    def _report(
+        self, state, *, route_reason, route_reason_cloud_storage_id=None
+    ) -> dict:
         """Build the join-state report over derived state.
 
         Route and acceptance reasons stay independent: a route may be ready
@@ -961,7 +972,11 @@ class TeamManager:
         return {
             "join": "complete" if state["join"] == "complete" else "absent",
             "admission": state["admission"],
-            **self._route_report(state, route_reason=route_reason),
+            **self._route_report(
+                state,
+                route_reason=route_reason,
+                route_reason_cloud_storage_id=route_reason_cloud_storage_id,
+            ),
             "acceptance": "withheld" if acceptance_reason else "exportable",
             "acceptance_reason": acceptance_reason,
         }
@@ -1126,7 +1141,15 @@ class TeamManager:
             return self._report(state, route_reason="storage_not_configured")
 
         state, route_reason = self._publish_berth_route(team_name, state, allocation)
-        return self._report(state, route_reason=route_reason)
+        return self._report(
+            state,
+            route_reason=route_reason,
+            route_reason_cloud_storage_id=(
+                allocation["cloud_storage_id"]
+                if route_reason == "credentials_missing"
+                else None
+            ),
+        )
 
     def reconcile_team_route(
         self, team_name, cloud_storage_id=None, new_location=False, app_name=_CORE_APP
@@ -1203,7 +1226,15 @@ class TeamManager:
         state, route_reason = self._publish_berth_route(
             team_name, state, allocation, app_name
         )
-        return self._route_report(state, route_reason=route_reason)
+        return self._route_report(
+            state,
+            route_reason=route_reason,
+            route_reason_cloud_storage_id=(
+                allocation["cloud_storage_id"]
+                if route_reason == "credentials_missing"
+                else None
+            ),
+        )
 
     def core_storage_allocation(self, team_name) -> dict:
         """Report this device's current Core storage decision for one team.
