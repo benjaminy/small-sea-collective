@@ -6,6 +6,28 @@
 <h1>{{ team.name }}</h1>
 
 <div class="section">
+    <h2>Known apps</h2>
+    {% if known_apps_need_hub %}
+    <p class="muted">Connect to Hub to include apps previously granted a session.</p>
+    {% endif %}
+    {% if known_apps %}
+    <table>
+        <thead><tr><th>App name</th><th>Sources</th></tr></thead>
+        <tbody>
+        {% for app in known_apps %}
+            <tr>
+                <td>{{ app.app_name }}</td>
+                <td>{{ app.sources | join(", ") }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p>No known apps.</p>
+    {% endif %}
+</div>
+
+<div class="section">
     <h2>Teammates</h2>
     <div id="teammate-list"
          hx-get="/fragments/teams/{{ team.name }}/teammates"

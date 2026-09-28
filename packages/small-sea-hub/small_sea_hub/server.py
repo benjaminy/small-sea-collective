@@ -926,6 +926,11 @@ async def list_confirmed_sessions(ss_session=Depends(_require_note_to_self_sessi
     return app.state.backend.list_confirmed_sessions(ss_session.participant_id)
 
 
+@app.get("/apps/granted")
+async def list_granted_apps(ss_session=Depends(_require_note_to_self_session)):
+    return app.state.backend.list_granted_apps(ss_session.participant_id)
+
+
 @app.delete("/sessions/confirmed/{session_id}")
 async def delete_confirmed_session(
     session_id: str, ss_session=Depends(_require_note_to_self_session)

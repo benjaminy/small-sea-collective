@@ -48,3 +48,11 @@ CREATE TABLE IF NOT EXISTS unknown_app_sighting (
     reason TEXT NOT NULL,
     UNIQUE(participant_hex, app_name, team_name, client_name)
 );
+
+CREATE TABLE IF NOT EXISTS granted_app (
+    participant_id BLOB NOT NULL,
+    team_name TEXT NOT NULL,
+    app_name TEXT NOT NULL,
+    first_granted_at TEXT NOT NULL,
+    PRIMARY KEY(participant_id, team_name, app_name)
+);

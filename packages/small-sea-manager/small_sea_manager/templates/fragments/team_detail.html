@@ -14,6 +14,25 @@
 </div>
 
 {% if joined_locally %}
+<div class="detail-section">
+  <h3>Known apps</h3>
+  {% if known_apps_need_hub %}
+  <p class="muted">Connect to Hub to include apps previously granted a session.</p>
+  {% endif %}
+  {% if known_apps %}
+  <table>
+    <thead><tr><th>App name</th><th>Sources</th></tr></thead>
+    <tbody>
+    {% for app in known_apps %}
+      <tr><td>{{ app.app_name }}</td><td>{{ app.sources | join(", ") }}</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No known apps.</p>
+  {% endif %}
+</div>
+
 {% if team_notice %}
 <div class="detail-section" style="padding-top:0.4rem; padding-bottom:0.4rem;">
   <p class="notice notice-ok">{{ team_notice }}</p>

@@ -191,6 +191,15 @@ class BootstrapSession(Base):
     expires_at = Column(String, nullable=False)
 
 
+class GrantedApp(Base):
+    __tablename__ = "granted_app"
+
+    participant_id = Column(LargeBinary, primary_key=True)
+    team_name = Column(String, primary_key=True)
+    app_name = Column(String, primary_key=True)
+    first_granted_at = Column(String, nullable=False)
+
+
 @dataclass
 class CloudStorageRecord:
     id: bytes
@@ -241,7 +250,7 @@ class SmallSeaBackend:
     small-sea-manager package (provisioning.py).
     """
 
-    hub_schema_version: int = 51
+    hub_schema_version: int = 52
 
     def __init__(self, root_dir, auto_approve_sessions: bool = False,
                  sandbox_mode: bool = False, log_level: str = "INFO",
@@ -359,6 +368,11 @@ class SmallSeaBackend:
                 user_version = 51
                 print("Hub DB migrated to v51.")
 
+            if user_version == 51:
+                self._create_granted_app_table(cursor)
+                user_version = 52
+                print("Hub DB migrated to v52.")
+
             cursor.execute(
                 f"PRAGMA user_version = {SmallSeaBackend.hub_schema_version}"
             )
@@ -396,6 +410,18 @@ class SmallSeaBackend:
                 seen_count INTEGER NOT NULL,
                 reason TEXT NOT NULL,
                 UNIQUE(participant_hex, app_name, team_name, client_name)
+            )
+        """)
+
+    @staticmethod
+    def _create_granted_app_table(cursor):
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS granted_app (
+                participant_id BLOB NOT NULL,
+                team_name TEXT NOT NULL,
+                app_name TEXT NOT NULL,
+                first_granted_at TEXT NOT NULL,
+                PRIMARY KEY(participant_id, team_name, app_name)
             )
         """)
 
@@ -791,6 +817,19 @@ class SmallSeaBackend:
                 client=pending.client_name,
             )
             sess.add(ss_session)
+            sess.execute(
+                text("""
+                    INSERT OR IGNORE INTO granted_app
+                    (participant_id, team_name, app_name, first_granted_at)
+                    VALUES (:participant_id, :team_name, :app_name, :first_granted_at)
+                """),
+                {
+                    "participant_id": ss_session.participant_id,
+                    "team_name": ss_session.team_name,
+                    "app_name": ss_session.app_name,
+                    "first_granted_at": now.isoformat(),
+                },
+            )
             sess.delete(pending)
             sess.commit()
 
@@ -950,6 +989,25 @@ class SmallSeaBackend:
                     "duration_sec": r.duration_sec,
                 }
                 for r in rows
+            ]
+
+    def list_granted_apps(self, participant_id: bytes) -> list[dict]:
+        """List app names this participant has ever received a session for."""
+        engine_local = create_engine(f"sqlite:///{self.path_local_db}")
+        with Session(engine_local) as sess:
+            rows = (
+                sess.query(GrantedApp)
+                .filter(GrantedApp.participant_id == participant_id)
+                .order_by(GrantedApp.team_name, GrantedApp.app_name)
+                .all()
+            )
+            return [
+                {
+                    "team_name": row.team_name,
+                    "app_name": row.app_name,
+                    "first_granted_at": row.first_granted_at,
+                }
+                for row in rows
             ]
 
     def delete_confirmed_session(self, participant_id: bytes, session_id_hex: str) -> bool:

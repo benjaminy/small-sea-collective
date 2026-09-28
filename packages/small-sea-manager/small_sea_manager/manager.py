@@ -1,6 +1,7 @@
 import contextlib
 import logging
 import pathlib
+import sqlite3
 from dataclasses import dataclass
 from typing import Literal, Optional
 
@@ -602,6 +603,32 @@ class TeamManager:
             "viewer_is_steward": viewer_is_steward,
             "self_in_team": self_in_team,
         }
+
+    def known_apps(self, team_name):
+        """Return Core registered apps and names ever granted by this Hub."""
+        core_path = (
+            self.root_dir / "Participants" / self.participant_hex
+            / team_name / "Sync" / "core.db"
+        )
+        with contextlib.closing(sqlite3.connect(str(core_path))) as conn:
+            registered_names = {
+                row[0] for row in conn.execute("SELECT name FROM app")
+            }
+
+        names = {name: {"app_name": name, "sources": ["registered"]}
+                 for name in registered_names}
+        session = self.note_to_self_session_if_active()
+        if session is not None:
+            for grant in session.list_granted_apps():
+                if grant["team_name"] != team_name:
+                    continue
+                entry = names.setdefault(
+                    grant["app_name"],
+                    {"app_name": grant["app_name"], "sources": []},
+                )
+                if "granted" not in entry["sources"]:
+                    entry["sources"].append("granted")
+        return sorted(names.values(), key=lambda item: item["app_name"])
 
     def delete_team(self, team_name):
         """Delete a team. Must be a steward."""

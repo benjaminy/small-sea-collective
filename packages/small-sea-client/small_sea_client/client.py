@@ -362,6 +362,13 @@ class SmallSeaSession:
         """
         return self._client._get("/sessions/confirmed", token=self._token)
 
+    def list_granted_apps(self) -> list[dict]:
+        """List app names that have ever received a confirmed session.
+
+        Only a caller whose own session is on NoteToSelf may call this.
+        """
+        return self._client._get("/apps/granted", token=self._token)
+
     def delete_session(self, session_id: str) -> None:
         """Delete one of this participant's confirmed Hub sessions by id.
 

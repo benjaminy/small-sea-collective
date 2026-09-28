@@ -272,6 +272,8 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "team_notice": notice,
                 "team_error": error,
                 "admission_package_token": admission_package_token,
+                "known_apps": [],
+                "known_apps_need_hub": False,
             }
         return {
             "team_name": team_name,
@@ -295,6 +297,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "team_notice": notice,
             "team_error": error,
             "admission_package_token": admission_package_token,
+            "known_apps": mgr.known_apps(team_name),
+            "known_apps_need_hub": (
+                mgr.note_to_self_session_if_active() is None
+            ),
         }
 
     def _render_team_detail(
