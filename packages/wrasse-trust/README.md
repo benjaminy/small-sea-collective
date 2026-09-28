@@ -37,6 +37,10 @@ Authority is judged by each device from the records it holds, in a *transitional
 The view reports each commit as authorized, or refused with a reason: bad signature, wrong scope (a real key used on a berth it was not delegated for), missing authority, or ambiguous authority.
 Removing a teammate stops their future authority, but commits they signed earlier still verify (#295 tracks commits made after a removal).
 
+Today most of these keys live as long as the device stays in the team, and the founder's first team-device key doubles as the team's authority anchor.
+Treat that as a gap, not a design: the direction is short-lived keys tied to teammates and teams by certificates and delegations, so new code should not assume any key is permanent or that a key identifies a person.
+See #296 (rotating team-device keys), #288 (changing the anchor), and #287 (revoking workhorse delegations).
+
 The earlier layered model, with a per-team identity key and `device_binding` certificates, survives only in `wrasse_trust/identity.py` and its tests; no other package uses it.
 
 ## Current Direction
