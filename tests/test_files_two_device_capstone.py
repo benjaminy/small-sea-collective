@@ -11,23 +11,32 @@ join request and bootstrap response.
 Every provider call is attributed to the Hub whose backend made it; see
 `_ProviderSpy`.
 
-Not yet covered: Files publications and commits are unsigned (#266), so a
-fetched head proves what the store held, not which device wrote it.
+Every Files commit is signed with the session's real workhorse key, whose
+delegation comes from the identity join and linked-device bootstrap.
+Each device's Hub checks the histories it fetches through `/session/verify`,
+and the test asks the Hub to verify each device's final Files history.
+The one test shortcut is that the key is exported to a file for `ssh-keygen`,
+because the Hub's signing program is not installed here.
+
+Not yet covered: commits that should be refused (unsigned, wrong berth,
+missing or ambiguous authority).
 """
-from test_support import local_files_signer
-
-
 import importlib.util
 import inspect
+import os
 import pathlib
+import shutil
 import sqlite3
 import sys
 from urllib.parse import unquote, urlsplit
 
 import boto3
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi.testclient import TestClient
 
+from cod_sync.git import signing_git_env
 import small_sea_hub.backend as SmallSea
 from small_sea_manager.manager import (
     TeamManager,
@@ -67,6 +76,25 @@ class _Device:
         app = _load_hub_app(name)
         app.state.backend = self.backend
         self.http = TestClient(app)
+
+    def signer(self, team_name, hub_port=11437, *, _http_client=None):
+        """A CommitSigner using this session's real workhorse key and the Hub's verifier."""
+        session = sync.get_team_session(team_name, hub_port, _http_client=_http_client)
+        info = session.session_info()
+        seed = self.backend.signing_key(session.token)
+        key_path = self.root.parent / f"{self.root.name}-key-{session.token[:8]}"
+        key_path.write_bytes(Ed25519PrivateKey.from_private_bytes(seed).private_bytes(
+            serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
+            serialization.NoEncryption()))
+        key_path.chmod(0o600)
+        env = signing_git_env(
+            os.environ, program=shutil.which("ssh-keygen"),
+            public_key=session.signing_public_key(), signing_key=str(key_path),
+            extra_env={"GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@t",
+                       "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t"},
+        )
+        return files.CommitSigner(info["team_id"], info["berth_id"], session.authority_view(),
+                                  env, session.verify_history)
 
     def use_files(self):
         """Point Files' per-user config at this device's file."""
@@ -226,20 +254,11 @@ def test_files_database_guard_detects_manager_database_open(tmp_path, monkeypatc
         guard.assert_clean()
 
 
-def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_server_gen):
+def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen):
     minio = minio_server_gen()
     a = _Device("A", tmp_path / "device-a", monkeypatch)
     b = _Device("B", tmp_path / "device-b", monkeypatch)
     spy = _ProviderSpy(monkeypatch, [a, b])
-
-    # Commits use a local test key, like the in-process Files tests, because the
-    # Hub's signing program is not installed here.
-    def in_process_signer(team_name, hub_port=11437, *, _http_client=None):
-        session = sync.get_team_session(team_name, hub_port, _http_client=_http_client)
-        context = files.materialization_context_from_session_info(session.session_info())
-        return local_files_signer(context)
-
-    monkeypatch.setattr(sync, "commit_signer", in_process_signer)
 
     # 1. Participant and MinIO-backed cloud account on A, through Manager.
     import small_sea_manager.provisioning as Provisioning
@@ -264,17 +283,19 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
 
     db_guard = _ManagerDatabaseGuard(monkeypatch, [a, b], alice_hex)
 
+    monkeypatch.setattr(sync, "commit_signer", a.signer)
+
     # 5. Files on A: login, niche, checkout, publish, push.
     a.use_files()
     mark = spy.mark()
     login_a = sync.login_team(a.files_root, TEAM, alice_hex, _http_client=a.http)
     ctx_a = files.materialization_context_from_session_info(login_a.session_info)
-    files.create_niche(a.files_root, alice_hex, ctx_a, NICHE, signer=local_files_signer(ctx_a))
+    files.create_niche(a.files_root, alice_hex, ctx_a, NICHE, signer=a.signer(TEAM, _http_client=a.http))
     checkout_a = a.root / "checkout"
     files.add_checkout(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a))
     original = b"tomatoes by the fence\n"
     (checkout_a / "beds.txt").write_bytes(original)
-    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A1", signer=local_files_signer(ctx_a))
+    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A1", signer=a.signer(TEAM, _http_client=a.http))
     sync.push_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
     spy.assert_only(mark, "A")
 
@@ -316,14 +337,14 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
     login_b = sync.login_team(b.files_root, TEAM, alice_hex, _http_client=b.http)
     ctx_b = files.materialization_context_from_session_info(login_b.session_info)
     assert ctx_b.team_id == ctx_a.team_id
-    monkeypatch.setattr(sync, "commit_signer", lambda *args, **kwargs: local_files_signer(ctx_b))
+    monkeypatch.setattr(sync, "commit_signer", b.signer)
 
     # 11. Fetch B's own registry through the Hub, discover the niche, then fetch it.
     fetched_registry = sync.fetch_self_via_hub(
         b.files_root, alice_hex, TEAM, _http_client=b.http
     )
     assert fetched_registry.registry_sha
-    files.merge_self_registry(b.files_root, alice_hex, ctx_b, signer=local_files_signer(ctx_b))
+    files.merge_self_registry(b.files_root, alice_hex, ctx_b, signer=b.signer(TEAM, _http_client=b.http))
     discovered = [n["name"] for n in files.list_niches(b.files_root, alice_hex, ctx_b)]
     assert "plans" in discovered
     niche = discovered[0]
@@ -334,28 +355,45 @@ def test_one_participant_two_devices_share_files(tmp_path, monkeypatch, minio_se
     assert fetched.niche_sha == _git_head(files._niche_git_dir(a.files_root, ctx_a, niche))
     checkout_b = b.root / "checkout"
     files.add_checkout(b.files_root, alice_hex, ctx_b, niche, str(checkout_b))
-    sync.merge_self(b.files_root, alice_hex, TEAM, niche)
+    sync.merge_self(b.files_root, alice_hex, TEAM, niche, _http_client=b.http)
     assert (checkout_b / "beds.txt").read_bytes() == original
 
     # 12. B changes the file and pushes through B's Hub.
     from_b = b"tomatoes by the fence\nbeans on the trellis\n"
     (checkout_b / "beds.txt").write_bytes(from_b)
-    files.publish(b.files_root, alice_hex, ctx_b, niche, str(checkout_b), message="B1", signer=local_files_signer(ctx_b))
+    files.publish(b.files_root, alice_hex, ctx_b, niche, str(checkout_b), message="B1", signer=b.signer(TEAM, _http_client=b.http))
     sync.push_via_hub(b.files_root, alice_hex, TEAM, niche, _http_client=b.http)
     spy.assert_only(mark, "B")
 
-    # 13. A fetches and integrates B's change through A's Hub.
-    a.use_files()
-    monkeypatch.setattr(sync, "commit_signer", lambda *args, **kwargs: local_files_signer(ctx_a))
+    # 13. A learns B's signing delegation, then fetches and integrates B's change.
+    # B's key was delegated in B's Core chain when B first signed.
+    # A's Hub can only accept B's commits once A has integrated that chain.
     mark = spy.mark()
+    manager_b.push_team(TEAM)
+    spy.assert_only(mark, "B")
+    a.use_files()
+    monkeypatch.setattr(sync, "commit_signer", a.signer)
+    mark = spy.mark()
+    (participant,) = manager_a.list_teammates(TEAM)
+    manager_a.fetch_teammate_core(TEAM, participant["id"])
+    manager_a.integrate_core_sources(TEAM)
     sync.fetch_self_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
-    sync.merge_self(a.files_root, alice_hex, TEAM, NICHE)
+    sync.merge_self(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
     assert (checkout_a / "beds.txt").read_bytes() == from_b
 
     # 14. A publishes again on the converged history, with no conflict.
     (checkout_a / "beds.txt").write_bytes(from_b + b"squash in the corner\n")
-    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A2", signer=local_files_signer(ctx_a))
+    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A2", signer=a.signer(TEAM, _http_client=a.http))
     sync.push_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
     spy.assert_only(mark, "A")
     db_guard.assert_clean()
+
+    # 15. Each device's Hub accepts every commit in that device's final Files history.
+    for device, context in ((a, ctx_a), (b, ctx_b)):
+        device.use_files()
+        session = sync.get_team_session(TEAM, _http_client=device.http)
+        git_dir = files._niche_git_dir(device.files_root, context, NICHE)
+        verdicts = session.verify_history(git_dir, _git_head(git_dir))["commits"]
+        assert verdicts, f"no commits verified on {device.name}"
+        assert {v["result"] for v in verdicts} == {"authorized"}, verdicts
     assert all(owner in ("A", "B") for owner, _op, _bucket in spy.calls)
