@@ -68,7 +68,7 @@
   <div id="admission-events-watch-{{ team_name }}"
        hx-get="/teams/{{ team_name }}/admission-events/watch"
        hx-trigger="load delay:{{ admission_watch_delay }}, refresh"
-       hx-sync="#team-detail:replace"
+       hx-sync="#team-detail:queue last"
        hx-swap="outerHTML"
        style="display:none"></div>
 </div>
