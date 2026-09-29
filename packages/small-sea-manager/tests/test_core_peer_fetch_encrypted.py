@@ -247,3 +247,34 @@ def test_admission_import_alone_does_not_let_the_inviter_read_the_invitee(teams)
 
     with pytest.raises(PeerSenderKeyUnavailableError):
         alice.fetch_teammate_core(_ALICE_TEAM, bob_id)
+
+
+def test_delivering_the_redistribution_artifact_lets_the_inviter_read_the_invitee(teams):
+    """PLACEHOLDER (#228, task 100)."""
+    root, alice, bob = teams["root"], teams["alice"], teams["bob"]
+    assert bob.import_admission_package(_ALICE_TEAM, teams["alice_package"]) is True
+
+    db = root / "Participants" / teams["alice_hex"] / _ALICE_TEAM / "Sync" / "core.db"
+    with sqlite3.connect(str(db)) as conn:
+        ids = [row[0].hex() for row in conn.execute("SELECT id FROM teammate")]
+    (bob_id,) = [i for i in ids if i != teams["alice_teammate_id"]]
+
+    bob.push_team(_ALICE_TEAM)
+    report = bob.reconcile_runtime_state(_ALICE_TEAM)
+    (artifact,) = report["redistribution_artifacts"]
+
+    # Same call the Hub's runtime inbox makes on receipt.
+    Provisioning.receive_sender_key_distribution(
+        root, teams["alice_hex"], _ALICE_TEAM, artifact["distribution_payload"]
+    )
+    try:
+        result = alice.fetch_teammate_core(_ALICE_TEAM, bob_id)
+        print("RESULT1", result)
+    except Exception as e:
+        print("RESULT1 exc", type(e), e)
+    bob.push_team(_ALICE_TEAM)
+    try:
+        result = alice.fetch_teammate_core(_ALICE_TEAM, bob_id)
+        print("RESULT2", result)
+    except Exception as e:
+        print("RESULT2 exc", type(e), e)
