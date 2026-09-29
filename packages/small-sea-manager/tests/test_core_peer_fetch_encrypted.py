@@ -33,6 +33,7 @@ from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app as hub_app
 from small_sea_manager.manager import (
+    CoreFetchRemoteError,
     PeerSenderKeyUnavailableError,
     TeamManager,
     core_peer_latest_ref,
@@ -249,8 +250,20 @@ def test_admission_import_alone_does_not_let_the_inviter_read_the_invitee(teams)
         alice.fetch_teammate_core(_ALICE_TEAM, bob_id)
 
 
-def test_delivering_the_redistribution_artifact_lets_the_inviter_read_the_invitee(teams):
-    """PLACEHOLDER (#228, task 100)."""
+def test_delivered_sender_key_cannot_read_a_link_published_before_it(teams):
+    """Delivering Bob's sender key still leaves Alice unable to read his chain (#228, #280, task 100).
+
+    Continues task 99's probe.
+    Bob's redistribution artifact is handed to Alice's Provisioning directly,
+    the same call the Hub's runtime inbox makes on receipt; the Hub delivery
+    path itself is not exercised.
+    Alice now holds Bob's sender key, but at the chain position Bob had reached
+    when he distributed it.
+    Bob's `latest-link.yaml` was encrypted one step earlier, and a chain key
+    cannot be wound backward, so the fetch fails.
+    This is #280's pre-join problem seen from the inviter's side.
+    Not tested: whether a link Bob publishes after the delivery is readable.
+    """
     root, alice, bob = teams["root"], teams["alice"], teams["bob"]
     assert bob.import_admission_package(_ALICE_TEAM, teams["alice_package"]) is True
 
@@ -263,18 +276,8 @@ def test_delivering_the_redistribution_artifact_lets_the_inviter_read_the_invite
     report = bob.reconcile_runtime_state(_ALICE_TEAM)
     (artifact,) = report["redistribution_artifacts"]
 
-    # Same call the Hub's runtime inbox makes on receipt.
     Provisioning.receive_sender_key_distribution(
         root, teams["alice_hex"], _ALICE_TEAM, artifact["distribution_payload"]
     )
-    try:
-        result = alice.fetch_teammate_core(_ALICE_TEAM, bob_id)
-        print("RESULT1", result)
-    except Exception as e:
-        print("RESULT1 exc", type(e), e)
-    bob.push_team(_ALICE_TEAM)
-    try:
-        result = alice.fetch_teammate_core(_ALICE_TEAM, bob_id)
-        print("RESULT2", result)
-    except Exception as e:
-        print("RESULT2 exc", type(e), e)
+    with pytest.raises(CoreFetchRemoteError, match="No skipped key for iteration"):
+        alice.fetch_teammate_core(_ALICE_TEAM, bob_id)
