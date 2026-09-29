@@ -463,3 +463,86 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     panel_resp = bob_client.get("/teams/ProjectX/niches/docs/peer_panel")
     assert panel_resp.status_code == 200
     assert "Has changes since your last fetch" not in panel_resp.text
+
+
+def _fresh_web_client(playground_dir, monkeypatch, *, auto_approve):
+    root = pathlib.Path(playground_dir)
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "files.toml"))
+    backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=auto_approve)
+    app.state.backend = backend
+    http = TestClient(app)
+    alice_hex = Provisioning.create_new_participant(root, "Alice")
+    Provisioning.register_app_for_participant(root, alice_hex, sync.HUB_APP_NAME)
+    Provisioning.create_team(root, alice_hex, "ProjectX")
+    Provisioning.activate_app_for_team(root, alice_hex, "ProjectX", sync.HUB_APP_NAME)
+    files_root = str(root / "files")
+    files.init_files(files_root, alice_hex)
+    client = TestClient(create_app(files_root, alice_hex, _http_client=http))
+    return files_root, alice_hex, backend, client
+
+
+def _assert_no_path_named_for_team(files_root, team_name):
+    assert not [p for p in pathlib.Path(files_root).rglob("*") if p.name == team_name]
+
+
+def test_web_fresh_index_offers_team_login(playground_dir, monkeypatch):
+    _, _, _, client = _fresh_web_client(playground_dir, monkeypatch, auto_approve=True)
+    resp = client.get("/")
+    assert resp.status_code == 200
+    assert 'action="/teams/login"' in resp.text
+    assert 'name="team_name"' in resp.text
+
+
+def test_web_login_auto_approved_team_appears_on_index(playground_dir, monkeypatch):
+    files_root, alice_hex, _, client = _fresh_web_client(
+        playground_dir, monkeypatch, auto_approve=True
+    )
+    resp = client.post("/teams/login", data={"team_name": "ProjectX"})
+    assert resp.status_code == 200
+    assert 'id="team-ProjectX"' in resp.text
+    assert "Add niche" in resp.text
+    assert sync.resolve_team_context(files_root, alice_hex, "ProjectX").team_id
+    _assert_no_path_named_for_team(files_root, "ProjectX")
+
+
+def test_web_login_pin_flow_team_appears_on_index(playground_dir, monkeypatch):
+    files_root, alice_hex, backend, client = _fresh_web_client(
+        playground_dir, monkeypatch, auto_approve=False
+    )
+    captured = {}
+    original = backend.request_session
+
+    def _capturing(participant, app_name, team, client_name, mode="encrypted"):
+        pending_id, pin = original(participant, app_name, team, client_name, mode=mode)
+        captured["pin"] = pin
+        return pending_id, pin
+
+    backend.request_session = _capturing
+    try:
+        resp = client.post("/teams/login", data={"team_name": "ProjectX"})
+        assert resp.status_code == 200
+        # Pending: the PIN form is on the index, and the team is not materialized.
+        assert "PIN sent via notification" in resp.text
+        assert 'id="team-ProjectX"' not in resp.text
+        assert not list(files.iter_materialized_teams(files_root, alice_hex))
+
+        confirm = client.post("/teams/ProjectX/session/confirm", data={"pin": captured["pin"]})
+        assert confirm.status_code == 200
+        assert confirm.headers["HX-Refresh"] == "true"
+
+        index = client.get("/")
+        assert 'id="team-ProjectX"' in index.text
+        assert "PIN sent via notification" not in index.text
+        _assert_no_path_named_for_team(files_root, "ProjectX")
+    finally:
+        backend.request_session = original
+
+
+def test_web_login_unknown_team_shows_error_on_index(playground_dir, monkeypatch):
+    files_root, alice_hex, _, client = _fresh_web_client(
+        playground_dir, monkeypatch, auto_approve=True
+    )
+    resp = client.post("/teams/login", data={"team_name": "NoSuchTeam"})
+    assert resp.status_code == 200
+    assert "notice-err" in resp.text
+    assert not list(files.iter_materialized_teams(files_root, alice_hex))
