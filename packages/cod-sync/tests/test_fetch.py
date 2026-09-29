@@ -497,3 +497,33 @@ def test_a_published_merge_round_trips(scratch_dir):
     assert result.observed_head == merged.observed_head
     bob.checkout_branch("main", result.observed_head)
     assert working_tree_files(bob) == working_tree_files(alice)
+
+
+# ---------------------------------------------------------- provider replay #
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="#265: a replayed older latest-link is accepted as current",
+)
+def test_a_replayed_older_latest_link_is_refused_or_flagged(scratch_dir):
+    """A store that serves an older, validly signed head must not pass as current.
+
+    Bob has already seen the newest head.
+    The store then serves the previous link as `latest-link.yaml`.
+    Every link in that chain is genuine, so only a device that remembers what
+    it saw before can tell the state moved backwards.
+    """
+    scratch = pathlib.Path(scratch_dir)
+    _alice, publication, heads = build_chain(scratch, 2)
+    bob = reader(scratch)
+    make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+    assert bob.resolve_ref(PIN) == heads[-1]
+
+    latest_path = publication / "latest-link.yaml"
+    newest = decode_link(latest_path.read_bytes())
+    older_bytes = (publication / f"L-{newest.previous.link_id}.yaml").read_bytes()
+    latest_path.write_bytes(older_bytes)
+
+    with pytest.raises(ChainError):
+        make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
