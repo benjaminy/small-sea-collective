@@ -15,13 +15,14 @@ import json
 import os
 import sqlite3
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from cod_sync.protocol import CodSync
 from cod_sync.repo import Repo
-from cod_sync.store import LocalFolderStore
+from cod_sync.store import LocalFolderStore, StoreTransportError
 from fastapi.testclient import TestClient
 
 from small_sea_hub.backend import SmallSeaBackend
@@ -31,6 +32,7 @@ from small_sea_note_to_self.db import device_local_db_path
 from small_sea_note_to_self.sender_keys import (
     load_peer_sender_key,
     load_team_sender_key,
+    save_peer_sender_key,
 )
 
 OBJECT_PATH = "chains/latest-link.yaml"
@@ -436,3 +438,57 @@ def _record_ownership(core_db, device_key_id, teammate_id):
             (device_key_id, teammate_id, b"unused-here", "2026-01-01T00:00:00+00:00"),
         )
         conn.commit()
+
+
+# --- Newcomer and pre-join history (#280) ---
+
+
+def test_a_newcomers_cod_sync_fetch_fails_on_a_link_published_before_it_joined(routed):
+    # Pins #280 through the Hub: Bob's key for Alice starts at the step Alice
+    # had when Bob joined, so one pre-join publication makes the chain unreadable.
+    from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
+
+    env = routed
+    alice_token = open_session(env, "Alice")
+    bob_token = open_session(env, "Bob")
+
+    work = env.root / "alice-work"
+    work.mkdir()
+    repo = Repo.init(work / ".git").with_work_tree(work)
+    repo.config("user.email", "alice@test")
+    repo.config("user.name", "alice")
+    alice_store = SmallSeaStore(alice_token, client=env.http)
+
+    def publish_commit(name):
+        (work / name).write_text(name)
+        repo.stage([name])
+        repo.commit(f"write {name}")
+        CodSync(repo, alice_store).publish()
+
+    publish_commit("before-join.txt")
+
+    # Bob joins now: he holds Alice's key at its current step, without the
+    # signing private key.
+    alice_now = load_team_sender_key(
+        device_local_db_path(env.root, env.alice), env.team_id
+    )
+    save_peer_sender_key(
+        device_local_db_path(env.root, env.bob),
+        env.team_id,
+        replace(alice_now, signing_private_key=None, skipped_message_keys={}),
+    )
+
+    publish_commit("after-join.txt")
+
+    bob_work = env.root / "bob-work"
+    bob_work.mkdir()
+    bob_repo = Repo.init(bob_work / ".git").with_work_tree(bob_work)
+    bob_store = PeerSmallSeaStore(bob_token, env.alice_teammate.hex(), client=env.http)
+    env.requested.clear()
+    with pytest.raises(StoreTransportError, match="No skipped key for iteration"):
+        CodSync(bob_repo, bob_store).fetch()
+
+    # The head and the newest bundle were published after the join and read
+    # fine; the fetch stops at the archived pre-join link.
+    assert env.requested[0] == "latest-link.yaml"
+    assert env.requested[-1].startswith("L-")
