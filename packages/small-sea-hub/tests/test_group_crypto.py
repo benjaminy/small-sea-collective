@@ -313,3 +313,48 @@ def test_an_unbound_envelope_is_refused_rather_than_read(reader):
     with pytest.raises(PublicationNotAuthenticExn) as refused:
         accept(env, json.dumps(unbound).encode("utf-8"))
     assert refused.value.reason == "unreadable_envelope"
+
+
+# --- Newcomer and re-read limits (#280, #264) ---
+
+
+def _hand_current_key_to_newcomer(env, device_name):
+    """Replace the reader's stored key for a device with the device's current one.
+
+    This is what a device that joins now receives: the chain at its present
+    step, without the signing private key.
+    """
+    current = env.devices[device_name]
+    save_peer_sender_key(
+        env.local_db,
+        env.team_id,
+        replace(current, signing_private_key=None, skipped_message_keys={}),
+    )
+
+
+def test_newcomer_cannot_read_a_message_published_before_it_joined(reader):
+    # Pins #280: a sender key handed over at step N cannot derive step < N.
+    env = reader
+    before_join = publish(env, "alice_d", b"published before join")
+    _hand_current_key_to_newcomer(env, "alice_d")
+    after_join = publish(env, "alice_d", b"published after join")
+
+    with pytest.raises(ValueError, match="No skipped key for iteration 0"):
+        accept(env, before_join)
+
+    assert accept(env, after_join) == b"published after join"
+
+
+def test_a_successful_read_keeps_that_messages_key_so_a_reread_works(reader):
+    # Pins #264: every decrypt retains its iteration's key in skipped_message_keys.
+    env = reader
+    payload = publish(env, "alice_d", b"read me twice")
+    device_id = env.devices["alice_d"].sender_device_key_id
+    assert load_peer_sender_key(env.local_db, env.team_id, device_id).skipped_message_keys == {}
+
+    assert accept(env, payload) == b"read me twice"
+
+    stored = load_peer_sender_key(env.local_db, env.team_id, device_id)
+    assert set(stored.skipped_message_keys) == {0}
+    assert stored.iteration == 1
+    assert accept(env, payload) == b"read me twice"
