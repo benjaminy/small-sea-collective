@@ -6,6 +6,21 @@
 
 <div id="niche-detail"></div>
 
+{% if pending_teams %}
+<div id="pending-teams">
+  {% for pending_name in pending_teams %}
+  <div class="team-section">
+    <h2>{{ pending_name }}</h2>
+    <div style="padding:0.6rem 1rem">
+      {% with team_name = pending_name, team_session_status = "pending", session_error = None %}
+        {% include "fragments/team_session.html" %}
+      {% endwith %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
 <div id="teams-container">
   {% if teams %}
     {% for team in teams %}
@@ -17,10 +32,20 @@
     </p>
     <p style="color:#78716c; margin-bottom:1rem; font-size:0.92rem">
       Teams are created in Small Sea Manager. Once you are a teammate of a
-      team, run <code>ssc-files login &lt;team_name&gt;</code>
-      from a terminal to open a Hub session and materialize the team locally.
+      team, enter its name below to open a Hub session and materialize the
+      team locally.
     </p>
   {% endif %}
+</div>
+
+<div id="team-login" style="padding:0.6rem 0">
+  {% if login_error %}
+  <p class="notice notice-err" style="margin-bottom:0.5rem">{{ login_error }}</p>
+  {% endif %}
+  <form class="inline-form" method="post" action="/teams/login">
+    <input type="text" name="team_name" placeholder="Team name" required>
+    <button class="btn btn-secondary" type="submit">Connect team</button>
+  </form>
 </div>
 
 {% endblock %}

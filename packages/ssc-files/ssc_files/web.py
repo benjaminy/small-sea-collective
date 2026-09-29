@@ -3,7 +3,7 @@
 import pathlib
 
 from fastapi import FastAPI, Form, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from small_sea_client.client import SmallSeaClient
 
@@ -195,20 +195,48 @@ def create_app(
             },
         )
 
-    @app.get("/", response_class=HTMLResponse)
-    async def index(request: Request):
+    def _index_response(request: Request, login_error: str | None = None):
         vr, ph = _vr(request), _ph(request)
+        contexts = list(files.iter_materialized_teams(vr, ph))
         team_data = [
             {
                 "name": ctx.team_name,
                 "niches": _niches_with_info(vr, ph, ctx),
             }
-            for ctx in files.iter_materialized_teams(vr, ph)
+            for ctx in contexts
         ]
+        materialized = {ctx.team_name for ctx in contexts}
+        pending_teams = [name for name in _pending(request) if name not in materialized]
         return templates.TemplateResponse(
             "index.html",
-            {"request": request, "teams": team_data, "participant_short": ph[:8]},
+            {
+                "request": request,
+                "teams": team_data,
+                "pending_teams": pending_teams,
+                "login_error": login_error,
+                "participant_short": ph[:8],
+            },
         )
+
+    @app.get("/", response_class=HTMLResponse)
+    async def index(request: Request):
+        return _index_response(request)
+
+    @app.post("/teams/login", response_class=HTMLResponse)
+    async def team_login(request: Request, team_name: str = Form(...)):
+        """Start the first session for a team that is not yet materialized.
+
+        An auto-approved session materializes the team at once.
+        Otherwise the team is listed as pending on the index, where the
+        PIN form appears.
+        """
+        team_name = team_name.strip()
+        if not team_name:
+            return _index_response(request, login_error="Enter a team name.")
+        error = _start_login(request, team_name)
+        if error:
+            return _index_response(request, login_error=error)
+        return RedirectResponse("/", status_code=303)
 
     @app.post("/teams/{team_name}/niches", response_class=HTMLResponse)
     async def create_niche(
@@ -243,8 +271,8 @@ def create_app(
         """Lightweight fragment endpoint for background peer-panel polling."""
         return _peer_panel_response(request, team_name, niche_name)
 
-    @app.post("/teams/{team_name}/session/request", response_class=HTMLResponse)
-    async def team_session_request(request: Request, team_name: str):
+    def _start_login(request: Request, team_name: str) -> str | None:
+        """Request a Hub session; return an error message, or None on success."""
         try:
             session, pending_id = _client(request).start_session(
                 _ph(request), sync.HUB_APP_NAME, team_name, "SmallSeaCollectiveFilesWeb"
@@ -255,8 +283,13 @@ def create_app(
             else:
                 _pending(request)[team_name] = pending_id
         except Exception as exc:
-            return _session_fragment(request, team_name, error=str(exc))
-        return _session_fragment(request, team_name)
+            return str(exc)
+        return None
+
+    @app.post("/teams/{team_name}/session/request", response_class=HTMLResponse)
+    async def team_session_request(request: Request, team_name: str):
+        error = _start_login(request, team_name)
+        return _session_fragment(request, team_name, error=error)
 
     @app.post("/teams/{team_name}/session/confirm", response_class=HTMLResponse)
     async def team_session_confirm(
@@ -267,13 +300,21 @@ def create_app(
             return _session_fragment(
                 request, team_name, error="No pending session request for this team."
             )
+        was_materialized = any(
+            ctx.team_name == team_name
+            for ctx in files.iter_materialized_teams(_vr(request), _ph(request))
+        )
         try:
             session = _client(request).confirm_session(pending_id, pin.strip())
             sync.finalize_login(_vr(request), team_name, _ph(request), session)
             _pending(request).pop(team_name, None)
         except Exception as exc:
             return _session_fragment(request, team_name, error=str(exc))
-        return _session_fragment(request, team_name)
+        response = _session_fragment(request, team_name)
+        if not was_materialized:
+            # The team just appeared; reload so the index lists it with its niches.
+            response.headers["HX-Refresh"] = "true"
+        return response
 
     @app.post(
         "/teams/{team_name}/session/resend-notification", response_class=HTMLResponse
