@@ -32,7 +32,11 @@ from botocore.config import Config as BotoConfig
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app as hub_app
-from small_sea_manager.manager import TeamManager, core_peer_latest_ref
+from small_sea_manager.manager import (
+    PeerSenderKeyUnavailableError,
+    TeamManager,
+    core_peer_latest_ref,
+)
 from test_support import accept_and_export, acceptance_record_from_courier
 
 _ALICE_TEAM = "ProjectX"
@@ -86,7 +90,7 @@ def _core_berth_id_hex(root, participant_hex, team_name):
 
 
 def _invite(root, inviter, inviter_hex, invitee, team_name, inviter_minio):
-    """Run one whole invitation and return (inviter_teammate_id, invitee_label).
+    """Run one whole invitation and return (inviter_teammate_id, admission_package_token).
 
     Publication is encrypted throughout, which is what the invitee's clone of
     the inviter's chain has to decrypt with the sender key carried in the
@@ -110,9 +114,9 @@ def _invite(root, inviter, inviter_hex, invitee, team_name, inviter_minio):
     inviter.push_team(team_name)
 
     acceptance_b64 = accept_and_export(invitee, token)
-    inviter.complete_invitation_acceptance(team_name, acceptance_b64)
+    report = inviter.complete_invitation_acceptance(team_name, acceptance_b64)
     inviter.push_team(team_name)
-    return team["teammate_id_hex"]
+    return team["teammate_id_hex"], report["admission_package"]
 
 
 @pytest.fixture(scope="module")
@@ -149,12 +153,13 @@ def teams(playground_dir, minios):
     alice = TeamManager(root, alice_hex, _http_client=http)
     bob = TeamManager(root, bob_hex, _http_client=http)
 
-    alice_teammate_id = _invite(root, alice, alice_hex, bob, _ALICE_TEAM, alice_minio)
-    bob_teammate_id = _invite(root, bob, bob_hex, alice, _BOB_TEAM, bob_minio)
+    alice_teammate_id, alice_package = _invite(root, alice, alice_hex, bob, _ALICE_TEAM, alice_minio)
+    bob_teammate_id, _ = _invite(root, bob, bob_hex, alice, _BOB_TEAM, bob_minio)
 
     return dict(
         root=root,
         alice=alice, alice_hex=alice_hex, alice_teammate_id=alice_teammate_id,
+        alice_package=alice_package,
         bob=bob, bob_hex=bob_hex, bob_teammate_id=bob_teammate_id,
     )
 
@@ -208,3 +213,37 @@ def test_the_same_fetch_works_with_the_invitation_direction_reversed(teams):
         writer="bob",
         teammate_id=teams["bob_teammate_id"],
     )
+
+
+
+
+def test_admission_import_alone_does_not_let_the_inviter_read_the_invitee(teams):
+    """The admission package fixes the invitee's side but not the inviter's read (#228, task 99).
+
+    Alice invited Bob to ProjectX.
+    After Bob imports the admission package, his Core holds his own membership
+    certificate, so `reconcile_runtime_state` reports his device as trusted and
+    produces a sender-key redistribution artifact for Alice's device.
+    That is the step that returned early before the import.
+
+    Alice's fetch of Bob's chain still fails with `PeerSenderKeyUnavailableError`.
+    The artifact is only returned to the caller here.
+    Delivering it to Alice runs in the Hub's runtime watch, which this probe
+    does not start, so Alice never receives Bob's sender key.
+    Whether delivery would then make the read work is not tested.
+    """
+    root, alice, bob = teams["root"], teams["alice"], teams["bob"]
+    assert bob.import_admission_package(_ALICE_TEAM, teams["alice_package"]) is True
+
+    db = root / "Participants" / teams["alice_hex"] / _ALICE_TEAM / "Sync" / "core.db"
+    with sqlite3.connect(str(db)) as conn:
+        ids = [row[0].hex() for row in conn.execute("SELECT id FROM teammate")]
+    (bob_id,) = [i for i in ids if i != teams["alice_teammate_id"]]
+
+    bob.push_team(_ALICE_TEAM)
+    report = bob.reconcile_runtime_state(_ALICE_TEAM)
+    assert report["local_device_trusted"] is True
+    assert len(report["redistribution_artifacts"]) == 1
+
+    with pytest.raises(PeerSenderKeyUnavailableError):
+        alice.fetch_teammate_core(_ALICE_TEAM, bob_id)
