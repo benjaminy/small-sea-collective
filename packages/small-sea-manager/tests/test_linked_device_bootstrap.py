@@ -799,3 +799,76 @@ def test_linked_device_bootstrap_prepare_reentry_is_rejected(playground_dir):
     manager2.prepare_linked_device_team_join("ProjectX")
     with pytest.raises(ValueError, match="already in progress"):
         manager2.prepare_linked_device_team_join("ProjectX")
+
+
+def test_linked_device_reads_authorizer_pre_link_messages(playground_dir):
+    """A linked device can read the authorizer's pre-link messages (task 101, #280).
+
+    Alice's device A encrypts two messages on her team sender chain, then links
+    device B.
+    B's peer row for A's own device key arrives at iteration 0 with no
+    skipped keys, because A's own receiver row advances only when A reads its
+    own objects.
+    B decrypts both pre-link messages from that row.
+    So the linked-device bootstrap already gives B A's full history, which
+    contradicts #280's account of linked devices.
+    Crypto level only: the Hub fetch path is not exercised.
+    Not tested: a case where A has read its own objects first, which moves
+    the row forward.
+    """
+    workspace = pathlib.Path(playground_dir)
+    root1 = workspace / "install-a"
+    root2 = workspace / "install-b"
+    bob_root = workspace / "install-bob"
+    cloud_dir = workspace / "cloud"
+    root1.mkdir()
+    root2.mkdir()
+    bob_root.mkdir()
+    cloud_dir.mkdir()
+
+    alice_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
+    bob_hex = create_new_participant(bob_root, "Bob")
+
+    join_request = create_identity_join_request(root2)
+    manager1 = TeamManager(root1, alice_hex)
+    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+
+    team_result = manager1.create_team("ProjectX")
+    team_id = bytes.fromhex(team_result["team_id_hex"])
+    teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
+    bob = _bootstrap_remote_teammate_installation(
+        root1,
+        alice_hex,
+        bob_root,
+        bob_hex,
+        "ProjectX",
+        team_id,
+        teammate_id,
+    )
+    _copy_team_baseline(root1, root2, alice_hex, alice_hex, "ProjectX", team_id, teammate_id)
+
+    local_db1 = device_local_db_path(root1, alice_hex)
+    local_db2 = device_local_db_path(root2, alice_hex)
+    alice_sender = load_team_sender_key(local_db1, team_id)
+    assert alice_sender is not None
+    alice_key_id = alice_sender.sender_device_key_id
+    alice_sender, first_message = group_encrypt(team_id, alice_sender, b"first from Alice", CONTEXT)
+    alice_sender, second_message = group_encrypt(team_id, alice_sender, b"second from Alice", CONTEXT)
+    save_team_sender_key(local_db1, team_id, alice_sender)
+
+    manager2 = TeamManager(root2, alice_hex)
+    prepared = manager2.prepare_linked_device_team_join("ProjectX")
+    created = manager1.create_linked_device_bootstrap("ProjectX", prepared["join_request_bundle"])
+    manager2.finalize_linked_device_bootstrap("ProjectX", created["bootstrap_bundle"])
+
+    own_row = load_peer_sender_key(local_db2, team_id, alice_key_id)
+    assert own_row is not None
+    assert own_row.iteration == 0
+    assert not own_row.skipped_message_keys
+
+    own_row, plaintext = group_decrypt(first_message, own_row, CONTEXT)
+    assert plaintext == b"first from Alice"
+    own_row, plaintext = group_decrypt(second_message, own_row, CONTEXT)
+    assert plaintext == b"second from Alice"
