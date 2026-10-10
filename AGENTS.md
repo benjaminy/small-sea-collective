@@ -20,20 +20,15 @@ We have much to learn and build before that is possible, so choosing the next us
 
 - **Identify failure modes without automatically building the fix.**
   Look for designs that could fail under adversarial inputs, partial failure, concurrency, or real-world use.
-  Record consequential findings for later work when they fall outside the current task.
   Build safeguards now when the user asks for them, the current experiment needs them, or postponing them would endanger developer data, credentials, or research integrity.
 
 - **Respect architectural boundaries without building everything at once.**
   The architectural mandates below guide the design.
   A demo need not implement every part of that design, but incompleteness does not justify assigning responsibilities to the wrong component.
 
-- **Measure progress by what people can use and what we learn.**
-  A founder's focus on shipping and a researcher's willingness to question assumptions both help.
-  Our aim is social benefit, not revenue or publication for its own sake.
-
 - **Learn from prior art, and examine where it fits.**
   Projects such as Signal and the fediverse have much to teach us.
-  Small Sea centers small teams of ordinary people, rather than individuals, hubs, or channels.
+  Small Sea centers small teams of ordinary people, rather than individuals, servers, or channels.
   We also expect to bootstrap through existing physical infrastructure and commercial services.
   These choices may require different designs; explain why an existing approach does or does not fit before inventing a new one.
 
@@ -86,8 +81,6 @@ Sentences that fail usually fail in the same way: a noun is doing the work a ver
 
 # Small Sea AI Agent Guidelines
 
-As an AI agent working in this repository, you must follow these rules to maintain project integrity and follow existing conventions.
-
 ## General Guidelines
 
 **Simplicity first.**
@@ -113,14 +106,6 @@ Do not treat the newest instruction as automatically correct.
 When a request conflicts with earlier decisions or with evidence, name the conflict before acting, and say whether you are persuaded or merely deferring.
 Change position because of a better argument, not because of who made it or when.
 
-**Write concisely.**
-Prefer one specific claim over three vague ones.
-Cut filler and hype words like "robust", "comprehensive", and "seamless", but keep load-bearing qualifiers.
-Summaries state what changed and why it matters; they do not narrate the process of getting there.
-
-These guidelines bias toward caution over speed.
-For trivial tasks, use judgment.
-
 ## Project Management Rules
 
 - **Commits.** You may commit when every change is inside `.IN_PROGRESS/`, or when a human tells you to in conversation.
@@ -128,9 +113,6 @@ For trivial tasks, use judgment.
    Do not amend or rewrite existing commits.
 - **Micro tests, not unit tests.** The project calls quick, developer-focused tests "micro tests".
    Use that term in discussion and documentation.
-- **Branch lifecycle.** When starting, continuing, or finishing a nontrivial unit of branch work, read and follow [small-sea-branch-lifecycle](.agents/skills/small-sea-branch-lifecycle/SKILL.md).
-   If your harness does not discover skills, read the linked file directly.
-   Skip this for work that is conceptually very small in scope (cleanup, rename, etc).
 
 ## Architectural Mandates
 - **Hub as Gateway**: In production, all Small Sea internet traffic must go through the **Hub**.
@@ -142,12 +124,8 @@ For trivial tasks, use judgment.
 - **Local-Only Testing**: During testing, avoid internet communication where possible. If tests require network interaction, use local mocks or services like MinIO.
 
 ## Contextual Knowledge
-- Consult [architecture.md](architecture.md) for the core concepts (Teams, Apps, Berths) and the technical pillars (X3DH, Git-based sync).
-- Familiarize yourself with the [README.md](README.md) to understand the "Why?" behind the project's local-first philosophy.
+Consult [architecture.md](architecture.md) for the core concepts (Teams, Apps, Berths) and the technical pillars (X3DH, Git-based sync).
 
 ## Style Rules
-- In plain text prose files (markdown, latex, etc) use semantic line breaks
-   - Always line break after a complete sentence
-   - Line breaks within sentences are discouraged
-      - Only acceptable at natural pause points in very long sentences
-   - Do not reformat existing text to follow this rule unless specifically instructed to do so
+In prose files (markdown, latex, etc), use semantic line breaks: break after every sentence, and within a sentence only at a natural pause in a very long one.
+Do not reformat existing text to follow this rule unless asked.
