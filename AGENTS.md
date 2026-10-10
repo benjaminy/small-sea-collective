@@ -1,3 +1,42 @@
+## Project Phase: R&D
+
+Small Sea aims to bring decentralized, E2EE, local-first software to ordinary people.
+We have much to learn and build before that is possible, so choosing the next useful piece of work matters more than completing every detail.
+
+- **Choose work that teaches us something.**
+  Prioritize tasks that expose or answer important unknowns over filling in obvious details, and working demos over polish.
+  Defer decisions when the next experiment is likely to change them; make the decisions needed to run that experiment.
+
+- **Question precedent within the scope of the work.**
+  Existing code and documentation vary widely in maturity.
+  Judge whether a pattern expresses the intended design or reflects a shortcut from an earlier experiment.
+  If that distinction matters and the repository does not resolve it, discuss it with a human.
+  Follow the surgical-change rules below, and discuss broader replacements before expanding the scope.
+
+- **Prefer replacement over backward compatibility.**
+  We have no installed user base or production service to preserve.
+  We can replace schemas and interfaces without supporting earlier experiments, but must preserve developer data and research results we still need.
+  Keep version markers where they serve a concrete purpose; defer compatibility machinery until we need it.
+
+- **Identify failure modes without automatically building the fix.**
+  Look for designs that could fail under adversarial inputs, partial failure, concurrency, or real-world use.
+  Record consequential findings for later work when they fall outside the current task.
+  Build safeguards now when the user asks for them, the current experiment needs them, or postponing them would endanger developer data, credentials, or research integrity.
+
+- **Respect architectural boundaries without building everything at once.**
+  The architectural mandates below guide the design.
+  A demo need not implement every part of that design, but incompleteness does not justify assigning responsibilities to the wrong component.
+
+- **Measure progress by what people can use and what we learn.**
+  A founder's focus on shipping and a researcher's willingness to question assumptions both help.
+  Our aim is social benefit, not revenue or publication for its own sake.
+
+- **Learn from prior art, and examine where it fits.**
+  Projects such as Signal and the fediverse have much to teach us.
+  Small Sea centers small teams of ordinary people, rather than individuals, hubs, or channels.
+  We also expect to bootstrap through existing physical infrastructure and commercial services.
+  These choices may require different designs; explain why an existing approach does or does not fit before inventing a new one.
+
 # Technical Writing Style Guide
 
 You were trained on an ocean of obscurantist prose:
@@ -48,27 +87,6 @@ Sentences that fail usually fail in the same way: a noun is doing the work a ver
 # Small Sea AI Agent Guidelines
 
 As an AI agent working in this repository, you must follow these rules to maintain project integrity and follow existing conventions.
-
-## Project Phase: Research, Not Production
-
-**This is a research project, not a deployed product.**
-There is no installed user base, production data, or service availability to preserve.
-
-Actively identify designs that could fail under adversarial inputs, partial failure, concurrency, migration, or real-world operations.
-Those observations are valuable even when the fix does not belong in the current change, and a focused GitHub issue is its normal home.
-Do not add compatibility layers, rollout machinery, migration paths, defensive complexity, or operational recovery systems for a hypothetical deployment.
-Implement a production-oriented safeguard now only when the user asks for it,
-it is needed to validate the current research,
-or postponing it would endanger developer data, credentials, or research integrity.
-
-Existing code and documentation vary widely in maturity.
-Treat repository precedent as evidence, not authority.
-Before following an existing pattern, judge whether it expresses the intended design or is a research-stage shortcut that should be corrected.
-If that distinction matters and the repository does not resolve it, ask a human rather than silently copying or correcting the pattern.
-
-Prefer clean designs over compatibility with existing research artifacts unless the user asks otherwise.
-Keep schema/version markers in place so future compatibility work remains possible.
-The architectural mandates below describe the intended destination, not what must be built now.
 
 ## General Guidelines
 
