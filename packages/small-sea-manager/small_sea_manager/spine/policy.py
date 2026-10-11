@@ -36,6 +36,8 @@ def apply_ordinary(state: dict, signer: str, payload: dict) -> tuple[dict | None
             return None, "cannot add a device for another member"
         if payload["device_key"] in state["devices"]:
             return None, "device key already exists"
+        if not encoding.public_key_allowed(payload["device_key"]):
+            return None, "disallowed device key"
         result = _copy(state)
         row = {key: payload[key] for key in ("device_key", "member_id", "label")}
         result["devices"][row["device_key"]] = row

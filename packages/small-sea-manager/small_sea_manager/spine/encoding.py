@@ -99,7 +99,38 @@ def sign(seed: bytes, body) -> str:
     ).hex()
 
 
+# Ed25519 y coordinates from libsodium 1.0.18's ge25519_has_small_order.
+# Ignoring the sign bit covers both signs, including OpenSSL's x=0 aliases.
+# https://github.com/jedisct1/libsodium/blob/1.0.18/src/libsodium/crypto_core/ed25519/ref10/ed25519_ref10.c#L966
+_ED25519_P = 2**255 - 19
+_SMALL_ORDER_Y = frozenset([
+    0, 1, _ED25519_P - 1, _ED25519_P, _ED25519_P + 1,
+    int.from_bytes(bytes.fromhex(
+        "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"), "little"),
+    int.from_bytes(bytes.fromhex(
+        "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"), "little"),
+])
+
+
+def public_key_allowed(key: str) -> bool:
+    """Require 32 bytes, canonical y, and no small-order point.
+
+    Signature verification still checks curve membership and the signature.
+    This is not a full prime-subgroup validation routine.
+    """
+    try:
+        raw = bytes.fromhex(key)
+    except ValueError:
+        return False
+    if len(raw) != 32:
+        return False
+    y = int.from_bytes(raw, "little") & ((1 << 255) - 1)
+    return y < _ED25519_P and y not in _SMALL_ORDER_Y
+
+
 def verify(author: str, body, sig: str) -> bool:
+    if not public_key_allowed(author):
+        return False
     try:
         Ed25519PublicKey.from_public_bytes(bytes.fromhex(author)).verify(
             bytes.fromhex(sig), b"spine-v1 sig\0" + canonical(body)
@@ -199,6 +230,8 @@ def decode_genesis(data: bytes) -> dict:
         raise EncodingError("duplicate member or device")
     if any(d["member_id"] not in member_ids for d in g["devices"]):
         raise EncodingError("device names unlisted member")
+    if any(not public_key_allowed(key) for key in keys):
+        raise EncodingError("disallowed device key")
     return {"id": object_id(g), "body": g}
 
 

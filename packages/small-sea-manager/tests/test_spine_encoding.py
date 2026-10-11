@@ -81,9 +81,8 @@ def test_id_changes_with_body():
 
 
 def test_decoded_id_is_the_hash_of_the_body_alone():
-    # Ed25519 here is deterministic, so one key cannot give a second valid envelope
-    # over the same body. Instead, pin the literal ID to a hash computed without the
-    # signature, and check that the decoder reports exactly that ID.
+    # Our signer is deterministic, but a key holder can use another nonce.
+    # IDs depend only on the body, regardless of the signature bytes.
     env = json.loads(EVENT_BYTES)
     assert hashlib.sha256(b"spine-v1 id\0" + enc.canonical(env["body"])).hexdigest() == EVENT_ID
     assert enc.decode_event(EVENT_BYTES)["id"] == EVENT_ID
