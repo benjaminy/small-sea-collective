@@ -9,7 +9,7 @@ Their authors raised four points; the owner answered them.
    The device keeps the child as an object marked invalid ("builds on a rejected event"), so the evidence survives and the team is not blocked.
    A branch that *adopts* what another rejected (for example a join adopting Y) still goes to a person, as `reconciliation-design.md` says.
    The owner notes this is a policy question: the protocol could work either way, and we have to start somewhere.
-   - Open, proposed by the orchestrator, awaiting the owner: an event whose parent is known only as a copy inside an *invalid* reconciliation is a different case.
+   - Decided (owner agreed to the orchestrator's proposal): an event whose parent is known only as a copy inside an *invalid* reconciliation is a different case.
      Nobody validly rejected that parent.
      Proposal: treat the copy as a received event with its own disposition, and let ancestry pass through it, so a malformed reconciliation cannot sink honest events.
 2. **Resolved tips that are ancestors of other resolved tips.**
