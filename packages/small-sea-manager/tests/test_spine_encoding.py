@@ -1,5 +1,6 @@
 """Micro tests for spine canonical encoding, strict decoding, IDs, and signatures."""
 
+import hashlib
 import json
 
 import pytest
@@ -79,9 +80,13 @@ def test_id_changes_with_body():
     assert enc.object_id(changed["body"]) != EVENT_ID
 
 
-def test_id_ignores_signature():
+def test_decoded_id_is_the_hash_of_the_body_alone():
+    # Ed25519 here is deterministic, so one key cannot give a second valid envelope
+    # over the same body. Instead, pin the literal ID to a hash computed without the
+    # signature, and check that the decoder reports exactly that ID.
     env = json.loads(EVENT_BYTES)
-    assert enc.object_id(env["body"]) == EVENT_ID
+    assert hashlib.sha256(b"spine-v1 id\0" + enc.canonical(env["body"])).hexdigest() == EVENT_ID
+    assert enc.decode_event(EVENT_BYTES)["id"] == EVENT_ID
 
 
 def test_tampered_signature_fails():

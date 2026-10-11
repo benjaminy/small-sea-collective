@@ -15,6 +15,15 @@ def initial_state(genesis_bytes: bytes) -> dict:
     }
 
 
+def _copy(state: dict) -> dict:
+    """An independent copy; rows are flat dicts of strings, so dict() copies them fully."""
+    return {
+        "members": {key: dict(row) for key, row in state["members"].items()},
+        "devices": {key: dict(row) for key, row in state["devices"].items()},
+        "policy": deepcopy(state["policy"]),
+    }
+
+
 def apply_ordinary(state: dict, signer: str, payload: dict) -> tuple[dict | None, str | None]:
     """Return a fresh state, or (None, reason) when the operation is refused."""
     device = state["devices"].get(signer)
@@ -27,7 +36,7 @@ def apply_ordinary(state: dict, signer: str, payload: dict) -> tuple[dict | None
             return None, "cannot add a device for another member"
         if payload["device_key"] in state["devices"]:
             return None, "device key already exists"
-        result = deepcopy(state)
+        result = _copy(state)
         row = {key: payload[key] for key in ("device_key", "member_id", "label")}
         result["devices"][row["device_key"]] = row
         return result, None
@@ -37,7 +46,7 @@ def apply_ordinary(state: dict, signer: str, payload: dict) -> tuple[dict | None
             return None, "cannot remove self"
         if target not in state["members"]:
             return None, "member does not exist"
-        result = deepcopy(state)
+        result = _copy(state)
         del result["members"][target]
         result["devices"] = {
             key: row for key, row in result["devices"].items()

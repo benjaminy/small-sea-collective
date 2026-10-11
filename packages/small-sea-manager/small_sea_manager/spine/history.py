@@ -1,16 +1,18 @@
-"""Object lookup, ancestry to the pinned genesis, and state at an object.
+"""Object lookup and ancestry to the pinned genesis.
 
 Pure: everything works over a `Lookup` built from encoded objects, never storage.
+The state after an object, which depends on the reconciliation checks, lives in
+`reconcile.Evaluator`.
 Every check returns a result dict with the same four keys:
   status:  "valid", "invalid", or "incomplete"
   reason:  None when valid, else a short string
   missing: IDs needed to decide (non-empty only when incomplete)
-  state:   the state tables after the object (only for state_at / validate_original when valid)
+  state:   the state tables after the object (only from the Evaluator, when valid)
 """
 
 from dataclasses import dataclass
 
-from . import encoding, policy
+from . import encoding
 
 
 @dataclass
@@ -25,18 +27,20 @@ def _result(status, reason=None, missing=(), state=None):
 
 
 def build_lookup(encoded_objects, genesis_bytes: bytes) -> Lookup:
-    """Decode objects and index them by ID, including copies and approvals inside reconciliations.
+    """Decode objects and index them by ID, with every copy and approval carried
+    inside a reconciliation, including reconciliations carried inside others.
 
-    A standalone object wins over a retained copy of the same ID.
+    Each ID is indexed once. Standalone objects win; among carried objects,
+    shallower ones win over deeper ones. Bodies with one ID are identical, so
+    the choice affects only which signature bytes are kept.
     """
     genesis = encoding.decode_genesis(genesis_bytes)
     objects = {genesis["id"]: genesis}
-    decoded = [encoding.decode_object(data) for data in encoded_objects]
-    for obj in decoded:
-        objects.setdefault(obj["id"], obj)
-    for obj in decoded:
-        for held in obj.get("copies", []) + obj.get("approvals", []):
-            objects.setdefault(held["id"], held)
+    queue = [encoding.decode_object(data) for data in encoded_objects]
+    for obj in queue:  # the queue grows as carried objects are found
+        if obj["id"] not in objects:
+            objects[obj["id"]] = obj
+            queue.extend(obj.get("copies", []) + obj.get("approvals", []))
     return Lookup(objects, genesis["id"], genesis_bytes)
 
 
@@ -62,48 +66,10 @@ def _chain(lookup: Lookup, object_id: str):
 
 
 def ancestry(lookup: Lookup, object_id: str) -> dict:
-    """Valid when single parent links reach the pinned genesis; otherwise invalid or incomplete."""
+    """Valid when single parent links reach the pinned genesis; otherwise invalid or incomplete.
+
+    This checks the shape of the links only; `reconcile.Evaluator` also checks
+    each object's origin, operation, and reconciliation evidence.
+    """
     failure, _ = _chain(lookup, object_id)
     return failure or _result("valid")
-
-
-def state_at(lookup: Lookup, object_id: str) -> dict:
-    """State tables after an object, replaying every step from the pinned genesis.
-
-    A reconciliation is assumed to have passed the reconcile checks; replay still refuses on failure.
-    """
-    failure, chain = _chain(lookup, object_id)
-    if failure:
-        return failure
-    state = policy.initial_state(lookup.genesis_bytes)
-    for obj in chain[1:]:
-        body = obj["body"]
-        if body["kind"] == "ordinary":
-            state, reason = policy.apply_ordinary(state, body["author"], body["payload"])
-            if reason:
-                return _result("invalid", reason)
-        elif body["kind"] == "approval":
-            if not policy.approval_valid(state, body["author"]):
-                return _result("invalid", "signer is not a device")
-        else:
-            copies = {c["id"]: c for c in obj["copies"]}
-            for adopted_id in body["payload"]["proposal"]["adopted"]:
-                step = copies.get(adopted_id)
-                if step is None:
-                    return _result("invalid", "adopted event is not carried")
-                state, reason = policy.apply_ordinary(
-                    state, step["body"]["author"], step["body"]["payload"]
-                )
-                if reason:
-                    return _result("invalid", f"replay fails: {reason}")
-    return _result("valid", state=state)
-
-
-def validate_original(lookup: Lookup, object_id: str) -> dict:
-    """Check one ordinary event or approval at its own parent's state; state is the state after it."""
-    obj = lookup.objects.get(object_id)
-    if obj is None:
-        return _result("incomplete", "missing object", [object_id])
-    if obj["body"]["kind"] not in ("ordinary", "approval"):
-        return _result("invalid", "not an ordinary event or approval")
-    return state_at(lookup, object_id)

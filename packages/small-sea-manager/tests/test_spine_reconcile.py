@@ -100,7 +100,7 @@ def test_valid_r_adopts_removal_and_rejects_addition(w):
     assert result["missing"] == []
     assert names(result["state"]) == ["alice", "carol"]
     assert devices(result["state"]) == [("alice", "laptop"), ("carol", "laptop"), ("carol", "phone")]
-    after = history.state_at(history.build_lookup([w.p_bytes, r], w.g_bytes), oid(r))
+    after = reconcile.Evaluator(history.build_lookup([w.p_bytes, r], w.g_bytes)).result(oid(r))
     assert names(after["state"]) == ["alice", "carol"]
     assert devices(after["state"]) == [("alice", "laptop"), ("carol", "laptop"), ("carol", "phone")]
 
@@ -158,6 +158,30 @@ def test_r_reaching_lookup_without_p_is_incomplete(w):
     assert result["missing"] == [w.p]
 
 
+def on_base(w, base_r):
+    """R1 resolves two children of base_r: adopt K1 (Carol adds c3), reject K2 (Alice adds b3)."""
+    base = oid(base_r)
+    k1 = w.event("c", base, add_device("carol", "c3", "tablet"))
+    k2 = w.event("a", base, add_device("alice", "b3", "tablet"))
+    c = w.proposal([oid(k1)], [oid(k2)], tips=[oid(k1), oid(k2)], base=base)
+    return w.r(c, [k1, k2]), k1, k2
+
+
+def test_unauthorized_reconciliation_as_base_fails_base(w):
+    r0 = w.r(w.proposal([w.x], [w.y]), [w.x_bytes, w.y_bytes], approvals=[])
+    r1, k1, k2 = on_base(w, r0)
+    assert verdict(w.check(r1, r0, k1, k2)) == (
+        "invalid", "base", "base is invalid: approvals do not reach quorum")
+
+
+def test_pending_reconciliation_as_base_makes_r_incomplete(w):
+    r0 = w.r(w.proposal([w.x], [w.y]), [w.x_bytes])  # Y is neither carried nor held
+    r1, k1, k2 = on_base(w, r0)
+    result = w.check(r1, r0, k1, k2)
+    assert verdict(result) == ("incomplete", "base", "base is pending: missing ancestor")
+    assert result["missing"] == [w.y]
+
+
 # ---- partition ----
 
 def test_event_both_adopted_and_rejected_fails_partition(w):
@@ -178,10 +202,13 @@ def test_extra_copy_outside_branches_fails_partition(w):
         "invalid", "partition", "copies are not exactly the covered events")
 
 
-def test_resolved_tip_at_the_base_fails_partition(w):
-    # P is an ancestor of X, so the derived base is P itself and P is not covered.
+def test_resolved_tip_at_the_base_is_allowed(w):
+    # P is an ancestor of X, so the derived base is P itself and P contributes no covered events.
+    # Allowed: R may name any published tip (decision 2, after-t3-decisions.md).
     r = w.r(w.proposal([w.x], [], tips=[w.p, w.x]), [w.x_bytes])
-    assert verdict(w.check(r)) == ("invalid", "partition", "a resolved tip is not after the base")
+    result = w.check(r)
+    assert verdict(result) == ("valid", None, None)
+    assert names(result["state"]) == ["alice", "carol"]
 
 
 def test_approval_carried_as_a_copy_fails_partition(w):

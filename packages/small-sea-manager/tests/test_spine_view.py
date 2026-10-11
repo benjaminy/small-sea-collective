@@ -143,6 +143,19 @@ def test_approval_child_and_invalid_child_leave_p_followed(w):
         {"P": OK, "U": OK, "bad": ("invalid", "signer is not a device", [])}, "P", P_TABLES)
 
 
+def test_foreign_origin_event_and_approval_are_invalid_though_their_parents_reach_g(w):
+    # Both name P as parent, so their chains reach the pinned genesis; only origin is wrong.
+    foreign = "ff" * 32
+    xf = encoding.make_event(SEEDS["a"], foreign, "ordinary", w.id("P"), remove("bob"))
+    uf = encoding.make_event(SEEDS["c"], foreign, "approval", w.id("P"), {"approves": "ab" * 32})
+    w.named("Xf", xf)
+    w.named("Uf", uf)
+    kid = w.event("Kid", "a", w.id("Xf"), add("alice", "a2"))
+    origin = ("invalid", "origin is not the pinned genesis", [])
+    assert w.view(w.P, xf, uf, kid) == followed(
+        {"P": OK, "Xf": origin, "Uf": origin, "Kid": origin}, "P", P_TABLES)
+
+
 # ---- conflicts and splits ----
 
 XY_OBJECTS = {"P": OK, "X": OK, "Y": OK}
@@ -182,15 +195,19 @@ def test_seven_concurrent_additions_are_unsupported_so_conflict(w):
 
 
 # ---- reconciliation ----
+# A device holds the copies and approvals inside every reconciliation it stored,
+# so X, Y, U, and V get dispositions whenever R is held.
+
+R_HELD = {"P": OK, "X": OK, "Y": OK, "U": OK, "V": OK, "R": OK}
+
 
 def test_valid_r_is_followed(w):
-    assert w.view(w.P, w.X, w.Y, w.R) == followed(
-        {"P": OK, "X": OK, "Y": OK, "R": OK}, "R", R_TABLES)
+    assert w.view(w.P, w.X, w.Y, w.R) == followed(R_HELD, "R", R_TABLES)
 
 
 def test_y_first_arriving_after_r_never_becomes_a_head(w):
-    assert w.view(w.P, w.R) == followed({"P": OK, "R": OK}, "R", R_TABLES)
-    assert w.view(w.P, w.R, w.Y) == followed({"P": OK, "R": OK, "Y": OK}, "R", R_TABLES)
+    assert w.view(w.P, w.R) == followed(R_HELD, "R", R_TABLES)
+    assert w.view(w.P, w.R, w.Y) == followed(R_HELD, "R", R_TABLES)
 
 
 def test_competing_reconciliations_stay_visible(w):
@@ -198,49 +215,91 @@ def test_competing_reconciliations_stay_visible(w):
     approvals = w.approvals(c2, {"U2": "b", "V2": "c"})
     r2 = w.r("R2", c2, [w.X, w.Y], approvals, signer="b")
     assert w.view(w.P, w.X, w.Y, w.R, r2) == conflict(
-        {"P": OK, "X": OK, "Y": OK, "R": OK, "R2": OK}, ["R", "R2"])
+        {**R_HELD, "U2": OK, "V2": OK, "R2": OK}, ["R", "R2"])
 
 
 def test_unrelated_head_beside_reconciled_split(w):
     z = w.event("Z", "c", w.id("P"), add("carol", "c3"))
-    assert w.view(w.P, w.X, w.Y, w.R, z) == conflict(
-        {"P": OK, "X": OK, "Y": OK, "R": OK, "Z": OK}, ["R", "Z"])
+    assert w.view(w.P, w.X, w.Y, w.R, z) == conflict({**R_HELD, "Z": OK}, ["R", "Z"])
 
 
-def test_new_child_of_rejected_y_stays_visible(w):
+def test_events_building_on_rejected_y_are_invalid_and_do_not_block(w):
     y2 = w.event("Y2", "b2", w.id("Y"), add("bob", "b3"))
-    assert w.view(w.P, w.X, w.Y, w.R, y2) == conflict(
-        {"P": OK, "X": OK, "Y": OK, "R": OK, "Y2": OK}, ["R", "Y2"])
+    y3 = w.event("Y3", "b2", w.id("Y2"), add("bob", "b4"))
+    rejected = ("invalid", "builds on a rejected event", [])
+    assert w.view(w.P, w.X, w.Y, w.R, y2, y3) == followed(
+        {**R_HELD, "Y2": rejected, "Y3": rejected}, "R", R_TABLES)
 
 
 def test_event_on_invalid_reconciliation_is_invalid(w):
     bad_r = w.r("Rbad", w.C, [w.X, w.Y], [w.U])  # one approval: below quorum
     z = w.event("Zbad", "c", w.id("Rbad"), add("carol", "c3"))
     assert w.view(w.P, w.X, w.Y, bad_r, z) == conflict({
-        **XY_OBJECTS,
+        **XY_OBJECTS, "U": OK,
         "Rbad": ("invalid", "approvals do not reach quorum", []),
         "Zbad": ("invalid", "built on an invalid reconciliation", []),
     }, ["X", "Y"])
 
 
+def test_copies_inside_invalid_reconciliation_count_as_received(w):
+    # Y is held only as a copy inside Rbad. Rbad is invalid, so nobody validly
+    # rejected Y, and W (b2 adds b3 on Y) is judged like any other event.
+    bad_r = w.r("Rbad", w.C, [w.X, w.Y], [w.U])
+    w_ = w.event("W", "b2", w.id("Y"), add("bob", "b3"))
+    assert w.view(w.P, bad_r, w_) == conflict({
+        **XY_OBJECTS, "U": OK, "W": OK,
+        "Rbad": ("invalid", "approvals do not reach quorum", []),
+    }, ["W", "X"])
+
+
 def test_event_on_pending_reconciliation_is_pending(w):
     # R carries only X, so Y (a resolved tip) is needed to find the base.
+    # Bob's child would fail in the state Rpart proposes (Bob removed), but Rpart
+    # is not yet judged, so the child waits with it instead of becoming invalid.
     c = w.proposal(adopted=["X"], rejected=["Y"])
     r = w.r("Rpart", c, [w.X], w.approvals(c, {"Up": "a", "Vp": "c"}))
     z = w.event("Zpart", "c", w.id("Rpart"), add("carol", "c3"))
-    assert w.view(w.P, w.X, r, z) == followed({
-        "P": OK, "X": OK,
+    zb = w.event("Zbob", "b", w.id("Rpart"), add("bob", "b3"))
+    pending_child = ("pending", "built on a pending reconciliation", ["Y"])
+    assert w.view(w.P, w.X, r, z, zb) == followed({
+        "P": OK, "X": OK, "Up": OK, "Vp": OK,
         "Rpart": ("pending", "missing ancestor", ["Y"]),
-        "Zpart": ("pending", "built on a pending reconciliation", ["Y"]),
+        "Zpart": pending_child, "Zbob": pending_child,
     }, "X", {"alice": ["a"], "carol": ["c", "c2"]})
+
+
+def test_reconciliation_adopting_an_approval_has_invalid_child_without_crashing(w):
+    # An unregistered device (b3) lists approval U as a covered, adopted event and builds on it.
+    c = w.proposal(adopted=["X", "U"], rejected=[], tips=("X", "U"), signer="b3")
+    bad_r = w.r("Rbad", c, [w.X, w.U], [], signer="b3")
+    kid = w.event("Kid", "b3", w.id("Rbad"), add("bob", "b4"))
+    assert w.view(w.P, bad_r, kid) == followed({
+        "P": OK, "X": OK, "U": OK,
+        "Rbad": ("invalid", "a copy is not an ordinary event", []),
+        "Kid": ("invalid", "built on an invalid reconciliation", []),
+    }, "X", R_TABLES)
+
+
+def test_copies_nested_two_reconciliations_deep_get_dispositions(w):
+    # Rbad (below quorum) carries X, Y, and U; Router carries Rbad, which fails partition.
+    # Only P, Router, and W (b2 adds b3 on Y) are held standalone.
+    bad_r = w.r("Rbad", w.C, [w.X, w.Y], [w.U])
+    z = w.event("Z", "c", w.id("P"), add("carol", "c3"))
+    c = w.proposal(adopted=["Z"], rejected=["Rbad"], tips=("Rbad", "Z"))
+    router = w.r("Router", c, [bad_r, z], w.approvals(c, {"Uo": "a", "Vo": "c"}))
+    w_ = w.event("W", "b2", w.id("Y"), add("bob", "b3"))
+    assert w.view(w.P, router, w_) == conflict({
+        **XY_OBJECTS, "U": OK, "Z": OK, "W": OK, "Uo": OK, "Vo": OK,
+        "Rbad": ("invalid", "approvals do not reach quorum", []),
+        "Router": ("invalid", "a copy is not an ordinary event", []),
+    }, ["W", "X", "Z"])
 
 
 # ---- arrival order ----
 
 def test_arrival_order_does_not_matter(w):
     z = w.event("Z", "c", w.id("P"), add("carol", "c3"))
-    expected = conflict({"P": OK, "X": OK, "Y": OK, "U": OK, "V": OK, "R": OK, "Z": OK},
-                        ["R", "Z"])
+    expected = conflict({**R_HELD, "Z": OK}, ["R", "Z"])
     objects = [w.P, w.X, w.Y, w.U, w.V, w.R, z]
     for order in (objects, objects[::-1], [w.R, z, w.V, w.P, w.Y, w.U, w.X]):
         assert w.view(*order) == expected
