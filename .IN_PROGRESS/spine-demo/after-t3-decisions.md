@@ -21,3 +21,14 @@ Their authors raised four points; the owner answered them.
 4. **Untested branches in `reconcile.py`.**
    No micro test covers an R whose kind is not "reconciliation" (decoding probably prevents it from reaching the checks) or a base that is itself invalid.
    Noted here rather than tested now.
+
+## After R1
+
+5. **New children of adopted events published before the reconciliation was seen.**
+   Example: Alice publishes X2 on X before she sees R, which adopts X.
+   Owner decision: classify R plus X2 as a "split awaiting join", not a conflict; it blocks Constitution publishing but does not call for a reconciliation, and future join work picks it up.
+   Not yet implemented; today's view reports a conflict (`test_spine_adversarial.py` asserts that and must change with it).
+6. **Known gap.** The "builds on a rejected event" rule lives only in the view.
+   Moving it into the Evaluator makes check 5 call itself in a loop, so `check_reconciliation` alone accepts a reconciliation whose base builds on a rejected event, while the view refuses it.
+7. **Replay guard.** `reconcile.py` refuses non-ordinary replay steps, which the partition check already makes impossible; kept for now as protection on the most sensitive path.
+8. **Envelope conflicts** (R1 finding 10) are untested and belong to T5.
