@@ -54,12 +54,14 @@ Byte values are lowercase hex: keys and IDs 64 characters, signatures 128.
 The decoder rejects duplicate keys, unknown or missing keys for the kind, wrong types, and any input whose re-encoding differs from the received bytes.
 **IDs and signatures** use domain prefixes ending in a zero byte:
 - object ID = SHA-256(`"spine-v1 id\0"` + canonical body);
-- signature = Ed25519 (RFC 8032, deterministic) over `"spine-v1 sig\0"` + canonical body;
+- signature = Ed25519 (RFC 8032) over `"spine-v1 sig\0"` + canonical body;
+  our signer is deterministic, but verifiers accept any nonce, so a key holder can make several valid signatures over one body;
 - D = SHA-256(`"spine-v1 proposal\0"` + canonical C).
 
 The ID excludes the signature, as v0 (`wrasse_trust/events.py`) does and the probe does not, so one rule covers signed and unsigned objects.
 A store keeps the first envelope for an ID; a later, different envelope with the same ID is refused with reason "envelope conflict".
 Copies inside R are checked on their own bytes; a mismatch with a stored standalone is logged as an envelope conflict and does not change R's verdict.
+Envelope storage belongs to T5 and is not built yet.
 T1 commits literal test vectors: canonical bytes, ID, and signature for a fixed-seed genesis and one event.
 
 - **Genesis** (unsigned): `{format:"spine-v1", kind:"genesis", nonce, policy:{name:"spine-demo-1", settings:{reconcile_quorum:2}}, members:[{member_id, name}], devices:[{device_key, member_id, label}]}`.
@@ -101,8 +103,9 @@ The verifier returns `{status: valid|invalid|incomplete, check, missing, tip, ba
    The split is a **conflict** if any branch holds a reconciliation after the base or the compatibility check says incompatible or unsupported; otherwise it is a **split awaiting join**.
    Both block ordinary publishing and report every head; only a conflict allows reconciliations and approvals.
 
-Competing reconciliations, unrelated heads beside a reconciled split, and new children of rejected events therefore stay visible and blocking.
+Competing reconciliations and unrelated heads beside a reconciled split therefore stay visible and blocking.
 Resolving them is deferred, not decided by the evaluator.
+New children of rejected events are invalid and do not block (after-t3-decisions.md, decision 1).
 
 **Provisional answers to RD's questions:**
 1. *Fields* as in section 3; R names its base twice, and the receiver derives it independently.
@@ -223,7 +226,7 @@ After each delegated task, grep the diff for the listed tests and real assertion
 
 - Hub, MinIO, Cod Sync, screens, and outsider comprehension sessions.
 - Mechanical joins, app records and anchors, the history query, key release and rotation, and resets.
-- Resolving competing reconciliations, unrelated heads beside a reconciled split, or new children of rejected events; slice 1 only keeps them visible and blocking.
+- Resolving competing reconciliations or unrelated heads beside a reconciled split; slice 1 only keeps them visible and blocking.
 - Policy flexibility, including comparing two policies.
 - A second, independent verifier; the shared evaluator is a known risk, offset by literal expectations and mutation tests.
 - Cutting team flows over and deleting the old constitution modules.

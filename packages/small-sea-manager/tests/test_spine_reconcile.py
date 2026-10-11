@@ -150,6 +150,17 @@ def test_declared_base_g_rejecting_p_fails_base(w):
         "invalid", "base", "declared base is not the nearest common ancestor")
 
 
+def test_check_reconciliation_on_unknown_id_is_incomplete(w):
+    result = reconcile.check_reconciliation(history.build_lookup([], w.g_bytes), "ff" * 32)
+    assert verdict(result) == ("incomplete", "core", "missing object")
+    assert result["missing"] == ["ff" * 32]
+
+
+def test_check_reconciliation_on_ordinary_event_fails_shape(w):
+    result = reconcile.check_reconciliation(history.build_lookup([w.p_bytes], w.g_bytes), w.p)
+    assert verdict(result) == ("invalid", "shape", "not a reconciliation")
+
+
 def test_r_reaching_lookup_without_p_is_incomplete(w):
     r = w.r(w.proposal([w.x], [w.y]), [w.x_bytes, w.y_bytes])
     lookup = history.build_lookup([r], w.g_bytes)

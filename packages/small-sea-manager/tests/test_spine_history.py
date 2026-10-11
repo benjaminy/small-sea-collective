@@ -114,6 +114,12 @@ def test_ancestry_unknown_object_is_incomplete(w):
     assert history.ancestry(w.lookup(), "ff" * 32)["missing"] == ["ff" * 32]
 
 
+def test_state_at_unknown_object_is_missing_object(w):
+    result = state_at(w.lookup(), "ff" * 32)
+    assert (result["status"], result["reason"], result["missing"]) == (
+        "incomplete", "missing object", ["ff" * 32])
+
+
 def test_ancestry_complete_reaches_pinned_genesis(w):
     assert history.ancestry(w.lookup(w.p_bytes, w.x_bytes), w.x) == {
         "status": "valid", "reason": None, "missing": [], "state": None}
@@ -162,6 +168,7 @@ def test_event_whose_parent_is_an_approval_is_invalid(w):
     assert state_at(lookup, oid(u))["status"] == "valid"
     result = state_at(lookup, oid(child))
     assert (result["status"], result["reason"]) == ("invalid", "parent is an approval")
+    assert history.ancestry(lookup, oid(child))["reason"] == "parent is an approval"
 
 
 def test_approval_by_non_device_is_invalid_and_valid_one_keeps_state(w):

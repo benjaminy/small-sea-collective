@@ -10,7 +10,7 @@ Expected values are literals; object IDs are translated to these story names.
 
 import pytest
 
-from small_sea_manager.spine import encoding, view
+from small_sea_manager.spine import encoding, history, reconcile, view
 
 NAMES = ["a", "b", "c", "c2", "b2", "b3", "b4", "c3", "c4", "a2", "a3"]
 SEEDS = {name: bytes([n]) * 32 for n, name in enumerate(NAMES, 1)}
@@ -229,6 +229,21 @@ def test_events_building_on_rejected_y_are_invalid_and_do_not_block(w):
     rejected = ("invalid", "builds on a rejected event", [])
     assert w.view(w.P, w.X, w.Y, w.R, y2, y3) == followed(
         {**R_HELD, "Y2": rejected, "Y3": rejected}, "R", R_TABLES)
+
+
+def test_check_reconciliation_accepts_r_on_rejected_y_that_the_view_refuses(w):
+    # Known gap (after-t3 decision 6): "builds on a rejected event" lives only in
+    # the view, so check_reconciliation alone accepts R9, whose base Y is rejected by R.
+    b2a = w.event("B2a", "b2", w.id("Y"), add("bob", "b3"))
+    b2b = w.event("B2b", "b", w.id("Y"), add("bob", "b4"))
+    c9 = {**w.proposal(adopted=["B2a", "B2b"], rejected=[], tips=("B2a", "B2b")), "base": w.id("Y")}
+    r9 = w.r("R9", c9, [b2a, b2b], w.approvals(c9, {"U9": "a", "V9": "c"}))
+    held = [w.P, w.X, w.Y, w.R, b2a, b2b, r9]
+    lookup = history.build_lookup(held, w.g_bytes)
+    assert reconcile.check_reconciliation(lookup, w.id("R9"))["status"] == "valid"
+    rejected = ("invalid", "builds on a rejected event", [])
+    assert w.view(*held) == followed({**R_HELD, "B2a": rejected, "B2b": rejected,
+                                      "U9": rejected, "V9": rejected, "R9": rejected}, "R", R_TABLES)
 
 
 def test_event_on_invalid_reconciliation_is_invalid(w):
