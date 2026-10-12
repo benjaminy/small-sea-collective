@@ -4,9 +4,9 @@ import pytest
 
 from small_sea_manager.spine import encoding, policy
 
+TIME = 1_760_000_000  # the author's claimed time; no check reads it
 
 BASE = "base"
-DIGEST = "digest"
 A2, A3, B3, C2 = [encoding.public_key(bytes([i]) * 32) for i in range(10, 14)]
 
 
@@ -24,7 +24,7 @@ def state():
             "b2": {"device_key": "b2", "member_id": "bob", "label": "phone"},
             "c": {"device_key": "c", "member_id": "carol", "label": "laptop"},
         },
-        "policy": {"name": "spine-demo-1", "settings": {"reconcile_quorum": 2}},
+        "policy": {"name": "spine-demo-1", "settings": {}},
     }
 
 
@@ -38,11 +38,6 @@ def event(event_id, parent, signer, payload):
     }}
 
 
-def approval(signer, digest=DIGEST, parent=BASE):
-    return {"body": {"kind": "approval", "author": signer,
-                     "parents": [parent], "payload": {"approves": digest}}}
-
-
 def test_initial_state_decodes_genesis_and_keys_tables():
     data = encoding.make_genesis("00" * 32, [
         {"member_id": "alice", "name": "Alice"},
@@ -50,7 +45,7 @@ def test_initial_state_decodes_genesis_and_keys_tables():
     ], [
         {"device_key": "aa" * 32, "member_id": "alice", "label": "laptop"},
         {"device_key": "bb" * 32, "member_id": "bob", "label": "phone"},
-    ])
+    ], time=TIME)
     assert policy.initial_state(data) == {
         "members": {
             "alice": {"member_id": "alice", "name": "Alice"},
@@ -60,7 +55,7 @@ def test_initial_state_decodes_genesis_and_keys_tables():
             "aa" * 32: {"device_key": "aa" * 32, "member_id": "alice", "label": "laptop"},
             "bb" * 32: {"device_key": "bb" * 32, "member_id": "bob", "label": "phone"},
         },
-        "policy": {"name": "spine-demo-1", "settings": {"reconcile_quorum": 2}},
+        "policy": {"name": "spine-demo-1", "settings": {}},
     }
     with pytest.raises(encoding.EncodingError):
         policy.initial_state(data.replace(b'"spine-demo-1"', b'"wrong-policy"'))
@@ -73,8 +68,8 @@ def test_add_device_adds_own_row_without_mutating_input(state):
         "device_key": A2, "member_id": "alice", "label": "tablet",
     }
     assert A2 not in state["devices"]
-    result["policy"]["settings"]["reconcile_quorum"] = 3
-    assert state["policy"]["settings"]["reconcile_quorum"] == 2
+    result["policy"]["settings"]["extra"] = "x"
+    assert state["policy"]["settings"] == {}
 
 
 @pytest.mark.parametrize(("signer", "payload", "reason"), [
@@ -86,7 +81,7 @@ def test_add_device_adds_own_row_without_mutating_input(state):
 ])
 def test_ordinary_refusals(state, signer, payload, reason):
     before = {"members": dict(state["members"]), "devices": dict(state["devices"]),
-              "policy": {"name": "spine-demo-1", "settings": {"reconcile_quorum": 2}}}
+              "policy": {"name": "spine-demo-1", "settings": {}}}
     assert policy.apply_ordinary(state, signer, payload) == (None, reason)
     assert state == before
 
@@ -103,68 +98,32 @@ def test_remove_member_removes_all_its_devices(state):
     assert sorted(state["devices"]) == ["a", "b", "b2", "c"]
 
 
-def test_approval_checks_signer_and_changes_nothing(state):
-    assert policy.approval_valid(state, "b2") is True
-    assert policy.approval_valid(state, "absent") is False
-    assert sorted(state["devices"]) == ["a", "b", "b2", "c"]
-
-
-def test_independent_additions_are_compatible(state):
+def test_independent_additions_merge(state):
     events = [event("x", BASE, "a", add("alice", A2)),
               event("y", BASE, "c", add("carol", C2))]
-    assert policy.compatibility(state, events) == "compatible"
+    merged, reason = policy.merge(state, events)
+    assert reason is None
+    assert sorted(merged["devices"]) == sorted(["a", "b", "b2", "c", A2, C2])
     assert sorted(state["devices"]) == ["a", "b", "b2", "c"]
 
 
 def test_remove_bob_conflicts_with_bob_adding_device(state):
     events = [event("x", BASE, "a", {"op": "remove_member", "member_id": "bob"}),
               event("y", BASE, "b", add("bob", B3))]
-    assert policy.compatibility(state, events) == "incompatible"
+    assert policy.merge(state, events) == (None, "some order fails or the orders disagree")
 
 
-def test_compatibility_respects_parent_links(state):
+def test_merge_respects_parent_links(state):
     events = [event("x", BASE, "a", add("alice", A2)),
               event("y", "x", A2, add("alice", A3))]
-    assert policy.compatibility(state, events) == "compatible"
+    assert policy.merge(state, events)[1] is None
 
 
-def test_compatibility_limit_is_more_than_six(state):
+def test_merge_limit_is_more_than_six(state):
     events = [
         event(str(i), BASE, "a", add("alice", encoding.public_key(bytes([i + 20]) * 32)))
         for i in range(1, 8)
     ]
-    assert policy.compatibility(state, events[:6]) == "compatible"
-    assert policy.compatibility(state, events) == "unsupported"
+    assert policy.merge(state, events[:6])[1] is None
+    assert policy.merge(state, events) == (None, "more than six events")
 
-
-def test_quorum_counts_distinct_members(state):
-    assert policy.reconciliation_authorized(
-        state, BASE, "a", DIGEST, [approval("a"), approval("c")]) is True
-    assert policy.reconciliation_authorized(
-        state, BASE, "a", DIGEST, [approval("b"), approval("c")]) is True
-
-
-def test_two_devices_of_one_member_do_not_meet_quorum(state):
-    assert policy.reconciliation_authorized(
-        state, BASE, "a", DIGEST, [approval("b"), approval("b2")]) is False
-
-
-@pytest.mark.parametrize("bad_approval", [
-    approval("c", digest="other"),
-    approval("c", parent="other"),
-    approval("absent"),
-])
-def test_wrong_digest_parent_or_nonbase_approver_does_not_count(state, bad_approval):
-    assert policy.reconciliation_authorized(
-        state, BASE, "a", DIGEST, [approval("b"), bad_approval]) is False
-
-
-def test_publisher_signature_alone_is_not_an_approval(state):
-    assert policy.reconciliation_authorized(state, BASE, "a", DIGEST, []) is False
-    assert policy.reconciliation_authorized(
-        state, BASE, "a", DIGEST, [approval("c")]) is False
-
-
-def test_publisher_must_be_device_at_base(state):
-    assert policy.reconciliation_authorized(
-        state, BASE, "absent", DIGEST, [approval("a"), approval("c")]) is False

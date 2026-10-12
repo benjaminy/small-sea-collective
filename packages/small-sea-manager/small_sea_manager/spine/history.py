@@ -27,8 +27,8 @@ def _result(status, reason=None, missing=(), state=None):
 
 
 def build_lookup(encoded_objects, genesis_bytes: bytes) -> Lookup:
-    """Decode objects and index them by ID, with every copy and approval carried
-    inside a reconciliation, including reconciliations carried inside others.
+    """Decode objects and index them by ID, with every copy carried inside a
+    reconciliation, including reconciliations carried inside others.
 
     Each ID is indexed once. Standalone objects win; among carried objects,
     shallower ones win over deeper ones. Bodies with one ID are identical, so
@@ -40,7 +40,7 @@ def build_lookup(encoded_objects, genesis_bytes: bytes) -> Lookup:
     for obj in queue:  # the queue grows as carried objects are found
         if obj["id"] not in objects:
             objects[obj["id"]] = obj
-            queue.extend(obj.get("copies", []) + obj.get("approvals", []))
+            queue.extend(obj.get("copies", []))
     return Lookup(objects, genesis["id"], genesis_bytes)
 
 
@@ -60,9 +60,6 @@ def _chain(lookup: Lookup, object_id: str):
                 return _result("invalid", "ancestry reaches a different genesis"), None
             return None, chain[::-1]
         current = obj["body"]["parents"][0]
-        parent = lookup.objects.get(current)
-        if parent is not None and parent["body"]["kind"] == "approval":
-            return _result("invalid", "parent is an approval"), None
 
 
 def ancestry(lookup: Lookup, object_id: str) -> dict:

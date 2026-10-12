@@ -58,15 +58,19 @@ def apply_ordinary(state: dict, signer: str, payload: dict) -> tuple[dict | None
     return None, "unknown operation"
 
 
-def approval_valid(state: dict, signer: str) -> bool:
-    """An approval is valid at its parent state if its signer is a device there."""
-    return signer in state["devices"]
+TOO_MANY = "more than six events"
 
 
-def compatibility(base_state: dict, events: list[dict]) -> str:
-    """Try every order allowed by the parent links of at most six branch events."""
+def merge(base_state: dict, events: list[dict]) -> tuple[dict | None, str | None]:
+    """Return the state after the branch events together, or (None, reason).
+
+    The events merge when every order allowed by their parent links applies
+    cleanly and all orders reach equal tables. More than six events are refused.
+    Any replacement rule must stay pure, agree with replaying the events in every
+    such order, and not depend on how the events are grouped into branches.
+    """
     if len(events) > 6:
-        return "unsupported"
+        return None, TOO_MANY
     by_id = {event["id"]: event for event in events}
     final_state = None
     found_order = False
@@ -90,21 +94,7 @@ def compatibility(base_state: dict, events: list[dict]) -> str:
                 return False
         return True
 
-    return "compatible" if visit(base_state, set(by_id)) and found_order else "incompatible"
+    if not (visit(base_state, set(by_id)) and found_order):
+        return None, "some order fails or the orders disagree"
+    return final_state, None
 
-
-def reconciliation_authorized(
-    base_state: dict, base_id: str, signer: str, digest: str, approvals: list[dict]
-) -> bool:
-    """Count distinct base members whose valid approvals name this base and digest."""
-    if signer not in base_state["devices"]:
-        return False
-    members = set()
-    for approval in approvals:
-        body = approval["body"]
-        device = base_state["devices"].get(body["author"])
-        if (device is not None and body["kind"] == "approval"
-                and body["parents"] == [base_id]
-                and body["payload"]["approves"] == digest):
-            members.add(device["member_id"])
-    return len(members) >= base_state["policy"]["settings"]["reconcile_quorum"]

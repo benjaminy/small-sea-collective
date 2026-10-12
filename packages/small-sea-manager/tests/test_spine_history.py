@@ -8,6 +8,8 @@ import pytest
 
 from small_sea_manager.spine import encoding, history, reconcile
 
+TIME = 1_760_000_000  # the author's claimed time; no check reads it
+
 SEEDS = {name: bytes([n]) * 32 for n, name in enumerate(["a", "b", "c", "c2", "b2", "x"], 1)}
 KEY = {name: encoding.public_key(seed) for name, seed in SEEDS.items()}
 
@@ -21,7 +23,7 @@ def make_genesis(nonce="00"):
         {"device_key": KEY["a"], "member_id": "alice", "label": "laptop"},
         {"device_key": KEY["b"], "member_id": "bob", "label": "laptop"},
         {"device_key": KEY["c"], "member_id": "carol", "label": "laptop"},
-    ])
+    ], time=TIME)
 
 
 def oid(encoded):
@@ -46,30 +48,19 @@ class World:
     def __init__(self):
         self.g_bytes = make_genesis()
         self.g = oid(self.g_bytes)
-        self.p_bytes = encoding.make_event(SEEDS["c"], self.g, "ordinary", self.g, add_device("carol", "c2"))
+        self.p_bytes = encoding.make_event(SEEDS["c"], self.g, "ordinary", self.g, add_device("carol", "c2"), time=TIME)
         self.p = oid(self.p_bytes)
-        self.x_bytes = encoding.make_event(SEEDS["a"], self.g, "ordinary", self.p, remove("bob"))
+        self.x_bytes = encoding.make_event(SEEDS["a"], self.g, "ordinary", self.p, remove("bob"), time=TIME)
         self.x = oid(self.x_bytes)
-        self.y_bytes = encoding.make_event(SEEDS["b"], self.g, "ordinary", self.p, add_device("bob", "b2"))
+        self.y_bytes = encoding.make_event(SEEDS["b"], self.g, "ordinary", self.p, add_device("bob", "b2"), time=TIME)
         self.y = oid(self.y_bytes)
 
     def event(self, seed, parent, payload, kind="ordinary"):
-        return encoding.make_event(SEEDS[seed], self.g, kind, parent, payload)
+        return encoding.make_event(SEEDS[seed], self.g, kind, parent, payload, time=TIME)
 
-    def approval(self, seed, parent):
-        return self.event(seed, parent, {"approves": "ab" * 32}, "approval")
-
-    def reconciliation(self, adopted, rejected, copies, approvals=None, parent=None, signer="a"):
-        """Approvals default to valid ones from a and c."""
+    def reconciliation(self, adopted, rejected, copies, parent=None, signer="a"):
         parent = parent or self.p
-        proposal = {
-            "format": "spine-proposal-v1", "origin": self.g, "base": parent, "signer": KEY[signer],
-            "resolved_tips": sorted([self.x, self.y]), "adopted": adopted, "rejected": sorted(rejected),
-        }
-        if approvals is None:
-            digest = encoding.proposal_digest(proposal)
-            approvals = [self.event(s, parent, {"approves": digest}, "approval") for s in ("a", "c")]
-        payload = encoding.make_reconciliation_payload(proposal, list(copies), list(approvals))
+        payload = encoding.make_reconciliation_payload([self.x, self.y], adopted, rejected, list(copies))
         return self.event(signer, parent, payload, "reconciliation")
 
     def lookup(self, *objects):
@@ -161,32 +152,10 @@ def test_removed_member_device_signing_after_removal_is_invalid(w):
     assert (result["status"], result["reason"]) == ("invalid", "signer is not a device")
 
 
-def test_event_whose_parent_is_an_approval_is_invalid(w):
-    u = w.approval("a", w.p)
-    child = w.event("c", oid(u), add_device("carol", "x"))
-    lookup = w.lookup(w.p_bytes, u, child)
-    assert state_at(lookup, oid(u))["status"] == "valid"
-    result = state_at(lookup, oid(child))
-    assert (result["status"], result["reason"]) == ("invalid", "parent is an approval")
-    assert history.ancestry(lookup, oid(child))["reason"] == "parent is an approval"
-
-
-def test_approval_by_non_device_is_invalid_and_valid_one_keeps_state(w):
-    bad = w.approval("x", w.p)
-    assert state_at(w.lookup(w.p_bytes, bad), oid(bad))["reason"] == "signer is not a device"
-    good = w.approval("a", w.p)
-    result = state_at(w.lookup(w.p_bytes, good), oid(good))
-    assert result["status"] == "valid"
-    assert devices(result["state"]) == [
-        ("alice", "laptop"), ("bob", "laptop"), ("carol", "laptop"), ("carol", "phone")]
-
-
 def test_lookup_resolves_event_only_present_as_copy_in_reconciliation(w):
-    u, v = w.approval("a", w.p), w.approval("c", w.p)
-    r = w.reconciliation([w.x], [w.y], [w.x_bytes, w.y_bytes], [u, v])
+    r = w.reconciliation([w.x], [w.y], [w.x_bytes, w.y_bytes])
     lookup = w.lookup(w.p_bytes, r)  # no standalone X or Y
     assert state_at(lookup, w.y)["status"] == "valid"
-    assert oid(u) in lookup.objects and oid(v) in lookup.objects
     assert history.ancestry(lookup, w.x)["status"] == "valid"
 
 

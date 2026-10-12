@@ -4,11 +4,19 @@ Only "core checks" live here: format, IDs, signatures, and origins.
 Policy, ancestry to genesis, and reconciliation validation belong to later modules.
 
 Spec readings chosen here:
-- Embedded objects (copies, approvals, bundle objects) are lowercase-hex strings of their encoded bytes.
+- Embedded objects (copies, bundle objects) are lowercase-hex strings of their encoded bytes.
 - Lists that must be "sorted by ID" are strictly increasing, so duplicates are refused.
 - Genesis `nonce` is 64 hex characters; `member_id`, `name`, and `label` are free strings.
 - A genesis decodes to {"id", "body"}; a signed event to {"id", "body", "sig"}, plus
-  decoded "copies" and "approvals" lists for reconciliations.
+  a decoded "copies" list for reconciliations; a join to {"id", "body"}.
+- A reconciliation's payload is {tips, adopted, rejected, copies}: tips and rejected
+  are sorted, adopted is in replay order. Its author is the one member who decided;
+  nobody else signs it.
+- A join is unsigned and carries nothing: its envelope is {"body"} alone, and its
+  tips are strictly sorted, so devices holding the same heads build the same bytes.
+- A genesis and every signed event carry "time": whole seconds since 1970 (UTC) by
+  the author's own clock. It is only the author's claim, so no check reads it.
+  A join has no time, because a time would make devices build different joins.
 """
 
 import hashlib
@@ -22,7 +30,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 
 FORMAT = "spine-v1"
-POLICY = {"name": "spine-demo-1", "settings": {"reconcile_quorum": 2}}
+POLICY = {"name": "spine-demo-1", "settings": {}}
 
 
 class EncodingError(ValueError):
@@ -83,10 +91,6 @@ def decode_canonical(data: bytes):
 
 def object_id(body) -> str:
     return hashlib.sha256(b"spine-v1 id\0" + canonical(body)).hexdigest()
-
-
-def proposal_digest(proposal) -> str:
-    return hashlib.sha256(b"spine-v1 proposal\0" + canonical(proposal)).hexdigest()
 
 
 def public_key(seed: bytes) -> str:
@@ -182,11 +186,6 @@ def _lit(x):
 
 
 H = hexs(64)
-PROPOSAL_SPEC = {
-    "format": _lit("spine-proposal-v1"),
-    "origin": H, "base": H, "signer": H,
-    "resolved_tips": [H], "adopted": [H], "rejected": [H],
-}
 
 
 def _sorted_by_id(items, what):
@@ -204,10 +203,8 @@ def _decode_embedded(hexes, origin, what):
 
 
 def _payload_spec(kind, payload):
-    if kind == "approval":
-        return {"approves": H}
     if kind == "reconciliation":
-        return {"proposal": PROPOSAL_SPEC, "copies": [hexs()], "approvals": [hexs()]}
+        return {"tips": [H], "adopted": [H], "rejected": [H], "copies": [hexs()]}
     op = payload.get("op") if isinstance(payload, dict) else None
     if op == "remove_member":
         return {"op": _lit(op), "member_id": str}
@@ -219,7 +216,7 @@ def _payload_spec(kind, payload):
 def decode_genesis(data: bytes) -> dict:
     g = decode_canonical(data)
     _check(g, {
-        "format": _lit(FORMAT), "kind": _lit("genesis"), "nonce": H,
+        "format": _lit(FORMAT), "kind": _lit("genesis"), "nonce": H, "time": int,
         "policy": _lit(POLICY),
         "members": [{"member_id": str, "name": str}],
         "devices": [{"device_key": H, "member_id": str, "label": str}],
@@ -240,10 +237,10 @@ def decode_event(data: bytes) -> dict:
     _check(env, {"body": lambda v: isinstance(v, dict), "sig": hexs(128)})
     body = env["body"]
     kind = body.get("kind")
-    if kind not in ("ordinary", "approval", "reconciliation"):
+    if kind not in ("ordinary", "reconciliation"):
         raise EncodingError("unknown event kind")
     _check(body, {
-        "format": _lit(FORMAT), "origin": H, "kind": str, "author": H,
+        "format": _lit(FORMAT), "origin": H, "kind": str, "author": H, "time": int,
         "parents": [H],
         "payload": _payload_spec(kind, body["payload"] if "payload" in body else None),
     })
@@ -253,36 +250,33 @@ def decode_event(data: bytes) -> dict:
         raise EncodingError("bad signature")
     out = {"id": object_id(body), "body": body, "sig": env["sig"]}
     if kind == "reconciliation":
-        p, origin = body["payload"], body["origin"]
-        if p["proposal"]["origin"] != origin:
-            raise EncodingError("proposal origin differs")
-        c = p["proposal"]
-        if c["resolved_tips"] != sorted(c["resolved_tips"]) or c["rejected"] != sorted(c["rejected"]):
-            raise EncodingError("proposal lists not sorted")
-        out["copies"] = _decode_embedded(p["copies"], origin, "copies")
-        out["approvals"] = _decode_embedded(p["approvals"], origin, "approvals")
-        if any(a["body"]["kind"] != "approval" for a in out["approvals"]):
-            raise EncodingError("approvals must be approval events")
+        p = body["payload"]
+        if p["tips"] != sorted(p["tips"]) or p["rejected"] != sorted(p["rejected"]):
+            raise EncodingError("reconciliation lists not sorted")
+        out["copies"] = _decode_embedded(p["copies"], body["origin"], "copies")
     return out
 
 
+def decode_join(data: bytes) -> dict:
+    env = decode_canonical(data)
+    _check(env, {"body": {
+        "format": _lit(FORMAT), "origin": H, "kind": _lit("join"),
+        "parents": [H], "payload": {"tips": [H]},
+    }})
+    body = env["body"]
+    if len(body["parents"]) != 1:
+        raise EncodingError("a join has exactly one parent")
+    tips = body["payload"]["tips"]
+    if tips != sorted(set(tips)):
+        raise EncodingError("tips not strictly sorted")
+    return {"id": object_id(body), "body": body}
+
+
 def decode_object(data: bytes) -> dict:
-    return decode_event(data) if "body" in decode_canonical(data) else decode_genesis(data)
-
-
-def decode_proposal(data: bytes) -> dict:
-    c = decode_canonical(data)
-    _check(c, PROPOSAL_SPEC)
-    if c["resolved_tips"] != sorted(c["resolved_tips"]) or c["rejected"] != sorted(c["rejected"]):
-        raise EncodingError("proposal lists not sorted")
-    return c
-
-
-def decode_package(data: bytes) -> dict:
-    pkg = decode_canonical(data)
-    _check(pkg, {"proposal": PROPOSAL_SPEC, "copies": [hexs()]})
-    c = decode_proposal(canonical(pkg["proposal"]))
-    return {"proposal": c, "copies": _decode_embedded(pkg["copies"], c["origin"], "copies")}
+    env = decode_canonical(data)
+    if "body" not in env:
+        return decode_genesis(data)
+    return decode_event(data) if "sig" in env else decode_join(data)
 
 
 def decode_bundle(data: bytes) -> dict:
@@ -298,22 +292,31 @@ def decode_bundle(data: bytes) -> dict:
 
 # ---- constructors (all return encoded bytes, except where noted) ----
 
-def make_genesis(nonce: str, members: list, devices: list) -> bytes:
+def make_genesis(nonce: str, members: list, devices: list, time: int) -> bytes:
     data = canonical({
-        "format": FORMAT, "kind": "genesis", "nonce": nonce, "policy": POLICY,
+        "format": FORMAT, "kind": "genesis", "nonce": nonce, "time": time, "policy": POLICY,
         "members": members, "devices": devices,
     })
     decode_genesis(data)
     return data
 
 
-def make_event(seed: bytes, origin: str, kind: str, parent: str, payload) -> bytes:
+def make_event(seed: bytes, origin: str, kind: str, parent: str, payload, time: int) -> bytes:
     body = {
         "format": FORMAT, "origin": origin, "kind": kind, "author": public_key(seed),
-        "parents": [parent], "payload": payload,
+        "time": time, "parents": [parent], "payload": payload,
     }
     data = canonical({"body": body, "sig": sign(seed, body)})
     decode_event(data)
+    return data
+
+
+def make_join(origin: str, parent: str, tips: list) -> bytes:
+    data = canonical({"body": {
+        "format": FORMAT, "origin": origin, "kind": "join",
+        "parents": [parent], "payload": {"tips": sorted(tips)},
+    }})
+    decode_join(data)
     return data
 
 
@@ -325,14 +328,10 @@ def _sorted_hex(objects: list) -> list:
     return [e.hex() for e in sorted(objects, key=_id_of)]
 
 
-def make_reconciliation_payload(proposal: dict, copies: list, approvals: list) -> dict:
-    return {"proposal": proposal, "copies": _sorted_hex(copies), "approvals": _sorted_hex(approvals)}
-
-
-def make_package(proposal: dict, copies: list) -> bytes:
-    data = canonical({"proposal": proposal, "copies": _sorted_hex(copies)})
-    decode_package(data)
-    return data
+def make_reconciliation_payload(tips: list, adopted: list, rejected: list, copies: list) -> dict:
+    """Adopted stays in the given replay order; tips and rejected are sorted."""
+    return {"tips": sorted(tips), "adopted": list(adopted), "rejected": sorted(rejected),
+            "copies": _sorted_hex(copies)}
 
 
 def make_bundle(origin: str, tip: str, objects: list) -> bytes:

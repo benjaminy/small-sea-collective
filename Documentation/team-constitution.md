@@ -229,6 +229,10 @@ Those are current application-policy choices, not settled core protocol rules.
 Further envelope work should proceed only on properties needed by the narrow core: canonical bytes, full content digests, exact version and type pinning, origin binding, signature verification, parent references, and hostile-input-safe parsing.
 It should not add admission thresholds, effective-membership rules, one accepted frontier, analyzer taxonomies, receipt families, or projection-provenance schemes to the core envelope.
 
+A replacement, the Constitution spine, is being built in `packages/small-sea-manager/small_sea_manager/spine/`; its [README](../packages/small-sea-manager/small_sea_manager/spine/README.md) gives the formats, rules, and owner decisions.
+It has single-parent signed events, reconciliations signed by one member, and a verifier that checks an exported history.
+No team flow uses it yet.
+
 ## Open Core Questions
 
 Only questions that independent core implementations must answer belong here:
