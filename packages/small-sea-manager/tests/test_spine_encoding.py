@@ -7,11 +7,13 @@ import pytest
 
 from small_sea_manager.spine import encoding as enc
 
-GENESIS_BYTES = b'{"devices":[{"device_key":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","label":"laptop","member_id":"alice"},{"device_key":"8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394","label":"laptop","member_id":"bob"},{"device_key":"ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1","label":"laptop","member_id":"carol"}],"format":"spine-v1","kind":"genesis","members":[{"member_id":"alice","name":"Alice"},{"member_id":"bob","name":"Bob"},{"member_id":"carol","name":"Carol"}],"nonce":"0000000000000000000000000000000000000000000000000000000000000000","policy":{"name":"spine-demo-1","settings":{"reconcile_quorum":2}}}'
-GENESIS_ID = "8c44662f111fd29795aaf4082ac1a36f127bc191cdc83aae248b7333e7b8c5a1"
-EVENT_BYTES = b'{"body":{"author":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","format":"spine-v1","kind":"ordinary","origin":"8c44662f111fd29795aaf4082ac1a36f127bc191cdc83aae248b7333e7b8c5a1","parents":["8c44662f111fd29795aaf4082ac1a36f127bc191cdc83aae248b7333e7b8c5a1"],"payload":{"member_id":"bob","op":"remove_member"}},"sig":"e62f9607d3603ab8b65d29ead545c9457602f9bc12b93976ca814ebd354e2013f22f6422321125e6c2f812d5aadf7e32b9c7814f78dd7efc24d363a5264b1a04"}'
-EVENT_ID = "e388a8df9303dd22222bbd21933b504ba7d4042ba1400dda356f9554480bd13a"
-EVENT_SIG = "e62f9607d3603ab8b65d29ead545c9457602f9bc12b93976ca814ebd354e2013f22f6422321125e6c2f812d5aadf7e32b9c7814f78dd7efc24d363a5264b1a04"
+TIME = 1_760_000_000  # the author's claimed time; no check reads it
+
+GENESIS_BYTES = b'{"devices":[{"device_key":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","label":"laptop","member_id":"alice"},{"device_key":"8139770ea87d175f56a35466c34c7ecccb8d8a91b4ee37a25df60f5b8fc9b394","label":"laptop","member_id":"bob"},{"device_key":"ed4928c628d1c2c6eae90338905995612959273a5c63f93636c14614ac8737d1","label":"laptop","member_id":"carol"}],"format":"spine-v1","kind":"genesis","members":[{"member_id":"alice","name":"Alice"},{"member_id":"bob","name":"Bob"},{"member_id":"carol","name":"Carol"}],"nonce":"0000000000000000000000000000000000000000000000000000000000000000","policy":{"name":"spine-demo-1","settings":{}},"time":1760000000}'
+GENESIS_ID = "7aae385fa1c7a8d300c98cee667515bafe3105513f55dd0ab7eb3704dea40864"
+EVENT_BYTES = b'{"body":{"author":"8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c","format":"spine-v1","kind":"ordinary","origin":"7aae385fa1c7a8d300c98cee667515bafe3105513f55dd0ab7eb3704dea40864","parents":["7aae385fa1c7a8d300c98cee667515bafe3105513f55dd0ab7eb3704dea40864"],"payload":{"member_id":"bob","op":"remove_member"},"time":1760000000},"sig":"55b2d3de39bcaf87a9faad40f6925626f3ce9eeaa5274a3a3f0946616b7aca645b827f0a72dd1941cfd7372347ab782a127fbcf554dc044cde1f0d8f565fa509"}'
+EVENT_ID = "660dde69a4b1f0e8d011b7f93a876c4638f9649b5df204d256e599560d581974"
+EVENT_SIG = "55b2d3de39bcaf87a9faad40f6925626f3ce9eeaa5274a3a3f0946616b7aca645b827f0a72dd1941cfd7372347ab782a127fbcf554dc044cde1f0d8f565fa509"
 ALICE_KEY = "8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c"
 
 SEED_A, SEED_B, SEED_C = bytes([1]) * 32, bytes([2]) * 32, bytes([3]) * 32
@@ -35,15 +37,6 @@ def resign(env):
     return enc.canonical(env)
 
 
-def proposal(**changes):
-    c = {
-        "format": "spine-proposal-v1", "origin": GENESIS_ID, "base": GENESIS_ID,
-        "signer": ALICE_KEY, "resolved_tips": [ID1, ID2], "adopted": [ID1], "rejected": [ID2],
-    }
-    c.update(changes)
-    return c
-
-
 def test_vector_genesis():
     assert enc.make_genesis("00" * 32, [
         {"member_id": "alice", "name": "Alice"},
@@ -53,7 +46,7 @@ def test_vector_genesis():
         {"device_key": enc.public_key(SEED_A), "member_id": "alice", "label": "laptop"},
         {"device_key": enc.public_key(SEED_B), "member_id": "bob", "label": "laptop"},
         {"device_key": enc.public_key(SEED_C), "member_id": "carol", "label": "laptop"},
-    ]) == GENESIS_BYTES
+    ], time=TIME) == GENESIS_BYTES
     assert enc.decode_genesis(GENESIS_BYTES)["id"] == GENESIS_ID
     assert enc.public_key(SEED_A) == ALICE_KEY
 
@@ -61,18 +54,12 @@ def test_vector_genesis():
 def test_vector_event():
     data = enc.make_event(
         SEED_A, GENESIS_ID, "ordinary", GENESIS_ID,
-        {"op": "remove_member", "member_id": "bob"},
+        {"op": "remove_member", "member_id": "bob"}, time=TIME,
     )
     assert data == EVENT_BYTES
     decoded = enc.decode_event(EVENT_BYTES)
     assert decoded["id"] == EVENT_ID
     assert decoded["sig"] == EVENT_SIG
-
-
-def test_vector_proposal_digest():
-    assert enc.proposal_digest(proposal()) == (
-        "1e97200b878821ff56ef07adcba1297118592406881626af117f852dbd1734b5"
-    )
 
 
 def test_id_changes_with_body():
@@ -153,9 +140,9 @@ def test_genesis_rejects_extra_and_missing_keys():
 
 def test_genesis_rejects_wrong_policy_settings():
     for policy in (
-        {"name": "spine-demo-1", "settings": {"reconcile_quorum": 3}},
-        {"name": "other", "settings": {"reconcile_quorum": 2}},
-        {"name": "spine-demo-1", "settings": {"reconcile_quorum": 2, "x": 1}},
+        {"name": "spine-demo-1", "settings": {"reconcile_quorum": 2}},
+        {"name": "other", "settings": {}},
+        {"name": "spine-demo-1"},
     ):
         with pytest.raises(enc.EncodingError):
             enc.decode_genesis(genesis(policy=policy))
@@ -197,6 +184,30 @@ def test_event_rejects_unknown_and_missing_keys():
         enc.decode_event(enc.canonical(env))
 
 
+def test_time_is_required_and_a_non_negative_integer():
+    for bad in ("1760000000", [TIME], {"time": TIME}):
+        with pytest.raises(enc.EncodingError):
+            enc.decode_genesis(genesis(time=bad))
+        with pytest.raises(enc.EncodingError):
+            enc.decode_event(resign(event_env(time=bad)))
+    with pytest.raises(enc.EncodingError):
+        enc.canonical(event_env(time=-1))
+    g = json.loads(GENESIS_BYTES)
+    del g["time"]
+    with pytest.raises(enc.EncodingError):
+        enc.decode_genesis(enc.canonical(g))
+    env = event_env()
+    del env["body"]["time"]
+    with pytest.raises(enc.EncodingError):
+        enc.decode_event(resign(env))
+
+
+def test_time_is_only_a_claim():
+    # A clock set to 1970 or to the far future still makes a valid event.
+    for claimed in (0, 2**40):
+        assert enc.decode_event(resign(event_env(time=claimed)))["body"]["time"] == claimed
+
+
 def test_event_rejects_bad_parents():
     for parents in ([], [GENESIS_ID, ID1], GENESIS_ID, [5]):
         with pytest.raises(enc.EncodingError):
@@ -225,92 +236,75 @@ def test_event_rejects_noncanonical_bytes():
         enc.decode_event(json.dumps(env).encode())
 
 
-def test_add_device_and_approval_events_decode():
+def test_add_device_decodes_and_approvals_are_gone():
     add = enc.make_event(SEED_B, GENESIS_ID, "ordinary", GENESIS_ID, {
-        "op": "add_device", "member_id": "bob", "device_key": "ab" * 32, "label": "phone"})
+        "op": "add_device", "member_id": "bob", "device_key": "ab" * 32, "label": "phone"}, time=TIME)
     assert enc.decode_event(add)["body"]["payload"]["label"] == "phone"
-    d = enc.proposal_digest(proposal())
-    appr = enc.make_event(SEED_C, GENESIS_ID, "approval", GENESIS_ID, {"approves": d})
-    assert enc.decode_event(appr)["body"]["kind"] == "approval"
+    with pytest.raises(enc.EncodingError, match="unknown event kind"):
+        enc.make_event(SEED_C, GENESIS_ID, "approval", GENESIS_ID, {"approves": "ab" * 32}, time=TIME)
 
 
-def test_proposal_rejects_unsorted_and_extra_keys():
-    with pytest.raises(enc.EncodingError):
-        enc.decode_proposal(enc.canonical(proposal(resolved_tips=[ID2, ID1])))
-    with pytest.raises(enc.EncodingError):
-        enc.decode_proposal(enc.canonical(proposal(rejected=[ID3, ID1])))
-    with pytest.raises(enc.EncodingError):
-        enc.decode_proposal(enc.canonical(proposal(extra=[])))
+def _payload(copies, **changes):
+    payload = {"tips": [ID1, ID2], "adopted": [ID1], "rejected": [ID2],
+               "copies": [c.hex() for c in copies]}
+    payload.update(changes)
+    return payload
+
+
+def _reconciliation(copies, **changes):
+    return enc.make_event(SEED_A, GENESIS_ID, "reconciliation", GENESIS_ID,
+                          _payload(copies, **changes), time=TIME)
+
+
+def _two_copies():
+    """EVENT_BYTES and a second event, sorted by ID."""
+    y = enc.make_event(SEED_B, GENESIS_ID, "ordinary", GENESIS_ID, {
+        "op": "add_device", "member_id": "bob", "device_key": "ab" * 32, "label": "phone"}, time=TIME)
+    return sorted([EVENT_BYTES, y], key=lambda e: enc.decode_event(e)["id"])
+
+
+def test_reconciliation_decodes_with_copies_sorted_by_id():
+    r = enc.decode_event(_reconciliation(_two_copies()))
+    ids = [c["id"] for c in r["copies"]]
+    assert EVENT_ID in ids and ids == sorted(ids) and len(ids) == 2
+    assert set(r) == {"id", "body", "sig", "copies"}
     # adopted is in replay order, so any order is accepted
-    got = enc.decode_proposal(enc.canonical(proposal(adopted=[ID3, ID1])))
-    assert got["adopted"] == [ID3, ID1]
+    r = enc.decode_event(_reconciliation([], adopted=[ID3, ID1]))
+    assert r["body"]["payload"]["adopted"] == [ID3, ID1]
 
 
-def _reconciliation(copies, approvals, **c_changes):
-    c = proposal(**c_changes)
-    payload = enc.make_reconciliation_payload(c, copies, approvals)
-    return enc.make_event(SEED_A, GENESIS_ID, "reconciliation", GENESIS_ID, payload)
-
-
-def _x_and_approval():
-    x = EVENT_BYTES
-    d = enc.proposal_digest(proposal())
-    return x, enc.make_event(SEED_C, GENESIS_ID, "approval", GENESIS_ID, {"approves": d})
-
-
-def test_reconciliation_decodes_with_copies_and_approvals_sorted_by_id():
-    x, u = _x_and_approval()
-    v = enc.make_event(SEED_A, GENESIS_ID, "approval", GENESIS_ID, {"approves": "ab" * 32})
-    r = enc.decode_event(_reconciliation([x], [u, v]))
-    assert [c["id"] for c in r["copies"]] == [EVENT_ID]
-    ids = [a["id"] for a in r["approvals"]]
-    assert ids == sorted(ids) and len(ids) == 2
-    assert r["body"]["payload"]["proposal"]["signer"] == ALICE_KEY
+def test_make_reconciliation_payload_sorts_tips_rejected_and_copies():
+    copies = _two_copies()
+    payload = enc.make_reconciliation_payload([ID2, ID1], [ID3, ID1], [ID3, ID2], copies[::-1])
+    assert payload == _payload(copies, adopted=[ID3, ID1], rejected=[ID2, ID3])
 
 
 def test_reconciliation_rejects_unsorted_duplicate_and_bad_embedded():
-    x, u = _x_and_approval()
-    v = enc.make_event(SEED_A, GENESIS_ID, "approval", GENESIS_ID, {"approves": "ab" * 32})
-    c = proposal()
-    ordered = enc.make_reconciliation_payload(c, [x], [u, v])
+    x = EVENT_BYTES
+    copies = [c.hex() for c in _two_copies()]
     for payload in (
-        {**ordered, "approvals": ordered["approvals"][::-1]},
-        {**ordered, "approvals": [ordered["approvals"][0]] * 2},
-        {**ordered, "copies": [x.hex()[:-2] + "00"]},
-        {**ordered, "approvals": [x.hex()]},  # an ordinary event is not an approval
-        {**ordered, "copies": ["zz"]},
+        {**_payload([]), "copies": copies[::-1]},
+        {**_payload([]), "copies": [copies[0]] * 2},
+        {**_payload([]), "copies": [x.hex()[:-2] + "00"]},
+        {**_payload([]), "copies": ["zz"]},
+        _payload([x], approvals=[]),  # the old approvals list is an unknown key
+        {key: v for key, v in _payload([x]).items() if key != "tips"},
     ):
         with pytest.raises(enc.EncodingError):
-            enc.make_event(SEED_A, GENESIS_ID, "reconciliation", GENESIS_ID, payload)
+            enc.make_event(SEED_A, GENESIS_ID, "reconciliation", GENESIS_ID, payload, time=TIME)
 
 
-def test_reconciliation_rejects_unsorted_proposal_lists():
-    for changes in ({"resolved_tips": [ID2, ID1]}, {"rejected": [ID3, ID2]}):
+def test_reconciliation_rejects_unsorted_lists():
+    for changes in ({"tips": [ID2, ID1]}, {"rejected": [ID3, ID2]}):
         with pytest.raises(enc.EncodingError, match="not sorted"):
-            _reconciliation([], [], **changes)
+            _reconciliation([], **changes)
 
 
 def test_reconciliation_rejects_copy_with_other_origin():
     other = enc.make_event(
-        SEED_A, ID3, "ordinary", ID3, {"op": "remove_member", "member_id": "bob"})
+        SEED_A, ID3, "ordinary", ID3, {"op": "remove_member", "member_id": "bob"}, time=TIME)
     with pytest.raises(enc.EncodingError, match="origin"):
-        _reconciliation([other], [])
-
-
-def test_reconciliation_rejects_proposal_with_other_origin():
-    with pytest.raises(enc.EncodingError, match="origin"):
-        _reconciliation([], [], origin=ID3)
-
-
-def test_package_roundtrip_and_rejections():
-    data = enc.make_package(proposal(), [EVENT_BYTES])
-    pkg = enc.decode_package(data)
-    assert [c["id"] for c in pkg["copies"]] == [EVENT_ID]
-    assert pkg["proposal"]["adopted"] == [ID1]
-    with pytest.raises(enc.EncodingError):
-        enc.decode_package(enc.canonical({"proposal": proposal(), "copies": [], "x": 1}))
-    with pytest.raises(enc.EncodingError):
-        enc.decode_package(data.replace(b",", b", ", 1))
+        _reconciliation([other])
 
 
 def test_bundle_roundtrip_sorted_and_rejections():
@@ -330,3 +324,29 @@ def test_bundle_roundtrip_sorted_and_rejections():
         enc.decode_bundle(enc.canonical({**json.loads(data), "format": "spine-bundle-v2"}))
     with pytest.raises(enc.EncodingError):
         enc.decode_bundle(enc.canonical({**json.loads(data), "extra": 1}))
+
+
+def test_join_roundtrip_and_id_is_the_hash_of_the_body():
+    data = enc.make_join(GENESIS_ID, EVENT_ID, [ID2, ID1])
+    j = enc.decode_object(data)
+    assert j["body"]["payload"]["tips"] == [ID1, ID2]
+    assert j["id"] == enc.object_id(j["body"]) and "sig" not in j
+    assert data == enc.make_join(GENESIS_ID, EVENT_ID, [ID1, ID2])
+
+
+def test_join_rejects_unsorted_tips_extra_keys_and_two_parents():
+    body = json.loads(enc.make_join(GENESIS_ID, EVENT_ID, [ID1, ID2]))["body"]
+    for change in ({"payload": {"tips": [ID2, ID1]}}, {"payload": {"tips": [ID1, ID1]}},
+                   {"parents": [ID1, ID2]}, {"author": ALICE_KEY},
+                   {"payload": {"tips": [ID1, ID2], "adopted": []}}, {"time": TIME}):
+        with pytest.raises(enc.EncodingError):
+            enc.decode_object(enc.canonical({"body": {**body, **change}}))
+    with pytest.raises(enc.EncodingError):
+        enc.decode_object(enc.canonical({"body": body, "copies": []}))
+
+
+def test_signed_join_is_refused():
+    body = json.loads(enc.make_join(GENESIS_ID, EVENT_ID, [ID1, ID2]))["body"]
+    body["author"] = ALICE_KEY
+    with pytest.raises(enc.EncodingError, match="unknown event kind"):
+        enc.decode_object(enc.canonical({"body": body, "sig": enc.sign(SEED_A, body)}))

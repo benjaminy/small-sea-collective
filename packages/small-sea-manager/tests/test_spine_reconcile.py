@@ -2,13 +2,14 @@
 
 Story: G lists Alice (a), Bob (b), Carol (c); P = Carol adds c2;
 X = Alice removes Bob (parent P); Y = Bob adds b2 (parent P).
-Every R below gets a freshly computed digest, fresh approvals, and a fresh
-signature unless a test says otherwise, so quorum cannot mask the check under test.
+One member's signature is enough: there are no approvals or quorum.
 """
 
 import pytest
 
 from small_sea_manager.spine import encoding, history, reconcile
+
+TIME = 1_760_000_000  # the author's claimed time; no check reads it
 
 NAMES = ["a", "b", "c", "c2", "b2", "b3", "c3"]
 SEEDS = {name: bytes([n]) * 32 for n, name in enumerate(NAMES, 1)}
@@ -32,7 +33,7 @@ def make_genesis(nonce="00"):
         {"device_key": KEY["a"], "member_id": "alice", "label": "laptop"},
         {"device_key": KEY["b"], "member_id": "bob", "label": "laptop"},
         {"device_key": KEY["c"], "member_id": "carol", "label": "laptop"},
-    ])
+    ], time=TIME)
 
 
 class World:
@@ -47,27 +48,17 @@ class World:
         self.y = oid(self.y_bytes)
 
     def event(self, seed, parent, payload, kind="ordinary", origin=None):
-        return encoding.make_event(SEEDS[seed], origin or self.g, kind, parent, payload)
+        return encoding.make_event(SEEDS[seed], origin or self.g, kind, parent, payload, time=TIME)
 
     def proposal(self, adopted, rejected, tips=None, base=None, signer="a"):
-        return {
-            "format": "spine-proposal-v1", "origin": self.g, "base": base or self.p,
-            "signer": KEY[signer], "resolved_tips": sorted(tips or [self.x, self.y]),
-            "adopted": adopted, "rejected": sorted(rejected),
-        }
+        """What R will say, before it is signed; base becomes R's parent."""
+        return {"base": base or self.p, "signer": signer, "tips": tips or [self.x, self.y],
+                "adopted": adopted, "rejected": rejected}
 
-    def approvals(self, proposal, approvers=("a", "c"), parent=None):
-        digest = encoding.proposal_digest(proposal)
-        return [self.event(s, parent or proposal["base"], {"approves": digest}, "approval")
-                for s in approvers]
-
-    def r(self, proposal, copies, approvals=None, author=None):
-        """Sign R for this proposal; approvals default to fresh ones from a and c."""
-        if approvals is None:
-            approvals = self.approvals(proposal)
-        payload = encoding.make_reconciliation_payload(proposal, list(copies), list(approvals))
-        signer = author or next(k for k, v in KEY.items() if v == proposal["signer"])
-        return self.event(signer, proposal["base"], payload, "reconciliation")
+    def r(self, proposal, copies):
+        payload = encoding.make_reconciliation_payload(
+            proposal["tips"], proposal["adopted"], proposal["rejected"], list(copies))
+        return self.event(proposal["signer"], proposal["base"], payload, "reconciliation")
 
     def check(self, r, *extra):
         lookup = history.build_lookup([self.p_bytes, *extra, r], self.g_bytes)
@@ -105,10 +96,10 @@ def test_valid_r_adopts_removal_and_rejects_addition(w):
     assert devices(after["state"]) == [("alice", "laptop"), ("carol", "laptop"), ("carol", "phone")]
 
 
-def test_bob_signs_and_approves_his_own_removal(w):
+def test_bob_alone_may_sign_his_own_removal(w):
     # Authority comes from the base, where Bob is still a member.
     c = w.proposal([w.x], [w.y], signer="b")
-    r = w.r(c, [w.x_bytes, w.y_bytes], w.approvals(c, ("b", "c")))
+    r = w.r(c, [w.x_bytes, w.y_bytes])
     result = w.check(r)
     assert verdict(result) == ("valid", None, None)
     assert names(result["state"]) == ["alice", "carol"]
@@ -118,22 +109,9 @@ def test_bob_signs_and_approves_his_own_removal(w):
 
 def test_r_with_another_origin_fails_core(w):
     other = oid(make_genesis("11"))
-    c = dict(w.proposal([], []), origin=other)
-    payload = encoding.make_reconciliation_payload(c, [], [])
+    payload = encoding.make_reconciliation_payload([w.x, w.y], [], [], [])
     r = w.event("a", w.p, payload, "reconciliation", origin=other)
     assert verdict(w.check(r)) == ("invalid", "core", "origin is not the pinned genesis")
-
-
-def test_author_other_than_proposal_signer_fails_shape(w):
-    r = w.r(w.proposal([w.x], [w.y]), [w.x_bytes, w.y_bytes], author="c")
-    assert verdict(w.check(r)) == ("invalid", "shape", "author is not the proposal's signer")
-
-
-def test_parent_other_than_proposal_base_fails_shape(w):
-    c = w.proposal([w.x], [w.y])
-    payload = encoding.make_reconciliation_payload(c, [w.x_bytes, w.y_bytes], w.approvals(c))
-    r = w.event("a", w.g, payload, "reconciliation")
-    assert verdict(w.check(r)) == ("invalid", "shape", "parent is not the proposal's base")
 
 
 def test_single_resolved_tip_fails_shape(w):
@@ -143,11 +121,11 @@ def test_single_resolved_tip_fails_shape(w):
 
 # ---- base ----
 
-def test_declared_base_g_rejecting_p_fails_base(w):
+def test_parent_g_rejecting_p_fails_base(w):
     c = w.proposal([], [w.p, w.x, w.y], base=w.g)
     r = w.r(c, [w.p_bytes, w.x_bytes, w.y_bytes])
     assert verdict(w.check(r)) == (
-        "invalid", "base", "declared base is not the nearest common ancestor")
+        "invalid", "base", "parent is neither the tips' nearest common ancestor nor a tip")
 
 
 def test_check_reconciliation_on_unknown_id_is_incomplete(w):
@@ -179,10 +157,10 @@ def on_base(w, base_r):
 
 
 def test_unauthorized_reconciliation_as_base_fails_base(w):
-    r0 = w.r(w.proposal([w.x], [w.y]), [w.x_bytes, w.y_bytes], approvals=[])
+    r0 = w.r(w.proposal([w.x], [w.y], signer="b2"), [w.x_bytes, w.y_bytes])
     r1, k1, k2 = on_base(w, r0)
     assert verdict(w.check(r1, r0, k1, k2)) == (
-        "invalid", "base", "base is invalid: approvals do not reach quorum")
+        "invalid", "base", "base is invalid: signer is not a device at the base")
 
 
 def test_pending_reconciliation_as_base_makes_r_incomplete(w):
@@ -215,17 +193,11 @@ def test_extra_copy_outside_branches_fails_partition(w):
 
 def test_resolved_tip_at_the_base_is_allowed(w):
     # P is an ancestor of X, so the derived base is P itself and P contributes no covered events.
-    # Allowed: R may name any published tip (decision 2, after-t3-decisions.md).
+    # Allowed: R may name any published tip (spine README section 4).
     r = w.r(w.proposal([w.x], [], tips=[w.p, w.x]), [w.x_bytes])
     result = w.check(r)
     assert verdict(result) == ("valid", None, None)
     assert names(result["state"]) == ["alice", "carol"]
-
-
-def test_approval_carried_as_a_copy_fails_partition(w):
-    u = w.event("c", w.p, {"approves": "ab" * 32}, "approval")
-    r = w.r(w.proposal([w.x], [oid(u)], tips=[w.x, oid(u)]), [w.x_bytes, u])
-    assert verdict(w.check(r)) == ("invalid", "partition", "a copy is not an ordinary event")
 
 
 # ---- original validity ----
@@ -271,35 +243,7 @@ def test_adopting_both_x_and_y_fails_replay(w):
 
 # ---- authority ----
 
-def test_stale_approvals_on_edited_proposal_fail_authority(w):
-    original = w.proposal([w.x], [w.y])
-    stale = w.approvals(original)
-    assert verdict(w.check(w.r(original, [w.x_bytes, w.y_bytes], stale)))[0] == "valid"
-    edited = w.proposal([w.y], [w.x])
-    r = w.r(edited, [w.x_bytes, w.y_bytes], stale)
-    assert verdict(w.check(r)) == ("invalid", "authority", "approvals do not reach quorum")
-
-
-def test_one_members_approval_fails_authority(w):
-    c = w.proposal([w.x], [w.y])
-    r = w.r(c, [w.x_bytes, w.y_bytes], w.approvals(c, ("a",)))
-    assert verdict(w.check(r)) == ("invalid", "authority", "approvals do not reach quorum")
-
-
-def test_two_devices_of_one_member_count_once(w):
-    c = w.proposal([w.x], [w.y])
-    r = w.r(c, [w.x_bytes, w.y_bytes], w.approvals(c, ("c", "c2")))
-    assert verdict(w.check(r)) == ("invalid", "authority", "approvals do not reach quorum")
-
-
 def test_r_signed_by_device_absent_at_base_fails_authority(w):
     r = w.r(w.proposal([w.x], [w.y], signer="b2"), [w.x_bytes, w.y_bytes])
     assert verdict(w.check(r)) == ("invalid", "authority", "signer is not a device at the base")
 
-
-def test_approval_not_parenting_the_base_fails_authority(w):
-    # a and c alone reach quorum; the extra approval on G must still be refused.
-    c = w.proposal([w.x], [w.y])
-    approvals = w.approvals(c) + w.approvals(c, ("c2",), parent=w.g)
-    r = w.r(c, [w.x_bytes, w.y_bytes], approvals)
-    assert verdict(w.check(r)) == ("invalid", "authority", "an approval does not parent the base")

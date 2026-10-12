@@ -230,6 +230,12 @@ Those systems avoid pausing on a human because they serve many uncoordinated par
 Small Sea's coordination groups are small, the parties can talk to each other out of band, and a paused device blocks only its owner.
 The tradeoff that makes pausing unacceptable elsewhere does not apply here, so treating it as acceptable is a decision, not an oversight.
 
+Best-effort steps that make collisions rare are worth taking, even though they guarantee nothing.
+For example, a Manager pulls the team's latest Constitution changes before it publishes one.
+Two devices can still race, and storage can be unreachable, so collisions still happen and must still be handled correctly.
+But under common conditions this keeps changes flowing without anyone having to resolve anything.
+Correctness must never depend on such a step.
+
 The corresponding safety rule is strict: human-scale repair is acceptable, but
 silent misresolution is not. Code must not grant access by arbitrary row order,
 collapse distinct identities by friendly name, or discard one side of a
