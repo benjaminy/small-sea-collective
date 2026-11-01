@@ -178,6 +178,12 @@ These are not gaps to fill by default in the core.
 They are boundaries that let each extension state and test the security properties its actions require.
 An extension that releases fresh key material, for example, needs a stronger and more explicit authorization policy than an extension that merely displays an unfamiliar signed event.
 
+The broader [security model](../architecture.md#security-under-radical-decentralization) protects participants' ability to stop cooperating and continue independently, rather than promising that a hostile collaboration remains available.
+This does not relax verification, authorization, or local resource limits for either insiders or outsiders.
+Retained signed evidence can expose harmful actions by a key, but cannot always establish human intent or reveal withheld events.
+Participants need no proof of misconduct to choose a different continuation.
+Copying existing records into that continuation must preserve their original authorship and context; it must not make them statements of the new technical origin.
+
 ## Relationship to Git and Core
 
 Git carries database snapshots and application histories, while Constitution events carry domain signatures.

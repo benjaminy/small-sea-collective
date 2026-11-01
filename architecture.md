@@ -9,7 +9,8 @@ Small Sea Collective is a framework for building collaborative team applications
   The identifier does not itself grant authority or settle social identity.
 - **Application (App)**: A way to organize resources like storage, notifications, and identity. Apps are not specific client software but logical groupings of resources.
 - **Berth**: The intersection of a specific team scope and a specific **App**.
-  It is the fundamental unit of resource allocation, local client authorization, cryptographic readability, and teammate integration mode.
+  It is the fundamental unit of resource allocation, local client authorization, encrypted app-data distribution, and teammate integration mode.
+  The team defines the intended readership of shared data; berths do not create private reader subsets within a team.
 - **Client**: Any software (GUI, CLI, agent) that accesses resources through the Small Sea Hub.
 - **Hub**: By default, a local service that mediates all access to general-purpose cloud services.
   It acts as a security gateway and protocol translator.
@@ -153,7 +154,11 @@ They can later consume the same canonical basis object without changing this app
 ### 1. Fully Decentralized Team Management
 Small Sea uses Signal-inspired cryptographic protocols ([X3DH](https://signal.org/docs/specifications/x3dh/) and [Double Ratchet](https://signal.org/docs/specifications/doubleratchet/)) to manage identity and group membership. Teammates certify each other's identities, effectively building a decentralized web of trust.
 
-**Read access is endpoint-trust-scoped.** Any admitted party — teammate or sibling device — can in principle proxy plaintext or hand over receiver state to anyone they choose. The protocol cannot prevent this; it relies on the social commitment of admitted parties rather than a cryptographic enforcement boundary.
+**Recipients control the data they receive.**
+Any admitted party — teammate or sibling device — can copy plaintext or hand over receiver state to anyone they choose.
+Small Sea cannot prevent this, retract received information, or force recipients to delete their copies.
+Encryption protects against parties who lack the keys; continued confidentiality also depends on recipients choosing not to disclose what they hold.
+The [security model](#security-under-radical-decentralization) defines the intended readership and the limits of exclusion and pruning.
 
 **Membership and device management are extensions over the Constitution DAG.**
 The current Manager implements one inviter-orchestrated, transcript-bound admission policy and one sibling-device linking policy.
@@ -200,6 +205,66 @@ Core uses the same forward-only Git rule.
 Any stronger event-retention or projection-repair rule belongs to the Constitution storage implementation or to an extension, not to the event envelope.
 
 ## Design Principles & Constraints
+
+### Security Under Radical Decentralization
+
+Small Sea protects people's ability to choose whom they collaborate with and what they share.
+It cannot make recipients obey sharing rules or make unwilling teammates cooperate.
+These limits follow from participants controlling their own devices, data, and recognized histories.
+
+**Teams define audiences.**
+All teammates are intended readers of the team's shared data.
+Joining grants access to whatever the team currently shares, including history retained as part of an application's data model.
+Admission date does not establish a separate readership boundary within that data.
+Personal drafts, local preferences, private keys, and provider credentials are not shared team data.
+The Hub still enforces local client access to each berth; teammate readership does not authorize every local app.
+
+Use a separate team when the intended audience differs, including for private conversations.
+Apps may present such a group as a conversation rather than an organizational Team.
+A linked subgroup can deliberately expose relationship metadata to a larger group for convenience.
+An unrelated group with overlapping membership need not announce that relationship.
+Neither choice prevents members from disclosing the group or its contents.
+See [Linked Teams](Documentation/linked-teams.md#private-conversations-and-shared-history).
+
+If earlier history should not be shared with newcomers, create a new team carrying only the intended data, or make history pruning part of the application's data model.
+Pruning determines what a copy retains and offers; it cannot erase other copies.
+Exclusion and fresh keys let participants stop giving someone future data and keys, but cannot retract earlier disclosures or prevent a remaining teammate from passing along new data.
+
+**Protect the ability to continue without uncooperative teammates.**
+Small Sea does not promise to keep a hostile collaboration functioning.
+Participants must be able to stop accepting a teammate's contributions and continue together without that teammate's cooperation.
+They may establish a new technical team, with fresh keys and resources the excluded person does not control, carrying forward the state they choose from data they hold.
+This cannot recover data whose only holder refuses to supply it.
+
+Continued mutual recognition holds a social team together; a technical origin does not own that continuity.
+Splits are an ordinary consequence of independent local choices.
+No canonical successor, team identity token, or approval from the old team is needed for people to continue together.
+External relationships likewise follow people and the continuations they recognize.
+Different people may recognize different continuations; a team identifier cannot settle their disagreement or provide a universal redirect.
+
+Making a fresh technical team nearly as seamless as an ordinary departure is a design target, not an implemented guarantee.
+Both require establishing future readership and distributing fresh key material.
+Apps should be able to preserve a user's workspace through a chosen continuation while retaining the original context and authorship of existing records.
+Returning devices should update their view before publishing; unpublished work still needs ordinary reconciliation against the continuation the user chooses.
+The continuation API and departure mechanics remain open, and must preserve local authorization boundaries.
+
+**Uncooperative teammates and external attacks require different responses.**
+Leaving a collaboration is no general defense against an external attacker.
+Small Sea must reject forged or unauthorized actions, protect encrypted data from parties lacking keys, and bound the resources consumed by hostile input.
+These defenses also apply to input from teammates: a valid signature grants no entitlement to unlimited processing.
+An excluded teammate may attack as an outsider, and a current teammate may attack the software as well as obstruct collaboration.
+So people can leave and carry on, each device must cap what hostile input can consume, keep enough data to continue, and be able to stop accepting a peer's updates.
+
+Small Sea should expose harmful behavior and the evidence it has without claiming to prove malicious intent.
+A signed conflict may identify a key; silence may reflect withholding, a failed connection, or an offline device.
+People need no proof of wrongdoing to stop cooperating.
+
+**Integrity, authenticity, and accountability remain essential.**
+Verify signed content, preserve its authorship and context through merges and repairs, and retain inspectable evidence of consequential decisions.
+A signature identifies a signing key; recognizing its holder and authorizing its actions require separate evidence and policy.
+Authentic statements can be false, and a compromised device can act without its owner's intent.
+Accountability means explaining actions from available evidence, not promising complete disclosure of everything someone did or knew.
+The [Constitution's security claims](Documentation/team-constitution.md#security-claims) state what its signed DAG can establish; applications and extensions must state and enforce the additional properties their actions require.
 
 ### Human-Scale Coordination
 

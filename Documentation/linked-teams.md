@@ -60,8 +60,8 @@ A **constitutional group** is a working name for a group with a stable technical
 "Constitutional" is intentionally thin here; it does not imply bylaws, elaborate governance, permanence, or organizational importance.
 A Team, an ad hoc conversation, and an app-specific workspace might all use that substrate while only the first is presented as a Team.
 
-One promising formation rule for a cross-cutting ad hoc group is that its members must be connected through a declared graph of existing constitutional groups and dual-member people.
-The existing groups can carry signed creation and membership records, while the new group's app data remains readable only by its own members.
+One promising formation rule for a linked, cross-cutting ad hoc group is that its members must be connected through a declared graph of existing constitutional groups and dual-member people.
+The existing groups can carry signed creation and membership records, while the new group's app data is encrypted for its own members.
 Its existence and roster may be visible to everyone in the declared source groups even when its app payload is not.
 That separates a relatively visible control plane from an encrypted data plane and avoids inventing an out-of-band identity or invitation system.
 
@@ -72,6 +72,25 @@ The least surprising starting semantics are probably admission-time: the graph e
 
 This reframing leaves large questions open: who may announce a new group into a source group's shared history, how much metadata is visible, whether membership records are mirrored or merely witnessed, whether a new group gets independent transport immediately, and which optional signed profile makes a constitutional group appear as a Team.
 Those questions belong to a later design pass rather than the first linked-team implementation.
+
+### Private Conversations and Shared History
+
+Use separate teams for different audiences rather than private reader subsets inside one team.
+A private conversation can use the team machinery without appearing as an organizational Team in the UI.
+
+A linked subgroup and an unrelated group with overlapping membership serve different privacy choices.
+The linked subgroup deliberately exposes some relationship metadata to source groups in exchange for convenience, such as introductions through an existing group.
+Its app data is shared with its own members, not automatically with the source groups.
+The link design must specify what metadata it exposes, and the product must explain that choice.
+The exact metadata remains open.
+
+People who do not want that announcement can create an unrelated group using ordinary admission.
+Overlapping membership alone creates no declared link and does not require publishing the group's existence or roster into another team's history.
+The declared-source-graph proposal above applies to linked groups, not to every group people may create.
+Neither form prevents members from disclosing its metadata or contents, or promises that outside observers cannot infer a relationship.
+
+Both kinds follow the same readership rules as any other team, including access to retained history on joining; see the [security model](../architecture.md#security-under-radical-decentralization).
+Those rules are not optional link policies.
 
 ---
 
@@ -90,6 +109,10 @@ Different participants can hold different heads and make different local choices
 So "Team B" is not a single state that Team A can point at.
 It is a living, potentially divided history with no built-in spokesperson.
 Naming its technical origin gives a stable replay domain and shared-ancestry handle, but that handle says nothing about which continuation Team A recognizes *now* or who may speak within it.
+
+Continued recognition is what keeps people together as a team.
+When they split, an outside party follows the people and continuation it chooses to recognize; the old identifier cannot name a universally legitimate successor.
+Establishing a fresh technical team after a split should use this ordinary relationship model, without requiring approval from the excluded participants or introducing a global redirect.
 
 ### The bridge answer
 
