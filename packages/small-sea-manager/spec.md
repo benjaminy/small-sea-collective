@@ -357,7 +357,7 @@ Current same-teammate flow:
 
 Historical boundary and visibility:
 
-- **The access policy is join-time-forward.** The new device inherits the
+- **The decryption limit is join-time-forward.** The new device inherits the
   sibling's snapshot of peer sender keys at bootstrap time and can read forward
   from that point across all senders the sibling held. It does not receive
   ciphertext from before the `device_link` cert was published — that historical
