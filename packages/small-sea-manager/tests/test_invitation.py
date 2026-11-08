@@ -228,6 +228,20 @@ def test_invitation_rejects_token_with_invalid_anchor_signature(playground_dir):
     with pytest.raises(ValueError, match="anchor signature is invalid"):
         provisioning.accept_invitation(root, bob, tampered_token, inviter_store)
 
+    # The refusal leaves nothing behind (#298), so the genuine token still works.
+    team_id = bytes.fromhex(token_data["team_id"])
+    assert not (root / "Participants" / bob / "ProjectX" / "Sync").exists()
+    team_names = lambda: [t["name"] for t in provisioning.list_teams(root, bob)]
+    assert team_names() == ["NoteToSelf"]
+    with provisioning.attached_note_to_self_connection(root, bob) as conn:
+        for table in ("team_device_key", "local.team_device_key_secret"):
+            rows = conn.execute(
+                f"SELECT 1 FROM {table} WHERE team_id = ?", (team_id,)
+            ).fetchall()
+            assert rows == [], table
+    provisioning.accept_invitation(root, bob, token, inviter_store)
+    assert sorted(team_names()) == ["NoteToSelf", "ProjectX"]
+
 
 def test_invitation_rejects_core_with_forged_genesis(playground_dir, monkeypatch):
     root = pathlib.Path(playground_dir)

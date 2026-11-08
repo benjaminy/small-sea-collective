@@ -5969,6 +5969,14 @@ def accept_invitation(
 
     acceptor_dir = root_dir / "Participants" / acceptor_participant_hex
 
+    with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
+        existing = conn.execute(
+            "SELECT 1 FROM team WHERE name = ?",
+            (team_name,),
+        ).fetchone()
+    if existing is not None:
+        raise ValueError(f"Team '{team_name}' already exists in NoteToSelf")
+
     # --- Create acceptor's team directory ---
     team_sync_dir = acceptor_dir / team_name / "Sync"
     os.makedirs(team_sync_dir, exist_ok=False)
@@ -5977,8 +5985,9 @@ def accept_invitation(
     # init + fetch + checkout: every path is named explicitly, so this works
     # when the workspace lives inside an existing git repo and needs no cwd.
 
-    # Nothing else is written until the clone succeeds, so a failed clone
-    # removes the directory and the invitee can simply retry.
+    # Nothing outside the team directory is written until the clone and the
+    # invitation checks below succeed. A failure removes the directory, so the
+    # invitee can simply retry.
     try:
         repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
         try:
@@ -5991,37 +6000,14 @@ def accept_invitation(
                 f"The inviter's cloud publishes no team repo ({inviter_url})"
             ) from exc
         repo.checkout_branch("main", start_point=result.observed_head)
+        # --- Install sqlite merge driver ---
+        _install_sqlite_merge_driver(team_sync_dir)
+        team_db_path = team_sync_dir / "core.db"
+        ensure_team_db_schema(team_db_path)
     except BaseException:
         shutil.rmtree(team_sync_dir)
         raise
 
-    # --- Install sqlite merge driver ---
-    _install_sqlite_merge_driver(team_sync_dir)
-
-    with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
-        existing = conn.execute(
-            "SELECT 1 FROM team WHERE name = ?",
-            (team_name,),
-        ).fetchone()
-        if existing is not None:
-            raise ValueError(f"Team '{team_name}' already exists in NoteToSelf")
-        conn.execute(
-            "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
-            (team_id, team_name, acceptor_teammate_id),
-        )
-        # Core participant registration is identity-wide in NoteToSelf. Hub
-        # berth resolution currently accepts any NoteToSelf Core berth for the
-        # app, so accepting a team invitation does not add a per-team Core row.
-        conn.commit()
-
-    # --- Generate local current device key ---
-    team_keys = _generate_initial_team_device_key(
-        root_dir, acceptor_participant_hex, team_id
-    )
-    acceptor_device_key_id = key_id_from_public(team_keys["device_key"].public_key)
-
-    team_db_path = team_sync_dir / "core.db"
-    ensure_team_db_schema(team_db_path)
     # The cloned Core is an untrusted snapshot. Adopt an anchor only when its
     # signed proposal author is reachable through a verified membership chain
     # from exactly one self-issued genesis certificate.
@@ -6106,8 +6092,28 @@ def accept_invitation(
                 raise ValueError("Invitation authority anchor signature is invalid")
             if adopted_genesis.subject_public_key != signed_anchor:
                 raise ValueError("Invitation Core authority anchor does not match inviter signature")
+    except BaseException:
+        core_engine.dispose()
+        shutil.rmtree(team_sync_dir)
+        raise
     finally:
         core_engine.dispose()
+
+    with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
+        conn.execute(
+            "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
+            (team_id, team_name, acceptor_teammate_id),
+        )
+        # Core participant registration is identity-wide in NoteToSelf. Hub
+        # berth resolution currently accepts any NoteToSelf Core berth for the
+        # app, so accepting a team invitation does not add a per-team Core row.
+        conn.commit()
+
+    # --- Generate local current device key ---
+    team_keys = _generate_initial_team_device_key(
+        root_dir, acceptor_participant_hex, team_id
+    )
+    acceptor_device_key_id = key_id_from_public(team_keys["device_key"].public_key)
 
     _record_authority_anchor(
         root_dir,
