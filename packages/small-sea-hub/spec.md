@@ -490,6 +490,10 @@ A publisher label inside a payload never overrides that projection, and a key th
 
 Plaintext is returned and receiver sender-key state is committed only after the signature, header, context and ownership checks all succeed.
 A refused read leaves persisted receiver records and in-memory skipped-key maps unchanged.
+The Hub selects receiver state by team, sending device, and the chain ID named in the message.
+Rotation preserves earlier chains, including their chain keys and retained message keys, so old objects remain readable even if first fetched after rotation.
+Saving a successful read updates only that chain.
+Keeping decryption keys does not decide which publications belong to accepted history.
 
 ### Read outcomes
 
@@ -497,7 +501,7 @@ Missing evidence and refused publications stay distinguishable, and neither may 
 
 | Outcome | HTTP | `error` |
 |---|---|---|
-| No sender key for the signing device yet | 409 | `sender_key_unavailable` |
+| No sender key for the named device and chain yet | 409 | `sender_key_unavailable` |
 | No ownership projection for this session at all | 409 | `ownership_projection_absent` |
 | Projection present, no accepted row for the device | 409 | `device_ownership_unavailable` |
 | Device associated with more than one teammate | 409 | `device_ownership_ambiguous` |

@@ -65,7 +65,7 @@ def test_interruption_rolls_back_prekey_and_receiver_record_and_allows_retry(pai
     p.rotate_team_sender_key(pair['alice_root'], pair['alice_hex'], 'ProjectX')
     payload = artifact(pair)
     before = stored_state(pair)
-    save = p.save_peer_sender_key
+    save = p.install_peer_sender_key
 
     def interrupted(*args, **kwargs):
         if after_write:
@@ -73,7 +73,7 @@ def test_interruption_rolls_back_prekey_and_receiver_record_and_allows_retry(pai
         raise RuntimeError('interrupted while persisting received sender key')
 
     with monkeypatch.context() as patch:
-        patch.setattr(p, 'save_peer_sender_key', interrupted)
+        patch.setattr(p, 'install_peer_sender_key', interrupted)
         with pytest.raises(RuntimeError, match='interrupted'):
             receive(pair, payload)
     assert stored_state(pair) == before
@@ -107,7 +107,7 @@ def test_concurrent_receivers_cannot_both_consume_prekey(pair, monkeypatch):
     payloads = [artifact(pair), artifact(pair)]
     decrypted = Barrier(2)
     decrypt = p.ratchet_decrypt
-    save = p.save_peer_sender_key
+    save = p.install_peer_sender_key
     writes = []
 
     def synchronized_decrypt(*args, **kwargs):
@@ -120,7 +120,7 @@ def test_concurrent_receivers_cannot_both_consume_prekey(pair, monkeypatch):
         return save(*args, **kwargs)
 
     monkeypatch.setattr(p, 'ratchet_decrypt', synchronized_decrypt)
-    monkeypatch.setattr(p, 'save_peer_sender_key', track_save)
+    monkeypatch.setattr(p, 'install_peer_sender_key', track_save)
     with ThreadPoolExecutor(max_workers=2) as executor:
         futures = [executor.submit(receive, pair, payload) for payload in payloads]
         outcomes = []

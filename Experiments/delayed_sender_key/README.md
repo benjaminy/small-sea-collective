@@ -1,4 +1,10 @@
-# A delayed distribution replaces a newer sender chain
+# Delayed sender-key distributions
+
+The micro tests now require both chains to survive either delivery order.
+Receiver storage identifies each chain separately; receiving another distribution no longer replaces a different chain.
+The original observations below describe the failure before this fix.
+
+## Original observations
 
 A valid old sender-key distribution can replace newer receiver state when it arrives for the first time after a rotation.
 Atomic prekey consumption prevents duplicate receipt but does not establish ordering between two authentic distributions using different prekeys.

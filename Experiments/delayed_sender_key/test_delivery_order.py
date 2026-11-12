@@ -1,4 +1,4 @@
-"""Observe whether authentic delayed distributions replace newer receiver state."""
+"""Check that authentic delayed distributions preserve both receiver chains."""
 import importlib.util
 import sqlite3
 from dataclasses import replace
@@ -29,16 +29,15 @@ def receive(pair, payload):
     return p.receive_sender_key_distribution(pair['bob_root'], pair['bob_hex'], 'ProjectX', payload)
 
 
-def chain(pair, sender):
+def chains(pair, sender):
     with sqlite3.connect(p.device_local_db_path(pair['bob_root'], pair['bob_hex'])) as conn:
         rows = conn.execute('SELECT chain_id FROM peer_sender_key WHERE sender_device_key_id = ?',
                             (bytes.fromhex(sender),)).fetchall()
-    assert len(rows) == 1
-    return rows[0][0].hex()
+    return {row[0].hex() for row in rows}
 
 
 @pytest.mark.parametrize('reverse', [False, True], ids=['ordered-control', 'delayed-old-distribution'])
-def test_last_delivery_replaces_current_chain_even_when_older(pair, monkeypatch, reverse):
+def test_delivery_order_preserves_both_chains(pair, monkeypatch, reverse):
     old = distribute(pair)
     p.rotate_team_sender_key(pair['alice_root'], pair['alice_hex'], 'ProjectX')
     send = p.x3dh_send
@@ -59,9 +58,9 @@ def test_last_delivery_replaces_current_chain_even_when_older(pair, monkeypatch,
     first, last = (new, old) if reverse else (old, new)
     sender = old_body['sender_device_key_id']
     receive(pair, first)
-    assert chain(pair, sender) == (new_chain if reverse else old_chain)
+    assert chains(pair, sender) == ({old_chain, new_chain} if reverse else {old_chain})
     receive(pair, last)
-    assert chain(pair, sender) == (old_chain if reverse else new_chain)
+    assert chains(pair, sender) == {old_chain, new_chain}
     # Receipt protection still works for exact replay of a consumed prekey.
     with pytest.raises(ValueError, match='unavailable one-time prekey'):
         receive(pair, last)

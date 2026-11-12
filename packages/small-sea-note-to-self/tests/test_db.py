@@ -106,9 +106,9 @@ def test_old_shared_note_to_self_db_version_requires_recreate(tmp_path):
     assert "user_device" not in _table_names(db_path)
 
 
-def test_old_device_local_note_to_self_db_version_requires_recreate(tmp_path):
+def test_unsupported_device_local_version_preserves_database(tmp_path):
     db_path = tmp_path / "device_local.db"
-    old_version = LOCAL_SCHEMA_VERSION - 1
+    old_version = 12
     _stamp_future_version(db_path, old_version)
 
     with pytest.raises(NotImplementedError) as exc_info:
@@ -123,3 +123,67 @@ def test_old_device_local_note_to_self_db_version_requires_recreate(tmp_path):
         version = conn.execute("PRAGMA user_version").fetchone()[0]
     assert version == old_version
     assert "note_to_self_sync_state" not in _table_names(db_path)
+
+
+def test_schema_13_upgrade_preserves_keys_credentials_and_other_tables(tmp_path):
+    from dataclasses import replace
+
+    from cuttlefish.group import create_sender_key
+    from small_sea_note_to_self.sender_keys import (
+        install_peer_sender_key,
+        load_all_peer_sender_keys,
+        receiver_record_from_distribution,
+    )
+
+    db_path = tmp_path / "device_local.db"
+    initialize_device_local_db(db_path)
+    _, distribution = create_sender_key(b"team", b"device")
+    record = replace(
+        receiver_record_from_distribution(distribution),
+        skipped_message_keys={0: b"retained-message-key"},
+    )
+    install_peer_sender_key(db_path, b"team", record)
+    with sqlite3.connect(db_path) as conn:
+        # Reproduce the old primary key while preserving the full row.
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'peer_sender_key'"
+        ).fetchone()[0]
+        conn.execute("ALTER TABLE peer_sender_key RENAME TO old_peer")
+        conn.execute(sql.replace(
+            "PRIMARY KEY (team_id, sender_device_key_id, chain_id)",
+            "PRIMARY KEY (team_id, sender_device_key_id)",
+        ))
+        conn.execute("INSERT INTO peer_sender_key SELECT * FROM old_peer")
+        conn.execute("DROP TABLE old_peer")
+        conn.execute("INSERT INTO cloud_storage_credential (cloud_storage_id, secret_key) VALUES (?, ?)",
+                     (b"cloud", "keep-this-secret"))
+        conn.execute("PRAGMA user_version = 13")
+    tables_before = _table_names(db_path)
+
+    initialize_device_local_db(db_path)
+    initialize_device_local_db(db_path)
+
+    assert load_all_peer_sender_keys(db_path, b"team") == [record]
+    assert _table_names(db_path) == tables_before
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == LOCAL_SCHEMA_VERSION
+        assert conn.execute("SELECT secret_key FROM cloud_storage_credential").fetchone() == ("keep-this-secret",)
+    _, next_distribution = create_sender_key(b"team", b"device")
+    install_peer_sender_key(db_path, b"team", receiver_record_from_distribution(next_distribution))
+    assert len(load_all_peer_sender_keys(db_path, b"team")) == 2
+
+
+def test_failed_schema_13_upgrade_rolls_back_the_table_rename(tmp_path):
+    db_path = tmp_path / "device_local.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("CREATE TABLE peer_sender_key (evidence TEXT)")
+        conn.execute("INSERT INTO peer_sender_key VALUES ('preserve me')")
+        conn.execute("PRAGMA user_version = 13")
+
+    with pytest.raises(sqlite3.OperationalError):
+        initialize_device_local_db(db_path)
+
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 13
+        assert conn.execute("SELECT * FROM peer_sender_key").fetchall() == [("preserve me",)]
+    assert _table_names(db_path) == {"peer_sender_key"}

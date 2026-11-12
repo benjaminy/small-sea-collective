@@ -203,7 +203,7 @@ def test_invalid_iteration_is_a_publication_rejection(routed, iteration):
     message = json.loads(original)
     device_id = bytes.fromhex(message["sender_device_key_id"])
     local_db = device_local_db_path(env.root, env.alice)
-    before = load_peer_sender_key(local_db, env.team_id, device_id)
+    before = load_peer_sender_key(local_db, env.team_id, device_id, bytes.fromhex(message["sender_chain_id"]))
     message["iteration"] = iteration
     env.stored[OBJECT_PATH] = json.dumps(message).encode()
 
@@ -213,7 +213,7 @@ def test_invalid_iteration_is_a_publication_rejection(routed, iteration):
     assert response.json()["error"] == "publication_not_authentic"
     assert response.json()["reason"] == "invalid_iteration"
     assert "data" not in response.json()
-    assert load_peer_sender_key(local_db, env.team_id, device_id) == before
+    assert load_peer_sender_key(local_db, env.team_id, device_id, bytes.fromhex(message["sender_chain_id"])) == before
     env.stored[OBJECT_PATH] = original
     assert get(env, token, "/cloud_file", path=OBJECT_PATH).status_code == 200
 
@@ -356,14 +356,14 @@ def test_a_new_invitee_waits_for_its_own_accepted_ownership_row(routed):
 
     bob_local_db = device_local_db_path(env.root, env.bob)
     device = env.bob_sender.sender_device_key_id
-    before = load_peer_sender_key(bob_local_db, env.team_id, device)
+    before = load_peer_sender_key(bob_local_db, env.team_id, device, env.bob_sender.chain_id)
 
     # Bob holds his own sender key, but his snapshot has no accepted row for
     # his device yet. His own read waits; nothing about it is decided.
     pending = get(env, bob_token, "/cloud_file", path=OBJECT_PATH)
     assert pending.status_code == 409
     assert pending.json()["error"] == "device_ownership_unavailable"
-    assert load_peer_sender_key(bob_local_db, env.team_id, device) == before
+    assert load_peer_sender_key(bob_local_db, env.team_id, device, env.bob_sender.chain_id) == before
 
     # Work whose prerequisites are satisfied is not blocked: Bob can still read
     # from the inviter he already recognizes.

@@ -6,7 +6,7 @@ from pathlib import Path
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
 SHARED_SCHEMA_VERSION = 59
-LOCAL_SCHEMA_VERSION = 13
+LOCAL_SCHEMA_VERSION = 14
 
 
 class FutureNoteToSelfDatabaseVersionError(Exception):
@@ -102,15 +102,22 @@ def initialize_device_local_db(local_db_path: str | Path) -> None:
 
 
 def _migrate_device_local_db(conn: sqlite3.Connection, current_version: int) -> None:
-    """Scaffold for future device-local DB migrations.
-
-    Pre-alpha databases older than the current schema are intentionally not
-    migrated. Delete and recreate the local workspace instead.
-    """
-    raise NotImplementedError(
-        "Pre-alpha NoteToSelf device-local DB migrations are not supported; "
-        f"delete/recreate this DB (schema {current_version} -> {LOCAL_SCHEMA_VERSION})."
-    )
+    """Preserve existing keys when changing receiver storage to one row per chain."""
+    if current_version != 13:
+        raise NotImplementedError(
+            "Pre-alpha NoteToSelf device-local DB migrations are not supported "
+            f"from schema {current_version} to {LOCAL_SCHEMA_VERSION}. "
+            "Preserve the workspace and its secrets before choosing how to upgrade."
+        )
+    # Start before DDL so a failed copy or schema update rolls back the rename too.
+    conn.execute("BEGIN")
+    conn.execute("ALTER TABLE peer_sender_key RENAME TO peer_sender_key_v13")
+    schema = (_sql_dir() / "device_local_schema.sql").read_text()
+    start = schema.index("CREATE TABLE IF NOT EXISTS peer_sender_key (")
+    end = schema.index(";", start) + 1
+    conn.execute(schema[start:end])
+    conn.execute("INSERT INTO peer_sender_key SELECT * FROM peer_sender_key_v13")
+    conn.execute("DROP TABLE peer_sender_key_v13")
 
 
 def initialize_bootstrap_local_state(root_dir: str | Path, participant_hex: str) -> Path:

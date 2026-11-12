@@ -19,18 +19,28 @@ from small_sea_hub.crypto import (
     DeviceOwnershipUnavailableExn,
     OwnershipProjectionAbsentExn,
     PublicationNotAuthenticExn,
+    SenderKeyUnavailableExn,
     UnexpectedPublisherExn,
+    commit_encrypted_upload,
     decrypt_group_payload,
     deserialize_group_message,
+    prepare_encrypted_upload,
     publication_context,
     serialize_group_message,
 )
-from small_sea_manager.provisioning import create_new_participant, create_team
+from small_sea_manager.provisioning import (
+    create_new_participant,
+    create_team,
+    rotate_team_sender_key,
+)
 from small_sea_note_to_self.db import device_local_db_path
 from small_sea_note_to_self.sender_keys import (
     load_peer_sender_key,
+    load_team_sender_key,
     receiver_record_from_distribution,
     save_peer_sender_key,
+    install_peer_sender_key,
+    load_all_peer_sender_keys,
 )
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
@@ -57,7 +67,7 @@ def reader(playground_dir):
     for name in ("alice_d", "alice_g", "carol"):
         device, _private = generate_key_pair(ProtectionLevel.DAILY)
         record, distribution = create_sender_key(team_id, device.key_id)
-        save_peer_sender_key(
+        install_peer_sender_key(
             bob_local_db, team_id, receiver_record_from_distribution(distribution)
         )
         devices[name] = record
@@ -117,7 +127,7 @@ def _with_extra_ciphertext(payload):
 def receiver_state(env):
     return {
         name: load_peer_sender_key(
-            env.local_db, env.team_id, record.sender_device_key_id
+            env.local_db, env.team_id, record.sender_device_key_id, record.chain_id
         )
         for name, record in env.devices.items()
     }
@@ -350,11 +360,77 @@ def test_a_successful_read_keeps_that_messages_key_so_a_reread_works(reader):
     env = reader
     payload = publish(env, "alice_d", b"read me twice")
     device_id = env.devices["alice_d"].sender_device_key_id
-    assert load_peer_sender_key(env.local_db, env.team_id, device_id).skipped_message_keys == {}
+    assert load_peer_sender_key(env.local_db, env.team_id, device_id, env.devices["alice_d"].chain_id).skipped_message_keys == {}
 
     assert accept(env, payload) == b"read me twice"
 
-    stored = load_peer_sender_key(env.local_db, env.team_id, device_id)
+    stored = load_peer_sender_key(env.local_db, env.team_id, device_id, env.devices["alice_d"].chain_id)
     assert set(stored.skipped_message_keys) == {0}
     assert stored.iteration == 1
     assert accept(env, payload) == b"read me twice"
+
+
+@pytest.mark.parametrize("read_before_rotation", [False, True])
+def test_after_a_rotation_both_chains_are_readable(reader, read_before_rotation):
+    # Rotation preserves both retained keys and unread old-chain objects.
+    env = reader
+    bob_device = load_team_sender_key(env.local_db, env.team_id).sender_device_key_id
+    env.ownership[bob_device] = {b"bob-teammate----"}
+
+    def publish_own(plaintext):
+        next_record, payload = prepare_encrypted_upload(env.session, plaintext, env.context)
+        commit_encrypted_upload(env.session, next_record)
+        return payload
+
+    def accept_own(payload):
+        return accept(env, payload, publisher=b"bob-teammate----")
+
+    peer_before = publish(env, "alice_d", b"peer, before")
+    own_before = publish_own(b"own, before")
+    if read_before_rotation:
+        assert accept(env, peer_before) == b"peer, before"
+        assert accept_own(own_before) == b"own, before"
+
+    # Bob rotates his own key; Alice rotates hers and Bob stores the receiver
+    # record, as receive_sender_key_distribution does.
+    rotate_team_sender_key(env.root, env.participant, "ProjectX")
+    alice_device = env.devices["alice_d"].sender_device_key_id
+    env.devices["alice_d"], distribution = create_sender_key(env.team_id, alice_device)
+    install_peer_sender_key(
+        env.local_db, env.team_id, receiver_record_from_distribution(distribution)
+    )
+
+    peer_after = publish(env, "alice_d", b"peer, after")
+    own_after = publish_own(b"own, after")
+    assert accept(env, peer_after) == b"peer, after"
+    assert accept_own(own_after) == b"own, after"
+
+    assert accept(env, peer_before) == b"peer, before"
+    assert accept_own(own_before) == b"own, before"
+
+
+def test_unknown_chain_is_pending_without_changing_receiver_state(reader):
+    payload = publish(reader, "alice_d", b"hello")
+    message = deserialize_group_message(payload)
+    before = load_all_peer_sender_keys(reader.local_db, reader.team_id)
+    with pytest.raises(SenderKeyUnavailableExn):
+        accept(reader, serialize_group_message(replace(message, sender_chain_id=b"unknown")))
+    assert load_all_peer_sender_keys(reader.local_db, reader.team_id) == before
+
+
+def test_delayed_distribution_preserves_both_chains_and_retained_keys(reader):
+    env = reader
+    original = replace(env.devices["alice_d"], signing_private_key=None)
+    old_payload = publish(env, "alice_d", b"old")
+    assert accept(env, old_payload) == b"old"
+    env.devices["alice_d"], distribution = create_sender_key(
+        env.team_id, original.sender_device_key_id
+    )
+    install_peer_sender_key(env.local_db, env.team_id, receiver_record_from_distribution(distribution))
+    new_payload = publish(env, "alice_d", b"new")
+    assert accept(env, new_payload) == b"new"
+    before = load_all_peer_sender_keys(env.local_db, env.team_id)
+    install_peer_sender_key(env.local_db, env.team_id, original)
+    assert load_all_peer_sender_keys(env.local_db, env.team_id) == before
+    assert accept(env, old_payload) == b"old"
+    assert accept(env, new_payload) == b"new"

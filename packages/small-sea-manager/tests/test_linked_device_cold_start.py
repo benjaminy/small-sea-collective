@@ -148,7 +148,7 @@ def test_sibling_device_materializes_discovered_team_through_bootstrap(
     )
     b_sender = load_team_sender_key(device_local_db_path(root_b, alice_hex), team_id)
     assert load_peer_sender_key(
-        device_local_db_path(root_a, alice_hex), team_id, b_sender.sender_device_key_id
+        device_local_db_path(root_a, alice_hex), team_id, b_sender.sender_device_key_id, b_sender.chain_id
     ) is not None
 
 

@@ -302,11 +302,11 @@ Protocol/product boundary:
   `finalize_linked_device_bootstrap(...)` in
   `small_sea_manager/provisioning.py`.
 - **Scope of the current slice** — The current flow bootstraps the new device
-  into one team using a sibling device of the same teammate. As part of bootstrap,
-  the sibling hands off its snapshot of peer sender keys, giving the new device
-  join-time-forward access across all senders the sibling held. Each team is
-  bootstrapped independently; this is not a blanket "join every known team"
-  operation.
+  into one team using a sibling device of the same teammate.
+  The sibling hands off every retained receiver chain, with each chain's retained message keys.
+  This includes old chains and the sibling's own receiver chains, so linking preserves the history those records can decrypt.
+  Distribution arrival order does not establish which chain is current.
+  Each team is bootstrapped independently; this is not a blanket "join every known team" operation.
   Evidence of bootstrap flow structure:
   `prepare_linked_device_team_join(...)`,
   `create_linked_device_bootstrap(...)`,
@@ -336,6 +336,8 @@ Current same-teammate flow:
    containing its own current sender-key distribution plus its current snapshot
    of peer sender-key receiver state for the team, and records a pending
    bootstrap breadcrumb.
+   Payload version 4 keeps each receiver record's chain ID and retained message keys together.
+   Earlier payload versions are rejected; recreate pending bootstrap bundles with the updated Manager.
    Evidence: `create_linked_device_bootstrap(...)` in
    `small_sea_manager/provisioning.py`.
 3. The joining device calls `finalize_linked_device_bootstrap(...)`, verifies

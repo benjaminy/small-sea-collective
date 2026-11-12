@@ -135,7 +135,7 @@ from small_sea_note_to_self.sender_keys import (
     load_peer_sender_key,
     load_team_sender_key,
     receiver_record_from_distribution,
-    save_peer_sender_key,
+    install_peer_sender_key,
     save_team_sender_key,
     serialize_sender_key_record,
     serialize_distribution_message,
@@ -2648,7 +2648,7 @@ def prepare_linked_device_team_join(root_dir, participant_hex, team_name):
 
 # This versions the signed response JSON contract. The ratchet envelope has its
 # own version, while any HKDF info label only separates derived key uses.
-LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION = 3
+LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION = 4
 
 
 def _team_core_berth_id_from_db(team_db_path) -> bytes | None:
@@ -2791,26 +2791,13 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
         device_local_db_path(root_dir, participant_hex),
         team_id,
     )
-    peer_sender_distributions = [
-        # Peer receiver records and local sender records share the same current
-        # chain-position fields needed by SenderKeyDistributionMessage, so this
-        # reuse is valid for bootstrap handoff.
-        serialize_distribution_message(distribution_message_from_record(peer_record))
-        for peer_record in peer_sender_records
-    ]
-    peer_sender_skipped_keys = {
-        peer_record.sender_device_key_id.hex(): {
-            str(iteration): key.hex()
-            for iteration, key in peer_record.skipped_message_keys.items()
-        }
-        for peer_record in peer_sender_records
-        if peer_record.skipped_message_keys
-    }
     plaintext = _json_bytes(
         {
             "own_sender_distribution": serialize_distribution_message(sender_distribution),
-            "peer_sender_distributions": peer_sender_distributions,
-            "peer_sender_skipped_keys": peer_sender_skipped_keys,
+            # Keep each chain's retained keys with that chain, including old chains.
+            "peer_sender_records": [
+                serialize_sender_key_record(record) for record in peer_sender_records
+            ],
             "core_bundle": core_bundle_b64,
         }
     )
@@ -3034,32 +3021,21 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     authorizer_distribution = deserialize_distribution_message(
         decrypted_payload["own_sender_distribution"]
     )
-    save_peer_sender_key(
-        device_local_db_path(root_dir, participant_hex),
-        team_id,
-        receiver_record_from_distribution(authorizer_distribution),
-    )
-    peer_sender_skipped_keys = decrypted_payload.get("peer_sender_skipped_keys", {})
-    for peer_distribution_data in decrypted_payload["peer_sender_distributions"]:
-        peer_distribution = deserialize_distribution_message(peer_distribution_data)
-        peer_record = receiver_record_from_distribution(peer_distribution)
-        raw_skipped_keys = peer_sender_skipped_keys.get(
-            peer_distribution.sender_device_key_id.hex(),
-            {},
-        )
-        if raw_skipped_keys:
-            peer_record = replace(
-                peer_record,
-                skipped_message_keys={
-                    int(iteration): bytes.fromhex(key_hex)
-                    for iteration, key_hex in raw_skipped_keys.items()
-                },
-            )
-        save_peer_sender_key(
+    for record_data in decrypted_payload["peer_sender_records"]:
+        peer_record = deserialize_sender_key_record(record_data)
+        install_peer_sender_key(
             device_local_db_path(root_dir, participant_hex),
             team_id,
             peer_record,
         )
+
+    # Prefer the authorizer's receiver record, which can retain older keys.
+    # Its current sender distribution is only a fallback if that row is absent.
+    install_peer_sender_key(
+        device_local_db_path(root_dir, participant_hex),
+        team_id,
+        receiver_record_from_distribution(authorizer_distribution),
+    )
 
     team_device_private_key = session_row["team_device_private_key"]
     if team_device_private_key is None:
@@ -3223,7 +3199,7 @@ def _install_sqlite_merge_driver(team_sync_dir):
 def _initialize_team_sender_key_state(user_db_path, team_id, sender_device_key_id):
     sender_key, distribution = create_sender_key(team_id, sender_device_key_id)
     save_team_sender_key(user_db_path, team_id, sender_key)
-    save_peer_sender_key(
+    install_peer_sender_key(
         user_db_path,
         team_id,
         receiver_record_from_distribution(distribution),
@@ -4340,7 +4316,7 @@ def rotate_team_sender_key(root_dir, participant_hex, team_name):
     sender_record, distribution = create_sender_key(team_id, sender_device_key_id)
     user_db_path = device_local_db_path(root_dir, participant_hex)
     save_team_sender_key(user_db_path, team_id, sender_record)
-    save_peer_sender_key(user_db_path, team_id, receiver_record_from_distribution(distribution))
+    install_peer_sender_key(user_db_path, team_id, receiver_record_from_distribution(distribution))
     return {
         "team_id_hex": team_id.hex(),
         "sender_device_key_id_hex": distribution.sender_device_key_id.hex(),
@@ -4571,7 +4547,7 @@ def receive_sender_key_distribution(root_dir, participant_hex, team_name, distri
                 )
                 if consumed.rowcount != 1:
                     raise ValueError("Distribution payload consumed an unavailable one-time prekey")
-            save_peer_sender_key(db_path, team_id, receiver_record, connection=conn)
+            install_peer_sender_key(db_path, team_id, receiver_record, connection=conn)
     finally:
         conn.close()
     return {
@@ -6142,7 +6118,7 @@ def accept_invitation(
             root_dir, acceptor_participant_hex, core_berth_id
         )
     # Team sender state is local-only and does not publish admission.
-    save_peer_sender_key(
+    install_peer_sender_key(
         device_local_db_path(root_dir, acceptor_participant_hex),
         team_id,
         receiver_record_from_distribution(inviter_sender_key),

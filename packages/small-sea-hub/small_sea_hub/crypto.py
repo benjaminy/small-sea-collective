@@ -279,11 +279,12 @@ def decrypt_group_payload(
     )
     message = deserialize_group_message(payload)
     sender_key = load_peer_sender_key(
-        user_db_path, ss_session.team_id, message.sender_device_key_id
+        user_db_path, ss_session.team_id, message.sender_device_key_id, message.sender_chain_id
     )
     if sender_key is None:
         raise SenderKeyUnavailableExn(
-            f"Missing sender key for device key {message.sender_device_key_id.hex()}"
+            f"Missing sender key for device key {message.sender_device_key_id.hex()} "
+            f"and chain {message.sender_chain_id.hex()}"
         )
     try:
         next_sender_key, plaintext = group_decrypt(message, sender_key, expected_context)

@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS peer_sender_key (
     signing_public_key BLOB NOT NULL,
     signing_private_key BLOB,
     skipped_message_keys TEXT NOT NULL DEFAULT '{}',
-    PRIMARY KEY (team_id, sender_device_key_id)
+    PRIMARY KEY (team_id, sender_device_key_id, chain_id)
 );
 
 CREATE TABLE IF NOT EXISTS linked_team_bootstrap_session (

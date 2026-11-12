@@ -160,8 +160,59 @@ def save_peer_sender_key(
     *,
     connection: sqlite3.Connection | None = None,
 ) -> None:
-    """Save a receiver record; a supplied connection owns its transaction."""
-    _save_record(db_path, "peer_sender_key", team_id, record, connection=connection)
+    """Update an installed chain after decryption without creating another chain."""
+    conn = connection if connection is not None else sqlite3.connect(str(db_path))
+    try:
+        updated = conn.execute(
+            """
+            UPDATE peer_sender_key
+            SET chain_key = ?, iteration = ?, skipped_message_keys = ?
+            WHERE team_id = ? AND sender_device_key_id = ? AND chain_id = ?
+            """,
+            (record.chain_key, record.iteration, _serialize_skipped(record.skipped_message_keys),
+             team_id, record.sender_device_key_id, record.chain_id),
+        )
+        if updated.rowcount != 1:
+            raise ValueError("Cannot update a receiver chain that is not installed")
+        if connection is None:
+            conn.commit()
+    finally:
+        if connection is None:
+            conn.close()
+
+
+def install_peer_sender_key(
+    db_path: str | Path,
+    team_id: bytes,
+    record: SenderKeyRecord,
+    *,
+    connection: sqlite3.Connection | None = None,
+) -> None:
+    """Install a distribution without replacing a chain already held locally.
+
+    Repeated or delayed distributions must not discard retained message keys
+    or rewind a receiver. Chain IDs identify chains; they do not order them.
+    A supplied connection owns its transaction.
+    """
+    conn = connection if connection is not None else sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            INSERT INTO peer_sender_key (
+                team_id, group_id, sender_device_key_id, chain_id, chain_key,
+                iteration, signing_public_key, signing_private_key, skipped_message_keys
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (team_id, sender_device_key_id, chain_id) DO NOTHING
+            """,
+            (team_id, record.group_id, record.sender_device_key_id, record.chain_id,
+             record.chain_key, record.iteration, record.signing_public_key,
+             record.signing_private_key, _serialize_skipped(record.skipped_message_keys)),
+        )
+        if connection is None:
+            conn.commit()
+    finally:
+        if connection is None:
+            conn.close()
 
 
 def load_team_sender_key(db_path: str | Path, team_id: bytes) -> SenderKeyRecord | None:
@@ -183,7 +234,7 @@ def load_team_sender_key(db_path: str | Path, team_id: bytes) -> SenderKeyRecord
 
 
 def load_peer_sender_key(
-    db_path: str | Path, team_id: bytes, sender_device_key_id: bytes
+    db_path: str | Path, team_id: bytes, sender_device_key_id: bytes, chain_id: bytes
 ) -> SenderKeyRecord | None:
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
@@ -193,9 +244,9 @@ def load_peer_sender_key(
             SELECT group_id, sender_device_key_id, chain_id, chain_key, iteration,
                    signing_public_key, signing_private_key, skipped_message_keys
             FROM peer_sender_key
-            WHERE team_id = ? AND sender_device_key_id = ?
+            WHERE team_id = ? AND sender_device_key_id = ? AND chain_id = ?
             """,
-            (team_id, sender_device_key_id),
+            (team_id, sender_device_key_id, chain_id),
         ).fetchone()
     finally:
         conn.close()
@@ -212,7 +263,7 @@ def load_all_peer_sender_keys(db_path: str | Path, team_id: bytes) -> list[Sende
                    signing_public_key, signing_private_key, skipped_message_keys
             FROM peer_sender_key
             WHERE team_id = ?
-            ORDER BY sender_device_key_id ASC
+            ORDER BY sender_device_key_id ASC, chain_id ASC
             """,
             (team_id,),
         ).fetchall()

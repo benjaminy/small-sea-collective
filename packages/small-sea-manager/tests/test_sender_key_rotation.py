@@ -25,9 +25,10 @@ from small_sea_manager.provisioning import (
 from small_sea_note_to_self.db import device_local_db_path, note_to_self_sync_db_path
 from small_sea_note_to_self.sender_keys import (
     load_peer_sender_key,
+    load_all_peer_sender_keys,
     load_team_sender_key,
     receiver_record_from_distribution,
-    save_peer_sender_key,
+    install_peer_sender_key,
 )
 from sqlalchemy import create_engine, text
 from wrasse_trust.identity import issue_membership_cert
@@ -237,12 +238,12 @@ def _bootstrap_remote_teammate_installation(workspace: pathlib.Path):
         team_id,
         key_id_from_public(bob_team_keys["device_key"].public_key),
     )
-    save_peer_sender_key(
+    install_peer_sender_key(
         alice_local_db,
         team_id,
         receiver_record_from_distribution(bob_distribution),
     )
-    save_peer_sender_key(
+    install_peer_sender_key(
         device_local_db_path(bob_root, bob_hex),
         team_id,
         receiver_record_from_distribution(
@@ -333,6 +334,7 @@ def test_rotate_and_redistribute_round_trip_cross_teammate(playground_dir):
         device_local_db_path(state["bob_root"], state["bob_hex"]),
         state["team_id"],
         bytes.fromhex(rotated["sender_device_key_id_hex"]),
+        bytes.fromhex(rotated["sender_distribution"]["sender_chain_id"]),
     )
     assert bob_peer_for_alice is not None
 
@@ -404,12 +406,12 @@ def test_remove_teammate_purges_local_receiver_state_but_preserves_evidence(play
         cert_rows = conn.execute("SELECT claims FROM key_certificate").fetchall()
     assert any(json.loads(row[0]).get("teammate_id") == state["bob_teammate_id"].hex() for row in cert_rows)
 
-    peer_sender = load_peer_sender_key(
-        device_local_db_path(state["alice_root"], state["alice_hex"]),
-        state["team_id"],
-        state["bob_device_key_id"],
+    assert all(
+        record.sender_device_key_id != state["bob_device_key_id"]
+        for record in load_all_peer_sender_keys(
+            device_local_db_path(state["alice_root"], state["alice_hex"]), state["team_id"]
+        )
     )
-    assert peer_sender is None
 
 
 def test_redistribute_sender_key_includes_same_teammate_linked_devices(playground_dir):

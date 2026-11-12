@@ -31,6 +31,7 @@ from small_sea_note_to_self.sender_keys import (
     load_team_sender_key,
     receiver_record_from_distribution,
     save_peer_sender_key,
+    install_peer_sender_key,
     save_team_sender_key,
 )
 from wrasse_trust.identity import issue_membership_cert
@@ -180,7 +181,7 @@ def _bootstrap_remote_teammate_installation(
         bob_device_key_id,
     )
     save_team_sender_key(bob_local_db, team_id, bob_sender_record)
-    save_peer_sender_key(
+    install_peer_sender_key(
         device_local_db_path(alice_root, alice_hex),
         team_id,
         receiver_record_from_distribution(bob_distribution),
@@ -265,12 +266,12 @@ def test_linked_device_bootstrap_round_trip_same_teammate(playground_dir):
     assert root1_sender.sender_device_key_id != root2_sender.sender_device_key_id
 
     root1_sender, message_to_b = group_encrypt(root1_sender.group_id, root1_sender, b"hello from A", CONTEXT)
-    root2_peer_for_a = load_peer_sender_key(local_db2, team_id, root1_sender.sender_device_key_id)
+    root2_peer_for_a = load_peer_sender_key(local_db2, team_id, root1_sender.sender_device_key_id, root1_sender.chain_id)
     assert root2_peer_for_a is not None
     root2_peer_for_a, plaintext_to_b = group_decrypt(message_to_b, root2_peer_for_a, CONTEXT)
     assert plaintext_to_b == b"hello from A"
 
-    assert load_peer_sender_key(local_db1, team_id, root2_sender.sender_device_key_id) is None
+    assert load_peer_sender_key(local_db1, team_id, root2_sender.sender_device_key_id, root2_sender.chain_id) is None
     redistribution = provisioning.redistribute_sender_key(root2, alice_hex, "ProjectX")
     assert redistribution["skipped_device_key_ids_hex"] == []
     assert len(redistribution["artifacts"]) == 1
@@ -281,7 +282,7 @@ def test_linked_device_bootstrap_round_trip_same_teammate(playground_dir):
         redistribution["artifacts"][0]["distribution_payload"],
     )
 
-    root1_peer_for_b = load_peer_sender_key(local_db1, team_id, root2_sender.sender_device_key_id)
+    root1_peer_for_b = load_peer_sender_key(local_db1, team_id, root2_sender.sender_device_key_id, root2_sender.chain_id)
     assert root1_peer_for_b is not None
     root2_sender, message_to_a = group_encrypt(root2_sender.group_id, root2_sender, b"hello from B", CONTEXT)
     root1_peer_for_b, plaintext_to_a = group_decrypt(message_to_a, root1_peer_for_b, CONTEXT)
@@ -310,7 +311,7 @@ def test_linked_device_bootstrap_round_trip_same_teammate(playground_dir):
         ).fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("version", [None, True, "3", 2, 4])
+@pytest.mark.parametrize("version", [None, True, "4", 3, 5])
 def test_linked_device_bootstrap_rejects_invalid_payload_version_without_mutation(
     playground_dir, version
 ):
@@ -553,7 +554,7 @@ def test_linked_device_bootstrap_peer_sender_keys_transferred(playground_dir):
     bob_sender = load_team_sender_key(bob["local_db"], team_id)
     assert bob_sender is not None
 
-    alice_peer_for_bob = load_peer_sender_key(local_db1, team_id, bob["device_key_id"])
+    alice_peer_for_bob = load_peer_sender_key(local_db1, team_id, bob["device_key_id"], bob_sender.chain_id)
     assert alice_peer_for_bob is not None
     bob_sender, historical_bob_message = group_encrypt(team_id, bob_sender, b"before bootstrap", CONTEXT)
     save_team_sender_key(bob["local_db"], team_id, bob_sender)
@@ -579,7 +580,7 @@ def test_linked_device_bootstrap_peer_sender_keys_transferred(playground_dir):
     )
     assert "bootstrap_id_hex" in finalized
 
-    root2_peer_for_bob = load_peer_sender_key(local_db2, team_id, bob["device_key_id"])
+    root2_peer_for_bob = load_peer_sender_key(local_db2, team_id, bob["device_key_id"], bob_sender.chain_id)
     assert root2_peer_for_bob is not None
     with pytest.raises(ValueError):
         group_decrypt(historical_bob_message, root2_peer_for_bob, CONTEXT)
@@ -592,7 +593,8 @@ def test_linked_device_bootstrap_peer_sender_keys_transferred(playground_dir):
     assert plaintext == b"hello from Bob"
 
 
-def test_linked_device_bootstrap_transfers_skipped_peer_sender_keys(playground_dir):
+@pytest.mark.parametrize("rotate_before_link", [False, True])
+def test_linked_device_bootstrap_transfers_skipped_peer_sender_keys(playground_dir, rotate_before_link):
     workspace = pathlib.Path(playground_dir)
     root1 = workspace / "install-a"
     root2 = workspace / "install-b"
@@ -631,7 +633,7 @@ def test_linked_device_bootstrap_transfers_skipped_peer_sender_keys(playground_d
     bob_sender = load_team_sender_key(bob["local_db"], team_id)
     assert bob_sender is not None
 
-    alice_peer_for_bob = load_peer_sender_key(local_db1, team_id, bob["device_key_id"])
+    alice_peer_for_bob = load_peer_sender_key(local_db1, team_id, bob["device_key_id"], bob_sender.chain_id)
     assert alice_peer_for_bob is not None
     bob_sender, first_bob_message = group_encrypt(team_id, bob_sender, b"first from Bob", CONTEXT)
     bob_sender, second_bob_message = group_encrypt(team_id, bob_sender, b"second from Bob", CONTEXT)
@@ -641,6 +643,17 @@ def test_linked_device_bootstrap_transfers_skipped_peer_sender_keys(playground_d
     assert plaintext == b"second from Bob"
     assert alice_peer_for_bob.skipped_message_keys
     save_peer_sender_key(local_db1, team_id, alice_peer_for_bob)
+
+    if rotate_before_link:
+        # Both chains retain iteration zero, but with different message keys.
+        # Bootstrap must neither drop the old chain nor mix their skipped keys.
+        new_sender, new_distribution = provisioning.create_sender_key(team_id, bob["device_key_id"])
+        install_peer_sender_key(local_db1, team_id, receiver_record_from_distribution(new_distribution))
+        new_sender, new_first = group_encrypt(team_id, new_sender, b"new first", CONTEXT)
+        new_sender, new_second = group_encrypt(team_id, new_sender, b"new second", CONTEXT)
+        new_receiver = load_peer_sender_key(local_db1, team_id, bob["device_key_id"], new_sender.chain_id)
+        new_receiver, _ = group_decrypt(new_second, new_receiver, CONTEXT)
+        save_peer_sender_key(local_db1, team_id, new_receiver)
 
     manager2 = TeamManager(root2, alice_hex)
     prepared = manager2.prepare_linked_device_team_join("ProjectX")
@@ -654,12 +667,18 @@ def test_linked_device_bootstrap_transfers_skipped_peer_sender_keys(playground_d
     )
     assert "bootstrap_id_hex" in finalized
 
-    root2_peer_for_bob = load_peer_sender_key(local_db2, team_id, bob["device_key_id"])
+    root2_peer_for_bob = load_peer_sender_key(local_db2, team_id, bob["device_key_id"], bob_sender.chain_id)
     assert root2_peer_for_bob is not None
     assert root2_peer_for_bob.skipped_message_keys == alice_peer_for_bob.skipped_message_keys
 
     root2_peer_for_bob, plaintext = group_decrypt(first_bob_message, root2_peer_for_bob, CONTEXT)
     assert plaintext == b"first from Bob"
+
+    if rotate_before_link:
+        linked_new = load_peer_sender_key(local_db2, team_id, bob["device_key_id"], new_sender.chain_id)
+        assert linked_new == new_receiver
+        _, plaintext = group_decrypt(new_first, linked_new, CONTEXT)
+        assert plaintext == b"new first"
 
 
 def test_linked_device_bootstrap_exclusion_cuts_off_peer(playground_dir):
@@ -700,7 +719,7 @@ def test_linked_device_bootstrap_exclusion_cuts_off_peer(playground_dir):
     local_db2 = device_local_db_path(root2, alice_hex)
     bob_sender = load_team_sender_key(bob["local_db"], team_id)
     assert bob_sender is not None
-    alice_peer_for_bob = load_peer_sender_key(local_db1, team_id, bob["device_key_id"])
+    alice_peer_for_bob = load_peer_sender_key(local_db1, team_id, bob["device_key_id"], bob_sender.chain_id)
     assert alice_peer_for_bob is not None
 
     bob_sender, initial_bob_message = group_encrypt(team_id, bob_sender, b"before bootstrap", CONTEXT)
@@ -721,7 +740,7 @@ def test_linked_device_bootstrap_exclusion_cuts_off_peer(playground_dir):
     )
     assert "bootstrap_id_hex" in finalized
 
-    root2_peer_for_bob = load_peer_sender_key(local_db2, team_id, bob["device_key_id"])
+    root2_peer_for_bob = load_peer_sender_key(local_db2, team_id, bob["device_key_id"], bob_sender.chain_id)
     assert root2_peer_for_bob is not None
     bob_sender = load_team_sender_key(bob["local_db"], team_id)
     assert bob_sender is not None
@@ -759,6 +778,7 @@ def test_linked_device_bootstrap_exclusion_cuts_off_peer(playground_dir):
         local_db1,
         team_id,
         bytes.fromhex(rotated["sender_device_key_id_hex"]),
+        bytes.fromhex(rotated["sender_distribution"]["sender_chain_id"]),
     )
     assert alice_peer_for_bob is not None
 
@@ -801,7 +821,8 @@ def test_linked_device_bootstrap_prepare_reentry_is_rejected(playground_dir):
         manager2.prepare_linked_device_team_join("ProjectX")
 
 
-def test_linked_device_reads_authorizer_pre_link_messages(playground_dir):
+@pytest.mark.parametrize("rotate_before_link", [False, True])
+def test_linked_device_reads_authorizer_pre_link_messages(playground_dir, rotate_before_link):
     """A linked device can read the authorizer's pre-link messages (task 101, #280).
 
     Alice's device A encrypts two messages on her team sender chain, then links
@@ -858,12 +879,15 @@ def test_linked_device_reads_authorizer_pre_link_messages(playground_dir):
     alice_sender, second_message = group_encrypt(team_id, alice_sender, b"second from Alice", CONTEXT)
     save_team_sender_key(local_db1, team_id, alice_sender)
 
+    if rotate_before_link:
+        provisioning.rotate_team_sender_key(root1, alice_hex, "ProjectX")
+
     manager2 = TeamManager(root2, alice_hex)
     prepared = manager2.prepare_linked_device_team_join("ProjectX")
     created = manager1.create_linked_device_bootstrap("ProjectX", prepared["join_request_bundle"])
     manager2.finalize_linked_device_bootstrap("ProjectX", created["bootstrap_bundle"])
 
-    own_row = load_peer_sender_key(local_db2, team_id, alice_key_id)
+    own_row = load_peer_sender_key(local_db2, team_id, alice_key_id, alice_sender.chain_id)
     assert own_row is not None
     assert own_row.iteration == 0
     assert not own_row.skipped_message_keys
