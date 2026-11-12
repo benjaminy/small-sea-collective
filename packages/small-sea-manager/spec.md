@@ -359,26 +359,20 @@ Current same-teammate flow:
 
 Historical boundary and visibility:
 
-- **The decryption limit is join-time-forward.** The new device inherits the
-  sibling's snapshot of peer sender keys at bootstrap time and can read forward
-  from that point across all senders the sibling held. It does not receive
-  ciphertext from before the `device_link` cert was published — that historical
-  material was encrypted without the new device's keys.
+- **The new device can decrypt what the sibling's receiver records can decrypt.**
+  For each chain the sibling holds, old or current, that is every message from the chain's stored position forward, plus any message whose key the record retains.
+  A message the sibling's record has advanced past without retaining its key stays unreadable on the new device.
   Evidence: `test_linked_device_bootstrap_peer_sender_keys_transferred` asserts
   that a pre-bootstrap Bob message remains unreadable while a post-bootstrap Bob
-  message is readable after the sibling hands off Bob's current receiver state.
-- **Skipped-key caches are part of the sibling snapshot handed off at
-  bootstrap.** The bootstrap envelope still serializes current chain position
-  through `SenderKeyDistributionMessage`, and it now carries cached
-  `skipped_message_keys` as a parallel bootstrap payload field keyed by sender
-  device key id. If the sibling had stored skipped keys because peer messages
-  arrived out of order before bootstrap, the new device inherits those cached
-  keys and can decrypt the same pending messages the sibling could decrypt at
-  bootstrap time.
+  message is readable after the sibling hands off Bob's receiver state.
+- **Retained message keys travel with their chain.**
+  The bootstrap envelope carries each receiver record whole: chain ID, chain position, and retained `skipped_message_keys`.
+  If the sibling had stored skipped keys because peer messages arrived out of order before bootstrap, the new device inherits those keys and can decrypt the same pending messages the sibling could decrypt at bootstrap time.
   Evidence: `test_linked_device_bootstrap_transfers_skipped_peer_sender_keys`
   exercises an out-of-order Bob-message case where Alice caches a skipped key,
   bootstraps a sibling device, and the new device decrypts the earlier Bob
   message from the transferred skipped-key state.
+  Its rotated case checks that two chains from one device keep separate retained keys.
 - That test is **repo-local protocol evidence**, not a full cryptographic
   assurance. It depends on current Cuttlefish group-encryption behavior in a
   pre-alpha repo where crypto internals are still evolving.
