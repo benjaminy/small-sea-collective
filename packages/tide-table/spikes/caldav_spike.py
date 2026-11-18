@@ -3,8 +3,8 @@
 
 Its job is to find out what Apple Calendar and Thunderbird need from a
 localhost CalDAV server, not to be the real Tide Table.
-It serves one user with one calendar, stores each event as a file, and logs
-every request and response in full so we can read what the clients did.
+It serves one user with one calendar and stores each event as a file.
+Use --log-bodies with synthetic events to capture CalDAV payloads.
 
 Deliberate shortcuts:
 - calendar-query ignores its filters and returns every event.
@@ -54,6 +54,7 @@ class Store:
     """Events as files, plus a change counter that backs ctag and sync-token.
 
     Deletions are remembered forever, so every token we ever issued stays valid.
+    Handlers hold lock across each operation on the store.
     """
 
     def __init__(self, root):
@@ -89,30 +90,31 @@ class Store:
 
     def version(self, etag):
         """A body this store has held, looked up by its ETag, or None."""
-        path = os.path.join(self.versions, etag.strip('"') + ".ics")
+        match = re.fullmatch(r'"([0-9a-f]{32})"', etag)
+        if match is None:
+            return None
+        path = os.path.join(self.versions, match[1] + ".ics")
         if not os.path.exists(path):
             return None
         with open(path, "rb") as f:
             return f.read()
 
     def put(self, name, data):
-        with self.lock:
-            with open(os.path.join(self.versions, etag_of(data).strip('"') + ".ics"), "wb") as f:
-                f.write(data)
-            with open(os.path.join(self.dir, name), "wb") as f:
-                f.write(data)
-            self.state["token"] += 1
-            self.state["changed"][name] = self.token
-            self.state["deleted"].pop(name, None)
-            self._save()
+        with open(os.path.join(self.versions, etag_of(data).strip('"') + ".ics"), "wb") as f:
+            f.write(data)
+        with open(os.path.join(self.dir, name), "wb") as f:
+            f.write(data)
+        self.state["token"] += 1
+        self.state["changed"][name] = self.token
+        self.state["deleted"].pop(name, None)
+        self._save()
 
     def delete(self, name):
-        with self.lock:
-            os.remove(os.path.join(self.dir, name))
-            self.state["token"] += 1
-            self.state["changed"].pop(name, None)
-            self.state["deleted"][name] = self.token
-            self._save()
+        os.remove(os.path.join(self.dir, name))
+        self.state["token"] += 1
+        self.state["changed"].pop(name, None)
+        self.state["deleted"][name] = self.token
+        self._save()
 
     def changes_since(self, token):
         changed = [n for n, t in self.state["changed"].items() if t > token and n in self.names()]
@@ -259,8 +261,7 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         self._resp = (401, {"WWW-Authenticate": "Digest + Basic"}, body)
 
-    def _classify(self):
-        path = unquote(urlsplit(self.path).path)
+    def _classify(self, path):
         principal, home, cal = self._paths()
         coll = path if path.endswith("/") else path + "/"
         if coll in ("/", "/dav/"):
@@ -277,7 +278,7 @@ class Handler(BaseHTTPRequestHandler):
             return "calendar", None
         if path.startswith(cal):
             name = path[len(cal):]
-            if name and "/" not in name and not name.startswith("."):
+            if name and "/" not in name and "\x00" not in name and not name.startswith("."):
                 return "event", name
         return "unknown", None
 
@@ -294,7 +295,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.command != "OPTIONS" and not self._authorized():
                 self._challenge()
                 return
-            kind, name = self._classify()
+            kind, name = self._classify(unquote(urlsplit(self.path).path))
             if kind == "wellknown":
                 self._send(301, headers={"Location": "/dav/"})
                 return
@@ -316,11 +317,11 @@ class Handler(BaseHTTPRequestHandler):
         interesting = ["User-Agent", "Depth", "If-Match", "If-None-Match", "Content-Type", "Prefer", "Brief"]
         lines = [f"===== {stamp} {self.command} {self.path}"]
         lines += [f"> {h}: {self.headers[h]}" for h in interesting if self.headers.get(h)]
-        if self._req_body:
+        if self.cfg["log_bodies"] and self._req_body:
             lines.append(self._req_body.decode(errors="replace"))
         lines.append(f"----- {status}{note}")
         lines += [f"< {k}: {v}" for k, v in rheaders.items() if k != "Content-Length"]
-        if rbody:
+        if self.cfg["log_bodies"] and rbody:
             text = rbody.decode(errors="replace")
             lines.append(text if len(text) < 8000 else text[:8000] + "\n...[truncated]")
         with self.server.log_lock, open(self.cfg["log"], "a") as f:
@@ -418,17 +419,23 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def h_PROPFIND(self, kind, name):
-        if kind == "unknown" or (kind == "event" and self.server.store.get(name) is None):
+        if kind == "unknown":
             self._send(404)
             return
+        store = self.server.store
         props = requested_props(self._parse())
         depth = self.headers.get("Depth", "infinity")
-        parts = [self._response_for(kind, name, props)]
-        if depth != "0":
-            if kind == "home":
-                parts.append(self._response_for("calendar", None, props))
-            elif kind == "calendar":
-                parts += [self._response_for("event", n, props) for n in self.server.store.names()]
+        with store.lock:
+            parts = []
+            if kind != "event" or store.get(name) is not None:
+                parts.append(self._response_for(kind, name, props))
+                if depth != "0" and kind == "home":
+                    parts.append(self._response_for("calendar", None, props))
+                elif depth != "0" and kind == "calendar":
+                    parts += [self._response_for("event", n, props) for n in store.names()]
+        if not parts:
+            self._send(404)
+            return
         self._xml(207, multistatus(parts))
 
     def h_PROPPATCH(self, kind, name):
@@ -446,22 +453,30 @@ class Handler(BaseHTTPRequestHandler):
         if kind != "calendar":
             self._send(403)
             return
-        store = self.server.store
         root = self._parse()
+        with self.server.store.lock:
+            status, body = self._report(root)
+        self._xml(status, body)
+
+    def _report(self, root):
+        store = self.server.store
         props = requested_props(root)
         rtype = root.tag if root is not None else ""
         if rtype == f"{{{CAL}}}calendar-multiget":
             parts = []
             for h in root.iter(f"{{{DAV}}}href"):
-                href = unquote(urlsplit(h.text.strip()).path)
-                n = href[len(self._paths()[2]):]
-                if store.get(n) is None:
+                href = (h.text or "").strip()
+                try:
+                    kind, n = self._classify(unquote(urlsplit(href).path))
+                except ValueError:
+                    kind, n = "unknown", None
+                if kind != "event" or store.get(n) is None:
                     parts.append(f"<d:response><d:href>{escape(href)}</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>")
                 else:
                     parts.append(self._response_for("event", n, props))
-            self._xml(207, multistatus(parts))
+            return 207, multistatus(parts)
         elif rtype == f"{{{CAL}}}calendar-query":
-            self._xml(207, multistatus([self._response_for("event", n, props) for n in store.names()]))
+            return 207, multistatus([self._response_for("event", n, props) for n in store.names()])
         elif rtype == f"{{{DAV}}}sync-collection":
             text = (root.findtext(f"{{{DAV}}}sync-token") or "").strip()
             if not text:
@@ -474,22 +489,23 @@ class Handler(BaseHTTPRequestHandler):
                     if since > store.token:
                         raise ValueError
                 except ValueError:
-                    self._xml(403, f'<?xml version="1.0" encoding="utf-8"?>\n<d:error {NSDECL}><d:valid-sync-token/></d:error>'.encode())
-                    return
+                    return 403, f'<?xml version="1.0" encoding="utf-8"?>\n<d:error {NSDECL}><d:valid-sync-token/></d:error>'.encode()
                 changed, deleted = store.changes_since(since)
             parts = [self._response_for("event", n, props) for n in changed]
             parts += [f"<d:response><d:href>{escape(self._href('event', n))}</d:href><d:status>HTTP/1.1 404 Not Found</d:status></d:response>"
                       for n in deleted]
             parts.append(f"<d:sync-token>{SYNC_PREFIX}{store.token}</d:sync-token>")
-            self._xml(207, multistatus(parts))
+            return 207, multistatus(parts)
         else:
-            self._xml(403, f'<?xml version="1.0" encoding="utf-8"?>\n<d:error {NSDECL}><d:supported-report/></d:error>'.encode())
+            return 403, f'<?xml version="1.0" encoding="utf-8"?>\n<d:error {NSDECL}><d:supported-report/></d:error>'.encode()
 
     def h_GET(self, kind, name):
         if kind != "event":
             self._send(200 if kind != "unknown" else 404, b"Tide Table CalDAV spike\n", content_type="text/plain")
             return
-        data = self.server.store.get(name)
+        store = self.server.store
+        with store.lock:
+            data = store.get(name)
         if data is None:
             self._send(404)
             return
@@ -510,23 +526,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(403)
             return
         store = self.server.store
-        current = store.get(name)
-        if self._precondition_fails(current):
-            merged = self._merge_stale_put(current)
-            if merged is None:
-                self._send(412)
-                return
-            store.put(name, merged)
-            # No ETag: the stored body differs from what the client sent, so it must refetch.
-            self._send(204)
-            return
-        store.put(name, self._req_body)
-        self._send(201 if current is None else 204, headers={"ETag": etag_of(self._req_body)})
+        headers = {}
+        with store.lock:
+            current = store.get(name)
+            if self._precondition_fails(current):
+                merged = self._merge_stale_put(current)
+                if merged is None:
+                    status = 412
+                else:
+                    store.put(name, merged)
+                    # No ETag: the stored body differs from what the client sent, so it must refetch.
+                    status = 204
+            else:
+                store.put(name, self._req_body)
+                status = 201 if current is None else 204
+                headers["ETag"] = etag_of(self._req_body)
+        self._send(status, headers=headers)
 
     def _merge_stale_put(self, current):
         """Merge a PUT made against an older version; return the merged body or None."""
         im = self.headers.get("If-Match")
-        if current is None or not im or im.strip() == "*" or "," in im:
+        if current is None or not im or self.headers.get("If-None-Match") == "*":
             return None
         base = self.server.store.version(im.strip())
         if base is None:
@@ -548,15 +568,16 @@ class Handler(BaseHTTPRequestHandler):
         if kind != "event":
             self._send(403)
             return
-        current = store.get(name)
-        if current is None:
-            self._send(404)
-            return
-        if self._precondition_fails(current):
-            self._send(412)
-            return
-        store.delete(name)
-        self._send(204)
+        with store.lock:
+            current = store.get(name)
+            if current is None:
+                status = 404
+            elif self._precondition_fails(current):
+                status = 412
+            else:
+                store.delete(name)
+                status = 204
+        self._send(status)
 
     def h_unsupported(self, kind, name):
         self._send(405, headers={"Allow": "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT"})
@@ -573,16 +594,18 @@ def main():
     ap.add_argument("--user", default="alice")
     ap.add_argument("--password", default="tide")
     ap.add_argument("--data", default=None, help="store directory (default: Scratch/tide-table-spike/<user>)")
+    ap.add_argument("--log-bodies", action="store_true", help="log CalDAV payloads for synthetic calendars")
     args = ap.parse_args()
     data = args.data or os.path.join(REPO_ROOT, "Scratch", "tide-table-spike", args.user)
     os.makedirs(data, exist_ok=True)
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    server.cfg = {"user": args.user, "password": args.password, "log": os.path.join(data, "requests.log")}
+    server.cfg = {"user": args.user, "password": args.password, "log": os.path.join(data, "requests.log"),
+                  "log_bodies": args.log_bodies}
     server.store = Store(data)
     server.log_lock = threading.Lock()
     server.nonce = secrets.token_hex(16)
     print(f"Tide Table CalDAV spike on http://localhost:{args.port}/  user={args.user} password={args.password}")
-    print(f"store + full request log: {data}")
+    print(f"store + request log: {data}")
     server.serve_forever()
 
 

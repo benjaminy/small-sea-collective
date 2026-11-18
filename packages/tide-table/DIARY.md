@@ -25,7 +25,7 @@ Tide Table can copy the Files sync pattern; the new work is CalDAV and the merge
 ## 2026-11-18 — Spike server
 
 `spikes/caldav_spike.py`: standard-library CalDAV server, one user, one calendar, events as files.
-Logs every request and response in full to `Scratch/tide-table-spike/<user>/requests.log`.
+The first version included request and response bodies in `Scratch/tide-table-spike/<user>/requests.log`.
 Supports discovery (`/.well-known/caldav`, current-user-principal, calendar-home-set), PROPFIND, GET/PUT/DELETE with ETag preconditions, and the REPORTs calendar-multiget, calendar-query (filters ignored), and sync-collection.
 PROPPATCH claims success but stores nothing.
 Checked with curl only; real clients not tried yet.
@@ -118,3 +118,15 @@ Apple did not show the location until a manual refresh.
 Its earlier automatic check had seen the change tag move (6 → 7) without fetching the event; after ⌘R it ran sync-collection and multiget and showed the merged event.
 So Apple sometimes checks the calendar list without fetching events; when it fetches events seems to be up to Apple.
 For the demo, refresh by hand.
+
+## 2026-11-18 — CalDAV review follow-up
+
+`calendar-multiget` now applies the same event path checks as direct requests.
+The stale `PUT` lookup accepts only ETags in the format the spike generates.
+
+The server builds a sync report and reads its token while holding the store lock, so a concurrent write cannot advance the token past a change the report omits.
+`PUT` and `DELETE` hold that same lock from the ETag check through the write, including any merge on save.
+
+`requests.log` now records request and response metadata by default.
+Pass `--log-bodies` to inspect payloads from synthetic calendars.
+Existing logs from earlier runs can still contain plaintext event data.
