@@ -130,3 +130,42 @@ The server builds a sync report and reads its token while holding the store lock
 `requests.log` now records request and response metadata by default.
 Pass `--log-bodies` to inspect payloads from synthetic calendars.
 Existing logs from earlier runs can still contain plaintext event data.
+
+## 2026-11-18 — Two teammates sync through the Hub
+
+`tide_table/calendar_repo.py`: each teammate's calendar is a git repo, one `.ics` file per event; saving commits.
+Sync uses Cod Sync directly: publish to your own store, fetch a teammate's history into `refs/peers/<teammate>/main`, merge.
+Git does not merge event text: `.git/info/attributes` sets `*.ics -merge`, so any event both sides changed comes back as a conflict, and `merge` calls `merge_event` with git's base, ours and theirs.
+If any event does not merge, `merge` aborts and changes nothing; the teammate's history stays parked in its ref.
+A line-by-line git merge would have combined a new `DTSTART` from one side with a new `DTEND` from the other.
+
+`tests/test_hub_sync.py` runs the demo with no calendar apps: Alice and Bob, separate MinIO servers, encrypted objects, a real invitation.
+Alice creates the recorded event; Bob syncs; Alice applies Apple's move, Bob Thunderbird's location; both publish; Alice merges; Bob fast-forwards to her merge.
+Both end with the move, the location, and `SEQUENCE:2`, at the same commit.
+Shortcuts, mostly copied from the Files tests: one in-process Hub and data directory, sessions approved automatically, Bob's sender key and storage announcement handed to Alice directly (#138).
+Calendar commits are unsigned and fetched history is not verified; the Files tests show how to sign through the Hub.
+
+`tests/test_calendar_repo.py` covers the same with folder stores, plus:
+- Both teammates merge at the same time: each merge takes the calendar header and zone from its own side, so the two merge commits differ; one more round of sync settles on a single history.
+- A real conflict (two different locations) leaves both repos untouched.
+
+## 2026-11-18 — Two CalDAV servers, synced on demand
+
+The spike's event directory is now a `CalendarRepo`: every `PUT` and `DELETE` is a commit.
+`spikes/two_teammates_demo.py` sets up the team (the Hub test's setup), starts Alice's server on 5232 and Bob's on 5233, and syncs a teammate when you type `a` or `b`.
+A sync publishes that teammate's calendar, fetches the other's, merges, and publishes again if the merge made a new commit.
+Events the sync changed or deleted advance the server's sync token, so the apps see them on their next refresh; merged bodies are kept as versions, so a later stale save still merges.
+
+Checked with HTTP requests in place of the apps:
+create on Alice, sync both, Bob has it; Alice moves, Bob adds a location; Alice syncs (Bob has not published yet, so nothing new), Bob syncs and merges.
+A stale save on Bob's server after that sync merged on save; the next syncs carried it to Alice with `SEQUENCE:3`.
+A delete on Alice reached Bob.
+
+Only a sync publishes, so a teammate sees your edits after you sync and then they sync.
+Every run starts from scratch; the apps may need their accounts re-added after a restart.
+Both teammates share one in-process Hub.
+
+## 2026-11-18 — The demo with real apps
+
+Apple Calendar as Alice (5232) and Thunderbird as Bob (5233), syncing by hand through the demo script.
+The user reports that it worked; the steps and any surprises were not recorded here.
