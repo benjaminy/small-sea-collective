@@ -10,7 +10,8 @@ test_removed_teammate_history.py. Remaining shortcuts: sessions are approved
 automatically, Manager steps run as direct calls against each teammate's
 data directory, Bob's sender key is handed to Alice directly, and Bob's
 storage announcement is copied into Alice's team database by hand (#138).
-Calendar commits are unsigned and fetched history is not verified.
+Calendar commits are signed through each teammate's Hub, and each Hub judges
+the history its teammate fetches.
 """
 
 import os
@@ -30,6 +31,7 @@ from small_sea_manager.manager import TeamManager, _CORE_APP
 from test_support import _shut_down, accept_and_export, acceptance_record_from_courier, reserve_ports
 
 from tide_table.calendar_repo import CalendarRepo, peer_ref
+from tide_table.hub_signer import HubSigner, UnauthorizedHistory
 
 APP = "TideTable"
 TEAM = "ProjectX"
@@ -132,6 +134,10 @@ def _setup_two_teammate_team(root, minio_server_gen, hub_gen):
         Provisioning.add_berth_cloud_allocation_by_berth_id(
             roots[name], hexes[name], berth, cloud[name], location=f"ss-{berth[:16]}")
         _setup_cloud(http[name], token)
+        # Creates this berth's signing key and records its delegation in Core,
+        # so the Core publishes below carry it to the teammate.
+        resp = http[name].get("/session/signing_key", headers={"Authorization": f"Bearer {token}"})
+        assert resp.status_code == 200, resp.text
         return token
 
     # Alice creates the team and invites Bob.
@@ -180,7 +186,9 @@ def _setup_two_teammate_team(root, minio_server_gen, hub_gen):
 
 def test_move_and_location_merge_through_two_hubs(tmp_path, minio_server_gen, hub_gen):
     team = _setup_two_teammate_team(tmp_path / "devices", minio_server_gen, hub_gen)
-    cals = {name: CalendarRepo.create(tmp_path / name.lower() / "calendar", name) for name in team}
+    cals = {name: CalendarRepo.create(tmp_path / name.lower() / "calendar", name,
+                                      HubSigner(team[name]["hub"], team[name]["token"]))
+            for name in team}
 
     def publish(me):
         cals[me].publish(SmallSeaStore(team[me]["token"], base_url=team[me]["hub"]))
@@ -213,3 +221,15 @@ def test_move_and_location_merge_through_two_hubs(tmp_path, minio_server_gen, hu
         assert b"LOCATION:over theere" in text
         assert b"SEQUENCE:2" in text
     assert cals["Alice"].repo.head() == cals["Bob"].repo.head()
+    for commit in cals["Alice"].repo._run(["rev-list", "HEAD"]).stdout.split():
+        body = cals["Alice"].repo._run(["cat-file", "commit", commit]).stdout
+        assert "\ngpgsig " in body and "\nSmall-Sea-Work-Context: " in body, body
+
+    # A commit Bob's Hub did not sign is refused when Alice fetches it.
+    unsigned = CalendarRepo(cals["Bob"].path)
+    unsigned.save(EVENT, _fixture("base.ics"), "unsigned")
+    unsigned.publish(SmallSeaStore(team["Bob"]["token"], base_url=team["Bob"]["hub"]))
+    head = cals["Alice"].repo.head()
+    with pytest.raises(UnauthorizedHistory):
+        sync("Alice", "Bob")
+    assert cals["Alice"].repo.head() == head

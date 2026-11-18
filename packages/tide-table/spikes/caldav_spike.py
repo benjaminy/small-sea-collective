@@ -61,15 +61,15 @@ class Store:
     Handlers hold lock across each operation on the store.
     """
 
-    def __init__(self, root, author="spike"):
+    def __init__(self, root, author="spike", signer=None):
         self.dir = os.path.join(root, "events")
         if os.path.isdir(os.path.join(self.dir, ".git")):
-            self.cal = CalendarRepo(self.dir)
+            self.cal = CalendarRepo(self.dir, signer)
         else:
-            self.cal = CalendarRepo.create(self.dir, author)
+            self.cal = CalendarRepo.create(self.dir, author, signer)
             if os.listdir(self.dir) != [".git"]:
                 self.cal.repo.stage()
-                self.cal.repo.commit("Import events stored before git")
+                self.cal.commit("Import events stored before git")
         self.versions = os.path.join(root, "versions")
         os.makedirs(self.versions, exist_ok=True)
         self.state_path = os.path.join(root, "state.json")
@@ -623,12 +623,12 @@ for _m in ["OPTIONS", "PROPFIND", "PROPPATCH", "REPORT", "GET", "HEAD", "PUT", "
     setattr(Handler, "do_" + _m, Handler._handle)
 
 
-def make_server(port, user, password, data, log_bodies=False):
+def make_server(port, user, password, data, log_bodies=False, signer=None):
     os.makedirs(data, exist_ok=True)
     server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     server.cfg = {"user": user, "password": password, "log": os.path.join(data, "requests.log"),
                   "log_bodies": log_bodies}
-    server.store = Store(data, author=user)
+    server.store = Store(data, author=user, signer=signer)
     server.log_lock = threading.Lock()
     server.nonce = secrets.token_hex(16)
     print(f"Tide Table CalDAV spike on http://localhost:{port}/  user={user} password={password}")

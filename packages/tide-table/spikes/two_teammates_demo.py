@@ -41,6 +41,7 @@ from test_support import _shut_down, _wait_for_minio_ready, reserve_ports  # noq
 from caldav_spike import make_server  # noqa: E402
 from test_hub_sync import _setup_two_teammate_team, start_hub  # noqa: E402
 from tide_table.calendar_repo import EventConflict, peer_ref  # noqa: E402
+from tide_table.hub_signer import HubSigner, UnauthorizedHistory  # noqa: E402
 
 DATA = REPO_ROOT / "Scratch" / "tide-table-demo"
 PORTS = {"Alice": 5232, "Bob": 5233}
@@ -113,7 +114,8 @@ def main():
             print(f"{name}'s Hub: {t['hub']}")
         stores = {}
         for name, port in PORTS.items():
-            server = make_server(port, name.lower(), PASSWORD, str(data / name.lower()))
+            server = make_server(port, name.lower(), PASSWORD, str(data / name.lower()),
+                                 signer=HubSigner(team[name]["hub"], team[name]["token"]))
             stores[name] = server.store
             threading.Thread(target=server.serve_forever, daemon=True).start()
         print("Ready. Type a (sync Alice), b (sync Bob), q (quit).")
@@ -123,7 +125,8 @@ def main():
                 me, them = ("Alice", "Bob") if cmd == "a" else ("Bob", "Alice")
                 try:
                     sync(me, them, stores, team)
-                except (CodSyncError, StoreError, RepoError, subprocess.CalledProcessError) as e:
+                except (CodSyncError, StoreError, RepoError, UnauthorizedHistory,
+                        subprocess.CalledProcessError) as e:
                     print(f"{me}: sync failed: {e}", file=sys.stderr)
             elif cmd == "q":
                 break

@@ -9,6 +9,10 @@ When both sides changed the same event file, `merge` asks `merge_event` to
 combine the two versions, using the git merge base as the common version.
 If any event cannot be merged that way, `merge` changes nothing and raises
 `EventConflict`; the teammate's history stays in its ref for later.
+
+With a signer (see hub_signer.py), every commit is signed and Cod Sync
+accepts a fetched or published history only if the signer approves it.
+Without one, commits are unsigned and nothing is checked.
 """
 
 import pathlib
@@ -31,17 +35,18 @@ def peer_ref(teammate_id_hex):
 
 
 class CalendarRepo:
-    def __init__(self, path):
+    def __init__(self, path, signer=None):
         self.path = pathlib.Path(path)
         self.git_dir = self.path / ".git"
-        self.repo = Repo(self.git_dir, self.path)
+        self.signer = signer
+        self.repo = Repo(self.git_dir, self.path, env=signer.env if signer else None)
 
     @classmethod
-    def create(cls, path, author):
+    def create(cls, path, author, signer=None):
         path = pathlib.Path(path)
         path.mkdir(parents=True, exist_ok=True)
         Repo.init(path / ".git")
-        cal = cls(path)
+        cal = cls(path, signer)
         cal.repo.config("user.name", author)
         cal.repo.config("user.email", f"{author.lower()}@tide-table.invalid")
         # Git must not merge event text line by line: it would happily combine
@@ -55,26 +60,33 @@ class CalendarRepo:
     def _git(self, *args, check=True):
         return subprocess.run(
             ["git", "--git-dir", str(self.git_dir), "--work-tree", str(self.path), *args],
-            capture_output=True, check=check,
+            capture_output=True, check=check, env=self.repo.env,
         )
 
     def read(self, name):
         return (self.path / name).read_bytes()
 
+    def commit(self, message):
+        """Commit staged changes. Returns the new SHA, or None if nothing is staged."""
+        return self.repo.commit(self._message(message))
+
+    def _message(self, message):
+        return self.signer.message(message) if self.signer else message
+
     def save(self, name, data, message):
         (self.path / name).write_bytes(data)
         self.repo.stage([name])
-        return self.repo.commit(message)
+        return self.commit(message)
 
     def delete(self, name, message):
         self._git("rm", "-q", "--", name)
-        return self.repo.commit(message)
+        return self.commit(message)
 
     def publish(self, store):
-        return CodSync(self.repo, store).publish()
+        return CodSync(self.repo, store, verifier=self.signer).publish()
 
     def fetch(self, store, teammate_id_hex):
-        return CodSync(self.repo, store).fetch(pin_to_ref=peer_ref(teammate_id_hex)).pinned_head
+        return CodSync(self.repo, store, verifier=self.signer).fetch(pin_to_ref=peer_ref(teammate_id_hex)).pinned_head
 
     def merge(self, ref):
         """Merge ref into main. Returns the paths merged event by event."""
@@ -111,7 +123,7 @@ class CalendarRepo:
             self._git("merge", "--abort")
             raise EventConflict(unresolved)
         if self._git("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
-            self._git("commit", "--no-edit")
+            self._git("commit", "-m", self._message(f"Merge {ref}"))
         return merged
 
     def _stages(self, path):

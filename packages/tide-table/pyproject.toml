@@ -4,7 +4,7 @@ version = "0.1.0"
 requires-python = ">=3.12"
 description = "Concept-stage Small Sea app for team-owned calendar and scheduling."
 readme = "README.md"
-dependencies = ["cod-sync"]
+dependencies = ["cod-sync", "small-sea-client"]
 
 [project.optional-dependencies]
 test = [
@@ -15,6 +15,7 @@ test = [
 
 [tool.uv.sources]
 cod-sync = { workspace = true }
+small-sea-client = { workspace = true }
 small-sea-hub = { workspace = true }
 small-sea-manager = { workspace = true }
 
