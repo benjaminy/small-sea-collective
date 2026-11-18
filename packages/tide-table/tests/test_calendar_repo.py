@@ -8,6 +8,7 @@ demo scenario through the Hub.
 import pathlib
 
 import pytest
+from cod_sync.repo import RepoError
 from cod_sync.store import LocalFolderStore
 
 from tide_table.calendar_repo import CalendarRepo, EventConflict, peer_ref
@@ -125,3 +126,22 @@ def test_conflicting_edits_leave_both_histories_untouched(team):
     assert b"LOCATION:kitchen" in alice.read(EVENT)
     assert alice.repo.status() == []
     assert alice.repo.resolve_ref(peer_ref("bob")) == bob.repo.head()
+
+
+def test_merge_reports_git_failure_without_conflicts(team):
+    alice, bob, publish, sync = team
+    alice.save("alice.ics", _fixture("base.ics"), "local edit")
+    bob.save(EVENT, _fixture("apple-move.ics"), "move")
+    publish("bob")
+    head = alice.repo.head()
+    index_lock = alice.git_dir / "index.lock"
+    index_lock.touch()
+
+    with pytest.raises(RepoError, match=r"index\.lock"):
+        sync("alice", "bob")
+    assert alice.repo.head() == head
+    assert alice.repo.resolve_ref(peer_ref("bob")) == bob.repo.head()
+
+    index_lock.unlink()
+    assert sync("alice", "bob") == []
+    assert alice.read(EVENT) == _fixture("apple-move.ics")
