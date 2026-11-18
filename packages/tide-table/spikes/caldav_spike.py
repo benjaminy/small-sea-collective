@@ -12,6 +12,11 @@ Deliberate shortcuts:
 - One hard-coded user and password, accepted by Digest or Basic auth.
 - No recurrence or time-zone handling; event bodies are stored verbatim.
 
+A PUT whose If-Match names an older version is merged with the current
+version (tide_table.merge) instead of refused, using the older version as the
+base. Every stored body is kept under versions/ for this. A conflict, or a
+PUT with no If-Match, behaves as before (412, or overwrite).
+
 Run:
     uv run python packages/tide-table/spikes/caldav_spike.py
 then point a client at http://localhost:5232/ as user "alice", password "tide".
@@ -30,6 +35,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, unquote, urlsplit
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
+
+from tide_table.merge import Conflict, Unsupported, merge_event
 
 DAV = "DAV:"
 CAL = "urn:ietf:params:xml:ns:caldav"
@@ -52,6 +59,8 @@ class Store:
     def __init__(self, root):
         self.dir = os.path.join(root, "events")
         os.makedirs(self.dir, exist_ok=True)
+        self.versions = os.path.join(root, "versions")
+        os.makedirs(self.versions, exist_ok=True)
         self.state_path = os.path.join(root, "state.json")
         self.lock = threading.Lock()
         if os.path.exists(self.state_path):
@@ -78,8 +87,18 @@ class Store:
         with open(path, "rb") as f:
             return f.read()
 
+    def version(self, etag):
+        """A body this store has held, looked up by its ETag, or None."""
+        path = os.path.join(self.versions, etag.strip('"') + ".ics")
+        if not os.path.exists(path):
+            return None
+        with open(path, "rb") as f:
+            return f.read()
+
     def put(self, name, data):
         with self.lock:
+            with open(os.path.join(self.versions, etag_of(data).strip('"') + ".ics"), "wb") as f:
+                f.write(data)
             with open(os.path.join(self.dir, name), "wb") as f:
                 f.write(data)
             self.state["token"] += 1
@@ -269,6 +288,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle(self):
         self._resp = None
+        self._note = ""
         self._req_body = self._read_body()
         try:
             if self.command != "OPTIONS" and not self._authorized():
@@ -291,13 +311,14 @@ class Handler(BaseHTTPRequestHandler):
         status, rheaders, rbody = self._resp or (0, {}, b"")
         stamp = datetime.datetime.now().isoformat(timespec="milliseconds")
         ua = self.headers.get("User-Agent", "")
-        print(f"{stamp} {self.command} {self.path} depth={self.headers.get('Depth', '-')} -> {status}  [{ua[:40]}]", flush=True)
+        note = f"  ({self._note})" if self._note else ""
+        print(f"{stamp} {self.command} {self.path} depth={self.headers.get('Depth', '-')} -> {status}  [{ua[:40]}]{note}", flush=True)
         interesting = ["User-Agent", "Depth", "If-Match", "If-None-Match", "Content-Type", "Prefer", "Brief"]
         lines = [f"===== {stamp} {self.command} {self.path}"]
         lines += [f"> {h}: {self.headers[h]}" for h in interesting if self.headers.get(h)]
         if self._req_body:
             lines.append(self._req_body.decode(errors="replace"))
-        lines.append(f"----- {status}")
+        lines.append(f"----- {status}{note}")
         lines += [f"< {k}: {v}" for k, v in rheaders.items() if k != "Content-Length"]
         if rbody:
             text = rbody.decode(errors="replace")
@@ -491,10 +512,36 @@ class Handler(BaseHTTPRequestHandler):
         store = self.server.store
         current = store.get(name)
         if self._precondition_fails(current):
-            self._send(412)
+            merged = self._merge_stale_put(current)
+            if merged is None:
+                self._send(412)
+                return
+            store.put(name, merged)
+            # No ETag: the stored body differs from what the client sent, so it must refetch.
+            self._send(204)
             return
         store.put(name, self._req_body)
         self._send(201 if current is None else 204, headers={"ETag": etag_of(self._req_body)})
+
+    def _merge_stale_put(self, current):
+        """Merge a PUT made against an older version; return the merged body or None."""
+        im = self.headers.get("If-Match")
+        if current is None or not im or im.strip() == "*" or "," in im:
+            return None
+        base = self.server.store.version(im.strip())
+        if base is None:
+            self._note = "stale If-Match names a version we never stored"
+            return None
+        try:
+            result = merge_event(base, current, self._req_body)
+        except Unsupported as e:
+            self._note = f"merge unsupported: {e}"
+            return None
+        if isinstance(result, Conflict):
+            self._note = f"merge conflict: {', '.join(result.fields)}"
+            return None
+        self._note = "merged stale PUT"
+        return result.text
 
     def h_DELETE(self, kind, name):
         store = self.server.store
