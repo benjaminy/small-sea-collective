@@ -204,3 +204,8 @@ CREATE TABLE IF NOT EXISTS team_authority_anchor (
     adopted_at TEXT NOT NULL,
     enrollment_completed_at TEXT
 );
+
+CREATE TABLE IF NOT EXISTS team_spine_origin (
+    team_id BLOB PRIMARY KEY,
+    origin TEXT NOT NULL
+);

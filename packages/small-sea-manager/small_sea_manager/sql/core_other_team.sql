@@ -38,6 +38,12 @@ CREATE TABLE IF NOT EXISTS invitation (
     accepted_by BLOB
 );
 
+CREATE TABLE IF NOT EXISTS spine_object (
+    object_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    encoded BLOB NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS team_setting (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

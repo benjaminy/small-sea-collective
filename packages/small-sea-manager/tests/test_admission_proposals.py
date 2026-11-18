@@ -122,6 +122,8 @@ def test_quorum_two_requires_second_steward_and_inviter_finalization(playground_
         inviter_store=LocalFolderStore(str(alice_cloud)),
     )
 
+    # Changing the rule after opening this proposal cannot waive its second endorsement.
+    provisioning.set_team_admission_policy(root, alice_hex, "ProjectX", quorum=1)
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposals = provisioning.list_invitations(root, alice_hex, "ProjectX")
     assert proposals[0]["status"] == "awaiting_quorum"
@@ -130,6 +132,7 @@ def test_quorum_two_requires_second_steward_and_inviter_finalization(playground_
     provisioning.endorse_admission(root, carol_hex, "ProjectX", proposals[0]["id"])
     shutil.copy2(carol_sync / "core.db", alice_sync / "core.db")
 
+    provisioning.set_team_admission_policy(root, alice_hex, "ProjectX", quorum=3)
     provisioning.finalize_admission(root, alice_hex, "ProjectX", proposals[0]["id"])
     proposals = provisioning.list_invitations(root, alice_hex, "ProjectX")
     assert proposals[0]["status"] == "finalized"
@@ -208,6 +211,7 @@ def test_contributor_role_finalizes_as_proposal_only_on_core(playground_dir):
         invitee_label="Bob",
         mode_plan=provisioning.mode_plan_for_preset("contributor"),
     )
+    provisioning.set_team_admission_policy(root, alice_hex, "ProjectX", quorum=2)
     acceptance = provisioning.accept_invitation(
         root,
         bob_hex,

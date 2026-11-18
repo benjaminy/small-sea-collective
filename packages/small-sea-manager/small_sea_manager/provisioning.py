@@ -118,6 +118,8 @@ from small_sea_note_to_self.bootstrap import (
     welcome_bundle_aad,
 )
 from small_sea_manager import berth_authority, berth_source_decision
+from small_sea_manager.spine import bootstrap as spine_bootstrap
+from small_sea_manager.spine import encoding as spine_encoding
 from small_sea_manager import note_to_self_sync
 from small_sea_manager.git_signing import core_signed_repo
 from small_sea_manager.constitution_projection import (
@@ -1095,11 +1097,6 @@ def _acceptance_signed_fields(
     }
 
 
-def _proposal_quorum(conn) -> int:
-    quorum, _expiry = _team_admission_policy(conn)
-    return quorum
-
-
 def _load_proposal_row(conn, record_id: bytes):
     row = conn.execute(
         text(
@@ -1331,10 +1328,8 @@ def _valid_finalization_exists(conn, record_id: bytes) -> bool:
     proposal), and subject_digest == the recorded acceptance's commitment.
     Deliberately NOT checked: constitution_digest equality with the proposal
     (a legitimate finalization anchors the post-projection snapshot, which
-    always differs) and quorum re-count (re-validating against the current
-    mutable threshold would retroactively invalidate legitimate finalizations
-    when quorum is raised; auditing the signed endorsement_count claim is the
-    #167 replay's job).
+    always differs). For proposals with a signed quorum, count the distinct
+    verified endorsements against that original threshold.
     """
     rows = conn.execute(
         text(
@@ -1367,6 +1362,13 @@ def _valid_finalization_exists(conn, record_id: bytes) -> bool:
     acceptance_row = _load_acceptance_row(conn, record_id)
     if acceptance_row is None:
         return False
+    # Older finalized proposals have no signed quorum to replay.
+    if "admission_quorum" in snapshot:
+        quorum = snapshot["admission_quorum"]
+        if type(quorum) is not int or quorum < 1:
+            return False
+        if _count_valid_endorsements(conn, proposal_row, acceptance_row) < quorum:
+            return False
     expected_subject_digest = _sha256_bytes(_acceptance_canonical_from_row(acceptance_row))
     for (
         fin_record_id,
@@ -1427,7 +1429,17 @@ def _admission_status(conn, *, record_id: bytes, constitution_digest: bytes, exp
         return "invalidated"
     if expires_at < _now_iso():
         return "expired"
-    if _constitution_digest(_constitution_snapshot(conn)) != constitution_digest:
+    proposal = _load_proposal_row(conn, record_id)
+    try:
+        snapshot = _verified_proposal_snapshot(proposal)
+    except ValueError:
+        return "invalidated"
+    current = _constitution_snapshot(conn)
+    quorum = snapshot.get("admission_quorum")
+    if type(quorum) is not int or quorum < 1:
+        return "invalidated"
+    current["admission_quorum"] = quorum
+    if _constitution_digest(current) != constitution_digest:
         return "invalidated"
     if conn.execute(
         text("SELECT 1 FROM admission_acceptance WHERE subject_record_id = :id"), {"id": record_id}
@@ -1452,6 +1464,9 @@ def _admission_action_block_reason(conn, proposal_row) -> str | None:
             {"id": record_id},
         ).fetchone() is not None:
             return "Proposal has been revoked"
+        snapshot = _verified_proposal_snapshot(proposal_row)
+        if "admission_quorum" not in snapshot:
+            return "Proposal has no signed admission quorum; issue a new invitation"
         return "Proposal invalidated by governance drift"
     return None
 
@@ -1485,8 +1500,8 @@ def _append_endorsement(
         raise ValueError("Proposal does not have a recorded acceptance yet")
     subject_digest = _sha256_bytes(_acceptance_canonical_from_row(acceptance_row))
     author_device_key_id = key_id_from_public(author_public_key)
-    snapshot = _constitution_snapshot(conn)
-    digest = _constitution_digest(snapshot)
+    snapshot = _verified_proposal_snapshot(proposal_row)
+    digest = proposal_row[5]
     now = _now_iso()
     envelope = _record_envelope_fields(
         record_type="endorsement",
@@ -2648,7 +2663,7 @@ def prepare_linked_device_team_join(root_dir, participant_hex, team_name):
 
 # This versions the signed response JSON contract. The ratchet envelope has its
 # own version, while any HKDF info label only separates derived key uses.
-LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION = 4
+LINKED_TEAM_BOOTSTRAP_PAYLOAD_VERSION = 5
 
 
 def _team_core_berth_id_from_db(team_db_path) -> bytes | None:
@@ -2692,6 +2707,13 @@ def _materialize_team_baseline(team_sync_dir: pathlib.Path, bundle_bytes: bytes,
     if repo.head() != core_head:
         raise ValueError("Bootstrap Core baseline HEAD does not match the signed Core head")
     _install_sqlite_merge_driver(team_sync_dir)
+
+
+def _team_spine_origin(root_dir, participant_hex, team_id):
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        row = conn.execute("SELECT origin FROM local.team_spine_origin WHERE team_id = ?",
+                           (team_id,)).fetchone()
+    return row[0] if row else None
 
 
 def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_request_bundle):
@@ -2753,11 +2775,15 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
             "bootstrap_bundle": pending["bootstrap_bundle"],
         }
 
-    cert = issue_device_link_for_teammate(
+    origin = _team_spine_origin(root_dir, participant_hex, team_id)
+    if origin is None:
+        raise ValueError("This device has no adopted Constitution origin for team bootstrap")
+    cert, spine_bundle = _issue_device_link(
         root_dir,
         participant_hex,
         team_name,
         proposed_team_device_public_key,
+        origin=origin,
     )
 
     # The joining device may have no local Core clone yet. The encrypted
@@ -2799,6 +2825,7 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
                 serialize_sender_key_record(record) for record in peer_sender_records
             ],
             "core_bundle": core_bundle_b64,
+            "spine_bundle": spine_bundle.hex(),
         }
     )
     associated_data = _json_bytes(
@@ -2823,6 +2850,7 @@ def create_linked_device_bootstrap(root_dir, participant_hex, team_name, join_re
         "active_sender_device_key_id": sender_distribution.sender_device_key_id.hex(),
         "core_berth_id": core_berth_id.hex(),
         "core_head": core_head,
+        "spine_origin": origin,
         "x3dh_initial_message": _serialize_x3dh_initial_message(x3dh_result.initial_message),
         "ratchet_message": _serialize_encrypted_message(encrypted_message),
         "device_link_cert": _serialize_cert(cert),
@@ -2884,6 +2912,7 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         "active_sender_device_key_id": response["active_sender_device_key_id"],
         "core_berth_id": response["core_berth_id"],
         "core_head": response["core_head"],
+        "spine_origin": response["spine_origin"],
         "x3dh_initial_message": response["x3dh_initial_message"],
         "ratchet_message": response["ratchet_message"],
         "device_link_cert": response["device_link_cert"],
@@ -2932,28 +2961,17 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
         subject_public_key=session_row["team_device_public_key"],
     ):
         raise ValueError("Bootstrap bundle device_link cert is invalid")
+    origin = response["spine_origin"]
+    pin = _team_spine_origin(root_dir, participant_hex, team_id)
+    if pin is not None and pin != origin:
+        raise ValueError("Bootstrap Constitution differs from the adopted origin")
     if session_row["finalized_at"] is not None and session_row["response_payload_json"]:
         response_payload = json.loads(session_row["response_payload_json"])
         return response_payload
 
-    # Adopt the sibling's anchor from the authenticated response before any
-    # fetched authority is verified. Enrollment completion is recorded below.
     offered_anchor = response["authority_anchor"]
-    if offered_anchor is not None:
-        if offered_anchor.get("view_policy") != berth_authority.VIEW_VERSION.decode():
-            raise ValueError("Bootstrap bundle offers an unsupported authority view policy")
-        _record_authority_anchor(
-            root_dir,
-            participant_hex,
-            team_id,
-            bytes.fromhex(offered_anchor["public_key"]),
-            adopted_via="linked-device-bootstrap",
-            evidence_ref=(
-                f"linked-bootstrap:{bootstrap_id.hex()}:"
-                f"{hashlib.sha256(response_bytes).hexdigest()}"
-            ),
-            enrollment_completed=False,
-        )
+    if offered_anchor is not None and offered_anchor.get("view_policy") != berth_authority.VIEW_VERSION.decode():
+        raise ValueError("Bootstrap bundle offers an unsupported authority view policy")
 
     identity = IdentityKeyPair(
         dh_public_key=session_row["x3dh_identity_dh_public_key"],
@@ -2995,8 +3013,12 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     )
     decrypted_payload = json.loads(plaintext.decode("utf-8"))
 
-    if not has_clone:
-        try:
+    held = spine_bootstrap.check_bundle(
+        bytes.fromhex(decrypted_payload["spine_bundle"]), origin, teammate_id.hex(),
+        authorizing_team_device_public_key.hex(), session_row["team_device_public_key"].hex(),
+    )
+    try:
+        if not has_clone:
             _materialize_team_baseline(
                 team_sync_dir,
                 base64.b64decode(decrypted_payload["core_bundle"], validate=True),
@@ -3011,13 +3033,40 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
                 raise ValueError(
                     "Bootstrap bundle signer is not trusted by the delivered Core baseline"
                 )
-        except Exception:
+        with sqlite3.connect(team_sync_dir / "core.db") as baseline:
+            existing = dict(baseline.execute("SELECT object_id, encoded FROM spine_object"))
+        if not has_clone and existing != held:
+            raise ValueError("Bootstrap Constitution differs from the signed Core baseline")
+        if has_clone and (origin not in existing or
+                          any(held.get(key) != data for key, data in existing.items())):
+            raise ValueError("Bootstrap Constitution does not extend this device's Core baseline")
+        if offered_anchor is not None:
+            _record_authority_anchor(
+                root_dir,
+                participant_hex,
+                team_id,
+                bytes.fromhex(offered_anchor["public_key"]),
+                adopted_via="linked-device-bootstrap",
+                evidence_ref=(
+                    f"linked-bootstrap:{bootstrap_id.hex()}:"
+                    f"{hashlib.sha256(response_bytes).hexdigest()}"
+                ),
+                enrollment_completed=False,
+            )
+        with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+            conn.execute("INSERT OR IGNORE INTO local.team_spine_origin VALUES (?, ?)", (team_id, origin))
+            adopted, = conn.execute("SELECT origin FROM local.team_spine_origin WHERE team_id = ?",
+                                    (team_id,)).fetchone()
+            if adopted != origin:
+                raise ValueError("Bootstrap Constitution differs from the adopted origin")
+    except Exception:
+        if not has_clone:
             shutil.rmtree(team_sync_dir, ignore_errors=True)
             try:
                 team_sync_dir.parent.rmdir()
             except OSError:
                 pass
-            raise
+        raise
     authorizer_distribution = deserialize_distribution_message(
         decrypted_payload["own_sender_distribution"]
     )
@@ -3089,6 +3138,10 @@ def finalize_linked_device_bootstrap(root_dir, participant_hex, team_name, boots
     engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
+            for key, data in held.items():
+                conn.execute(text("INSERT OR IGNORE INTO spine_object VALUES (:id, :kind, :data)"),
+                             {"id": key, "kind": spine_encoding.decode_object(data)["body"]["kind"],
+                              "data": data})
             cert_inserted = _insert_team_certificate_if_missing(
                 conn,
                 cert,
@@ -4963,6 +5016,16 @@ def _reproject_berth_roles(conn, touched_pairs) -> None:
 
 def issue_device_link_for_teammate(root_dir, participant_hex, team_name, linked_device_public_key):
     """Issue and store a device_link cert for an externally generated public key."""
+    team_id, _ = _team_row(root_dir, participant_hex, team_name)
+    origin = _team_spine_origin(root_dir, participant_hex, team_id)
+    if origin is None:
+        raise ValueError("This device has no adopted Constitution origin for device linking")
+    cert, _ = _issue_device_link(root_dir, participant_hex, team_name, linked_device_public_key,
+                                 origin=origin)
+    return cert
+
+
+def _issue_device_link(root_dir, participant_hex, team_name, linked_device_public_key, *, origin):
     if isinstance(linked_device_public_key, str):
         linked_device_public_key = bytes.fromhex(linked_device_public_key)
 
@@ -5002,6 +5065,9 @@ def issue_device_link_for_teammate(root_dir, participant_hex, team_name, linked_
     engine = _sqlite_engine(team_db_path)
     try:
         with engine.begin() as conn:
+            bundle = spine_bootstrap.add_device(
+                conn, origin, teammate_id.hex(), issuer_private_key, linked_device_public_key.hex()
+            )
             record_key_certificate(conn, cert, teammate_id, issuer_private_key)
             _upsert_team_device_row(
                 conn,
@@ -5014,7 +5080,7 @@ def issue_device_link_for_teammate(root_dir, participant_hex, team_name, linked_
     repo = core_signed_repo(root_dir, participant_hex, team_name, _Repo(team_sync_dir / ".git", team_sync_dir))
     repo.stage(["core.db"])
     repo.commit("Linked additional team device")
-    return cert
+    return cert, bundle
 
 
 def _generate_initial_team_device_key(
@@ -5515,6 +5581,19 @@ def create_team(root_dir, participant_hex, team_name):
     # Populate the team DB: creator teammate, app, berth, and creator's role.
     creator_display_name = get_nickname(root_dir, participant_hex) or None
     with team_engine.begin() as conn:
+        member = teammate_id.hex()
+        genesis = spine_encoding.make_genesis(
+            secrets.token_hex(32),
+            [{"member_id": member, "name": creator_display_name or ""}],
+            [{"member_id": member, "device_key": team_keys["device_key"].public_key.hex(),
+              "label": ""}],
+            int(datetime.now(timezone.utc).timestamp()),
+            admission_quorum=_DEFAULT_ADMISSION_QUORUM,
+        )
+        conn.execute(
+            text("INSERT INTO spine_object (object_id, kind, encoded) VALUES (:id, 'genesis', :encoded)"),
+            {"id": spine_encoding.decode_genesis(genesis)["id"], "encoded": genesis},
+        )
         _upsert_teammate_row(conn, teammate_id, display_name=creator_display_name)
         # The creator is the only teammate present while bootstrapping Core for a
         # new team, so every current teammate receives the initial Core role.
@@ -5565,6 +5644,11 @@ def create_team(root_dir, participant_hex, team_name):
     _install_sqlite_merge_driver(team_sync_dir)
     repo.stage(["core.db", ".gitattributes"])
     repo.commit(f"New team: {team_name}")
+
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        conn.execute("INSERT INTO local.team_spine_origin VALUES (?, ?)",
+                     (team_id, spine_encoding.decode_genesis(genesis)["id"]))
+        conn.commit()
 
     return {
         "team_id_hex": team_id.hex(),
@@ -5788,6 +5872,10 @@ def create_invitation(
         ):
             raise ValueError("inviter_cloud does not match the Core cloud allocation")
 
+    origin = _team_spine_origin(root_dir, participant_hex, team_id)
+    if origin is None:
+        raise ValueError("This device has no adopted Constitution origin for invitations")
+
     invitee_teammate_id = uuid7()
     nonce = secrets.token_bytes(16)
     now_dt = datetime.now(timezone.utc)
@@ -5799,6 +5887,7 @@ def create_invitation(
             raise ValueError("Admission quorum must be at least 1")
         anchor_commit = _team_head_commit(team_sync_dir)
         snapshot = _constitution_snapshot(conn)
+        snapshot["admission_quorum"] = quorum
         digest = _constitution_digest(snapshot)
         expires_at = _proposal_expiry(now_dt, expiry_seconds)
 
@@ -5859,7 +5948,8 @@ def create_invitation(
 
     # Build token with only the material the invitee needs to author acceptance.
     token_data = {
-        "payload_version": 2,
+        "payload_version": 3,
+        "spine_origin": origin,
         "proposal_id": proposal_id.hex(),
         "invitation_id": proposal_id.hex(),
         "nonce": nonce.hex(),
@@ -5881,6 +5971,7 @@ def create_invitation(
         inviter_private_key,
         _json_bytes({
             "payload_version": token_data["payload_version"],
+            "spine_origin": origin,
             "proposal_id": token_data["proposal_id"],
             "nonce": token_data["nonce"],
             "team_id": token_data["team_id"],
@@ -5932,7 +6023,7 @@ def accept_invitation(
     proposal_id = bytes.fromhex(token["proposal_id"])
     nonce = bytes.fromhex(token["nonce"])
     invitee_teammate_id = bytes.fromhex(token["invitee_teammate_id"])
-    if token.get("payload_version") != 2:
+    if token.get("payload_version") != 3:
         raise ValueError("Unsupported invitation payload version")
     signed_anchor = bytes.fromhex(token["authority_anchor"])
 
@@ -6054,6 +6145,7 @@ def accept_invitation(
             )
             signed_token_fields = {
                 "payload_version": token["payload_version"],
+                "spine_origin": token["spine_origin"],
                 "proposal_id": token["proposal_id"],
                 "nonce": token["nonce"],
                 "team_id": token["team_id"],
@@ -6066,6 +6158,7 @@ def accept_invitation(
                 bytes.fromhex(token["authority_anchor_signature"]),
             ):
                 raise ValueError("Invitation authority anchor signature is invalid")
+            spine_bootstrap.linked_view(spine_bootstrap.objects(core_conn), token["spine_origin"])
             if adopted_genesis.subject_public_key != signed_anchor:
                 raise ValueError("Invitation Core authority anchor does not match inviter signature")
     except BaseException:
@@ -6080,6 +6173,7 @@ def accept_invitation(
             "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
             (team_id, team_name, acceptor_teammate_id),
         )
+        conn.execute("INSERT INTO local.team_spine_origin VALUES (?, ?)", (team_id, token["spine_origin"]))
         # Core participant registration is identity-wide in NoteToSelf. Hub
         # berth resolution currently accepts any NoteToSelf Core berth for the
         # app, so accepting a team invitation does not add a per-team Core row.
@@ -6504,7 +6598,7 @@ def complete_invitation_acceptance(
 
             acceptance_row = _load_acceptance_row(conn, proposal_id)
             endorsement_count = _count_valid_endorsements(conn, proposal_row, acceptance_row)
-            if endorsement_count >= _proposal_quorum(conn):
+            if endorsement_count >= snapshot["admission_quorum"]:
                 _upsert_teammate_row(conn, invitee_teammate_id, display_name=proposal_row[13])
                 record_key_certificate(conn, membership_cert, inviter_teammate_id, inviter_private_key)
                 stored_device_key_id = _upsert_team_device_row(
@@ -6947,7 +7041,7 @@ def finalize_admission(root_dir, participant_hex, team_name, proposal_id_hex):
                 _verify_proposal_row(conn, proposal_row)
                 _verify_acceptance_row(acceptance_row, proposal_row)
                 endorsement_count = _count_valid_endorsements(conn, proposal_row, acceptance_row)
-                if endorsement_count < _proposal_quorum(conn):
+                if endorsement_count < _verified_proposal_snapshot(proposal_row)["admission_quorum"]:
                     raise ValueError("Proposal has not met quorum")
                 invitee_teammate_id = proposal_row[9]
                 invitee_device_public_key = acceptance_row[10]

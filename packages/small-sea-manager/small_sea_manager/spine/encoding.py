@@ -215,9 +215,14 @@ def _payload_spec(kind, payload):
 
 def decode_genesis(data: bytes) -> dict:
     g = decode_canonical(data)
+    policy_spec = _lit(POLICY)
+    if isinstance(g, dict) and g.get("policy") != POLICY:
+        policy_spec = {"name": _lit(POLICY["name"]), "settings": {
+            "admission_quorum": lambda value: type(value) is int and value > 0,
+        }}
     _check(g, {
         "format": _lit(FORMAT), "kind": _lit("genesis"), "nonce": H, "time": int,
-        "policy": _lit(POLICY),
+        "policy": policy_spec,
         "members": [{"member_id": str, "name": str}],
         "devices": [{"device_key": H, "member_id": str, "label": str}],
     })
@@ -292,9 +297,13 @@ def decode_bundle(data: bytes) -> dict:
 
 # ---- constructors (all return encoded bytes, except where noted) ----
 
-def make_genesis(nonce: str, members: list, devices: list, time: int) -> bytes:
+def make_genesis(nonce: str, members: list, devices: list, time: int, *,
+                 admission_quorum: int | None = None) -> bytes:
+    policy = POLICY if admission_quorum is None else {
+        "name": POLICY["name"], "settings": {"admission_quorum": admission_quorum},
+    }
     data = canonical({
-        "format": FORMAT, "kind": "genesis", "nonce": nonce, "time": time, "policy": POLICY,
+        "format": FORMAT, "kind": "genesis", "nonce": nonce, "time": time, "policy": policy,
         "members": members, "devices": devices,
     })
     decode_genesis(data)

@@ -30,6 +30,7 @@ def b(n):
 # One full row per table, keyed by n. Different n gives a different primary key
 # and a different value in every UNIQUE column.
 ROWS = {
+    "spine_object": lambda n: dict(object_id=b(n).hex(), kind="genesis", encoded=b(n)),
     "teammate": lambda n: dict(id=b(n), display_name=f"t{n}", identity_public_key=b(n)),
     "app": lambda n: dict(id=b(n), name=f"app{n}"),
     "team_app_berth": lambda n: dict(id=b(n), app_id=b(n)),
@@ -109,6 +110,7 @@ ROWS = {
 # The column is one a writer could plausibly change; the values differ from the
 # default in ROWS.
 MUTABLE = {
+    "spine_object": ("object_id", "encoded", b(90), b(91)),
     "teammate": ("id", "display_name", "alice", "bob"),
     "app": ("id", "name", "x", "y"),
     "team_app_berth": ("id", "app_id", b(90), b(91)),
@@ -136,6 +138,7 @@ MUTABLE["integration_mode_change"] = (
 )
 
 CLASS = {
+    "spine_object": "content-addressed",
     "teammate": "unclear", "app": "unclear", "team_app_berth": "unclear",
     "berth_role": "projection", "invitation": "unclear", "team_setting": "unclear",
     "admission_proposal": "signed", "admission_acceptance": "signed",

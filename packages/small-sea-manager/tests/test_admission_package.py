@@ -125,6 +125,33 @@ def test_bob_sees_his_own_admission_after_import(playground_dir):
     assert _bob_state(root, bob_hex) == (head_after, db_after)
 
 
+def test_invited_member_can_bootstrap_a_sibling_after_import(playground_dir):
+    from small_sea_manager.manager import TeamManager, bootstrap_existing_identity, create_identity_join_request
+
+    root = pathlib.Path(playground_dir)
+    alice, bob, _, package = _steward_package(root)
+    provisioning.import_admission_package(root, bob, "ProjectX", package)
+    cloud = root / "bob-cloud"
+    cloud.mkdir()
+    provisioning.add_cloud_storage(root, bob, protocol="localfolder", url=str(cloud))
+    sibling = root / "bob-laptop"
+    sibling.mkdir()
+    bob_manager = TeamManager(root, bob)
+    request = create_identity_join_request(sibling)
+    welcome = bob_manager.authorize_identity_join(request["join_request_artifact"])
+    bootstrap_existing_identity(sibling, welcome["welcome_bundle"])
+
+    laptop = TeamManager(sibling, bob)
+    join = laptop.prepare_linked_device_team_join("ProjectX")
+    response = bob_manager.create_linked_device_bootstrap("ProjectX", join["join_request_bundle"])
+    laptop.finalize_linked_device_bootstrap("ProjectX", response["bootstrap_bundle"])
+    team_id, _ = provisioning._team_row(root, alice, "ProjectX")
+    assert provisioning._team_spine_origin(sibling, bob, team_id) == provisioning._team_spine_origin(
+        root, alice, team_id
+    )
+    assert laptop.get_team("ProjectX")["joined_locally"]
+
+
 def test_import_stores_events_and_projects_rows(playground_dir):
     root = pathlib.Path(playground_dir)
     alice_hex, bob_hex, acceptance, raw = _steward_package(root)

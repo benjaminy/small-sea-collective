@@ -6,6 +6,7 @@ import subprocess
 import pytest
 from small_sea_note_to_self.db import SHARED_SCHEMA_VERSION, device_local_db_path
 
+from small_sea_manager.spine import encoding as spine_encoding
 from small_sea_manager.provisioning import _deserialize_cert, _serialize_cert
 from small_sea_manager.provisioning import (
     FutureTeamDatabaseVersionError,
@@ -185,6 +186,19 @@ def test_create_team(playground_dir):
     assert len(teammate_id_hex) == 32
     # Teammate ID should be different from participant ID (fresh per-team ID)
     assert teammate_id_hex != alice_hex
+
+    with sqlite3.connect(_team_db(root, alice_hex, "CoolProject")) as team_db:
+        origin, encoded = team_db.execute(
+            "SELECT object_id, encoded FROM spine_object WHERE kind = 'genesis'"
+        ).fetchone()
+        public_key, = team_db.execute("SELECT public_key FROM team_device").fetchone()
+    genesis = spine_encoding.decode_genesis(encoded)
+    assert genesis["id"] == origin
+    assert genesis["body"]["policy"]["settings"] == {"admission_quorum": 1}
+    assert genesis["body"]["members"] == [{"member_id": teammate_id_hex, "name": "Alice"}]
+    assert genesis["body"]["devices"] == [
+        {"member_id": teammate_id_hex, "device_key": public_key.hex(), "label": ""}
+    ]
 
     # --- Verify NoteToSelf core.db has only a lightweight team membership pointer ---
     user_db = root / "Participants" / alice_hex / "NoteToSelf" / "Sync" / "core.db"

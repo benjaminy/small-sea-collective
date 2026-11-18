@@ -142,6 +142,7 @@ def test_genesis_rejects_wrong_policy_settings():
     for policy in (
         {"name": "spine-demo-1", "settings": {"reconcile_quorum": 2}},
         {"name": "other", "settings": {}},
+        {"name": "spine-demo-1", "settings": {"admission_quorum": 0}},
         {"name": "spine-demo-1"},
     ):
         with pytest.raises(enc.EncodingError):

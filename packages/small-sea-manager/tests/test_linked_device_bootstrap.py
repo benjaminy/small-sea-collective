@@ -311,7 +311,7 @@ def test_linked_device_bootstrap_round_trip_same_teammate(playground_dir):
         ).fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("version", [None, True, "4", 3, 5])
+@pytest.mark.parametrize("version", [None, True, "5", 4, 6])
 def test_linked_device_bootstrap_rejects_invalid_payload_version_without_mutation(
     playground_dir, version
 ):

@@ -6,7 +6,7 @@ from pathlib import Path
 SHARED_DB_FILENAME = "core.db"
 LOCAL_DB_FILENAME = "device_local.db"
 SHARED_SCHEMA_VERSION = 59
-LOCAL_SCHEMA_VERSION = 14
+LOCAL_SCHEMA_VERSION = 15
 
 
 class FutureNoteToSelfDatabaseVersionError(Exception):
@@ -102,22 +102,25 @@ def initialize_device_local_db(local_db_path: str | Path) -> None:
 
 
 def _migrate_device_local_db(conn: sqlite3.Connection, current_version: int) -> None:
-    """Preserve existing keys when changing receiver storage to one row per chain."""
-    if current_version != 13:
+    """Preserve local keys and credentials while upgrading the device's tables."""
+    if current_version not in (13, 14):
         raise NotImplementedError(
             "Pre-alpha NoteToSelf device-local DB migrations are not supported "
             f"from schema {current_version} to {LOCAL_SCHEMA_VERSION}. "
             "Preserve the workspace and its secrets before choosing how to upgrade."
         )
-    # Start before DDL so a failed copy or schema update rolls back the rename too.
     conn.execute("BEGIN")
-    conn.execute("ALTER TABLE peer_sender_key RENAME TO peer_sender_key_v13")
-    schema = (_sql_dir() / "device_local_schema.sql").read_text()
-    start = schema.index("CREATE TABLE IF NOT EXISTS peer_sender_key (")
-    end = schema.index(";", start) + 1
-    conn.execute(schema[start:end])
-    conn.execute("INSERT INTO peer_sender_key SELECT * FROM peer_sender_key_v13")
-    conn.execute("DROP TABLE peer_sender_key_v13")
+    if current_version == 13:
+        conn.execute("ALTER TABLE peer_sender_key RENAME TO peer_sender_key_v13")
+        schema = (_sql_dir() / "device_local_schema.sql").read_text()
+        start = schema.index("CREATE TABLE IF NOT EXISTS peer_sender_key (")
+        end = schema.index(";", start) + 1
+        conn.execute(schema[start:end])
+        conn.execute("INSERT INTO peer_sender_key SELECT * FROM peer_sender_key_v13")
+        conn.execute("DROP TABLE peer_sender_key_v13")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS team_spine_origin (team_id BLOB PRIMARY KEY, origin TEXT NOT NULL)"
+    )
 
 
 def initialize_bootstrap_local_state(root_dir: str | Path, participant_hex: str) -> Path:

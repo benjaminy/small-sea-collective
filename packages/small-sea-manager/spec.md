@@ -336,7 +336,11 @@ Current same-teammate flow:
    containing its own current sender-key distribution plus its current snapshot
    of peer sender-key receiver state for the team, and records a pending
    bootstrap breadcrumb.
-   Payload version 4 keeps each receiver record's chain ID and retained message keys together.
+   Payload version 5 signs the team origin and carries a Constitution bundle inside the encrypted response.
+   The founder's device signs the sibling's `add_device` event before exporting the Core baseline.
+   The joining Manager checks both device keys against the verified founder membership and pins the origin locally.
+   Invitations also carry the signed origin.
+   Until admission events move to the spine, invited members link their own devices through the existing certificate ceremony.
    Earlier payload versions are rejected; recreate pending bootstrap bundles with the updated Manager.
    Evidence: `create_linked_device_bootstrap(...)` in
    `small_sea_manager/provisioning.py`.
@@ -776,8 +780,27 @@ Takes the invitee's out-of-band acceptance blob. The inviter:
 4. Commits and pushes that evidence.
 5. Allows other current Core integrators to endorse it under the configured admission policy.
 
-The current admission extension counts anchor-relative endorsements toward a configured quorum and publishes a `finalization` record.
+The Manager records the required endorsement count in the snapshot whose digest the inviter signs when opening the proposal.
+Changing the team quorum affects invitations opened afterward.
+A steward can withdraw an outstanding invitation.
+The Manager counts endorsements against the original threshold before publishing a `finalization` record.
 That is Manager policy, not a Constitution-core membership decision.
+
+For the spine cutover, the initial Manager policy requires the existing admission quorum of distinct eligible endorsers to change the quorum for future invitations.
+The current settings setter does not collect those endorsements.
+A device evaluating the change will need the old rule, the endorsers' standing at its parent, and their signatures over the proposed change.
+Other policies may interpret the same evidence differently.
+
+Correction can also change the effective quorum.
+For example, if Alice and Carol raise it from one to two, a later reconciliation could reject that change and restore one.
+The spine demo lets a single member sign such a reconciliation.
+A device that followed the rejected event asks its owner to choose, while a device that never followed it can adopt the reconciliation automatically.
+Which corrections the admission policy lets a Manager adopt automatically remains open.
+
+When explaining a correction, the Manager should distinguish the proposed membership changes from actions a device already took.
+Today the inviter sends sender-key material in the invitation, before the invitee returns an acceptance or any finalization occurs.
+Withdrawing the invitation cannot recall that material.
+A device can report its own recorded actions and any signed evidence it received from others.
 
 The invitee's Core storage route is not set up by admission itself.
 During the normal first-contact ceremony, Manager attempts to prepare the route and courier a signed `teammate_berth_storage_announcement` beside the acceptance (issue #183).

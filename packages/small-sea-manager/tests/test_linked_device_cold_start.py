@@ -11,6 +11,7 @@ These use MinIO because Hub-mediated NoteToSelf sync needs a real cloud backend.
 import base64
 import json
 import pathlib
+import sqlite3
 
 import pytest
 import small_sea_hub.backend as SmallSea
@@ -135,6 +136,13 @@ def test_sibling_device_materializes_discovered_team_through_bootstrap(
     sync_a, sync_b = _team_sync_dir(root_a, alice_hex), _team_sync_dir(root_b, alice_hex)
     assert Repo(sync_a / ".git", sync_a).head() == signed_head
     assert Repo(sync_b / ".git", sync_b).head() == signed_head
+    with sqlite3.connect(sync_b / "core.db") as core:
+        events = [Provisioning.spine_encoding.decode_object(row[0]) for row in
+                  core.execute("SELECT encoded FROM spine_object WHERE kind = 'ordinary'")]
+    assert len(events) == 1
+    _, key_b = Provisioning.get_current_team_device_key(root_b, alice_hex, TEAM)
+    assert events[0]["body"]["payload"]["device_key"] == key_b.hex()
+    assert events[0]["body"]["origin"] == Provisioning._untokenize(created["bootstrap_bundle"])["spine_origin"]
     detail = manager_b.get_team(TEAM)
     assert detail["joined_locally"] is True
     assert detail["self_in_team"] == manager_a.get_team(TEAM)["self_in_team"]
@@ -152,8 +160,12 @@ def test_sibling_device_materializes_discovered_team_through_bootstrap(
     ) is not None
 
 
-def test_baseline_with_unsigned_head_is_rejected_without_a_clone(
-    playground_dir, minio_server_gen
+@pytest.mark.parametrize(("field", "wrong", "reason"), [
+    ("core_head", "0" * 40, "signed Core head"),
+    ("spine_origin", "0" * 64, "different origin"),
+])
+def test_inconsistent_signed_bootstrap_is_rejected_without_a_clone(
+    playground_dir, minio_server_gen, field, wrong, reason
 ):
     root_a, root_b, alice_hex, manager_a, manager_b = _discovered_team_on_device_b(
         pathlib.Path(playground_dir), minio_server_gen()
@@ -161,16 +173,52 @@ def test_baseline_with_unsigned_head_is_rejected_without_a_clone(
     prepared = manager_b.prepare_linked_device_team_join(TEAM)
     created = manager_a.create_linked_device_bootstrap(TEAM, prepared["join_request_bundle"])
 
-    # A correctly signed response whose head is not what the bundle carries.
-    lying = _resign(root_a, alice_hex, created["bootstrap_bundle"], core_head="0" * 40)
-    with pytest.raises(ValueError, match="signed Core head"):
+    if field == "spine_origin":
+        other = manager_a.create_team("AnotherTeam")
+        wrong = Provisioning._team_spine_origin(root_a, alice_hex, bytes.fromhex(other["team_id_hex"]))
+    # The sibling signed the response, but the enclosed history disagrees.
+    lying = _resign(root_a, alice_hex, created["bootstrap_bundle"], **{field: wrong})
+    with pytest.raises(ValueError, match=reason):
         manager_b.finalize_linked_device_bootstrap(TEAM, lying)
     assert not Provisioning.has_local_team_clone(root_b, alice_hex, TEAM)
     assert not _team_sync_dir(root_b, alice_hex).exists()
 
+    team_id, _ = Provisioning._team_row(root_b, alice_hex, TEAM)
+    assert Provisioning.get_authority_anchor(root_b, alice_hex, team_id) is None
+    assert Provisioning._team_spine_origin(root_b, alice_hex, team_id) is None
+
     # The genuine response still works afterwards.
     manager_b.finalize_linked_device_bootstrap(TEAM, created["bootstrap_bundle"])
     assert Provisioning.has_local_team_clone(root_b, alice_hex, TEAM)
+
+
+def test_valid_genesis_alone_cannot_authorize_founders_second_device(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    root_a, root_b, participant, manager_a, manager_b = _discovered_team_on_device_b(
+        pathlib.Path(playground_dir), minio_server_gen()
+    )
+    team_id, _ = Provisioning._team_row(root_a, participant, TEAM)
+    origin = Provisioning._team_spine_origin(root_a, participant, team_id)
+    with sqlite3.connect(_team_sync_dir(root_a, participant) / "core.db") as conn:
+        genesis, = conn.execute("SELECT encoded FROM spine_object WHERE object_id = ?", (origin,)).fetchone()
+    genesis_only = Provisioning.spine_encoding.make_bundle(origin, origin, [genesis])
+
+    # A signs the response normally. Its certificate names B, but its spine
+    # bundle stops one event before B's key was added.
+    encrypt = Provisioning.ratchet_encrypt
+    def encrypt_without_link(state, plaintext, *, associated_data):
+        payload = json.loads(plaintext)
+        payload["spine_bundle"] = genesis_only.hex()
+        return encrypt(state, Provisioning._json_bytes(payload), associated_data=associated_data)
+
+    request = manager_b.prepare_linked_device_team_join(TEAM)
+    monkeypatch.setattr(Provisioning, "ratchet_encrypt", encrypt_without_link)
+    response = manager_a.create_linked_device_bootstrap(TEAM, request["join_request_bundle"])
+    with pytest.raises(ValueError, match="does not recognize both devices"):
+        manager_b.finalize_linked_device_bootstrap(TEAM, response["bootstrap_bundle"])
+    assert not _team_sync_dir(root_b, participant).exists()
+    assert Provisioning._team_spine_origin(root_b, participant, team_id) is None
 
 
 def test_baseline_from_untrusted_signer_is_rejected_without_a_clone(

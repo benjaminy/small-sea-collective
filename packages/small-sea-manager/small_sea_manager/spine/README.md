@@ -1,7 +1,10 @@
 # The Constitution spine
 
 The spine is a research replacement for today's constitution code (`constitution_store.py`, `constitution_projection.py`, `wrasse_trust/events.py`).
-It lives in the Manager package beside the old modules, and no team flow calls it yet; a later step will cut the team flows over to it and delete the old modules.
+The Manager writes the founder, founding device, and initial admission quorum to a genesis object in the new team’s first Core commit.
+A linked device verifies its sibling’s Constitution bundle and adopts its origin.
+For founding members the bundle must establish both devices’ membership.
+An invited member learns the origin from the signed invitation and still uses the admission and device-link certificates for membership.
 It is meant to organize development of the framework, not to be thrown away.
 
 Slice 1, finished 2026-11-07, tells one story:
@@ -66,7 +69,9 @@ A store keeps the first envelope for an ID and refuses a later, different one wi
 Copies inside a reconciliation are checked on their own bytes; a mismatch with a stored standalone is logged as an envelope conflict and does not change the reconciliation's verdict.
 
 - **Genesis** (unsigned): `{format:"spine-v1", kind:"genesis", nonce, time, policy:{name:"spine-demo-1", settings:{}}, members:[{member_id, name}], devices:[{device_key, member_id, label}]}`.
-  Valid iff member IDs and device keys are unique, every device names a listed member, and the policy is exactly this one.
+  Valid iff member IDs and device keys are unique, every device names a listed member, and the policy is `spine-demo-1`.
+  The demo uses empty settings.
+  Team creation includes a positive integer `admission_quorum` in settings.
   Its ID is the team's origin, which each device and the verifier learn out of band.
 - **Signed event**: `{body:{format:"spine-v1", origin, kind, author, time, parents:[one ID], payload}, sig}`.
   Its ancestry must reach the pinned genesis; carrying the right `origin` is not enough.

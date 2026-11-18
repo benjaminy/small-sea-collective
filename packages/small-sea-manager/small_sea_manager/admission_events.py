@@ -123,7 +123,6 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
 
     if proposal_rows:
         events: list[AdmissionEvent] = []
-        quorum_target = int(provisioning._team_setting(conn, "admission_quorum", "1"))
         for (
             record_id,
             inviter_teammate_id,
@@ -177,6 +176,8 @@ def _invitation_events(conn, dismissed, *, self_teammate_id_hex: str | None, vie
                 event_type = AdmissionEventType.AWAITING_QUORUM
                 if (event_type.value, artifact_id_hex) in dismissed:
                     continue
+                proposal = provisioning._load_proposal_row(conn, record_id)
+                quorum_target = provisioning._verified_proposal_snapshot(proposal)["admission_quorum"]
                 quorum_count = provisioning._endorsement_count(conn, record_id)
                 can_finalize = (
                     viewer_is_steward
