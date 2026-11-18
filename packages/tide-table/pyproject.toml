@@ -4,7 +4,19 @@ version = "0.1.0"
 requires-python = ">=3.12"
 description = "Concept-stage Small Sea app for team-owned calendar and scheduling."
 readme = "README.md"
-dependencies = []
+dependencies = ["cod-sync"]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.4.2",
+    "small-sea-hub",
+    "small-sea-manager",
+]
+
+[tool.uv.sources]
+cod-sync = { workspace = true }
+small-sea-hub = { workspace = true }
+small-sea-manager = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]

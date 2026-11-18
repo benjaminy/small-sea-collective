@@ -3,7 +3,9 @@
 
 Its job is to find out what Apple Calendar and Thunderbird need from a
 localhost CalDAV server, not to be the real Tide Table.
-It serves one user with one calendar and stores each event as a file.
+It serves one user with one calendar and stores each event as a file in a
+git repo (tide_table.calendar_repo); two_teammates_demo.py runs two of these
+and syncs them through the Hub.
 Use --log-bodies with synthetic events to capture CalDAV payloads.
 
 Deliberate shortcuts:
@@ -36,6 +38,7 @@ from urllib.parse import quote, unquote, urlsplit
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
+from tide_table.calendar_repo import CalendarRepo
 from tide_table.merge import Conflict, Unsupported, merge_event
 
 DAV = "DAV:"
@@ -53,13 +56,20 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 class Store:
     """Events as files, plus a change counter that backs ctag and sync-token.
 
+    The events directory is a CalendarRepo, so every save is a git commit.
     Deletions are remembered forever, so every token we ever issued stays valid.
     Handlers hold lock across each operation on the store.
     """
 
-    def __init__(self, root):
+    def __init__(self, root, author="spike"):
         self.dir = os.path.join(root, "events")
-        os.makedirs(self.dir, exist_ok=True)
+        if os.path.isdir(os.path.join(self.dir, ".git")):
+            self.cal = CalendarRepo(self.dir)
+        else:
+            self.cal = CalendarRepo.create(self.dir, author)
+            if os.listdir(self.dir) != [".git"]:
+                self.cal.repo.stage()
+                self.cal.repo.commit("Import events stored before git")
         self.versions = os.path.join(root, "versions")
         os.makedirs(self.versions, exist_ok=True)
         self.state_path = os.path.join(root, "state.json")
@@ -79,7 +89,7 @@ class Store:
         return self.state["token"]
 
     def names(self):
-        return sorted(os.listdir(self.dir))
+        return sorted(n for n in os.listdir(self.dir) if not n.startswith("."))
 
     def get(self, name):
         path = os.path.join(self.dir, name)
@@ -99,22 +109,47 @@ class Store:
         with open(path, "rb") as f:
             return f.read()
 
-    def put(self, name, data):
+    def _keep_version(self, data):
         with open(os.path.join(self.versions, etag_of(data).strip('"') + ".ics"), "wb") as f:
             f.write(data)
-        with open(os.path.join(self.dir, name), "wb") as f:
-            f.write(data)
+
+    def _mark_changed(self, name):
         self.state["token"] += 1
         self.state["changed"][name] = self.token
         self.state["deleted"].pop(name, None)
-        self._save()
 
-    def delete(self, name):
-        os.remove(os.path.join(self.dir, name))
+    def _mark_deleted(self, name):
         self.state["token"] += 1
         self.state["changed"].pop(name, None)
         self.state["deleted"][name] = self.token
+
+    def put(self, name, data):
+        self._keep_version(data)
+        self.cal.save(name, data, f"Save {name}")
+        self._mark_changed(name)
         self._save()
+
+    def delete(self, name):
+        self.cal.delete(name, f"Delete {name}")
+        self._mark_deleted(name)
+        self._save()
+
+    def snapshot(self):
+        """ETag of every event, to compare before and after a sync."""
+        return {n: etag_of(self.get(n)) for n in self.names()}
+
+    def record_changes_since(self, before):
+        """Advance the sync token for events a sync changed; return their names."""
+        after = self.snapshot()
+        changed = sorted(n for n in after if before.get(n) != after[n])
+        deleted = sorted(n for n in before if n not in after)
+        for n in changed:
+            self._keep_version(self.get(n))
+            self._mark_changed(n)
+        for n in deleted:
+            self._mark_deleted(n)
+        self._save()
+        return changed, deleted
 
     def changes_since(self, token):
         changed = [n for n, t in self.state["changed"].items() if t > token and n in self.names()]
@@ -588,6 +623,19 @@ for _m in ["OPTIONS", "PROPFIND", "PROPPATCH", "REPORT", "GET", "HEAD", "PUT", "
     setattr(Handler, "do_" + _m, Handler._handle)
 
 
+def make_server(port, user, password, data, log_bodies=False):
+    os.makedirs(data, exist_ok=True)
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server.cfg = {"user": user, "password": password, "log": os.path.join(data, "requests.log"),
+                  "log_bodies": log_bodies}
+    server.store = Store(data, author=user)
+    server.log_lock = threading.Lock()
+    server.nonce = secrets.token_hex(16)
+    print(f"Tide Table CalDAV spike on http://localhost:{port}/  user={user} password={password}")
+    print(f"store + request log: {data}")
+    return server
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=5232)
@@ -597,16 +645,7 @@ def main():
     ap.add_argument("--log-bodies", action="store_true", help="log CalDAV payloads for synthetic calendars")
     args = ap.parse_args()
     data = args.data or os.path.join(REPO_ROOT, "Scratch", "tide-table-spike", args.user)
-    os.makedirs(data, exist_ok=True)
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    server.cfg = {"user": args.user, "password": args.password, "log": os.path.join(data, "requests.log"),
-                  "log_bodies": args.log_bodies}
-    server.store = Store(data)
-    server.log_lock = threading.Lock()
-    server.nonce = secrets.token_hex(16)
-    print(f"Tide Table CalDAV spike on http://localhost:{args.port}/  user={args.user} password={args.password}")
-    print(f"store + request log: {data}")
-    server.serve_forever()
+    make_server(args.port, args.user, args.password, data, args.log_bodies).serve_forever()
 
 
 if __name__ == "__main__":
