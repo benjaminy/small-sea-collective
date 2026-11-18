@@ -36,8 +36,8 @@ def test_failed_publish_preserves_local_sync_changes(tmp_path, monkeypatch):
         return publish(store)
 
     monkeypatch.setattr(alice.cal, "publish", fail_after_merge)
-    identities = {name: name for name in stores}
-    args = ("Alice", "Bob", stores, None, identities, identities)
+    team = {name: {"hub": None, "token": name, "teammate_id": name} for name in stores}
+    args = ("Alice", "Bob", stores, team)
     with pytest.raises(StoreTransportError, match="connection lost"):
         demo.sync(*args)
 

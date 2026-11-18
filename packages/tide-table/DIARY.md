@@ -171,3 +171,19 @@ Both teammates share one in-process Hub.
 
 Apple Calendar as Alice (5232) and Thunderbird as Bob (5233), syncing by hand through the demo script.
 The user reports that it worked; the steps and any surprises were not recorded here.
+
+## 2026-11-18 — One Hub per teammate
+
+The Hub test and the demo now run a separate Hub process for each teammate (`uvicorn small_sea_hub.server:app`), each over its own data directory, as on two computers.
+Each teammate's sessions, publishes and fetches go to their own Hub over HTTP; the two Hubs never talk to each other, only to the two MinIO servers.
+Manager steps (team creation, invitation, acceptance) still run as direct calls against each teammate's data directory.
+The setup worked unchanged apart from that split, which is some evidence the invitation flow does not depend on a shared Hub.
+Still shortcuts: sessions approved automatically, Bob's sender key and storage announcement handed to Alice directly (#138), unsigned calendar commits.
+
+The demo deletes its data directory at start, so a second copy wipes a running one; `--data` picks another directory.
+
+## 2026-11-18 — Apple delays uploads too
+
+An event created in a local Apple calendar and then moved to the spike calendar reached the server noticeably later than the user expected; the server saw a single `PUT` with `If-None-Match: *` and no error.
+So Apple chooses when to upload, not just when to fetch.
+For the demo, refresh Apple (⌘R) and see its save in the console before syncing.
