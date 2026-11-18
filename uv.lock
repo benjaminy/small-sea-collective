@@ -1323,6 +1323,7 @@ version = "0.1.0"
 source = { editable = "packages/tide-table" }
 dependencies = [
     { name = "cod-sync" },
+    { name = "small-sea-client" },
 ]
 
 [package.optional-dependencies]
@@ -1336,6 +1337,7 @@ test = [
 requires-dist = [
     { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "pytest", marker = "extra == 'test'", specifier = ">=8.4.2" },
+    { name = "small-sea-client", editable = "packages/small-sea-client" },
     { name = "small-sea-hub", marker = "extra == 'test'", editable = "packages/small-sea-hub" },
     { name = "small-sea-manager", marker = "extra == 'test'", editable = "packages/small-sea-manager" },
 ]

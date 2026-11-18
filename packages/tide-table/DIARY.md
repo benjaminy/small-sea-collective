@@ -187,3 +187,34 @@ The demo deletes its data directory at start, so a second copy wipes a running o
 An event created in a local Apple calendar and then moved to the spike calendar reached the server noticeably later than the user expected; the server saw a single `PUT` with `If-None-Match: *` and no error.
 So Apple chooses when to upload, not just when to fetch.
 For the demo, refresh Apple (⌘R) and see its save in the console before syncing.
+
+## 2026-11-18 — Signed calendar commits
+
+Every calendar commit is now signed through the teammate's own Hub (`tide_table/hub_signer.py`), the same path Files uses: Git runs `small-sea-git-sign`, which asks the Hub to sign with the berth's key.
+Each commit message carries a `Small-Sea-Work-Context` trailer with the team, berth, purpose `TideTable/calendar`, and the device's current transitional authority view.
+Publish and fetch pass the history to the Hub's `/session/verify`; a fetched history with any commit the Hub does not authorize is refused, and the local calendar is left alone.
+Setup asks each Hub for its signing key before the Core publishes, so each teammate's key delegation reaches the other.
+
+The Hub test checks that every commit is signed and that an unsigned commit from Bob is refused when Alice fetches it.
+The demo, driven with HTTP requests, still merges on sync and on save, with every commit signed.
+The one-time prekey warning seen earlier in Alice's Hub log did not appear in this run.
+
+## 2026-11-18 — Where a Constitution basis could go (not built)
+
+Open design notes; nothing here is decided.
+A basis (`architecture.md`, "Constitution Bases") could be carried in three places, each answering a different question:
+- On a commit: the view the author held when making the change.
+  Signed, survives merges and re-publishing; a merge commit records the view the merger accepted work under.
+  Probably replaces `authority_view` in the work context.
+- On a bundle or publication link: the view the publisher held when publishing.
+  A teammate can read it before importing, and fetch Core first if it cites events they lack.
+  It does not mean the publisher endorses older commits in the bundle under that view, and it is gone after import unless recorded.
+  The work context's `publication-link` origin may be the slot.
+- In app data: for uses the app cares about, such as a decision made while some teammate was a member.
+  The app hands the bytes back to the Hub to ask questions rather than parsing them.
+  For Tide Table, an `X-` property would face client rewrites and need a merge rule; commits are the easier place.
+
+Open questions:
+- A commit cites events the receiver lacks: pause and fetch Core, or accept and judge later?
+- A merge-on-save commit carries the server owner's basis, not that of the app that made the stale edit.
+- `.IN_PROGRESS/issue-300-constitution-spine/spikes/causal-refs` may already cover how app history depends on Constitution history; not yet read.
