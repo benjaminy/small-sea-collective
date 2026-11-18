@@ -155,6 +155,8 @@ The spike's event directory is now a `CalendarRepo`: every `PUT` and `DELETE` is
 `spikes/two_teammates_demo.py` sets up the team (the Hub test's setup), starts Alice's server on 5232 and Bob's on 5233, and syncs a teammate when you type `a` or `b`.
 A sync publishes that teammate's calendar, fetches the other's, merges, and publishes again if the merge made a new commit.
 Events the sync changed or deleted advance the server's sync token, so the apps see them on their next refresh; merged bodies are kept as versions, so a later stale save still merges.
+The server records those changes before publishing the merged head, so a publish failure leaves the local refresh working.
+The demo reports Git and sync errors and keeps accepting commands so the user can retry.
 
 Checked with HTTP requests in place of the apps:
 create on Alice, sync both, Bob has it; Alice moves, Bob adds a location; Alice syncs (Bob has not published yet, so nothing new), Bob syncs and merges.

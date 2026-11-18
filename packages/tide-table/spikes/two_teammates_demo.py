@@ -32,8 +32,9 @@ HERE = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
 sys.path[:0] = [str(REPO_ROOT), str(HERE.parent / "tests"), str(HERE)]
 
-from cod_sync.protocol import NoPublishedHeadError  # noqa: E402
-from cod_sync.store import PeerSmallSeaStore, SmallSeaStore  # noqa: E402
+from cod_sync.protocol import CodSyncError, NoPublishedHeadError  # noqa: E402
+from cod_sync.repo import RepoError  # noqa: E402
+from cod_sync.store import PeerSmallSeaStore, SmallSeaStore, StoreError  # noqa: E402
 from test_support import _shut_down, _wait_for_minio_ready, reserve_ports  # noqa: E402
 
 from caldav_spike import make_server  # noqa: E402
@@ -80,9 +81,9 @@ def sync(me, them, stores, http, tokens, teammate_ids):
         except EventConflict as e:
             print(f"{me}: not merged; these events changed on both sides in ways that conflict: {e.paths}")
             return
+        changed, deleted = store.record_changes_since(before)
         if cal.repo.head() != head:
             cal.publish(own)
-        changed, deleted = store.record_changes_since(before)
     print(f"{me} synced with {them}: {len(changed)} changed, {len(deleted)} deleted"
           + (f", merged event by event: {merged}" if merged else ""))
 
@@ -110,10 +111,12 @@ def main():
         print("Ready. Type a (sync Alice), b (sync Bob), q (quit).")
         for line in sys.stdin:
             cmd = line.strip().lower()
-            if cmd == "a":
-                sync("Alice", "Bob", stores, http, tokens, teammate_ids)
-            elif cmd == "b":
-                sync("Bob", "Alice", stores, http, tokens, teammate_ids)
+            if cmd in ("a", "b"):
+                me, them = ("Alice", "Bob") if cmd == "a" else ("Bob", "Alice")
+                try:
+                    sync(me, them, stores, http, tokens, teammate_ids)
+                except (CodSyncError, StoreError, RepoError, subprocess.CalledProcessError) as e:
+                    print(f"{me}: sync failed: {e}", file=sys.stderr)
             elif cmd == "q":
                 break
             elif cmd:

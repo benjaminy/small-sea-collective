@@ -15,7 +15,7 @@ import pathlib
 import subprocess
 
 from cod_sync.protocol import CodSync
-from cod_sync.repo import Repo
+from cod_sync.repo import Repo, RepoError
 
 from tide_table.merge import Conflict, Unsupported, merge_event
 
@@ -87,9 +87,13 @@ class CalendarRepo:
         # Teammates who each created events before their first sync have
         # histories with no common commit; each event is its own file, so
         # merging them is safe.
-        self._git("merge", "--no-commit", "--no-edit", "--allow-unrelated-histories", theirs, check=False)
+        git_merge = self._git("merge", "--no-commit", "--no-edit", "--allow-unrelated-histories", theirs, check=False)
+        conflicts = self.repo.conflict_paths()
+        if git_merge.returncode and (git_merge.returncode != 1 or not conflicts):
+            detail = git_merge.stderr.decode(errors="replace").strip()
+            raise RepoError(f"merge {ref!r} failed (exit {git_merge.returncode}): {detail}")
         merged, unresolved = [], []
-        for path in self.repo.conflict_paths():
+        for path in conflicts:
             stages = self._stages(path)
             result = None
             if path.endswith(".ics") and set(stages) == {1, 2, 3}:
