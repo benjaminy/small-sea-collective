@@ -118,6 +118,31 @@ async def test_deleted_event_reaches_teammate(team):
     assert not (bob.path / EVENT).exists()
 
 
+@pytest.mark.xfail(strict=True, raises=EventConflict,
+                   reason="a delete after crossed merges reaches merge_event as a delete/modify conflict")
+async def test_delete_after_both_teammates_merged_the_same_edits(team):
+    alice, bob, publish, sync = team
+    await alice.save(EVENT, _fixture("apple-move.ics"), "move")
+    await bob.save(EVENT, _fixture("thunderbird-location.ics"), "location")
+    await publish("alice")
+    await publish("bob")
+    await sync("alice", "bob")
+    await sync("bob", "alice")
+
+    # Bob deletes the event before another round settles the two merge
+    # commits on one history. Both merges hold the same edits, so the delete
+    # throws away nothing Bob did not see.
+    await bob.delete(EVENT, "delete")
+    await publish("bob")
+    await sync("alice", "bob")
+    await publish("alice")
+    await sync("bob", "alice")
+
+    assert not (alice.path / EVENT).exists()
+    assert not (bob.path / EVENT).exists()
+    assert await alice.repo.head() == await bob.repo.head()
+
+
 async def test_conflicting_edits_leave_both_histories_untouched(team):
     alice, bob, publish, sync = team
     loc = _fixture("thunderbird-location.ics")
