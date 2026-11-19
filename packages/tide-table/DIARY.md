@@ -218,3 +218,19 @@ Open questions:
 - A commit cites events the receiver lacks: pause and fetch Core, or accept and judge later?
 - A merge-on-save commit carries the server owner's basis, not that of the app that made the stale edit.
 - `.IN_PROGRESS/issue-300-constitution-spine/spikes/causal-refs` may already cover how app history depends on Constitution history; not yet read.
+
+## 2026-11-18 — The demo keeps its team across restarts
+
+The demo's data directory is now a sandbox workspace (`devtools/sandbox`).
+The first run sets up the team as before and saves the teammate IDs in `tide-table.json`.
+Later runs reuse the ports and MinIO credentials in `sandbox.json`, start whatever is not running, open new sessions, and carry on with the same calendars.
+A Hub already running on a teammate's port, such as one started from the sandbox dashboard, is used as is; if it does not auto-approve sessions, the demo reads the PIN from the Hub's sandbox-only pending list.
+`--fresh` starts over.
+
+The sandbox changed to fit: each participant now has their own root directory, so each Hub and Manager sees only one participant's data, as on separate computers.
+Before, all participants shared one root and any Hub would open a session for any of them.
+
+The calendars live in the workspace's `tide-table/` folder, not in a participant's root: the Hub refuses to verify history in a git directory under its own root.
+
+Checked by running the demo three times over one scratch workspace: set up and sync, restart and merge a move with a location change, restart again with Alice's Hub already running without auto-approve and sync a delete.
+Not yet tried: the Manager UI over a demo workspace.

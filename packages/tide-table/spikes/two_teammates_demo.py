@@ -3,8 +3,7 @@
 
 Simulates two computers: each teammate has their own Hub process and data
 directory, plus their own MinIO server standing in for their cloud storage.
-Sets up a team with Alice and Bob (the setup from tests/test_hub_sync.py),
-then runs one CalDAV spike server per teammate:
+Runs one CalDAV spike server per teammate:
     Alice: http://localhost:5232/  user alice, password tide
     Bob:   http://localhost:5233/  user bob,   password tide
 Type `a` to sync Alice, `b` to sync Bob, `q` to quit.
@@ -12,55 +11,136 @@ Type `a` to sync Alice, `b` to sync Bob, `q` to quit.
 Syncing a teammate publishes their calendar, fetches the other's, merges,
 and publishes again if the merge produced anything new.
 
-Shortcuts beyond the test's: every run starts from scratch (new team, empty calendars); remove and re-add
-the calendar accounts in the apps if they get confused by the reset.
+The data directory is a sandbox workspace (devtools/sandbox). The first run
+sets up a team with Alice and Bob (the setup from tests/test_hub_sync.py).
+Later runs keep the team and the calendars: they start whatever MinIO servers
+and Hubs are not already running on the ports in sandbox.json, and use any
+that are. To look at the teammates' Manager UIs, open the same workspace in
+the sandbox dashboard:
+    uv run small-sea-sandbox --workspace Scratch/tide-table-demo
+`--fresh` deletes the workspace and starts over.
 
 Run:
     uv run python packages/tide-table/spikes/two_teammates_demo.py
 """
 
 import argparse
+import json
 import logging
-import os
 import pathlib
-import secrets
 import shutil
 import subprocess
 import sys
 import threading
+import time
+
+import httpx
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
-sys.path[:0] = [str(REPO_ROOT), str(HERE.parent / "tests"), str(HERE)]
+sys.path[:0] = [str(REPO_ROOT), str(HERE.parent / "tests"), str(HERE), str(REPO_ROOT / "devtools" / "sandbox")]
 
 from cod_sync.protocol import CodSyncError, NoPublishedHeadError  # noqa: E402
 from cod_sync.repo import RepoError  # noqa: E402
 from cod_sync.store import PeerSmallSeaStore, SmallSeaStore, StoreError  # noqa: E402
-from test_support import _shut_down, _wait_for_minio_ready, reserve_ports  # noqa: E402
+from sandbox.workspace import SandboxWorkspace, is_port_in_use  # noqa: E402
+from test_support import _shut_down  # noqa: E402
 
 from caldav_spike import make_server  # noqa: E402
-from test_hub_sync import _setup_two_teammate_team, start_hub  # noqa: E402
+from test_hub_sync import _setup_two_teammate_team  # noqa: E402
 from tide_table.calendar_repo import EventConflict, peer_ref  # noqa: E402
 from tide_table.hub_signer import HubSigner, UnauthorizedHistory  # noqa: E402
 
 DATA = REPO_ROOT / "Scratch" / "tide-table-demo"
 PORTS = {"Alice": 5232, "Bob": 5233}
 PASSWORD = "tide"
+STATE = "tide-table.json"  # teammate IDs, beside sandbox.json
 
 
-def start_minio(root_dir, procs):
-    port, console_port = reserve_ports([None, None])
-    access_key, secret_key = secrets.token_hex(16), secrets.token_hex(32)
-    env = dict(os.environ, MINIO_ROOT_USER=access_key, MINIO_ROOT_PASSWORD=secret_key)
-    root_dir.mkdir(parents=True)
-    proc = subprocess.Popen(
-        ["minio", "server", str(root_dir), "--address", f"127.0.0.1:{port}",
-         "--console-address", f"127.0.0.1:{console_port}"],
-        env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    procs.append(proc)
-    endpoint = f"http://127.0.0.1:{port}"
-    _wait_for_minio_ready(proc, endpoint, access_key, secret_key)
-    return {"port": port, "endpoint": endpoint, "access_key": access_key, "secret_key": secret_key}
+def ensure_running(port, start, procs, ready_url):
+    """Start a server unless something already listens on port; wait until ready_url answers."""
+    proc = None
+    if not is_port_in_use(port):
+        proc = start()
+        procs.append(proc)
+    deadline = time.monotonic() + 30
+    while True:
+        if proc is not None and proc.poll() is not None:
+            raise RuntimeError(f"server for port {port} exited (code {proc.returncode})")
+        try:
+            if httpx.get(ready_url, timeout=0.5).status_code < 500:
+                return
+        except httpx.TransportError:
+            pass
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"nothing answered at {ready_url}")
+        time.sleep(0.1)
+
+
+def start_minio(ws, server, procs):
+    ensure_running(server.api_port,
+                   lambda: ws.start_minio(server, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL),
+                   procs, f"http://127.0.0.1:{server.api_port}/minio/health/live")
+    return f"http://127.0.0.1:{server.api_port}"
+
+
+def start_hub(ws, p, procs):
+    log = open(ws.workspace_dir / f"{p.root}-hub.log", "ab")
+    ensure_running(p.hub_port, lambda: ws.start_hub(p, auto_approve=True, stdout=log, stderr=subprocess.STDOUT),
+                   procs, f"http://127.0.0.1:{p.hub_port}/")
+    return f"http://127.0.0.1:{p.hub_port}"
+
+
+def open_session(hub, name):
+    """Open a TideTable session; on a Hub that does not auto-approve, read the PIN as the sandbox dashboard does."""
+    http = httpx.Client(base_url=hub, timeout=60)
+    resp = http.post("/sessions/request", json={
+        "participant": name, "app": "TideTable", "team": "ProjectX", "client": "Tide Table demo", "mode": "encrypted"})
+    resp.raise_for_status()
+    result = resp.json()
+    if "token" in result:
+        return result["token"]
+    pending = http.get("/sessions/pending").json()
+    pin = next(s["pin"] for s in pending if s["pending_id"] == result["pending_id"])
+    resp = http.post("/sessions/confirm", json={"pending_id": result["pending_id"], "pin": pin})
+    resp.raise_for_status()
+    return resp.json()
+
+
+def set_up_team(ws, procs):
+    """First run: create Alice and Bob in the workspace and set up their team."""
+    names = {name.lower(): name for name in PORTS}
+    accounts = iter(names)
+
+    def minio_gen():
+        label = next(accounts)
+        server = ws.add_minio_server()
+        endpoint = start_minio(ws, server, procs)
+        account = ws.create_account(server.api_port, label)
+        return {"endpoint": endpoint, "access_key": account.access_key, "secret_key": account.secret_key}
+
+    def hub_gen(root):
+        (participant_dir,) = (root / "Participants").iterdir()
+        p = ws.register_participant(names[root.name], root.name, participant_dir.name)
+        return p.hub_port, start_hub(ws, p, procs)
+
+    team = _setup_two_teammate_team(ws.workspace_dir, minio_gen, hub_gen)
+    (ws.workspace_dir / STATE).write_text(json.dumps(
+        {name: {"teammate_id": t["teammate_id"]} for name, t in team.items()}, indent=1))
+    return team
+
+
+def resume_team(ws, procs):
+    """Later runs: start what is not running, and open new sessions."""
+    state = json.loads((ws.workspace_dir / STATE).read_text())
+    team = {}
+    for name in PORTS:
+        p = next(p for p in ws.participants if p.nickname == name)
+        account = next(a for a in ws.minio_accounts if a.label == p.root)
+        start_minio(ws, next(s for s in ws.minio_servers if s.api_port == account.server_port), procs)
+        hub = start_hub(ws, p, procs)
+        team[name] = {"hub": hub, "token": open_session(hub, name), "teammate_id": state[name]["teammate_id"]}
+    return team
 
 
 def sync(me, them, stores, team):
@@ -96,25 +176,30 @@ def main():
     ap.add_argument("--alice-port", type=int, default=PORTS["Alice"])
     ap.add_argument("--bob-port", type=int, default=PORTS["Bob"])
     ap.add_argument("--data", type=pathlib.Path, default=DATA,
-                    help=f"demo data directory, deleted at start (default: {DATA})")
+                    help=f"sandbox workspace for the demo (default: {DATA})")
+    ap.add_argument("--fresh", action="store_true", help="delete the workspace and set up a new team")
     args = ap.parse_args()
-    data = args.data
+    data = args.data.resolve()
     PORTS.update(Alice=args.alice_port, Bob=args.bob_port)
     sys.stdout.reconfigure(line_buffering=True)
     logging.basicConfig(level=logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    shutil.rmtree(data, ignore_errors=True)
+    if args.fresh:
+        shutil.rmtree(data, ignore_errors=True)
+    resuming = (data / STATE).exists()
+    if not resuming and data.exists() and any(data.iterdir()):
+        sys.exit(f"{data} has data but no {STATE}; use --fresh to delete it and start over")
+    data.mkdir(parents=True, exist_ok=True)
+    ws = SandboxWorkspace.load(data)
     procs = []
     try:
-        minio_dirs = iter(["minio-alice", "minio-bob"])
-        team = _setup_two_teammate_team(
-            data / "hubs", lambda: start_minio(data / next(minio_dirs), procs),
-            lambda root: start_hub(root, procs, log_path=root.parent / f"{root.name}-hub.log"))
+        team = resume_team(ws, procs) if resuming else set_up_team(ws, procs)
         for name, t in team.items():
             print(f"{name}'s Hub: {t['hub']}")
         stores = {}
         for name, port in PORTS.items():
-            server = make_server(port, name.lower(), PASSWORD, str(data / name.lower()),
+            # Not inside the participant's root: the Hub verifies no git directory under its own root.
+            server = make_server(port, name.lower(), PASSWORD, str(data / "tide-table" / name.lower()),
                                  signer=HubSigner(team[name]["hub"], team[name]["token"]))
             stores[name] = server.store
             threading.Thread(target=server.serve_forever, daemon=True).start()
