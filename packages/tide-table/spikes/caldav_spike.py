@@ -231,7 +231,11 @@ class Handler:
     def __init__(self, server, request, body):
         self.server = server  # the CalDAVApp: cfg, store, nonce
         self.command = request.method
-        self.path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        # The ASGI server has already percent-decoded scope["path"], so a
+        # decoded "?" or "%" is part of the name; decoding again would change it.
+        self.decoded_path = request.scope["path"]
+        query = request.scope["query_string"]
+        self.path = request.scope["raw_path"].decode("latin-1") + (f"?{query.decode('latin-1')}" if query else "")
         self.headers = request.headers
         self._req_body = body
 
@@ -327,7 +331,7 @@ class Handler:
             if self.command != "OPTIONS" and not self._authorized():
                 self._challenge()
                 return
-            kind, name = self._classify(unquote(urlsplit(self.path).path))
+            kind, name = self._classify(self.decoded_path)
             if kind == "wellknown":
                 self._send(301, headers={"Location": "/dav/"})
                 return
