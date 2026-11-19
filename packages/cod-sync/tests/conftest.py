@@ -23,6 +23,15 @@ def playground_dir():
         print(f"Temp directory disappeared ({dir_name})")
 
 
+@pytest.fixture(params=["sync", "aio"])
+def both_cod_syncs(request, monkeypatch):
+    """Run a test once with the sync CodSync and once with the async one."""
+    import cod_sync_test_helpers
+
+    monkeypatch.setattr(cod_sync_test_helpers, "COD_SYNC_FLAVOR", request.param)
+    return request.param
+
+
 @pytest.fixture
 def anyio_backend():
     """Async tests run on asyncio, which Cod Sync's async modules use directly."""

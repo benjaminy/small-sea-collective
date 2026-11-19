@@ -5,6 +5,11 @@ sign with this berth's key. The commit message carries a work context naming
 the team, berth, purpose, and the authority view this device holds when the
 commit is made. A fetched history is accepted only if the Hub judges every
 commit in it authorized.
+
+Signing happens inside commits, which are still synchronous, so it uses the
+synchronous client. Judging history happens inside Cod Sync's async fetch
+and publish, so it uses an async session over an httpx.AsyncClient the
+caller owns.
 """
 
 import os
@@ -13,6 +18,7 @@ from urllib.parse import urlparse
 
 from cod_sync.git import signing_git_env
 from cod_sync.work_context import WorkContext, commit_message_with_context
+from small_sea_client import aio
 from small_sea_client.client import SmallSeaClient, SmallSeaSession
 
 PURPOSE = "TideTable/calendar"
@@ -27,11 +33,13 @@ class UnauthorizedHistory(Exception):
 
 
 class HubSigner:
-    def __init__(self, hub_url, token):
+    def __init__(self, hub_url, token, http):
+        """http: an httpx.AsyncClient whose base_url is the Hub, for judging history."""
         program = shutil.which("small-sea-git-sign")
         if program is None:
             raise FileNotFoundError("small-sea-git-sign is not on PATH")
         self.session = SmallSeaSession(SmallSeaClient(port=urlparse(hub_url).port), token)
+        self.judge = aio.SmallSeaSession(http, token)
         info = self.session.session_info()
         self.team_id, self.berth_id = info["team_id"], info["berth_id"]
         self.env = signing_git_env(
@@ -42,8 +50,8 @@ class HubSigner:
         context = WorkContext("commit", self.team_id, self.berth_id, PURPOSE, self.session.authority_view())
         return commit_message_with_context(message, context)
 
-    def verify_history(self, repo, head):
-        result = self.session.verify_history(repo.git_dir, head)
+    async def verify_history(self, repo, head):
+        result = await self.judge.verify_history(repo.git_dir, head)
         refusals = [c for c in result["commits"] if c["result"] != "authorized"]
         if refusals:
             raise UnauthorizedHistory(head, refusals)

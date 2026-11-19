@@ -8,13 +8,20 @@ demo scenario through the Hub.
 import pathlib
 
 import pytest
+from cod_sync.aio.store import LocalFolderStore
 from cod_sync.repo import RepoError
-from cod_sync.store import LocalFolderStore
 
 from tide_table.calendar_repo import CalendarRepo, EventConflict, peer_ref
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "move-vs-location"
 EVENT = "event.ics"
+
+pytestmark = pytest.mark.anyio
+
+
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
 
 
 def _fixture(name):
@@ -22,7 +29,7 @@ def _fixture(name):
 
 
 @pytest.fixture
-def team(tmp_path):
+async def team(tmp_path):
     alice = CalendarRepo.create(tmp_path / "alice", "Alice")
     bob = CalendarRepo.create(tmp_path / "bob", "Bob")
     stores = {}
@@ -30,17 +37,17 @@ def team(tmp_path):
         (tmp_path / f"{name}-store").mkdir()
         stores[name] = LocalFolderStore(tmp_path / f"{name}-store")
 
-    def sync(me, them):
+    async def sync(me, them):
         repo = {"alice": alice, "bob": bob}[me]
-        repo.fetch(stores[them], them)
+        await repo.fetch(stores[them], them)
         return repo.merge(peer_ref(them))
 
-    def publish(me):
-        {"alice": alice, "bob": bob}[me].publish(stores[me])
+    async def publish(me):
+        await {"alice": alice, "bob": bob}[me].publish(stores[me])
 
     alice.save(EVENT, _fixture("base.ics"), "create")
-    publish("alice")
-    sync("bob", "alice")
+    await publish("alice")
+    await sync("bob", "alice")
     return alice, bob, publish, sync
 
 
@@ -51,43 +58,43 @@ def _assert_merged(repo):
     assert b"SEQUENCE:2" in text
 
 
-def test_move_and_location_merge_then_teammate_catches_up(team):
+async def test_move_and_location_merge_then_teammate_catches_up(team):
     alice, bob, publish, sync = team
     alice.save(EVENT, _fixture("apple-move.ics"), "move")
     bob.save(EVENT, _fixture("thunderbird-location.ics"), "location")
-    publish("bob")
+    await publish("bob")
 
-    assert sync("alice", "bob") == [EVENT]
-    publish("alice")
-    assert sync("bob", "alice") == []  # fast-forward to Alice's merge commit
+    assert await sync("alice", "bob") == [EVENT]
+    await publish("alice")
+    assert await sync("bob", "alice") == []  # fast-forward to Alice's merge commit
     _assert_merged(alice)
     assert alice.repo.head() == bob.repo.head()
 
 
-def test_both_teammates_merge_concurrently_then_converge(team):
+async def test_both_teammates_merge_concurrently_then_converge(team):
     alice, bob, publish, sync = team
     alice.save(EVENT, _fixture("apple-move.ics"), "move")
     bob.save(EVENT, _fixture("thunderbird-location.ics"), "location")
-    publish("alice")
-    publish("bob")
+    await publish("alice")
+    await publish("bob")
 
-    assert sync("alice", "bob") == [EVENT]
-    assert sync("bob", "alice") == [EVENT]
+    assert await sync("alice", "bob") == [EVENT]
+    assert await sync("bob", "alice") == [EVENT]
     _assert_merged(alice)
     _assert_merged(bob)
 
     # Each merge took the calendar header and zone from its own side, so the
     # two merge commits differ. One more round settles on a single history.
-    publish("alice")
-    publish("bob")
-    sync("alice", "bob")
-    publish("alice")
-    sync("bob", "alice")
+    await publish("alice")
+    await publish("bob")
+    await sync("alice", "bob")
+    await publish("alice")
+    await sync("bob", "alice")
     _assert_merged(alice)
     assert alice.repo.head() == bob.repo.head()
 
 
-def test_events_created_before_first_sync_merge(tmp_path):
+async def test_events_created_before_first_sync_merge(tmp_path):
     stores = {}
     cals = {}
     for name in ("alice", "bob"):
@@ -96,31 +103,31 @@ def test_events_created_before_first_sync_merge(tmp_path):
         cals[name] = CalendarRepo.create(tmp_path / name, name)
     cals["alice"].save("a.ics", _fixture("base.ics"), "alice's event")
     cals["bob"].save("b.ics", _fixture("base.ics").replace(b"UID:", b"UID:b-"), "bob's event")
-    cals["bob"].publish(stores["bob"])
+    await cals["bob"].publish(stores["bob"])
 
-    cals["alice"].fetch(stores["bob"], "bob")
+    await cals["alice"].fetch(stores["bob"], "bob")
     cals["alice"].merge(peer_ref("bob"))
     assert sorted(p.name for p in (tmp_path / "alice").glob("*.ics")) == ["a.ics", "b.ics"]
 
 
-def test_deleted_event_reaches_teammate(team):
+async def test_deleted_event_reaches_teammate(team):
     alice, bob, publish, sync = team
     alice.delete(EVENT, "delete")
-    publish("alice")
-    sync("bob", "alice")
+    await publish("alice")
+    await sync("bob", "alice")
     assert not (bob.path / EVENT).exists()
 
 
-def test_conflicting_edits_leave_both_histories_untouched(team):
+async def test_conflicting_edits_leave_both_histories_untouched(team):
     alice, bob, publish, sync = team
     loc = _fixture("thunderbird-location.ics")
     alice.save(EVENT, loc.replace(b"over theere", b"kitchen"), "kitchen")
     bob.save(EVENT, loc.replace(b"over theere", b"garden"), "garden")
-    publish("bob")
+    await publish("bob")
     head = alice.repo.head()
 
     with pytest.raises(EventConflict) as exc:
-        sync("alice", "bob")
+        await sync("alice", "bob")
     assert exc.value.paths == [EVENT]
     assert alice.repo.head() == head
     assert b"LOCATION:kitchen" in alice.read(EVENT)
@@ -128,20 +135,20 @@ def test_conflicting_edits_leave_both_histories_untouched(team):
     assert alice.repo.resolve_ref(peer_ref("bob")) == bob.repo.head()
 
 
-def test_merge_reports_git_failure_without_conflicts(team):
+async def test_merge_reports_git_failure_without_conflicts(team):
     alice, bob, publish, sync = team
     alice.save("alice.ics", _fixture("base.ics"), "local edit")
     bob.save(EVENT, _fixture("apple-move.ics"), "move")
-    publish("bob")
+    await publish("bob")
     head = alice.repo.head()
     index_lock = alice.git_dir / "index.lock"
     index_lock.touch()
 
     with pytest.raises(RepoError, match=r"index\.lock"):
-        sync("alice", "bob")
+        await sync("alice", "bob")
     assert alice.repo.head() == head
     assert alice.repo.resolve_ref(peer_ref("bob")) == bob.repo.head()
 
     index_lock.unlink()
-    assert sync("alice", "bob") == []
+    assert await sync("alice", "bob") == []
     assert alice.read(EVENT) == _fixture("apple-move.ics")

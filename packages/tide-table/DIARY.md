@@ -262,3 +262,26 @@ Found along the way:
   The demo now starts all MinIO servers before any Hub; the Hub itself is unchanged.
 - The Hub counts a teammate's publications in all berths together, so a Core publish also wakes the calendar's watch; the extra fetch finds nothing new.
 - `TeamManager.wait_for_team_admission_signal` returns `"updated" in result`, which is true even when the watch timed out with nothing updated.
+
+## 2026-11-19 — The sync agent goes async
+
+Decided in discussion: Small Sea's Python goes async all the way down, with no threads where an event loop will do.
+Async modules appear beside the sync ones (`cod_sync.aio`, `small_sea_client.aio`); callers move over one at a time, and each sync module goes away once nothing uses it.
+After the async git runner and `Repo`, we took one path all the way through before mirroring more: the sync agent's watch, fetch and publish.
+
+Built:
+- `cod_sync.aio.store` (local folder, own Hub storage, a teammate's storage through the Hub) and `cod_sync.aio.protocol` (CodSync, generated from the sync class and diffed against it).
+- `small_sea_client.aio`: only the three session calls the agent needs.
+- `CalendarRepo.fetch` and `publish` are coroutines; `HubSigner.verify_history` is too.
+- `SyncAgent` is two asyncio tasks with `start()` and an awaitable `stop()`.
+  Hub stores and sessions share one `httpx.AsyncClient` per teammate, owned by whoever starts the agent.
+- The demo runs its agents and event processing on one event loop.
+  The CalDAV server still runs on threads and asks for publishes with `call_soon_threadsafe`; merges still run synchronously, on the loop.
+  On `q`, the demo stops the CalDAV servers, then the agents, then the HTTP clients, and only then the Hubs, so no agent fails against a Hub that is shutting down.
+
+The sync protocol micro tests also run against the async CodSync, through a blocking wrapper in `cod_sync_test_helpers.py`, rather than as a second copy.
+
+Checked by driving the demo with HTTP requests over a scratch workspace: a new event reached Bob in about 5 s, a delete reached Alice in about 3 s, and `q` shut everything down with no errors; a restart synced a new event in about 5 s.
+
+Still open: who owns the calendar's work tree.
+Commits and merges are serialized by the CalDAV store's lock; once they are async, an `asyncio.Lock` in one owner should take over, and `commit_paths()` must not read `HEAD` after another task's commit.

@@ -13,12 +13,16 @@ If any event cannot be merged that way, `merge` changes nothing and raises
 With a signer (see hub_signer.py), every commit is signed and Cod Sync
 accepts a fetched or published history only if the signer approves it.
 Without one, commits are unsigned and nothing is checked.
+
+`publish` and `fetch` are coroutines; saving, deleting and merging are not
+yet, because the CalDAV server that calls them still runs on threads.
 """
 
 import pathlib
 import subprocess
 
-from cod_sync.protocol import CodSync
+from cod_sync.aio.protocol import CodSync
+from cod_sync.aio.repo import Repo as AioRepo
 from cod_sync.repo import Repo, RepoError
 
 from tide_table.merge import Conflict, Unsupported, merge_event
@@ -40,6 +44,7 @@ class CalendarRepo:
         self.git_dir = self.path / ".git"
         self.signer = signer
         self.repo = Repo(self.git_dir, self.path, env=signer.env if signer else None)
+        self.aio_repo = AioRepo(self.git_dir, self.path, env=self.repo.env)
 
     @classmethod
     def create(cls, path, author, signer=None):
@@ -82,11 +87,14 @@ class CalendarRepo:
         self._git("rm", "-q", "--", name)
         return self.commit(message)
 
-    def publish(self, store):
-        return CodSync(self.repo, store, verifier=self.signer).publish()
+    async def publish(self, store):
+        """Publish main to store, an async store (cod_sync.aio.store)."""
+        return await CodSync(self.aio_repo, store, verifier=self.signer).publish()
 
-    def fetch(self, store, teammate_id_hex):
-        return CodSync(self.repo, store, verifier=self.signer).fetch(pin_to_ref=peer_ref(teammate_id_hex)).pinned_head
+    async def fetch(self, store, teammate_id_hex):
+        """Fetch the teammate's history from store into their parked ref; return its head."""
+        cod_sync = CodSync(self.aio_repo, store, verifier=self.signer)
+        return (await cod_sync.fetch(pin_to_ref=peer_ref(teammate_id_hex))).pinned_head
 
     def merge(self, ref):
         """Merge ref into main. Returns the paths merged event by event."""

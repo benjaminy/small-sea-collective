@@ -48,7 +48,7 @@ from cod_sync.verify import (
     VerificationUnavailableError,
 )
 
-pytestmark = pytest.mark.usefixtures("isolated_git_config")
+pytestmark = pytest.mark.usefixtures("isolated_git_config", "both_cod_syncs")
 
 PIN = "refs/peers/alice/main"
 
