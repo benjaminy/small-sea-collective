@@ -157,35 +157,56 @@ def resume_team(ws, procs):
 async def process_events(name, store, agent, names):
     """The app's side: take the agent's events one at a time."""
     while True:
-        handle_event(name, store, agent, names, await agent.events.get())
+        await handle_event(name, store, agent, names, await agent.events.get())
 
 
-def handle_event(name, store, agent, names, event):
+async def take_lock(lock):
+    """Acquire a threading lock without blocking the event loop.
+
+    The store's lock decides who owns the calendar's work tree: a CalDAV
+    request on one of the server's threads, or a merge on the loop. Polling
+    leaves no thread waiting on the lock if the caller is cancelled.
+    """
+    while not lock.acquire(blocking=False):
+        await asyncio.sleep(0.01)
+
+
+async def handle_event(name, store, agent, names, event):
     """Merge a teammate's parked changes, record them for CalDAV clients, and ask to publish.
 
-    The merge runs on the event loop, under the store's lock, because the
-    CalDAV server's threads still commit synchronously. It blocks the loop
-    for as long as git takes, and for as long as a CalDAV request holds the lock.
+    The merge holds the store's lock, so it waits for any CalDAV write in
+    progress and CalDAV requests wait for it. The waiting, and the merge's
+    git commands, leave the event loop free for other teammates.
     """
     if isinstance(event, SyncFailed):
         print(f"{name}: {event.what} failed, will retry: {event.error}", file=sys.stderr)
         return
     them = names.get(event.teammate_id, event.teammate_id[:8])
-    with store.lock:
-        before = store.snapshot()
-        head = store.cal.repo.head() if store.cal.repo.has_commits() else None
-        try:
-            merged = store.cal.merge(peer_ref(event.teammate_id))
-        except (EventConflict, RepoError) as e:
-            print(f"{name}: {them}'s changes stay parked, not merged: {e}")
-            return
-        changed, deleted = store.record_changes_since(before)
-        moved = store.cal.repo.head() != head
+    await take_lock(store.lock)
+    # Shielded: cancelling a merge halfway would leave git mid-merge. At
+    # shutdown, stop_caldav waits for the lock, and so for the merge.
+    try:
+        merged, changed, deleted, moved = await asyncio.shield(_merge_holding_lock(store, event.teammate_id))
+    except (EventConflict, RepoError) as e:
+        print(f"{name}: {them}'s changes stay parked, not merged: {e}")
+        return
     if moved:
         agent.request_publish()
     if moved or changed or deleted:
         print(f"{name} merged {them}'s changes: {len(changed)} changed, {len(deleted)} deleted"
               + (f", merged event by event: {merged}" if merged else ""))
+
+
+async def _merge_holding_lock(store, teammate_id):
+    """Merge, record the changes, and release the store's lock the caller took."""
+    try:
+        before = store.snapshot()
+        head = await store.cal.aio_repo.head() if await store.cal.aio_repo.has_commits() else None
+        merged = await store.cal.merge(peer_ref(teammate_id))
+        changed, deleted = store.record_changes_since(before)
+        return merged, changed, deleted, await store.cal.aio_repo.head() != head
+    finally:
+        store.lock.release()
 
 
 async def run_teammates(team, data):
@@ -218,10 +239,10 @@ async def run_teammates(team, data):
         for task in done - {quit}:
             task.result()
     finally:
-        # Event workers first, because they take the store locks on the loop;
-        # then CalDAV, so no commit asks a stopped agent to publish; then the
-        # agents, so none is waiting on a Hub when the Hubs shut down. Parked
-        # changes not yet merged are fetched and reported again next run.
+        # Event workers first, so no merge starts; then CalDAV, so no commit
+        # asks a stopped agent to publish; then the agents, so none is waiting
+        # on a Hub when the Hubs shut down. Parked changes not yet merged are
+        # fetched and reported again next run.
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -233,18 +254,17 @@ async def run_teammates(team, data):
 
 
 async def stop_caldav(servers):
-    """Stop accepting CalDAV requests, and wait for writes already under way.
+    """Stop accepting CalDAV requests, and wait for writes and merges already under way.
 
-    A write in progress holds its store's lock while it commits, and committing
-    asks the Hub to sign. Taking each lock, and keeping it, lets those writes
-    finish while the Hub is still up; a request that arrives later waits,
-    unanswered, until the process exits. Event workers must already be
-    stopped, since they take the same locks on the loop.
+    A write or merge in progress holds its store's lock while it commits, and
+    committing asks the Hub to sign. Taking each lock, and keeping it, lets
+    them finish while the Hub is still up; a request that arrives later waits,
+    unanswered, until the process exits.
     """
     for server in servers:
         server.shutdown()
     for server in servers:
-        await asyncio.to_thread(server.store.lock.acquire)
+        await take_lock(server.store.lock)
 
 
 async def wait_for_quit():

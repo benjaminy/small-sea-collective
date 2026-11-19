@@ -14,13 +14,14 @@ With a signer (see hub_signer.py), every commit is signed and Cod Sync
 accepts a fetched or published history only if the signer approves it.
 Without one, commits are unsigned and nothing is checked.
 
-`publish` and `fetch` are coroutines; saving, deleting and merging are not
+`publish`, `fetch` and `merge` are coroutines; saving and deleting are not
 yet, because the CalDAV server that calls them still runs on threads.
 """
 
 import pathlib
 import subprocess
 
+from cod_sync.aio.git import git_cmd_binary
 from cod_sync.aio.protocol import CodSync
 from cod_sync.aio.repo import Repo as AioRepo
 from cod_sync.repo import Repo, RepoError
@@ -96,25 +97,29 @@ class CalendarRepo:
         cod_sync = CodSync(self.aio_repo, store, verifier=self.signer)
         return (await cod_sync.fetch(pin_to_ref=peer_ref(teammate_id_hex))).pinned_head
 
-    def merge(self, ref):
+    async def _agit(self, *args, check=True):
+        return await git_cmd_binary(["--git-dir", str(self.git_dir), "--work-tree", str(self.path), *args],
+                                    raise_on_error=check, env=self.repo.env)
+
+    async def merge(self, ref):
         """Merge ref into main. Returns the paths merged event by event."""
-        theirs = self.repo.resolve_ref(ref)
-        if not self.repo.has_commits():
-            self._git("checkout", "-B", "main", theirs)
+        theirs = await self.aio_repo.resolve_ref(ref)
+        if not await self.aio_repo.has_commits():
+            await self._agit("checkout", "-B", "main", theirs)
             return []
-        if self.repo.is_ancestor(theirs, "HEAD"):
+        if await self.aio_repo.is_ancestor(theirs, "HEAD"):
             return []
         # Teammates who each created events before their first sync have
         # histories with no common commit; each event is its own file, so
         # merging them is safe.
-        git_merge = self._git("merge", "--no-commit", "--no-edit", "--allow-unrelated-histories", theirs, check=False)
-        conflicts = self.repo.conflict_paths()
+        git_merge = await self._agit("merge", "--no-commit", "--no-edit", "--allow-unrelated-histories", theirs,
+                                     check=False)
+        conflicts = await self.aio_repo.conflict_paths()
         if git_merge.returncode and (git_merge.returncode != 1 or not conflicts):
-            detail = git_merge.stderr.decode(errors="replace").strip()
-            raise RepoError(f"merge {ref!r} failed (exit {git_merge.returncode}): {detail}")
+            raise RepoError(f"merge {ref!r} failed (exit {git_merge.returncode}): {git_merge.stderr.strip()}")
         merged, unresolved = [], []
         for path in conflicts:
-            stages = self._stages(path)
+            stages = await self._stages(path)
             result = None
             if path.endswith(".ics") and set(stages) == {1, 2, 3}:
                 try:
@@ -125,21 +130,21 @@ class CalendarRepo:
                 unresolved.append(path)
                 continue
             (self.path / path).write_bytes(result.text)
-            self.repo.stage([path])
+            await self.aio_repo.stage([path])
             merged.append(path)
         if unresolved:
-            self._git("merge", "--abort")
+            await self._agit("merge", "--abort")
             raise EventConflict(unresolved)
-        if self._git("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False).returncode == 0:
-            self._git("commit", "-m", self._message(f"Merge {ref}"))
+        if (await self._agit("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)).returncode == 0:
+            await self._agit("commit", "-m", self._message(f"Merge {ref}"))
         return merged
 
-    def _stages(self, path):
+    async def _stages(self, path):
         """Base (1), ours (2) and theirs (3) versions of a conflicted path."""
-        out = self._git("ls-files", "-u", "-z", "--", path).stdout.decode()
+        out = (await self._agit("ls-files", "-u", "-z", "--", path)).stdout.decode()
         stages = {}
         for entry in filter(None, out.split("\0")):
             info, _ = entry.split("\t", 1)
             _mode, sha, stage = info.split()
-            stages[int(stage)] = self._git("cat-file", "blob", sha).stdout
+            stages[int(stage)] = (await self._agit("cat-file", "blob", sha)).stdout
         return stages

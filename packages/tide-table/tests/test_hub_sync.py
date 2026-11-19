@@ -213,7 +213,7 @@ async def _move_and_location(tmp_path, team, http):
         them_id = team[them]["teammate_id"]
         store = AioPeerSmallSeaStore(team[me]["token"], them_id, http[me])
         await cals[me].fetch(store, them_id)
-        return cals[me].merge(peer_ref(them_id))
+        return await cals[me].merge(peer_ref(them_id))
 
     # Alice creates the event; Bob syncs and has it too.
     cals["Alice"].save(EVENT, _fixture("base.ics"), "create")

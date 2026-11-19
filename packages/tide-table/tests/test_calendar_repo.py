@@ -40,7 +40,7 @@ async def team(tmp_path):
     async def sync(me, them):
         repo = {"alice": alice, "bob": bob}[me]
         await repo.fetch(stores[them], them)
-        return repo.merge(peer_ref(them))
+        return await repo.merge(peer_ref(them))
 
     async def publish(me):
         await {"alice": alice, "bob": bob}[me].publish(stores[me])
@@ -106,7 +106,7 @@ async def test_events_created_before_first_sync_merge(tmp_path):
     await cals["bob"].publish(stores["bob"])
 
     await cals["alice"].fetch(stores["bob"], "bob")
-    cals["alice"].merge(peer_ref("bob"))
+    await cals["alice"].merge(peer_ref("bob"))
     assert sorted(p.name for p in (tmp_path / "alice").glob("*.ics")) == ["a.ics", "b.ics"]
 
 
