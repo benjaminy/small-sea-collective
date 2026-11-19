@@ -285,3 +285,27 @@ Checked by driving the demo with HTTP requests over a scratch workspace: a new e
 
 Still open: who owns the calendar's work tree.
 Commits and merges are serialized by the CalDAV store's lock; once they are async, an `asyncio.Lock` in one owner should take over, and `commit_paths()` must not read `HEAD` after another task's commit.
+
+## 2026-11-19 — One teammate's held write no longer stalls the other
+
+The experiment: hold Alice's CalDAV write partway through its commit, where a real write waits for the Hub to sign, while both Alice and Bob have a teammate's changes parked to merge.
+A good result is that Bob merges at once, and Alice merges only after her write finishes.
+`test_a_held_write_stalls_only_its_own_teammate` runs it, releasing the write from a watchdog thread after 2 s.
+
+Before the change, Bob's merge waited for the release.
+Alice's event worker took her store's threading lock on the event loop, so waiting for her write blocked the loop, and with it every teammate in the process.
+
+What changed:
+- `CalendarRepo.merge` is a coroutine and runs git through the async runner.
+- The demo's event worker takes the store's lock by polling it without blocking (`take_lock`), then merges.
+  The lock still decides who owns the work tree: a CalDAV request on one of the server's threads, or a merge on the loop.
+  Polling leaves no thread waiting on the lock if the worker is cancelled.
+- The merge itself is shielded from cancellation, because a merge cancelled halfway would leave git mid-merge and break the next one.
+  At shutdown, `stop_caldav` takes each lock with `take_lock`, so it waits for a merge in progress as it does for a write.
+
+The test now passes: Bob merges while Alice's write is held, and Alice ends up with her own write and Bob's change.
+In the demo, over a fresh scratch workspace, Alice moved an event while Bob gave it a location; both calendars had both changes, merged event by event, within about 6 s.
+
+What still blocks the loop: a merge's commit message asks the Hub for the authority view through the synchronous client, and snapshots read event files synchronously.
+Both are short.
+Saving and deleting stay synchronous on the CalDAV threads until the server moves to ASGI; then the threading lock can become an `asyncio.Lock`.
