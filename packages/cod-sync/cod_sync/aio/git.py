@@ -11,6 +11,8 @@ from cod_sync.git import GitCmdFailed
 
 logger = logging.getLogger("cod_sync")
 
+STOP_GRACE = 5  # seconds a cancelled git gets to exit before SIGKILL
+
 
 async def git_cmd(git_params, raise_on_error=True, env=None):
     return await _run(git_params, text=True, raise_on_error=raise_on_error, env=env)
@@ -41,14 +43,7 @@ async def _run(git_params, *, text, raise_on_error, env):
     try:
         stdout, stderr = await proc.communicate()
     except asyncio.CancelledError:
-        # Do not leave git running, and possibly holding a lock, after the
-        # caller has stopped waiting for it. Killing git alone is not enough:
-        # a child still holding git's output pipes would keep wait() blocked.
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        await proc.wait()
+        await _stop(proc)
         raise
     if text:
         stdout, stderr = _decode(stdout), _decode(stderr)
@@ -60,3 +55,27 @@ async def _run(git_params, *, text, raise_on_error, env):
             raise exn
         logger.debug(str(exn))
     return result
+
+
+async def _stop(proc):
+    """Stop git, and the children it started, after the caller stopped waiting.
+
+    SIGTERM first, because git then removes its lock files (index.lock and
+    the like) before exiting; SIGKILL would leave them and break the next
+    write. SIGKILL only for a process group still running after the grace
+    period. The whole group, because a child still holding git's output
+    pipes would keep wait() blocked.
+    """
+    _signal_group(proc, signal.SIGTERM)
+    try:
+        await asyncio.wait_for(proc.wait(), STOP_GRACE)
+    except TimeoutError:
+        _signal_group(proc, signal.SIGKILL)
+        await proc.wait()
+
+
+def _signal_group(proc, sig):
+    try:
+        os.killpg(proc.pid, sig)
+    except ProcessLookupError:
+        pass
