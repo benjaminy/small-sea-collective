@@ -309,3 +309,8 @@ In the demo, over a fresh scratch workspace, Alice moved an event while Bob gave
 What still blocks the loop: a merge's commit message asks the Hub for the authority view through the synchronous client, and snapshots read event files synchronously.
 Both are short.
 Saving and deleting stay synchronous on the CalDAV threads until the server moves to ASGI; then the threading lock can become an `asyncio.Lock`.
+
+Follow-up: shielding the merge let it finish after its worker was cancelled, but nobody saw how it ended.
+If recording the CalDAV changes failed during shutdown, the demo quit normally and asyncio logged "Task exception was never retrieved".
+Now a cancelled worker waits for its merge and ends with the merge's error; `stop_workers` collects those errors, and the demo raises the first one once everything has shut down.
+A merge conflict during shutdown is still only reported, as it is at any other time.
