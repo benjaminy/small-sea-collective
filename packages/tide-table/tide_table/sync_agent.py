@@ -1,24 +1,24 @@
 """Talk to the Hub promptly; leave merging to the app.
 
-The agent runs two background threads. One waits for the Hub to report that
-a teammate published, fetches that teammate's history into their parked ref
+The agent runs two asyncio tasks. One waits for the Hub to report that a
+teammate published, fetches that teammate's history into their parked ref
 (`refs/peers/<teammate>/main`), and reports it on the `events` queue. The
 other publishes local history whenever the app asks.
 
 The agent never merges and never touches the working tree or `main`. The app
 takes events from the queue when it is ready and decides whether and when to
 merge. A teammate's changes can sit parked for as long as the app likes.
+
+`stop` cancels both tasks and waits for them, so whoever started the agent
+can shut it down before the Hub it talks to goes away.
 """
 
-import queue
-import threading
-import time
+import asyncio
 from dataclasses import dataclass
 
-import httpx
+from cod_sync.aio.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.protocol import NoPublishedHeadError
-from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
-from small_sea_client.client import SmallSeaClient, SmallSeaSession
+from small_sea_client.aio import SmallSeaSession
 
 WATCH_TIMEOUT = 30  # seconds the Hub may hold each watch request
 RETRY_DELAY = 5
@@ -39,56 +39,67 @@ class SyncFailed:
 
 
 class SyncAgent:
-    def __init__(self, cal, hub_url, token):
+    def __init__(self, cal, http, token):
+        """http: an httpx.AsyncClient whose base_url is the Hub.
+
+        Its timeout must be longer than WATCH_TIMEOUT. The caller closes it
+        after stopping the agent.
+        """
         self.cal = cal
-        self.hub_url = hub_url
+        self.http = http
         self.token = token
-        self.events = queue.Queue()
-        http = httpx.Client(base_url=hub_url, timeout=WATCH_TIMEOUT + 30)
-        self.session = SmallSeaSession(SmallSeaClient(_http_client=http), token)
+        self.events = asyncio.Queue()
+        self.session = SmallSeaSession(http, token)
         self._known = {}   # teammate ID -> publication count already fetched
         self._parked = {}  # teammate ID -> head last reported
-        self._publish_wanted = threading.Event()
+        self._publish_wanted = asyncio.Event()
+        self._tasks = []
 
     def start(self):
-        threading.Thread(target=self._watch, daemon=True).start()
-        threading.Thread(target=self._publish, daemon=True).start()
+        self._tasks = [asyncio.create_task(self._watch()), asyncio.create_task(self._publish())]
         self.request_publish()  # in case commits were made while the agent was not running
 
+    async def stop(self):
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._tasks = []
+
     def request_publish(self):
+        """Ask for a publish. Call it from the agent's event loop."""
         self._publish_wanted.set()
 
-    def _watch(self):
+    async def _watch(self):
         while True:
             try:
-                for peer in self.session.session_peers():
+                for peer in await self.session.session_peers():
                     self._known.setdefault(peer["teammate_id"], 0)
-                updated = self.session.watch_notifications(dict(self._known), timeout=WATCH_TIMEOUT)["updated"]
-                for teammate_id, count in updated.items():
-                    self._fetch(teammate_id)
+                result = await self.session.watch_notifications(dict(self._known), timeout=WATCH_TIMEOUT)
+                for teammate_id, count in result["updated"].items():
+                    await self._fetch(teammate_id)
                     self._known[teammate_id] = count
             except Exception as e:
-                self.events.put(SyncFailed("fetch", e))
-                time.sleep(RETRY_DELAY)
+                self.events.put_nowait(SyncFailed("fetch", e))
+                await asyncio.sleep(RETRY_DELAY)
 
-    def _fetch(self, teammate_id):
-        store = PeerSmallSeaStore(self.token, teammate_id, base_url=self.hub_url)
+    async def _fetch(self, teammate_id):
+        store = PeerSmallSeaStore(self.token, teammate_id, self.http)
         try:
-            head = self.cal.fetch(store, teammate_id)
+            head = await self.cal.fetch(store, teammate_id)
         except NoPublishedHeadError:
             return  # the count rose for another of the teammate's berths; nothing here yet
         if head != self._parked.get(teammate_id):
             self._parked[teammate_id] = head
-            self.events.put(Parked(teammate_id, head))
+            self.events.put_nowait(Parked(teammate_id, head))
 
-    def _publish(self):
+    async def _publish(self):
         while True:
-            self._publish_wanted.wait()
+            await self._publish_wanted.wait()
             self._publish_wanted.clear()
             try:
-                if self.cal.repo.has_commits():
-                    self.cal.publish(SmallSeaStore(self.token, base_url=self.hub_url))
+                if await self.cal.aio_repo.has_commits():
+                    await self.cal.publish(SmallSeaStore(self.token, self.http))
             except Exception as e:
-                self.events.put(SyncFailed("publish", e))
-                time.sleep(RETRY_DELAY)
+                self.events.put_nowait(SyncFailed("publish", e))
+                await asyncio.sleep(RETRY_DELAY)
                 self._publish_wanted.set()

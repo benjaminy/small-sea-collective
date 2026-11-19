@@ -6,6 +6,8 @@ actually does is init, fetch, adopt the observed head, commit, publish.
 
 import pathlib
 
+import pytest
+
 from cod_sync_test_helpers import (
     all_refs,
     assert_no_scratch,
@@ -17,6 +19,8 @@ from cod_sync_test_helpers import (
 )
 
 from cod_sync.store import LocalFolderStore
+
+pytestmark = pytest.mark.usefixtures("both_cod_syncs")
 
 
 def test_cold_start_then_incremental_round_trip(scratch_dir):

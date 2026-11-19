@@ -34,6 +34,8 @@ from cod_sync.protocol import (
 )
 from cod_sync.store import LocalFolderStore
 
+pytestmark = pytest.mark.usefixtures("both_cod_syncs")
+
 PIN = "refs/peers/alice/main"
 
 

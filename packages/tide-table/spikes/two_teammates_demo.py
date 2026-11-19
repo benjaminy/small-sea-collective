@@ -29,6 +29,7 @@ Run:
 """
 
 import argparse
+import asyncio
 import json
 import logging
 import os
@@ -53,13 +54,12 @@ from caldav_spike import make_server  # noqa: E402
 from test_hub_sync import _setup_two_teammate_team  # noqa: E402
 from tide_table.calendar_repo import EventConflict, peer_ref  # noqa: E402
 from tide_table.hub_signer import HubSigner  # noqa: E402
-from tide_table.sync_agent import SyncAgent, SyncFailed  # noqa: E402
+from tide_table.sync_agent import WATCH_TIMEOUT, SyncAgent, SyncFailed  # noqa: E402
 
 DATA = REPO_ROOT / "Scratch" / "tide-table-demo"
 PORTS = {"Alice": 5232, "Bob": 5233}
 PASSWORD = "tide"
 STATE = "tide-table.json"  # teammate IDs, beside sandbox.json
-QUITTING = threading.Event()  # set before the Hubs shut down, to silence the agents' failures
 
 
 def ensure_running(port, start, procs, ready_url):
@@ -154,17 +154,21 @@ def resume_team(ws, procs):
     return team
 
 
-def process_events(name, store, agent, names):
+async def process_events(name, store, agent, names):
     """The app's side: take the agent's events one at a time."""
     while True:
-        handle_event(name, store, agent, names, agent.events.get())
+        handle_event(name, store, agent, names, await agent.events.get())
 
 
 def handle_event(name, store, agent, names, event):
-    """Merge a teammate's parked changes, record them for CalDAV clients, and ask to publish."""
+    """Merge a teammate's parked changes, record them for CalDAV clients, and ask to publish.
+
+    The merge runs on the event loop, under the store's lock, because the
+    CalDAV server's threads still commit synchronously. It blocks the loop
+    for as long as git takes, and for as long as a CalDAV request holds the lock.
+    """
     if isinstance(event, SyncFailed):
-        if not QUITTING.is_set():
-            print(f"{name}: {event.what} failed, will retry: {event.error}", file=sys.stderr)
+        print(f"{name}: {event.what} failed, will retry: {event.error}", file=sys.stderr)
         return
     them = names.get(event.teammate_id, event.teammate_id[:8])
     with store.lock:
@@ -182,6 +186,55 @@ def handle_event(name, store, agent, names, event):
     if moved or changed or deleted:
         print(f"{name} merged {them}'s changes: {len(changed)} changed, {len(deleted)} deleted"
               + (f", merged event by event: {merged}" if merged else ""))
+
+
+async def run_teammates(team, data):
+    """Serve each teammate's calendar and sync it until the user quits; then stop it all."""
+    loop = asyncio.get_running_loop()
+    names = {t["teammate_id"]: name for name, t in team.items()}
+    clients, servers, agents, tasks = [], [], [], []
+    try:
+        for name, port in PORTS.items():
+            hub, token = team[name]["hub"], team[name]["token"]
+            http = httpx.AsyncClient(base_url=hub, timeout=WATCH_TIMEOUT + 30)
+            clients.append(http)
+            # Not inside the participant's root: the Hub verifies no git directory under its own root.
+            server = make_server(port, name.lower(), PASSWORD, str(data / "tide-table" / name.lower()),
+                                 signer=HubSigner(hub, token, http))
+            agent = SyncAgent(server.store.cal, http, token)
+            # CalDAV requests commit on the server's threads; the agent lives on the loop.
+            server.store.on_commit = lambda agent=agent: loop.call_soon_threadsafe(agent.request_publish)
+            tasks.append(asyncio.create_task(process_events(name, server.store, agent, names)))
+            agents.append(agent)
+            agent.start()
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            servers.append(server)
+        print("Ready. Type q to quit.")
+        await wait_for_quit()
+    finally:
+        # CalDAV first, so no commit asks a stopped agent to publish; then the
+        # agents, so none is waiting on a Hub when the Hubs shut down.
+        for server in servers:
+            server.shutdown()
+        for agent in agents:
+            await agent.stop()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        for http in clients:
+            await http.aclose()
+
+
+async def wait_for_quit():
+    """Return when stdin says q, or closes."""
+    loop = asyncio.get_running_loop()
+    lines = asyncio.Queue()
+    loop.add_reader(sys.stdin, lambda: lines.put_nowait(sys.stdin.readline()))
+    try:
+        while (line := await lines.get()) and line.strip().lower() != "q":
+            pass
+    finally:
+        loop.remove_reader(sys.stdin)
 
 
 def main():
@@ -216,23 +269,8 @@ def main():
         team = resume_team(ws, procs) if resuming else set_up_team(ws, procs)
         for name, t in team.items():
             print(f"{name}'s Hub: {t['hub']}")
-        names = {t["teammate_id"]: name for name, t in team.items()}
-        for name, port in PORTS.items():
-            hub, token = team[name]["hub"], team[name]["token"]
-            # Not inside the participant's root: the Hub verifies no git directory under its own root.
-            server = make_server(port, name.lower(), PASSWORD, str(data / "tide-table" / name.lower()),
-                                 signer=HubSigner(hub, token))
-            agent = SyncAgent(server.store.cal, hub, token)
-            server.store.on_commit = agent.request_publish
-            threading.Thread(target=process_events, args=(name, server.store, agent, names), daemon=True).start()
-            agent.start()
-            threading.Thread(target=server.serve_forever, daemon=True).start()
-        print("Ready. Type q to quit.")
-        for line in sys.stdin:
-            if line.strip().lower() == "q":
-                break
+        asyncio.run(run_teammates(team, data))
     finally:
-        QUITTING.set()
         for proc in reversed(procs):  # Hubs before the storage they use
             _shut_down(proc)
 

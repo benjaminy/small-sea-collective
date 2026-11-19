@@ -25,7 +25,6 @@ from cod_sync.format import LinkFormatError, decode_link, encode_link
 from cod_sync.protocol import (
     MAIN_REF,
     ChainError,
-    CodSync,
     NoLocalHeadError,
     PublicationIntegrationRequiredError,
     PublicationOutcomeUnresolvedError,
@@ -39,6 +38,8 @@ from cod_sync.store import (
     ObjectNotFoundError,
     StoreProviderError,
 )
+
+pytestmark = pytest.mark.usefixtures("both_cod_syncs")
 
 
 class FrozenEmptyView:
@@ -328,16 +329,16 @@ def test_publication_cleans_its_temporary_directory(alice, monkeypatch):
     repo, store = alice
     seen = []
 
-    real = CodSync._require_bundle_matches
+    real = store.put_bundle
 
-    def record(self, link, bundle_path):
+    def record(bundle_uid, bundle_path):
         seen.append(pathlib.Path(bundle_path).parent)
-        return real(self, link, bundle_path)
+        return real(bundle_uid, bundle_path)
 
-    monkeypatch.setattr(CodSync, "_require_bundle_matches", record)
+    monkeypatch.setattr(store, "put_bundle", record)
     make_cod_sync(repo, store).publish()
 
-    assert seen, "publication never inspected a bundle"
+    assert seen, "publication never uploaded a bundle"
     for work_dir in seen:
         assert not work_dir.exists()
     assert_no_scratch(repo)
@@ -350,14 +351,11 @@ def test_a_failed_publication_still_cleans_up(scratch_dir, monkeypatch):
     store = make_store(scratch / "publication")
     seen = []
 
-    real = CodSync._require_bundle_matches
-
-    def explode(self, link, bundle_path):
+    def explode(bundle_uid, bundle_path):
         seen.append(pathlib.Path(bundle_path).parent)
-        real(self, link, bundle_path)
         raise RuntimeError("upload interrupted")
 
-    monkeypatch.setattr(CodSync, "_require_bundle_matches", explode)
+    monkeypatch.setattr(store, "put_bundle", explode)
     with pytest.raises(RuntimeError):
         make_cod_sync(repo, store).publish()
 

@@ -4,11 +4,14 @@ Not conftest.py: several packages have one, and pytest imports them all under
 the same `conftest` module name when their suites run together.
 """
 
+import asyncio
 import pathlib
 import subprocess
 
 import pytest
 
+import cod_sync.aio.protocol as aio_protocol
+from cod_sync.aio.repo import Repo as AioRepo
 from cod_sync.protocol import MAIN_REF, CodSync
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore
@@ -37,8 +40,78 @@ def make_store(path) -> LocalFolderStore:
     return LocalFolderStore(str(path))
 
 
-def make_cod_sync(repo: Repo, store, verifier=None) -> CodSync:
+#: Which CodSync make_cod_sync builds: "sync", or "aio" for the async one.
+#: The both_cod_syncs fixture sets it.
+COD_SYNC_FLAVOR = "sync"
+
+
+def make_cod_sync(repo: Repo, store, verifier=None):
+    if COD_SYNC_FLAVOR == "aio":
+        return BlockingAioCodSync(repo, store, verifier)
     return CodSync(repo, store, verifier=verifier)
+
+
+class BlockingAioCodSync:
+    """The async CodSync behind the sync CodSync's methods.
+
+    This lets the sync protocol micro tests check the async CodSync too.
+    Their repos, stores and verifiers are sync, so each is wrapped: the async
+    Repo opens the same git directory, and the store and verifier wrappers
+    call the sync objects, looking methods up at call time so a test's
+    monkeypatching still applies.
+    """
+
+    def __init__(self, repo: Repo, store, verifier=None):
+        self.repo = repo
+        self._aio = aio_protocol.CodSync(
+            AioRepo(repo.git_dir, repo.work_tree, env=repo.env), None
+        )
+        self.store = store
+        self.verifier = verifier
+
+    # Tests swap a CodSync's store or verifier between calls.
+    @property
+    def store(self):
+        return self._store
+
+    @store.setter
+    def store(self, store):
+        self._store = store
+        self._aio.store = _AsyncStore(store)
+
+    @property
+    def verifier(self):
+        return self._verifier
+
+    @verifier.setter
+    def verifier(self, verifier):
+        self._verifier = verifier
+        self._aio.verifier = None if verifier is None else _AsyncVerifier(verifier, self.repo)
+
+    def publish(self, *args, **kwargs):
+        return asyncio.run(self._aio.publish(*args, **kwargs))
+
+    def fetch(self, *args, **kwargs):
+        return asyncio.run(self._aio.fetch(*args, **kwargs))
+
+
+class _AsyncStore:
+    def __init__(self, inner):
+        self.inner = inner
+
+    def __getattr__(self, name):
+        async def call(*args, **kwargs):
+            return getattr(self.inner, name)(*args, **kwargs)
+        return call
+
+
+class _AsyncVerifier:
+    def __init__(self, inner, repo: Repo):
+        self.inner = inner
+        self.repo = repo
+
+    async def verify_history(self, _repo, head):
+        self.inner.verify_history(self.repo, head)
 
 
 @pytest.fixture

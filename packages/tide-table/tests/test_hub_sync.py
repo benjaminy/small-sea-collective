@@ -14,6 +14,7 @@ Calendar commits are signed through each teammate's Hub, and each Hub judges
 the history its teammate fetches.
 """
 
+import contextlib
 import os
 import pathlib
 import sqlite3
@@ -24,9 +25,11 @@ import time
 import httpx
 import pytest
 import small_sea_manager.provisioning as Provisioning
+from cod_sync.aio.store import PeerSmallSeaStore as AioPeerSmallSeaStore
+from cod_sync.aio.store import SmallSeaStore as AioSmallSeaStore
 from cod_sync.protocol import CodSync
 from cod_sync.repo import Repo
-from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
+from cod_sync.store import SmallSeaStore
 from small_sea_manager.manager import TeamManager, _CORE_APP
 from test_support import _shut_down, accept_and_export, acceptance_record_from_courier, reserve_ports
 
@@ -184,37 +187,50 @@ def _setup_two_teammate_team(root, minio_server_gen, hub_gen):
             for name in names}
 
 
-def test_move_and_location_merge_through_two_hubs(tmp_path, minio_server_gen, hub_gen):
+@pytest.fixture
+def anyio_backend():
+    return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_move_and_location_merge_through_two_hubs(tmp_path, minio_server_gen, hub_gen):
     team = _setup_two_teammate_team(tmp_path / "devices", minio_server_gen, hub_gen)
+    async with contextlib.AsyncExitStack() as stack:
+        http = {name: await stack.enter_async_context(
+                    httpx.AsyncClient(base_url=team[name]["hub"], timeout=60)) for name in team}
+        await _move_and_location(tmp_path, team, http)
+
+
+async def _move_and_location(tmp_path, team, http):
     cals = {name: CalendarRepo.create(tmp_path / name.lower() / "calendar", name,
-                                      HubSigner(team[name]["hub"], team[name]["token"]))
+                                      HubSigner(team[name]["hub"], team[name]["token"], http[name]))
             for name in team}
 
-    def publish(me):
-        cals[me].publish(SmallSeaStore(team[me]["token"], base_url=team[me]["hub"]))
+    async def publish(me):
+        await cals[me].publish(AioSmallSeaStore(team[me]["token"], http[me]))
 
-    def sync(me, them):
+    async def sync(me, them):
         them_id = team[them]["teammate_id"]
-        store = PeerSmallSeaStore(team[me]["token"], them_id, base_url=team[me]["hub"])
-        cals[me].fetch(store, them_id)
+        store = AioPeerSmallSeaStore(team[me]["token"], them_id, http[me])
+        await cals[me].fetch(store, them_id)
         return cals[me].merge(peer_ref(them_id))
 
     # Alice creates the event; Bob syncs and has it too.
     cals["Alice"].save(EVENT, _fixture("base.ics"), "create")
-    publish("Alice")
-    sync("Bob", "Alice")
+    await publish("Alice")
+    await sync("Bob", "Alice")
     assert cals["Bob"].read(EVENT) == _fixture("base.ics")
 
     # Concurrently: Alice moves it, Bob adds a location.
     cals["Alice"].save(EVENT, _fixture("apple-move.ics"), "move")
     cals["Bob"].save(EVENT, _fixture("thunderbird-location.ics"), "location")
-    publish("Alice")
-    publish("Bob")
+    await publish("Alice")
+    await publish("Bob")
 
     # Alice syncs first and merges; Bob then catches up to her merge.
-    assert sync("Alice", "Bob") == [EVENT]
-    publish("Alice")
-    assert sync("Bob", "Alice") == []
+    assert await sync("Alice", "Bob") == [EVENT]
+    await publish("Alice")
+    assert await sync("Bob", "Alice") == []
     for cal in cals.values():
         text = cal.read(EVENT)
         assert b"DTSTART;TZID=America/Denver:20261119T151500" in text
@@ -228,8 +244,8 @@ def test_move_and_location_merge_through_two_hubs(tmp_path, minio_server_gen, hu
     # A commit Bob's Hub did not sign is refused when Alice fetches it.
     unsigned = CalendarRepo(cals["Bob"].path)
     unsigned.save(EVENT, _fixture("base.ics"), "unsigned")
-    unsigned.publish(SmallSeaStore(team["Bob"]["token"], base_url=team["Bob"]["hub"]))
+    await unsigned.publish(AioSmallSeaStore(team["Bob"]["token"], http["Bob"]))
     head = cals["Alice"].repo.head()
     with pytest.raises(UnauthorizedHistory):
-        sync("Alice", "Bob")
+        await sync("Alice", "Bob")
     assert cals["Alice"].repo.head() == head
