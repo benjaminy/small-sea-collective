@@ -39,3 +39,33 @@ async def test_cancelling_the_caller_stops_git(monkeypatch):
         await asyncio.wait_for(task, timeout=5)
 
     assert started[0].returncode is not None
+
+
+async def test_cancelled_write_releases_its_lock(tmp_path):
+    repo = tmp_path / "repo"
+    await aio_git.git_cmd(["init", "-q", str(repo)])
+    (repo / ".gitattributes").write_text("*.txt filter=slow\n")
+    (repo / "a.txt").write_text("a\n")
+    # A clean filter that stalls keeps `git add` holding index.lock.
+    slow_add = ["-C", str(repo), "-c", "filter.slow.clean=sleep 30; cat", "add", "a.txt"]
+    task = asyncio.create_task(aio_git.git_cmd(slow_add))
+    while not (repo / ".git" / "index.lock").exists():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=10)
+
+    assert not (repo / ".git" / "index.lock").exists()
+    await aio_git.git_cmd(["-C", str(repo), "-c", "filter.slow.clean=cat", "add", "a.txt"])
+
+
+async def test_cancelling_kills_children_that_ignore_sigterm(monkeypatch):
+    monkeypatch.setattr(aio_git, "STOP_GRACE", 0.2)
+    # The ignored SIGTERM is inherited by sleep, which keeps git's pipes open.
+    task = asyncio.create_task(
+        aio_git.git_cmd(["-c", "alias.stubborn=!trap '' TERM; sleep 30", "stubborn"])
+    )
+    await asyncio.sleep(0.3)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
