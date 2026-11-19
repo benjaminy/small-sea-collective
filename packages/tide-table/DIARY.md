@@ -235,3 +235,30 @@ The calendars live in the workspace's `tide-table/` folder, not in a participant
 
 Checked by running the demo three times over one scratch workspace: set up and sync, restart and merge a move with a location change, restart again with Alice's Hub already running without auto-approve and sync a delete.
 Not yet tried: the Manager UI over a demo workspace.
+
+## 2026-11-19 — Sync on its own: a sync agent that parks, an app that merges later
+
+Decided in discussion:
+- The Hub stays a simple network utility: it moves bytes, reports that a teammate published, and judges signatures.
+  Cod Sync chains and repos are the app's business.
+- Inside the app, a thin layer talks to the Hub promptly: it fetches teammates' changes into parked refs as soon as the Hub reports them, and publishes local changes.
+  The rest of the app merges, or gets the user's attention, when it is ready, by processing events.
+- Colliding changes will need uncommon-case UI that we should stay open-minded about; near term, look for clever ways to work within existing clients.
+- Code from these experimental apps should move into shared libraries once a second app wants it.
+- An app may run the layer in its own process or separately; start in-process.
+
+Built: `tide_table/sync_agent.py`.
+One thread long-polls the Hub's existing `/notifications/watch` and fetches each teammate whose count rose into `refs/peers/<id>/main`; another publishes when asked, retrying failures.
+Both report on an event queue; the agent never merges.
+The demo's CalDAV store asks for a publish after every save and delete; the demo's event handler merges parked changes and asks for a publish when the merge moved `main`.
+Typing `a` and `b` is gone.
+Hubs the demo starts check teammates' signals every 5 seconds (`SMALL_SEA_WATCHER_INTERVAL`); no ntfy.
+
+Checked by driving the demo with HTTP requests: a new event reached Bob in 1.5 s; a concurrent move and location change merged on both sides in about 5 s, with identical results; after a restart, a delete reached Alice in about 4 s.
+
+Found along the way:
+- A Hub's peer watcher reads teammates' storage synchronously on the event loop.
+  While a teammate's storage is unreachable, boto retries and the Hub answers no requests for tens of seconds.
+  The demo now starts all MinIO servers before any Hub; the Hub itself is unchanged.
+- The Hub counts a teammate's publications in all berths together, so a Core publish also wakes the calendar's watch; the extra fetch finds nothing new.
+- `TeamManager.wait_for_team_admission_signal` returns `"updated" in result`, which is true even when the watch timed out with nothing updated.

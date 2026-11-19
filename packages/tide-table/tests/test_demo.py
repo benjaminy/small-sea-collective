@@ -1,21 +1,31 @@
 import pathlib
+import threading
 
-import pytest
 from cod_sync.store import LocalFolderStore, StoreTransportError
 
+import tide_table.sync_agent as sync_agent
+from tide_table.sync_agent import Parked, SyncAgent, SyncFailed
 
-def test_failed_publish_preserves_local_sync_changes(tmp_path, monkeypatch):
+
+class _Agent:
+    def __init__(self):
+        self.publish_requests = 0
+
+    def request_publish(self):
+        self.publish_requests += 1
+
+
+def test_merge_records_changes_before_publishing(tmp_path, monkeypatch):
+    """A merge's changes reach CalDAV clients whether or not the publish that follows succeeds."""
     monkeypatch.syspath_prepend(str(pathlib.Path(__file__).resolve().parents[1] / "spikes"))
     import two_teammates_demo as demo
     from caldav_spike import Store, etag_of
 
     stores = {name: Store(tmp_path / name, author=name) for name in ("Alice", "Bob")}
-    cloud_paths = {name: tmp_path / f"{name}-cloud" for name in stores}
-    for path in cloud_paths.values():
-        path.mkdir()
-    cloud = {name: LocalFolderStore(path) for name, path in cloud_paths.items()}
-    monkeypatch.setattr(demo, "SmallSeaStore", lambda token, **_: cloud[token])
-    monkeypatch.setattr(demo, "PeerSmallSeaStore", lambda token, teammate, **_: cloud[teammate])
+    cloud = {}
+    for name in stores:
+        (tmp_path / f"{name}-cloud").mkdir()
+        cloud[name] = LocalFolderStore(tmp_path / f"{name}-cloud")
 
     alice, bob = stores["Alice"], stores["Bob"]
     event = "event.ics"
@@ -27,28 +37,45 @@ def test_failed_publish_preserves_local_sync_changes(tmp_path, monkeypatch):
     bob.cal.publish(cloud["Bob"])
 
     token = alice.token
-    before = alice.cal.repo.head()
-    publish = alice.cal.publish
+    head = alice.cal.fetch(cloud["Bob"], "Bob")
+    agent = _Agent()
+    demo.handle_event("Alice", alice, agent, {}, Parked("Bob", head))
 
-    def fail_after_merge(store):
-        if alice.cal.repo.head() != before:
-            raise StoreTransportError("connection lost")
-        return publish(store)
-
-    monkeypatch.setattr(alice.cal, "publish", fail_after_merge)
-    team = {name: {"hub": None, "token": name, "teammate_id": name} for name in stores}
-    args = ("Alice", "Bob", stores, team)
-    with pytest.raises(StoreTransportError, match="connection lost"):
-        demo.sync(*args)
-
+    assert agent.publish_requests == 1
     assert alice.get(event) == b"updated"
     assert alice.changes_since(token) == ([event], [])
     assert alice.version(etag_of(b"updated")) == b"updated"
     assert Store(tmp_path / "Alice").changes_since(token) == ([event], [])
 
-    monkeypatch.setattr(alice.cal, "publish", publish)
-    merged_token = alice.token
-    demo.sync(*args)
 
-    assert alice.token == merged_token
-    assert bob.cal.fetch(cloud["Alice"], "Alice") == alice.cal.repo.head()
+def test_agent_retries_a_failed_publish(tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(pathlib.Path(__file__).resolve().parents[1] / "spikes"))
+    from caldav_spike import Store
+
+    store = Store(tmp_path / "Alice", author="Alice")
+    store.put("event.ics", b"original")
+    (tmp_path / "cloud").mkdir()
+    cloud = LocalFolderStore(tmp_path / "cloud")
+    monkeypatch.setattr(sync_agent, "SmallSeaStore", lambda token, **_: cloud)
+    monkeypatch.setattr(sync_agent, "RETRY_DELAY", 0)
+
+    published = threading.Event()
+    attempts = []
+    publish = store.cal.publish
+
+    def flaky_publish(target):
+        attempts.append(target)
+        if len(attempts) == 1:
+            raise StoreTransportError("connection lost")
+        publish(target)
+        published.set()
+
+    monkeypatch.setattr(store.cal, "publish", flaky_publish)
+    agent = SyncAgent(store.cal, "http://127.0.0.1:1", "token")
+    threading.Thread(target=agent._publish, daemon=True).start()
+    agent.request_publish()
+
+    assert published.wait(10)
+    failure = agent.events.get_nowait()
+    assert isinstance(failure, SyncFailed) and failure.what == "publish"
+    assert store.cal.fetch(cloud, "Alice") == store.cal.repo.head()
