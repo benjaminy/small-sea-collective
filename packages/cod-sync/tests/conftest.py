@@ -21,3 +21,9 @@ def playground_dir():
         shutil.rmtree(dir_name)
     except FileNotFoundError:
         print(f"Temp directory disappeared ({dir_name})")
+
+
+@pytest.fixture
+def anyio_backend():
+    """Async tests run on asyncio, which Cod Sync's async modules use directly."""
+    return "asyncio"
