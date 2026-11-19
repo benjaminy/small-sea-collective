@@ -4,6 +4,10 @@
     A workspace is a directory that holds all participant data for one sandbox session.
   </p>
 
+  {% if workspace_error %}
+  <p class="error-msg">{{ workspace_error }}</p>
+  {% endif %}
+
   <form method="post" action="/workspace">
     <label for="workspace_path">Workspace directory</label>
     <div class="row">

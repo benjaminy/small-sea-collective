@@ -17,6 +17,10 @@ from small_sea_manager.provisioning import create_new_participant, uuid7
 SANDBOX_JSON = "sandbox.json"
 
 
+class WorkspaceFormatError(ValueError):
+    pass
+
+
 @dataclass
 class MinioServerConfig:
     api_port: int
@@ -63,6 +67,11 @@ class SandboxWorkspace:
         path = workspace_dir / SANDBOX_JSON
         if path.exists():
             data = json.loads(path.read_text())
+            if any("root" not in p for p in data.get("participants", [])):
+                raise WorkspaceFormatError(
+                    f"{workspace_dir} uses the old shared participant directory. "
+                    "Choose an empty directory for a new sandbox workspace."
+                )
             # Migrate old format: {"minio": {...}} → {"minio_servers": [{...}]}
             if "minio" in data and "minio_servers" not in data:
                 data["minio_servers"] = [data.pop("minio")]
@@ -80,6 +89,8 @@ class SandboxWorkspace:
             minio_accounts=minio_accounts,
             participants=participants,
         )
+        for p in ws.participants:
+            ws.participant_root(p)
         ws.save()
         return ws
 
@@ -143,8 +154,8 @@ class SandboxWorkspace:
         return subprocess.Popen(
             [
                 "minio", "server", str(data_dir),
-                "--address", f":{server.api_port}",
-                "--console-address", f":{server.console_port}",
+                "--address", f"127.0.0.1:{server.api_port}",
+                "--console-address", f"127.0.0.1:{server.console_port}",
             ],
             env=env,
             **popen_kwargs,
@@ -200,7 +211,10 @@ class SandboxWorkspace:
     # ------------------------------------------------------------------ #
 
     def participant_root(self, p: ParticipantConfig) -> pathlib.Path:
-        return self.workspace_dir / p.root
+        path = self.workspace_dir / p.root
+        if not p.root or pathlib.Path(p.root).name != p.root or p.root == ".." or path.is_symlink():
+            raise WorkspaceFormatError(f"Invalid participant directory {p.root!r} in {self.workspace_dir}")
+        return path
 
     def add_participant(self, nickname: str) -> ParticipantConfig:
         """Create a new participant. Cloud storage must be configured separately.
@@ -208,10 +222,7 @@ class SandboxWorkspace:
         Each participant gets its own root directory, as if on its own
         computer: its Hub and Manager see no other participant's data.
         """
-        root, n = nickname, 1
-        while (self.workspace_dir / root).exists():
-            n += 1
-            root = f"{nickname}-{n}"
+        root = f"participant-{uuid7().hex()}"
         participant_hex = create_new_participant(
             self.workspace_dir / root, nickname, device_label="Sandbox device"
         )
@@ -226,6 +237,7 @@ class SandboxWorkspace:
             hub_port=self._next_hub_port(),
             manager_port=self._next_manager_port(),
         )
+        self.participant_root(p)
         self.participants.append(p)
         self.save()
         return p
