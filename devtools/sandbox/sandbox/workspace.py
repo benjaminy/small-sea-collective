@@ -1,10 +1,13 @@
 """Sandbox workspace: load/save sandbox.json, add participants, MinIO servers/accounts."""
 
 import json
+import os
 import pathlib
 import secrets
 import shutil
 import socket
+import subprocess
+import sys
 import tempfile
 from dataclasses import asdict, dataclass, field
 
@@ -34,6 +37,7 @@ class MinioAccountConfig:
 class ParticipantConfig:
     hex: str
     nickname: str
+    root: str  # this participant's root directory, relative to the workspace
     hub_port: int
     manager_port: int
 
@@ -128,6 +132,24 @@ class SandboxWorkspace:
         self.save()
         return server
 
+    def start_minio(self, server: MinioServerConfig, **popen_kwargs) -> subprocess.Popen:
+        data_dir = self.workspace_dir / f"minio-data-{server.api_port}"
+        data_dir.mkdir(exist_ok=True)
+        env = {
+            **os.environ,
+            "MINIO_ROOT_USER": server.root_user,
+            "MINIO_ROOT_PASSWORD": server.root_password,
+        }
+        return subprocess.Popen(
+            [
+                "minio", "server", str(data_dir),
+                "--address", f":{server.api_port}",
+                "--console-address", f":{server.console_port}",
+            ],
+            env=env,
+            **popen_kwargs,
+        )
+
     # ------------------------------------------------------------------ #
     # MinIO accounts (per-user IAM credentials)
     # ------------------------------------------------------------------ #
@@ -177,22 +199,55 @@ class SandboxWorkspace:
     # Participants
     # ------------------------------------------------------------------ #
 
+    def participant_root(self, p: ParticipantConfig) -> pathlib.Path:
+        return self.workspace_dir / p.root
+
     def add_participant(self, nickname: str) -> ParticipantConfig:
-        """Create a new participant. Cloud storage must be configured separately."""
-        hub_port = self._next_hub_port()
-        manager_port = self._next_manager_port()
+        """Create a new participant. Cloud storage must be configured separately.
+
+        Each participant gets its own root directory, as if on its own
+        computer: its Hub and Manager see no other participant's data.
+        """
+        root, n = nickname, 1
+        while (self.workspace_dir / root).exists():
+            n += 1
+            root = f"{nickname}-{n}"
         participant_hex = create_new_participant(
-            self.workspace_dir, nickname, device_label="Sandbox device"
+            self.workspace_dir / root, nickname, device_label="Sandbox device"
         )
+        return self.register_participant(nickname, root, participant_hex)
+
+    def register_participant(self, nickname: str, root: str, participant_hex: str) -> ParticipantConfig:
+        """Record a participant already created under workspace_dir / root."""
         p = ParticipantConfig(
             hex=participant_hex,
             nickname=nickname,
-            hub_port=hub_port,
-            manager_port=manager_port,
+            root=root,
+            hub_port=self._next_hub_port(),
+            manager_port=self._next_manager_port(),
         )
         self.participants.append(p)
         self.save()
         return p
+
+    def start_hub(self, p: ParticipantConfig, auto_approve: bool = False, **popen_kwargs) -> subprocess.Popen:
+        env = {
+            **os.environ,
+            "SMALL_SEA_ROOT_DIR": str(self.participant_root(p)),
+            "SMALL_SEA_SANDBOX_MODE": "1",
+        }
+        if auto_approve:
+            env["SMALL_SEA_AUTO_APPROVE_SESSIONS"] = "1"
+        return subprocess.Popen(
+            [
+                sys.executable, "-m", "uvicorn",
+                "small_sea_hub.server:app",
+                "--host", "127.0.0.1",
+                "--port", str(p.hub_port),
+            ],
+            env=env,
+            **popen_kwargs,
+        )
 
 
 def create_temp_workspace() -> pathlib.Path:

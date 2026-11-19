@@ -38,13 +38,17 @@ A workspace is a directory that holds all state for one sandbox session:
 ```
 my-sandbox/
   sandbox.json          # participants, port assignments, MinIO credentials
-  minio-data/           # MinIO object data
-  Participants/
-    {hex}/              # one directory per participant
-      NoteToSelf/Sync/core.db
-      {team}/Sync/core.db
-      ...
+  minio-data-{port}/    # MinIO object data, one directory per server
+  {nickname}/           # one root directory per participant, as if on its own computer
+    small_sea_collective_local.db
+    Participants/
+      {hex}/
+        NoteToSelf/Sync/core.db
+        {team}/Sync/core.db
+        ...
 ```
+
+Each participant's Hub and Manager run over that participant's root directory only.
 
 `sandbox.json` is created on first open and reused across dashboard restarts.
 Port assignments and MinIO credentials are stable across restarts — you can

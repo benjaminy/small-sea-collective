@@ -1,6 +1,5 @@
 """Sandbox dashboard — FastAPI app and CLI."""
 
-import os
 import pathlib
 import subprocess
 import sys
@@ -146,21 +145,7 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
                         error = f"Port {p} is already in use"
                         break
                 if not error:
-                    data_dir = ws.workspace_dir / f"minio-data-{port}"
-                    data_dir.mkdir(exist_ok=True)
-                    env = {
-                        **os.environ,
-                        "MINIO_ROOT_USER": server.root_user,
-                        "MINIO_ROOT_PASSWORD": server.root_password,
-                    }
-                    request.app.state.processes[key] = subprocess.Popen(
-                        [
-                            "minio", "server", str(data_dir),
-                            "--address", f":{server.api_port}",
-                            "--console-address", f":{server.console_port}",
-                        ],
-                        env=env,
-                    )
+                    request.app.state.processes[key] = ws.start_minio(server)
 
         return _render_minio_server(request, server, error=error)
 
@@ -228,22 +213,7 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
                 if is_port_in_use(p.hub_port):
                     error = f"Port {p.hub_port} in use"
                 else:
-                    env = {
-                        **os.environ,
-                        "SMALL_SEA_ROOT_DIR": str(ws.workspace_dir),
-                        "SMALL_SEA_SANDBOX_MODE": "1",
-                    }
-                    if auto_approve == "1":
-                        env["SMALL_SEA_AUTO_APPROVE_SESSIONS"] = "1"
-                    request.app.state.processes[key] = subprocess.Popen(
-                        [
-                            sys.executable, "-m", "uvicorn",
-                            "small_sea_hub.server:app",
-                            "--host", "127.0.0.1",
-                            "--port", str(p.hub_port),
-                        ],
-                        env=env,
-                    )
+                    request.app.state.processes[key] = ws.start_hub(p, auto_approve=auto_approve == "1")
 
         return _render(
             "fragments/participant_row.html",
@@ -310,7 +280,7 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
                     request.app.state.processes[key] = subprocess.Popen(
                         [
                             sys.executable, "-m", "small_sea_manager.cli",
-                            "--root-dir", str(ws.workspace_dir),
+                            "--root-dir", str(ws.participant_root(p)),
                             "--participant-hex", p.hex,
                             "--hub-port", str(p.hub_port),
                             "serve",
