@@ -39,7 +39,7 @@ A workspace is a directory that holds all state for one sandbox session:
 my-sandbox/
   sandbox.json          # participants, port assignments, MinIO credentials
   minio-data-{port}/    # MinIO object data, one directory per server
-  {nickname}/           # one root directory per participant, as if on its own computer
+  {participant-root}/   # one root directory per participant, as if on its own computer
     small_sea_collective_local.db
     Participants/
       {hex}/
@@ -53,6 +53,7 @@ Each participant's Hub and Manager run over that participant's root directory on
 `sandbox.json` is created on first open and reused across dashboard restarts.
 Port assignments and MinIO credentials are stable across restarts — you can
 close and reopen the dashboard without losing your configuration.
+If an older workspace used one shared participant directory, start the dashboard with `--workspace` pointing to an empty directory.
 
 > **Note:** Restarting the dashboard does not automatically restart Hub and
 > Manager processes. Use the Start buttons to bring them back up. See

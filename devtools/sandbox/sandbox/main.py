@@ -15,6 +15,7 @@ from fastapi.templating import Jinja2Templates
 
 from sandbox.workspace import (
     SandboxWorkspace,
+    WorkspaceFormatError,
     create_temp_workspace,
     is_port_in_use,
     minio_available,
@@ -95,7 +96,13 @@ def create_app(workspace: Optional[SandboxWorkspace] = None) -> FastAPI:
     async def set_workspace(request: Request, workspace_path: str = Form(...)):
         path = pathlib.Path(workspace_path).expanduser().resolve()
         path.mkdir(parents=True, exist_ok=True)
-        request.app.state.workspace = SandboxWorkspace.load(path)
+        try:
+            request.app.state.workspace = SandboxWorkspace.load(path)
+        except WorkspaceFormatError as e:
+            return templates.TemplateResponse(
+                request, "index.html", {"workspace": None, "minio_ok": minio_available(), "workspace_error": str(e)},
+                status_code=400,
+            )
         return RedirectResponse("/", status_code=303)
 
     @app.post("/workspace/temp")
@@ -344,7 +351,10 @@ def cli(workspace, port, host):
     ws = None
     workspace_path = pathlib.Path(workspace).expanduser().resolve() if workspace else _DEFAULT_WORKSPACE
     workspace_path.mkdir(parents=True, exist_ok=True)
-    ws = SandboxWorkspace.load(workspace_path)
+    try:
+        ws = SandboxWorkspace.load(workspace_path)
+    except WorkspaceFormatError as e:
+        raise click.ClickException(str(e)) from e
 
     app = create_app(ws)
     url = f"http://{host}:{port}"

@@ -18,7 +18,7 @@ and Hubs are not already running on the ports in sandbox.json, and use any
 that are. To look at the teammates' Manager UIs, open the same workspace in
 the sandbox dashboard:
     uv run small-sea-sandbox --workspace Scratch/tide-table-demo
-`--fresh` deletes the workspace and starts over.
+`--fresh` resets a completed demo workspace.
 
 Run:
     uv run python packages/tide-table/spikes/two_teammates_demo.py
@@ -58,7 +58,7 @@ STATE = "tide-table.json"  # teammate IDs, beside sandbox.json
 
 
 def ensure_running(port, start, procs, ready_url):
-    """Start a server unless something already listens on port; wait until ready_url answers."""
+    """Start or reuse a server and wait for its readiness endpoint to succeed."""
     proc = None
     if not is_port_in_use(port):
         proc = start()
@@ -68,12 +68,15 @@ def ensure_running(port, start, procs, ready_url):
         if proc is not None and proc.poll() is not None:
             raise RuntimeError(f"server for port {port} exited (code {proc.returncode})")
         try:
-            if httpx.get(ready_url, timeout=0.5).status_code < 500:
+            status = httpx.get(ready_url, timeout=0.5).status_code
+            if status == 200:
                 return
+            if proc is None and status < 500:
+                raise RuntimeError(f"Port {port} is in use, but {ready_url} returned HTTP {status}")
         except httpx.TransportError:
             pass
         if time.monotonic() > deadline:
-            raise RuntimeError(f"nothing answered at {ready_url}")
+            raise RuntimeError(f"server did not become ready at {ready_url}")
         time.sleep(0.1)
 
 
@@ -85,9 +88,9 @@ def start_minio(ws, server, procs):
 
 
 def start_hub(ws, p, procs):
-    log = open(ws.workspace_dir / f"{p.root}-hub.log", "ab")
-    ensure_running(p.hub_port, lambda: ws.start_hub(p, auto_approve=True, stdout=log, stderr=subprocess.STDOUT),
-                   procs, f"http://127.0.0.1:{p.hub_port}/")
+    with open(ws.workspace_dir / f"{p.root}-hub.log", "ab") as log:
+        ensure_running(p.hub_port, lambda: ws.start_hub(p, auto_approve=True, stdout=log, stderr=subprocess.STDOUT),
+                       procs, f"http://127.0.0.1:{p.hub_port}/sessions/pending")
     return f"http://127.0.0.1:{p.hub_port}"
 
 
@@ -177,18 +180,24 @@ def main():
     ap.add_argument("--bob-port", type=int, default=PORTS["Bob"])
     ap.add_argument("--data", type=pathlib.Path, default=DATA,
                     help=f"sandbox workspace for the demo (default: {DATA})")
-    ap.add_argument("--fresh", action="store_true", help="delete the workspace and set up a new team")
+    ap.add_argument("--fresh", action="store_true", help="reset a completed demo workspace")
     args = ap.parse_args()
-    data = args.data.resolve()
+    path = args.data.expanduser().absolute()
+    data = path.resolve()
+    if args.fresh and path != data:
+        ap.error("--fresh requires a direct path to the demo workspace")
+    if data.exists() and not data.is_dir():
+        ap.error(f"{data} is not a directory")
+    resuming = (data / STATE).is_file()
+    if not resuming and data.exists() and any(data.iterdir()):
+        ap.error(f"{data} has data but no {STATE}. Choose an empty directory with --data.")
+    if args.fresh and resuming:
+        shutil.rmtree(data)
+        resuming = False
     PORTS.update(Alice=args.alice_port, Bob=args.bob_port)
     sys.stdout.reconfigure(line_buffering=True)
     logging.basicConfig(level=logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    if args.fresh:
-        shutil.rmtree(data, ignore_errors=True)
-    resuming = (data / STATE).exists()
-    if not resuming and data.exists() and any(data.iterdir()):
-        sys.exit(f"{data} has data but no {STATE}; use --fresh to delete it and start over")
     data.mkdir(parents=True, exist_ok=True)
     ws = SandboxWorkspace.load(data)
     procs = []
