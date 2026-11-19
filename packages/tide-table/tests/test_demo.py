@@ -112,6 +112,19 @@ async def test_caldav_serves_head_digest_challenge_and_unsupported_methods(tmp_p
     assert mkcol.status_code == 405
 
 
+async def test_caldav_decodes_an_event_name_once(tmp_path, spikes):
+    names = {"meeting.ics": b"meeting", "meeting.ics%3Fdraft.ics": b"draft", "a%2541.ics": b"percent"}
+    async with _caldav(tmp_path / "alice") as (server, _, url), httpx.AsyncClient() as http:
+        for name, body in names.items():
+            put = await http.put(url + name, content=body, auth=("alice", "tide"))
+            assert put.status_code in (201, 204)
+        got = {name: (await http.get(url + name, auth=("alice", "tide"))).content for name in names}
+
+    assert got == names
+    assert server.store.get("meeting.ics?draft.ics") == b"draft"
+    assert server.store.get("a%41.ics") == b"percent"
+
+
 async def test_stopping_caldav_lets_a_write_in_progress_finish(tmp_path, spikes, monkeypatch):
     import two_teammates_demo as demo
 
