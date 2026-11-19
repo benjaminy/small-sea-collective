@@ -64,18 +64,28 @@ async def _stop(proc):
     the like) before exiting; SIGKILL would leave them and break the next
     write. SIGKILL only for a process group still running after the grace
     period. The whole group, because a child still holding git's output
-    pipes would keep wait() blocked.
+    pipes would keep wait() blocked, and a child that let go of them would
+    outlive git unnoticed.
     """
     _signal_group(proc, signal.SIGTERM)
     try:
-        await asyncio.wait_for(proc.wait(), STOP_GRACE)
+        await asyncio.wait_for(_group_gone(proc), STOP_GRACE)
     except TimeoutError:
         _signal_group(proc, signal.SIGKILL)
-        await proc.wait()
+        await _group_gone(proc)
+
+
+async def _group_gone(proc):
+    """Return once git and every process left in its group have exited."""
+    await proc.wait()
+    while _signal_group(proc, 0):
+        await asyncio.sleep(0.05)
 
 
 def _signal_group(proc, sig):
+    """Send sig to git's process group; return False if the group is gone."""
     try:
         os.killpg(proc.pid, sig)
     except ProcessLookupError:
-        pass
+        return False
+    return True

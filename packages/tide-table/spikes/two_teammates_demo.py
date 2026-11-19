@@ -210,19 +210,41 @@ async def run_teammates(team, data):
             threading.Thread(target=server.serve_forever, daemon=True).start()
             servers.append(server)
         print("Ready. Type q to quit.")
-        await wait_for_quit()
+        quit = asyncio.create_task(wait_for_quit())
+        tasks.append(quit)
+        # An event worker should never return; if one fails, its teammate
+        # would stop merging silently, so stop the demo and show the error.
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        for task in done - {quit}:
+            task.result()
     finally:
-        # CalDAV first, so no commit asks a stopped agent to publish; then the
-        # agents, so none is waiting on a Hub when the Hubs shut down.
-        for server in servers:
-            server.shutdown()
-        for agent in agents:
-            await agent.stop()
+        # Event workers first, because they take the store locks on the loop;
+        # then CalDAV, so no commit asks a stopped agent to publish; then the
+        # agents, so none is waiting on a Hub when the Hubs shut down. Parked
+        # changes not yet merged are fetched and reported again next run.
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await stop_caldav(servers)
+        for agent in agents:
+            await agent.stop()
         for http in clients:
             await http.aclose()
+
+
+async def stop_caldav(servers):
+    """Stop accepting CalDAV requests, and wait for writes already under way.
+
+    A write in progress holds its store's lock while it commits, and committing
+    asks the Hub to sign. Taking each lock, and keeping it, lets those writes
+    finish while the Hub is still up; a request that arrives later waits,
+    unanswered, until the process exits. Event workers must already be
+    stopped, since they take the same locks on the loop.
+    """
+    for server in servers:
+        server.shutdown()
+    for server in servers:
+        await asyncio.to_thread(server.store.lock.acquire)
 
 
 async def wait_for_quit():

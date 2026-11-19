@@ -1,6 +1,7 @@
 """Micro tests for cod_sync.aio.git."""
 
 import asyncio
+import os
 
 import pytest
 
@@ -69,3 +70,21 @@ async def test_cancelling_kills_children_that_ignore_sigterm(monkeypatch):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(task, timeout=5)
+
+
+async def test_cancelling_kills_children_that_outlive_git(monkeypatch, tmp_path):
+    monkeypatch.setattr(aio_git, "STOP_GRACE", 0.2)
+    pid_file = tmp_path / "pid"
+    # The background sleep ignores SIGTERM and holds none of git's pipes, so
+    # git and its shell exit on SIGTERM and leave it running in their group.
+    alias = f"!(trap '' TERM; exec sleep 30) >/dev/null 2>&1 & echo $! > {pid_file}; wait"
+    task = asyncio.create_task(aio_git.git_cmd(["-c", f"alias.orphan={alias}", "orphan"]))
+    while not pid_file.exists() or not pid_file.read_text().strip():
+        await asyncio.sleep(0.01)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
+
+    pid = int(pid_file.read_text())
+    with pytest.raises(ProcessLookupError):
+        os.kill(pid, 0)
