@@ -50,6 +50,12 @@ async def test_verify_history_decodes_view(tmp_path):
     assert json.loads(requests[0].content) == {"git_dir": str(tmp_path / ".git"), "head": "abc123"}
 
 
+async def test_authority_view_decodes_view():
+    s, requests = session(lambda r: httpx.Response(200, json={"authority_view": "AH8"}))
+    assert await s.authority_view() == b"\x00\x7f"
+    assert requests[0].method == "GET" and requests[0].url.path == "/session/authority_view"
+
+
 async def test_errors_are_the_sync_clients():
     s, _ = session(lambda r: httpx.Response(404, json={"detail": "no such session"}))
     with pytest.raises(SmallSeaNotFound):

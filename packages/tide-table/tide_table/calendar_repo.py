@@ -136,7 +136,10 @@ class CalendarRepo:
             await self._agit("merge", "--abort")
             raise EventConflict(unresolved)
         if (await self._agit("rev-parse", "-q", "--verify", "MERGE_HEAD", check=False)).returncode == 0:
-            await self._agit("commit", "-m", self._message(f"Merge {ref}"))
+            message = f"Merge {ref}"
+            if self.signer:
+                message = await self.signer.message_async(message)
+            await self._agit("commit", "-m", message)
         return merged
 
     async def _stages(self, path):
