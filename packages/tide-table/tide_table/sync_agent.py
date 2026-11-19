@@ -97,7 +97,7 @@ class SyncAgent:
             await self._publish_wanted.wait()
             self._publish_wanted.clear()
             try:
-                if await self.cal.aio_repo.has_commits():
+                if await self.cal.repo.has_commits():
                     await self.cal.publish(SmallSeaStore(self.token, self.http))
             except Exception as e:
                 self.events.put_nowait(SyncFailed("publish", e))

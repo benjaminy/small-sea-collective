@@ -329,3 +329,26 @@ Commits on the CalDAV threads still use the synchronous `message`.
 In the demo, Alice moved an event while Bob gave it a location; both calendars had both changes within about 6 s, and both merge commits were signed, carried the work-context trailer, and passed the other teammate's Hub.
 
 The 10 ms poll in `take_lock` stays: this was the last Hub request on the loop's merge path that we know of, and the poll has not shown up as a cost.
+
+## 2026-11-19 — The CalDAV server moves to ASGI
+
+The CalDAV spike was the last part of the demo on threads.
+It is now an ASGI application (`CalDAVApp`, with Starlette's request and response) served by uvicorn on the demo's event loop.
+The request handling itself barely changed: each request still gets a `Handler`, whose methods are now coroutines.
+
+With no threads left, the rest followed:
+- `CalendarRepo` is async throughout and uses only cod_sync's async `Repo`; creating, saving, deleting and committing are coroutines.
+- `Store` opens with `await Store.open(...)`; `put` and `delete` are coroutines, and its lock is an `asyncio.Lock`.
+  The lock still decides who owns the work tree, a CalDAV request or a merge, but nobody polls it any more.
+- `HubSigner` opens with `await HubSigner.open(...)` and uses only the async session; `small_sea_client.aio` gained `session_info` and `signing_public_key`.
+- The demo no longer needs `call_soon_threadsafe`: a commit asks its agent to publish directly.
+  On `q`, setting `should_exit` stops each uvicorn server; uvicorn closes idle connections and waits for requests in progress, so a write that is committing still finishes while its Hub is up.
+- tide-table now depends on starlette and uvicorn directly; both were already in the workspace through the Hub.
+
+The held-write, slow-authority-view and shutdown micro tests carry over; a new one checks what uvicorn now handles for us: HEAD without a body, two `WWW-Authenticate` offers, and 405 for methods the spike does not support.
+Driving the demo with curl: Digest-authenticated PROPFIND, a sync-collection REPORT that listed a new event from the other teammate, concurrent move and location edits merged on both sides within about 5 s, `q` and Ctrl-C both shut down cleanly.
+Apple Calendar and Thunderbird have not been tried against the ASGI server yet.
+
+Found along the way, not fixed: after Alice and Bob each merge the same concurrent edits, their histories cross, with two different merge commits.
+If Bob then deletes the event before another round of sync makes the histories converge, git reports a delete-versus-modify conflict, `merge` raises `EventConflict` on both sides, and every later merge in either direction fails the same way, since each includes that history.
+It reproduces with `CalendarRepo` and folder stores alone, so it belongs to the merge logic, not the server.

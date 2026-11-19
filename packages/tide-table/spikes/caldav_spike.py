@@ -25,6 +25,7 @@ then point a client at http://localhost:5232/ as user "alice", password "tide".
 """
 
 import argparse
+import asyncio
 import base64
 import datetime
 import hashlib
@@ -32,11 +33,13 @@ import json
 import os
 import re
 import secrets
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import quote, unquote, urlsplit
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
+
+import uvicorn
+from starlette.requests import Request
+from starlette.responses import Response
 
 from tide_table.calendar_repo import CalendarRepo
 from tide_table.merge import Conflict, Unsupported, merge_event
@@ -58,28 +61,35 @@ class Store:
 
     The events directory is a CalendarRepo, so every save is a git commit.
     Deletions are remembered forever, so every token we ever issued stays valid.
-    Handlers hold lock across each operation on the store.
+    Whoever holds lock owns the work tree: CalDAV requests hold it across each
+    operation on the store, and the demo holds it across each merge.
     """
 
-    def __init__(self, root, author="spike", signer=None):
+    def __init__(self, root, cal):
+        """Use Store.open."""
         self.dir = os.path.join(root, "events")
-        if os.path.isdir(os.path.join(self.dir, ".git")):
-            self.cal = CalendarRepo(self.dir, signer)
-        else:
-            self.cal = CalendarRepo.create(self.dir, author, signer)
-            if os.listdir(self.dir) != [".git"]:
-                self.cal.repo.stage()
-                self.cal.commit("Import events stored before git")
+        self.cal = cal
         self.versions = os.path.join(root, "versions")
         os.makedirs(self.versions, exist_ok=True)
         self.state_path = os.path.join(root, "state.json")
-        self.lock = threading.Lock()
+        self.lock = asyncio.Lock()
         self.on_commit = None  # called after each save or delete commits
         if os.path.exists(self.state_path):
             with open(self.state_path) as f:
                 self.state = json.load(f)
         else:
             self.state = {"token": 0, "changed": {}, "deleted": {}}
+
+    @classmethod
+    async def open(cls, root, author="spike", signer=None):
+        events = os.path.join(root, "events")
+        if os.path.isdir(os.path.join(events, ".git")):
+            return cls(root, CalendarRepo(events, signer))
+        cal = await CalendarRepo.create(events, author, signer)
+        if os.listdir(events) != [".git"]:
+            await cal.repo.stage()
+            await cal.commit("Import events stored before git")
+        return cls(root, cal)
 
     def _save(self):
         with open(self.state_path, "w") as f:
@@ -124,16 +134,16 @@ class Store:
         self.state["changed"].pop(name, None)
         self.state["deleted"][name] = self.token
 
-    def put(self, name, data):
+    async def put(self, name, data):
         self._keep_version(data)
-        self.cal.save(name, data, f"Save {name}")
+        await self.cal.save(name, data, f"Save {name}")
         self._mark_changed(name)
         self._save()
         if self.on_commit:
             self.on_commit()
 
-    def delete(self, name):
-        self.cal.delete(name, f"Delete {name}")
+    async def delete(self, name):
+        await self.cal.delete(name, f"Delete {name}")
         self._mark_deleted(name)
         self._save()
         if self.on_commit:
@@ -215,14 +225,17 @@ PRIVILEGES = "".join(
 )
 
 
-class Handler(BaseHTTPRequestHandler):
-    protocol_version = "HTTP/1.1"
-    server_version = "TideTableSpike/0"
+class Handler:
+    """One CalDAV request: its method, path, headers and body, and the response built for it."""
+
+    def __init__(self, server, request, body):
+        self.server = server  # the CalDAVApp: cfg, store, nonce
+        self.command = request.method
+        self.path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        self.headers = request.headers
+        self._req_body = body
 
     # --- plumbing -----------------------------------------------------------
-
-    def log_message(self, fmt, *args):
-        pass  # we write our own log in _finish
 
     @property
     def cfg(self):
@@ -232,30 +245,13 @@ class Handler(BaseHTTPRequestHandler):
         u = self.cfg["user"]
         return f"/dav/principals/{u}/", f"/dav/calendars/{u}/", f"/dav/calendars/{u}/{CAL_NAME}/"
 
-    def _read_body(self):
-        if self.headers.get("Transfer-Encoding", "").lower() == "chunked":
-            data = b""
-            while True:
-                size = int(self.rfile.readline().strip().split(b";")[0], 16)
-                if size == 0:
-                    self.rfile.readline()
-                    return data
-                data += self.rfile.read(size)
-                self.rfile.readline()
-        n = int(self.headers.get("Content-Length") or 0)
-        return self.rfile.read(n) if n else b""
-
     def _send(self, status, body=b"", headers=None, content_type=None):
-        self.send_response(status)
         headers = dict(headers or {})
         if content_type:
             headers["Content-Type"] = content_type
         headers["Content-Length"] = str(len(body))
-        for k, v in headers.items():
-            self.send_header(k, v)
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        # uvicorn leaves out the body of a response to HEAD.
+        self.response = Response(body, status, headers)
         self._resp = (status, headers, body)
 
     def _xml(self, status, body):
@@ -290,15 +286,11 @@ class Handler(BaseHTTPRequestHandler):
         return p.get("response") == expected
 
     def _challenge(self):
-        self.send_response(401)
-        self.send_header("WWW-Authenticate",
-                         f'Digest realm="{REALM}", nonce="{self.server.nonce}", qop="auth", algorithm=MD5')
-        self.send_header("WWW-Authenticate", f'Basic realm="{REALM}"')
         body = b"auth required"
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        if self.command != "HEAD":
-            self.wfile.write(body)
+        self.response = Response(body, 401)
+        for offer in (f'Digest realm="{REALM}", nonce="{self.server.nonce}", qop="auth", algorithm=MD5',
+                      f'Basic realm="{REALM}"'):
+            self.response.raw_headers.append((b"www-authenticate", offer.encode()))
         self._resp = (401, {"WWW-Authenticate": "Digest + Basic"}, body)
 
     def _classify(self, path):
@@ -327,10 +319,10 @@ class Handler(BaseHTTPRequestHandler):
         return {"root": "/dav/", "principals": "/dav/principals/", "principal": principal,
                 "home": home, "calendar": cal}.get(kind) or cal + quote(name)
 
-    def _handle(self):
+    async def handle(self):
+        """Build self.response."""
         self._resp = None
         self._note = ""
-        self._req_body = self._read_body()
         try:
             if self.command != "OPTIONS" and not self._authorized():
                 self._challenge()
@@ -339,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
             if kind == "wellknown":
                 self._send(301, headers={"Location": "/dav/"})
                 return
-            getattr(self, "h_" + self.command.replace("-", "_"), self.h_unsupported)(kind, name)
+            await getattr(self, "h_" + self.command.replace("-", "_"), self.h_unsupported)(kind, name)
         except Exception as e:  # keep serving; log the failure
             import traceback
             traceback.print_exc()
@@ -364,7 +356,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.cfg["log_bodies"] and rbody:
             text = rbody.decode(errors="replace")
             lines.append(text if len(text) < 8000 else text[:8000] + "\n...[truncated]")
-        with self.server.log_lock, open(self.cfg["log"], "a") as f:
+        with open(self.cfg["log"], "a") as f:
             f.write("\n".join(lines) + "\n\n")
 
     # --- properties ---------------------------------------------------------
@@ -452,20 +444,20 @@ class Handler(BaseHTTPRequestHandler):
 
     # --- methods ------------------------------------------------------------
 
-    def h_OPTIONS(self, kind, name):
+    async def h_OPTIONS(self, kind, name):
         self._send(200, headers={
             "DAV": "1, 2, 3, calendar-access",
             "Allow": "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT",
         })
 
-    def h_PROPFIND(self, kind, name):
+    async def h_PROPFIND(self, kind, name):
         if kind == "unknown":
             self._send(404)
             return
         store = self.server.store
         props = requested_props(self._parse())
         depth = self.headers.get("Depth", "infinity")
-        with store.lock:
+        async with store.lock:
             parts = []
             if kind != "event" or store.get(name) is not None:
                 parts.append(self._response_for(kind, name, props))
@@ -478,7 +470,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         self._xml(207, multistatus(parts))
 
-    def h_PROPPATCH(self, kind, name):
+    async def h_PROPPATCH(self, kind, name):
         # Pretend every property was set; the log shows what the client wanted.
         root = self._parse()
         found = []
@@ -489,12 +481,12 @@ class Handler(BaseHTTPRequestHandler):
                     found.append(empty_elem(ns, local))
         self._xml(207, multistatus([response_xml(self._href(kind, name), found, [])]))
 
-    def h_REPORT(self, kind, name):
+    async def h_REPORT(self, kind, name):
         if kind != "calendar":
             self._send(403)
             return
         root = self._parse()
-        with self.server.store.lock:
+        async with self.server.store.lock:
             status, body = self._report(root)
         self._xml(status, body)
 
@@ -539,12 +531,12 @@ class Handler(BaseHTTPRequestHandler):
         else:
             return 403, f'<?xml version="1.0" encoding="utf-8"?>\n<d:error {NSDECL}><d:supported-report/></d:error>'.encode()
 
-    def h_GET(self, kind, name):
+    async def h_GET(self, kind, name):
         if kind != "event":
             self._send(200 if kind != "unknown" else 404, b"Tide Table CalDAV spike\n", content_type="text/plain")
             return
         store = self.server.store
-        with store.lock:
+        async with store.lock:
             data = store.get(name)
         if data is None:
             self._send(404)
@@ -561,24 +553,24 @@ class Handler(BaseHTTPRequestHandler):
             return True
         return False
 
-    def h_PUT(self, kind, name):
+    async def h_PUT(self, kind, name):
         if kind != "event":
             self._send(403)
             return
         store = self.server.store
         headers = {}
-        with store.lock:
+        async with store.lock:
             current = store.get(name)
             if self._precondition_fails(current):
                 merged = self._merge_stale_put(current)
                 if merged is None:
                     status = 412
                 else:
-                    store.put(name, merged)
+                    await store.put(name, merged)
                     # No ETag: the stored body differs from what the client sent, so it must refetch.
                     status = 204
             else:
-                store.put(name, self._req_body)
+                await store.put(name, self._req_body)
                 status = 201 if current is None else 204
                 headers["ETag"] = etag_of(self._req_body)
         self._send(status, headers=headers)
@@ -603,39 +595,57 @@ class Handler(BaseHTTPRequestHandler):
         self._note = "merged stale PUT"
         return result.text
 
-    def h_DELETE(self, kind, name):
+    async def h_DELETE(self, kind, name):
         store = self.server.store
         if kind != "event":
             self._send(403)
             return
-        with store.lock:
+        async with store.lock:
             current = store.get(name)
             if current is None:
                 status = 404
             elif self._precondition_fails(current):
                 status = 412
             else:
-                store.delete(name)
+                await store.delete(name)
                 status = 204
         self._send(status)
 
-    def h_unsupported(self, kind, name):
+    async def h_unsupported(self, kind, name):
         self._send(405, headers={"Allow": "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT"})
 
 
-for _m in ["OPTIONS", "PROPFIND", "PROPPATCH", "REPORT", "GET", "HEAD", "PUT", "DELETE",
-           "POST", "MKCALENDAR", "MKCOL", "MOVE", "COPY", "LOCK", "UNLOCK", "ACL"]:
-    setattr(Handler, "do_" + _m, Handler._handle)
+class CalDAVApp:
+    """The ASGI application: one Handler per request."""
+
+    def __init__(self, store, cfg):
+        self.store = store
+        self.cfg = cfg
+        self.nonce = secrets.token_hex(16)
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return
+        request = Request(scope, receive)
+        handler = Handler(self, request, await request.body())
+        await handler.handle()
+        await handler.response(scope, receive, send)
 
 
-def make_server(port, user, password, data, log_bodies=False, signer=None):
+async def make_server(port, user, password, data, log_bodies=False, signer=None):
+    """A uvicorn server for one user's calendar; its store is server.store.
+
+    Run it with `await server.serve()`. Setting server.should_exit stops it
+    accepting connections; serve() returns once requests in progress finish.
+    """
     os.makedirs(data, exist_ok=True)
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
-    server.cfg = {"user": user, "password": password, "log": os.path.join(data, "requests.log"),
-                  "log_bodies": log_bodies}
-    server.store = Store(data, author=user, signer=signer)
-    server.log_lock = threading.Lock()
-    server.nonce = secrets.token_hex(16)
+    store = await Store.open(data, author=user, signer=signer)
+    cfg = {"user": user, "password": password, "log": os.path.join(data, "requests.log"),
+           "log_bodies": log_bodies}
+    config = uvicorn.Config(CalDAVApp(store, cfg), host="127.0.0.1", port=port, lifespan="off", ws="none",
+                            log_level="warning", access_log=False, server_header=False)
+    server = uvicorn.Server(config)
+    server.store = store
     print(f"Tide Table CalDAV spike on http://localhost:{port}/  user={user} password={password}")
     print(f"store + request log: {data}")
     return server
@@ -650,7 +660,11 @@ def main():
     ap.add_argument("--log-bodies", action="store_true", help="log CalDAV payloads for synthetic calendars")
     args = ap.parse_args()
     data = args.data or os.path.join(REPO_ROOT, "Scratch", "tide-table-spike", args.user)
-    make_server(args.port, args.user, args.password, data, args.log_bodies).serve_forever()
+
+    async def serve():
+        await (await make_server(args.port, args.user, args.password, data, args.log_bodies)).serve()
+
+    asyncio.run(serve())
 
 
 if __name__ == "__main__":

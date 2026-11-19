@@ -37,7 +37,6 @@ import pathlib
 import shutil
 import subprocess
 import sys
-import threading
 import time
 
 import httpx
@@ -160,29 +159,17 @@ async def process_events(name, store, agent, names):
         await handle_event(name, store, agent, names, await agent.events.get())
 
 
-async def take_lock(lock):
-    """Acquire a threading lock without blocking the event loop.
-
-    The store's lock decides who owns the calendar's work tree: a CalDAV
-    request on one of the server's threads, or a merge on the loop. Polling
-    leaves no thread waiting on the lock if the caller is cancelled.
-    """
-    while not lock.acquire(blocking=False):
-        await asyncio.sleep(0.01)
-
-
 async def handle_event(name, store, agent, names, event):
     """Merge a teammate's parked changes, record them for CalDAV clients, and ask to publish.
 
     The merge holds the store's lock, so it waits for any CalDAV write in
-    progress and CalDAV requests wait for it. The waiting, and the merge's
-    git commands, leave the event loop free for other teammates.
+    progress and CalDAV requests wait for it.
     """
     if isinstance(event, SyncFailed):
         print(f"{name}: {event.what} failed, will retry: {event.error}", file=sys.stderr)
         return
     them = names.get(event.teammate_id, event.teammate_id[:8])
-    await take_lock(store.lock)
+    await store.lock.acquire()
     # Its own task, because cancelling a merge halfway would leave git
     # mid-merge. A worker cancelled meanwhile waits for the merge, and ends
     # with the merge's error if it failed, so stop_workers can report it.
@@ -209,41 +196,40 @@ async def _merge_holding_lock(store, teammate_id):
     """Merge, record the changes, and release the store's lock the caller took."""
     try:
         before = store.snapshot()
-        head = await store.cal.aio_repo.head() if await store.cal.aio_repo.has_commits() else None
+        head = await store.cal.repo.head() if await store.cal.repo.has_commits() else None
         merged = await store.cal.merge(peer_ref(teammate_id))
         changed, deleted = store.record_changes_since(before)
-        return merged, changed, deleted, await store.cal.aio_repo.head() != head
+        return merged, changed, deleted, await store.cal.repo.head() != head
     finally:
         store.lock.release()
 
 
 async def run_teammates(team, data):
     """Serve each teammate's calendar and sync it until the user quits; then stop it all."""
-    loop = asyncio.get_running_loop()
     names = {t["teammate_id"]: name for name, t in team.items()}
-    clients, servers, agents, tasks = [], [], [], []
+    clients, servers, serving, agents, tasks = [], [], [], [], []
     try:
         for name, port in PORTS.items():
             hub, token = team[name]["hub"], team[name]["token"]
             http = httpx.AsyncClient(base_url=hub, timeout=WATCH_TIMEOUT + 30)
             clients.append(http)
             # Not inside the participant's root: the Hub verifies no git directory under its own root.
-            server = make_server(port, name.lower(), PASSWORD, str(data / "tide-table" / name.lower()),
-                                 signer=HubSigner(hub, token, http))
+            server = await make_server(port, name.lower(), PASSWORD, str(data / "tide-table" / name.lower()),
+                                       signer=await HubSigner.open(hub, token, http))
             agent = SyncAgent(server.store.cal, http, token)
-            # CalDAV requests commit on the server's threads; the agent lives on the loop.
-            server.store.on_commit = lambda agent=agent: loop.call_soon_threadsafe(agent.request_publish)
+            server.store.on_commit = agent.request_publish
             tasks.append(asyncio.create_task(process_events(name, server.store, agent, names)))
             agents.append(agent)
             agent.start()
-            threading.Thread(target=server.serve_forever, daemon=True).start()
             servers.append(server)
+            serving.append(asyncio.create_task(server.serve()))
+            await until_started(server, serving[-1])
         print("Ready. Type q to quit.")
         quit = asyncio.create_task(wait_for_quit())
         tasks.append(quit)
-        # An event worker should never return; if one fails, its teammate
-        # would stop merging silently, so stop the demo and show the error.
-        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        # Event workers and servers should never return; if one fails, its
+        # teammate would stop merging or serving, so stop the demo and show the error.
+        done, _ = await asyncio.wait(tasks + serving, return_when=asyncio.FIRST_COMPLETED)
         for task in done - {quit}:
             task.result()
     finally:
@@ -252,7 +238,7 @@ async def run_teammates(team, data):
         # on a Hub when the Hubs shut down. Parked changes not yet merged are
         # fetched and reported again next run.
         failures = await stop_workers(tasks)
-        await stop_caldav(servers)
+        await stop_caldav(servers, serving)
         for agent in agents:
             await agent.stop()
         for http in clients:
@@ -273,18 +259,25 @@ async def stop_workers(tasks):
     return [r for r in results if isinstance(r, Exception)]
 
 
-async def stop_caldav(servers):
-    """Stop accepting CalDAV requests, and wait for writes and merges already under way.
+async def until_started(server, serve):
+    """Wait until the server listens; raise if it fails first, as when its port is taken."""
+    while not server.started:
+        if serve.done():
+            serve.result()
+            raise RuntimeError("the CalDAV server stopped before it started")
+        await asyncio.sleep(0.05)
 
-    A write or merge in progress holds its store's lock while it commits, and
-    committing asks the Hub to sign. Taking each lock, and keeping it, lets
-    them finish while the Hub is still up; a request that arrives later waits,
-    unanswered, until the process exits.
+
+async def stop_caldav(servers, serving):
+    """Stop accepting CalDAV requests, and wait for requests already under way.
+
+    A write in progress commits, and committing asks the Hub to sign, so it
+    must finish while the Hub is still up. uvicorn closes idle connections at
+    once and waits for the others to finish their requests.
     """
     for server in servers:
-        server.shutdown()
-    for server in servers:
-        await take_lock(server.store.lock)
+        server.should_exit = True
+    await asyncio.gather(*serving)
 
 
 async def wait_for_quit():

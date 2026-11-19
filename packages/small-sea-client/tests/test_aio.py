@@ -56,6 +56,18 @@ async def test_authority_view_decodes_view():
     assert requests[0].method == "GET" and requests[0].url.path == "/session/authority_view"
 
 
+async def test_session_info_and_signing_key():
+    def respond(request):
+        return httpx.Response(200, json={
+            "/session/info": {"team_id": "t", "berth_id": "b"},
+            "/session/signing_key": {"public_key": "ssh-ed25519 AAAA"},
+        }[request.url.path])
+    s, requests = session(respond)
+    assert await s.session_info() == {"team_id": "t", "berth_id": "b"}
+    assert await s.signing_public_key() == "ssh-ed25519 AAAA"
+    assert [r.method for r in requests] == ["GET", "GET"]
+
+
 async def test_errors_are_the_sync_clients():
     s, _ = session(lambda r: httpx.Response(404, json={"detail": "no such session"}))
     with pytest.raises(SmallSeaNotFound):
