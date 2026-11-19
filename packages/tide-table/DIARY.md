@@ -352,3 +352,26 @@ Apple Calendar and Thunderbird have not been tried against the ASGI server yet.
 Found along the way, not fixed: after Alice and Bob each merge the same concurrent edits, their histories cross, with two different merge commits.
 If Bob then deletes the event before another round of sync makes the histories converge, git reports a delete-versus-modify conflict, `merge` raises `EventConflict` on both sides, and every later merge in either direction fails the same way, since each includes that history.
 It reproduces with `CalendarRepo` and folder stores alone, so it belongs to the merge logic, not the server.
+
+## 2026-11-19 — Step 0 of keeping the calendar in one SQLite file
+
+The plan: keep the calendar in one SQLite file in git instead of one `.ics` file per event, and merge it with a Tide Table merge driver built on Splice Merge's row deltas, with `merge_event` for an event both sides edited.
+Before building it, `spikes/sqlite_merge_spike.py` tested two things with plain git repos (git 2.55, no Cod Sync, no signing).
+It runs the crossed-history delete from the previous entry twice, once with Bob deleting and once with Alice.
+
+**Git calls a custom merge driver for crossed histories.**
+When the merge of the delete finds two candidate bases, git first merges those bases (the move and the location change) by calling the driver, then merges against the result.
+So Tide Table can keep using `git merge` and does not need to find bases itself.
+
+**The delete merges only by luck of byte order.**
+`merge_event` takes the calendar header and the time-zone blocks from whichever side is "ours", so the two teammates' merges hold the same event content in different bytes.
+When git's merged base happens to come out byte-identical to the merging teammate's file, git does not even call the driver, and the delete goes through.
+When it doesn't, the driver sees an event that looks edited on one side and deleted on the other, and refuses; from then on every merge refuses in both directions, the same wedge as with `.ics` files.
+Which case happens varied between runs of the same script: Bob's delete went through in one run and wedged in the next, so the choice of "ours" in git's base merge depends on something like commit order or timestamps.
+
+Two ways to fix it, not yet tried:
+- Make `merge_event` give the same bytes whichever side is "ours", for example by choosing the header and time-zone block by a fixed rule instead of by side.
+  The two teammates' merges would then store identical rows, and the comparison against git's merged base would see no edit.
+- Have the driver compare events by content rather than bytes, so an event whose fields match the base counts as unchanged.
+
+The first also lets the two merge commits hold identical rows, which may help histories converge; the second is more forgiving of clients that rewrite events without changing them.
