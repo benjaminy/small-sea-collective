@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Two teammates, two CalDAV servers, syncing through their Hubs when asked.
+"""Two teammates, two CalDAV servers, syncing through their Hubs on their own.
 
 Simulates two computers: each teammate has their own Hub process and data
 directory, plus their own MinIO server standing in for their cloud storage.
 Runs one CalDAV spike server per teammate:
     Alice: http://localhost:5232/  user alice, password tide
     Bob:   http://localhost:5233/  user bob,   password tide
-Type `a` to sync Alice, `b` to sync Bob, `q` to quit.
+Type `q` to quit.
 
-Syncing a teammate publishes their calendar, fetches the other's, merges,
-and publishes again if the merge produced anything new.
+Each teammate's server has a sync agent (tide_table/sync_agent.py). It
+publishes after every local change, and when the Hub reports that the other
+teammate published, it fetches their history into a parked ref. The server
+then merges parked changes as it gets to them and publishes the result.
+Hubs this demo starts check teammates' signals every 5 seconds, so changes
+arrive within about that long; a Hub started elsewhere uses its own interval.
 
 The data directory is a sandbox workspace (devtools/sandbox). The first run
 sets up a team with Alice and Bob (the setup from tests/test_hub_sync.py).
@@ -27,6 +31,7 @@ Run:
 import argparse
 import json
 import logging
+import os
 import pathlib
 import shutil
 import subprocess
@@ -40,21 +45,21 @@ HERE = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = HERE.parents[2]
 sys.path[:0] = [str(REPO_ROOT), str(HERE.parent / "tests"), str(HERE), str(REPO_ROOT / "devtools" / "sandbox")]
 
-from cod_sync.protocol import CodSyncError, NoPublishedHeadError  # noqa: E402
 from cod_sync.repo import RepoError  # noqa: E402
-from cod_sync.store import PeerSmallSeaStore, SmallSeaStore, StoreError  # noqa: E402
 from sandbox.workspace import SandboxWorkspace, is_port_in_use  # noqa: E402
 from test_support import _shut_down  # noqa: E402
 
 from caldav_spike import make_server  # noqa: E402
 from test_hub_sync import _setup_two_teammate_team  # noqa: E402
 from tide_table.calendar_repo import EventConflict, peer_ref  # noqa: E402
-from tide_table.hub_signer import HubSigner, UnauthorizedHistory  # noqa: E402
+from tide_table.hub_signer import HubSigner  # noqa: E402
+from tide_table.sync_agent import SyncAgent, SyncFailed  # noqa: E402
 
 DATA = REPO_ROOT / "Scratch" / "tide-table-demo"
 PORTS = {"Alice": 5232, "Bob": 5233}
 PASSWORD = "tide"
 STATE = "tide-table.json"  # teammate IDs, beside sandbox.json
+QUITTING = threading.Event()  # set before the Hubs shut down, to silence the agents' failures
 
 
 def ensure_running(port, start, procs, ready_url):
@@ -137,41 +142,46 @@ def resume_team(ws, procs):
     """Later runs: start what is not running, and open new sessions."""
     state = json.loads((ws.workspace_dir / STATE).read_text())
     team = {}
+    # Every teammate's storage first: a Hub's first watcher pass reads its
+    # teammates' storage, and while that storage is unreachable the Hub
+    # answers no requests.
+    for server in ws.minio_servers:
+        start_minio(ws, server, procs)
     for name in PORTS:
         p = next(p for p in ws.participants if p.nickname == name)
-        account = next(a for a in ws.minio_accounts if a.label == p.root)
-        start_minio(ws, next(s for s in ws.minio_servers if s.api_port == account.server_port), procs)
         hub = start_hub(ws, p, procs)
         team[name] = {"hub": hub, "token": open_session(hub, name), "teammate_id": state[name]["teammate_id"]}
     return team
 
 
-def sync(me, them, stores, team):
-    """Sync one teammate through their own Hub; team[name] has hub, token, teammate_id."""
-    store = stores[me]
-    cal = store.cal
-    hub, token, them_id = team[me]["hub"], team[me]["token"], team[them]["teammate_id"]
+def process_events(name, store, agent, names):
+    """The app's side: take the agent's events one at a time."""
+    while True:
+        handle_event(name, store, agent, names, agent.events.get())
+
+
+def handle_event(name, store, agent, names, event):
+    """Merge a teammate's parked changes, record them for CalDAV clients, and ask to publish."""
+    if isinstance(event, SyncFailed):
+        if not QUITTING.is_set():
+            print(f"{name}: {event.what} failed, will retry: {event.error}", file=sys.stderr)
+        return
+    them = names.get(event.teammate_id, event.teammate_id[:8])
     with store.lock:
         before = store.snapshot()
-        own = SmallSeaStore(token, base_url=hub)
-        if cal.repo.has_commits():
-            cal.publish(own)
+        head = store.cal.repo.head() if store.cal.repo.has_commits() else None
         try:
-            cal.fetch(PeerSmallSeaStore(token, them_id, base_url=hub), them_id)
-        except NoPublishedHeadError:
-            print(f"{them} has not published anything yet")
-            return
-        head = cal.repo.head()
-        try:
-            merged = cal.merge(peer_ref(them_id))
-        except EventConflict as e:
-            print(f"{me}: not merged; these events changed on both sides in ways that conflict: {e.paths}")
+            merged = store.cal.merge(peer_ref(event.teammate_id))
+        except (EventConflict, RepoError) as e:
+            print(f"{name}: {them}'s changes stay parked, not merged: {e}")
             return
         changed, deleted = store.record_changes_since(before)
-        if cal.repo.head() != head:
-            cal.publish(own)
-    print(f"{me} synced with {them}: {len(changed)} changed, {len(deleted)} deleted"
-          + (f", merged event by event: {merged}" if merged else ""))
+        moved = store.cal.repo.head() != head
+    if moved:
+        agent.request_publish()
+    if moved or changed or deleted:
+        print(f"{name} merged {them}'s changes: {len(changed)} changed, {len(deleted)} deleted"
+              + (f", merged event by event: {merged}" if merged else ""))
 
 
 def main():
@@ -200,34 +210,30 @@ def main():
     logging.getLogger("httpx").setLevel(logging.WARNING)
     data.mkdir(parents=True, exist_ok=True)
     ws = SandboxWorkspace.load(data)
+    os.environ.setdefault("SMALL_SEA_WATCHER_INTERVAL", "5")  # for the Hubs this demo starts
     procs = []
     try:
         team = resume_team(ws, procs) if resuming else set_up_team(ws, procs)
         for name, t in team.items():
             print(f"{name}'s Hub: {t['hub']}")
-        stores = {}
+        names = {t["teammate_id"]: name for name, t in team.items()}
         for name, port in PORTS.items():
+            hub, token = team[name]["hub"], team[name]["token"]
             # Not inside the participant's root: the Hub verifies no git directory under its own root.
             server = make_server(port, name.lower(), PASSWORD, str(data / "tide-table" / name.lower()),
-                                 signer=HubSigner(team[name]["hub"], team[name]["token"]))
-            stores[name] = server.store
+                                 signer=HubSigner(hub, token))
+            agent = SyncAgent(server.store.cal, hub, token)
+            server.store.on_commit = agent.request_publish
+            threading.Thread(target=process_events, args=(name, server.store, agent, names), daemon=True).start()
+            agent.start()
             threading.Thread(target=server.serve_forever, daemon=True).start()
-        print("Ready. Type a (sync Alice), b (sync Bob), q (quit).")
+        print("Ready. Type q to quit.")
         for line in sys.stdin:
-            cmd = line.strip().lower()
-            if cmd in ("a", "b"):
-                me, them = ("Alice", "Bob") if cmd == "a" else ("Bob", "Alice")
-                try:
-                    sync(me, them, stores, team)
-                except (CodSyncError, StoreError, RepoError, UnauthorizedHistory,
-                        subprocess.CalledProcessError) as e:
-                    print(f"{me}: sync failed: {e}", file=sys.stderr)
-            elif cmd == "q":
+            if line.strip().lower() == "q":
                 break
-            elif cmd:
-                print("a, b or q")
     finally:
-        for proc in procs:
+        QUITTING.set()
+        for proc in reversed(procs):  # Hubs before the storage they use
             _shut_down(proc)
 
 

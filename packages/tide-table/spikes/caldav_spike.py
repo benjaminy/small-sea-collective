@@ -74,6 +74,7 @@ class Store:
         os.makedirs(self.versions, exist_ok=True)
         self.state_path = os.path.join(root, "state.json")
         self.lock = threading.Lock()
+        self.on_commit = None  # called after each save or delete commits
         if os.path.exists(self.state_path):
             with open(self.state_path) as f:
                 self.state = json.load(f)
@@ -128,11 +129,15 @@ class Store:
         self.cal.save(name, data, f"Save {name}")
         self._mark_changed(name)
         self._save()
+        if self.on_commit:
+            self.on_commit()
 
     def delete(self, name):
         self.cal.delete(name, f"Delete {name}")
         self._mark_deleted(name)
         self._save()
+        if self.on_commit:
+            self.on_commit()
 
     def snapshot(self):
         """ETag of every event, to compare before and after a sync."""
