@@ -202,9 +202,10 @@ async def test_move_and_location_merge_through_two_hubs(tmp_path, minio_server_g
 
 
 async def _move_and_location(tmp_path, team, http):
-    cals = {name: CalendarRepo.create(tmp_path / name.lower() / "calendar", name,
-                                      HubSigner(team[name]["hub"], team[name]["token"], http[name]))
-            for name in team}
+    cals = {}
+    for name in team:
+        signer = await HubSigner.open(team[name]["hub"], team[name]["token"], http[name])
+        cals[name] = await CalendarRepo.create(tmp_path / name.lower() / "calendar", name, signer)
 
     async def publish(me):
         await cals[me].publish(AioSmallSeaStore(team[me]["token"], http[me]))
@@ -216,14 +217,14 @@ async def _move_and_location(tmp_path, team, http):
         return await cals[me].merge(peer_ref(them_id))
 
     # Alice creates the event; Bob syncs and has it too.
-    cals["Alice"].save(EVENT, _fixture("base.ics"), "create")
+    await cals["Alice"].save(EVENT, _fixture("base.ics"), "create")
     await publish("Alice")
     await sync("Bob", "Alice")
     assert cals["Bob"].read(EVENT) == _fixture("base.ics")
 
     # Concurrently: Alice moves it, Bob adds a location.
-    cals["Alice"].save(EVENT, _fixture("apple-move.ics"), "move")
-    cals["Bob"].save(EVENT, _fixture("thunderbird-location.ics"), "location")
+    await cals["Alice"].save(EVENT, _fixture("apple-move.ics"), "move")
+    await cals["Bob"].save(EVENT, _fixture("thunderbird-location.ics"), "location")
     await publish("Alice")
     await publish("Bob")
 
@@ -236,16 +237,16 @@ async def _move_and_location(tmp_path, team, http):
         assert b"DTSTART;TZID=America/Denver:20261119T151500" in text
         assert b"LOCATION:over theere" in text
         assert b"SEQUENCE:2" in text
-    assert cals["Alice"].repo.head() == cals["Bob"].repo.head()
-    for commit in cals["Alice"].repo._run(["rev-list", "HEAD"]).stdout.split():
-        body = cals["Alice"].repo._run(["cat-file", "commit", commit]).stdout
+    assert await cals["Alice"].repo.head() == await cals["Bob"].repo.head()
+    for commit in (await cals["Alice"].repo._run(["rev-list", "HEAD"])).stdout.split():
+        body = (await cals["Alice"].repo._run(["cat-file", "commit", commit])).stdout
         assert "\ngpgsig " in body and "\nSmall-Sea-Work-Context: " in body, body
 
     # A commit Bob's Hub did not sign is refused when Alice fetches it.
     unsigned = CalendarRepo(cals["Bob"].path)
-    unsigned.save(EVENT, _fixture("base.ics"), "unsigned")
+    await unsigned.save(EVENT, _fixture("base.ics"), "unsigned")
     await unsigned.publish(AioSmallSeaStore(team["Bob"]["token"], http["Bob"]))
-    head = cals["Alice"].repo.head()
+    head = await cals["Alice"].repo.head()
     with pytest.raises(UnauthorizedHistory):
         await sync("Alice", "Bob")
-    assert cals["Alice"].repo.head() == head
+    assert await cals["Alice"].repo.head() == head

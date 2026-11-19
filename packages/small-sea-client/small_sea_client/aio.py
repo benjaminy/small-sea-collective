@@ -33,6 +33,14 @@ class SmallSeaSession:
         result["view_identifier"] = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
         return result
 
+    async def session_info(self) -> dict:
+        """Return metadata for this session: participant_hex, team_name, app_name, berth_id, client."""
+        return await self._get("/session/info")
+
+    async def signing_public_key(self) -> str:
+        """Return this session berth's workhorse public key."""
+        return (await self._get("/session/signing_key"))["public_key"]
+
     async def authority_view(self) -> bytes:
         """Return the identifier of this session team's adopted authority view."""
         token = (await self._get("/session/authority_view"))["authority_view"]
