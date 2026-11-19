@@ -33,6 +33,11 @@ class SmallSeaSession:
         result["view_identifier"] = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
         return result
 
+    async def authority_view(self) -> bytes:
+        """Return the identifier of this session team's adopted authority view."""
+        token = (await self._get("/session/authority_view"))["authority_view"]
+        return base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+
     async def session_peers(self) -> list[dict]:
         """Return peers visible to this session, with best-effort labels."""
         result = await self._get("/session/peers")

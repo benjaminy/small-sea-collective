@@ -1,7 +1,9 @@
 import asyncio
+import json
 import pathlib
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
@@ -165,6 +167,85 @@ async def test_a_held_write_stalls_only_its_own_teammate(tmp_path, spikes, monke
     assert [alice.get(n) for n in ("a.ics", "a2.ics", "b.ics")] == [b"from alice", b"held", b"from bob"]
     assert bob.get("a.ics") == b"from alice"
     server.server_close()
+
+
+def _hub_with_slow_authority_view(release):
+    """A fake Hub for HubSigner; it answers the authority-view request only once release is set."""
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == "/session/authority_view":
+                release.wait()
+            body = json.dumps({
+                "/session/info": {"team_id": "team", "berth_id": "berth"},
+                "/session/signing_key": {"public_key": "ssh-ed25519 AAAA"},
+                "/session/authority_view": {"authority_view": "dmlldw"},
+            }[self.path]).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+async def test_a_slow_authority_view_stalls_only_its_own_teammate(tmp_path, spikes):
+    """While Alice's merge commit waits for her Hub's authority view, Bob still merges."""
+    import two_teammates_demo as demo
+    from caldav_spike import Store
+
+    from tide_table.hub_signer import HubSigner
+
+    alice, bob = Store(tmp_path / "alice", author="Alice"), Store(tmp_path / "bob", author="Bob")
+    clouds = {}
+    for name, store in (("Alice", alice), ("Bob", bob)):
+        (tmp_path / f"{name}-cloud").mkdir()
+        clouds[name] = LocalFolderStore(tmp_path / f"{name}-cloud")
+        store.put(f"{name}.ics", f"from {name}".encode())
+        await store.cal.publish(clouds[name])
+    # Independent histories on both sides, so each merge makes a merge commit.
+    alice_parked = await alice.cal.fetch(clouds["Bob"], "Bob")
+    bob_parked = await bob.cal.fetch(clouds["Alice"], "Alice")
+
+    release = threading.Event()
+    hub = _hub_with_slow_authority_view(release)
+    url = f"http://127.0.0.1:{hub.server_address[1]}"
+    async with httpx.AsyncClient(base_url=url) as http:
+        signer = HubSigner(url, "token", http)
+        signer.env = None  # commits unsigned: this test is about the authority-view request
+        alice = Store(tmp_path / "alice", author="Alice", signer=signer)
+
+        workers = {"Alice": _Worker(), "Bob": _Worker()}
+        tasks = [asyncio.create_task(demo.process_events(name, store, workers[name], {}))
+                 for name, store in (("Alice", alice), ("Bob", bob))]
+        released = []
+        # A watchdog thread, because a blocked event loop could not release the Hub itself.
+        watchdog = threading.Timer(2, lambda: (released.append(time.monotonic()), release.set()))
+        watchdog.start()
+        workers["Alice"].events.put_nowait(Parked("Bob", alice_parked))
+        await asyncio.sleep(0.2)  # Alice's merge is waiting on her Hub
+        workers["Bob"].events.put_nowait(Parked("Alice", bob_parked))
+        try:
+            for worker in workers.values():
+                await asyncio.wait_for(worker.merged.wait(), 10)
+        finally:
+            watchdog.cancel()
+            release.set()
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            hub.shutdown()
+            hub.server_close()
+
+    assert workers["Bob"].merged_at < released[0], "Bob's merge waited on Alice's Hub"
+    assert workers["Alice"].merged_at > released[0]
+    assert alice.get("Bob.ics") == b"from Bob" and bob.get("Alice.ics") == b"from Alice"
+    assert b"Small-Sea-Work-Context: " in alice.cal._git("log", "-1", "--format=%B").stdout
 
 
 async def test_stopping_workers_reports_a_merge_that_fails_after_cancellation(tmp_path, spikes, monkeypatch):

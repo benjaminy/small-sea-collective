@@ -6,10 +6,10 @@ the team, berth, purpose, and the authority view this device holds when the
 commit is made. A fetched history is accepted only if the Hub judges every
 commit in it authorized.
 
-Signing happens inside commits, which are still synchronous, so it uses the
-synchronous client. Judging history happens inside Cod Sync's async fetch
-and publish, so it uses an async session over an httpx.AsyncClient the
-caller owns.
+Commits made on the CalDAV server's threads get the authority view for their
+message through the synchronous client. Merge commits and judging history
+happen on the event loop, so they use an async session over an
+httpx.AsyncClient the caller owns.
 """
 
 import os
@@ -47,7 +47,15 @@ class HubSigner:
             extra_env={"SMALL_SEA_HUB_URL": hub_url, "SMALL_SEA_SESSION_TOKEN": token})
 
     def message(self, message):
-        context = WorkContext("commit", self.team_id, self.berth_id, PURPOSE, self.session.authority_view())
+        """For commits on the CalDAV server's threads."""
+        return self._with_context(message, self.session.authority_view())
+
+    async def message_async(self, message):
+        """For commits on the event loop, such as merges."""
+        return self._with_context(message, await self.judge.authority_view())
+
+    def _with_context(self, message, authority_view):
+        context = WorkContext("commit", self.team_id, self.berth_id, PURPOSE, authority_view)
         return commit_message_with_context(message, context)
 
     async def verify_history(self, repo, head):

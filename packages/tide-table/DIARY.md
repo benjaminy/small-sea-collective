@@ -314,3 +314,18 @@ Follow-up: shielding the merge let it finish after its worker was cancelled, but
 If recording the CalDAV changes failed during shutdown, the demo quit normally and asyncio logged "Task exception was never retrieved".
 Now a cancelled worker waits for its merge and ends with the merge's error; `stop_workers` collects those errors, and the demo raises the first one once everything has shut down.
 A merge conflict during shutdown is still only reported, as it is at any other time.
+
+## 2026-11-19 — A slow Hub during a merge commit no longer stalls the other teammate
+
+The previous entry left one known block on the event loop: a merge commit's message carries the authority view, and `HubSigner.message` asked the Hub for it through the synchronous client.
+We tested whether that mattered before deciding anything else.
+`test_a_slow_authority_view_stalls_only_its_own_teammate` gives Alice the real `HubSigner`, pointed at a fake Hub that holds the authority-view request until a watchdog thread releases it after 2 s; commits are unsigned there, since the test is about that one request.
+Alice and Bob each merge a teammate's independent history, so both merges make a merge commit.
+
+Before the change, Bob's merge waited for Alice's Hub to answer, so one teammate's slow Hub held up every teammate in the process.
+Now merges get the authority view through `HubSigner.message_async`, which uses the async session (`small_sea_client.aio` gained `authority_view`); Bob merges at once and Alice merges after her Hub answers.
+Commits on the CalDAV threads still use the synchronous `message`.
+
+In the demo, Alice moved an event while Bob gave it a location; both calendars had both changes within about 6 s, and both merge commits were signed, carried the work-context trailer, and passed the other teammate's Hub.
+
+The 10 ms poll in `take_lock` stays: this was the last Hub request on the loop's merge path that we know of, and the poll has not shown up as a cost.
