@@ -1,5 +1,6 @@
 import asyncio
 import pathlib
+import threading
 
 import httpx
 import pytest
@@ -60,6 +61,38 @@ async def test_merge_records_changes_before_publishing(tmp_path, spikes):
     assert alice.changes_since(token) == ([event], [])
     assert alice.version(etag_of(b"updated")) == b"updated"
     assert Store(tmp_path / "Alice").changes_since(token) == ([event], [])
+
+
+async def test_stopping_caldav_lets_a_write_in_progress_finish(tmp_path, spikes, monkeypatch):
+    import two_teammates_demo as demo
+    from caldav_spike import make_server
+
+    server = make_server(0, "alice", "tide", str(tmp_path / "alice"))
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    store = server.store
+    committing, release = threading.Event(), threading.Event()
+    real_save = store.cal.save
+
+    def held_save(*args):
+        committing.set()  # where a real save would be waiting on the Hub to sign
+        release.wait()
+        return real_save(*args)
+
+    monkeypatch.setattr(store.cal, "save", held_save)
+    url = f"http://127.0.0.1:{server.server_address[1]}/dav/calendars/alice/team/event.ics"
+    put = asyncio.create_task(asyncio.to_thread(httpx.put, url, content=b"body", auth=("alice", "tide")))
+    await asyncio.to_thread(committing.wait, 5)
+
+    stopping = asyncio.create_task(demo.stop_caldav([server]))
+    await asyncio.sleep(0.2)
+    assert not stopping.done()
+    release.set()
+    await asyncio.wait_for(stopping, 5)
+
+    assert store.get("event.ics") == b"body"
+    assert store.cal.repo.has_commits()
+    assert (await put).status_code == 201
+    server.server_close()
 
 
 def _hub_that_never_reports(watches):
