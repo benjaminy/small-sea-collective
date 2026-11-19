@@ -183,10 +183,18 @@ async def handle_event(name, store, agent, names, event):
         return
     them = names.get(event.teammate_id, event.teammate_id[:8])
     await take_lock(store.lock)
-    # Shielded: cancelling a merge halfway would leave git mid-merge. At
-    # shutdown, stop_caldav waits for the lock, and so for the merge.
+    # Its own task, because cancelling a merge halfway would leave git
+    # mid-merge. A worker cancelled meanwhile waits for the merge, and ends
+    # with the merge's error if it failed, so stop_workers can report it.
+    merge = asyncio.create_task(_merge_holding_lock(store, event.teammate_id))
     try:
-        merged, changed, deleted, moved = await asyncio.shield(_merge_holding_lock(store, event.teammate_id))
+        merged, changed, deleted, moved = await asyncio.shield(merge)
+    except asyncio.CancelledError:
+        try:
+            await merge
+        except (EventConflict, RepoError) as e:
+            print(f"{name}: {them}'s changes stay parked, not merged: {e}")
+        raise
     except (EventConflict, RepoError) as e:
         print(f"{name}: {them}'s changes stay parked, not merged: {e}")
         return
@@ -243,14 +251,26 @@ async def run_teammates(team, data):
         # asks a stopped agent to publish; then the agents, so none is waiting
         # on a Hub when the Hubs shut down. Parked changes not yet merged are
         # fetched and reported again next run.
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        failures = await stop_workers(tasks)
         await stop_caldav(servers)
         for agent in agents:
             await agent.stop()
         for http in clients:
             await http.aclose()
+        if failures:
+            raise failures[0]
+
+
+async def stop_workers(tasks):
+    """Cancel the event workers and wait for them; return the errors they ended with.
+
+    A worker cancelled during a merge finishes the merge first, and ends with
+    the merge's error if it failed.
+    """
+    for task in tasks:
+        task.cancel()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    return [r for r in results if isinstance(r, Exception)]
 
 
 async def stop_caldav(servers):

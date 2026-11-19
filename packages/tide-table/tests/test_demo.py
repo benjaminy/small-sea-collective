@@ -167,6 +167,46 @@ async def test_a_held_write_stalls_only_its_own_teammate(tmp_path, spikes, monke
     server.server_close()
 
 
+async def test_stopping_workers_reports_a_merge_that_fails_after_cancellation(tmp_path, spikes, monkeypatch):
+    import two_teammates_demo as demo
+    from caldav_spike import Store
+
+    alice, bob = Store(tmp_path / "alice", author="Alice"), Store(tmp_path / "bob", author="Bob")
+    (tmp_path / "cloud").mkdir()
+    cloud = LocalFolderStore(tmp_path / "cloud")
+    alice.put("a.ics", b"from alice")
+    await alice.cal.publish(cloud)
+    parked = await bob.cal.fetch(cloud, "Alice")
+
+    merging, go_on = asyncio.Event(), asyncio.Event()
+    real_merge = bob.cal.merge
+
+    async def slow_merge(ref):
+        merging.set()
+        await go_on.wait()
+        return await real_merge(ref)
+
+    def failing_record(before):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(bob.cal, "merge", slow_merge)
+    monkeypatch.setattr(bob, "record_changes_since", failing_record)
+    worker = _Worker()
+    task = asyncio.create_task(demo.process_events("Bob", bob, worker, {}))
+    worker.events.put_nowait(Parked("Alice", parked))
+    await asyncio.wait_for(merging.wait(), 5)
+
+    stopping = asyncio.create_task(demo.stop_workers([task]))
+    await asyncio.sleep(0.1)
+    assert not stopping.done()  # waiting for the merge, not abandoning it
+    go_on.set()
+    failures = await asyncio.wait_for(stopping, 5)
+
+    assert [str(f) for f in failures] == ["disk full"]
+    assert bob.get("a.ics") == b"from alice"  # the merge itself finished
+    assert bob.lock.acquire(blocking=False)
+
+
 def _hub_that_never_reports(watches):
     """A Hub with no peers whose watch requests stay pending until cancelled."""
     async def handler(request):
