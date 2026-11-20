@@ -517,3 +517,4 @@ The page offered a separate choice for each, and the server flattened the choice
 In the case a review found, Alice chose her own version for the filename conflict and Bob's for the UID conflict; the page reported success and put Bob's event under the filename Alice had chosen to keep.
 The server now rejects choices that disagree about any event, applies nothing, and the page names the events that link the conflicts.
 A micro test covers this case.
+A later review found that the notice named every event in overlapping conflicts, for all teammates; the redirect now carries the teammate and the IDs the choices disagreed about, and the notice names only those.

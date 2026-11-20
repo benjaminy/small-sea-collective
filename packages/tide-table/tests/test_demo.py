@@ -559,7 +559,22 @@ async def test_contradictory_choices_apply_nothing(tmp_path, spikes):
         assert len(alice.state["conflicts"][BOB_ID]["details"]) == 2
 
         response = await http.post(root + alice.conflict_page + "/resolve", data=_form(alice, ["ours", "theirs"]))
-        assert response.headers["location"].endswith("?result=contradictory")
+        assert "result=contradictory" in response.headers["location"]
         assert b"kitchen" in alice.get("shared.ics") and len(alice.state["conflicts"][BOB_ID]["details"]) == 2
         page = (await http.get(root + response.headers["location"])).content
         assert b"shared.ics" in page.split(b"<form")[0]
+
+
+def test_the_contradiction_notice_names_only_the_events_chosen_both_ways():
+    from tide_table import conflicts
+
+    def overlapping(name):
+        row = {"id": name + "-id", "name": name, "ours": None, "theirs": None}
+        other = {"id": name + "-other", "name": "other-" + name, "ours": None, "theirs": None}
+        conflict = {"description": "same name", "rows": [row, other]}
+        return {"details": [conflict, {**conflict, "rows": [row]}], "heads": [None, "0" * 40]}
+
+    state = {"bob": overlapping("lunch.ics"), "cara": overlapping("trip.ics")}
+    page = conflicts.page(state, {}, "/resolve", "contradictory", ("bob", ["lunch.ics-id"]))
+    notice = page.split(b"<form")[0]
+    assert b"lunch.ics" in notice and b"trip.ics" not in notice and b"other-" not in notice

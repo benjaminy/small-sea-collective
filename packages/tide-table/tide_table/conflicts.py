@@ -144,26 +144,20 @@ NOTICES = {
 }
 
 
-def _shared_events(conflicts):
-    """Names of events that are in more than one of a teammate's conflicts."""
-    names = []
-    for entry in conflicts.values():
-        seen = {}
-        for conflict in entry["details"]:
-            for row in conflict["rows"]:
-                seen.setdefault(row["id"], []).append(row["name"])
-        names += [n[0] for n in seen.values() if len(n) > 1]
-    return names
+def _event_names(entry, ids):
+    """Names of the events in one teammate's conflicts whose IDs are in ids."""
+    return list(dict.fromkeys(row["name"] for c in entry["details"] for row in c["rows"] if row["id"] in ids))
 
 
-def page(conflicts, names, action, notice=None):
+def page(conflicts, names, action, notice=None, contradicted=(None, ())):
     """The resolution page.
 
     conflicts maps teammate IDs to {"details": [...], "heads": [ours, theirs]};
     names maps teammate IDs to display names; action is the URL the choices
     are posted to. A merge needs every choice at once, so each teammate's
     conflicts share one form, with a field "conflict:<event IDs>" for each.
-    notice is a key of NOTICES, or None.
+    notice is a key of NOTICES, or None. For the "contradictory" notice,
+    contradicted is (teammate ID, IDs of the events the choices disagreed about).
     """
     forms = []
     for teammate_id, entry in conflicts.items():
@@ -187,7 +181,9 @@ def page(conflicts, names, action, notice=None):
                      f"{''.join(sections)}<button>Apply choices</button></form>")
     body = "".join(forms) or "<p>No conflicts. Everything merged.</p>"
     if notice == "contradictory":
-        shared = ", ".join(html.escape(n) for n in _shared_events(conflicts))
+        teammate_id, ids = contradicted
+        entry = conflicts.get(teammate_id, {"details": []})
+        shared = ", ".join(html.escape(n) for n in _event_names(entry, ids))
         notice = f"<p class=stale>{NOTICES[notice]} {shared}</p>"
     else:
         notice = f"<p class=stale>{NOTICES[notice]}</p>" if notice in NOTICES else ""

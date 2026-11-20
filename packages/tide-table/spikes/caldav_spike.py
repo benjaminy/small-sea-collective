@@ -39,7 +39,7 @@ import json
 import os
 import re
 import secrets
-from urllib.parse import parse_qs, quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlsplit
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
@@ -763,10 +763,11 @@ class Handler:
             self._send(404)
             return
         if parts[3:] == [] and self.command == "GET":
-            notice = next(iter(parse_qs(self.path.partition("?")[2]).get("result", [])), None)
+            query = {k: v[0] for k, v in parse_qs(self.path.partition("?")[2]).items()}
+            contradicted = (query.get("teammate"), query.get("ids", "").split(","))
             async with store.lock:
                 body = conflicts.page(store.state["conflicts"], store.teammate_names,
-                                      store.conflict_page + "/resolve", notice)
+                                      store.conflict_page + "/resolve", query.get("result"), contradicted)
             self._send(200, body, content_type="text/html; charset=utf-8")
         elif parts[3:] == ["resolve"] and self.command == "POST":
             form = {k: v[0] for k, v in parse_qs(self._req_body.decode(), keep_blank_values=True).items()}
@@ -779,12 +780,14 @@ class Handler:
             pairs = {(i, choice) for ids, choice in choices.items() for i in ids.split(",")}
             resolutions = dict(pairs)
             heads = [form.get("ours_head") or None, form.get("theirs_head")]
-            if len(resolutions) < len(pairs):
-                result = "contradictory"
+            contradicted = sorted({i for i, _ in pairs if (i, "ours") in pairs and (i, "theirs") in pairs})
+            if contradicted:
+                query = {"result": "contradictory", "teammate": form["teammate"], "ids": ",".join(contradicted)}
             else:
                 result = await store.resolve(form["teammate"], resolutions, heads)
-            self._note = f"choices {result}"
-            self._send(303, headers={"Location": store.conflict_page + ("" if result == "resolved" else f"?result={result}")})
+                query = {} if result == "resolved" else {"result": result}
+            self._note = f"choices {query.get('result', 'resolved')}"
+            self._send(303, headers={"Location": store.conflict_page + ("?" + urlencode(query) if query else "")})
         elif parts[3:] == ["resolve"] and self.command == "GET":
             # A browser sometimes fetches the form's address on its own after submitting.
             self._send(303, headers={"Location": store.conflict_page})
