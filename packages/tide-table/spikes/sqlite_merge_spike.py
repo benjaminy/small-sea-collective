@@ -4,7 +4,9 @@ Two questions:
 1. When histories cross, git merges the candidate bases into one base before
    the real merge. Does it call a custom merge driver for that inner merge?
 2. With the calendar in one SQLite file and an event-aware driver, does the
-   crossed-history delete (see DIARY.md, 2026-11-19) merge cleanly?
+   crossed-history delete merge cleanly? (After both teammates merge the
+   same concurrent edits, their histories cross; one then deletes the event.
+   See tide_table/merge_driver.py for what the answers led to.)
 
 Plain git repos fetch straight from each other; Cod Sync and signing are
 beside the point here. Run:

@@ -1,7 +1,9 @@
 # Tide Table
 
-**Status:** concept-stage app.
-This package currently contains only enough metadata to be a valid workspace teammate; it does not implement the app yet.
+**Status:** research demo.
+Two teammates each run a local CalDAV server (`spikes/two_teammates_demo.py`), use Apple Calendar or Thunderbird against it, and sync through their own Hubs.
+Concurrent edits merge event by event; edits that do not merge show up in the calendar as placeholder events that link to a local page for choosing a side.
+What the demo taught us, and what is still open, is in `ROADMAP.md`.
 
 Tide Table is a Small Sea team calendar and scheduling app.
 The name leans on the useful double meaning: a tide table is already a schedule, and Small Sea teams need a shared rhythm that belongs to them.
@@ -77,16 +79,11 @@ The roadmap is organized to confront the calendar ecosystem's scar tissue (clien
 
 ## Backlog Notes
 
-When Tide Table comes back off the shelf, start with a throwaway CalDAV and account-setup spike rather than storage architecture.
-Real calendar clients will decide what product shape is possible.
-Apple Calendar, Thunderbird, GNOME Calendar, Outlook, DAVx5, and similar clients may all disagree about the parts of CalDAV that matter most.
+The demo tried only Apple Calendar on macOS and Thunderbird.
+GNOME Calendar, Outlook, DAVx5, and the iOS calendar may disagree with both about the parts of CalDAV that matter most.
 
 Account setup is part of the product, not an afterthought.
 Configuration profiles, QR pairing, username/password-shaped credentials, local credential revocation, and manual setup as a floor all need early pressure-testing.
-
-Conflict handling is where Tide Table should stay most Small Sea-shaped.
-When concurrent edits cannot be safely merged, preserve the competing states and make the ambiguity visible.
-A likely UX is a read-only "Tide Table Conflicts" calendar with synthetic `CONFLICT: ...` events that link to a small local resolver.
 
 Time zones and recurrence cannot remain vague for long.
 Even read-only display can break around `VTIMEZONE`, daylight-saving transitions, all-day events, floating times, and recurring events.
