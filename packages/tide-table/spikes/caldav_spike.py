@@ -19,6 +19,12 @@ version (tide_table.merge) instead of refused, using the older version as the
 base. Every stored body is kept under versions/ for this. A conflict, or a
 PUT with no If-Match, behaves as before (412, or overwrite).
 
+When a teammate's changes do not merge (Store.merge), the calendar shows a
+placeholder event for each conflict (tide_table/conflicts.py), linking to a
+page on this server, /conflicts/<secret>, where the person keeps their
+version or the teammate's. Deleting a placeholder in a client hides it until
+its conflict changes; editing one is ignored.
+
 Run:
     uv run python packages/tide-table/spikes/caldav_spike.py
 then point a client at http://localhost:5232/ as user "alice", password "tide".
@@ -33,7 +39,7 @@ import json
 import os
 import re
 import secrets
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import parse_qs, quote, unquote, urlsplit
 from xml.etree import ElementTree as ET
 from xml.sax.saxutils import escape
 
@@ -41,7 +47,8 @@ import uvicorn
 from starlette.requests import Request
 from starlette.responses import Response
 
-from tide_table.calendar_repo import CalendarRepo
+from tide_table import conflicts
+from tide_table.calendar_repo import CalendarRepo, EventConflict, peer_ref
 from tide_table.merge import Conflict, Unsupported, merge_event
 
 DAV = "DAV:"
@@ -72,12 +79,19 @@ class Store:
         os.makedirs(self.versions, exist_ok=True)
         self.state_path = os.path.join(root, "state.json")
         self.lock = asyncio.Lock()
-        self.on_commit = None  # called after each save or delete commits
+        self.on_commit = None  # called after each save, delete or resolution commits
+        self.base_url = None  # this server's URL, for links in placeholder events
+        self.teammate_names = {}  # teammate ID -> name shown in placeholders
         if os.path.exists(self.state_path):
             with open(self.state_path) as f:
                 self.state = json.load(f)
         else:
             self.state = {"token": 0, "changed": {}, "deleted": {}}
+        # Conflicts with each teammate, kept with the state so that a
+        # placeholder clients have seen is withdrawn even after a restart.
+        self.state.setdefault("conflicts", {})
+        self.state.setdefault("dismissed", {})  # placeholder name -> ETag of the version dismissed
+        self.state.setdefault("conflict_secret", secrets.token_urlsafe(16))
 
     @classmethod
     async def open(cls, root, author="spike", signer=None):
@@ -95,10 +109,118 @@ class Store:
         return self.state["token"]
 
     def names(self):
-        return self.cal.names()
+        return sorted(self.cal.names() + list(self._visible_placeholders()))
 
     def get(self, name):
-        return self.cal.read(name)
+        placeholder = self._visible_placeholders().get(name)
+        return placeholder if placeholder is not None else self.cal.read(name)
+
+    # --- conflicts ------------------------------------------------------------
+
+    @property
+    def conflict_page(self):
+        return f"/conflicts/{self.state['conflict_secret']}"
+
+    def _placeholders(self):
+        """A placeholder event for each known conflict: name -> body."""
+        out = {}
+        for teammate_id, entry in self.state["conflicts"].items():
+            since = datetime.datetime.fromisoformat(entry["since"])
+            name = self.teammate_names.get(teammate_id, teammate_id[:8])
+            for c in entry["details"]:
+                out[conflicts.placeholder_name(teammate_id, c)] = conflicts.placeholder(
+                    teammate_id, name, c, f"{self.base_url}{self.conflict_page}", since)
+        return out
+
+    def _visible_placeholders(self):
+        """Placeholders except those a client deleted, unless they have changed since."""
+        return {n: b for n, b in self._placeholders().items() if self.state["dismissed"].get(n) != etag_of(b)}
+
+    def is_placeholder(self, name):
+        return name in self._placeholders()
+
+    def _set_conflicts(self, teammate_id, details=None, heads=None):
+        """Record the conflicts with a teammate (none if details is None) and update the placeholders."""
+        before = self._visible_placeholders()
+        old = self.state["conflicts"].get(teammate_id)
+        if details is None:
+            self.state["conflicts"].pop(teammate_id, None)
+        elif old and old["details"] == details:
+            old["heads"] = heads
+        else:
+            since = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            self.state["conflicts"][teammate_id] = {"details": details, "heads": heads, "since": since}
+        after = self._visible_placeholders()
+        for n in after:
+            if before.get(n) != after[n]:
+                self._mark_changed(n)
+        for n in before:
+            if n not in after:
+                self._mark_deleted(n)
+        placeholders = self._placeholders()
+        self.state["dismissed"] = {n: e for n, e in self.state["dismissed"].items() if n in placeholders}
+        self._save()
+
+    def dismiss(self, name):
+        """A client deleted a placeholder: hide it until its conflict changes."""
+        self.state["dismissed"][name] = etag_of(self._placeholders()[name])
+        self._mark_deleted(name)
+        self._save()
+
+    def refuse_edit(self, name):
+        """A client changed a placeholder: report it changed so the client fetches it again."""
+        self._mark_changed(name)
+        self._save()
+
+    async def _heads(self, teammate_id):
+        ours = await self.cal.repo.head() if await self.cal.repo.has_commits() else None
+        return [ours, await self.cal.repo.resolve_ref(peer_ref(teammate_id))]
+
+    async def merge(self, teammate_id, resolutions=None):
+        """Merge a teammate's parked changes; the caller holds lock.
+
+        Returns (events merged field by field, names changed, names deleted,
+        whether main moved). On conflict, records the conflicts as
+        placeholders and raises EventConflict; a merge that succeeds
+        withdraws the teammate's placeholders.
+        """
+        before = self.snapshot()
+        head = await self.cal.repo.head() if await self.cal.repo.has_commits() else None
+        try:
+            merged = await self.cal.merge(peer_ref(teammate_id), resolutions)
+        except EventConflict as e:
+            self._set_conflicts(teammate_id, e.details, await self._heads(teammate_id))
+            raise
+        self._set_conflicts(teammate_id)
+        changed, deleted = self.record_changes_since(before)
+        return merged, changed, deleted, await self.cal.repo.head() != head
+
+    async def resolve(self, teammate_id, ids, choice, heads):
+        """Merge a teammate's parked changes with a person's choice for one conflict.
+
+        heads are the two histories' heads when the person saw the conflict.
+        If either has moved since, the choice is not applied, the conflicts
+        are refreshed, and this returns False.
+        """
+        await self.lock.acquire()
+        # Its own task, so an abandoned request cannot stop a merge halfway.
+        return await asyncio.shield(asyncio.create_task(self._resolve_holding_lock(teammate_id, ids, choice, heads)))
+
+    async def _resolve_holding_lock(self, teammate_id, ids, choice, heads):
+        try:
+            entry = self.state["conflicts"].get(teammate_id)
+            if entry is None:
+                return False
+            fresh = entry["heads"] == heads == await self._heads(teammate_id)
+            try:
+                *_, moved = await self.merge(teammate_id, {i: choice for i in ids} if fresh else None)
+            except EventConflict:
+                return fresh
+            if moved and self.on_commit:
+                self.on_commit()
+            return fresh
+        finally:
+            self.lock.release()
 
     def version(self, etag):
         """A body this store has held, looked up by its ETag, or None."""
@@ -141,8 +263,8 @@ class Store:
             self.on_commit()
 
     def snapshot(self):
-        """ETag of every event, to compare before and after a sync."""
-        return {n: etag_of(self.get(n)) for n in self.names()}
+        """ETag of every stored event, to compare before and after a sync."""
+        return {n: etag_of(self.cal.read(n)) for n in self.cal.names()}
 
     def record_changes_since(self, before):
         """Advance the sync token for events a sync changed; return their names."""
@@ -150,7 +272,7 @@ class Store:
         changed = sorted(n for n in after if before.get(n) != after[n])
         deleted = sorted(n for n in before if n not in after)
         for n in changed:
-            self._keep_version(self.get(n))
+            self._keep_version(self.cal.read(n))
             self._mark_changed(n)
         for n in deleted:
             self._mark_deleted(n)
@@ -319,6 +441,9 @@ class Handler:
         self._resp = None
         self._note = ""
         try:
+            if self.decoded_path.startswith("/conflicts/"):
+                await self.h_conflicts()  # its own secret instead of the CalDAV password
+                return
             if self.command != "OPTIONS" and not self._authorized():
                 self._challenge()
                 return
@@ -556,7 +681,10 @@ class Handler:
         headers = {}
         async with store.lock:
             current = store.get(name)
-            if self._precondition_fails(current):
+            if store.is_placeholder(name):
+                store.refuse_edit(name)
+                status = 204  # no ETag, so the client fetches the placeholder again
+            elif self._precondition_fails(current):
                 merged = self._merge_stale_put(current)
                 if merged is None:
                     status = 412
@@ -601,10 +729,42 @@ class Handler:
                 status = 404
             elif self._precondition_fails(current):
                 status = 412
+            elif store.is_placeholder(name):
+                store.dismiss(name)
+                status = 204
             else:
                 await store.delete(name)
                 status = 204
         self._send(status)
+
+    async def h_conflicts(self):
+        """The conflict page, at /conflicts/<secret>, and its form's target, <page>/resolve.
+
+        Any web page the person visits can send requests to localhost, so the
+        secret in the path is what lets a request in.
+        """
+        store = self.server.store
+        parts = self.decoded_path.split("/")
+        if len(parts) < 3 or not secrets.compare_digest(parts[2].encode(), store.state["conflict_secret"].encode()):
+            self._send(404)
+            return
+        if parts[3:] == [] and self.command == "GET":
+            stale = "stale" in parse_qs(self.path.partition("?")[2])
+            async with store.lock:
+                body = conflicts.page(store.state["conflicts"], store.teammate_names,
+                                      store.conflict_page + "/resolve", stale)
+            self._send(200, body, content_type="text/html; charset=utf-8")
+        elif parts[3:] == ["resolve"] and self.command == "POST":
+            form = {k: v[0] for k, v in parse_qs(self._req_body.decode(), keep_blank_values=True).items()}
+            if form.get("choice") not in ("ours", "theirs") or not form.get("teammate"):
+                self._send(400)
+                return
+            heads = [form.get("ours_head") or None, form.get("theirs_head")]
+            fresh = await store.resolve(form["teammate"], form.get("ids", "").split(","), form["choice"], heads)
+            self._note = f"resolved: {form['choice']}" if fresh else "resolution was stale"
+            self._send(303, headers={"Location": store.conflict_page + ("" if fresh else "?stale=1")})
+        else:
+            self._send(404)
 
     async def h_unsupported(self, kind, name):
         self._send(405, headers={"Allow": "OPTIONS, GET, HEAD, PUT, DELETE, PROPFIND, PROPPATCH, REPORT"})
@@ -641,7 +801,9 @@ async def make_server(port, user, password, data, log_bodies=False, signer=None)
                             log_level="warning", access_log=False, server_header=False)
     server = uvicorn.Server(config)
     server.store = store
+    store.base_url = f"http://localhost:{port}"  # port 0: the caller sets it once the port is known
     print(f"Tide Table CalDAV spike on http://localhost:{port}/  user={user} password={password}")
+    print(f"conflicts: http://localhost:{port}{store.conflict_page}")
     print(f"store + request log: {data}")
     return server
 

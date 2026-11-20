@@ -10,7 +10,8 @@ store, `fetch` brings a teammate's history into a local ref, and `merge`
 combines it with local history. Git merges calendar.sqlite with Tide Table's
 merge driver (merge_driver.py), which merges event by event. If any event
 cannot be merged, `merge` changes nothing and raises `EventConflict`; the
-teammate's history stays in its ref for later.
+teammate's history stays in its ref for later. Merging again with a person's
+choices for those conflicts settles them.
 
 With a signer (see hub_signer.py), every commit is signed and Cod Sync
 accepts a fetched or published history only if the signer approves it.
@@ -40,9 +41,12 @@ SCHEMA = "CREATE TABLE IF NOT EXISTS events (id BLOB PRIMARY KEY, name TEXT NOT 
 
 
 class EventConflict(Exception):
-    def __init__(self, conflicts):
-        super().__init__(f"events changed on both sides in ways that do not merge: {conflicts}")
-        self.conflicts = conflicts
+    """details: the merge driver's conflicts (see merge_driver.merge); conflicts: their descriptions."""
+
+    def __init__(self, details):
+        self.details = details
+        self.conflicts = [c["description"] for c in details]
+        super().__init__(f"events changed on both sides in ways that do not merge: {self.conflicts}")
 
 
 def peer_ref(teammate_id_hex):
@@ -154,8 +158,12 @@ class CalendarRepo:
         return await git_cmd_binary(["--git-dir", str(self.git_dir), "--work-tree", str(self.path), *args],
                                     raise_on_error=check, env=env or self.repo.env)
 
-    async def merge(self, ref):
-        """Merge ref into main. Returns the names of events merged field by field."""
+    async def merge(self, ref, resolutions=None):
+        """Merge ref into main. Returns the names of events merged field by field.
+
+        resolutions settles conflicts: it maps event IDs (hex) to "ours" or
+        "theirs", as merge_driver.merge describes.
+        """
         theirs = await self.repo.resolve_ref(ref)
         if not await self.repo.has_commits():
             await self._git("checkout", "-B", "main", theirs)
@@ -165,6 +173,10 @@ class CalendarRepo:
         report_path = self.git_dir / "tide-table-merge.json"
         report_path.unlink(missing_ok=True)
         env = {**(self.repo.env or os.environ), "TIDE_TABLE_MERGE_REPORT": str(report_path)}
+        if resolutions:
+            resolutions_path = self.git_dir / "tide-table-resolutions.json"
+            resolutions_path.write_text(json.dumps(resolutions))
+            env["TIDE_TABLE_MERGE_RESOLUTIONS"] = str(resolutions_path)
         # Teammates who each created events before their first sync have
         # histories with no common commit; the driver then merges against an
         # empty calendar, which is safe.

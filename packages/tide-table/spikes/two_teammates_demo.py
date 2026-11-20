@@ -12,6 +12,8 @@ Each teammate's server has a sync agent (tide_table/sync_agent.py). It
 publishes after every local change, and when the Hub reports that the other
 teammate published, it fetches their history into a parked ref. The server
 then merges parked changes as it gets to them and publishes the result.
+Changes that do not merge show up in the calendar as a placeholder event
+linking to a page for choosing a side (see caldav_spike.py).
 Hubs this demo starts check teammates' signals every 5 seconds, so changes
 arrive within about that long; a Hub started elsewhere uses its own interval.
 
@@ -51,7 +53,7 @@ from test_support import _shut_down  # noqa: E402
 
 from caldav_spike import make_server  # noqa: E402
 from test_hub_sync import _setup_two_teammate_team  # noqa: E402
-from tide_table.calendar_repo import EventConflict, peer_ref  # noqa: E402
+from tide_table.calendar_repo import EventConflict  # noqa: E402
 from tide_table.hub_signer import HubSigner  # noqa: E402
 from tide_table.sync_agent import WATCH_TIMEOUT, SyncAgent, SyncFailed  # noqa: E402
 
@@ -182,7 +184,11 @@ async def handle_event(name, store, agent, names, event):
         except (EventConflict, RepoError) as e:
             print(f"{name}: {them}'s changes stay parked, not merged: {e}")
         raise
-    except (EventConflict, RepoError) as e:
+    except EventConflict as e:
+        print(f"{name}: {them}'s changes stay parked, not merged: {e}\n"
+              f"  resolve at {store.base_url}{store.conflict_page}")
+        return
+    except RepoError as e:
         print(f"{name}: {them}'s changes stay parked, not merged: {e}")
         return
     if moved:
@@ -195,11 +201,7 @@ async def handle_event(name, store, agent, names, event):
 async def _merge_holding_lock(store, teammate_id):
     """Merge, record the changes, and release the store's lock the caller took."""
     try:
-        before = store.snapshot()
-        head = await store.cal.repo.head() if await store.cal.repo.has_commits() else None
-        merged = await store.cal.merge(peer_ref(teammate_id))
-        changed, deleted = store.record_changes_since(before)
-        return merged, changed, deleted, await store.cal.repo.head() != head
+        return await store.merge(teammate_id)
     finally:
         store.lock.release()
 
@@ -218,6 +220,7 @@ async def run_teammates(team, data):
                                        signer=await HubSigner.open(hub, token, http))
             agent = SyncAgent(server.store.cal, http, token)
             server.store.on_commit = agent.request_publish
+            server.store.teammate_names = names
             tasks.append(asyncio.create_task(process_events(name, server.store, agent, names)))
             agents.append(agent)
             agent.start()

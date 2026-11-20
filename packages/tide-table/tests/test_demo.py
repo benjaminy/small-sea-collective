@@ -12,6 +12,7 @@ from cod_sync.aio.store import LocalFolderStore
 from cod_sync.store import StoreTransportError
 
 import tide_table.sync_agent as sync_agent
+from tide_table.calendar_repo import peer_ref
 from tide_table.sync_agent import Parked, SyncAgent, SyncFailed
 
 pytestmark = pytest.mark.anyio
@@ -51,7 +52,7 @@ async def test_merge_records_changes_before_publishing(tmp_path, spikes):
     await alice.put(event, b"original")
     await alice.cal.publish(cloud["Alice"])
     await bob.cal.fetch(cloud["Alice"], "Alice")
-    await bob.cal.merge(demo.peer_ref("Alice"))
+    await bob.cal.merge(peer_ref("Alice"))
     await bob.put(event, b"updated")
     await bob.cal.publish(cloud["Bob"])
 
@@ -297,10 +298,10 @@ async def test_stopping_workers_reports_a_merge_that_fails_after_cancellation(tm
     merging, go_on = asyncio.Event(), asyncio.Event()
     real_merge = bob.cal.merge
 
-    async def slow_merge(ref):
+    async def slow_merge(*args):
         merging.set()
         await go_on.wait()
-        return await real_merge(ref)
+        return await real_merge(*args)
 
     def failing_record(before):
         raise OSError("disk full")
@@ -393,3 +394,85 @@ async def test_agent_retries_a_failed_publish(tmp_path, monkeypatch, spikes):
     failure = agent.events.get_nowait()
     assert isinstance(failure, SyncFailed) and failure.what == "publish"
     assert await store.cal.fetch(cloud, "Alice") == await store.cal.repo.head()
+
+
+@contextlib.asynccontextmanager
+async def _conflicted(tmp_path):
+    """Alice's CalDAV server with a conflict with Bob: yields the server, an HTTP client, the calendar URL and the server's root."""
+    from caldav_spike import Store
+    from tide_table.calendar_repo import EventConflict
+
+    location = (pathlib.Path(__file__).parent / "fixtures" / "move-vs-location" / "thunderbird-location.ics").read_bytes()
+    bob = await Store.open(tmp_path / "bob", author="Bob")
+    cloud = {}
+    for name in ("alice", "bob"):
+        (tmp_path / f"{name}-cloud").mkdir()
+        cloud[name] = LocalFolderStore(tmp_path / f"{name}-cloud")
+    async with _caldav(tmp_path / "alice") as (server, _, url), httpx.AsyncClient() as http:
+        alice = server.store
+        root = url.split("/dav/")[0]
+        alice.base_url = root
+        alice.teammate_names = {BOB_ID: "Bob"}
+        await alice.put(EVENT, location)
+        await alice.cal.publish(cloud["alice"])
+        await bob.cal.fetch(cloud["alice"], "alice")
+        await bob.cal.merge(peer_ref("alice"))
+        await alice.put(EVENT, location.replace(b"over theere", b"kitchen"))
+        await bob.put(EVENT, location.replace(b"over theere", b"garden"))
+        await bob.cal.publish(cloud["bob"])
+        await alice.cal.fetch(cloud["bob"], BOB_ID)
+        async with alice.lock:
+            with pytest.raises(EventConflict):
+                await alice.merge(BOB_ID)
+        yield alice, http, url, root
+
+
+EVENT, BOB_ID = "event.ics", "b0b0b0b0b0b0"
+
+
+def _resolution(store, choice):
+    entry = store.state["conflicts"][BOB_ID]
+    return {"teammate": BOB_ID, "ours_head": entry["heads"][0], "theirs_head": entry["heads"][1],
+            "ids": entry["details"][0]["rows"][0]["id"], "choice": choice}
+
+
+async def test_a_conflict_shows_as_a_placeholder_until_resolved(tmp_path, spikes):
+    async with _conflicted(tmp_path) as (alice, http, url, root):
+        (placeholder,) = [n for n in alice.names() if n != EVENT]
+        assert placeholder.startswith("tide-table-conflict-")
+        body = (await http.get(url + placeholder, auth=("alice", "tide"))).content
+        assert b"CONFLICT" in body and b"DTSTART;TZID=America/Denver" in body
+        assert f"URL:{root}{alice.conflict_page}".encode() in body.replace(b"\r\n ", b"")
+
+        assert (await http.get(root + "/conflicts/guess")).status_code == 404
+        page = await http.get(root + alice.conflict_page)
+        assert b"kitchen" in page.content and b"garden" in page.content
+
+        stale = await http.post(root + alice.conflict_page + "/resolve",
+                                data={**_resolution(alice, "theirs"), "theirs_head": "0" * 40})
+        assert stale.status_code == 303 and stale.headers["location"].endswith("?stale=1")
+        assert b"kitchen" in alice.get(EVENT)
+
+        token = alice.token
+        done = await http.post(root + alice.conflict_page + "/resolve", data=_resolution(alice, "theirs"))
+        assert done.status_code == 303 and done.headers["location"] == alice.conflict_page
+        assert b"LOCATION:garden" in alice.get(EVENT)
+        assert alice.changes_since(token) == ([EVENT], [placeholder])
+        assert alice.state["conflicts"] == {}
+
+
+async def test_a_client_can_dismiss_a_placeholder_but_not_edit_it(tmp_path, spikes):
+    async with _conflicted(tmp_path) as (alice, http, url, root):
+        (placeholder,) = [n for n in alice.names() if n != EVENT]
+        body = alice.get(placeholder)
+        token = alice.token
+        put = await http.put(url + placeholder, content=b"edited", auth=("alice", "tide"))
+        assert put.status_code == 204 and "etag" not in put.headers
+        assert alice.get(placeholder) == body and alice.changes_since(token) == ([placeholder], [])
+
+        assert (await http.delete(url + placeholder, auth=("alice", "tide"))).status_code == 204
+        assert alice.names() == [EVENT]
+        token = alice.token
+        await http.post(root + alice.conflict_page + "/resolve", data=_resolution(alice, "ours"))
+        assert alice.changes_since(token) == ([], [])  # already gone from the client
+        assert b"kitchen" in alice.get(EVENT)
