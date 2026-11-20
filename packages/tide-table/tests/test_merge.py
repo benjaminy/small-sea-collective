@@ -4,7 +4,7 @@ import pathlib
 
 import pytest
 
-from tide_table.merge import Conflict, Merged, Unsupported, merge_event
+from tide_table.merge import Conflict, Merged, Unsupported, merge_event, same_event
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
 
@@ -171,3 +171,30 @@ def test_different_events_are_unsupported():
     b = a.replace(b"UID:u1", b"UID:u2")
     with pytest.raises(Unsupported):
         merge_event(a, a, b)
+
+
+# --- same_event -----------------------------------------------------------------
+
+def test_merges_made_on_either_side_are_the_same_event():
+    case = "move-vs-location"
+    base, move, loc = (_fixture(case, n) for n in ("base.ics", "apple-move.ics", "thunderbird-location.ics"))
+    alices, bobs = merge_event(base, move, loc).text, merge_event(base, loc, move).text
+    assert alices != bobs  # header and zone come from each side's own client
+    assert same_event(alices, bobs)
+
+
+def test_bookkeeping_folding_and_zones_do_not_make_a_different_event():
+    plain = _cal(*BASE_LINES)
+    touched = _cal("DTSTAMP:20261120T090000Z", "SEQUENCE:4", *BASE_LINES[1:3], "SUMMARY:din\r\n ner", tz=True)
+    assert same_event(plain, touched)
+
+
+def test_a_changed_field_makes_a_different_event():
+    assert not same_event(_cal(*BASE_LINES), _cal(*BASE_LINES, "LOCATION:kitchen"))
+    assert not same_event(_cal(*BASE_LINES), _cal(*BASE_LINES[:3], "SUMMARY:lunch"))
+
+
+def test_unparseable_objects_are_the_same_only_byte_for_byte():
+    recurring = _cal(*BASE_LINES, "RRULE:FREQ=WEEKLY")
+    assert same_event(recurring, recurring)
+    assert not same_event(recurring, recurring.replace(b"DTSTAMP:20261118", b"DTSTAMP:20261119"))
