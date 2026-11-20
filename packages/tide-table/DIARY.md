@@ -504,3 +504,11 @@ A script gave the same event different locations on both sides at once, because 
   It did no harm; that address could answer GET with a redirect to the page.
 
 Still not checked in real clients: whether the link in the placeholder can be opened from the event, whether the alarm fires, and what each client does when an edit to a placeholder is ignored or a placeholder is deleted.
+
+## 2026-11-20 — Choices that contradict each other
+
+An event can be in two conflicts at once: one over its filename and one over its UID.
+The page offered a separate choice for each, and the server flattened the choices into one answer per event, so a later choice silently overwrote an earlier one.
+In the case a review found, Alice chose her own version for the filename conflict and Bob's for the UID conflict; the page reported success and put Bob's event under the filename Alice had chosen to keep.
+The server now rejects choices that disagree about any event, applies nothing, and the page names the events that link the conflicts.
+A micro test covers this case.

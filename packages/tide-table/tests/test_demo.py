@@ -525,3 +525,39 @@ async def test_keeping_theirs_keeps_the_version_shown(tmp_path, spikes):
         async with alice.lock:
             await alice.merge(BOB_ID)  # Bob's later change arrives as a change of its own
         assert b"LOCATION:airport" in alice.get(EVENT)
+
+
+async def test_contradictory_choices_apply_nothing(tmp_path, spikes):
+    """Alice's new event shares a name with one of Bob's and a UID with another, so it is in two conflicts."""
+    from caldav_spike import Store
+    from tide_table.calendar_repo import EventConflict
+
+    bob = await Store.open(tmp_path / "bob", author="Bob")
+    cloud = {}
+    for name in ("alice", "bob"):
+        (tmp_path / f"{name}-cloud").mkdir()
+        cloud[name] = LocalFolderStore(tmp_path / f"{name}-cloud")
+    async with _caldav(tmp_path / "alice") as (server, _, url), httpx.AsyncClient() as http:
+        alice = server.store
+        root = url.split("/dav/")[0]
+        alice.teammate_names = {BOB_ID: "Bob"}
+        await alice.put(EVENT, _at(EVENT, "the hall"))
+        await alice.cal.publish(cloud["alice"])
+        await bob.cal.fetch(cloud["alice"], "alice")
+        await bob.cal.merge(peer_ref("alice"))
+
+        await alice.put("shared.ics", _at("x", "kitchen"))
+        await bob.put("shared.ics", _at("y", "garden"))
+        await bob.put("other.ics", _at("x", "garden"))
+        await bob.cal.publish(cloud["bob"])
+        await alice.cal.fetch(cloud["bob"], BOB_ID)
+        async with alice.lock:
+            with pytest.raises(EventConflict):
+                await alice.merge(BOB_ID)
+        assert len(alice.state["conflicts"][BOB_ID]["details"]) == 2
+
+        response = await http.post(root + alice.conflict_page + "/resolve", data=_form(alice, ["ours", "theirs"]))
+        assert response.headers["location"].endswith("?result=contradictory")
+        assert b"kitchen" in alice.get("shared.ics") and len(alice.state["conflicts"][BOB_ID]["details"]) == 2
+        page = (await http.get(root + response.headers["location"])).content
+        assert b"shared.ics" in page.split(b"<form")[0]

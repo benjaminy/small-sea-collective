@@ -139,7 +139,21 @@ def _field_rows(row, teammate_name):
 NOTICES = {
     "stale": "Something changed since you loaded this page, so nothing was applied. Check the choices again.",
     "unresolved": "Some conflicts are still unresolved, so nothing was applied.",
+    "contradictory": "Your choices disagreed about an event that is in more than one conflict, "
+                     "so nothing was applied. Choose the same side for each conflict involving:",
 }
+
+
+def _shared_events(conflicts):
+    """Names of events that are in more than one of a teammate's conflicts."""
+    names = []
+    for entry in conflicts.values():
+        seen = {}
+        for conflict in entry["details"]:
+            for row in conflict["rows"]:
+                seen.setdefault(row["id"], []).append(row["name"])
+        names += [n[0] for n in seen.values() if len(n) > 1]
+    return names
 
 
 def page(conflicts, names, action, notice=None):
@@ -172,7 +186,11 @@ def page(conflicts, names, action, notice=None):
         forms.append(f'<form method=post action="{html.escape(action)}">{hidden}<h2>With {who}</h2>'
                      f"{''.join(sections)}<button>Apply choices</button></form>")
     body = "".join(forms) or "<p>No conflicts. Everything merged.</p>"
-    notice = f"<p class=stale>{NOTICES[notice]}</p>" if notice in NOTICES else ""
+    if notice == "contradictory":
+        shared = ", ".join(html.escape(n) for n in _shared_events(conflicts))
+        notice = f"<p class=stale>{NOTICES[notice]} {shared}</p>"
+    else:
+        notice = f"<p class=stale>{NOTICES[notice]}</p>" if notice in NOTICES else ""
     return f"""<!doctype html>
 <html><head><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1">
 <title>Calendar conflicts</title>
