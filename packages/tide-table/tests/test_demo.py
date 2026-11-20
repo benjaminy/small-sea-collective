@@ -466,6 +466,8 @@ async def test_a_conflict_shows_as_a_placeholder_until_resolved(tmp_path, spikes
         assert (await http.get(root + "/conflicts/guess")).status_code == 404
         page = await http.get(root + alice.conflict_page)
         assert b"kitchen" in page.content and b"garden" in page.content
+        visit = await http.get(root + alice.conflict_page + "/resolve")
+        assert visit.status_code == 303 and visit.headers["location"] == alice.conflict_page
 
         stale = await http.post(root + alice.conflict_page + "/resolve",
                                 data={**_form(alice, ["theirs"]), "theirs_head": "0" * 40})

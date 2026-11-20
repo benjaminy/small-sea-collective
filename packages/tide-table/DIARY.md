@@ -501,9 +501,14 @@ A script gave the same event different locations on both sides at once, because 
   Bob's server merged the result, and Thunderbird dropped the placeholder on its next poll.
 - Thunderbird checks a calendar only every 30 minutes by default, so without a manual refresh a placeholder can take that long to appear.
 - Right after the form was submitted, the browser sent a GET to the form's `/resolve` address and got a 404.
-  It did no harm; that address could answer GET with a redirect to the page.
+  It did no harm.
+  The log showed the browser had already followed the redirect and loaded the page; the GET came about 190 ms later, from the browser itself.
+  That address now answers GET with a redirect to the page.
 
-Still not checked in real clients: whether the link in the placeholder can be opened from the event, whether the alarm fires, and what each client does when an edit to a placeholder is ignored or a placeholder is deleted.
+- Clicking the link in the placeholder opened the conflict page from both Apple Calendar and Thunderbird.
+  The person who clicked already knew the link was there, so this does not show whether a newcomer would find it.
+
+Still not checked in real clients: whether the alarm fires, and what each client does when an edit to a placeholder is ignored or a placeholder is deleted.
 
 ## 2026-11-20 — Choices that contradict each other
 

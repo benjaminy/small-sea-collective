@@ -785,6 +785,9 @@ class Handler:
                 result = await store.resolve(form["teammate"], resolutions, heads)
             self._note = f"choices {result}"
             self._send(303, headers={"Location": store.conflict_page + ("" if result == "resolved" else f"?result={result}")})
+        elif parts[3:] == ["resolve"] and self.command == "GET":
+            # A browser sometimes fetches the form's address on its own after submitting.
+            self._send(303, headers={"Location": store.conflict_page})
         else:
             self._send(404)
 
