@@ -450,3 +450,27 @@ It now takes everything after the first colon outside quoted parameters.
 
 Not fixed: `same_event` ignores VTIMEZONE blocks, so two versions that define one TZID with different offsets count as the same event, and a concurrent delete can win silently.
 Telling them apart needs a VTIMEZONE interpreter, which the planned parsed columns for `calendar-query` will also need.
+
+## 2026-11-19 — Conflicts show up in the calendar
+
+When a teammate's changes do not merge, the CalDAV server now adds a placeholder event for each conflict, the shape ROADMAP.md sketches for Phase 3.
+The placeholder sits at the conflicting event's time, is titled "⚠️ CONFLICT: <summary>", carries an alarm a minute after the conflict appeared, and links (in URL and DESCRIPTION) to a page on the same server, `/conflicts/<secret>`.
+The page shows each conflicting event's fields side by side, with the differing ones highlighted, and offers "Keep yours" or "Keep Bob's".
+
+- The placeholders are not stored in calendar.sqlite or synced.
+  The server makes them up from the conflicts it recorded, which it keeps in its state.json so a placeholder clients saw is withdrawn even after a restart.
+- A choice reaches the merge driver as a resolutions file (event ID to "ours" or "theirs").
+  Each event in the conflict takes that side's version, or is deleted if that side has none; for a duplicate UID, that keeps one side's copy and drops the other.
+  The result is an ordinary merge commit, so the teammate fast-forwards to it and their own placeholder goes away.
+- The form carries both histories' heads. If either moved since the page was shown, the choice is not applied, the conflicts are refreshed, and the page says to check again.
+- The page needs the secret in its path, not the CalDAV password, because any web page the person visits can send requests to localhost.
+- Deleting a placeholder in a client hides it until its conflict changes. Editing one is ignored, and the server reports it changed so the client fetches it back.
+- This is option A from the discussion: a conflict still blocks all of that teammate's other changes until someone resolves it, and each teammate sees and can resolve it on their own device. Option B, merging everything else and recording the conflict in the shared data, is the likely next step if blocking hurts.
+
+Micro tests cover choosing either side for an edit conflict, an edit against a delete, and a duplicate UID; a choice covering only some conflicts settles nothing; and, through HTTP, the placeholder, the page, a stale choice, resolution, and a client dismissing or editing a placeholder.
+On a scratch workspace through two Hubs, a concurrent kitchen/garden edit produced a placeholder on both sides within 4 s; Alice chose Bob's room on the page, and Bob's placeholder was withdrawn about 5 s later.
+
+Known unknowns, deferred:
+- Apple Calendar and Thunderbird have not been pointed at the SQLite storage, let alone the placeholders: whether they show the link, fire the alarm, or behave when an edit to a placeholder is ignored.
+- Conflicts are only re-checked when a teammate publishes. If the person edits the conflicting event locally so that it matches, the placeholder stays until the next merge or a visit to the page.
+- The page shows yours and theirs but not the version both started from.

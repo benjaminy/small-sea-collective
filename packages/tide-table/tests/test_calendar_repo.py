@@ -258,3 +258,74 @@ async def test_a_disagreement_both_sides_kept_is_still_reported(team):
     await publish("bob")
     await sync("alice", "bob")
     assert b"LOCATION:Room A" in alice.read(EVENT)
+
+
+def _ids(exc):
+    return [row["id"] for c in exc.value.details for row in c["rows"]]
+
+
+async def test_choosing_theirs_settles_an_edit_conflict_for_both(team):
+    alice, bob, publish, sync = team
+    loc = _fixture("thunderbird-location.ics")
+    await alice.save(EVENT, loc.replace(b"over theere", b"kitchen"), "kitchen")
+    await bob.save(EVENT, loc.replace(b"over theere", b"garden"), "garden")
+    await publish("bob")
+    with pytest.raises(EventConflict) as exc:
+        await sync("alice", "bob")
+    (row,) = exc.value.details[0]["rows"]
+    assert (row["name"], "kitchen" in row["ours"], "garden" in row["theirs"]) == (EVENT, True, True)
+
+    await alice.merge(peer_ref("bob"), {row["id"]: "theirs"})
+    assert b"LOCATION:garden" in alice.read(EVENT)
+    await publish("alice")
+    await sync("bob", "alice")
+    assert await alice.repo.head() == await bob.repo.head()
+
+
+async def test_choosing_ours_keeps_an_event_a_teammate_deleted(team):
+    alice, bob, publish, sync = team
+    await alice.save(EVENT, _fixture("apple-move.ics"), "move")
+    await bob.delete(EVENT, "delete")
+    await publish("bob")
+    with pytest.raises(EventConflict) as exc:
+        await sync("alice", "bob")
+    assert exc.value.details[0]["rows"][0]["theirs"] is None
+
+    await alice.merge(peer_ref("bob"), {i: "ours" for i in _ids(exc)})
+    await publish("alice")
+    await sync("bob", "alice")
+    assert bob.read(EVENT) == _fixture("apple-move.ics")
+
+
+async def test_choosing_theirs_settles_a_duplicate_uid(team):
+    alice, bob, publish, sync = team
+    invitation = _fixture("base.ics").replace(b"UID:", b"UID:invite-")
+    await alice.save("alices-copy.ics", invitation, "add invitation")
+    await bob.save("bobs-copy.ics", invitation, "add invitation")
+    await publish("bob")
+    with pytest.raises(EventConflict) as exc:
+        await sync("alice", "bob")
+
+    await alice.merge(peer_ref("bob"), {i: "theirs" for i in _ids(exc)})
+    assert alice.names() == ["bobs-copy.ics", EVENT]
+
+
+async def test_a_choice_for_only_some_events_settles_nothing(team):
+    alice, bob, publish, sync = team
+    loc = _fixture("thunderbird-location.ics")
+    for name in ("one.ics", "two.ics"):
+        await alice.save(name, loc.replace(b"UID:", f"UID:{name}-".encode()), f"add {name}")
+    await publish("alice")
+    await sync("bob", "alice")
+    for name in ("one.ics", "two.ics"):
+        await alice.save(name, alice.read(name).replace(b"over theere", b"kitchen"), "kitchen")
+        await bob.save(name, bob.read(name).replace(b"over theere", b"garden"), "garden")
+    await publish("bob")
+    with pytest.raises(EventConflict) as exc:
+        await sync("alice", "bob")
+    first = exc.value.details[0]["rows"][0]["id"]
+
+    with pytest.raises(EventConflict) as exc:
+        await alice.merge(peer_ref("bob"), {first: "theirs"})
+    assert len(exc.value.details) == 1
+    assert b"kitchen" in alice.read("one.ics") and b"kitchen" in alice.read("two.ics")
