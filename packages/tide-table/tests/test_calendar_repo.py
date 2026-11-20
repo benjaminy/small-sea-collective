@@ -107,7 +107,7 @@ async def test_events_created_before_first_sync_merge(tmp_path):
 
     await cals["alice"].fetch(stores["bob"], "bob")
     await cals["alice"].merge(peer_ref("bob"))
-    assert sorted(p.name for p in (tmp_path / "alice").glob("*.ics")) == ["a.ics", "b.ics"]
+    assert cals["alice"].names() == ["a.ics", "b.ics"]
 
 
 async def test_deleted_event_reaches_teammate(team):
@@ -115,11 +115,9 @@ async def test_deleted_event_reaches_teammate(team):
     await alice.delete(EVENT, "delete")
     await publish("alice")
     await sync("bob", "alice")
-    assert not (bob.path / EVENT).exists()
+    assert bob.read(EVENT) is None
 
 
-@pytest.mark.xfail(strict=True, raises=EventConflict,
-                   reason="a delete after crossed merges reaches merge_event as a delete/modify conflict")
 async def test_delete_after_both_teammates_merged_the_same_edits(team):
     alice, bob, publish, sync = team
     await alice.save(EVENT, _fixture("apple-move.ics"), "move")
@@ -138,8 +136,8 @@ async def test_delete_after_both_teammates_merged_the_same_edits(team):
     await publish("alice")
     await sync("bob", "alice")
 
-    assert not (alice.path / EVENT).exists()
-    assert not (bob.path / EVENT).exists()
+    assert alice.read(EVENT) is None
+    assert bob.read(EVENT) is None
     assert await alice.repo.head() == await bob.repo.head()
 
 
@@ -153,7 +151,7 @@ async def test_conflicting_edits_leave_both_histories_untouched(team):
 
     with pytest.raises(EventConflict) as exc:
         await sync("alice", "bob")
-    assert exc.value.paths == [EVENT]
+    assert exc.value.conflicts == [f"update/update {EVENT}"]
     assert await alice.repo.head() == head
     assert b"LOCATION:kitchen" in alice.read(EVENT)
     assert await alice.repo.status() == []
@@ -162,7 +160,7 @@ async def test_conflicting_edits_leave_both_histories_untouched(team):
 
 async def test_merge_reports_git_failure_without_conflicts(team):
     alice, bob, publish, sync = team
-    await alice.save("alice.ics", _fixture("base.ics"), "local edit")
+    await alice.save("alice.ics", _fixture("base.ics").replace(b"UID:", b"UID:a-"), "local edit")
     await bob.save(EVENT, _fixture("apple-move.ics"), "move")
     await publish("bob")
     head = await alice.repo.head()
@@ -177,3 +175,54 @@ async def test_merge_reports_git_failure_without_conflicts(team):
     index_lock.unlink()
     assert await sync("alice", "bob") == []
     assert alice.read(EVENT) == _fixture("apple-move.ics")
+
+
+async def test_edit_against_delete_conflicts(team):
+    alice, bob, publish, sync = team
+    await alice.save(EVENT, _fixture("apple-move.ics"), "move")
+    await bob.delete(EVENT, "delete")
+    await publish("bob")
+
+    with pytest.raises(EventConflict) as exc:
+        await sync("alice", "bob")
+    assert exc.value.conflicts == [f"delete/modify {EVENT}"]
+    assert alice.read(EVENT) == _fixture("apple-move.ics")
+
+
+async def test_two_events_with_one_uid_conflict(team):
+    # Say both teammates added the same emailed invitation, under different names.
+    alice, bob, publish, sync = team
+    invitation = _fixture("base.ics").replace(b"UID:", b"UID:invite-")
+    await alice.save("alices-copy.ics", invitation, "add invitation")
+    await bob.save("bobs-copy.ics", invitation, "add invitation")
+    await publish("bob")
+
+    with pytest.raises(EventConflict, match="two events with uid invite-"):
+        await sync("alice", "bob")
+    assert alice.names() == ["alices-copy.ics", EVENT]
+
+
+async def test_a_disagreement_both_sides_kept_is_still_reported(team):
+    """Each teammate resolves a conflict by keeping their own room; their next sync must not hide it."""
+    alice, bob, publish, sync = team
+    loc = _fixture("thunderbird-location.ics")
+    await alice.save(EVENT, loc.replace(b"over theere", b"Room A"), "Room A")
+    await bob.save(EVENT, loc.replace(b"over theere", b"Room B"), "Room B")
+    await publish("alice")
+    await publish("bob")
+    for me, them in ((alice, "bob"), (bob, "alice")):
+        with pytest.raises(EventConflict):
+            await sync({alice: "alice", bob: "bob"}[me], them)
+        await me._git("merge", "-q", "-s", "ours", "--no-edit", peer_ref(them))
+
+    await publish("bob")
+    # The crossed merges give git two candidate bases, which conflict with
+    # each other; the driver records the event as having no agreed base.
+    with pytest.raises(EventConflict):
+        await sync("alice", "bob")
+
+    # Bob comes round to Room A; his client stamps the event afresh.
+    await bob.save(EVENT, loc.replace(b"over theere", b"Room A").replace(b"SEQUENCE:1", b"SEQUENCE:3"), "Room A")
+    await publish("bob")
+    await sync("alice", "bob")
+    assert b"LOCATION:Room A" in alice.read(EVENT)
