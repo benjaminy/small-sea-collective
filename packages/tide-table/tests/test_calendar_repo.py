@@ -11,7 +11,7 @@ import pytest
 from cod_sync.aio.store import LocalFolderStore
 from cod_sync.repo import RepoError
 
-from tide_table.calendar_repo import CalendarRepo, EventConflict, peer_ref
+from tide_table.calendar_repo import CalendarRepo, EventConflict, event_uid, peer_ref
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "move-vs-location"
 EVENT = "event.ics"
@@ -200,6 +200,38 @@ async def test_two_events_with_one_uid_conflict(team):
     with pytest.raises(EventConflict, match="two events with uid invite-"):
         await sync("alice", "bob")
     assert alice.names() == ["alices-copy.ics", EVENT]
+
+
+async def test_each_keeping_their_own_copy_is_still_reported(team):
+    """Each teammate resolves a duplicate UID by keeping their own copy; their next sync must not delete both."""
+    alice, bob, publish, sync = team
+    invitation = _fixture("base.ics").replace(b"UID:", b"UID:invite-")
+    await alice.save("alices-copy.ics", invitation, "add invitation")
+    await bob.save("bobs-copy.ics", invitation, "add invitation")
+    await publish("alice")
+    await publish("bob")
+    for me, them in ((alice, "bob"), (bob, "alice")):
+        with pytest.raises(EventConflict):
+            await sync({alice: "alice", bob: "bob"}[me], them)
+        await me._git("merge", "-q", "-s", "ours", "--no-edit", peer_ref(them))
+
+    await publish("bob")
+    with pytest.raises(EventConflict) as exc:
+        await sync("alice", "bob")
+    assert sorted(exc.value.conflicts) == ["delete/modify alices-copy.ics", "modify/delete bobs-copy.ics"]
+    assert alice.names() == ["alices-copy.ics", EVENT]
+
+    # Bob takes Alice's copy instead of his own.
+    await bob._git("checkout", peer_ref("alice"), "--", "calendar.sqlite")
+    await bob.commit("use Alice's copy")
+    await publish("bob")
+    await sync("alice", "bob")
+    assert alice.names() == ["alices-copy.ics", EVENT]
+
+
+def test_a_uid_containing_a_colon_is_kept_whole():
+    assert event_uid(b"BEGIN:VEVENT\r\nUID:mailto:alice\r\nEND:VEVENT\r\n") == "mailto:alice"
+    assert event_uid(b'BEGIN:VEVENT\r\nUID;X-NOTE="a:b":alice\r\nEND:VEVENT\r\n') == "alice"
 
 
 async def test_a_disagreement_both_sides_kept_is_still_reported(team):

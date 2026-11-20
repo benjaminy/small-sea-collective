@@ -58,7 +58,8 @@ def uuid7():
 
 def event_uid(data):
     """The UID property of an iCalendar object, or None if it has none."""
-    match = re.search(rb"^UID[;:](?:[^:\r\n]*:)?(.*?)\r?$", data.replace(b"\r\n ", b""), re.M)
+    # The value follows the first colon outside any quoted parameter, and may itself contain colons.
+    match = re.search(rb'^UID(?:;(?:[^:"\r\n]|"[^"\r\n]*")*)?:(.*?)\r?$', data.replace(b"\r\n ", b""), re.M)
     return match[1].decode("utf-8", "replace") if match else None
 
 

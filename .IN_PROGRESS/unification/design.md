@@ -113,6 +113,17 @@ Teammates can already delete each other's events, so this is not a new power, an
 
 Until automatic unification exists, the merge driver reports two rows with one UID as a conflict, so nothing is silently combined or duplicated.
 
+**"Which row is this event" is a disagreement that must survive merging.**
+Two rows with one UID are not two separate problems, one per row; they are one question about which row stands for the event.
+A review found what happens when the driver forgets that.
+Alice and Bob each kept their own copy of an invitation after the duplicate was reported.
+When their histories crossed, git combined the two candidate bases into one holding both copies, and against that base each side seemed to have deleted the other's copy.
+The merge succeeded and deleted both.
+The driver now marks both rows as having no agreed base, the same treatment as two versions of one row, so the next merge reports the disagreement until both sides hold the same copy.
+
+Unification is the way to settle that question instead of reporting it.
+Whatever form it takes, it has to work with combined bases: a pair recorded on only one side, or two sides that each kept a different row, must still reach a person or the fixed survivor rule, never a silent delete of both.
+
 ## What CalDAV clients see
 
 When B is unified into A, a client sees B's event deleted and A's event changed, through the usual sync-token change list.
