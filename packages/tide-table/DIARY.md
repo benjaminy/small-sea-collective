@@ -409,3 +409,26 @@ Six runs of all three scenarios: every delete merged on both sides and the histo
 Micro tests for `same_event` cover merges made on either side, bookkeeping and folding, a changed field, and recurring events, which `merge_event` cannot parse and so compare byte for byte.
 
 `merge_event` still takes the header and zone from "ours", so the two teammates' merges still differ in bytes; with content comparison that no longer matters for merging.
+
+## 2026-11-19 — The calendar is one SQLite file
+
+Step 1: `CalendarRepo` now keeps every event in `calendar.sqlite`, one row per event, and git merges that file with Tide Table's merge driver.
+
+- Each row has a random UUIDv7 (`id`), the name CalDAV clients use, the event's UID, and its iCalendar text exactly as the client wrote it.
+  A save keeps the event's ID when the name already exists.
+  The UUIDv7 code is a copy of `small_sea_note_to_self.ids.uuid7`, as ssc-files also has; Python 3.12 has no `uuid.uuid7`.
+- `tide_table/merge_driver.py` is the spike's driver made real.
+  `CalendarRepo.create` registers it as `python -m tide_table.merge_driver %O %A %B %L %P`, using the interpreter that created the calendar.
+  It writes the events it merged field by field and its conflicts to a JSON file that `merge` reads, so `EventConflict` now carries descriptions such as `update/update e.ics` or `delete/modify e.ics` instead of paths.
+- Two events with one name or one UID after a merge are a conflict, as `.IN_PROGRESS/unification/design.md` suggests until unification exists.
+- Reads open the file afresh each time, because a merge or checkout replaces it.
+- The CalDAV store reads events through `CalendarRepo` and keeps its calendar in a `calendar/` directory.
+  An older demo workspace's `events/` directory is left alone, so its events no longer show up; nothing converts them.
+
+The crossed-history delete test passes and lost its expected-failure mark.
+New micro tests: an edit against a delete conflicts; two events with one UID conflict; and a disagreement both teammates kept is still reported after their histories cross, then settles once they agree.
+Disabling the no-agreed-base handling makes that last test fail.
+All 39 Tide Table tests pass, including the signed run through two real Hubs.
+
+The demo on a new scratch workspace (ports 5292/5293): an event reached Bob in 1.5 s, concurrent move and location edits merged on both sides in about 5 s, Bob's delete straight after reached Alice in under 4 s, and after a restart both calendars were still empty and a new event synced.
+Apple Calendar and Thunderbird have not been tried against this storage yet.

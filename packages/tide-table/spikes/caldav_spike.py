@@ -3,8 +3,8 @@
 
 Its job is to find out what Apple Calendar and Thunderbird need from a
 localhost CalDAV server, not to be the real Tide Table.
-It serves one user with one calendar and stores each event as a file in a
-git repo (tide_table.calendar_repo); two_teammates_demo.py runs two of these
+It serves one user with one calendar and stores the events in a SQLite file
+in a git repo (tide_table.calendar_repo); two_teammates_demo.py runs two of these
 and syncs them through the Hub.
 Use --log-bodies with synthetic events to capture CalDAV payloads.
 
@@ -57,9 +57,9 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
 
 
 class Store:
-    """Events as files, plus a change counter that backs ctag and sync-token.
+    """Events in a CalendarRepo, plus a change counter that backs ctag and sync-token.
 
-    The events directory is a CalendarRepo, so every save is a git commit.
+    The calendar directory is a CalendarRepo, so every save is a git commit.
     Deletions are remembered forever, so every token we ever issued stays valid.
     Whoever holds lock owns the work tree: CalDAV requests hold it across each
     operation on the store, and the demo holds it across each merge.
@@ -67,7 +67,6 @@ class Store:
 
     def __init__(self, root, cal):
         """Use Store.open."""
-        self.dir = os.path.join(root, "events")
         self.cal = cal
         self.versions = os.path.join(root, "versions")
         os.makedirs(self.versions, exist_ok=True)
@@ -82,14 +81,10 @@ class Store:
 
     @classmethod
     async def open(cls, root, author="spike", signer=None):
-        events = os.path.join(root, "events")
-        if os.path.isdir(os.path.join(events, ".git")):
-            return cls(root, CalendarRepo(events, signer))
-        cal = await CalendarRepo.create(events, author, signer)
-        if os.listdir(events) != [".git"]:
-            await cal.repo.stage()
-            await cal.commit("Import events stored before git")
-        return cls(root, cal)
+        calendar = os.path.join(root, "calendar")
+        if os.path.isdir(os.path.join(calendar, ".git")):
+            return cls(root, CalendarRepo(calendar, signer))
+        return cls(root, await CalendarRepo.create(calendar, author, signer))
 
     def _save(self):
         with open(self.state_path, "w") as f:
@@ -100,14 +95,10 @@ class Store:
         return self.state["token"]
 
     def names(self):
-        return sorted(n for n in os.listdir(self.dir) if not n.startswith("."))
+        return self.cal.names()
 
     def get(self, name):
-        path = os.path.join(self.dir, name)
-        if not os.path.exists(path):
-            return None
-        with open(path, "rb") as f:
-            return f.read()
+        return self.cal.read(name)
 
     def version(self, etag):
         """A body this store has held, looked up by its ETag, or None."""
