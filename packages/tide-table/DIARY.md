@@ -474,3 +474,17 @@ Known unknowns, deferred:
 - Apple Calendar and Thunderbird have not been pointed at the SQLite storage, let alone the placeholders: whether they show the link, fire the alarm, or behave when an edit to a placeholder is ignored.
 - Conflicts are only re-checked when a teammate publishes. If the person edits the conflicting event locally so that it matches, the placeholder stays until the next merge or a visit to the page.
 - The page shows yours and theirs but not the version both started from.
+
+## 2026-11-19 — Applying a person's choices correctly
+
+A review found two ways the conflict page applied the wrong thing.
+
+- **Two conflicts could not be resolved.** Each conflict had its own buttons, but a merge needs every choice at once: a single choice settled nothing, and the page still reported success.
+  Each teammate's conflicts now share one form, with a choice for each and one "Apply choices" button.
+  A submission that still leaves conflicts applies nothing and says so.
+  Fixing this exposed a second bug: a merge with only some choices recorded the smaller conflict list it reported, so the page dropped the conflict already chosen and the next submission never applied that choice. Only a merge without choices now records conflicts.
+- **"Keep Bob's" could commit a version Alice never saw.** The sync agent can move Bob's parked ref at any time, even while Alice's merge holds the calendar lock.
+  `Store.merge` now fixes the commit before merging and records conflicts against the exact commits that produced them, and a choice merges exactly the commit shown on the page.
+  Whatever was fetched since merges afterwards as a change of its own.
+
+Micro tests cover both cases. The live run on a scratch workspace still resolves a conflict on both sides.

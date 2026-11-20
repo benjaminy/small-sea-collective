@@ -172,12 +172,13 @@ class Store:
         self._mark_changed(name)
         self._save()
 
-    async def _heads(self, teammate_id):
-        ours = await self.cal.repo.head() if await self.cal.repo.has_commits() else None
-        return [ours, await self.cal.repo.resolve_ref(peer_ref(teammate_id))]
-
-    async def merge(self, teammate_id, resolutions=None):
+    async def merge(self, teammate_id, resolutions=None, theirs=None):
         """Merge a teammate's parked changes; the caller holds lock.
+
+        theirs is the commit to merge; by default, whatever the teammate's
+        parked ref points at now. The sync agent can move that ref at any
+        time, so the commit is fixed before merging, and conflicts are
+        recorded against the commits that produced them.
 
         Returns (events merged field by field, names changed, names deleted,
         whether main moved). On conflict, records the conflicts as
@@ -186,39 +187,52 @@ class Store:
         """
         before = self.snapshot()
         head = await self.cal.repo.head() if await self.cal.repo.has_commits() else None
+        theirs = theirs or await self.cal.repo.resolve_ref(peer_ref(teammate_id))
         try:
-            merged = await self.cal.merge(peer_ref(teammate_id), resolutions)
+            merged = await self.cal.merge(theirs, resolutions)
         except EventConflict as e:
-            self._set_conflicts(teammate_id, e.details, await self._heads(teammate_id))
+            # With choices, the driver leaves out the conflicts they settle;
+            # the conflicts recorded without them stay, so all can be chosen again.
+            if resolutions is None:
+                self._set_conflicts(teammate_id, e.details, [head, theirs])
             raise
         self._set_conflicts(teammate_id)
         changed, deleted = self.record_changes_since(before)
         return merged, changed, deleted, await self.cal.repo.head() != head
 
-    async def resolve(self, teammate_id, ids, choice, heads):
-        """Merge a teammate's parked changes with a person's choice for one conflict.
+    async def resolve(self, teammate_id, resolutions, heads):
+        """Merge a teammate's changes with a person's choices for the conflicts.
 
-        heads are the two histories' heads when the person saw the conflict.
-        If either has moved since, the choice is not applied, the conflicts
-        are refreshed, and this returns False.
+        heads are the two commits whose conflicts the person saw. If this
+        device has committed since, or the conflicts have since been
+        recorded against other commits, the choices are not applied and the
+        conflicts are refreshed. Otherwise exactly the teammate's commit the
+        person saw is merged; anything fetched since merges afterwards as a
+        new change.
+
+        Returns "resolved", "stale", or "unresolved" if conflicts remain.
         """
         await self.lock.acquire()
         # Its own task, so an abandoned request cannot stop a merge halfway.
-        return await asyncio.shield(asyncio.create_task(self._resolve_holding_lock(teammate_id, ids, choice, heads)))
+        return await asyncio.shield(asyncio.create_task(self._resolve_holding_lock(teammate_id, resolutions, heads)))
 
-    async def _resolve_holding_lock(self, teammate_id, ids, choice, heads):
+    async def _resolve_holding_lock(self, teammate_id, resolutions, heads):
         try:
             entry = self.state["conflicts"].get(teammate_id)
             if entry is None:
-                return False
-            fresh = entry["heads"] == heads == await self._heads(teammate_id)
+                return "stale"
+            ours = await self.cal.repo.head() if await self.cal.repo.has_commits() else None
+            fresh = entry["heads"] == heads and heads[0] == ours
             try:
-                *_, moved = await self.merge(teammate_id, {i: choice for i in ids} if fresh else None)
+                if fresh:
+                    *_, moved = await self.merge(teammate_id, resolutions, theirs=heads[1])
+                else:
+                    *_, moved = await self.merge(teammate_id)
             except EventConflict:
-                return fresh
+                return "unresolved" if fresh else "stale"
             if moved and self.on_commit:
                 self.on_commit()
-            return fresh
+            return "resolved" if fresh else "stale"
         finally:
             self.lock.release()
 
@@ -749,20 +763,22 @@ class Handler:
             self._send(404)
             return
         if parts[3:] == [] and self.command == "GET":
-            stale = "stale" in parse_qs(self.path.partition("?")[2])
+            notice = next(iter(parse_qs(self.path.partition("?")[2]).get("result", [])), None)
             async with store.lock:
                 body = conflicts.page(store.state["conflicts"], store.teammate_names,
-                                      store.conflict_page + "/resolve", stale)
+                                      store.conflict_page + "/resolve", notice)
             self._send(200, body, content_type="text/html; charset=utf-8")
         elif parts[3:] == ["resolve"] and self.command == "POST":
             form = {k: v[0] for k, v in parse_qs(self._req_body.decode(), keep_blank_values=True).items()}
-            if form.get("choice") not in ("ours", "theirs") or not form.get("teammate"):
+            choices = {k[len("conflict:"):]: v for k, v in form.items() if k.startswith("conflict:")}
+            if not form.get("teammate") or not choices or set(choices.values()) - {"ours", "theirs"}:
                 self._send(400)
                 return
+            resolutions = {i: choice for ids, choice in choices.items() for i in ids.split(",")}
             heads = [form.get("ours_head") or None, form.get("theirs_head")]
-            fresh = await store.resolve(form["teammate"], form.get("ids", "").split(","), form["choice"], heads)
-            self._note = f"resolved: {form['choice']}" if fresh else "resolution was stale"
-            self._send(303, headers={"Location": store.conflict_page + ("" if fresh else "?stale=1")})
+            result = await store.resolve(form["teammate"], resolutions, heads)
+            self._note = f"choices {result}"
+            self._send(303, headers={"Location": store.conflict_page + ("" if result == "resolved" else f"?result={result}")})
         else:
             self._send(404)
 
