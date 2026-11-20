@@ -774,9 +774,15 @@ class Handler:
             if not form.get("teammate") or not choices or set(choices.values()) - {"ours", "theirs"}:
                 self._send(400)
                 return
-            resolutions = {i: choice for ids, choice in choices.items() for i in ids.split(",")}
+            # An event can be in two conflicts (one over its name, one over
+            # its UID); choices that disagree about it cannot both apply.
+            pairs = {(i, choice) for ids, choice in choices.items() for i in ids.split(",")}
+            resolutions = dict(pairs)
             heads = [form.get("ours_head") or None, form.get("theirs_head")]
-            result = await store.resolve(form["teammate"], resolutions, heads)
+            if len(resolutions) < len(pairs):
+                result = "contradictory"
+            else:
+                result = await store.resolve(form["teammate"], resolutions, heads)
             self._note = f"choices {result}"
             self._send(303, headers={"Location": store.conflict_page + ("" if result == "resolved" else f"?result={result}")})
         else:
