@@ -488,3 +488,19 @@ A review found two ways the conflict page applied the wrong thing.
   Whatever was fetched since merges afterwards as a change of its own.
 
 Micro tests cover both cases. The live run on a scratch workspace still resolves a conflict on both sides.
+
+## 2026-11-20 — The placeholder in Apple Calendar and Thunderbird
+
+Real clients show the conflict placeholder, and resolving on one side clears it on the other.
+We ran the two-teammate demo on a scratch workspace, with Apple Calendar connected as Alice (found from `/dav/principals/alice/`) and Thunderbird subscribed to Bob's calendar.
+A script gave the same event different locations on both sides at once, because the sides sync within about 5 s, too fast for two people to clash by hand.
+
+- Both clients showed "⚠️ CONFLICT: Team lunch".
+  Thunderbird fetched its placeholder about 20 s after the conflict.
+- Alice chose a side on the conflict page in a browser.
+  Bob's server merged the result, and Thunderbird dropped the placeholder on its next poll.
+- Thunderbird checks a calendar only every 30 minutes by default, so without a manual refresh a placeholder can take that long to appear.
+- Right after the form was submitted, the browser sent a GET to the form's `/resolve` address and got a 404.
+  It did no harm; that address could answer GET with a redirect to the page.
+
+Still not checked in real clients: whether the link in the placeholder can be opened from the event, whether the alarm fires, and what each client does when an edit to a placeholder is ignored or a placeholder is deleted.
