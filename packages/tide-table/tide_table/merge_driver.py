@@ -15,9 +15,10 @@ The merge works on rows, through Splice Merge's export and row deltas:
 When histories cross, git first merges their candidate bases, and passes a
 conflict-marker size above the default 7 to say so. A conflict there must
 not fail: git would carry on with one side as the base and quietly settle the
-disagreement. Instead the event's version in the merged base becomes
-NO_AGREED_BASE, and in the real merge an event with that base is settled only
-if both sides hold the same event.
+disagreement. Instead each row in the conflict, including both rows of a
+duplicate name or UID, gets NO_AGREED_BASE as its version in the merged base.
+In the real merge, an event with that base is settled only if both sides hold
+the same event, or neither holds it.
 
 If $TIDE_TABLE_MERGE_REPORT names a file, the real merge writes there, as
 JSON, the names of the events merged field by field and a description of
@@ -93,7 +94,13 @@ def merge(base_path, ours_path, theirs_path, building_base):
         conflicts.append(f"{c.kind} {name}")
         unsettled[c.key] = o or t
 
-    conflicts += _duplicates(o_rows, cleaned.get("events", {}))
+    # Two events with one name or UID are a disagreement about which row is the
+    # event, so in a merged base both rows get NO_AGREED_BASE too. Otherwise
+    # each side's choice of its own row would look like deleting the other's.
+    for description, rows in _duplicates(o_rows, cleaned.get("events", {})):
+        conflicts.append(description)
+        for row in rows:
+            unsettled[(("blob", row["id"]["__blob__"]),)] = row
     if conflicts and not building_base:
         return merged, conflicts
     apply_delta(ours_path, cleaned)
@@ -107,7 +114,10 @@ def merge(base_path, ours_path, theirs_path, building_base):
 
 
 def _duplicates(ours_rows, delta):
-    """Conflicts for two events that would share a name or a UID once delta is applied to ours."""
+    """Two events that would share a name or a UID once delta is applied to ours.
+
+    Returns a (description, (row, row)) pair for each.
+    """
     rows = dict(ours_rows)
     for key in delta.get("deletes", {}):
         rows.pop(key, None)
@@ -121,8 +131,9 @@ def _duplicates(ours_rows, delta):
             if value is None:
                 continue
             if value in seen:
-                out.append(f"two events with {column} {value}: {seen[value]} and {row['name']}")
-            seen.setdefault(value, row["name"])
+                out.append((f"two events with {column} {value}: {seen[value]['name']} and {row['name']}",
+                            (seen[value], row)))
+            seen.setdefault(value, row)
     return out
 
 

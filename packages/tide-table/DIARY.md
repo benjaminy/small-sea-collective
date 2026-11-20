@@ -432,3 +432,21 @@ All 39 Tide Table tests pass, including the signed run through two real Hubs.
 
 The demo on a new scratch workspace (ports 5292/5293): an event reached Bob in 1.5 s, concurrent move and location edits merged on both sides in about 5 s, Bob's delete straight after reached Alice in under 4 s, and after a restart both calendars were still empty and a new event synced.
 Apple Calendar and Thunderbird have not been tried against this storage yet.
+
+## 2026-11-19 — Keeping your own copy is a disagreement too
+
+A review found a merge that succeeded by deleting an invitation both teammates kept.
+Alice and Bob added the same invitation under different names; both merges reported the duplicate UID, and each resolved it by keeping their own copy.
+On the next sync git combined the two crossed bases, and the driver put both rows into the combined base unmarked.
+Against that base each side seemed to have deleted the other's copy, so the merge deleted both.
+
+`NO_AGREED_BASE` had only covered conflicts within one row.
+Now, in a combined base, both rows of a duplicate name or UID get it too.
+The real merge then reports each copy as kept on one side and deleted on the other, and succeeds once both sides hold the same copy.
+A micro test covers this; it fails with the old driver.
+
+The same review found that `event_uid` dropped the start of a UID that contains a colon (`UID:mailto:alice` read as `alice`), so unrelated events could look like duplicates.
+It now takes everything after the first colon outside quoted parameters.
+
+Not fixed: `same_event` ignores VTIMEZONE blocks, so two versions that define one TZID with different offsets count as the same event, and a concurrent delete can win silently.
+Telling them apart needs a VTIMEZONE interpreter, which the planned parsed columns for `calendar-query` will also need.
