@@ -75,6 +75,18 @@ The same translation works whichever side runs the merge, and it covers chains: 
 `merge_event` currently refuses versions whose UIDs differ.
 For a unified pair it would accept them, since that is the point of unifying.
 
+**Two teammates unifying the same pair can disagree without a visible edit.**
+Say A's location is Room 1 and B's is Room 2, and Alice and Bob each unify the pair.
+Alice keeps Room 1, so A's location is unchanged on her side; Bob picks Room 2, so A's location changed on his.
+Both add the same pair and delete B.
+An ordinary three-way merge of A sees only Bob editing the location, takes Room 2, and nobody learns they disagreed.
+The surviving ID is not the issue (both agree it is A); the issue is that keeping a value looks the same as never touching it.
+
+Proposed rule: when both sides added the same pair since the base, the fields where A and B differed are choices both sides made.
+The driver compares those fields directly between ours and theirs, and reports a conflict where they differ.
+Fields where A and B agreed merge three-way as usual.
+The alternative is to accept that the side that changed something wins, which is simpler but loses Alice's choice silently.
+
 **A late delete of a unified-away row is ambiguous.**
 Bob deleting B may mean "this meeting is cancelled", which should delete A, or it may be cleanup that no longer matters.
 Candidate rules:
@@ -123,6 +135,7 @@ Building it in Tide Table first and moving the general parts into Splice Merge w
 
 ## Open questions
 
+- When two teammates unify the same pair with different choices, compare the chosen fields directly (proposed), or let the side that changed something win?
 - Should the same UID unify automatically, or always ask?
 - Which rule for a late delete of a unified-away row?
 - Should the CalDAV server map a unified-away name to its survivor?

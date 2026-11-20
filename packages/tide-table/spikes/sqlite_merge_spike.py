@@ -51,8 +51,10 @@ def _summary(ics):
     return f"start={pick('DTSTART')[-6:]} location={pick('LOCATION')}"
 
 
-def driver(base, ours, theirs, _marker, path):
-    log = {"path": path, **{side: _summary(_events(f).get(EVENT))
+def driver(base, ours, theirs, marker, path):
+    # Git widens the conflict markers by 2 for each level of merging bases, so
+    # a marker size above the default 7 means this call builds a merged base.
+    log = {"path": path, "marker": int(marker), **{side: _summary(_events(f).get(EVENT))
                             for side, f in (("base", base), ("ours", ours), ("theirs", theirs))}}
     b, o, t = (sqlite_to_json(f) for f in (base, ours, theirs))
     cleaned, conflicts = reconcile_deltas(compute_delta(b, o), compute_delta(b, t))
@@ -157,23 +159,53 @@ def scenario(root, deleter):
     print("Same history:", git(alice, "rev-parse", "HEAD").stdout == git(bob, "rev-parse", "HEAD").stdout)
 
 
+def rooms(root):
+    """Alice and Bob each keep their own room after a real conflict, then sync again.
+
+    Their disagreement should come back as a conflict, not vanish.
+    """
+    alice, bob = root / "alice", root / "bob"
+    create(alice, "alice")
+    create(bob, "bob")
+    location = (FIXTURES / "thunderbird-location.ics").read_bytes()
+    save(alice, (FIXTURES / "base.ics").read_bytes(), "create")
+    fetch(bob, alice, "alice")
+    assert merge(bob, "alice")
+    save(alice, location.replace(b"over theere", b"Room A"), "Room A")
+    save(bob, location.replace(b"over theere", b"Room B"), "Room B")
+    fetch(alice, bob, "bob")
+    fetch(bob, alice, "alice")
+    print("Alice merges Bob's room:", merge(alice, "bob"))
+    print("Bob merges Alice's room:", merge(bob, "alice"))
+    # Each resolves the conflict by keeping their own room.
+    git(alice, "merge", "-q", "-s", "ours", "--no-edit", "refs/peers/bob")
+    git(bob, "merge", "-q", "-s", "ours", "--no-edit", "refs/peers/alice")
+    fetch(alice, bob, "bob")
+    print("Alice merges Bob's resolution:", merge(alice, "bob"), "->", _summary(event(alice)))
+
+
+def run(root, title, play):
+    shutil.rmtree(root, ignore_errors=True)
+    os.environ["SPIKE_LOG"] = str(root / "driver.log")
+    root.mkdir(parents=True)
+    print(f"=== {title}")
+    play(root)
+    print("Driver calls (marker size: base / ours / theirs):")
+    for line in (root / "driver.log").read_text().splitlines():
+        call = json.loads(line)
+        print(f"  {call['marker']:2}: base {call['base']} | ours {call['ours']} | theirs {call['theirs']}"
+              f"{'  UNRESOLVED ' + str(call['unresolved']) if call['unresolved'] else ''}")
+    print()
+
+
 def main():
     if sys.argv[1] == "driver":
         driver(*sys.argv[2:7])
         return
+    workdir = pathlib.Path(sys.argv[1])
     for deleter in ("bob", "alice"):
-        root = pathlib.Path(sys.argv[1]) / f"{deleter}-deletes"
-        shutil.rmtree(root, ignore_errors=True)
-        os.environ["SPIKE_LOG"] = str(root / "driver.log")
-        root.mkdir(parents=True)
-        print(f"=== {deleter} deletes")
-        scenario(root, deleter)
-        print("Driver calls (base / ours / theirs):")
-        for line in (root / "driver.log").read_text().splitlines():
-            call = json.loads(line)
-            print(f"  base {call['base']} | ours {call['ours']} | theirs {call['theirs']}"
-                  f"{'  UNRESOLVED ' + str(call['unresolved']) if call['unresolved'] else ''}")
-        print()
+        run(workdir / f"{deleter}-deletes", f"{deleter} deletes", lambda root: scenario(root, deleter))
+    run(workdir / "rooms", "each keeps their own room", rooms)
 
 
 if __name__ == "__main__":
