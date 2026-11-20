@@ -20,7 +20,11 @@ When git is merging candidate bases rather than the real histories, a
 conflict must not fail: git would carry on with one side as the base and
 quietly settle the disagreement. Instead the driver stores NO_AGREED_BASE for
 that event. In the real merge, an event whose base is NO_AGREED_BASE is
-settled only if both sides hold the same version.
+settled only if both sides hold the same event.
+
+"The same event" is `same_event`: the bookkeeping fields, calendar header and
+time-zone blocks do not count. A side whose version of an event is the same
+event as the base's has not changed it.
 """
 
 import json
@@ -33,7 +37,7 @@ import sys
 
 from splice_merge.core import apply_delta, compute_delta, reconcile_deltas, sqlite_to_json
 
-from tide_table.merge import Merged, Unsupported, merge_event
+from tide_table.merge import Merged, Unsupported, merge_event, same_event
 
 FIXTURES = pathlib.Path(__file__).parent.parent / "tests" / "fixtures" / "move-vs-location"
 DB = "calendar.sqlite"
@@ -61,6 +65,16 @@ def _summary(ics):
     return f"start={pick('DTSTART')[-6:]} location={pick('LOCATION')}"
 
 
+def _unchanged_as_base(base, side):
+    """In side's export, replace each event that is the same event as the base's with the base's row."""
+    base_rows = {r["name"]: r for r in base["__tables__"].get("events", [])}
+    rows = side["__tables__"].get("events", [])
+    for i, row in enumerate(rows):
+        was = base_rows.get(row["name"])
+        if was and same_event(bytes.fromhex(was["ics"]["__blob__"]), bytes.fromhex(row["ics"]["__blob__"])):
+            rows[i] = was
+
+
 def driver(base, ours, theirs, marker, path):
     # Git widens the conflict markers by 2 for each level of merging bases, so
     # a marker size above the default 7 means this call builds a merged base.
@@ -68,12 +82,14 @@ def driver(base, ours, theirs, marker, path):
     log = {"path": path, "marker": int(marker), **{side: _summary(_events(f).get(EVENT))
                             for side, f in (("base", base), ("ours", ours), ("theirs", theirs))}}
     b, o, t = (sqlite_to_json(f) for f in (base, ours, theirs))
+    for side in (o, t):
+        _unchanged_as_base(b, side)
     cleaned, conflicts = reconcile_deltas(compute_delta(b, o), compute_delta(b, t))
     unresolved = []
     for c in conflicts:
         name = c.key[0][1]
         if c.table == "events" and c.kind == "update/update" and _events(base)[name] == NO_AGREED_BASE:
-            if _events(ours)[name] == _events(theirs)[name]:
+            if same_event(_events(ours)[name], _events(theirs)[name]):
                 continue  # both sides settled on the same version; ours already holds it
         elif c.table == "events" and c.kind == "update/update":
             versions = [_events(f)[name] for f in (base, ours, theirs)]
@@ -202,8 +218,10 @@ def rooms(root):
     git(bob, "merge", "-q", "-s", "ours", "--no-edit", "refs/peers/alice")
     fetch(alice, bob, "bob")
     print("Alice merges Bob's resolution:", merge(alice, "bob"), "->", _summary(event(alice)))
-    # Bob gives in and switches to Room A; now they agree.
-    save(bob, location.replace(b"over theere", b"Room A"), "Room A after all")
+    # Bob gives in and switches to Room A; now they agree, though his client
+    # stamps the event afresh.
+    room_a = location.replace(b"over theere", b"Room A")
+    save(bob, room_a.replace(b"DTSTAMP:20261118T192728Z", b"DTSTAMP:20261120T090000Z").replace(b"SEQUENCE:1", b"SEQUENCE:3"), "Room A after all")
     fetch(alice, bob, "bob")
     print("Alice merges Bob's change of mind:", merge(alice, "bob"), "->", _summary(event(alice)))
 

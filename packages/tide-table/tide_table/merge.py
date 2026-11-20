@@ -21,6 +21,10 @@ block from ours (or from theirs if ours lacks it).
 Field order and line folding follow the side each line came from; the
 calendar's own properties (PRODID, VERSION, ...) come from ours.
 
+`same_event(a, b)` says whether two versions agree on everything the merge
+compares, so two versions that differ only in bookkeeping or in calendar
+header count as one.
+
 Not handled: recurrence (RRULE, RDATE, EXDATE, RECURRENCE-ID), more than one
 VEVENT, and components other than VEVENT and VTIMEZONE. These raise
 `Unsupported`.
@@ -152,6 +156,22 @@ def _int(lines):
         return int(_value(lines[0]).strip()) if lines else 0
     except ValueError:
         return 0
+
+
+def same_event(a: bytes, b: bytes) -> bool:
+    """Whether a and b say the same thing about one event.
+
+    Compares what `merge_event` compares: every event field except the
+    bookkeeping ones, ignoring line folding and the order of lines within a
+    field. The calendar header and VTIMEZONE blocks are ignored too. Objects
+    this module cannot parse are the same only if their bytes are.
+    """
+    try:
+        x, y = _parse(a), _parse(b)
+    except Unsupported:
+        return a == b
+    content = lambda c: {k: _key(v) for k, v in c.fields.items() if k not in BOOKKEEPING}
+    return content(x) == content(y)
 
 
 def merge_event(base: bytes, ours: bytes, theirs: bytes):

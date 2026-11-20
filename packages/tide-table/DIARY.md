@@ -396,3 +396,16 @@ That held in five runs out of five.
 "The same version" is a byte comparison for now.
 That works here because both Room A versions come from the same text; two real clients that agree on a room will still differ in DTSTAMP and SEQUENCE, so the comparison has to be by content, the same need as the delete case.
 The crossed-history delete is unchanged by this and still depends on luck: in five runs, it wedged in three of the ten merges of a delete.
+
+Then content comparison, which fixes the delete case.
+`tide_table.merge.same_event(a, b)` says whether two versions agree on everything `merge_event` compares: every event field except DTSTAMP, LAST-MODIFIED, X-MOZ-GENERATION and SEQUENCE, ignoring line folding, the calendar header and time-zone blocks.
+The spike's driver uses it twice:
+- Before diffing, a side whose version of an event is the same event as the base's counts as not having changed it.
+  In the crossed-history delete, Alice's merged event and git's merged base differ only in header and zone, so Alice's side no longer looks edited, and Bob's delete applies.
+- With `NO_AGREED_BASE` as the base, the two sides are settled if they are the same event, not the same bytes.
+  The rooms scenario now has Bob's client stamp a new DTSTAMP and SEQUENCE when he switches to Room A; the merge still accepts it.
+
+Six runs of all three scenarios: every delete merged on both sides and the histories converged, Bob's resolution was reported as a conflict every time, and his change of mind was accepted every time.
+Micro tests for `same_event` cover merges made on either side, bookkeeping and folding, a changed field, and recurring events, which `merge_event` cannot parse and so compare byte for byte.
+
+`merge_event` still takes the header and zone from "ours", so the two teammates' merges still differ in bytes; with content comparison that no longer matters for merging.
