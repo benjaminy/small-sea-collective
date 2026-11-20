@@ -375,3 +375,14 @@ Two ways to fix it, not yet tried:
 - Have the driver compare events by content rather than bytes, so an event whose fields match the base counts as unchanged.
 
 The first also lets the two merge commits hold identical rows, which may help histories converge; the second is more forgiving of clients that rewrite events without changing them.
+
+A reviewer found a worse case in the same spike, now its third scenario.
+Alice sets the location to Room A and Bob to Room B; both merges conflict, and each resolves by keeping their own room.
+When Alice next merges Bob's history, git first merges the two candidate bases, where the driver hits the same conflict and exits 1.
+Git does not stop: it uses the failed inner merge's "ours" (Room B) as the base, sees that only Alice changed the location relative to it, and keeps Room A without calling the driver again.
+The merge succeeds and Alice never learns they still disagree.
+
+The driver can tell these inner merges apart: git passes a conflict-marker size of 9 for them instead of 7 (it widens the markers by 2 per level).
+So in an inner merge, the driver could write a placeholder for an event it cannot merge, meaning "no agreed base".
+Both sides would then differ from the base, git would have to call the driver for the real merge, and the driver could compare the two sides directly: identical means settled, different means still in conflict.
+Not tried yet.
