@@ -136,33 +136,43 @@ def _field_rows(row, teammate_name):
     return note, "".join(out)
 
 
-def page(conflicts, names, action, stale=False):
+NOTICES = {
+    "stale": "Something changed since you loaded this page, so nothing was applied. Check the choices again.",
+    "unresolved": "Some conflicts are still unresolved, so nothing was applied.",
+}
+
+
+def page(conflicts, names, action, notice=None):
     """The resolution page.
 
     conflicts maps teammate IDs to {"details": [...], "heads": [ours, theirs]};
     names maps teammate IDs to display names; action is the URL the choices
-    are posted to.
+    are posted to. A merge needs every choice at once, so each teammate's
+    conflicts share one form, with a field "conflict:<event IDs>" for each.
+    notice is a key of NOTICES, or None.
     """
-    sections = []
+    forms = []
     for teammate_id, entry in conflicts.items():
-        who = names.get(teammate_id, teammate_id[:8])
+        who = html.escape(names.get(teammate_id, teammate_id[:8]))
+        sections = []
         for conflict in entry["details"]:
             tables = []
             for row in conflict["rows"]:
-                note, rows = _field_rows(row, who)
+                note, rows = _field_rows(row, names.get(teammate_id, teammate_id[:8]))
                 tables.append(f"<h3>{html.escape(row['name'])}</h3>{note}"
-                              f"<table><tr><th></th><th>Yours</th><th>{html.escape(who)}'s</th></tr>{rows}</table>")
-            hidden = "".join(f'<input type=hidden name={k} value="{html.escape(v)}">' for k, v in (
-                ("teammate", teammate_id), ("ours_head", entry["heads"][0] or ""), ("theirs_head", entry["heads"][1]),
-                ("ids", ",".join(r["id"] for r in conflict["rows"]))))
+                              f"<table><tr><th></th><th>Yours</th><th>{who}'s</th></tr>{rows}</table>")
+            field = html.escape("conflict:" + ",".join(r["id"] for r in conflict["rows"]))
             sections.append(
                 f"<section><h2>⚠️ {html.escape(_summary(conflict))}</h2>"
                 f"<p class=what>{html.escape(conflict['description'])}</p>{''.join(tables)}"
-                f'<form method=post action="{html.escape(action)}">{hidden}'
-                f"<button name=choice value=ours>Keep yours</button> "
-                f"<button name=choice value=theirs>Keep {html.escape(who)}'s</button></form></section>")
-    body = "".join(sections) or "<p>No conflicts. Everything merged.</p>"
-    notice = "<p class=stale>Something changed since you loaded this page. Check the choices again.</p>" if stale else ""
+                f'<p><label><input type=radio name="{field}" value=ours required> Keep yours</label> '
+                f'<label><input type=radio name="{field}" value=theirs> Keep {who}\'s</label></p></section>')
+        hidden = "".join(f'<input type=hidden name={k} value="{html.escape(v)}">' for k, v in (
+            ("teammate", teammate_id), ("ours_head", entry["heads"][0] or ""), ("theirs_head", entry["heads"][1])))
+        forms.append(f'<form method=post action="{html.escape(action)}">{hidden}<h2>With {who}</h2>'
+                     f"{''.join(sections)}<button>Apply choices</button></form>")
+    body = "".join(forms) or "<p>No conflicts. Everything merged.</p>"
+    notice = f"<p class=stale>{NOTICES[notice]}</p>" if notice in NOTICES else ""
     return f"""<!doctype html>
 <html><head><meta charset=utf-8><meta name=viewport content="width=device-width, initial-scale=1">
 <title>Calendar conflicts</title>
@@ -173,7 +183,8 @@ table {{ border-collapse: collapse; width: 100%; }}
 th, td {{ text-align: left; padding: 4px 8px; border-bottom: 1px solid #ddd; vertical-align: top; overflow-wrap: anywhere; }}
 tr.differs td {{ background: #fff3cd; font-weight: 600; }}
 td.gone {{ color: #888; }}
-button {{ font-size: 1rem; padding: 6px 12px; margin-top: 1rem; }}
+button {{ font-size: 1rem; padding: 6px 12px; margin: 0 0 2rem; }}
+label {{ margin-right: 1.5rem; }}
 .what {{ color: #666; }} .stale {{ background: #fff3cd; padding: 8px; }}
 </style></head>
 <body><h1>Calendar conflicts</h1>{notice}{body}</body></html>

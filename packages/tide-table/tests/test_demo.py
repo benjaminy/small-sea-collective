@@ -396,13 +396,26 @@ async def test_agent_retries_a_failed_publish(tmp_path, monkeypatch, spikes):
     assert await store.cal.fetch(cloud, "Alice") == await store.cal.repo.head()
 
 
+LOCATION = (pathlib.Path(__file__).parent / "fixtures" / "move-vs-location" / "thunderbird-location.ics").read_bytes()
+EVENT, BOB_ID = "event.ics", "b0b0b0b0b0b0"
+
+
+def _at(event, room):
+    return LOCATION.replace(b"UID:", f"UID:{event}-".encode()).replace(b"over theere", room.encode())
+
+
 @contextlib.asynccontextmanager
-async def _conflicted(tmp_path):
-    """Alice's CalDAV server with a conflict with Bob: yields the server, an HTTP client, the calendar URL and the server's root."""
+async def _conflicted(tmp_path, events=(EVENT,)):
+    """Alice's CalDAV server with a conflict with Bob over each of events.
+
+    Alice moves each event to the kitchen, Bob to the garden. Yields Alice's
+    store, an HTTP client, the calendar URL, the server's root, and a
+    coroutine function that saves an event on Bob's side and lets Alice
+    fetch it without merging.
+    """
     from caldav_spike import Store
     from tide_table.calendar_repo import EventConflict
 
-    location = (pathlib.Path(__file__).parent / "fixtures" / "move-vs-location" / "thunderbird-location.ics").read_bytes()
     bob = await Store.open(tmp_path / "bob", author="Bob")
     cloud = {}
     for name in ("alice", "bob"):
@@ -413,31 +426,37 @@ async def _conflicted(tmp_path):
         root = url.split("/dav/")[0]
         alice.base_url = root
         alice.teammate_names = {BOB_ID: "Bob"}
-        await alice.put(EVENT, location)
+
+        async def bob_saves(event, room):
+            await bob.put(event, _at(event, room))
+            await bob.cal.publish(cloud["bob"])
+            await alice.cal.fetch(cloud["bob"], BOB_ID)
+
+        for event in events:
+            await alice.put(event, _at(event, "the hall"))
         await alice.cal.publish(cloud["alice"])
         await bob.cal.fetch(cloud["alice"], "alice")
         await bob.cal.merge(peer_ref("alice"))
-        await alice.put(EVENT, location.replace(b"over theere", b"kitchen"))
-        await bob.put(EVENT, location.replace(b"over theere", b"garden"))
-        await bob.cal.publish(cloud["bob"])
-        await alice.cal.fetch(cloud["bob"], BOB_ID)
+        for event in events:
+            await alice.put(event, _at(event, "kitchen"))
+            await bob_saves(event, "garden")
         async with alice.lock:
             with pytest.raises(EventConflict):
                 await alice.merge(BOB_ID)
-        yield alice, http, url, root
+        yield alice, http, url, root, bob_saves
 
 
-EVENT, BOB_ID = "event.ics", "b0b0b0b0b0b0"
-
-
-def _resolution(store, choice):
+def _form(store, choices):
+    """The page's form for Bob's conflicts, with choices (one per conflict, in order) filled in."""
     entry = store.state["conflicts"][BOB_ID]
-    return {"teammate": BOB_ID, "ours_head": entry["heads"][0], "theirs_head": entry["heads"][1],
-            "ids": entry["details"][0]["rows"][0]["id"], "choice": choice}
+    form = {"teammate": BOB_ID, "ours_head": entry["heads"][0], "theirs_head": entry["heads"][1]}
+    for conflict, choice in zip(entry["details"], choices):
+        form["conflict:" + ",".join(r["id"] for r in conflict["rows"])] = choice
+    return form
 
 
 async def test_a_conflict_shows_as_a_placeholder_until_resolved(tmp_path, spikes):
-    async with _conflicted(tmp_path) as (alice, http, url, root):
+    async with _conflicted(tmp_path) as (alice, http, url, root, _):
         (placeholder,) = [n for n in alice.names() if n != EVENT]
         assert placeholder.startswith("tide-table-conflict-")
         body = (await http.get(url + placeholder, auth=("alice", "tide"))).content
@@ -449,12 +468,12 @@ async def test_a_conflict_shows_as_a_placeholder_until_resolved(tmp_path, spikes
         assert b"kitchen" in page.content and b"garden" in page.content
 
         stale = await http.post(root + alice.conflict_page + "/resolve",
-                                data={**_resolution(alice, "theirs"), "theirs_head": "0" * 40})
-        assert stale.status_code == 303 and stale.headers["location"].endswith("?stale=1")
+                                data={**_form(alice, ["theirs"]), "theirs_head": "0" * 40})
+        assert stale.status_code == 303 and stale.headers["location"].endswith("?result=stale")
         assert b"kitchen" in alice.get(EVENT)
 
         token = alice.token
-        done = await http.post(root + alice.conflict_page + "/resolve", data=_resolution(alice, "theirs"))
+        done = await http.post(root + alice.conflict_page + "/resolve", data=_form(alice, ["theirs"]))
         assert done.status_code == 303 and done.headers["location"] == alice.conflict_page
         assert b"LOCATION:garden" in alice.get(EVENT)
         assert alice.changes_since(token) == ([EVENT], [placeholder])
@@ -462,7 +481,7 @@ async def test_a_conflict_shows_as_a_placeholder_until_resolved(tmp_path, spikes
 
 
 async def test_a_client_can_dismiss_a_placeholder_but_not_edit_it(tmp_path, spikes):
-    async with _conflicted(tmp_path) as (alice, http, url, root):
+    async with _conflicted(tmp_path) as (alice, http, url, root, _):
         (placeholder,) = [n for n in alice.names() if n != EVENT]
         body = alice.get(placeholder)
         token = alice.token
@@ -473,6 +492,36 @@ async def test_a_client_can_dismiss_a_placeholder_but_not_edit_it(tmp_path, spik
         assert (await http.delete(url + placeholder, auth=("alice", "tide"))).status_code == 204
         assert alice.names() == [EVENT]
         token = alice.token
-        await http.post(root + alice.conflict_page + "/resolve", data=_resolution(alice, "ours"))
+        await http.post(root + alice.conflict_page + "/resolve", data=_form(alice, ["ours"]))
         assert alice.changes_since(token) == ([], [])  # already gone from the client
         assert b"kitchen" in alice.get(EVENT)
+
+
+async def test_choices_for_two_conflicts_apply_together(tmp_path, spikes):
+    async with _conflicted(tmp_path, ("one.ics", "two.ics")) as (alice, http, url, root, _):
+        page = (await http.get(root + alice.conflict_page)).content
+        assert page.count(b"Apply choices") == 1 and page.count(b"value=theirs") == 2
+
+        partial = await http.post(root + alice.conflict_page + "/resolve", data=_form(alice, ["theirs"]))
+        assert partial.headers["location"].endswith("?result=unresolved")
+        assert b"kitchen" in alice.get("one.ics") and b"kitchen" in alice.get("two.ics")
+
+        done = await http.post(root + alice.conflict_page + "/resolve", data=_form(alice, ["theirs", "theirs"]))
+        assert done.headers["location"] == alice.conflict_page
+        assert b"garden" in alice.get("one.ics") and b"garden" in alice.get("two.ics")
+        assert alice.state["conflicts"] == {}
+
+
+async def test_keeping_theirs_keeps_the_version_shown(tmp_path, spikes):
+    """Bob's history moves on after Alice loads the page; her choice applies to what she saw."""
+    async with _conflicted(tmp_path) as (alice, http, url, root, bob_saves):
+        form = _form(alice, ["theirs"])
+        await bob_saves(EVENT, "airport")  # fetched into Bob's parked ref, not yet merged
+
+        done = await http.post(root + alice.conflict_page + "/resolve", data=form)
+        assert done.headers["location"] == alice.conflict_page
+        assert b"LOCATION:garden" in alice.get(EVENT)
+
+        async with alice.lock:
+            await alice.merge(BOB_ID)  # Bob's later change arrives as a change of its own
+        assert b"LOCATION:airport" in alice.get(EVENT)
