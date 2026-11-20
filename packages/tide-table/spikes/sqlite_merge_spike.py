@@ -15,6 +15,12 @@ beside the point here. Run:
 to $SPIKE_LOG, then merges like the planned Tide Table driver: Splice Merge
 row deltas, `merge_event` for an event both sides edited, and failure (exit 1)
 for any other row conflict.
+
+When git is merging candidate bases rather than the real histories, a
+conflict must not fail: git would carry on with one side as the base and
+quietly settle the disagreement. Instead the driver stores NO_AGREED_BASE for
+that event. In the real merge, an event whose base is NO_AGREED_BASE is
+settled only if both sides hold the same version.
 """
 
 import json
@@ -32,6 +38,8 @@ from tide_table.merge import Merged, Unsupported, merge_event
 FIXTURES = pathlib.Path(__file__).parent.parent / "tests" / "fixtures" / "move-vs-location"
 DB = "calendar.sqlite"
 EVENT = "event.ics"
+NO_AGREED_BASE = b"TIDE-TABLE:NO-AGREED-BASE"
+DEFAULT_MARKER_SIZE = 7
 
 
 # --- the merge driver -------------------------------------------------------
@@ -45,6 +53,8 @@ def _summary(ics):
     """The fields this spike edits, to show which version a file holds."""
     if ics is None:
         return "deleted"
+    if ics == NO_AGREED_BASE:
+        return "NO_AGREED_BASE"
     lines = ics.decode().splitlines()
     lines = lines[lines.index("BEGIN:VEVENT"):]  # skip the time zone's own DTSTART
     pick = lambda p: next((l.split(":", 1)[1] for l in lines if l.startswith(p)), "-")
@@ -54,6 +64,7 @@ def _summary(ics):
 def driver(base, ours, theirs, marker, path):
     # Git widens the conflict markers by 2 for each level of merging bases, so
     # a marker size above the default 7 means this call builds a merged base.
+    building_base = int(marker) > DEFAULT_MARKER_SIZE
     log = {"path": path, "marker": int(marker), **{side: _summary(_events(f).get(EVENT))
                             for side, f in (("base", base), ("ours", ours), ("theirs", theirs))}}
     b, o, t = (sqlite_to_json(f) for f in (base, ours, theirs))
@@ -61,7 +72,10 @@ def driver(base, ours, theirs, marker, path):
     unresolved = []
     for c in conflicts:
         name = c.key[0][1]
-        if c.table == "events" and c.kind == "update/update":
+        if c.table == "events" and c.kind == "update/update" and _events(base)[name] == NO_AGREED_BASE:
+            if _events(ours)[name] == _events(theirs)[name]:
+                continue  # both sides settled on the same version; ours already holds it
+        elif c.table == "events" and c.kind == "update/update":
             versions = [_events(f)[name] for f in (base, ours, theirs)]
             try:
                 result = merge_event(*versions)
@@ -75,9 +89,15 @@ def driver(base, ours, theirs, marker, path):
     log["unresolved"] = unresolved
     with open(os.environ["SPIKE_LOG"], "a") as f:
         f.write(json.dumps(log) + "\n")
-    if unresolved:
+    if unresolved and not building_base:
         sys.exit(1)
     apply_delta(ours, cleaned)
+    if unresolved:
+        with sqlite3.connect(ours) as conn:
+            for c in conflicts:
+                if f"{c.kind} {c.key[0][1]}" in unresolved:
+                    conn.execute("INSERT OR REPLACE INTO events VALUES (?, ?)", (c.key[0][1], NO_AGREED_BASE))
+        conn.close()
 
 
 # --- the scenario ------------------------------------------------------------
@@ -182,6 +202,10 @@ def rooms(root):
     git(bob, "merge", "-q", "-s", "ours", "--no-edit", "refs/peers/alice")
     fetch(alice, bob, "bob")
     print("Alice merges Bob's resolution:", merge(alice, "bob"), "->", _summary(event(alice)))
+    # Bob gives in and switches to Room A; now they agree.
+    save(bob, location.replace(b"over theere", b"Room A"), "Room A after all")
+    fetch(alice, bob, "bob")
+    print("Alice merges Bob's change of mind:", merge(alice, "bob"), "->", _summary(event(alice)))
 
 
 def run(root, title, play):

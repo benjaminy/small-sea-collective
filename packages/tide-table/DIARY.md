@@ -386,3 +386,13 @@ The driver can tell these inner merges apart: git passes a conflict-marker size 
 So in an inner merge, the driver could write a placeholder for an event it cannot merge, meaning "no agreed base".
 Both sides would then differ from the base, git would have to call the driver for the real merge, and the driver could compare the two sides directly: identical means settled, different means still in conflict.
 Not tried yet.
+
+Tried the placeholder, and it works.
+When the marker size says git is merging candidate bases, the driver no longer fails on a conflict: it stores `NO_AGREED_BASE` as that event's version and exits 0.
+In the real merge, an event whose base is `NO_AGREED_BASE` is settled only if both sides hold the same version; otherwise the merge fails as a conflict.
+In the rooms scenario, Alice's merge of Bob's resolution now reports the conflict, and after Bob switches to Room A the next merge succeeds with Room A.
+That held in five runs out of five.
+
+"The same version" is a byte comparison for now.
+That works here because both Room A versions come from the same text; two real clients that agree on a room will still differ in DTSTAMP and SEQUENCE, so the comparison has to be by content, the same need as the delete case.
+The crossed-history delete is unchanged by this and still depends on luck: in five runs, it wedged in three of the ten merges of a delete.
