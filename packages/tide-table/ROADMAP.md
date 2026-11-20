@@ -45,6 +45,51 @@ Roughly ordered by how badly they could break the project if they turn out wrong
 
 The phases below try to expose each of these to a cheap test before anything downstream relies on the answer.
 
+## What the Demo Found (November 2026)
+
+We skipped ahead to a two-teammate demo: a short Phase 0 client spike, then the non-recurring part of Phase 3, with Apple Calendar (macOS 27) and Thunderbird as clients.
+The code is in `spikes/` and `tide_table/`; the merge rules are documented in `tide_table/merge.py` and `tide_table/merge_driver.py`.
+
+Clients (unknown 1):
+- Apple Calendar would not send a Basic password over plain HTTP, even to localhost; it connected once the server also offered Digest auth.
+  It does not send credentials ahead of time, so every request gets a 401 and a retry.
+- Neither client learns about changes quickly, and the server cannot tell them.
+  Apple decides on its own when to fetch and when to upload, and sometimes notices the calendar changed without fetching events; ⌘R forces both.
+  Thunderbird polls a calendar every 30 minutes by default.
+- Saving the same event in Apple Calendar and Thunderbird produced different iCalendar data.
+  Thunderbird's `VTIMEZONE` covered the zone's whole history, while Apple's covered only the current rules.
+  Apple wrote `SEQUENCE:0` and Thunderbird omitted `SEQUENCE`.
+  Apple added a placeholder `VALARM` and `X-APPLE-*` properties, and Thunderbird added `X-MOZ-GENERATION`.
+  Both rewrote `DTSTAMP` and `LAST-MODIFIED`.
+  Apple also rewrote the whole event in its own property order.
+
+Concurrent edits (unknown 4, non-recurring):
+- A plain CalDAV server given a stale save can refuse it, which gives Thunderbird a scary "item changed on server" dialog, or accept a forced overwrite, which silently lost Apple's move.
+  The demo instead keeps every version it served and treats a save against an older version as a three-way merge.
+  Thunderbird accepted the result with no dialog.
+- The calendar is one SQLite file in git, one row per event, merged by a custom git merge driver built on Splice Merge's row deltas, with a field-by-field event merge for events both sides edited.
+- When histories cross, git merges the candidate bases first, calling the driver for that too.
+  A conflict there must not fail, or git quietly settles it; the driver marks such events as having no agreed base so the real merge reports the disagreement.
+- Events are compared by content, not bytes, because each side's merge writes equivalent events with different bytes.
+
+Conflicts in ordinary clients (unknown 5):
+- A merge that does not succeed shows up as a placeholder event, "⚠️ CONFLICT: <summary>", at the event's time, with a link to a local page that shows both versions and asks the person to choose.
+  The server makes placeholders up from the conflicts it recorded; they are not stored or synced.
+- Both clients displayed the placeholder, and its link opened the page from both.
+  After one teammate chose, the other's server merged the result and Thunderbird withdrew its placeholder on its next poll.
+- A conflict blocks all of that teammate's other changes until someone resolves it.
+
+Open questions from the demo:
+- Would a teammate who has never seen the demo notice the placeholder and find the link? Everyone who tried it already knew.
+- Does the placeholder's alarm fire? What does each client do when an edit to a placeholder is ignored, or a placeholder is deleted?
+- Should a conflict block only the event in question, merging everything else and recording the conflict in the shared data?
+- The page shows both versions but not the one both started from.
+- A conflict is re-checked only when a teammate publishes, so a placeholder can outlive a local edit that settles it.
+- Every non-conflict path asks for the CalDAV password, so a browser's request for `/favicon.ico` on the conflict page gets a login challenge; some browsers may show a password prompt.
+- Comparing events ignores `VTIMEZONE` blocks, so a concurrent delete can win over a change to a zone's offsets (#308).
+- Two rows for one meeting, such as the same invitation added by two teammates, are reported as a conflict; recording that they are one meeting is #306.
+- Commits are signed and verified through each teammate's Hub, but sessions are approved automatically and some setup steps are handed between teammates directly (#138).
+
 ## Phase 0 — Spikes
 
 Timeboxed, throwaway code.
@@ -77,11 +122,11 @@ Deliberately out of scope for this phase: writes, recurrence editing, conflict h
 
 Round-trip `PUT` / `DELETE` from a calendar client through Tide Table into Small Sea storage, on one device only.
 
-- Commit to a storage shape (one `VEVENT` per file? content-addressed blob keyed by UID? a journal of changes?) — the question Open Design Questions in the original README deferred, now forced by the need to write.
+- Start with the demo's SQLite layout, which stores one row per event in a single file, and record what would justify changing it.
 - ETag and sync-token discipline good enough that real clients do not enter a perpetual re-sync loop.
 - Pass-through recurrence: standards-compliant `RRULE`/`EXDATE`/`RECURRENCE-ID` survives a round-trip even though we are not yet editing occurrences in interesting ways.
 
-This phase retires the single-writer half of unknown 4 and forces the storage-shape decision.
+This phase retires the single-writer half of unknown 4.
 Out of scope: multi-device sync, concurrent edits, occurrence-level recurrence editing.
 
 ## Phase 3 — Multi-device sync
