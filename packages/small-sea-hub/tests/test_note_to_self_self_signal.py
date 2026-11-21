@@ -6,7 +6,7 @@ Covers:
 - watch with known_self_count already current returns no self_updated_count
 - NoteToSelf session registers with watch_self_only; non-NoteToSelf sessions are unaffected
 """
-import asyncio
+import anyio
 import pathlib
 
 import small_sea_hub.backend as SmallSea
@@ -151,6 +151,33 @@ def test_existing_peer_watch_behavior_unaffected(playground_dir):
     assert "self_updated_count" not in data
 
 
+def test_a_zero_timeout_watch_answers_without_waiting(playground_dir):
+    """A timeout of 0 is a check: it never waits on the berth's event, which may belong to another event loop."""
+    root = pathlib.Path(playground_dir)
+    alice_hex = Provisioning.create_new_participant(root, "Alice")
+    Provisioning.create_team(root, alice_hex, "CoolTeam")
+    backend, http = _setup_backend_and_session(root)
+    token = _open_session(http, "Alice", "CoolTeam")
+    berth_id_hex = backend._lookup_session(token).berth_id.hex()
+
+    stale = anyio.Event()
+
+    async def wait_briefly():
+        with anyio.move_on_after(0.01):
+            await stale.wait()
+
+    anyio.run(wait_briefly)  # the event now belongs to that finished loop
+    app.state.peer_signal_events[berth_id_hex] = stale
+
+    resp = http.post(
+        "/notifications/watch",
+        json={"known": {}, "timeout": 0},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"updated": {}}
+
+
 def test_team_db_revision_pulses_watchers_for_device_link_only_changes(playground_dir, monkeypatch):
     """A device_link-only team DB change wakes berth waiters even without teammate-list changes."""
     root = pathlib.Path(playground_dir)
@@ -175,12 +202,12 @@ def test_team_db_revision_pulses_watchers_for_device_link_only_changes(playgroun
 
     monkeypatch.setattr(Server, "_refresh_local_runtime_signal", skip_local_runtime_signal)
 
-    asyncio.run(Server._watcher_pass(app))
+    anyio.run(Server._watcher_pass, app)
     pulses.clear()
 
     linked_public_key = generate_key_pair(ProtectionLevel.DAILY)[0].public_key
     Provisioning.issue_device_link_for_teammate(root, alice_hex, "ProjectX", linked_public_key)
 
-    asyncio.run(Server._watcher_pass(app))
+    anyio.run(Server._watcher_pass, app)
 
     assert berth_id_hex in pulses

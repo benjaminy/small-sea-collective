@@ -1,14 +1,17 @@
 # Async I/O in Small Sea
 
-Small Sea is moving its I/O to asyncio, so that one slow Hub, storage provider, or Git command does not stall everything else a process is doing.
+Small Sea is moving its I/O to async code, so that one slow Hub, storage provider, or Git command does not stall everything else a process is doing.
+New async code uses [AnyIO](https://anyio.readthedocs.io/) on the asyncio backend: task groups for background work, cancel scopes for timeouts and shielding.
+FastAPI, Starlette, and httpx already run on AnyIO.
 This note records the rules the first async code settled on, and the questions it left open.
 The design discussion is [issue #188](https://github.com/benjaminy/small-sea-collective/issues/188).
 
 The rules come from code that already follows them:
 Cod Sync's async modules (`packages/cod-sync/cod_sync/aio/`),
 the async Hub session (`packages/small-sea-client/small_sea_client/aio.py`),
-Tide Table's sync agent and demo (`packages/tide-table/`),
 and the Hub's peer watcher (`packages/small-sea-hub/small_sea_hub/server.py`).
+Tide Table (`packages/tide-table/`) was written before we chose AnyIO and still uses plain asyncio.
+It is a finished demo, and we left it as it is.
 
 ## Interface shape
 
@@ -33,16 +36,21 @@ A call that opens a streamed download, or makes a temporary directory, finishes 
 Neither outlives the call, even when the call is cancelled.
 
 **Background tasks.**
-Whoever starts a background task stops it: cancel it, then wait for it to finish.
+Background tasks run in a task group, and whoever owns the task group stops them by cancelling it.
+The `async with` block that holds the group does not end until every task in it has finished.
 Stop tasks before closing the HTTP client they use, and before the Hub they talk to shuts down.
-When tasks feed one another, stop the ones that start work first.
-Tide Table stops its merge workers, then its CalDAV servers, then its sync agents, then closes its HTTP clients.
+When tasks feed one another, nest their task groups so the ones that start work stop first.
+
+The Hub's lifespan owns one task group.
+The peer watcher runs in it, and so do the ntfy listeners, which session routes start through `app.state.task_group`.
+Shutting the Hub down cancels the group.
 
 ## Git commands
 
-Cod Sync runs Git with `asyncio.create_subprocess_exec`, in Git's own process group.
-When the caller cancels, Cod Sync sends SIGTERM to the whole group, waits up to five seconds, then sends SIGKILL to anything still running.
-It re-raises the cancellation only after every process in the group has exited.
+Cod Sync runs Git with `anyio.open_process`, in Git's own process group.
+When the caller cancels, or the call fails while Git still runs, Cod Sync sends SIGTERM to the whole group, waits up to five seconds, then sends SIGKILL to anything still running.
+It does this inside `anyio.CancelScope(shield=True)`, so the cancellation does not cut the stop short.
+The cancellation reaches the caller only after every process in the group has exited.
 
 SIGTERM comes first because Git then removes its lock files, such as `index.lock`.
 A SIGKILL would leave them behind, and the next write would fail.
@@ -51,16 +59,23 @@ The signal goes to the whole group because Git starts children (ssh, hooks, the 
 ## Cancelling around durable changes
 
 A single Git command may be cancelled; the rule above stops it cleanly.
-A change that takes several steps and must not stop halfway — a merge that runs Git and then records its result, for example — runs in its own task:
+A change that takes several steps and must not stop halfway — a merge that runs Git and then records its result, for example — runs in a shielded cancel scope while it holds its lock:
 
-1. The caller takes the lock that guards the state.
-2. The caller starts the change as a new task and awaits it through `asyncio.shield`.
-3. The task releases the lock in a `finally` block when it finishes.
-4. If the caller is cancelled while waiting, it still waits for the task to finish, and only then re-raises the cancellation.
+```python
+async with store.lock:
+    with anyio.CancelScope(shield=True):
+        await store.merge(teammate_id)
+```
 
-Tide Table's merge worker does all four steps (`handle_event` in `spikes/two_teammates_demo.py`).
-Its conflict resolution (`resolve` in `spikes/caldav_spike.py`) skips step 4.
-A cancelled caller returns at once, while the resolution still holds the lock and is using the repository.
+A cancellation that arrives during the merge waits until the shielded block ends, and the caller sees it then.
+The lock is released either way.
+
+A shielded block also ignores the deadlines of the scopes around it.
+If the change waits on the network, as a merge does when it asks the Hub to sign its commit, give it a deadline of its own inside the shield (`anyio.fail_after`), or a dead Hub keeps the change waiting forever.
+
+Tide Table's merge worker (`handle_event` in `spikes/two_teammates_demo.py`) does the same thing in plain asyncio, with a separate task and `asyncio.shield`.
+Its conflict resolution (`resolve` in `spikes/caldav_spike.py`) does not wait for the shielded task when its caller is cancelled.
+The caller returns at once, while the resolution still holds the lock and is using the repository.
 
 ## Local SQLite
 
@@ -71,26 +86,30 @@ We do not use aiosqlite: it runs SQLite in a thread, and that buys nothing for q
 ## Code that cannot be async yet
 
 Some libraries we depend on only block: boto3, and the Hub's storage and notification adapters, which use synchronous httpx.
-Async code runs each such call in a worker thread with `asyncio.to_thread`, one call at a time.
+Async code runs each such call in a worker thread with `anyio.to_thread.run_sync`, one call at a time.
 Changes to shared state stay on the event loop, so no two threads change it at once.
 
-Code that waits on a thread lets other tasks run in the meantime.
-If two tasks could now overlap where they could not before, guard them with an `asyncio.Lock`.
-Create the lock inside the running event loop (the Hub creates its watcher lock at startup), because an `asyncio.Lock` cannot be used from a different loop than the one it first waited on.
+The Hub passes `abandon_on_cancel=True` (see `_in_thread` in `server.py`), so a cancelled caller stops waiting at once and Hub shutdown does not wait out a storage provider's retries.
+The thread runs on until the blocking call returns, and its result is dropped.
+That is why a worker thread is a stopgap: it frees the event loop, but nothing can stop it.
 
-A worker thread is a stopgap.
-It frees the event loop, but a cancelled task does not stop its thread, and the thread runs on until the blocking call returns.
+Code that waits on a thread lets other tasks run in the meantime.
+If two tasks could now overlap where they could not before, guard them with an `anyio.Lock`.
+
+## Event loops in tests
+
+An AnyIO lock or event belongs to the event loop that first waits on it.
+Waiting on it from another loop raises an error.
+In production each process has one loop, but each FastAPI `TestClient` starts its own, so an event left in `app.state` by one test can belong to a loop that has already finished.
+The Hub creates its watcher lock at each startup for this reason.
+A watch with a timeout of 0 checks for news and returns without touching the berth's event at all.
 
 ## Open questions
 
-- **asyncio or AnyIO.**
-  Issue #188 suggested AnyIO task groups, cancel scopes, and deadlines.
-  All the async code so far uses plain asyncio, and the shield-and-wait pattern above is what that costs.
-  Should we keep asyncio, or switch before more code depends on it?
 - **What a cancelled publish or fetch leaves behind.**
   Cod Sync stops a cancelled Git command cleanly, but nobody has yet checked whether every step at which a publish or fetch can be cancelled leaves the repository and the store in a state the next attempt handles.
 - **A sync Hub client.**
-  Command-line tools could enter async code once through `asyncio.run`.
+  Command-line tools could enter async code once through `anyio.run`.
   We have not yet found a caller that needs a separate sync client.
 - **The Hub's routes and the Manager.**
   Many of the Hub's `async def` routes call the synchronous backend directly, so one slow storage read in a request still stalls the Hub.

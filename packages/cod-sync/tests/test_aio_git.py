@@ -1,8 +1,8 @@
 """Micro tests for cod_sync.aio.git."""
 
-import asyncio
 import os
 
+import anyio
 import pytest
 
 import cod_sync.aio.git as aio_git
@@ -21,24 +21,44 @@ async def test_text_output_and_failure():
     assert result.returncode != 0 and isinstance(result.stderr, str)
 
 
+async def _cancel_git(git_params, ready, timeout=5):
+    """Run git, cancel it once ready() is true, and return how git_cmd ended.
+
+    Fails if stopping takes longer than timeout seconds.
+    """
+    outcome = []
+
+    async def run():
+        try:
+            await aio_git.git_cmd(git_params)
+        except anyio.get_cancelled_exc_class():
+            outcome.append("cancelled")
+            raise
+        outcome.append("returned")
+
+    with anyio.fail_after(timeout):
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(run)
+            while not ready():
+                await anyio.sleep(0.01)
+            tg.cancel_scope.cancel()
+    return outcome
+
+
 async def test_cancelling_the_caller_stops_git(monkeypatch):
     started = []
-    real_exec = asyncio.create_subprocess_exec
+    real_open = anyio.open_process
 
-    async def recording_exec(*args, **kwargs):
-        proc = await real_exec(*args, **kwargs)
+    async def recording_open(*args, **kwargs):
+        proc = await real_open(*args, **kwargs)
         started.append(proc)
         return proc
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", recording_exec)
+    monkeypatch.setattr(anyio, "open_process", recording_open)
     # A shell alias makes git itself wait for its child.
-    task = asyncio.create_task(aio_git.git_cmd(["-c", "alias.slow=!sleep 30", "slow"]))
-    while not started:
-        await asyncio.sleep(0.01)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=5)
+    outcome = await _cancel_git(["-c", "alias.slow=!sleep 30", "slow"], lambda: started)
 
+    assert outcome == ["cancelled"]
     assert started[0].returncode is not None
 
 
@@ -49,13 +69,9 @@ async def test_cancelled_write_releases_its_lock(tmp_path):
     (repo / "a.txt").write_text("a\n")
     # A clean filter that stalls keeps `git add` holding index.lock.
     slow_add = ["-C", str(repo), "-c", "filter.slow.clean=sleep 30; cat", "add", "a.txt"]
-    task = asyncio.create_task(aio_git.git_cmd(slow_add))
-    while not (repo / ".git" / "index.lock").exists():
-        await asyncio.sleep(0.01)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=10)
+    outcome = await _cancel_git(slow_add, (repo / ".git" / "index.lock").exists, timeout=10)
 
+    assert outcome == ["cancelled"]
     assert not (repo / ".git" / "index.lock").exists()
     await aio_git.git_cmd(["-C", str(repo), "-c", "filter.slow.clean=cat", "add", "a.txt"])
 
@@ -63,13 +79,12 @@ async def test_cancelled_write_releases_its_lock(tmp_path):
 async def test_cancelling_kills_children_that_ignore_sigterm(monkeypatch):
     monkeypatch.setattr(aio_git, "STOP_GRACE", 0.2)
     # The ignored SIGTERM is inherited by sleep, which keeps git's pipes open.
-    task = asyncio.create_task(
-        aio_git.git_cmd(["-c", "alias.stubborn=!trap '' TERM; sleep 30", "stubborn"])
+    start = anyio.current_time()
+    outcome = await _cancel_git(
+        ["-c", "alias.stubborn=!trap '' TERM; sleep 30", "stubborn"],
+        lambda: anyio.current_time() - start > 0.3,
     )
-    await asyncio.sleep(0.3)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=5)
+    assert outcome == ["cancelled"]
 
 
 async def test_cancelling_kills_children_that_outlive_git(monkeypatch, tmp_path):
@@ -78,13 +93,12 @@ async def test_cancelling_kills_children_that_outlive_git(monkeypatch, tmp_path)
     # The background sleep ignores SIGTERM and holds none of git's pipes, so
     # git and its shell exit on SIGTERM and leave it running in their group.
     alias = f"!(trap '' TERM; exec sleep 30) >/dev/null 2>&1 & echo $! > {pid_file}; wait"
-    task = asyncio.create_task(aio_git.git_cmd(["-c", f"alias.orphan={alias}", "orphan"]))
-    while not pid_file.exists() or not pid_file.read_text().strip():
-        await asyncio.sleep(0.01)
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=5)
+    outcome = await _cancel_git(
+        ["-c", f"alias.orphan={alias}", "orphan"],
+        lambda: pid_file.exists() and pid_file.read_text().strip(),
+    )
 
+    assert outcome == ["cancelled"]
     pid = int(pid_file.read_text())
     with pytest.raises(ProcessLookupError):
         os.kill(pid, 0)

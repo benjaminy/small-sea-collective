@@ -1,8 +1,8 @@
 #
 
-import asyncio
 import base64
 import binascii
+import functools
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -10,6 +10,7 @@ from typing import Optional, Union
 
 import pathlib
 
+import anyio
 import pydantic
 from fastapi import Depends, FastAPI, Form, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
@@ -39,13 +40,24 @@ _templates = Jinja2Templates(directory=str(pathlib.Path(__file__).parent / "temp
 PEER_WATCHER_INTERVAL = 60  # seconds between poll rounds
 
 
+async def _in_thread(func, *args, **kwargs):
+    """Run a blocking call in a worker thread.
+
+    A cancelled caller stops waiting at once. The thread runs on until the
+    call returns, and its result is dropped.
+    """
+    return await anyio.to_thread.run_sync(
+        functools.partial(func, *args, **kwargs), abandon_on_cancel=True
+    )
+
+
 def _pulse_berth_event(app: FastAPI, berth_id_hex: str):
     """Wake all waiters on a berth by replacing its Event and setting the old one."""
     events = getattr(app.state, "peer_signal_events", None)
     if events is None:
         return  # Watcher state not yet initialized
     old_event = events.get(berth_id_hex)
-    events[berth_id_hex] = asyncio.Event()
+    events[berth_id_hex] = anyio.Event()
     if old_event:
         old_event.set()
 
@@ -115,7 +127,7 @@ async def _send_peer_notification(app: FastAPI, session_hex: str, berth_id_hex: 
     """
     from small_sea_hub.backend import SmallSeaNotFoundExn as _NotFound
     try:
-        ok, _, err = await asyncio.to_thread(
+        ok, _, err = await _in_thread(
             app.state.backend.send_notification,
             session_hex,
             "A teammate has pushed new data",
@@ -145,7 +157,7 @@ async def _send_linked_device_notification(app: FastAPI, session_hex: str, team_
         "Open Manager admission events for details."
     )
     try:
-        ok, _msg_id, err = await asyncio.to_thread(
+        ok, _msg_id, err = await _in_thread(
             app.state.backend.send_notification,
             session_hex,
             message,
@@ -248,7 +260,7 @@ async def _run_runtime_reconciliation_for_session(app: FastAPI, session_hex: str
             ss_session.team_name,
         )
         for artifact in result.get("redistribution_artifacts", []):
-            ok, _etag, msg = await asyncio.to_thread(
+            ok, _etag, msg = await _in_thread(
                 app.state.backend.upload_runtime_artifact,
                 session_hex,
                 artifact["artifact_path"],
@@ -319,13 +331,13 @@ async def _process_runtime_inbox_from_teammate(
             sender_device_key_id,
         )
         if use_local_bucket:
-            ok, data, _etag = await asyncio.to_thread(
+            ok, data, _etag = await _in_thread(
                 app.state.backend.download_runtime_artifact_from_cloud,
                 session_hex,
                 artifact_path,
             )
         else:
-            ok, data, _etag = await asyncio.to_thread(
+            ok, data, _etag = await _in_thread(
                 app.state.backend.download_runtime_artifact_from_peer,
                 session_hex,
                 teammate_id_hex,
@@ -374,7 +386,7 @@ async def _refresh_local_runtime_signal(app: FastAPI, session_hex: str):
         return
     if session_info.get("watch_self_only"):
         return
-    signals, etag = await asyncio.to_thread(app.state.backend.get_local_signal, session_hex)
+    signals, etag = await _in_thread(app.state.backend.get_local_signal, session_hex)
     if signals is None or etag is None:
         return
     if etag == session_info.get("self_signal_etag"):
@@ -402,7 +414,7 @@ async def _refresh_note_to_self_self_signal(app: FastAPI, session_hex: str):
     if session_info is None or not session_info.get("watch_self_only"):
         return
 
-    signals, etag = await asyncio.to_thread(app.state.backend.get_local_signal, session_hex)
+    signals, etag = await _in_thread(app.state.backend.get_local_signal, session_hex)
     if signals is None or etag is None:
         return
     if etag == session_info.get("self_signal_etag"):
@@ -456,7 +468,7 @@ async def _watcher_pass(app: FastAPI):
         session_hex, teammate_id_hex = key
         berth_id_hex = state.get("berth_id_hex")
         try:
-            signals, etag = await asyncio.to_thread(
+            signals, etag = await _in_thread(
                 app.state.backend.get_peer_signal, session_hex, teammate_id_hex
             )
             if signals is None:
@@ -523,7 +535,7 @@ async def _peer_watcher_loop(app: FastAPI):
     first_pass = True
     while True:
         if not first_pass:
-            await asyncio.sleep(getattr(app.state, "watcher_interval", PEER_WATCHER_INTERVAL))
+            await anyio.sleep(getattr(app.state, "watcher_interval", PEER_WATCHER_INTERVAL))
         first_pass = False
         async with app.state.watcher_lock:
             await _watcher_pass(app)
@@ -547,11 +559,9 @@ async def _ntfy_listener_loop(app: FastAPI, ntfy_url: str, berth_id_hex: str):
                 logger.debug(f"ntfy push received on {topic}, running watcher pass")
                 async with app.state.watcher_lock:
                     await _watcher_pass(app)
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:
             logger.warning(f"ntfy listener error ({topic}), reconnecting in 5s: {exc}")
-            await asyncio.sleep(5)
+            await anyio.sleep(5)
 
 
 @asynccontextmanager
@@ -573,30 +583,35 @@ async def lifespan(app: FastAPI):
     if not hasattr(app.state, "self_signal_counts"):
         app.state.self_signal_counts = {}  # berth_id_hex → int
     if not hasattr(app.state, "peer_signal_events"):
-        app.state.peer_signal_events = {}  # berth_id_hex → asyncio.Event
+        app.state.peer_signal_events = {}  # berth_id_hex → anyio.Event
     if not hasattr(app.state, "watcher_interval"):
         app.state.watcher_interval = Settings().watcher_interval
-    if not hasattr(app.state, "ntfy_listener_tasks"):
-        app.state.ntfy_listener_tasks = {}  # berth_id_hex → asyncio.Task
-    # A fresh lock each startup: an asyncio.Lock belongs to the loop it first waits on.
-    app.state.watcher_lock = asyncio.Lock()
+    # Berths with an ntfy listener running. Fresh each startup, because the
+    # listeners stop with the task group below.
+    app.state.ntfy_listener_berths = set()
+    app.state.watcher_lock = anyio.Lock()
     app.state.logger = app.state.backend.logger
     logger = app.state.backend.logger
     logger.info("Starting up...")
 
-    # Rebuild watcher state from persisted sessions so a Hub restart does not
-    # require apps to re-open their sessions or wait for the first watcher round.
-    for token_hex in app.state.backend.all_session_tokens():
-        _register_session_peers(token_hex)
+    # The watcher and the ntfy listeners run in this task group, and shutdown
+    # cancels them all. Session routes start listeners through
+    # app.state.task_group, so it must be set before sessions are registered.
+    async with anyio.create_task_group() as task_group:
+        app.state.task_group = task_group
+        try:
+            # Rebuild watcher state from persisted sessions so a Hub restart does not
+            # require apps to re-open their sessions or wait for the first watcher round.
+            for token_hex in app.state.backend.all_session_tokens():
+                _register_session_peers(token_hex)
 
-    watcher_task = asyncio.create_task(_peer_watcher_loop(app))
+            task_group.start_soon(_peer_watcher_loop, app)
 
-    yield
-
-    watcher_task.cancel()
-    for task in app.state.ntfy_listener_tasks.values():
-        task.cancel()
-    logger.info("Shutting down...")
+            yield
+        finally:
+            app.state.task_group = None
+            task_group.cancel_scope.cancel()
+            logger.info("Shutting down...")
 
 
 app = FastAPI(lifespan=lifespan)
@@ -675,22 +690,18 @@ class SessionRequestReq(pydantic.BaseModel):
 
 def _maybe_start_ntfy_listener(app: FastAPI, ss_session, berth_id_hex: str):
     """Start an ntfy SSE listener task for a berth if ntfy is configured and not already running."""
-    ntfy_listener_tasks = getattr(app.state, "ntfy_listener_tasks", None)
-    if ntfy_listener_tasks is None:
-        return
-    if berth_id_hex in ntfy_listener_tasks:
+    task_group = getattr(app.state, "task_group", None)
+    if task_group is None:
+        return  # the lifespan is not running (e.g. tests that skip it)
+    if berth_id_hex in app.state.ntfy_listener_berths:
         return  # already running for this berth
     try:
         adapter = app.state.backend._make_notification_adapter(ss_session)
         ntfy_url = adapter.base_url
     except Exception:
         return  # no ntfy configured — polling only
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        return  # not in an async context (e.g. tests that skip lifespan)
-    task = loop.create_task(_ntfy_listener_loop(app, ntfy_url, berth_id_hex))
-    ntfy_listener_tasks[berth_id_hex] = task
+    task_group.start_soon(_ntfy_listener_loop, app, ntfy_url, berth_id_hex)
+    app.state.ntfy_listener_berths.add(berth_id_hex)
     app.state.logger.info(f"ntfy listener task started for berth {berth_id_hex[:8]}")
 
 
@@ -725,7 +736,7 @@ def _register_session_peers(session_hex: str):
                 "ignore_self_signal_count": None,
                 "watch_self_only": True,
             }
-            app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
+            app.state.peer_signal_events.setdefault(berth_id_hex, anyio.Event())
             _maybe_start_ntfy_listener(app, ss_session, berth_id_hex)
             return
         team_db_path = str(
@@ -745,7 +756,7 @@ def _register_session_peers(session_hex: str):
             )[1].hex(),
             "watch_self_only": False,
         }
-        app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
+        app.state.peer_signal_events.setdefault(berth_id_hex, anyio.Event())
         # Do an immediate peer refresh so watched_peers is populated now rather
         # than waiting for the first watcher round.
         _refresh_session_peers(app, session_hex)
@@ -1420,15 +1431,17 @@ async def watch_notifications(
     result = _check()
     if result.get("updated") or "self_updated_count" in result:
         return result
+    if req.timeout <= 0:
+        return {"updated": {}}  # a check, not a wait
 
     # Grab the current event before sleeping — the watcher may replace it
     # while we wait, but we hold the reference so set() still wakes us.
     if not hasattr(app.state, "peer_signal_events"):
         app.state.peer_signal_events = {}
-    event = app.state.peer_signal_events.setdefault(berth_id_hex, asyncio.Event())
-    try:
-        await asyncio.wait_for(event.wait(), timeout=req.timeout)
-    except asyncio.TimeoutError:
+    event = app.state.peer_signal_events.setdefault(berth_id_hex, anyio.Event())
+    with anyio.move_on_after(req.timeout) as waiting:
+        await event.wait()
+    if waiting.cancelled_caught:
         return {"updated": {}}
 
     return _check()

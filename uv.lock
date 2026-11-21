@@ -262,6 +262,7 @@ name = "cod-sync"
 version = "0.1.0"
 source = { editable = "packages/cod-sync" }
 dependencies = [
+    { name = "anyio" },
     { name = "boto3" },
     { name = "cryptography" },
     { name = "pyyaml" },
@@ -270,6 +271,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.11" },
     { name = "boto3", specifier = ">=1.35.0" },
     { name = "cryptography", specifier = ">=41.0" },
     { name = "pyyaml", specifier = ">=6.0.3" },
@@ -1103,6 +1105,7 @@ name = "small-sea-hub"
 version = "0.1.0"
 source = { editable = "packages/small-sea-hub" }
 dependencies = [
+    { name = "anyio" },
     { name = "botocore" },
     { name = "cod-sync" },
     { name = "cuttlefish" },
@@ -1125,6 +1128,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.11" },
     { name = "botocore", specifier = ">=1.40.43" },
     { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "cuttlefish", editable = "packages/cuttlefish" },

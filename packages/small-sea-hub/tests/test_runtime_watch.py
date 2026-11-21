@@ -1,4 +1,4 @@
-import asyncio
+import anyio
 import json
 import sqlite3
 import threading
@@ -166,7 +166,6 @@ def test_watcher_reconciliation_uploads_runtime_artifact_once(playground_dir, mo
     app.state.watched_peers = {}
     app.state.peer_counts = {}
     app.state.peer_signal_events = {}
-    app.state.ntfy_listener_tasks = {}
     app.state.logger = backend.logger
     with TestClient(app) as client:
         session_hex = _request_and_confirm(client)
@@ -180,10 +179,10 @@ def test_watcher_reconciliation_uploads_runtime_artifact_once(playground_dir, mo
 
     monkeypatch.setattr(backend, "upload_runtime_artifact", _fake_upload_runtime_artifact)
 
-    asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex))
+    anyio.run(_run_runtime_reconciliation_for_session, app, session_hex)
     assert len(uploads) == 1
     assert linked_device_key_id.hex() in uploads[0][1]
-    asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex))
+    anyio.run(_run_runtime_reconciliation_for_session, app, session_hex)
     assert len(uploads) == 1
 
 
@@ -198,7 +197,6 @@ def test_a_device_linked_during_an_upload_gets_a_later_reconciliation(playground
     app.state.watched_peers = {}
     app.state.peer_counts = {}
     app.state.peer_signal_events = {}
-    app.state.ntfy_listener_tasks = {}
     app.state.logger = backend.logger
     with TestClient(app) as client:
         session_hex = _request_and_confirm(client)
@@ -215,9 +213,9 @@ def test_a_device_linked_during_an_upload_gets_a_later_reconciliation(playground
 
     monkeypatch.setattr(backend, "upload_runtime_artifact", _upload_while_a_device_links)
 
-    asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex))
+    anyio.run(_run_runtime_reconciliation_for_session, app, session_hex)
     assert len(uploads) == 1
-    asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex))
+    anyio.run(_run_runtime_reconciliation_for_session, app, session_hex)
     assert len(uploads) == 2
     assert late_device[0].hex() in uploads[1]
 
@@ -233,7 +231,6 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
     app.state.watched_peers = {}
     app.state.peer_counts = {}
     app.state.peer_signal_events = {}
-    app.state.ntfy_listener_tasks = {}
     app.state.logger = backend.logger
     with TestClient(app) as client:
         session_hex = _request_and_confirm(client)
@@ -261,7 +258,7 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
         return True, "msg-1", ""
 
     monkeypatch.setattr(backend, "send_notification", _missing_adapter)
-    assert asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex)) is True
+    assert anyio.run(_run_runtime_reconciliation_for_session, app, session_hex) is True
     assert attempts == ["missing"]
     assert (
         AdmissionEvents.AdmissionEventType.LINKED_DEVICE.value,
@@ -269,7 +266,7 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
     ) not in provisioning.list_notified_admission_events(root, alice_hex, "ProjectX")
 
     monkeypatch.setattr(backend, "send_notification", _success)
-    assert asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex)) is False
+    assert anyio.run(_run_runtime_reconciliation_for_session, app, session_hex) is False
     assert attempts == ["missing", "sent"]
     assert sent_payloads
     assert "`" not in sent_payloads[0][0]
@@ -279,7 +276,7 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
         linked_cert.cert_id.hex(),
     ) in provisioning.list_notified_admission_events(root, alice_hex, "ProjectX")
 
-    assert asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex)) is False
+    assert anyio.run(_run_runtime_reconciliation_for_session, app, session_hex) is False
     assert attempts == ["missing", "sent"]
 
 
@@ -294,7 +291,6 @@ def test_watcher_does_not_notify_for_self_linked_device_events(playground_dir, m
     app.state.watched_peers = {}
     app.state.peer_counts = {}
     app.state.peer_signal_events = {}
-    app.state.ntfy_listener_tasks = {}
     app.state.logger = backend.logger
     with TestClient(app) as client:
         session_hex = _request_and_confirm(client)
@@ -320,7 +316,7 @@ def test_watcher_does_not_notify_for_self_linked_device_events(playground_dir, m
         return True, "msg-1", ""
 
     monkeypatch.setattr(backend, "send_notification", _capture_send)
-    assert asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex)) is True
+    assert anyio.run(_run_runtime_reconciliation_for_session, app, session_hex) is True
     assert sends == []
 
 
@@ -345,14 +341,14 @@ def test_a_held_peer_signal_read_does_not_stall_other_requests(playground_dir, m
     monkeypatch.setattr(backend, "get_peer_signal", _held_read)
 
     async def scenario():
-        watcher = asyncio.create_task(Server._watcher_pass(app))
-        assert await asyncio.to_thread(read_started.wait, 5)
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://hub") as client:
-            resp = await client.get("/")
-        answered_during_read = not read_finished.is_set()
-        await watcher
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(Server._watcher_pass, app)
+            assert await anyio.to_thread.run_sync(read_started.wait, 5)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://hub") as client:
+                resp = await client.get("/")
+            answered_during_read = not read_finished.is_set()
         return resp.status_code, answered_during_read
 
-    status, answered_during_read = asyncio.run(scenario())
+    status, answered_during_read = anyio.run(scenario)
     assert status == 200
     assert answered_during_read

@@ -1,11 +1,12 @@
 """Async Git subprocess execution: the async twin of cod_sync.git."""
 
-import asyncio
 import locale
 import logging
 import os
 import signal
 import subprocess
+
+import anyio
 
 from cod_sync.git import GitCmdFailed
 
@@ -36,15 +37,24 @@ async def _run(git_params, *, text, raise_on_error, env):
     git_cmd = ["git"] + list(git_params)
     # Git's own process group, so cancelling can stop the children git starts
     # (ssh, hooks, the signing program) as well as git.
-    proc = await asyncio.create_subprocess_exec(
-        *git_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, env=env,
+    proc = await anyio.open_process(
+        git_cmd, stdin=None, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
         start_new_session=True,
     )
-    try:
-        stdout, stderr = await proc.communicate()
-    except asyncio.CancelledError:
-        await _stop(proc)
-        raise
+    stdout, stderr = bytearray(), bytearray()
+    async with proc:
+        try:
+            async with anyio.create_task_group() as tg:
+                tg.start_soon(_drain, proc.stdout, stdout)
+                tg.start_soon(_drain, proc.stderr, stderr)
+            await proc.wait()
+        finally:
+            if proc.returncode is None:
+                # Cancelled or failed while git still runs. Shielded, so the
+                # cancellation that brought us here does not cut the stop short.
+                with anyio.CancelScope(shield=True):
+                    await _stop(proc)
+    stdout, stderr = bytes(stdout), bytes(stderr)
     if text:
         stdout, stderr = _decode(stdout), _decode(stderr)
     result = subprocess.CompletedProcess(git_cmd, proc.returncode, stdout, stderr)
@@ -55,6 +65,11 @@ async def _run(git_params, *, text, raise_on_error, env):
             raise exn
         logger.debug(str(exn))
     return result
+
+
+async def _drain(stream, buffer):
+    async for chunk in stream:
+        buffer.extend(chunk)
 
 
 async def _stop(proc):
@@ -68,9 +83,9 @@ async def _stop(proc):
     outlive git unnoticed.
     """
     _signal_group(proc, signal.SIGTERM)
-    try:
-        await asyncio.wait_for(_group_gone(proc), STOP_GRACE)
-    except TimeoutError:
+    with anyio.move_on_after(STOP_GRACE) as grace:
+        await _group_gone(proc)
+    if grace.cancelled_caught:
         _signal_group(proc, signal.SIGKILL)
         await _group_gone(proc)
 
@@ -79,7 +94,7 @@ async def _group_gone(proc):
     """Return once git and every process left in its group have exited."""
     await proc.wait()
     while _signal_group(proc, 0):
-        await asyncio.sleep(0.05)
+        await anyio.sleep(0.05)
 
 
 def _signal_group(proc, sig):
