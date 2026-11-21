@@ -71,7 +71,10 @@ A cancellation that arrives during the merge waits until the shielded block ends
 The lock is released either way.
 
 A shielded block also ignores the deadlines of the scopes around it.
-If the change waits on the network, as a merge does when it asks the Hub to sign its commit, give it a deadline of its own inside the shield (`anyio.fail_after`), or a dead Hub keeps the change waiting forever.
+If the change waits on the network, as a merge does when it asks the Hub to sign its commit, a dead Hub keeps the change waiting forever.
+Do not fix that with a deadline around the whole block:
+it could expire after Git has changed the repository but before the result is recorded, which is the half-finished state the shield exists to prevent.
+Put the deadline on the network step alone, such as the HTTP client's timeout on the signing request, and only on a step whose failure the change already handles, the way it handles a failed Git command.
 
 Tide Table's merge worker (`handle_event` in `spikes/two_teammates_demo.py`) does the same thing in plain asyncio, with a separate task and `asyncio.shield`.
 Its conflict resolution (`resolve` in `spikes/caldav_spike.py`) does not wait for the shielded task when its caller is cancelled.

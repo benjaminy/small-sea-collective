@@ -45,6 +45,20 @@ async def _cancel_git(git_params, ready, timeout=5):
     return outcome
 
 
+async def _assert_gone(pid):
+    """Fail unless pid is gone within two seconds.
+
+    A killed child may linger briefly as a zombie until launchd or init reaps it.
+    """
+    with anyio.fail_after(2):
+        while True:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            await anyio.sleep(0.05)
+
+
 async def test_cancelling_the_caller_stops_git(monkeypatch):
     started = []
     real_open = anyio.open_process
@@ -87,6 +101,32 @@ async def test_cancelling_kills_children_that_ignore_sigterm(monkeypatch):
     assert outcome == ["cancelled"]
 
 
+async def test_cancelling_after_git_exits_stops_children_holding_its_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(aio_git, "STOP_GRACE", 0.2)
+    started = []
+    real_open = anyio.open_process
+
+    async def recording_open(*args, **kwargs):
+        proc = await real_open(*args, **kwargs)
+        started.append(proc)
+        return proc
+
+    monkeypatch.setattr(anyio, "open_process", recording_open)
+    pid_file = tmp_path / "pid"
+    # git and its shell exit at once; the background sleep keeps git's pipes open.
+    alias = f"!sleep 30 & echo $! > {pid_file}"
+    outcome = await _cancel_git(
+        ["-c", f"alias.lingering={alias}", "lingering"],
+        lambda: (
+            started and started[0].returncode is not None
+            and pid_file.exists() and pid_file.read_text().strip()
+        ),
+    )
+
+    assert outcome == ["cancelled"]
+    await _assert_gone(int(pid_file.read_text()))
+
+
 async def test_cancelling_kills_children_that_outlive_git(monkeypatch, tmp_path):
     monkeypatch.setattr(aio_git, "STOP_GRACE", 0.2)
     pid_file = tmp_path / "pid"
@@ -99,6 +139,4 @@ async def test_cancelling_kills_children_that_outlive_git(monkeypatch, tmp_path)
     )
 
     assert outcome == ["cancelled"]
-    pid = int(pid_file.read_text())
-    with pytest.raises(ProcessLookupError):
-        os.kill(pid, 0)
+    await _assert_gone(int(pid_file.read_text()))

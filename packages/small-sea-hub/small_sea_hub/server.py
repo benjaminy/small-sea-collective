@@ -450,14 +450,22 @@ async def _watcher_pass(app: FastAPI):
     logger = app.state.logger
 
     # Refresh peer lists for all active sessions before polling signals.
+    # One session's failure must not stop the others, so each gets its own
+    # handler, like each peer below.
     for session_hex in list(app.state.watched_sessions):
-        _refresh_session_peers(app, session_hex)
-        if await _run_runtime_reconciliation_for_session(app, session_hex):
-            berth_id_hex = app.state.watched_sessions.get(session_hex, {}).get("berth_id_hex")
-            if berth_id_hex:
-                _pulse_berth_event(app, berth_id_hex)
-        await _refresh_local_runtime_signal(app, session_hex)
-        await _refresh_note_to_self_self_signal(app, session_hex)
+        try:
+            _refresh_session_peers(app, session_hex)
+            if await _run_runtime_reconciliation_for_session(app, session_hex):
+                berth_id_hex = app.state.watched_sessions.get(session_hex, {}).get("berth_id_hex")
+                if berth_id_hex:
+                    _pulse_berth_event(app, berth_id_hex)
+            await _refresh_local_runtime_signal(app, session_hex)
+            await _refresh_note_to_self_self_signal(app, session_hex)
+        except SmallSeaSessionNotFoundExn:
+            _forget_session(app, session_hex)
+            logger.info(f"Removed expired session {session_hex[:8]} from watcher")
+        except Exception as exc:
+            logger.warning(f"Watcher error for session {session_hex[:8]}: {exc}")
 
     peers = getattr(app.state, "watched_peers", {})
     # Track which berths have already received a push notification this round
@@ -508,14 +516,18 @@ async def _watcher_pass(app: FastAPI):
                     await _send_peer_notification(app, session_hex, berth_id_hex, logger)
 
         except SmallSeaNotFoundExn:
-            # Session expired — remove it and all its peers from the watcher.
-            app.state.watched_sessions.pop(session_hex, None)
-            stale_keys = [k for k in app.state.watched_peers if k[0] == session_hex]
-            for k in stale_keys:
-                app.state.watched_peers.pop(k, None)
+            _forget_session(app, session_hex)
             logger.info(f"Removed expired session {session_hex[:8]} from watcher")
         except Exception as exc:
             logger.warning(f"Peer watcher error for {teammate_id_hex[:8]}: {exc}")
+
+
+def _forget_session(app: FastAPI, session_hex: str):
+    """Remove an expired session and all its peers from the watcher."""
+    app.state.watched_sessions.pop(session_hex, None)
+    stale_keys = [k for k in app.state.watched_peers if k[0] == session_hex]
+    for k in stale_keys:
+        app.state.watched_peers.pop(k, None)
 
 
 async def _peer_watcher_loop(app: FastAPI):

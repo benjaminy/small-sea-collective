@@ -42,15 +42,19 @@ async def _run(git_params, *, text, raise_on_error, env):
         start_new_session=True,
     )
     stdout, stderr = bytearray(), bytearray()
+    finished = False
     async with proc:
         try:
             async with anyio.create_task_group() as tg:
                 tg.start_soon(_drain, proc.stdout, stdout)
                 tg.start_soon(_drain, proc.stderr, stderr)
             await proc.wait()
+            finished = True
         finally:
-            if proc.returncode is None:
-                # Cancelled or failed while git still runs. Shielded, so the
+            if not finished:
+                # Cancelled or failed before git and every child holding its
+                # output finished. Git itself may have exited already, so stop
+                # the group even when returncode is set. Shielded, so the
                 # cancellation that brought us here does not cut the stop short.
                 with anyio.CancelScope(shield=True):
                     await _stop(proc)
@@ -102,5 +106,10 @@ def _signal_group(proc, sig):
     try:
         os.killpg(proc.pid, sig)
     except ProcessLookupError:
+        return False
+    except PermissionError:
+        # macOS answers EPERM when only zombies are left: children that
+        # exited after git did, not yet reaped by launchd. They run nothing
+        # and hold no pipes, so the group is as good as gone.
         return False
     return True

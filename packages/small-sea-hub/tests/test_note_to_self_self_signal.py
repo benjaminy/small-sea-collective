@@ -178,6 +178,32 @@ def test_a_zero_timeout_watch_answers_without_waiting(playground_dir):
     assert resp.json() == {"updated": {}}
 
 
+def test_one_sessions_storage_error_does_not_stop_the_watcher_pass(playground_dir, monkeypatch):
+    """A session whose storage cannot be reached is skipped; the pass still serves the others."""
+    root = pathlib.Path(playground_dir)
+    alice_hex = Provisioning.create_new_participant(root, "Alice")
+    Provisioning.create_team(root, alice_hex, "Broken")
+    Provisioning.create_team(root, alice_hex, "Healthy")
+    backend, http = _setup_backend_and_session(root)
+    broken = _open_session(http, "Alice", "Broken")  # watched first
+    healthy = _open_session(http, "Alice", "Healthy")
+
+    read = []
+
+    def get_local_signal(session_hex):
+        read.append(session_hex)
+        if session_hex == broken:
+            raise RuntimeError("storage unreachable")
+        return None, None
+
+    monkeypatch.setattr(backend, "get_local_signal", get_local_signal)
+
+    anyio.run(Server._watcher_pass, app)
+
+    assert read == [broken, healthy]
+    assert broken in app.state.watched_sessions
+
+
 def test_team_db_revision_pulses_watchers_for_device_link_only_changes(playground_dir, monkeypatch):
     """A device_link-only team DB change wakes berth waiters even without teammate-list changes."""
     root = pathlib.Path(playground_dir)
