@@ -1,6 +1,7 @@
 from test_support import local_files_signer
 import pathlib
 
+import anyio
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 from fastapi.testclient import TestClient
@@ -152,7 +153,7 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
     assert resp.status_code == 200, resp.text
     Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance_b64)
     _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync, alice_manager, "ProjectX")
-    bob_manager.fetch_teammate_core("ProjectX", alice_teammate_id_hex)
+    anyio.run(bob_manager.fetch_teammate_core, "ProjectX", alice_teammate_id_hex)
     bob_manager.integrate_core_sources("ProjectX")
     report = bob_manager.reconcile_team_route("ProjectX", app_name=sync.HUB_APP_NAME)
     assert report["route"] == "ready", report

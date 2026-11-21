@@ -33,6 +33,7 @@ import sys
 from types import SimpleNamespace
 from urllib.parse import unquote, urlsplit
 
+import anyio
 import boto3
 import pytest
 from cryptography.hazmat.primitives import serialization
@@ -287,7 +288,7 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
     manager_a.activate_app_for_team(TEAM, FILES_APP)
     assert manager_a.reconcile_team_route(TEAM)["route"] == "ready"
     assert manager_a.reconcile_team_route(TEAM, app_name=FILES_APP)["route"] == "ready"
-    assert manager_a.push_team(TEAM) == "published"
+    assert anyio.run(manager_a.push_team, TEAM) == "published"
     manager_a.push_note_to_self()
     spy.assert_only(mark, "A")
 
@@ -393,13 +394,13 @@ def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen):
     # B's key was delegated in B's Core chain when B first signed.
     # A's Hub can only accept B's commits once A has integrated that chain.
     mark = spy.mark()
-    manager_b.push_team(TEAM)
+    anyio.run(manager_b.push_team, TEAM)
     spy.assert_only(mark, "B")
     a.use_files()
     monkeypatch.setattr(sync, "commit_signer", a.signer)
     mark = spy.mark()
     (participant,) = manager_a.list_teammates(TEAM)
-    manager_a.fetch_teammate_core(TEAM, participant["id"])
+    anyio.run(manager_a.fetch_teammate_core, TEAM, participant["id"])
     manager_a.integrate_core_sources(TEAM)
     sync.fetch_self_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
     sync.merge_self(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
@@ -471,9 +472,9 @@ def test_signed_capstone_refuses_bad_history(
 
     # A learns B's delegations, except in the missing-authority case.
     if case != "missing_authority":
-        env.manager_b.push_team(TEAM)
+        anyio.run(env.manager_b.push_team, TEAM)
         (participant,) = env.manager_a.list_teammates(TEAM)
-        env.manager_a.fetch_teammate_core(TEAM, participant["id"])
+        anyio.run(env.manager_a.fetch_teammate_core, TEAM, participant["id"])
         env.manager_a.integrate_core_sources(TEAM)
     if case == "ambiguous_authority":
         # Two records that grant and then restrict the same standing cannot be ordered.

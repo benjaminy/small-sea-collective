@@ -12,9 +12,11 @@ import pytest
 
 import cod_sync.aio.protocol as aio_protocol
 from cod_sync.aio.repo import Repo as AioRepo
+from cod_sync.aio.verify import SshCommitVerifier as AioSshCommitVerifier
 from cod_sync.protocol import MAIN_REF, CodSync
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore
+from cod_sync.verify import SshCommitVerifier
 
 
 def make_repo(path, name="alice") -> Repo:
@@ -110,7 +112,11 @@ class _AsyncVerifier:
         self.inner = inner
         self.repo = repo
 
-    async def verify_history(self, _repo, head):
+    async def verify_history(self, aio_repo, head):
+        if type(self.inner) is SshCommitVerifier:
+            # The async twin, so the protocol tests check it as well.
+            verifier = AioSshCommitVerifier(self.inner.allowed_keys)
+            return await verifier.verify_history(aio_repo, head)
         self.inner.verify_history(self.repo, head)
 
 

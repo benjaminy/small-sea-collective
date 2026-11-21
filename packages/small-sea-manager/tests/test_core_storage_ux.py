@@ -75,6 +75,18 @@ class _CloudRefusingSession:
         )
 
 
+class _AsyncCloudRefusingSession:
+    """The same refusal from the async session that push_team uses."""
+
+    token = _CloudRefusingSession.token
+
+    def __init__(self, reason):
+        self._sync = _CloudRefusingSession(reason)
+
+    async def ensure_cloud_ready(self):
+        self._sync.ensure_cloud_ready()
+
+
 def _web(root, participant_hex):
     return TestClient(create_app(str(root), participant_hex))
 
@@ -185,11 +197,10 @@ def test_push_renders_guidance_instead_of_raw_hub_json(
 ):
     root = pathlib.Path(playground_dir)
     alice_hex = _alice(root)
-    monkeypatch.setattr(
-        TeamManager,
-        "_get_or_open_session",
-        lambda self, team, mode="encrypted": _CloudRefusingSession(cloud_reason),
-    )
+    async def hub_session(self, http, team, mode="encrypted"):
+        return _AsyncCloudRefusingSession(cloud_reason)
+
+    monkeypatch.setattr(TeamManager, "_hub_session", hub_session)
 
     body = _web(root, alice_hex).post(f"/teams/{TEAM}/push").text
 
@@ -207,11 +218,10 @@ def test_push_offers_the_repair_only_where_reconciling_helps(
 ):
     root = pathlib.Path(playground_dir)
     alice_hex = _alice(root)
-    monkeypatch.setattr(
-        TeamManager,
-        "_get_or_open_session",
-        lambda self, team, mode="encrypted": _CloudRefusingSession(cloud_reason),
-    )
+    async def hub_session(self, http, team, mode="encrypted"):
+        return _AsyncCloudRefusingSession(cloud_reason)
+
+    monkeypatch.setattr(TeamManager, "_hub_session", hub_session)
 
     body = _web(root, alice_hex).post(f"/teams/{TEAM}/push").text
 

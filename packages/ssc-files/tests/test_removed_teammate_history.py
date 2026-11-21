@@ -4,6 +4,7 @@ import os
 import shutil
 import sqlite3
 
+import anyio
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from test_hub_sync import _open_session, _push_team_repo_via_hub, _setup_two_teammate_team
@@ -76,7 +77,7 @@ def test_files_history_survives_teammate_removal(playground_dir, minio_server_ge
     bob_team_sync = root / "Participants" / env["bob_hex"] / "ProjectX" / "Sync"
     _push_team_repo_via_hub(http, bob_core_token, bob_team_sync, bob_manager, "ProjectX")
     alice_manager = TeamManager(root, env["alice_hex"], _http_client=http)
-    alice_manager.fetch_teammate_core("ProjectX", env["bob_teammate_id_hex"])
+    anyio.run(alice_manager.fetch_teammate_core, "ProjectX", env["bob_teammate_id_hex"])
     alice_manager.integrate_core_sources("ProjectX")
     # Core integration does not import peers' storage announcements yet (provisioning.py,
     # "deferred, #138"), so copy Bob's signed rows into Alice's team database by hand.

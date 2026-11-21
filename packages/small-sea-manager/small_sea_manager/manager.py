@@ -5,6 +5,14 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal, Optional
 
+import httpx
+
+from cod_sync.aio.protocol import CodSync as _AsyncCodSync
+from cod_sync.aio.repo import Repo as _AsyncRepo
+from cod_sync.aio.store import (
+    PeerSmallSeaStore as AsyncPeerSmallSeaStore,
+    SmallSeaStore as AsyncSmallSeaStore,
+)
 from cod_sync.verify import VerificationError as _VerificationError
 from cod_sync.repo import (
     Repo as _Repo,
@@ -26,19 +34,22 @@ from cod_sync.store import (
     BootstrapProxyStore,
     CandidateInspectionStore,
     PeerSenderKeyUnavailableError as _StorePeerSenderKeyUnavailableError,
-    PeerSmallSeaStore,
     PeerStorageUnknownError as _StorePeerStorageUnknownError,
     PublicationPendingError as _StorePublicationPendingError,
     SmallSeaStore,
     StoreError as _StoreError,
 )
+from small_sea_client import aio as _aio_client
 from small_sea_client.client import (
     SmallSeaClient,
     SmallSeaCloudStorageRequired,
     SmallSeaError,
     SmallSeaHubUnavailable,
 )
-from small_sea_manager.git_verification import core_history_verifier
+from small_sea_manager.git_verification import (
+    async_core_history_verifier,
+    core_history_verifier,
+)
 from small_sea_manager import admission_events
 from small_sea_manager import berth_source_decision
 from small_sea_manager import git_signing
@@ -47,6 +58,11 @@ from small_sea_manager import provisioning
 from small_sea_note_to_self.db import attached_note_to_self_connection
 
 _CORE_APP = "SmallSeaCollectiveCore"
+
+#: Timeouts for the Manager's async Hub calls. Generous on reads and writes,
+#: because the Hub answers an upload or download only after the cloud
+#: provider behind it does.
+_HUB_TIMEOUT = httpx.Timeout(300.0, connect=5.0)
 _LOG = logging.getLogger(__name__)
 
 #: Hub `cloud_storage_required` reasons, mapped to the route reasons the
@@ -256,6 +272,10 @@ class TeamManager:
         provisioning.assert_identity_bootstrap_trusted(self.root_dir, self.participant_hex)
         provisioning.migrate_participant_team_dbs(self.root_dir, self.participant_hex)
         self.client = SmallSeaClient(port=hub_port, _http_client=_http_client)
+        # A test that injects a Starlette TestClient for the Hub gets the same
+        # app for the async methods, called in-process on the caller's loop.
+        hub_app = getattr(_http_client, "app", None)
+        self._async_transport = None if hub_app is None else httpx.ASGITransport(app=hub_app)
         # Confirmed sessions, keyed by (team, mode).
         self._sessions: dict[tuple[str, str], "SmallSeaSession"] = {}
         # Pending PIN requests awaiting confirmation, keyed by (team, mode).
@@ -315,6 +335,29 @@ class TeamManager:
             return self._sessions[key]
         return self.client.open_session(
             self.participant_hex, _CORE_APP, team, "TeamManager", mode=mode
+        )
+
+    def _hub_http(self) -> httpx.AsyncClient:
+        """A new async HTTP client for the Hub.
+
+        Each async method opens its own and closes it before returning, so
+        no connection outlives the call or the event loop that made it.
+        """
+        return httpx.AsyncClient(
+            base_url=self.client._base_url,
+            transport=self._async_transport,
+            timeout=_HUB_TIMEOUT,
+        )
+
+    async def _hub_session(
+        self, http: httpx.AsyncClient, team: str, mode: str = "encrypted"
+    ) -> _aio_client.SmallSeaSession:
+        """The async counterpart of _get_or_open_session, on http."""
+        cached = self._sessions.get((team, mode))
+        if cached is not None:
+            return _aio_client.SmallSeaSession(http, cached.token)
+        return await _aio_client.open_session(
+            http, self.participant_hex, _CORE_APP, team, "TeamManager", mode=mode
         )
 
     def get_nickname(self):
@@ -1605,7 +1648,7 @@ class TeamManager:
             return "needs_push"
         return "synced"
 
-    def push_team(self, team_name) -> str:
+    async def push_team(self, team_name) -> str:
         """Publish the team's completed Core state to the participant's cloud.
 
         Commits outstanding `core.db` work first, so a Manager mutation that
@@ -1621,11 +1664,14 @@ class TeamManager:
         attention propagate as their typed Cod Sync errors.
         """
         repo_dir = self._team_repo_dir(team_name)
-        repo = self._team_repo(team_name)
-        self._signing_team_repo(team_name).commit_paths(["core.db"], "Update team Core")
+        repo = _AsyncRepo(repo_dir / ".git", repo_dir)
+        signing = self._signing_team_repo(team_name)
+        await _AsyncRepo(repo_dir / ".git", repo_dir, env=signing.env).commit_paths(
+            ["core.db"], "Update team Core"
+        )
         # Capture the head being published before the remote operation, so the
         # marker names the exact state Cod Sync was handed.
-        intended_head = repo.head()
+        intended_head = await repo.head()
 
         # Preparing core.db is purely local, so decide this before opening a
         # session: a no-op publication must not prompt for a PIN. A missing
@@ -1634,15 +1680,12 @@ class TeamManager:
         if intended_head is not None and self._last_published_head(team_name) == intended_head:
             return "already_present"
 
-        session = self._get_or_open_session(team_name)
-        session.ensure_cloud_ready()
-        store = SmallSeaStore(
-            session.token,
-            base_url=self.client._base_url,
-            client=self.client._http_client,
-        )
-        verifier = core_history_verifier(self.root_dir, self.participant_hex, team_name)
-        result = CodSync(_Repo(repo_dir / ".git", repo_dir), store, verifier=verifier).publish()
+        verifier = async_core_history_verifier(self.root_dir, self.participant_hex, team_name)
+        async with self._hub_http() as http:
+            session = await self._hub_session(http, team_name)
+            await session.ensure_cloud_ready()
+            store = AsyncSmallSeaStore(session.token, http)
+            result = await _AsyncCodSync(repo, store, verifier=verifier).publish()
         # Both ordinary dispositions mean the cloud holds this head — under
         # already_present it may hold a descendant of it — so the marker is
         # written for both. Every other disposition raised before this point
@@ -1655,7 +1698,7 @@ class TeamManager:
     # Incoming Core state: fetch and park, never integrate
     # ------------------------------------------------------------------ #
 
-    def fetch_teammate_core(self, team_name, teammate_id) -> TeammateCoreFetchResult:
+    async def fetch_teammate_core(self, team_name, teammate_id) -> TeammateCoreFetchResult:
         """Fetch one teammate's Core chain and preserve the head it published.
 
         Explicit and unconditional: no notification state is read, and nothing
@@ -1684,21 +1727,19 @@ class TeamManager:
                 f"team {team_name!r} has no teammate {teammate_id}"
             )
 
-        repo = self._team_repo(team_name)
+        repo_dir = self._team_repo_dir(team_name)
+        repo = _AsyncRepo(repo_dir / ".git", repo_dir)
         latest_ref = core_peer_latest_ref(teammate_id)
         try:
-            session = self._get_or_open_session(team_name)
-            store = PeerSmallSeaStore(
-                session.token,
-                teammate_id,
-                base_url=self.client._base_url,
-                client=self.client._http_client,
-            )
-            result = CodSync(repo, store, verifier=core_history_verifier(
-                self.root_dir, self.participant_hex, team_name
-            )).fetch(pin_to_ref=latest_ref)
+            verifier = async_core_history_verifier(self.root_dir, self.participant_hex, team_name)
+            async with self._hub_http() as http:
+                session = await self._hub_session(http, team_name)
+                store = AsyncPeerSmallSeaStore(session.token, teammate_id, http)
+                result = await _AsyncCodSync(repo, store, verifier=verifier).fetch(
+                    pin_to_ref=latest_ref
+                )
         except _PinIntegrationRequiredError as exc:
-            return self._record_core_divergence(repo, teammate_id, latest_ref, exc)
+            return await self._record_core_divergence(repo, teammate_id, latest_ref, exc)
         except _NoPublishedHeadError as exc:
             raise CorePublicationMissingError(
                 f"teammate {teammate_id} publishes no Core chain"
@@ -1736,7 +1777,7 @@ class TeamManager:
             latest_ref_name=latest_ref,
         )
 
-    def _record_core_divergence(
+    async def _record_core_divergence(
         self, repo, teammate_id, latest_ref, exc
     ) -> TeammateCoreFetchResult:
         """Preserve a divergent teammate head under its own immutable ref.
@@ -1748,7 +1789,7 @@ class TeamManager:
         """
         observation_ref = core_peer_observation_ref(teammate_id, exc.link_uid)
         try:
-            repo.create_ref_immutable(observation_ref, exc.observed_head)
+            await repo.create_ref_immutable(observation_ref, exc.observed_head)
         except _RepoError as err:
             raise CoreRefPersistenceError(
                 f"could not preserve {observation_ref} at {exc.observed_head}: {err}"

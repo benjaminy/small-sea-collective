@@ -12,7 +12,40 @@ from typing import Optional
 
 import httpx
 
-from small_sea_client.client import SmallSeaHubUnavailable, _check_response
+from small_sea_client.client import SmallSeaError, SmallSeaHubUnavailable, _check_response
+
+
+async def open_session(
+    http: httpx.AsyncClient,
+    participant: str,
+    app: str,
+    team: str,
+    client_name: str,
+    mode: str = "encrypted",
+) -> "SmallSeaSession":
+    """Open a session when the Hub is running in auto-approve mode.
+
+    The async twin of SmallSeaClient.open_session. Raises SmallSeaError if
+    the Hub is not in auto-approve mode.
+    """
+    payload = {
+        "participant": participant,
+        "app": app,
+        "team": team,
+        "client": client_name,
+        "mode": mode,
+    }
+    try:
+        resp = await http.post("/sessions/request", json=payload)
+    except httpx.ConnectError:
+        raise SmallSeaHubUnavailable()
+    _check_response(resp)
+    result = resp.json()
+    if "token" not in result:
+        raise SmallSeaError(
+            "Hub is not in auto-approve mode; use request_session/confirm_session"
+        )
+    return SmallSeaSession(http, result["token"])
 
 
 class SmallSeaSession:
@@ -32,6 +65,13 @@ class SmallSeaSession:
         token = result["view_identifier"]
         result["view_identifier"] = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
         return result
+
+    async def ensure_cloud_ready(self) -> None:
+        """Create and publish the cloud bucket for this session (S3 only).
+
+        Must be called before the first push. Safe to call multiple times.
+        """
+        await self._post("/cloud/setup", {})
 
     async def session_info(self) -> dict:
         """Return metadata for this session: participant_hex, team_name, app_name, berth_id, client."""

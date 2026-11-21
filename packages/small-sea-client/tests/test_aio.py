@@ -5,8 +5,8 @@ import json
 import httpx
 import pytest
 
-from small_sea_client.aio import SmallSeaSession
-from small_sea_client.client import SmallSeaHubUnavailable, SmallSeaNotFound
+from small_sea_client.aio import SmallSeaSession, open_session
+from small_sea_client.client import SmallSeaError, SmallSeaHubUnavailable, SmallSeaNotFound
 
 pytestmark = pytest.mark.anyio
 
@@ -78,3 +78,35 @@ async def test_errors_are_the_sync_clients():
     s, _ = session(refuse)
     with pytest.raises(SmallSeaHubUnavailable):
         await s.session_peers()
+
+
+async def test_open_session_in_auto_approve_mode():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"token": TOKEN})
+
+    http = httpx.AsyncClient(base_url="http://hub", transport=httpx.MockTransport(handler))
+    s = await open_session(http, "p1", "App", "Team", "Client", mode="passthrough")
+    assert s.token == TOKEN
+    assert requests[0].url.path == "/sessions/request"
+    assert json.loads(requests[0].content) == {
+        "participant": "p1", "app": "App", "team": "Team", "client": "Client", "mode": "passthrough",
+    }
+
+
+async def test_open_session_refuses_a_pin_flow():
+    http = httpx.AsyncClient(
+        base_url="http://hub",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"pending_id": "x"})),
+    )
+    with pytest.raises(SmallSeaError, match="auto-approve"):
+        await open_session(http, "p1", "App", "Team", "Client")
+
+
+async def test_ensure_cloud_ready():
+    s, requests = session(lambda r: httpx.Response(200, json={}))
+    await s.ensure_cloud_ready()
+    assert requests[0].method == "POST" and requests[0].url.path == "/cloud/setup"
+    assert requests[0].headers["authorization"] == f"Bearer {TOKEN}"

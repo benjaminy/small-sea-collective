@@ -771,7 +771,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         mgr = _mgr(request)
         storage_reason = None
         try:
-            outcome = mgr.push_team(team_name)
+            outcome = await mgr.push_team(team_name)
             notice = (
                 "Already published."
                 if outcome == "already_present"

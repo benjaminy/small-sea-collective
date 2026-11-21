@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 
+import anyio
 import httpx
 import small_sea_manager.provisioning as provisioning
 from small_sea_manager.manager import TeamManager, _CORE_APP
@@ -189,7 +190,7 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         # authorize Alice's signed Files history.
         _push_core(alice_http, alice_root, alice_core, alice)
         bob_manager = TeamManager(bob_root, bob, _http_client=bob_http)
-        bob_manager.fetch_teammate_core(TEAM, team["teammate_id_hex"])
+        anyio.run(bob_manager.fetch_teammate_core, TEAM, team["teammate_id_hex"])
         outcomes = bob_manager.integrate_core_sources(TEAM)
         assert [o["outcome"] for o in outcomes] == ["integrated"], outcomes
         sync.fetch_via_hub(bob_files, bob, TEAM, "docs", team["teammate_id_hex"], _http_client=bob_http)

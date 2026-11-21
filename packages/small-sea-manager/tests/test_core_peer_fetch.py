@@ -16,9 +16,11 @@ import shutil
 import sqlite3
 import types
 
+import anyio
 import pytest
 import small_sea_manager.manager as manager_module
 import small_sea_manager.provisioning as Provisioning
+from cod_sync.aio.repo import Repo as AsyncRepo
 from cod_sync.format import decode_link
 from cod_sync.protocol import CodSync, PARKED_REF_PREFIX
 from cod_sync.repo import RefAdvanceContendedError, Repo, RepoError
@@ -72,18 +74,18 @@ class _RecordingPeerStore:
 
     built = []
 
-    def __init__(self, session_hex, teammate_id_hex, base_url=None, client=None):
+    def __init__(self, session_hex, teammate_id_hex, client):
         self.teammate_id_hex = teammate_id_hex
         _RecordingPeerStore.built.append(teammate_id_hex)
         self._inner = LocalFolderStore(str(_RecordingPeerStore.publications[teammate_id_hex]))
 
-    def get_latest_link(self):
+    async def get_latest_link(self):
         return self._inner.get_latest_link()
 
-    def get_link(self, link_uid):
+    async def get_link(self, link_uid):
         return self._inner.get_link(link_uid)
 
-    def download_bundle(self, bundle_uid, local_path):
+    async def download_bundle(self, bundle_uid, local_path):
         return self._inner.download_bundle(bundle_uid, local_path)
 
 
@@ -92,10 +94,10 @@ class _FailingPeerStore:
 
     failure = None
 
-    def __init__(self, session_hex, teammate_id_hex, base_url=None, client=None):
+    def __init__(self, session_hex, teammate_id_hex, client):
         pass
 
-    def get_latest_link(self):
+    async def get_latest_link(self):
         raise type(self).failure
 
 
@@ -110,13 +112,14 @@ def env(playground_dir, monkeypatch):
 
     _RecordingPeerStore.built = []
     _RecordingPeerStore.publications = {}
-    monkeypatch.setattr(manager_module, "PeerSmallSeaStore", _RecordingPeerStore)
+    monkeypatch.setattr(manager_module, "AsyncPeerSmallSeaStore", _RecordingPeerStore)
 
     def make_manager():
         team_manager = TeamManager(root, alice_hex)
-        team_manager._get_or_open_session = lambda team, mode="encrypted": types.SimpleNamespace(
-            token="session"
-        )
+        async def hub_session(http, team, mode="encrypted"):
+            return types.SimpleNamespace(token="session")
+
+        team_manager._hub_session = hub_session
         return team_manager
 
     state = types.SimpleNamespace(
@@ -181,7 +184,7 @@ def test_a_first_fetch_creates_the_teammate_ref_without_moving_main(env):
     repo = _alice_repo(env)
     main_before = repo.resolve_ref(_MAIN)
 
-    result = env.manager.fetch_teammate_core(_TEAM, _BOB)
+    result = anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert result.disposition == "created"
     assert result.observed_head_sha == head
@@ -197,7 +200,7 @@ def test_only_the_named_teammate_is_contacted(env):
     _publish(env, _BOB, {"bob.txt": "one\n"})
     _publish(env, _CAROL, {"carol.txt": "one\n"})
 
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert _RecordingPeerStore.built == [_BOB]
     assert _alice_repo(env).resolve_ref(core_peer_latest_ref(_CAROL)) is None
@@ -205,10 +208,10 @@ def test_only_the_named_teammate_is_contacted(env):
 
 def test_a_later_head_advances_the_teammate_ref(env):
     first = _publish(env, _BOB, {"bob.txt": "one\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
     second = _publish(env, _BOB, {"bob.txt": "two\n"})
 
-    result = env.manager.fetch_teammate_core(_TEAM, _BOB)
+    result = anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert result.disposition == "advanced"
     assert result.current_head_sha == second
@@ -218,9 +221,9 @@ def test_a_later_head_advances_the_teammate_ref(env):
 
 def test_refetching_the_same_head_is_unchanged(env):
     head = _publish(env, _BOB, {"bob.txt": "one\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
-    result = env.manager.fetch_teammate_core(_TEAM, _BOB)
+    result = anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert result.disposition == "unchanged"
     assert result.current_head_sha == head
@@ -231,11 +234,11 @@ def test_an_older_observation_leaves_the_newer_ref_alone(env):
     snapshot = env.root / "publication-snapshot"
     shutil.copytree(_publication(env, _BOB), snapshot)
     second = _publish(env, _BOB, {"bob.txt": "two\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     # An out-of-order read reaches a store still holding the earlier head.
     _serve(_BOB, snapshot)
-    result = env.manager.fetch_teammate_core(_TEAM, _BOB)
+    result = anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert result.disposition == "stale"
     assert result.observed_head_sha == first
@@ -251,7 +254,7 @@ def test_an_older_observation_leaves_the_newer_ref_alone(env):
 def _diverge(env):
     """Fetch one head, then serve an unrelated chain for the same teammate."""
     first = _publish(env, _BOB, {"bob.txt": "one\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
     competing = _publish(
         env,
         _BOB,
@@ -265,7 +268,7 @@ def _diverge(env):
 def test_divergence_parks_the_head_and_keeps_the_convenience_ref(env):
     first, competing, _publication = _diverge(env)
 
-    result = env.manager.fetch_teammate_core(_TEAM, _BOB)
+    result = anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert result.disposition == "divergent"
     assert result.observed_head_sha == competing
@@ -277,9 +280,9 @@ def test_divergence_parks_the_head_and_keeps_the_convenience_ref(env):
 
 def test_a_repeated_divergent_fetch_verifies_the_same_observation(env):
     _first, competing, _publication = _diverge(env)
-    first_result = env.manager.fetch_teammate_core(_TEAM, _BOB)
+    first_result = anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
-    second_result = env.manager.fetch_teammate_core(_TEAM, _BOB)
+    second_result = anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert second_result == first_result
     assert _alice_repo(env).resolve_ref(second_result.observation_ref_name) == competing
@@ -294,7 +297,7 @@ def test_a_park_that_cannot_be_written_reports_a_local_ref_failure(env):
     repo._run(["update-ref", ref, first])
 
     with pytest.raises(CoreRefPersistenceError):
-        env.manager.fetch_teammate_core(_TEAM, _BOB)
+        anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert repo.resolve_ref(ref) == first
 
@@ -311,13 +314,13 @@ def test_latest_ref_write_failures_report_a_local_ref_failure(
 ):
     _publish(env, _BOB, {"bob.txt": "one\n"})
 
-    def fail_to_advance(_repo, _ref_name, _new_sha):
+    async def fail_to_advance(_repo, _ref_name, _new_sha):
         raise ref_failure
 
-    monkeypatch.setattr(Repo, "advance_ref", fail_to_advance)
+    monkeypatch.setattr(AsyncRepo, "advance_ref", fail_to_advance)
 
     with pytest.raises(CoreRefPersistenceError) as excinfo:
-        env.manager.fetch_teammate_core(_TEAM, _BOB)
+        anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert excinfo.value.__cause__ is ref_failure
     assert _alice_repo(env).resolve_ref(core_peer_latest_ref(_BOB)) is None
@@ -330,7 +333,7 @@ def test_latest_ref_write_failures_report_a_local_ref_failure(
 
 def test_an_absent_teammate_fails_before_any_peer_transport(env):
     with pytest.raises(TeammateNotFoundError):
-        env.manager.fetch_teammate_core(_TEAM, "dd" * 16)
+        anyio.run(env.manager.fetch_teammate_core, _TEAM, "dd" * 16)
 
     assert _RecordingPeerStore.built == []
 
@@ -341,7 +344,7 @@ def test_a_teammate_that_has_not_published_is_its_own_failure(env):
     _serve(_BOB, publication)
 
     with pytest.raises(CorePublicationMissingError):
-        env.manager.fetch_teammate_core(_TEAM, _BOB)
+        anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert _alice_repo(env).resolve_ref(core_peer_latest_ref(_BOB)) is None
 
@@ -360,10 +363,10 @@ def test_a_teammate_that_has_not_published_is_its_own_failure(env):
 )
 def test_store_failures_keep_their_distinctions(env, monkeypatch, store_failure, expected):
     _FailingPeerStore.failure = store_failure
-    monkeypatch.setattr(manager_module, "PeerSmallSeaStore", _FailingPeerStore)
+    monkeypatch.setattr(manager_module, "AsyncPeerSmallSeaStore", _FailingPeerStore)
 
     with pytest.raises(expected) as excinfo:
-        env.manager.fetch_teammate_core(_TEAM, _BOB)
+        anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     if isinstance(store_failure, StorePublicationPendingError) and not isinstance(
         store_failure, StorePeerSenderKeyUnavailableError
@@ -377,13 +380,13 @@ def test_store_failures_keep_their_distinctions(env, monkeypatch, store_failure,
     [SmallSeaHubUnavailable(), SmallSeaError("session rejected")],
 )
 def test_session_failures_are_remote_fetch_errors(env, monkeypatch, session_failure):
-    def fail_to_open(_team_name):
+    async def fail_to_open(_http, _team_name):
         raise session_failure
 
-    monkeypatch.setattr(env.manager, "_get_or_open_session", fail_to_open)
+    monkeypatch.setattr(env.manager, "_hub_session", fail_to_open)
 
     with pytest.raises(CoreFetchRemoteError) as excinfo:
-        env.manager.fetch_teammate_core(_TEAM, _BOB)
+        anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert excinfo.value.__cause__ is session_failure
     assert _RecordingPeerStore.built == []
@@ -395,7 +398,7 @@ def test_a_malformed_chain_is_not_a_transport_failure(env):
     head_file.write_text("not: [a, valid, link\n")
 
     with pytest.raises(InvalidCoreChainError):
-        env.manager.fetch_teammate_core(_TEAM, _BOB)
+        anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert _alice_repo(env).resolve_ref(core_peer_latest_ref(_BOB)) is None
 
@@ -406,7 +409,7 @@ def test_a_corrupt_bundle_is_an_invalid_chain(env):
     bundle.write_bytes(bundle.read_bytes()[:-20])
 
     with pytest.raises(InvalidCoreChainError):
-        env.manager.fetch_teammate_core(_TEAM, _BOB)
+        anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     assert _alice_repo(env).resolve_ref(core_peer_latest_ref(_BOB)) is None
 
@@ -418,7 +421,7 @@ def test_a_corrupt_bundle_is_an_invalid_chain(env):
 
 def test_the_read_model_survives_a_fresh_manager(env):
     head = _publish(env, _BOB, {"bob.txt": "one\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     heads = env.make_manager().list_core_source_heads(_TEAM)
 
@@ -433,8 +436,8 @@ def test_the_read_model_survives_a_fresh_manager(env):
 def test_two_teammates_are_separate_sources_in_ref_order(env):
     bob_head = _publish(env, _BOB, {"bob.txt": "one\n"})
     carol_head = _publish(env, _CAROL, {"carol.txt": "one\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
-    env.manager.fetch_teammate_core(_TEAM, _CAROL)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _CAROL)
 
     heads = env.manager.list_core_source_heads(_TEAM)
 
@@ -447,13 +450,13 @@ def test_two_teammates_are_separate_sources_in_ref_order(env):
 
 def test_a_strict_ancestor_in_one_source_is_superseded(env):
     first = _publish(env, _BOB, {"bob.txt": "one\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
     repo = _alice_repo(env)
     # An observation from an earlier fetch, kept as its own immutable ref.
     older_ref = manager_module.core_peer_observation_ref(_BOB, "L-old")
     repo.create_ref_immutable(older_ref, first)
     second = _publish(env, _BOB, {"bob.txt": "two\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     by_ref = {h.ref_name: h for h in env.manager.list_core_source_heads(_TEAM)}
 
@@ -465,7 +468,7 @@ def test_a_strict_ancestor_in_one_source_is_superseded(env):
 
 def test_equal_shas_in_one_source_both_stay_maximal(env):
     head = _publish(env, _BOB, {"bob.txt": "one\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
     twin_ref = manager_module.core_peer_observation_ref(_BOB, "L-twin")
     _alice_repo(env).create_ref_immutable(twin_ref, head)
 
@@ -477,7 +480,7 @@ def test_equal_shas_in_one_source_both_stay_maximal(env):
 
 def test_divergent_heads_in_one_source_both_stay_maximal(env):
     _first, competing, _publication = _diverge(env)
-    result = env.manager.fetch_teammate_core(_TEAM, _BOB)
+    result = anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
 
     heads = {h.ref_name: h for h in env.manager.list_core_source_heads(_TEAM)}
 
@@ -487,7 +490,7 @@ def test_divergent_heads_in_one_source_both_stay_maximal(env):
 
 def test_containment_by_another_teammate_does_not_hide_a_source(env):
     head = _publish(env, _BOB, {"bob.txt": "one\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
     # Carol's ref names the very same commits, from her own logical source.
     _alice_repo(env).advance_ref(core_peer_latest_ref(_CAROL), head)
 
@@ -500,7 +503,7 @@ def test_containment_by_another_teammate_does_not_hide_a_source(env):
 
 def test_a_self_publication_ref_is_reported_without_a_teammate(env):
     head = _publish(env, _BOB, {"bob.txt": "one\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
     # Exactly the ref shape Cod Sync's publication settlement leaves behind.
     parked_ref = f"{PARKED_REF_PREFIX}/L-competing"
     _alice_repo(env).create_ref_immutable(parked_ref, head)
@@ -517,7 +520,7 @@ def test_a_self_publication_ref_is_reported_without_a_teammate(env):
 
 def test_containment_in_local_main_is_reported(env):
     head = _publish(env, _BOB, {"bob.txt": "one\n"})
-    env.manager.fetch_teammate_core(_TEAM, _BOB)
+    anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
     repo = _alice_repo(env)
     before = [h.contained_in_main for h in env.manager.list_core_source_heads(_TEAM)]
     # Alice's own main is unrelated history, so this replaces it outright
@@ -542,7 +545,7 @@ def test_core_fetch_refuses_unsigned_descendant(env):
     CodSync(repo, LocalFolderStore(str(_publication(env, _BOB)))).publish()
 
     with pytest.raises(InvalidCoreChainError) as caught:
-        env.manager.fetch_teammate_core(_TEAM, _BOB)
+        anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)
     assert isinstance(caught.value.__cause__, UnsignedCommitError)
     assert caught.value.__cause__.commit == rejected
     assert _alice_repo(env).resolve_ref(core_peer_latest_ref(_BOB)) is None

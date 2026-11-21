@@ -89,19 +89,7 @@ class SshCommitVerifier:
     """
 
     def __init__(self, allowed_keys: Iterable[str]):
-        self.allowed_keys = []
-        self.fingerprints = set()
-        for key in allowed_keys:
-            try:
-                if "\n" in key.strip() or "\r" in key.strip():
-                    raise ValueError("expected one SSH public key line")
-                public_key = load_ssh_public_key(key.strip().encode())
-                normalized = public_key.public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
-            except (ValueError, UnsupportedAlgorithm) as exc:
-                raise VerificationUnavailableError("invalid SSH public key") from exc
-            self.allowed_keys.append(normalized.decode())
-            digest = hashlib.sha256(base64.b64decode(normalized.split()[1])).digest()
-            self.fingerprints.add("SHA256:" + base64.b64encode(digest).decode().rstrip("="))
+        self.allowed_keys, self.fingerprints = _load_keys(allowed_keys)
 
     def verify_history(self, repo: Repo, head: str) -> Dict[str, str]:
         """Check head and every commit it reaches.
@@ -109,21 +97,7 @@ class SshCommitVerifier:
         Returns {commit: signing key fingerprint} as the evidence of which key
         signed what, and raises on the first commit that is not accepted.
         """
-        rows = self._signature_rows(repo, head)
-
-        verified = {}
-        for row in rows:
-            if row.status != ACCEPTED_STATUS:
-                raise _classify(row)
-            if row.fingerprint not in self.fingerprints:
-                raise UnknownSignerError(
-                    "the signing fingerprint is not in the supplied SSH key set",
-                    commit=row.commit,
-                    status=row.status,
-                    fingerprint=row.fingerprint,
-                )
-            verified[row.commit] = row.fingerprint
-        return verified
+        return _accept(self._signature_rows(repo, head), self.fingerprints)
 
     def signature_evidence(self, repo: Repo, head: str) -> Dict[str, SignatureEvidence]:
         """Return signature evidence for every commit reachable from head.
@@ -154,31 +128,75 @@ class SshCommitVerifier:
     def _signature_rows(self, repo: Repo, head: str):
         try:
             with tempfile.TemporaryDirectory(prefix="cod-sync-verify-") as work_dir:
-                signers_file = pathlib.Path(work_dir) / "allowed_signers"
-                signers_file.write_text(
-                    "".join(
-                        f"signer-{index}@cod-sync.invalid {key}\n"
-                        for index, key in enumerate(self.allowed_keys)
-                    )
-                )
+                signers_file = _write_signers_file(work_dir, self.allowed_keys)
                 rows, diagnostics = repo.signature_report(head, signers_file)
         except (RepoError, OSError) as exc:
             raise VerificationUnavailableError(
                 f"could not report signatures: {exc}", commit=head
             ) from exc
-        if diagnostics.strip():
-            # We wrote the configuration this ran under, so a diagnostic means
-            # the verdicts below describe something other than the key set.
-            raise VerificationUnavailableError(
-                f"git reported a verification configuration problem: "
-                f"{diagnostics.strip()}",
-                commit=head,
+        return _checked_rows(rows, diagnostics, head)
+
+
+def _load_keys(allowed_keys):
+    """Return (normalized SSH key lines, their SHA256 fingerprints)."""
+    keys, fingerprints = [], set()
+    for key in allowed_keys:
+        try:
+            if "\n" in key.strip() or "\r" in key.strip():
+                raise ValueError("expected one SSH public key line")
+            public_key = load_ssh_public_key(key.strip().encode())
+            normalized = public_key.public_bytes(Encoding.OpenSSH, PublicFormat.OpenSSH)
+        except (ValueError, UnsupportedAlgorithm) as exc:
+            raise VerificationUnavailableError("invalid SSH public key") from exc
+        keys.append(normalized.decode())
+        digest = hashlib.sha256(base64.b64decode(normalized.split()[1])).digest()
+        fingerprints.add("SHA256:" + base64.b64encode(digest).decode().rstrip("="))
+    return keys, fingerprints
+
+
+def _write_signers_file(work_dir, allowed_keys) -> pathlib.Path:
+    signers_file = pathlib.Path(work_dir) / "allowed_signers"
+    signers_file.write_text(
+        "".join(
+            f"signer-{index}@cod-sync.invalid {key}\n"
+            for index, key in enumerate(allowed_keys)
+        )
+    )
+    return signers_file
+
+
+def _checked_rows(rows, diagnostics, head):
+    """Return rows, or raise if git's report cannot be trusted."""
+    if diagnostics.strip():
+        # We wrote the configuration this ran under, so a diagnostic means
+        # the verdicts below describe something other than the key set.
+        raise VerificationUnavailableError(
+            f"git reported a verification configuration problem: "
+            f"{diagnostics.strip()}",
+            commit=head,
+        )
+    if not rows:
+        raise VerificationUnavailableError(
+            "git reported no commits for the head to be accepted", commit=head
+        )
+    return rows
+
+
+def _accept(rows, fingerprints) -> Dict[str, str]:
+    """Return {commit: fingerprint}, or raise on the first commit not accepted."""
+    verified = {}
+    for row in rows:
+        if row.status != ACCEPTED_STATUS:
+            raise _classify(row)
+        if row.fingerprint not in fingerprints:
+            raise UnknownSignerError(
+                "the signing fingerprint is not in the supplied SSH key set",
+                commit=row.commit,
+                status=row.status,
+                fingerprint=row.fingerprint,
             )
-        if not rows:
-            raise VerificationUnavailableError(
-                "git reported no commits for the head to be accepted", commit=head
-            )
-        return rows
+        verified[row.commit] = row.fingerprint
+    return verified
 
 
 def _classify(row) -> VerificationError:

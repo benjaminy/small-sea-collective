@@ -1,6 +1,7 @@
 """Connected berth resolution scenarios with two installations and local MinIO."""
 import pathlib
 
+import anyio
 import pytest
 from cod_sync.protocol import PublicationIntegrationRequiredError
 from small_sea_client.client import SmallSeaCloudStorageRequired
@@ -51,14 +52,14 @@ def _paused_with_two_written_locations(workspace, minio):
     root_a, root_b, alice_hex = setup["root_a"], setup["root_b"], setup["alice_hex"]
     manager_a = setup["manager_a"]
 
-    manager_a.push_team(TEAM)
+    anyio.run(manager_a.push_team, TEAM)
     manager_a.push_note_to_self()
 
     manager_b = _reattach(root_b, alice_hex)
     manager_b.refresh_note_to_self()
     manager_b.reconcile_team_route(TEAM, new_location=True)
     _redistribute_b_sender_key(root_a, root_b, alice_hex)
-    manager_b.push_team(TEAM)
+    anyio.run(manager_b.push_team, TEAM)
     _, allocation_b = _core_allocation(root_b, alice_hex)
     head_b = manager_b._team_repo(TEAM).resolve_ref(MAIN)
     # Team work created before the fork and left unpublished, so a later
@@ -68,7 +69,7 @@ def _paused_with_two_written_locations(workspace, minio):
 
     manager_a = _reattach(root_a, alice_hex)
     manager_a.reconcile_team_route(TEAM, new_location=True)
-    manager_a.push_team(TEAM)
+    anyio.run(manager_a.push_team, TEAM)
     _, allocation_a = _core_allocation(root_a, alice_hex)
     head_a = manager_a._team_repo(TEAM).resolve_ref(MAIN)
     manager_a.add_cloud_storage(protocol="s3", url=minio["endpoint"] + "/unrelated-a")
@@ -136,7 +137,7 @@ def test_competing_choices_pause_the_berth_and_spare_unrelated_work(
     assert raised.value.reason == "berth_source_paused"
 
     with pytest.raises(SmallSeaCloudStorageRequired) as raised:
-        manager_b.push_team(TEAM)
+        anyio.run(manager_b.push_team, TEAM)
     assert raised.value.reason == "berth_source_paused"
     assert manager_b.core_storage_allocation(TEAM)["placement"] == "paused"
     assert manager_b.core_storage_allocation(TEAM)["allocation"] is None
@@ -271,7 +272,7 @@ def test_evidence_that_explains_the_disagreement_away_keeps_the_pause(
     assert status_b["paused"] is True
     assert _candidate(status_b, setup["allocation_b"]["location"])["live"] is False
     with pytest.raises(SmallSeaCloudStorageRequired) as raised:
-        manager_b.push_team(TEAM)
+        anyio.run(manager_b.push_team, TEAM)
     assert raised.value.reason == "berth_source_paused"
 
 
@@ -322,10 +323,10 @@ def test_either_existing_location_can_be_chosen_and_publication_resumes(
     # Cod Sync parks it for the ordinary integration path. Resolving where to
     # publish deliberately does not decide what to publish.
     if choose == "b":
-        assert manager_b.push_team(TEAM) == "published"
+        assert anyio.run(manager_b.push_team, TEAM) == "published"
     else:
         with pytest.raises(PublicationIntegrationRequiredError) as raised:
-            manager_b.push_team(TEAM)
+            anyio.run(manager_b.push_team, TEAM)
         assert raised.value.observed_head == setup["head_a"]
 
 
@@ -451,11 +452,11 @@ def test_publication_retry_after_resolution_keeps_the_choice(
     after it landed exercises Cod Sync's settlement. Interruption before the
     Manager marker exercises a separate restart with no recorded success.
     """
+    from cod_sync.aio.store import SmallSeaStore as AsyncSmallSeaStore
     from cod_sync.protocol import CodSync, PublicationRetryableError
     from cod_sync.repo import Repo
     from cod_sync.store import (
-        CandidateInspectionStore, SmallSeaStore, PublicationOutcomeUnknownError,
-        StoreTransportError,
+        CandidateInspectionStore, PublicationOutcomeUnknownError, StoreTransportError,
     )
     from small_sea_hub.adapters.s3 import SmallSeaS3Adapter
 
@@ -474,7 +475,7 @@ def test_publication_retry_after_resolution_keeps_the_choice(
 
     if choose == "a":
         with pytest.raises(PublicationIntegrationRequiredError) as raised:
-            manager.push_team(TEAM)
+            anyio.run(manager.push_team, TEAM)
         assert raised.value.observed_head == setup["head_a"]
         # Core has no Manager integration operation yet. Use its installed
         # splice-sqlite Git merge driver on the source parked by publication.
@@ -506,30 +507,30 @@ def test_publication_retry_after_resolution_keeps_the_choice(
 
             patch.setattr(pathlib.Path, "write_text", interrupt_marker)
             with pytest.raises(RuntimeError, match="before success marker"):
-                manager.push_team(TEAM)
+                anyio.run(manager.push_team, TEAM)
             assert manager._last_published_head(TEAM) == marker_before
         else:
-            real_put = SmallSeaStore.put_latest_link
+            real_put = AsyncSmallSeaStore.put_latest_link
 
-            def interrupt_head(store, data, expected_etag, link_uid=None):
+            async def interrupt_head(store, data, expected_etag, link_uid=None):
                 if interruption == "before_head":
                     failure = StoreTransportError("interrupted before sending head request")
                     failure.write_closed = True
                     raise failure
-                real_put(store, data, expected_etag, link_uid=link_uid)
+                await real_put(store, data, expected_etag, link_uid=link_uid)
                 raise PublicationOutcomeUnknownError(
                     "lost response after head write", expected_etag=expected_etag, link_uid=link_uid,
                 )
 
-            patch.setattr(SmallSeaStore, "put_latest_link", interrupt_head)
+            patch.setattr(AsyncSmallSeaStore, "put_latest_link", interrupt_head)
             if interruption == "before_head":
                 with pytest.raises(PublicationRetryableError) as raised:
-                    manager.push_team(TEAM)
+                    anyio.run(manager.push_team, TEAM)
                 assert raised.value.attempted_head == intended
                 assert raised.value.observed_head == setup[f"head_{choose}"]
                 assert manager._last_published_head(TEAM) == marker_before
             else:
-                assert manager.push_team(TEAM) == "already_present"
+                assert anyio.run(manager.push_team, TEAM) == "already_present"
                 assert manager._last_published_head(TEAM) == intended
 
     def observed_head(fresh_manager, key, label):
@@ -544,7 +545,7 @@ def test_publication_retry_after_resolution_keeps_the_choice(
     manager = _reattach(root, participant)
     before_retry = observed_head(manager, chosen_key, "before-retry")
     assert before_retry == (setup[f"head_{choose}"] if interruption == "before_head" else intended)
-    assert manager.push_team(TEAM) == ("published" if interruption == "before_head" else "already_present")
+    assert anyio.run(manager.push_team, TEAM) == ("published" if interruption == "before_head" else "already_present")
     assert manager._last_published_head(TEAM) == intended
     assert repo.head() == intended
     assert observed_head(manager, chosen_key, "after-retry") == intended

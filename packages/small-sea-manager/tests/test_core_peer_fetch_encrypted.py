@@ -24,6 +24,7 @@ import json
 import pathlib
 import sqlite3
 
+import anyio
 import boto3
 import pytest
 import small_sea_hub.backend as SmallSea
@@ -104,7 +105,7 @@ def _invite(root, inviter, inviter_hex, invitee, team_name, inviter_minio):
     inviter.publish_teammate_berth_storage_announcement(
         team_name, bytes.fromhex(team["berth_id_hex"]), allocation
     )
-    inviter.push_team(team_name)
+    anyio.run(inviter.push_team, team_name)
     _make_bucket_public(inviter_minio, allocation["location"])
 
     token = Provisioning.create_invitation(
@@ -112,11 +113,11 @@ def _invite(root, inviter, inviter_hex, invitee, team_name, inviter_minio):
         {"protocol": "s3", "url": inviter_minio["endpoint"]},
         invitee_label="invitee",
     )
-    inviter.push_team(team_name)
+    anyio.run(inviter.push_team, team_name)
 
     acceptance_b64 = accept_and_export(invitee, token)
     report = inviter.complete_invitation_acceptance(team_name, acceptance_b64)
-    inviter.push_team(team_name)
+    anyio.run(inviter.push_team, team_name)
     return team["teammate_id_hex"], report["admission_package"]
 
 
@@ -172,7 +173,7 @@ def _probe(teams, *, team_name, reader, writer, teammate_id):
     repo = _team_repo(teams["root"], teams[f"{reader}_hex"], team_name)
     main_before = repo.resolve_ref(_MAIN)
 
-    result = reader_manager.fetch_teammate_core(team_name, teammate_id)
+    result = anyio.run(reader_manager.fetch_teammate_core, team_name, teammate_id)
 
     assert result.disposition == "created"
     assert result.observed_head_sha == published_head
@@ -241,13 +242,13 @@ def test_admission_import_alone_does_not_let_the_inviter_read_the_invitee(teams)
         ids = [row[0].hex() for row in conn.execute("SELECT id FROM teammate")]
     (bob_id,) = [i for i in ids if i != teams["alice_teammate_id"]]
 
-    bob.push_team(_ALICE_TEAM)
+    anyio.run(bob.push_team, _ALICE_TEAM)
     report = bob.reconcile_runtime_state(_ALICE_TEAM)
     assert report["local_device_trusted"] is True
     assert len(report["redistribution_artifacts"]) == 1
 
     with pytest.raises(PeerSenderKeyUnavailableError):
-        alice.fetch_teammate_core(_ALICE_TEAM, bob_id)
+        anyio.run(alice.fetch_teammate_core, _ALICE_TEAM, bob_id)
 
 
 def test_delivered_sender_key_cannot_read_a_link_published_before_it(teams):
@@ -272,7 +273,7 @@ def test_delivered_sender_key_cannot_read_a_link_published_before_it(teams):
         ids = [row[0].hex() for row in conn.execute("SELECT id FROM teammate")]
     (bob_id,) = [i for i in ids if i != teams["alice_teammate_id"]]
 
-    bob.push_team(_ALICE_TEAM)
+    anyio.run(bob.push_team, _ALICE_TEAM)
     report = bob.reconcile_runtime_state(_ALICE_TEAM)
     (artifact,) = report["redistribution_artifacts"]
 
@@ -280,4 +281,4 @@ def test_delivered_sender_key_cannot_read_a_link_published_before_it(teams):
         root, teams["alice_hex"], _ALICE_TEAM, artifact["distribution_payload"]
     )
     with pytest.raises(CoreFetchRemoteError, match="No skipped key for iteration"):
-        alice.fetch_teammate_core(_ALICE_TEAM, bob_id)
+        anyio.run(alice.fetch_teammate_core, _ALICE_TEAM, bob_id)

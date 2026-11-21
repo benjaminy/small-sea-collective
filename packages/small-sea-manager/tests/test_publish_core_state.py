@@ -9,9 +9,12 @@ Hub has no localfolder storage adapter, so no Hub-backed push test can avoid it.
 import pathlib
 import sqlite3
 
+import anyio
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
+from cod_sync.aio.protocol import CodSync as AsyncCodSync
+from cod_sync.aio.store import SmallSeaStore as AsyncSmallSeaStore
 from cod_sync.protocol import (
     CodSync,
     PublicationIntegrationRequiredError,
@@ -171,7 +174,7 @@ def test_push_team_publishes_uncommitted_core_mutation(env):
     # An unrelated work-tree file must not be swept into the publication.
     (env.core_db.parent / "scratch.txt").write_text("not publication state\n")
 
-    assert env.manager.push_team(_TEAM) == "published"
+    assert anyio.run(env.manager.push_team, _TEAM) == "published"
 
     clone_dir, _sha = env.published_core_db("clone")
     published = _announcement_ids(clone_dir / "core.db")
@@ -189,20 +192,21 @@ def test_push_team_publishes_uncommitted_core_mutation(env):
 
 def test_second_push_is_already_present_and_opens_no_session(env, monkeypatch):
     env.announce_storage()
-    assert env.manager.push_team(_TEAM) == "published"
+    assert anyio.run(env.manager.push_team, _TEAM) == "published"
 
     head_after_first = env.repo.head()
     log_after_first = env.repo.log(limit=50)
 
     opened = []
-    real_open = env.manager._get_or_open_session
-    monkeypatch.setattr(
-        env.manager,
-        "_get_or_open_session",
-        lambda *a, **kw: (opened.append(a), real_open(*a, **kw))[1],
-    )
+    real_open = env.manager._hub_session
 
-    assert env.manager.push_team(_TEAM) == "already_present"
+    async def recording_open(*a, **kw):
+        opened.append(a)
+        return await real_open(*a, **kw)
+
+    monkeypatch.setattr(env.manager, "_hub_session", recording_open)
+
+    assert anyio.run(env.manager.push_team, _TEAM) == "already_present"
     assert opened == [], "no-op publication must not open a Hub session"
     # No empty commit, and no bundle attempt that Git would reject.
     assert env.repo.head() == head_after_first
@@ -216,7 +220,7 @@ def test_second_push_is_already_present_and_opens_no_session(env, monkeypatch):
 
 def test_marker_matches_the_published_main_sha(env):
     env.announce_storage()
-    env.manager.push_team(_TEAM)
+    anyio.run(env.manager.push_team, _TEAM)
 
     _clone_dir, published_sha = env.published_core_db("clone")
     assert env.marker.read_text().strip() == published_sha
@@ -225,19 +229,19 @@ def test_marker_matches_the_published_main_sha(env):
 
 def test_push_failure_leaves_marker_intact_and_work_preserved(env, monkeypatch):
     env.announce_storage()
-    env.manager.push_team(_TEAM)
+    anyio.run(env.manager.push_team, _TEAM)
     marker_before = env.marker.read_bytes()
     head_before = env.repo.head()
 
     Provisioning.set_team_admission_policy(env.root, env.alice_hex, _TEAM, quorum=2)
 
-    def _boom(*_args, **_kwargs):
+    async def _boom(*_args, **_kwargs):
         raise RuntimeError("injected transport failure")
 
-    monkeypatch.setattr(SmallSeaStore, "put_latest_link", _boom)
+    monkeypatch.setattr(AsyncSmallSeaStore, "put_latest_link", _boom)
 
     with pytest.raises(RuntimeError, match="injected transport failure"):
-        env.manager.push_team(_TEAM)
+        anyio.run(env.manager.push_team, _TEAM)
 
     assert env.marker.read_bytes() == marker_before
     new_head = env.repo.head()
@@ -248,19 +252,19 @@ def test_push_failure_leaves_marker_intact_and_work_preserved(env, monkeypatch):
 def test_session_open_failure_leaves_marker_intact_and_work_preserved(env, monkeypatch):
     """Step 3 moves the commit ahead of session opening; the work must survive."""
     env.announce_storage()
-    env.manager.push_team(_TEAM)
+    anyio.run(env.manager.push_team, _TEAM)
     marker_before = env.marker.read_bytes()
     head_before = env.repo.head()
 
     Provisioning.set_team_admission_policy(env.root, env.alice_hex, _TEAM, quorum=2)
 
-    def _denied(*_args, **_kwargs):
+    async def _denied(*_args, **_kwargs):
         raise RuntimeError("PIN denied")
 
-    monkeypatch.setattr(env.manager, "_get_or_open_session", _denied)
+    monkeypatch.setattr(env.manager, "_hub_session", _denied)
 
     with pytest.raises(RuntimeError, match="PIN denied"):
-        env.manager.push_team(_TEAM)
+        anyio.run(env.manager.push_team, _TEAM)
 
     assert env.marker.read_bytes() == marker_before
     assert env.repo.head() != head_before
@@ -277,13 +281,13 @@ def test_initial_session_failure_remains_never_pushed(playground_dir, monkeypatc
 
     Provisioning.set_team_admission_policy(root, alice_hex, _TEAM, quorum=2)
 
-    def _denied(*_args, **_kwargs):
+    async def _denied(*_args, **_kwargs):
         raise RuntimeError("PIN denied")
 
-    monkeypatch.setattr(manager, "_get_or_open_session", _denied)
+    monkeypatch.setattr(manager, "_hub_session", _denied)
 
     with pytest.raises(RuntimeError, match="PIN denied"):
-        manager.push_team(_TEAM)
+        anyio.run(manager.push_team, _TEAM)
 
     assert repo.head() != head_before, "the publication commit must be preserved"
     assert not _marker(root, alice_hex).exists()
@@ -304,20 +308,20 @@ def test_cas_conflict_reports_the_typed_state_and_preserves_local_commit(env, mo
     hand-written message nor touches the marker.
     """
     env.announce_storage()
-    env.manager.push_team(_TEAM)
+    anyio.run(env.manager.push_team, _TEAM)
     marker_before = env.marker.read_bytes()
     head_before = env.repo.head()
     published_head = marker_before.decode().strip()
 
     Provisioning.set_team_admission_policy(env.root, env.alice_hex, _TEAM, quorum=2)
 
-    def _conflict(*_args, **_kwargs):
+    async def _conflict(*_args, **_kwargs):
         raise CasConflictError("etag mismatch")
 
-    monkeypatch.setattr(SmallSeaStore, "put_latest_link", _conflict)
+    monkeypatch.setattr(AsyncSmallSeaStore, "put_latest_link", _conflict)
 
     with pytest.raises(PublicationRetryableError) as excinfo:
-        env.manager.push_team(_TEAM)
+        anyio.run(env.manager.push_team, _TEAM)
 
     failure = excinfo.value
     assert isinstance(failure.cause, CasConflictError)
@@ -358,11 +362,11 @@ def test_push_route_offers_no_integration_action_manager_does_not_have(env, monk
     route says what happened and what is preserved, and names no action.
     """
     env.announce_storage()
-    env.manager.push_team(_TEAM)
+    anyio.run(env.manager.push_team, _TEAM)
     marker_before = env.marker.read_bytes()
     Provisioning.set_team_admission_policy(env.root, env.alice_hex, _TEAM, quorum=2)
 
-    def _diverged(self, *_args, **_kwargs):
+    async def _diverged(self, *_args, **_kwargs):
         raise PublicationIntegrationRequiredError(
             "the store's head diverges from local main",
             attempted_head=env.repo.head(),
@@ -371,7 +375,7 @@ def test_push_route_offers_no_integration_action_manager_does_not_have(env, monk
             parked_ref="refs/cod-sync/parked/whatever",
         )
 
-    monkeypatch.setattr(CodSync, "publish", _diverged)
+    monkeypatch.setattr(AsyncCodSync, "publish", _diverged)
 
     web = create_app(env.root, env.alice_hex)
     web.state.manager = env.manager
@@ -390,17 +394,17 @@ def test_push_route_does_not_claim_local_status_settles_an_unknown_outcome(
     env, monkeypatch
 ):
     env.announce_storage()
-    env.manager.push_team(_TEAM)
+    anyio.run(env.manager.push_team, _TEAM)
     marker_before = env.marker.read_bytes()
     Provisioning.set_team_admission_policy(env.root, env.alice_hex, _TEAM, quorum=2)
 
-    def _unresolved(self, *_args, **_kwargs):
+    async def _unresolved(self, *_args, **_kwargs):
         raise PublicationOutcomeUnresolvedError(
             "the head write may still take effect",
             attempted_head=env.repo.head(),
         )
 
-    monkeypatch.setattr(CodSync, "publish", _unresolved)
+    monkeypatch.setattr(AsyncCodSync, "publish", _unresolved)
 
     web = create_app(env.root, env.alice_hex)
     web.state.manager = env.manager
@@ -419,17 +423,17 @@ def test_push_route_does_not_claim_a_retryable_write_changed_nothing(
 ):
     """Closed means the attempt is over, not necessarily that it never applied."""
     env.announce_storage()
-    env.manager.push_team(_TEAM)
+    anyio.run(env.manager.push_team, _TEAM)
     marker_before = env.marker.read_bytes()
     Provisioning.set_team_admission_policy(env.root, env.alice_hex, _TEAM, quorum=2)
 
-    def _retryable(self, *_args, **_kwargs):
+    async def _retryable(self, *_args, **_kwargs):
         raise PublicationRetryableError(
             "the head write is closed and left nothing to integrate",
             attempted_head=env.repo.head(),
         )
 
-    monkeypatch.setattr(CodSync, "publish", _retryable)
+    monkeypatch.setattr(AsyncCodSync, "publish", _retryable)
 
     web = create_app(env.root, env.alice_hex)
     web.state.manager = env.manager

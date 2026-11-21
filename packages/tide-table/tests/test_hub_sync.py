@@ -112,7 +112,7 @@ def _publish_core(http, core_token, root, participant_hex, manager):
     CodSync(Repo(sync_dir / ".git", sync_dir), store).publish()
 
 
-def _setup_two_teammate_team(root, minio_server_gen, hub_gen):
+async def _setup_two_teammate_team(root, minio_server_gen, hub_gen):
     """Return {name: {"hub": url, "token": calendar session, "teammate_id": hex}}."""
     names = ("Alice", "Bob")
     roots = {name: root / name.lower() for name in names}
@@ -161,7 +161,7 @@ def _setup_two_teammate_team(root, minio_server_gen, hub_gen):
     tokens["Bob"] = allocate_calendar_storage("Bob")
     Provisioning.complete_invitation_acceptance(roots["Alice"], hexes["Alice"], TEAM, acceptance)
     _publish_core(http["Alice"], alice_core, roots["Alice"], hexes["Alice"], managers["Alice"])
-    managers["Bob"].fetch_teammate_core(TEAM, alice_teammate_id)
+    await managers["Bob"].fetch_teammate_core(TEAM, alice_teammate_id)
     managers["Bob"].integrate_core_sources(TEAM)
     assert managers["Bob"].reconcile_team_route(TEAM, app_name=APP)["route"] == "ready"
 
@@ -171,7 +171,7 @@ def _setup_two_teammate_team(root, minio_server_gen, hub_gen):
         roots["Alice"], hexes["Alice"], TEAM, distribution["artifacts"][0]["distribution_payload"])
     bob_core = _open_session(http["Bob"], "Bob", app_name=_CORE_APP)
     _publish_core(http["Bob"], bob_core, roots["Bob"], hexes["Bob"], managers["Bob"])
-    managers["Alice"].fetch_teammate_core(TEAM, bob_teammate_id)
+    await managers["Alice"].fetch_teammate_core(TEAM, bob_teammate_id)
     managers["Alice"].integrate_core_sources(TEAM)
     with sqlite3.connect(str(Provisioning._team_db_path(roots["Bob"], hexes["Bob"], TEAM))) as bob_db, \
             sqlite3.connect(str(Provisioning._team_db_path(roots["Alice"], hexes["Alice"], TEAM))) as alice_db:
@@ -194,7 +194,7 @@ def anyio_backend():
 
 @pytest.mark.anyio
 async def test_move_and_location_merge_through_two_hubs(tmp_path, minio_server_gen, hub_gen):
-    team = _setup_two_teammate_team(tmp_path / "devices", minio_server_gen, hub_gen)
+    team = await _setup_two_teammate_team(tmp_path / "devices", minio_server_gen, hub_gen)
     async with contextlib.AsyncExitStack() as stack:
         http = {name: await stack.enter_async_context(
                     httpx.AsyncClient(base_url=team[name]["hub"], timeout=60)) for name in team}

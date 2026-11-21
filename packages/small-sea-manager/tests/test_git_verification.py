@@ -1,5 +1,6 @@
 """Micro tests for Core's runtime history verifier."""
 
+import anyio
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -8,7 +9,12 @@ from cod_sync.repo import Repo
 from cod_sync.verify import UnknownSignerError, UnsignedCommitError
 from small_sea_manager import provisioning as p
 from small_sea_manager.git_signing import core_signed_repo, signed_repo
-from small_sea_manager.git_verification import CoreHistoryVerifier, core_history_verifier
+from cod_sync.aio.repo import Repo as AsyncRepo
+from small_sea_manager.git_verification import (
+    AsyncCoreHistoryVerifier,
+    CoreHistoryVerifier,
+    core_history_verifier,
+)
 
 
 def _key():
@@ -52,6 +58,28 @@ def test_core_rejects_recognized_non_anchor_root(tmp_path):
         CoreHistoryVerifier(anchor, {anchor, device}).verify_history(repo, head)
 
 
+def test_async_core_verifier_gives_the_same_answers(tmp_path):
+    anchor_private, anchor = _key()
+    device_private, device = _key()
+    repo = _repo(tmp_path, anchor_private)
+    root = _commit(repo, "root")
+    signed_repo(repo, device_private, tmp_path / "keys")
+    head = _commit(repo, "device")
+    async_repo = AsyncRepo(repo.git_dir, repo.work_tree)
+
+    def verify(anchor_key, trusted):
+        verifier = AsyncCoreHistoryVerifier(anchor_key, trusted)
+        return anyio.run(verifier.verify_history, async_repo, head)
+
+    assert set(verify(anchor, {anchor, device})) == {root, head}
+    # Without the anchor's key, the root's signature is unrecognized.
+    with pytest.raises(UnknownSignerError, match="no supplied key|not in the supplied"):
+        verify(device, {device})
+    # Recognized, but not by the anchor this verifier was given.
+    with pytest.raises(UnknownSignerError, match="authority-anchor"):
+        verify(device, {anchor, device})
+
+
 @pytest.mark.parametrize("unsigned", [True, False])
 def test_core_rejects_unsigned_or_unknown_descendant(tmp_path, unsigned):
     anchor_private, anchor = _key()
@@ -86,7 +114,7 @@ def test_core_verifier_uses_local_adopted_certificates(tmp_path):
 
 def test_manager_publish_refuses_unsigned_local_history(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from small_sea_manager import manager as m
 
     participant = p.create_new_participant(tmp_path, "Alice")
@@ -98,12 +126,17 @@ def test_manager_publish_refuses_unsigned_local_history(tmp_path, monkeypatch):
     cloud = tmp_path / "cloud"
     cloud.mkdir()
     store = LocalFolderStore(str(cloud))
-    monkeypatch.setattr(m, "SmallSeaStore", lambda *args, **kwargs: store)
+    monkeypatch.setattr(m, "AsyncSmallSeaStore", lambda *args, **kwargs: store)
     manager = m.TeamManager(tmp_path, participant)
-    manager._get_or_open_session = lambda *args: SimpleNamespace(
-        token="test", ensure_cloud_ready=lambda: None,
-    )
+
+    async def ready():
+        pass
+
+    async def hub_session(*args):
+        return SimpleNamespace(token="test", ensure_cloud_ready=ready)
+
+    manager._hub_session = hub_session
     with pytest.raises(UnsignedCommitError) as caught:
-        manager.push_team("Project")
+        anyio.run(manager.push_team, "Project")
     assert caught.value.commit == rejected
     assert not list(cloud.iterdir())

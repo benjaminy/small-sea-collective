@@ -31,6 +31,11 @@ The caller closes the client, after stopping everything that uses it.
 The client's timeout must outlast the longest watch the caller asks for, because the Hub holds a watch open until something changes.
 (Tide Table uses the watch timeout plus 30 seconds.)
 
+The Manager is the exception.
+Each async TeamManager method opens its own client and closes it before returning (`_hub_http` in `manager.py`).
+TeamManager is long-lived, and its callers are web routes, scripts that enter through `anyio.run`, and tests that each start their own event loop;
+a client opened per call never outlives the loop that made it.
+
 **Streamed responses and temporary files.**
 A call that opens a streamed download, or makes a temporary directory, finishes with it before returning.
 Neither outlives the call, even when the call is cancelled.
@@ -116,5 +121,6 @@ A watch with a timeout of 0 checks for news and returns without touching the ber
   We have not yet found a caller that needs a separate sync client.
 - **The Hub's routes and the Manager.**
   Many of the Hub's `async def` routes call the synchronous backend directly, so one slow storage read in a request still stalls the Hub.
-  The Manager's web routes call TeamManager the same way.
+  Most of the Manager's web routes call TeamManager the same way.
+  So far only `push_team` and `fetch_teammate_core` are async.
   These are the next migration steps; see #188.
