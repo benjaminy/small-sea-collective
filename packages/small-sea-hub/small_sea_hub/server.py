@@ -274,11 +274,12 @@ async def _run_runtime_reconciliation_for_session(app: FastAPI, session_hex: str
         retry_needed = await _notify_linked_device_events_for_session(app, session_hex, ss_session)
         session_info["linked_device_notification_revision"] = revision
         session_info["linked_device_notification_retry_needed"] = retry_needed
-    try:
-        if should_run_reconciliation:
-            session_info["team_db_revision"] = _team_db_revision(session_info["team_db_path"])
-    except FileNotFoundError:
-        session_info["team_db_revision"] = None
+    if should_run_reconciliation:
+        # Record the revision read before reconciling, not a fresh stat: the team DB
+        # can change during the uploads above, and that change still needs a pass.
+        # When reconciliation itself writes the team DB, the next pass re-runs and
+        # finds nothing left to deliver.
+        session_info["team_db_revision"] = revision
     return revision_changed
 
 

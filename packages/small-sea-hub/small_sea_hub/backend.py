@@ -1739,9 +1739,11 @@ class SmallSeaBackend:
                 signals = yaml.safe_load(data.decode("utf-8")) or {}
                 if not isinstance(signals, dict):
                     signals = {}
-            else:
+            elif etag.absent:
                 signals = {}
                 etag = None
+            else:
+                continue  # the read failed; writing now could reset the counts
 
             signals.setdefault("version", 1)
             signals[berth_id_hex] = signals.get(berth_id_hex, 0) + 1
@@ -1750,7 +1752,8 @@ class SmallSeaBackend:
             if etag is not None:
                 upload_ok, _, msg = adapter.upload_if_match(self._SIGNAL_PATH, payload, etag)
             else:
-                upload_ok, _, msg = adapter.upload_overwrite(self._SIGNAL_PATH, payload)
+                # Create only: another writer may create the file first.
+                upload_ok, _, msg = adapter.upload_fresh(self._SIGNAL_PATH, payload)
 
             if upload_ok:
                 self._ntfy_publish_signal(ss_session, signals[berth_id_hex])

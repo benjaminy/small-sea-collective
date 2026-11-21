@@ -187,6 +187,41 @@ def test_watcher_reconciliation_uploads_runtime_artifact_once(playground_dir, mo
     assert len(uploads) == 1
 
 
+def test_a_device_linked_during_an_upload_gets_a_later_reconciliation(playground_dir, monkeypatch):
+    root = Path(playground_dir)
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    alice_hex = provisioning.create_new_participant(playground_dir, "alice")
+    provisioning.create_team(playground_dir, alice_hex, "ProjectX")
+    _add_same_teammate_linked_device_bundle(root, alice_hex, "ProjectX")
+    app.state.backend = backend
+    app.state.watched_sessions = {}
+    app.state.watched_peers = {}
+    app.state.peer_counts = {}
+    app.state.peer_signal_events = {}
+    app.state.ntfy_listener_tasks = {}
+    app.state.logger = backend.logger
+    with TestClient(app) as client:
+        session_hex = _request_and_confirm(client)
+    _register_session_peers(session_hex)
+
+    uploads = []
+    late_device = []
+
+    def _upload_while_a_device_links(session_hex_arg, path, data, expected_etag=None):
+        uploads.append(path)
+        if not late_device:
+            late_device.append(_add_same_teammate_linked_device_bundle(root, alice_hex, "ProjectX"))
+        return True, None, ""
+
+    monkeypatch.setattr(backend, "upload_runtime_artifact", _upload_while_a_device_links)
+
+    asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex))
+    assert len(uploads) == 1
+    asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex))
+    assert len(uploads) == 2
+    assert late_device[0].hex() in uploads[1]
+
+
 def test_watcher_retries_linked_device_notification_after_missing_adapter(playground_dir, monkeypatch):
     root = Path(playground_dir)
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
