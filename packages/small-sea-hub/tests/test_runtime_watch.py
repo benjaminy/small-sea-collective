@@ -1,10 +1,15 @@
+import asyncio
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
 
+import httpx
 from fastapi.testclient import TestClient
 
 import small_sea_hub.backend as SmallSea
+import small_sea_hub.server as Server
 from cod_sync.store import LocalFolderStore
 from cod_sync.repo import Repo
 from small_sea_hub.server import app, _register_session_peers, _run_runtime_reconciliation_for_session
@@ -175,10 +180,10 @@ def test_watcher_reconciliation_uploads_runtime_artifact_once(playground_dir, mo
 
     monkeypatch.setattr(backend, "upload_runtime_artifact", _fake_upload_runtime_artifact)
 
-    _run_runtime_reconciliation_for_session(app, session_hex)
+    asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex))
     assert len(uploads) == 1
     assert linked_device_key_id.hex() in uploads[0][1]
-    _run_runtime_reconciliation_for_session(app, session_hex)
+    asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex))
     assert len(uploads) == 1
 
 
@@ -221,7 +226,7 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
         return True, "msg-1", ""
 
     monkeypatch.setattr(backend, "send_notification", _missing_adapter)
-    assert _run_runtime_reconciliation_for_session(app, session_hex) is True
+    assert asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex)) is True
     assert attempts == ["missing"]
     assert (
         AdmissionEvents.AdmissionEventType.LINKED_DEVICE.value,
@@ -229,7 +234,7 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
     ) not in provisioning.list_notified_admission_events(root, alice_hex, "ProjectX")
 
     monkeypatch.setattr(backend, "send_notification", _success)
-    assert _run_runtime_reconciliation_for_session(app, session_hex) is False
+    assert asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex)) is False
     assert attempts == ["missing", "sent"]
     assert sent_payloads
     assert "`" not in sent_payloads[0][0]
@@ -239,7 +244,7 @@ def test_watcher_retries_linked_device_notification_after_missing_adapter(playgr
         linked_cert.cert_id.hex(),
     ) in provisioning.list_notified_admission_events(root, alice_hex, "ProjectX")
 
-    assert _run_runtime_reconciliation_for_session(app, session_hex) is False
+    assert asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex)) is False
     assert attempts == ["missing", "sent"]
 
 
@@ -280,5 +285,39 @@ def test_watcher_does_not_notify_for_self_linked_device_events(playground_dir, m
         return True, "msg-1", ""
 
     monkeypatch.setattr(backend, "send_notification", _capture_send)
-    assert _run_runtime_reconciliation_for_session(app, session_hex) is True
+    assert asyncio.run(_run_runtime_reconciliation_for_session(app, session_hex)) is True
     assert sends == []
+
+
+def test_a_held_peer_signal_read_does_not_stall_other_requests(playground_dir, monkeypatch):
+    backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
+    app.state.backend = backend
+    app.state.watched_sessions = {}
+    app.state.watched_peers = {("session", "teammate"): {"etag": None, "signals": {}, "berth_id_hex": "berth"}}
+    app.state.peer_counts = {}
+    app.state.peer_signal_events = {}
+    app.state.logger = backend.logger
+
+    read_started = threading.Event()
+    read_finished = threading.Event()
+
+    def _held_read(_session_hex, _teammate_id_hex):
+        read_started.set()
+        time.sleep(2)
+        read_finished.set()
+        return None, None
+
+    monkeypatch.setattr(backend, "get_peer_signal", _held_read)
+
+    async def scenario():
+        watcher = asyncio.create_task(Server._watcher_pass(app))
+        assert await asyncio.to_thread(read_started.wait, 5)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://hub") as client:
+            resp = await client.get("/")
+        answered_during_read = not read_finished.is_set()
+        await watcher
+        return resp.status_code, answered_during_read
+
+    status, answered_during_read = asyncio.run(scenario())
+    assert status == 200
+    assert answered_during_read

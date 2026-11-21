@@ -6,6 +6,7 @@ Covers:
 - watch with known_self_count already current returns no self_updated_count
 - NoteToSelf session registers with watch_self_only; non-NoteToSelf sessions are unaffected
 """
+import asyncio
 import pathlib
 
 import small_sea_hub.backend as SmallSea
@@ -169,14 +170,17 @@ def test_team_db_revision_pulses_watchers_for_device_link_only_changes(playgroun
         pulses.append(candidate_berth_id_hex)
 
     monkeypatch.setattr(Server, "_pulse_berth_event", capture_pulse)
-    monkeypatch.setattr(Server, "_refresh_local_runtime_signal", lambda *_args, **_kwargs: None)
+    async def skip_local_runtime_signal(*_args, **_kwargs):
+        return None
 
-    Server._watcher_pass(app)
+    monkeypatch.setattr(Server, "_refresh_local_runtime_signal", skip_local_runtime_signal)
+
+    asyncio.run(Server._watcher_pass(app))
     pulses.clear()
 
     linked_public_key = generate_key_pair(ProtectionLevel.DAILY)[0].public_key
     Provisioning.issue_device_link_for_teammate(root, alice_hex, "ProjectX", linked_public_key)
 
-    Server._watcher_pass(app)
+    asyncio.run(Server._watcher_pass(app))
 
     assert berth_id_hex in pulses
