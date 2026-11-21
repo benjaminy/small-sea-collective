@@ -58,7 +58,9 @@ A change that takes several steps and must not stop halfway — a merge that run
 3. The task releases the lock in a `finally` block when it finishes.
 4. If the caller is cancelled while waiting, it still waits for the task to finish, and only then re-raises the cancellation.
 
-Tide Table does this for merges (`handle_event` in `spikes/two_teammates_demo.py`) and for conflict resolutions (`resolve` in `spikes/caldav_spike.py`).
+Tide Table's merge worker does all four steps (`handle_event` in `spikes/two_teammates_demo.py`).
+Its conflict resolution (`resolve` in `spikes/caldav_spike.py`) skips step 4.
+A cancelled caller returns at once, while the resolution still holds the lock and is using the repository.
 
 ## Local SQLite
 

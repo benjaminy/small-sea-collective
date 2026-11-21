@@ -84,14 +84,18 @@ class SmallSeaDropboxAdapter(SmallSeaStorageAdapter):
         else:
             mode = {".tag": "update", "update": expected_etag}
 
-        api_arg = json.dumps(
-            {
-                "path": self._make_path(path),
-                "mode": mode,
-                "autorename": False,
-                "mute": True,
-            }
-        )
+        api_arg = {
+            "path": self._make_path(path),
+            "mode": mode,
+            "autorename": False,
+            "mute": True,
+        }
+        if expected_etag is not None:
+            # Without this, Dropbox reports success for a conditional write whose
+            # bytes match the file already there, so two writers who both
+            # computed the same new contents would each think they won.
+            api_arg["strict_conflict"] = True
+        api_arg = json.dumps(api_arg)
 
         resp = httpx.post(
             f"{DROPBOX_CONTENT}/files/upload",

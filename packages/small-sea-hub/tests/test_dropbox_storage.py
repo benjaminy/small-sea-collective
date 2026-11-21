@@ -99,6 +99,7 @@ def test_upload_overwrite():
     req = respx.calls.last.request
     api_arg = json.loads(req.headers["Dropbox-API-Arg"])
     assert api_arg["mode"] == {".tag": "overwrite"}
+    assert "strict_conflict" not in api_arg
 
 
 # ---- Upload fresh ----
@@ -125,6 +126,8 @@ def test_upload_fresh_success():
     req = respx.calls.last.request
     api_arg = json.loads(req.headers["Dropbox-API-Arg"])
     assert api_arg["mode"] == {".tag": "add"}
+    # Two writers creating the same bytes must not both succeed.
+    assert api_arg["strict_conflict"] is True
 
 
 @respx.mock
@@ -171,6 +174,7 @@ def test_upload_if_match_success():
     req = respx.calls.last.request
     api_arg = json.loads(req.headers["Dropbox-API-Arg"])
     assert api_arg["mode"] == {".tag": "update", "update": "rev003"}
+    assert api_arg["strict_conflict"] is True
 
 
 @respx.mock

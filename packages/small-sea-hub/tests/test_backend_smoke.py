@@ -77,14 +77,19 @@ def test_add_cloud(playground_dir, minio_server_gen):
     session = helper_add_cloud(small_sea, "alice", cloud_server["port"])
 
 
-def test_two_first_signal_bumps_both_count(playground_dir, monkeypatch):
-    """If another writer creates signals.yaml first, our first write must not overwrite it."""
+@pytest.mark.parametrize("same_berth", [False, True])
+def test_two_first_signal_bumps_both_count(playground_dir, monkeypatch, same_berth):
+    """If another writer creates signals.yaml first, our first write must not overwrite it.
+
+    With same_berth, both writers compute identical bytes, which Dropbox would
+    accept twice without strict_conflict.
+    """
     import types
     import yaml
     from small_sea_hub.cloud_errors import absent, cas_conflict
 
     berth_id = bytes(16)
-    other = "other-berth"
+    other = berth_id.hex() if same_berth else "other-berth"
 
     class RacingAdapter:
         """In-memory storage where another writer creates signals.yaml just after our first read."""
@@ -122,6 +127,9 @@ def test_two_first_signal_bumps_both_count(playground_dir, monkeypatch):
     monkeypatch.setattr(backend, "_make_storage_adapter", lambda _s: adapter)
     monkeypatch.setattr(backend, "_ntfy_publish_signal", lambda *_a: None)
 
-    assert backend._bump_signal("session") == 1
-    signals = yaml.safe_load(adapter.files[backend._SIGNAL_PATH][0])
-    assert signals == {"version": 1, other: 1, berth_id.hex(): 1}
+    if same_berth:
+        assert backend._bump_signal("session") == 2
+        assert yaml.safe_load(adapter.files[backend._SIGNAL_PATH][0]) == {"version": 1, berth_id.hex(): 2}
+    else:
+        assert backend._bump_signal("session") == 1
+        assert yaml.safe_load(adapter.files[backend._SIGNAL_PATH][0]) == {"version": 1, other: 1, berth_id.hex(): 1}
