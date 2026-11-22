@@ -106,10 +106,11 @@ If two tasks could now overlap where they could not before, guard them with an `
 
 ## Event loops in tests
 
-An AnyIO lock or event belongs to the event loop that first waits on it.
+An AnyIO event belongs to the event loop that first waits on it.
 Waiting on it from another loop raises an error.
+An AnyIO lock on asyncio belongs to no loop, so an object that outlives one loop can keep its locks; TeamManager's push locks rely on this.
 In production each process has one loop, but each FastAPI `TestClient` starts its own, so an event left in `app.state` by one test can belong to a loop that has already finished.
-The Hub creates its watcher lock at each startup for this reason.
+The Hub creates its watcher lock at each startup.
 A watch with a timeout of 0 checks for news and returns without touching the berth's event at all.
 
 ## Open questions
