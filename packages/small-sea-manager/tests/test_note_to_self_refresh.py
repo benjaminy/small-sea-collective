@@ -10,6 +10,7 @@ Covers:
 The two-device tests use MinIO because Hub-mediated NoteToSelf sync requires a
 real cloud backend (Hub's storage adapter does not support localfolder).
 """
+import functools
 import pathlib
 import sqlite3
 
@@ -211,6 +212,37 @@ def test_identity_join_retry_publishes_the_admission_an_earlier_call_did_not(
     monkeypatch.undo()
 
     welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
+
+    bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    with sqlite3.connect(str(note_to_self_sync_db_path(root_b, alice_hex))) as conn:
+        [(devices,)] = conn.execute("SELECT COUNT(*) FROM user_device").fetchall()
+    assert devices == 2
+
+
+def test_a_slow_publication_does_not_use_up_the_welcome_bundle_lifetime(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    """The bundle's lifetime starts once the admission is published."""
+    workspace = pathlib.Path(playground_dir)
+    root_b = workspace / "install-b"
+    root_b.mkdir()
+    alice_hex, http_a, manager_a = _s3_device(workspace / "install-a", minio_server_gen())
+    join_request = create_identity_join_request(root_b)
+    publish = AsyncCodSync.publish
+
+    async def slow_publish(self, *args, **kwargs):
+        await anyio.sleep(2.5)
+        return await publish(self, *args, **kwargs)
+
+    monkeypatch.setattr(AsyncCodSync, "publish", slow_publish)
+    welcome = anyio.run(
+        functools.partial(
+            manager_a.authorize_identity_join,
+            join_request["join_request_artifact"],
+            expires_in_seconds=2,
+        )
+    )
+    monkeypatch.undo()
 
     bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
     with sqlite3.connect(str(note_to_self_sync_db_path(root_b, alice_hex))) as conn:

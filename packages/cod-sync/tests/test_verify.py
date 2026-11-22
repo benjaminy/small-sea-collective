@@ -35,6 +35,7 @@ from cod_sync.format import (
 )
 from cod_sync.protocol import (
     MAIN_REF,
+    CodSync,
     PublicationFailedError,
     PublicationIntegrationRequiredError,
 )
@@ -153,6 +154,18 @@ def test_no_verifier_accepts_an_unsigned_history(scratch_dir):
 
     assert result.observed_head == head
     assert bob.resolve_ref(PIN) == head
+
+
+def test_the_sync_cod_sync_refuses_an_async_verifier(scratch_dir):
+    """It would call verify_history, get a coroutine, and never run the check."""
+
+    class AsyncVerifier:
+        async def verify_history(self, repo, head):
+            raise AssertionError("never awaited")
+
+    bob = make_repo(pathlib.Path(scratch_dir) / "bob", "bob")
+    with pytest.raises(TypeError, match="synchronous verifier"):
+        CodSync(bob, make_store(pathlib.Path(scratch_dir) / "publication"), verifier=AsyncVerifier())
 
 
 def test_an_unsigned_history_is_rejected_before_the_pin_moves(scratch_dir):

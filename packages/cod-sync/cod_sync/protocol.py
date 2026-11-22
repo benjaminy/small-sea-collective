@@ -23,6 +23,7 @@ What a publication may move
     touches a work tree, or constructs a merge.
 """
 
+import inspect
 import logging
 import tempfile
 from dataclasses import dataclass
@@ -371,6 +372,9 @@ class CodSync:
 
         A verifier implements verify_history(repo, head).
         """
+        if verifier is not None and inspect.iscoroutinefunction(verifier.verify_history):
+            # Calling it here would make a coroutine and never run the check.
+            raise TypeError("This Cod Sync needs a synchronous verifier")
         self.repo = repo
         self.store = store
         self.verifier = verifier

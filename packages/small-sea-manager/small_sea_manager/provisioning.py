@@ -2252,33 +2252,28 @@ def create_identity_join_request(root_dir, *, device_label=None):
     }
 
 
-def authorize_identity_join(
+def admit_identity_join_device(
     root_dir,
     participant_hex,
     join_request_artifact_b64,
     *,
     remote_descriptor: dict | None = None,
-    expires_in_seconds: int = 600,
 ):
-    """Admit a new device into shared NoteToSelf and return a sealed welcome bundle.
+    """Admit a new device into shared NoteToSelf.
 
     A localfolder remote is published here. For any other remote, the caller
-    publishes NoteToSelf before handing out the bundle.
-    When absent, it falls back to the older localfolder-only publish path.
+    publishes NoteToSelf, then calls issue_welcome_bundle.
+    Admitting a device that is already admitted with the same keys and label
+    changes nothing.
     """
-    if expires_in_seconds <= 0:
-        raise ValueError("expires_in_seconds must be positive")
-
     root_dir = pathlib.Path(root_dir)
     artifact = deserialize_join_request_artifact(join_request_artifact_b64)
-    auth_string = join_request_auth_string(artifact)
     device_id = bytes.fromhex(artifact.device_id_hex)
     encryption_public_key = bytes.fromhex(artifact.device_encryption_public_key_hex)
     signing_public_key = bytes.fromhex(artifact.device_signing_public_key_hex)
     inserted_user_device = False
 
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
-        authorizing_device = _current_device_row(conn)
         existing = conn.execute(
             "SELECT bootstrap_encryption_key, signing_key, label FROM user_device WHERE id = ?",
             (device_id,),
@@ -2299,9 +2294,6 @@ def authorize_identity_join(
             # Reissuing a welcome bundle is idempotent; relabelling a device is a
             # separate operation and must not ride along on a bootstrap retry.
             raise ValueError("A device with that ID is already registered with a different label")
-        authorizing_device_id = authorizing_device[0]
-        authorizing_signing_private_key = _read_local_secret(pathlib.Path(authorizing_device[4]))
-        authorizing_device_label = authorizing_device[5]
 
     if remote_descriptor is None:
         remote_descriptor = _single_note_to_self_remote_descriptor(root_dir, participant_hex)
@@ -2316,6 +2308,33 @@ def authorize_identity_join(
         )
         if remote_descriptor.get("protocol") == "localfolder":
             _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
+
+
+def issue_welcome_bundle(
+    root_dir,
+    participant_hex,
+    join_request_artifact_b64,
+    *,
+    remote_descriptor: dict,
+    expires_in_seconds: int = 600,
+):
+    """Sign and seal a welcome bundle for an admitted device.
+
+    The bundle's lifetime starts now, so call this only once the joining
+    device can fetch its admission.
+    """
+    if expires_in_seconds <= 0:
+        raise ValueError("expires_in_seconds must be positive")
+
+    root_dir = pathlib.Path(root_dir)
+    artifact = deserialize_join_request_artifact(join_request_artifact_b64)
+    auth_string = join_request_auth_string(artifact)
+    encryption_public_key = bytes.fromhex(artifact.device_encryption_public_key_hex)
+    with attached_note_to_self_connection(root_dir, participant_hex) as conn:
+        authorizing_device = _current_device_row(conn)
+    authorizing_device_id = authorizing_device[0]
+    authorizing_signing_private_key = _read_local_secret(pathlib.Path(authorizing_device[4]))
+    authorizing_device_label = authorizing_device[5]
 
     now = datetime.now(timezone.utc)
     expires = now.timestamp() + expires_in_seconds

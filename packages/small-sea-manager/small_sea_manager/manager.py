@@ -760,12 +760,11 @@ class TeamManager:
     async def authorize_identity_join(self, join_request_artifact_b64, *, expires_in_seconds=600):
         """Admit a new device into this participant's NoteToSelf identity."""
         remote_descriptor = await self._note_to_self_remote_descriptor()
-        result = provisioning.authorize_identity_join(
+        provisioning.admit_identity_join_device(
             self.root_dir,
             self.participant_hex,
             join_request_artifact_b64,
             remote_descriptor=remote_descriptor,
-            expires_in_seconds=expires_in_seconds,
         )
         if remote_descriptor["protocol"] != "localfolder":
             # Every call publishes, not only the one that admitted the device:
@@ -773,7 +772,15 @@ class TeamManager:
             # the joining device fetches the stored history, which must already
             # hold its admission. When it does, this returns already_present.
             await self.push_note_to_self()
-        return result
+        # Sign after publishing, so waiting on the push does not use up the
+        # bundle's lifetime.
+        return provisioning.issue_welcome_bundle(
+            self.root_dir,
+            self.participant_hex,
+            join_request_artifact_b64,
+            remote_descriptor=remote_descriptor,
+            expires_in_seconds=expires_in_seconds,
+        )
 
     def prepare_linked_device_team_join(self, team_name):
         """Prepare the joining-device side of same-teammate encrypted team bootstrap."""
