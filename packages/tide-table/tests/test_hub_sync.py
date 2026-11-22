@@ -14,6 +14,7 @@ Calendar commits are signed through each teammate's Hub, and each Hub judges
 the history its teammate fetches.
 """
 
+import anyio
 import contextlib
 import os
 import pathlib
@@ -102,10 +103,10 @@ def _berth_id(http, token):
     return http.get("/session/info", headers={"Authorization": f"Bearer {token}"}).json()["berth_id"]
 
 
-def _publish_core(http, core_token, root, participant_hex, manager):
+async def _publish_core(http, core_token, root, participant_hex, manager):
     """Publish a participant's team Core repo, so teammates can read it."""
     _setup_cloud(http, core_token)
-    report = manager.reconcile_team_route(TEAM, app_name=_CORE_APP)
+    report = await manager.reconcile_team_route(TEAM, app_name=_CORE_APP)
     assert report["route"] == "ready", report
     sync_dir = root / "Participants" / participant_hex / TEAM / "Sync"
     store = SmallSeaStore(core_token, base_url=str(http.base_url))
@@ -147,30 +148,31 @@ async def _setup_two_teammate_team(root, minio_server_gen, hub_gen):
     alice_teammate_id = Provisioning.create_team(roots["Alice"], hexes["Alice"], TEAM)["teammate_id_hex"]
     Provisioning.activate_app_for_team(roots["Alice"], hexes["Alice"], TEAM, APP)
     tokens = {"Alice": allocate_calendar_storage("Alice")}
-    assert managers["Alice"].reconcile_team_route(TEAM, app_name=APP)["route"] == "ready"
+    assert (await managers["Alice"].reconcile_team_route(TEAM, app_name=APP))["route"] == "ready"
     alice_core = _open_session(http["Alice"], "Alice", app_name=_CORE_APP)
-    _publish_core(http["Alice"], alice_core, roots["Alice"], hexes["Alice"], managers["Alice"])
+    await _publish_core(http["Alice"], alice_core, roots["Alice"], hexes["Alice"], managers["Alice"])
     invitation = Provisioning.create_invitation(
         roots["Alice"], hexes["Alice"], TEAM, {"protocol": "s3", "url": minio["Alice"]["endpoint"]},
         invitee_label="Bob")
-    _publish_core(http["Alice"], alice_core, roots["Alice"], hexes["Alice"], managers["Alice"])
+    await _publish_core(http["Alice"], alice_core, roots["Alice"], hexes["Alice"], managers["Alice"])
 
     # Bob accepts; Alice completes the acceptance; Bob reads Alice's Core.
-    acceptance = accept_and_export(managers["Bob"], invitation)
+    # The helper starts its own event loop, so it cannot run on this one.
+    acceptance = await anyio.to_thread.run_sync(accept_and_export, managers["Bob"], invitation)
     bob_teammate_id = acceptance_record_from_courier(acceptance)["author_teammate_id"]
     tokens["Bob"] = allocate_calendar_storage("Bob")
     Provisioning.complete_invitation_acceptance(roots["Alice"], hexes["Alice"], TEAM, acceptance)
-    _publish_core(http["Alice"], alice_core, roots["Alice"], hexes["Alice"], managers["Alice"])
+    await _publish_core(http["Alice"], alice_core, roots["Alice"], hexes["Alice"], managers["Alice"])
     await managers["Bob"].fetch_teammate_core(TEAM, alice_teammate_id)
     managers["Bob"].integrate_core_sources(TEAM)
-    assert managers["Bob"].reconcile_team_route(TEAM, app_name=APP)["route"] == "ready"
+    assert (await managers["Bob"].reconcile_team_route(TEAM, app_name=APP))["route"] == "ready"
 
     # Alice needs Bob's sender key and the location of Bob's bucket.
     distribution = Provisioning.redistribute_sender_key(roots["Bob"], hexes["Bob"], TEAM)
     Provisioning.receive_sender_key_distribution(
         roots["Alice"], hexes["Alice"], TEAM, distribution["artifacts"][0]["distribution_payload"])
     bob_core = _open_session(http["Bob"], "Bob", app_name=_CORE_APP)
-    _publish_core(http["Bob"], bob_core, roots["Bob"], hexes["Bob"], managers["Bob"])
+    await _publish_core(http["Bob"], bob_core, roots["Bob"], hexes["Bob"], managers["Bob"])
     await managers["Alice"].fetch_teammate_core(TEAM, bob_teammate_id)
     managers["Alice"].integrate_core_sources(TEAM)
     with sqlite3.connect(str(Provisioning._team_db_path(roots["Bob"], hexes["Bob"], TEAM))) as bob_db, \
@@ -180,7 +182,7 @@ async def _setup_two_teammate_team(root, minio_server_gen, hub_gen):
             (bytes.fromhex(bob_teammate_id),)).fetchall()
         alice_db.executemany(
             "INSERT OR IGNORE INTO teammate_berth_storage_announcement VALUES (?,?,?,?,?,?,?,?,?)", rows)
-    assert managers["Alice"].reconcile_team_route(TEAM, app_name=APP)["route"] == "ready"
+    assert (await managers["Alice"].reconcile_team_route(TEAM, app_name=APP))["route"] == "ready"
 
     teammate_ids = {"Alice": alice_teammate_id, "Bob": bob_teammate_id}
     return {name: {"hub": hubs[name], "token": tokens[name], "teammate_id": teammate_ids[name]}

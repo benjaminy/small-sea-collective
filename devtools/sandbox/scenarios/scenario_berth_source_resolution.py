@@ -1,4 +1,5 @@
 """Connected berth resolution scenarios with two installations and local MinIO."""
+import functools
 import pathlib
 
 import anyio
@@ -57,7 +58,7 @@ def _paused_with_two_written_locations(workspace, minio):
 
     manager_b = _reattach(root_b, alice_hex)
     anyio.run(manager_b.refresh_note_to_self)
-    manager_b.reconcile_team_route(TEAM, new_location=True)
+    anyio.run(functools.partial(manager_b.reconcile_team_route, TEAM, new_location=True))
     _redistribute_b_sender_key(root_a, root_b, alice_hex)
     anyio.run(manager_b.push_team, TEAM)
     _, allocation_b = _core_allocation(root_b, alice_hex)
@@ -68,7 +69,7 @@ def _paused_with_two_written_locations(workspace, minio):
     manager_b.create_invitation(TEAM, invitee_label="carol")
 
     manager_a = _reattach(root_a, alice_hex)
-    manager_a.reconcile_team_route(TEAM, new_location=True)
+    anyio.run(functools.partial(manager_a.reconcile_team_route, TEAM, new_location=True))
     anyio.run(manager_a.push_team, TEAM)
     _, allocation_a = _core_allocation(root_a, alice_hex)
     head_a = manager_a._team_repo(TEAM).resolve_ref(MAIN)
@@ -311,7 +312,7 @@ def test_either_existing_location_can_be_chosen_and_publication_resumes(
         s["url"].endswith("/unrelated-a") for s in manager_b.list_cloud_storage()
     )
 
-    assert manager_b.reconcile_team_route(TEAM)["route"] == "ready"
+    assert anyio.run(manager_b.reconcile_team_route, TEAM)["route"] == "ready"
     assert _live_locations(root_b, alice_hex, berth_id) == [chosen], (
         "reconcile rotated instead of signing for the chosen row"
     )
@@ -434,7 +435,7 @@ def test_a_paused_device_cannot_rotate_its_way_out(
     root_b, alice_hex, berth_id = setup["root_b"], setup["alice_hex"], setup["berth_id"]
     manager_b = setup["manager_b"]
 
-    report = manager_b.reconcile_team_route(TEAM, new_location=True)
+    report = anyio.run(functools.partial(manager_b.reconcile_team_route, TEAM, new_location=True))
 
     assert report["route_reason"] == "berth_source_paused"
     assert len(_live_locations(root_b, alice_hex, berth_id)) == 2
@@ -470,7 +471,7 @@ def test_publication_retry_after_resolution_keeps_the_choice(
     chosen_key = _key_for(status, chosen["location"])
     other_key = _key_for(status, other["location"])
     assert manager.resolve_berth_source(TEAM, chosen_key, status["evidence_digest"])["resolved"]
-    assert manager.reconcile_team_route(TEAM)["route"] == "ready"
+    assert anyio.run(manager.reconcile_team_route, TEAM)["route"] == "ready"
     repo = manager._team_repo(TEAM)
 
     if choose == "a":

@@ -23,6 +23,7 @@ unsigned, wrong-berth key, missing authority, ambiguous authority.
 Not yet covered: a changed authority view (needs the action guard, #286).
 """
 from dataclasses import replace
+import functools
 import importlib.util
 import inspect
 import os
@@ -286,8 +287,8 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
     manager_a.create_team(TEAM)
     manager_a.register_app_for_participant(FILES_APP)
     manager_a.activate_app_for_team(TEAM, FILES_APP)
-    assert manager_a.reconcile_team_route(TEAM)["route"] == "ready"
-    assert manager_a.reconcile_team_route(TEAM, app_name=FILES_APP)["route"] == "ready"
+    assert anyio.run(manager_a.reconcile_team_route, TEAM)["route"] == "ready"
+    assert anyio.run(functools.partial(manager_a.reconcile_team_route, TEAM, app_name=FILES_APP))["route"] == "ready"
     assert anyio.run(manager_a.push_team, TEAM) == "published"
     anyio.run(manager_a.push_note_to_self)
     spy.assert_only(mark, "A")

@@ -1,5 +1,6 @@
 """A teammate's commits made before their removal stay valid after it."""
 
+import functools
 import os
 import shutil
 import sqlite3
@@ -88,7 +89,7 @@ def test_files_history_survives_teammate_removal(playground_dir, minio_server_ge
             (bytes.fromhex(env["bob_teammate_id_hex"]),)).fetchall()
         alice_db.executemany(
             "INSERT OR IGNORE INTO teammate_berth_storage_announcement VALUES (?,?,?,?,?,?,?,?,?)", rows)
-    report = alice_manager.reconcile_team_route("ProjectX", app_name=sync.HUB_APP_NAME)
+    report = anyio.run(functools.partial(alice_manager.reconcile_team_route, "ProjectX", app_name=sync.HUB_APP_NAME))
     assert report["route"] == "ready", report
 
     # Alice fetches Bob's history while Bob is still a teammate.

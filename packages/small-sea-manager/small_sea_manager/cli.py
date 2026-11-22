@@ -1,11 +1,13 @@
 """Click CLI for the Small Sea Manager."""
 
 import base64
+import functools
 import json
 import pathlib
 import sys
 import tomllib
 
+import anyio
 import click
 
 from small_sea_manager.manager import TeamManager
@@ -244,7 +246,7 @@ def accept_invitation(ctx, token_b64):
     """
     manager = _make_manager(ctx)
     team_name = json.loads(base64.b64decode(token_b64))["team_name"]
-    report = manager.accept_invitation(token_b64)
+    report = anyio.run(manager.accept_invitation, token_b64)
     if report["acceptance"] == "exportable":
         report = manager.export_admission_acceptance(team_name)
     _echo_export(report, team_name)
@@ -256,7 +258,7 @@ def accept_invitation(ctx, token_b64):
 def prepare_route(ctx, team_name):
     """Retry storage route preparation for a pending join."""
     manager = _make_manager(ctx)
-    _report_join_state(manager.prepare_team_route(team_name), team_name)
+    _report_join_state(anyio.run(manager.prepare_team_route, team_name), team_name)
 
 
 def _report_route(report, team_name):
@@ -307,10 +309,13 @@ def reconcile_route(ctx, team_name, cloud_storage_id, new_location):
     """
     manager = _make_manager(ctx)
     try:
-        report = manager.reconcile_team_route(
-            team_name,
-            cloud_storage_id=cloud_storage_id,
-            new_location=new_location,
+        report = anyio.run(
+            functools.partial(
+                manager.reconcile_team_route,
+                team_name,
+                cloud_storage_id=cloud_storage_id,
+                new_location=new_location,
+            )
         )
     except ValueError as exc:
         # Invalid input, not route state: nothing was changed.

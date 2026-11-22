@@ -1013,7 +1013,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         try:
             token = invitation_token.strip()
             team_name = json.loads(base64.b64decode(token))["team_name"]
-            report = mgr.accept_invitation(token)
+            report = await mgr.accept_invitation(token)
             if report["acceptance"] == "exportable":
                 report = mgr.export_admission_acceptance(team_name)
             error = None
@@ -1026,7 +1026,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     async def prepare_route(request: Request, team_name: str):
         mgr = _mgr(request)
         try:
-            report = mgr.prepare_team_route(team_name)
+            report = await mgr.prepare_team_route(team_name)
             if report["acceptance"] == "exportable":
                 report = mgr.export_admission_acceptance(team_name)
             error = None
@@ -1076,7 +1076,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         """
         mgr = _mgr(request)
         try:
-            report = mgr.reconcile_team_route(
+            report = await mgr.reconcile_team_route(
                 team_name,
                 cloud_storage_id=cloud_storage_id.strip() or None,
                 new_location=new_location,

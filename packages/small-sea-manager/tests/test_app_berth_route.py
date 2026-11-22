@@ -5,7 +5,9 @@ storage through the Manager and the Hub alone, with no test-only publication
 helper and no direct SQL.
 """
 
+import anyio
 import base64
+import functools
 import pathlib
 import sqlite3
 
@@ -42,7 +44,7 @@ def test_files_berth_route_lets_a_files_session_write_and_read(
     provisioning.register_app_for_participant(root, alice_hex, FILES)
     provisioning.activate_app_for_team(root, alice_hex, TEAM, FILES)
 
-    report = manager.reconcile_team_route(TEAM, app_name=FILES)
+    report = anyio.run(functools.partial(manager.reconcile_team_route, TEAM, app_name=FILES))
     assert report == {"route": "ready", "route_reason": None}
 
     # Core's route state is untouched by the Files operation.
@@ -124,7 +126,7 @@ def test_pin_confirmed_core_session_sets_up_the_files_berth(
     _alice_hex, manager = _alice_with_files(root, http, minio_server_gen())
 
     manager.set_session(TEAM, _pin_session(http, "SmallSeaCollectiveCore", TEAM))
-    report = manager.reconcile_team_route(TEAM, app_name=FILES)
+    report = anyio.run(functools.partial(manager.reconcile_team_route, TEAM, app_name=FILES))
     assert report == {"route": "ready", "route_reason": None}
 
     auth = {"Authorization": f"Bearer {_pin_session(http, FILES, TEAM, 'passthrough')}"}
@@ -196,7 +198,7 @@ def test_duplicate_app_name_is_refused_before_allocation(
         conn.execute("INSERT INTO app (id, name) VALUES (?, ?)", (uuid7(), FILES))
 
     with pytest.raises(ValueError, match="ambiguous"):
-        manager.reconcile_team_route(TEAM, app_name=FILES)
+        anyio.run(functools.partial(manager.reconcile_team_route, TEAM, app_name=FILES))
     assert (
         provisioning.get_berth_cloud_allocation_for_berth(root, alice_hex, files_berth)
         is None

@@ -11,6 +11,8 @@ Peer delivery of the new announcement is separate sync work; so is copying
 existing data out of the old location.
 """
 
+import anyio
+import functools
 import pathlib
 import sqlite3
 
@@ -73,7 +75,7 @@ class _FakeSession:
         self.on_ready = on_ready
         self.calls = 0
 
-    def ensure_cloud_ready(self):
+    async def ensure_cloud_ready(self):
         self.calls += 1
         if self.on_ready is not None:
             self.on_ready()
@@ -84,11 +86,11 @@ class _FakeSession:
 def _manager(root, participant_hex, *, session=None):
     mgr = TeamManager(root, participant_hex)
 
-    def _open(team, mode="encrypted"):
+    async def _open(http, team, mode="encrypted"):
         assert session is not None, "reconciliation opened an unexpected session"
         return session
 
-    mgr._get_or_open_session = _open
+    mgr._hub_session = _open
     return mgr
 
 
@@ -202,7 +204,7 @@ def test_an_established_teammate_repairs_a_missing_announcement(playground_dir):
     assert _state(root, alice_hex)["route"] == "pending"
 
     session = _FakeSession()
-    report = _manager(root, alice_hex, session=session).reconcile_team_route(TEAM)
+    report = anyio.run(_manager(root, alice_hex, session=session).reconcile_team_route, TEAM)
 
     assert report == {"route": "ready", "route_reason": None}
     # Repair, not rotation: same allocation, and the route is the same locator.
@@ -215,16 +217,53 @@ def test_an_established_teammate_repairs_a_missing_announcement(playground_dir):
     ) == []
 
 
+def test_overlapping_repairs_for_one_team_run_one_at_a_time(playground_dir):
+    """A second repair waits for the first, then finds the route ready.
+
+    Both commit core.db in the team repo, so running them at once could
+    collide on Git's index lock.
+    """
+    root = pathlib.Path(playground_dir)
+    alice_hex = _established_alice(root)
+    _delete_announcements(root, alice_hex)
+    in_setup = 0
+    most_in_setup = 0
+
+    class _SlowSession:
+        async def ensure_cloud_ready(self):
+            nonlocal in_setup, most_in_setup
+            in_setup += 1
+            most_in_setup = max(most_in_setup, in_setup)
+            await anyio.sleep(0.1)
+            in_setup -= 1
+
+    mgr = _manager(root, alice_hex, session=_SlowSession())
+    reports = []
+
+    async def repair():
+        reports.append(await mgr.reconcile_team_route(TEAM))
+
+    async def both():
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(repair)
+            tg.start_soon(repair)
+
+    anyio.run(both)
+
+    assert most_in_setup == 1
+    assert reports == [{"route": "ready", "route_reason": None}] * 2
+
+
 def test_a_creator_who_configures_storage_late_publishes_a_route(playground_dir):
     root = pathlib.Path(playground_dir)
     alice_hex = _established_alice(root, storage=False)
     assert _allocation(root, alice_hex) is None
 
     mgr = _manager(root, alice_hex, session=_FakeSession())
-    assert mgr.reconcile_team_route(TEAM)["route_reason"] == "storage_not_configured"
+    assert anyio.run(mgr.reconcile_team_route, TEAM)["route_reason"] == "storage_not_configured"
 
     _add_storage(root, alice_hex, "alice-cloud-late")
-    report = mgr.reconcile_team_route(TEAM)
+    report = anyio.run(mgr.reconcile_team_route, TEAM)
 
     assert report == {"route": "ready", "route_reason": None}
     allocation = _allocation(root, alice_hex)
@@ -245,7 +284,7 @@ def test_multiple_registered_accounts_require_a_choice(playground_dir):
 
     session = _FakeSession()
     mgr = _manager(root, alice_hex, session=session)
-    report = mgr.reconcile_team_route(TEAM)
+    report = anyio.run(mgr.reconcile_team_route, TEAM)
 
     assert report == {"route": "pending", "route_reason": "storage_choice_required"}
     assert _allocation(root, alice_hex) is None
@@ -253,7 +292,7 @@ def test_multiple_registered_accounts_require_a_choice(playground_dir):
     # teammate, so no provider was contacted.
     assert session.calls == 0
 
-    chosen = mgr.reconcile_team_route(TEAM, cloud_storage_id=second)
+    chosen = anyio.run(functools.partial(mgr.reconcile_team_route, TEAM, cloud_storage_id=second))
     assert chosen == {"route": "ready", "route_reason": None}
     assert _allocation(root, alice_hex)["cloud_storage_id"] == second
 
@@ -269,7 +308,7 @@ def test_an_invalid_account_fails_before_touching_the_allocation(
     session = _FakeSession()
     mgr = _manager(root, alice_hex, session=session)
     with pytest.raises(ValueError):
-        mgr.reconcile_team_route(TEAM, cloud_storage_id=bad_id, new_location=True)
+        anyio.run(functools.partial(mgr.reconcile_team_route, TEAM, cloud_storage_id=bad_id, new_location=True))
 
     assert _allocation(root, alice_hex) == before
     assert session.calls == 0
@@ -287,8 +326,12 @@ def test_an_account_change_is_not_skipped_by_a_ready_route(playground_dir):
     before = _allocation(root, alice_hex)
     second = _add_storage(root, alice_hex, "cloud-two")
 
-    report = _manager(root, alice_hex, session=_FakeSession()).reconcile_team_route(
-        TEAM, cloud_storage_id=second
+    report = anyio.run(
+        functools.partial(
+            _manager(root, alice_hex, session=_FakeSession()).reconcile_team_route,
+            TEAM,
+            cloud_storage_id=second,
+        )
     )
 
     assert report == {"route": "ready", "route_reason": None}
@@ -306,8 +349,12 @@ def test_selecting_the_current_account_is_not_a_rotation(playground_dir):
     alice_hex = _established_alice(root)
     before = _allocation(root, alice_hex)
 
-    report = _manager(root, alice_hex, session=_FakeSession()).reconcile_team_route(
-        TEAM, cloud_storage_id=before["cloud_storage_id"]
+    report = anyio.run(
+        functools.partial(
+            _manager(root, alice_hex, session=_FakeSession()).reconcile_team_route,
+            TEAM,
+            cloud_storage_id=before["cloud_storage_id"],
+        )
     )
 
     assert report == {"route": "ready", "route_reason": None}
@@ -348,7 +395,7 @@ def test_a_rotation_publishes_the_reread_locator_not_the_provisional_one(
         MaterializationOutcome("materialized_with_locator", final_location),
         monkeypatch,
     )
-    report = mgr.reconcile_team_route(TEAM, new_location=True)
+    report = anyio.run(functools.partial(mgr.reconcile_team_route, TEAM, new_location=True))
 
     assert report == {"route": "ready", "route_reason": None}
     after = _allocation(root, alice_hex)
@@ -382,7 +429,7 @@ def test_publication_failure_leaves_the_old_route_and_retries_without_flags(
     )
     session = _FakeSession()
     mgr = _manager(root, alice_hex, session=session)
-    report = mgr.reconcile_team_route(TEAM, new_location=True)
+    report = anyio.run(functools.partial(mgr.reconcile_team_route, TEAM, new_location=True))
 
     assert report == {"route": "pending", "route_reason": "route_preparation_error"}
     replacement = _allocation(root, alice_hex)
@@ -392,7 +439,7 @@ def test_publication_failure_leaves_the_old_route_and_retries_without_flags(
 
     monkeypatch.undo()
     # A retry is not a second rotation: no change arguments, same replacement.
-    retried = mgr.reconcile_team_route(TEAM)
+    retried = anyio.run(mgr.reconcile_team_route, TEAM)
     assert retried == {"route": "ready", "route_reason": None}
     converged = _allocation(root, alice_hex)
     assert converged["id"] == replacement["id"]
@@ -447,12 +494,12 @@ def test_commit_failure_is_retryable_without_recontacting_the_provider(
     monkeypatch.setattr(repo, "commit_paths", _fail_once)
     monkeypatch.setattr(mgr, "_team_repo", lambda team_name: repo)
 
-    first = mgr.reconcile_team_route(TEAM, new_location=True)
+    first = anyio.run(functools.partial(mgr.reconcile_team_route, TEAM, new_location=True))
     assert first == {"route": "pending", "route_reason": "route_preparation_error"}
     assert repo.work_tree_paths_differ_from_head(["core.db"])
     rows_after_failure = _announcement_rows(root, alice_hex)
 
-    retried = mgr.reconcile_team_route(TEAM)
+    retried = anyio.run(mgr.reconcile_team_route, TEAM)
     assert retried == {"route": "ready", "route_reason": None}
     assert not repo.work_tree_paths_differ_from_head(["core.db"])
     # The materialized announcement was committed, not published again.
@@ -473,9 +520,7 @@ def test_an_untrusted_signers_row_is_repaired_by_the_current_device(playground_d
     stale = _insert_foreign_signed_announcement(root, alice_hex, "abandoned-location")
     assert _effective_location(root, alice_hex) is None
 
-    report = _manager(root, alice_hex, session=_FakeSession()).reconcile_team_route(
-        TEAM
-    )
+    report = anyio.run(_manager(root, alice_hex, session=_FakeSession()).reconcile_team_route, TEAM)
 
     assert report == {"route": "ready", "route_reason": None}
     assert _effective_location(root, alice_hex) == allocation["location"]
@@ -496,9 +541,7 @@ def test_an_untrusted_maximum_id_cannot_block_route_repair(playground_dir):
     )
     assert _effective_location(root, alice_hex) is None
 
-    report = _manager(root, alice_hex, session=_FakeSession()).reconcile_team_route(
-        TEAM
-    )
+    report = anyio.run(_manager(root, alice_hex, session=_FakeSession()).reconcile_team_route, TEAM)
 
     assert report == {"route": "ready", "route_reason": None}
     assert _effective_location(root, alice_hex) == allocation["location"]
@@ -522,7 +565,7 @@ def test_an_untrusted_current_device_reports_without_contacting_anyone(
         lambda *a, **k: {**state, "admission": "pending"},
     )
 
-    report = mgr.reconcile_team_route(TEAM, new_location=True)
+    report = anyio.run(functools.partial(mgr.reconcile_team_route, TEAM, new_location=True))
 
     assert report == {"route": "pending", "route_reason": "current_device_untrusted"}
     # The rejected request never became a durable rotation.
@@ -544,8 +587,13 @@ def test_an_untrusted_current_device_still_rejects_invalid_account(
     )
 
     with pytest.raises(ValueError):
-        _manager(root, alice_hex, session=None).reconcile_team_route(
-            TEAM, cloud_storage_id="not-hex", new_location=True
+        anyio.run(
+            functools.partial(
+                _manager(root, alice_hex, session=None).reconcile_team_route,
+                TEAM,
+                cloud_storage_id="not-hex",
+                new_location=True,
+            )
         )
 
     monkeypatch.undo()
@@ -562,11 +610,11 @@ def test_reconciling_twice_with_no_change_is_a_no_op(playground_dir):
     alice_hex = _established_alice(root)
     mgr = _manager(root, alice_hex, session=_FakeSession())
 
-    assert mgr.reconcile_team_route(TEAM) == {"route": "ready", "route_reason": None}
+    assert anyio.run(mgr.reconcile_team_route, TEAM) == {"route": "ready", "route_reason": None}
     allocation = _allocation(root, alice_hex)
     rows = _announcement_rows(root, alice_hex)
 
-    assert mgr.reconcile_team_route(TEAM) == {"route": "ready", "route_reason": None}
+    assert anyio.run(mgr.reconcile_team_route, TEAM) == {"route": "ready", "route_reason": None}
     assert _allocation(root, alice_hex) == allocation
     assert _announcement_rows(root, alice_hex) == rows
 
@@ -584,7 +632,7 @@ def test_a_replacement_during_hub_setup_is_not_announced(playground_dir):
         )
 
     session = _FakeSession(on_ready=_replace_mid_flight)
-    report = _manager(root, alice_hex, session=session).reconcile_team_route(TEAM)
+    report = anyio.run(_manager(root, alice_hex, session=session).reconcile_team_route, TEAM)
 
     assert report == {"route": "pending", "route_reason": "allocation_conflict"}
     # The stale operation signed nothing for an allocation it never materialized.
@@ -610,7 +658,7 @@ def test_a_replacement_seen_in_the_final_read_back_is_not_reported_ready(
         return result
 
     monkeypatch.setattr(mgr, "_commit_prepared_route", _replace_after_publication)
-    report = mgr.reconcile_team_route(TEAM)
+    report = anyio.run(mgr.reconcile_team_route, TEAM)
 
     assert report == {"route": "pending", "route_reason": "allocation_conflict"}
 
@@ -685,8 +733,12 @@ def test_a_ready_racing_replacement_is_reported_as_an_allocation_conflict(
         "resolve_berth_cloud_allocation_intent",
         _resolve_then_publish_a_replacement,
     )
-    report = _manager(root, alice_hex, session=None).reconcile_team_route(
-        TEAM, new_location=True
+    report = anyio.run(
+        functools.partial(
+            _manager(root, alice_hex, session=None).reconcile_team_route,
+            TEAM,
+            new_location=True,
+        )
     )
 
     assert report == {"route": "pending", "route_reason": "allocation_conflict"}
@@ -711,8 +763,12 @@ def test_a_replacement_announcement_outranks_the_row_it_supersedes(
     low_id = bytes.fromhex("00" * 16)
     monkeypatch.setattr(provisioning, "uuid7", lambda: low_id)
 
-    report = _manager(root, alice_hex, session=_FakeSession()).reconcile_team_route(
-        TEAM, new_location=True
+    report = anyio.run(
+        functools.partial(
+            _manager(root, alice_hex, session=_FakeSession()).reconcile_team_route,
+            TEAM,
+            new_location=True,
+        )
     )
 
     assert report == {"route": "ready", "route_reason": None}
@@ -749,9 +805,11 @@ def _cli(root, participant_hex, *args):
 def fake_session(monkeypatch):
     """Give every TeamManager built by a surface a stubbed Hub session."""
     session = _FakeSession()
-    monkeypatch.setattr(
-        TeamManager, "_get_or_open_session", lambda self, team, mode="encrypted": session
-    )
+
+    async def _open(self, http, team, mode="encrypted"):
+        return session
+
+    monkeypatch.setattr(TeamManager, "_hub_session", _open)
     return session
 
 

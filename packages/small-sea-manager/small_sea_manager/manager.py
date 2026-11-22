@@ -277,9 +277,8 @@ class TeamManager:
         # methods must reach the same Hub.
         injected_url = str(getattr(_http_client, "base_url", "") or "")
         self._hub_base_url = injected_url or self.client._base_url
-        # One publication at a time per team, so a second push sees the first
-        # one's commit and marker instead of racing it for Git's index lock.
-        self._push_locks: dict[str, anyio.Lock] = {}
+        # One push or route change at a time per team; see _team_lock.
+        self._team_locks: dict[str, anyio.Lock] = {}
         # NoteToSelf push and refresh run one at a time: each reads the adopted
         # signal count before awaiting the Hub and writes it afterwards, so an
         # overlapping call could move it backwards.
@@ -344,6 +343,14 @@ class TeamManager:
         return self.client.open_session(
             self.participant_hex, _CORE_APP, team, "TeamManager", mode=mode
         )
+
+    def _team_lock(self, team_name: str) -> anyio.Lock:
+        """The lock that lets one push or route change run at a time per team.
+
+        Each of them commits core.db in the team repo, and two Git commits
+        at once would collide on index.lock.
+        """
+        return self._team_locks.setdefault(team_name, anyio.Lock())
 
     def _hub_http(self) -> httpx.AsyncClient:
         """A new async HTTP client for the Hub.
@@ -949,7 +956,7 @@ class TeamManager:
             app_name,
         )
 
-    def accept_invitation(self, token_b64):
+    async def accept_invitation(self, token_b64):
         """Accept an invitation token (acceptor side). Returns a join-state report.
 
         Opens a NoteToSelf Hub session to proxy the inviter's cloud for cloning,
@@ -1001,7 +1008,7 @@ class TeamManager:
             self.root_dir, self.participant_hex, token_b64,
             inviter_store=proxy_store,
         )
-        return self.prepare_team_route(token["team_name"])
+        return await self.prepare_team_route(token["team_name"])
 
     # ------------------------------------------------------------------ #
     # Route preparation and acceptance export
@@ -1090,7 +1097,7 @@ class TeamManager:
             and observed["cloud_storage_id"] == expected["cloud_storage_id"]
         )
 
-    def _publish_berth_route(
+    async def _publish_berth_route(
         self, team_name, state, allocation, app_name=_CORE_APP
     ) -> tuple[dict, str | None]:
         """Session, materialize, reread, publish, read back, commit.
@@ -1108,25 +1115,26 @@ class TeamManager:
         Returns `(state, route_reason)`; a `None` reason means ready.
         """
         berth_id = state["berth_id"]
-        try:
-            session = self._get_or_open_session(team_name)
-        except (SmallSeaHubUnavailable, SmallSeaError):
-            return state, "hub_session_unavailable"
+        async with self._hub_http() as http:
+            try:
+                session = await self._hub_session(http, team_name)
+            except (SmallSeaHubUnavailable, SmallSeaError):
+                return state, "hub_session_unavailable"
 
-        try:
-            if app_name == _CORE_APP:
-                session.ensure_cloud_ready()
-            else:
-                session.ensure_berth_cloud_ready(berth_id.hex())
-        except SmallSeaCloudStorageRequired as exc:
-            return state, ROUTE_REASON_BY_CLOUD_REASON.get(
-                exc.reason, "route_preparation_error"
-            )
-        except SmallSeaHubUnavailable:
-            return state, "hub_session_unavailable"
-        except Exception:
-            _LOG.exception("Cloud setup failed while preparing a team route")
-            return state, "route_preparation_error"
+            try:
+                if app_name == _CORE_APP:
+                    await session.ensure_cloud_ready()
+                else:
+                    await session.ensure_berth_cloud_ready(berth_id.hex())
+            except SmallSeaCloudStorageRequired as exc:
+                return state, ROUTE_REASON_BY_CLOUD_REASON.get(
+                    exc.reason, "route_preparation_error"
+                )
+            except SmallSeaHubUnavailable:
+                return state, "hub_session_unavailable"
+            except Exception:
+                _LOG.exception("Cloud setup failed while preparing a team route")
+                return state, "route_preparation_error"
 
         try:
             # Reread after materialization: the provider may have written back
@@ -1176,7 +1184,7 @@ class TeamManager:
             return self._pending_route(state), "allocation_conflict"
         return state, None
 
-    def prepare_team_route(self, team_name) -> dict:
+    async def prepare_team_route(self, team_name) -> dict:
         """Publish this participant's Core storage route, and report join state.
 
         Retryable: every failure below leaves the completed local join intact
@@ -1184,6 +1192,10 @@ class TeamManager:
         skipped entirely unless this exact join has an eligible acceptance
         artifact to export once the route lands.
         """
+        async with self._team_lock(team_name):
+            return await self._prepare_team_route_locked(team_name)
+
+    async def _prepare_team_route_locked(self, team_name) -> dict:
         state = provisioning.derive_team_join_state(
             self.root_dir, self.participant_hex, team_name
         )
@@ -1218,7 +1230,7 @@ class TeamManager:
         if allocation is None:
             return self._report(state, route_reason="storage_not_configured")
 
-        state, route_reason = self._publish_berth_route(team_name, state, allocation)
+        state, route_reason = await self._publish_berth_route(team_name, state, allocation)
         return self._report(
             state,
             route_reason=route_reason,
@@ -1229,7 +1241,7 @@ class TeamManager:
             ),
         )
 
-    def reconcile_team_route(
+    async def reconcile_team_route(
         self, team_name, cloud_storage_id=None, new_location=False, app_name=_CORE_APP
     ) -> dict:
         """Reconcile and publish an established teammate's storage route for one berth.
@@ -1252,6 +1264,14 @@ class TeamManager:
         unregistered one raises `ValueError` before anything is mutated. There
         is deliberately no raw location parameter.
         """
+        async with self._team_lock(team_name):
+            return await self._reconcile_team_route_locked(
+                team_name, cloud_storage_id, new_location, app_name
+            )
+
+    async def _reconcile_team_route_locked(
+        self, team_name, cloud_storage_id, new_location, app_name
+    ) -> dict:
         state = provisioning.derive_team_join_state(
             self.root_dir, self.participant_hex, team_name, app_name
         )
@@ -1301,7 +1321,7 @@ class TeamManager:
                 )
             return self._route_report(state, route_reason=None)
 
-        state, route_reason = self._publish_berth_route(
+        state, route_reason = await self._publish_berth_route(
             team_name, state, allocation, app_name
         )
         return self._route_report(
@@ -1692,8 +1712,7 @@ class TeamManager:
         mode without a PIN provider. The three publication states that need
         attention propagate as their typed Cod Sync errors.
         """
-        lock = self._push_locks.setdefault(team_name, anyio.Lock())
-        async with lock:
+        async with self._team_lock(team_name):
             return await self._push_team_locked(team_name)
 
     async def _push_team_locked(self, team_name) -> str:

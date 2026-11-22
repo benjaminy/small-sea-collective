@@ -5,6 +5,7 @@ importable from any package's tests via the root `pyproject.toml`'s
 `pythonpath = ["."]`.
 """
 
+import anyio
 import contextlib
 from functools import lru_cache
 import os
@@ -132,7 +133,7 @@ def accept_and_export(manager, token_b64: str) -> str:
     import json
 
     team_name = json.loads(base64.b64decode(token_b64).decode())["team_name"]
-    report = manager.accept_invitation(token_b64)
+    report = anyio.run(manager.accept_invitation, token_b64)
     assert report["route"] == "ready", report
     assert report["acceptance"] == "exportable", report
     exported = manager.export_admission_acceptance(team_name)

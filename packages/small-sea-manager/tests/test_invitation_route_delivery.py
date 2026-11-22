@@ -11,6 +11,7 @@ real provider-issued locator writeback use a real Hub backend with a stubbed
 storage adapter.
 """
 
+import anyio
 import base64
 import json
 import pathlib
@@ -110,7 +111,7 @@ class _FakeSession:
         self.on_ready = on_ready
         self.calls = 0
 
-    def ensure_cloud_ready(self):
+    async def ensure_cloud_ready(self):
         self.calls += 1
         if self.on_ready is not None:
             self.on_ready()
@@ -121,13 +122,13 @@ class _FakeSession:
 def _manager(root, participant_hex, *, session=None, session_error=None):
     mgr = TeamManager(root, participant_hex)
 
-    def _open(team, mode="encrypted"):
+    async def _open(http, team, mode="encrypted"):
         if session_error is not None:
             raise session_error
         assert mode == "encrypted", f"route preparation used mode {mode!r}"
         return session
 
-    mgr._get_or_open_session = _open
+    mgr._hub_session = _open
     return mgr
 
 
@@ -155,7 +156,7 @@ def _prepared_bob(root, alice_cloud, alice_hex, bob_hex, token):
     """Bob accepts and reaches a ready route. Returns his courier token."""
     _accept_locally(root, bob_hex, token, alice_cloud)
     mgr = _manager(root, bob_hex, session=_FakeSession())
-    report = mgr.prepare_team_route(TEAM)
+    report = anyio.run(mgr.prepare_team_route, TEAM)
     assert report["route"] == "ready", report
     return mgr.export_admission_acceptance(TEAM)["acceptance_token"]
 
@@ -302,7 +303,7 @@ def test_route_pending_without_cloud_storage_then_ready_after_adding(playground_
 
     session = _FakeSession()
     mgr = _manager(root, bob_hex, session=session)
-    report = mgr.prepare_team_route(TEAM)
+    report = anyio.run(mgr.prepare_team_route, TEAM)
     assert report["join"] == "complete"
     assert report["route"] == "pending"
     assert report["route_reason"] == "storage_not_configured"
@@ -316,7 +317,7 @@ def test_route_pending_without_cloud_storage_then_ready_after_adding(playground_
     provisioning.add_cloud_storage(
         root, bob_hex, protocol="localfolder", url=str(bob_cloud)
     )
-    retried = mgr.prepare_team_route(TEAM)
+    retried = anyio.run(mgr.prepare_team_route, TEAM)
     assert retried["route"] == "ready"
     assert retried["route_reason"] is None
     assert retried["acceptance"] == "exportable"
@@ -336,7 +337,7 @@ def test_route_pending_when_no_hub_session(playground_dir, error, expected):
     _accept_locally(root, bob_hex, _invite(root, alice_hex, alice_cloud), alice_cloud)
 
     mgr = _manager(root, bob_hex, session_error=error)
-    report = mgr.prepare_team_route(TEAM)
+    report = anyio.run(mgr.prepare_team_route, TEAM)
     assert report["route"] == "pending"
     assert report["route_reason"] == expected
     assert report["acceptance"] == "withheld"
@@ -367,7 +368,7 @@ def test_each_cloud_setup_failure_leaves_a_retryable_pending_route(
         error=SmallSeaCloudStorageRequired(cloud_reason, cloud_reason)
     )
     mgr = _manager(root, bob_hex, session=failing)
-    report = mgr.prepare_team_route(TEAM)
+    report = anyio.run(mgr.prepare_team_route, TEAM)
     assert report["route"] == "pending"
     assert report["route_reason"] == expected
     assert report["acceptance"] == "withheld"
@@ -377,8 +378,11 @@ def test_each_cloud_setup_failure_leaves_a_retryable_pending_route(
     ) == []
 
     # The local join survived; a retry against a working Hub reaches ready.
-    mgr._get_or_open_session = lambda team, mode="encrypted": _FakeSession()
-    assert mgr.prepare_team_route(TEAM)["route"] == "ready"
+    async def _working(http, team, mode="encrypted"):
+        return _FakeSession()
+
+    mgr._hub_session = _working
+    assert anyio.run(mgr.prepare_team_route, TEAM)["route"] == "ready"
 
 
 def test_publication_failure_leaves_join_pending(playground_dir, monkeypatch):
@@ -393,13 +397,13 @@ def test_publication_failure_leaves_join_pending(playground_dir, monkeypatch):
         provisioning, "publish_teammate_berth_storage_announcement", _boom
     )
     mgr = _manager(root, bob_hex, session=_FakeSession())
-    report = mgr.prepare_team_route(TEAM)
+    report = anyio.run(mgr.prepare_team_route, TEAM)
     assert report["route"] == "pending"
     assert report["route_reason"] == "route_preparation_error"
     assert report["acceptance"] == "withheld"
 
     monkeypatch.undo()
-    assert mgr.prepare_team_route(TEAM)["route"] == "ready"
+    assert anyio.run(mgr.prepare_team_route, TEAM)["route"] == "ready"
 
 
 def test_commit_failure_is_retryable_without_recontacting_provider(
@@ -425,7 +429,7 @@ def test_commit_failure_is_retryable_without_recontacting_provider(
     monkeypatch.setattr(repo, "commit_paths", _fail_twice)
     monkeypatch.setattr(mgr, "_team_repo", lambda team_name: repo)
 
-    first = mgr.prepare_team_route(TEAM)
+    first = anyio.run(mgr.prepare_team_route, TEAM)
     assert first["route"] == "pending"
     assert first["route_reason"] == "route_preparation_error"
     assert first["acceptance"] == "withheld"
@@ -438,7 +442,7 @@ def test_commit_failure_is_retryable_without_recontacting_provider(
     assert direct_export["acceptance_token"] is None
     assert repo.work_tree_paths_differ_from_head(["core.db"])
 
-    retried = mgr.prepare_team_route(TEAM)
+    retried = anyio.run(mgr.prepare_team_route, TEAM)
     assert retried["route"] == "ready"
     assert retried["acceptance"] == "exportable"
     assert not repo.work_tree_paths_differ_from_head(["core.db"])
@@ -461,7 +465,7 @@ def test_route_preparation_skips_the_provider_without_an_eligible_artifact(
     conn.close()
 
     session = _FakeSession()
-    report = _manager(root, bob_hex, session=session).prepare_team_route(TEAM)
+    report = anyio.run(_manager(root, bob_hex, session=session).prepare_team_route, TEAM)
     assert report["route"] == "pending"
     assert report["acceptance"] == "withheld"
     assert report["acceptance_reason"] == "artifact_missing"
@@ -492,7 +496,7 @@ def test_export_is_withheld_until_the_route_is_ready_then_stable(playground_dir)
     provisioning.add_cloud_storage(
         root, bob_hex, protocol="localfolder", url=str(bob_cloud)
     )
-    assert mgr.prepare_team_route(TEAM)["route"] == "ready"
+    assert anyio.run(mgr.prepare_team_route, TEAM)["route"] == "ready"
 
     first = mgr.export_admission_acceptance(TEAM)["acceptance_token"]
     second = mgr.export_admission_acceptance(TEAM)["acceptance_token"]
@@ -506,7 +510,7 @@ def test_export_marks_first_export_and_refuses_replacement_afterwards(playground
     alice_hex, bob_hex, alice_cloud = _setup(root)
     _accept_locally(root, bob_hex, _invite(root, alice_hex, alice_cloud), alice_cloud)
     mgr = _manager(root, bob_hex, session=_FakeSession())
-    mgr.prepare_team_route(TEAM)
+    anyio.run(mgr.prepare_team_route, TEAM)
     assert mgr.export_admission_acceptance(TEAM)["acceptance_token"] is not None
 
     state = provisioning.derive_team_join_state(root, bob_hex, TEAM)
@@ -532,7 +536,7 @@ def test_a_stale_artifact_is_never_exported(playground_dir, field):
     alice_hex, bob_hex, alice_cloud = _setup(root)
     _accept_locally(root, bob_hex, _invite(root, alice_hex, alice_cloud), alice_cloud)
     mgr = _manager(root, bob_hex, session=_FakeSession())
-    mgr.prepare_team_route(TEAM)
+    anyio.run(mgr.prepare_team_route, TEAM)
 
     local_db = provisioning.device_local_db_path(root, bob_hex)
     conn = sqlite3.connect(str(local_db))
@@ -575,7 +579,7 @@ def test_export_works_without_the_proposal_row_in_the_invitee_clone(playground_d
         conn.close()
 
     mgr = _manager(root, bob_hex, session=_FakeSession())
-    assert mgr.prepare_team_route(TEAM)["route"] == "ready"
+    assert anyio.run(mgr.prepare_team_route, TEAM)["route"] == "ready"
     assert mgr.export_admission_acceptance(TEAM)["acceptance_token"] is not None
 
 
@@ -591,7 +595,7 @@ def test_sidecar_is_the_stored_row_and_leaves_the_acceptance_untouched(playgroun
     base_token = _accept_locally(root, bob_hex, token, alice_cloud)
 
     mgr = _manager(root, bob_hex, session=_FakeSession())
-    mgr.prepare_team_route(TEAM)
+    anyio.run(mgr.prepare_team_route, TEAM)
     courier = mgr.export_admission_acceptance(TEAM)["acceptance_token"]
 
     payload = json.loads(base64.b64decode(courier).decode())
@@ -635,7 +639,7 @@ def test_read_back_signed_by_another_device_is_refused_before_export(
         provisioning, "read_teammate_berth_storage_announcement", _other_signer
     )
     mgr = _manager(root, bob_hex, session=_FakeSession())
-    report = mgr.prepare_team_route(TEAM)
+    report = anyio.run(mgr.prepare_team_route, TEAM)
     assert report["route"] == "pending"
     assert report["route_reason"] == "route_preparation_error"
     assert report["acceptance"] == "withheld"
@@ -1106,7 +1110,7 @@ def _prepare_through_hub(root, bob_hex, outcome, monkeypatch):
         lambda self, ss_session, cloud: _StubAdapter(outcome),
     )
     mgr = TeamManager(root, bob_hex, _http_client=http)
-    return mgr.prepare_team_route(TEAM), mgr
+    return anyio.run(mgr.prepare_team_route, TEAM), mgr
 
 
 def test_a_provider_issued_locator_is_reread_before_signing(
@@ -1170,7 +1174,7 @@ def test_a_materialization_failure_leaves_a_pending_retryable_join(
             MaterializationOutcome("materialized")
         ),
     )
-    assert mgr.prepare_team_route(TEAM)["route"] == "ready"
+    assert anyio.run(mgr.prepare_team_route, TEAM)["route"] == "ready"
     assert mgr.export_admission_acceptance(TEAM)["acceptance_token"] is not None
 
 

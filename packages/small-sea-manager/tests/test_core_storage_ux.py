@@ -66,7 +66,7 @@ class _CloudRefusingSession:
     def __init__(self, reason):
         self.reason = reason
 
-    def ensure_cloud_ready(self):
+    async def ensure_cloud_ready(self):
         # The Hub's 409 body carries no `detail`, so the client's message is
         # the raw envelope. Reproducing that here is the point.
         raise SmallSeaCloudStorageRequired(
@@ -75,16 +75,13 @@ class _CloudRefusingSession:
         )
 
 
-class _AsyncCloudRefusingSession:
-    """The same refusal from the async session that push_team uses."""
+def _refuse_cloud(monkeypatch, reason):
+    """Give every TeamManager a Hub session that refuses cloud setup."""
 
-    token = _CloudRefusingSession.token
+    async def hub_session(self, http, team, mode="encrypted"):
+        return _CloudRefusingSession(reason)
 
-    def __init__(self, reason):
-        self._sync = _CloudRefusingSession(reason)
-
-    async def ensure_cloud_ready(self):
-        self._sync.ensure_cloud_ready()
+    monkeypatch.setattr(TeamManager, "_hub_session", hub_session)
 
 
 def _web(root, participant_hex):
@@ -155,11 +152,7 @@ def test_credentials_missing_guidance_names_the_account(playground_dir, monkeypa
         root, alice_hex, protocol="localfolder", url=str(second_dir)
     )
     provisioning.create_team(root, alice_hex, TEAM)
-    monkeypatch.setattr(
-        TeamManager,
-        "_get_or_open_session",
-        lambda self, team, mode="encrypted": _CloudRefusingSession("cloud_credentials_missing"),
-    )
+    _refuse_cloud(monkeypatch, "cloud_credentials_missing")
 
     body = _web(root, alice_hex).post(
         f"/teams/{TEAM}/reconcile-route", data={"cloud_storage_id": second_id}
@@ -197,10 +190,7 @@ def test_push_renders_guidance_instead_of_raw_hub_json(
 ):
     root = pathlib.Path(playground_dir)
     alice_hex = _alice(root)
-    async def hub_session(self, http, team, mode="encrypted"):
-        return _AsyncCloudRefusingSession(cloud_reason)
-
-    monkeypatch.setattr(TeamManager, "_hub_session", hub_session)
+    _refuse_cloud(monkeypatch, cloud_reason)
 
     body = _web(root, alice_hex).post(f"/teams/{TEAM}/push").text
 
@@ -218,10 +208,7 @@ def test_push_offers_the_repair_only_where_reconciling_helps(
 ):
     root = pathlib.Path(playground_dir)
     alice_hex = _alice(root)
-    async def hub_session(self, http, team, mode="encrypted"):
-        return _AsyncCloudRefusingSession(cloud_reason)
-
-    monkeypatch.setattr(TeamManager, "_hub_session", hub_session)
+    _refuse_cloud(monkeypatch, cloud_reason)
 
     body = _web(root, alice_hex).post(f"/teams/{TEAM}/push").text
 
@@ -292,11 +279,7 @@ def test_reconcile_result_offers_retry_only_where_it_can_help(
 ):
     root = pathlib.Path(playground_dir)
     alice_hex = _alice(root)
-    monkeypatch.setattr(
-        TeamManager,
-        "_get_or_open_session",
-        lambda self, team, mode="encrypted": _CloudRefusingSession(cloud_reason),
-    )
+    _refuse_cloud(monkeypatch, cloud_reason)
     monkeypatch.setattr(
         provisioning,
         "derive_team_join_state",
@@ -324,11 +307,7 @@ def test_cli_reconcile_names_the_split_reason(
 ):
     root = pathlib.Path(playground_dir)
     alice_hex = _alice(root)
-    monkeypatch.setattr(
-        TeamManager,
-        "_get_or_open_session",
-        lambda self, team, mode="encrypted": _CloudRefusingSession(cloud_reason),
-    )
+    _refuse_cloud(monkeypatch, cloud_reason)
     # A ready route would skip the Hub entirely; the repair path is the one
     # that meets the precondition.
     monkeypatch.setattr(

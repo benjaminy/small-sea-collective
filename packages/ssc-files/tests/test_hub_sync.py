@@ -1,4 +1,5 @@
 from test_support import local_files_signer
+import functools
 import pathlib
 
 import anyio
@@ -65,7 +66,7 @@ def _push_team_repo_via_hub(http, session_hex, repo_dir, manager, team_name):
     auth = {"Authorization": f"Bearer {session_hex}"}
     resp = http.post("/cloud/setup", headers=auth)
     assert resp.status_code == 200, resp.text
-    report = manager.reconcile_team_route(team_name, app_name=_CORE_APP)
+    report = anyio.run(functools.partial(manager.reconcile_team_route, team_name, app_name=_CORE_APP))
     assert report["route"] == "ready", report
 
     from cod_sync.protocol import CodSync
@@ -140,7 +141,7 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
         headers={"Authorization": f"Bearer {alice_team_token}"},
     )
     assert resp.status_code == 200, resp.text
-    report = alice_manager.reconcile_team_route("ProjectX", app_name=sync.HUB_APP_NAME)
+    report = anyio.run(functools.partial(alice_manager.reconcile_team_route, "ProjectX", app_name=sync.HUB_APP_NAME))
     assert report["route"] == "ready", report
 
     alice_core_team_token = _open_session(http, "Alice", "ProjectX", app_name=_CORE_APP)
@@ -178,7 +179,7 @@ def _setup_two_teammate_team(playground_dir, minio_server_gen):
     _push_team_repo_via_hub(http, alice_core_team_token, alice_team_sync, alice_manager, "ProjectX")
     anyio.run(bob_manager.fetch_teammate_core, "ProjectX", alice_teammate_id_hex)
     bob_manager.integrate_core_sources("ProjectX")
-    report = bob_manager.reconcile_team_route("ProjectX", app_name=sync.HUB_APP_NAME)
+    report = anyio.run(functools.partial(bob_manager.reconcile_team_route, "ProjectX", app_name=sync.HUB_APP_NAME))
     assert report["route"] == "ready", report
 
     return {

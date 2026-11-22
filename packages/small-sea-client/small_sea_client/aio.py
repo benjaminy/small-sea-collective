@@ -73,6 +73,10 @@ class SmallSeaSession:
         """
         await self._post("/cloud/setup", {})
 
+    async def ensure_berth_cloud_ready(self, berth_id_hex: str) -> None:
+        """Manager sessions only: set up storage for another berth of this team."""
+        await self._post(f"/manager/berths/{berth_id_hex}/cloud/setup", {})
+
     async def session_info(self) -> dict:
         """Return metadata for this session: participant_hex, team_name, app_name, berth_id, client."""
         return await self._get("/session/info")
