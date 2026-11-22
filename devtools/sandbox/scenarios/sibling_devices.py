@@ -6,6 +6,7 @@ these scenarios run sequentially within a process.
 
 import shutil
 
+import anyio
 from fastapi.testclient import TestClient
 import small_sea_hub.backend as SmallSea
 from small_sea_hub.server import app
@@ -83,10 +84,10 @@ def _two_installations(workspace, minio, http_a_holder):
     manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
     team_result = manager_a.create_team(TEAM)
     teammate_id = bytes.fromhex(team_result["teammate_id_hex"])
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     join_request = create_identity_join_request(root_b)
-    welcome = manager_a.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
 
     manager_b_local = TeamManager(root_b, alice_hex)

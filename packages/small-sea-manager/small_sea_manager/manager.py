@@ -37,7 +37,6 @@ from cod_sync.store import (
     PeerSenderKeyUnavailableError as _StorePeerSenderKeyUnavailableError,
     PeerStorageUnknownError as _StorePeerStorageUnknownError,
     PublicationPendingError as _StorePublicationPendingError,
-    SmallSeaStore,
     StoreError as _StoreError,
 )
 from small_sea_client import aio as _aio_client
@@ -386,7 +385,7 @@ class TeamManager:
     def _open_note_to_self_session(self, mode: str = "passthrough"):
         return self._get_or_open_session("NoteToSelf", mode=mode)
 
-    def _note_to_self_remote_descriptor(self) -> dict:
+    async def _note_to_self_remote_descriptor(self) -> dict:
         cloud = self._cloud()
         if cloud["protocol"] == "localfolder":
             return {
@@ -397,8 +396,9 @@ class TeamManager:
             raise ValueError(
                 f"Unsupported identity bootstrap provider: {cloud['protocol']}"
             )
-        nts_session = self._open_note_to_self_session(mode="passthrough")
-        session_info = nts_session.session_info()
+        async with self._hub_http() as http:
+            nts_session = await self._hub_session(http, "NoteToSelf", mode="passthrough")
+            session_info = await nts_session.session_info()
         berth_id = session_info["berth_id"]
         allocation = provisioning.get_berth_cloud_allocation_for_berth(
             self.root_dir,
@@ -418,20 +418,20 @@ class TeamManager:
             "bucket": allocation["location"],
         }
 
-    def _ensure_note_to_self_adopted_count(self, session) -> tuple[bytes, int]:
-        berth_id = bytes.fromhex(session.session_info()["berth_id"])
+    async def _ensure_note_to_self_adopted_count(self, session) -> tuple[bytes, int]:
+        berth_id = bytes.fromhex((await session.session_info())["berth_id"])
         adopted = provisioning.get_note_to_self_adopted_signal_count(
             self.root_dir, self.participant_hex, berth_id
         )
         if adopted is None:
-            snapshot = session.watch_notifications({}, timeout=0, known_self_count=0)
+            snapshot = await session.watch_notifications({}, timeout=0, known_self_count=0)
             adopted = int(snapshot.get("self_updated_count") or 0)
             provisioning.set_note_to_self_adopted_signal_count(
                 self.root_dir, self.participant_hex, berth_id, adopted
             )
         return berth_id, adopted
 
-    def push_note_to_self(self):
+    async def push_note_to_self(self):
         """Push the NoteToSelf Sync repo to the participant's cloud bucket.
 
         Commits any outstanding changes to core.db before pushing so that
@@ -446,25 +446,27 @@ class TeamManager:
         Hub I/O, so the committed bytes are one stable SQLite state and no Hub
         write can land inside Git's read of the file.
         """
-        session = self._open_note_to_self_session(mode="passthrough")
-        berth_id, adopted = self._ensure_note_to_self_adopted_count(session)
-        provisioning._auto_allocate_berth_cloud_if_available(
-            self.root_dir, self.participant_hex, berth_id
-        )
-        session.ensure_cloud_ready()
-        repo_dir = self._note_to_self_repo_dir()
-        nts_repo = git_signing.nts_signed_repo(
-            self.root_dir, self.participant_hex, _Repo(repo_dir / ".git", repo_dir)
-        )
-        with note_to_self_sync.write_reservation(
-            self.root_dir, self.participant_hex
-        ) as conn:
-            if note_to_self_sync.live_differs_from_head(nts_repo, conn):
-                nts_repo.commit_paths(["core.db"], "Update NoteToSelf")
-        store = SmallSeaStore(
-            session.token, base_url=self.client._base_url, client=self.client._http_client
-        )
-        result = CodSync(_Repo(repo_dir / ".git", repo_dir), store).publish()
+        async with self._hub_http() as http:
+            session = await self._hub_session(http, "NoteToSelf", mode="passthrough")
+            berth_id, adopted = await self._ensure_note_to_self_adopted_count(session)
+            provisioning._auto_allocate_berth_cloud_if_available(
+                self.root_dir, self.participant_hex, berth_id
+            )
+            await session.ensure_cloud_ready()
+            repo_dir = self._note_to_self_repo_dir()
+            nts_repo = git_signing.nts_signed_repo(
+                self.root_dir, self.participant_hex, _Repo(repo_dir / ".git", repo_dir)
+            )
+            # The commit stays synchronous: nothing may await while the
+            # reservation is held, or another task's SQLite write would block
+            # the event loop until the reservation's timeout.
+            with note_to_self_sync.write_reservation(
+                self.root_dir, self.participant_hex
+            ) as conn:
+                if note_to_self_sync.live_differs_from_head(nts_repo, conn):
+                    nts_repo.commit_paths(["core.db"], "Update NoteToSelf")
+            store = AsyncSmallSeaStore(session.token, http)
+            result = await _AsyncCodSync(_AsyncRepo(repo_dir / ".git", repo_dir), store).publish()
         if result.disposition != "published":
             # already_present sends no Hub notification, so there is no new
             # self-signal for the adopted baseline to catch up to. That holds
@@ -478,7 +480,7 @@ class TeamManager:
             adopted + 1,
         )
 
-    def refresh_note_to_self(self):
+    async def refresh_note_to_self(self):
         """Fetch and adopt shared NoteToSelf updates through the Hub transport.
 
         Adoption runs on the same path as explicit integration, so no refresh
@@ -490,22 +492,22 @@ class TeamManager:
         nothing and a later refresh refetches; once it exists, recovery is
         entirely local.
         """
-        session = self._open_note_to_self_session(mode="passthrough")
-        berth_id, adopted = self._ensure_note_to_self_adopted_count(session)
         repo_dir = self._note_to_self_repo_dir()
-        store = SmallSeaStore(
-            session.token, base_url=self.client._base_url, client=self.client._http_client
-        )
         repo = _Repo(repo_dir / ".git", repo_dir)
-        cs = CodSync(repo, store)
-        # Snapshot the berth counter BEFORE the fetch so the adopted baseline
-        # only advances to state we've actually incorporated. Reading the counter
-        # after the merge could observe a later push (counter N+1 or N+2) that
-        # this device has not yet fetched, causing that push to be silently
-        # skipped on the next watch/refresh cycle.
-        pre_fetch_snapshot = session.watch_notifications({}, timeout=0, known_self_count=adopted)
-        pre_fetch_count = int(pre_fetch_snapshot.get("self_updated_count") or adopted)
-        result = cs.fetch()
+        async with self._hub_http() as http:
+            session = await self._hub_session(http, "NoteToSelf", mode="passthrough")
+            berth_id, adopted = await self._ensure_note_to_self_adopted_count(session)
+            store = AsyncSmallSeaStore(session.token, http)
+            # Snapshot the berth counter BEFORE the fetch so the adopted baseline
+            # only advances to state we've actually incorporated. Reading the
+            # counter after the merge could observe a later push (counter N+1 or
+            # N+2) that this device has not yet fetched, causing that push to be
+            # silently skipped on the next watch/refresh cycle.
+            pre_fetch_snapshot = await session.watch_notifications(
+                {}, timeout=0, known_self_count=adopted
+            )
+            pre_fetch_count = int(pre_fetch_snapshot.get("self_updated_count") or adopted)
+            result = await _AsyncCodSync(_AsyncRepo(repo_dir / ".git", repo_dir), store).fetch()
         outcome = note_to_self_sync.adopt_fetched_source(
             self.root_dir,
             self.participant_hex,
@@ -746,9 +748,9 @@ class TeamManager:
             mode_plan=provisioning.mode_plan_for_preset(role),
         )
 
-    def authorize_identity_join(self, join_request_artifact_b64, *, expires_in_seconds=600):
+    async def authorize_identity_join(self, join_request_artifact_b64, *, expires_in_seconds=600):
         """Admit a new device into this participant's NoteToSelf identity."""
-        remote_descriptor = self._note_to_self_remote_descriptor()
+        remote_descriptor = await self._note_to_self_remote_descriptor()
         result = provisioning.authorize_identity_join(
             self.root_dir,
             self.participant_hex,
@@ -757,7 +759,7 @@ class TeamManager:
             expires_in_seconds=expires_in_seconds,
         )
         if result.get("needs_publish"):
-            self.push_note_to_self()
+            await self.push_note_to_self()
         return result
 
     def prepare_linked_device_team_join(self, team_name):

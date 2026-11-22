@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import subprocess
 
+import anyio
 import pytest
 from cod_sync.store import LocalFolderStore
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
@@ -138,7 +139,7 @@ def test_invited_member_can_bootstrap_a_sibling_after_import(playground_dir):
     sibling.mkdir()
     bob_manager = TeamManager(root, bob)
     request = create_identity_join_request(sibling)
-    welcome = bob_manager.authorize_identity_join(request["join_request_artifact"])
+    welcome = anyio.run(bob_manager.authorize_identity_join, request["join_request_artifact"])
     bootstrap_existing_identity(sibling, welcome["welcome_bundle"])
 
     laptop = TeamManager(sibling, bob)

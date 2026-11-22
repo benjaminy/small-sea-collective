@@ -1,10 +1,12 @@
 import dataclasses
+import functools
 import pathlib
 import sqlite3
 import time
 import json
 import base64
 
+import anyio
 import cod_sync.protocol as CodSync
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore, StoreProviderError
@@ -132,7 +134,7 @@ def test_localfolder_identity_bootstrap_roundtrip(playground_dir):
 
     join_request = create_identity_join_request(root2)
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
 
     assert welcome["auth_string"] == join_request["auth_string"]
 
@@ -190,8 +192,9 @@ def test_identity_bootstrap_refuses_a_corrupt_fetched_database(playground_dir):
     alice_hex = create_new_participant(root1, "Alice")
     add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
     join_request = create_identity_join_request(root2)
-    welcome = TeamManager(root1, alice_hex).authorize_identity_join(
-        join_request["join_request_artifact"]
+    welcome = anyio.run(
+        TeamManager(root1, alice_hex).authorize_identity_join,
+        join_request["join_request_artifact"],
     )
 
     repo_dir = root1 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
@@ -259,9 +262,12 @@ def test_identity_bootstrap_bundle_expiry_and_reissue(playground_dir):
 
     join_request = create_identity_join_request(root2)
     alice_manager = TeamManager(root1, alice_hex)
-    expired = alice_manager.authorize_identity_join(
-        join_request["join_request_artifact"],
-        expires_in_seconds=1,
+    expired = anyio.run(
+        functools.partial(
+            alice_manager.authorize_identity_join,
+            join_request["join_request_artifact"],
+            expires_in_seconds=1,
+        )
     )
     time.sleep(1.2)
 
@@ -271,7 +277,7 @@ def test_identity_bootstrap_bundle_expiry_and_reissue(playground_dir):
     except ValueError as exn:
         assert "expired" in str(exn).lower()
 
-    fresh = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    fresh = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap = bootstrap_existing_identity(root2, fresh["welcome_bundle"])
     assert bootstrap["participant_hex"] == alice_hex
 
@@ -290,7 +296,7 @@ def test_identity_bootstrap_rejects_unknown_signer_and_blocks_installation(playg
 
     join_request = create_identity_join_request(root2)
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
 
     tampered_bundle = _rewrite_welcome_bundle(
         root2,
@@ -345,7 +351,7 @@ def test_authorize_rejects_unsupported_join_request_version_before_admitting(pla
 
     alice_manager = TeamManager(root1, alice_hex)
     try:
-        alice_manager.authorize_identity_join(bumped)
+        anyio.run(alice_manager.authorize_identity_join, bumped)
         assert False, "Expected unsupported join request version to be rejected"
     except ValueError as exn:
         assert "join request artifact" in str(exn)
@@ -365,7 +371,7 @@ def test_bootstrap_rejects_unsupported_payload_version_after_decryption(playgrou
 
     join_request = create_identity_join_request(root2)
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
 
     bumped_payload = _rewrite_welcome_bundle(
         root2,
@@ -392,7 +398,7 @@ def test_bootstrap_rejects_unsupported_signed_wrapper_version(playground_dir):
 
     join_request = create_identity_join_request(root2)
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
 
     bumped_wrapper = _rewrite_welcome_bundle(
         root2,
@@ -424,7 +430,7 @@ def test_welcome_bundle_aad_binds_the_expected_payload_version(playground_dir):
 
     join_request = create_identity_join_request(root2)
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
 
     wrong_aad = _rewrite_welcome_bundle(
         root2,
@@ -453,7 +459,7 @@ def test_identity_bootstrap_rejects_wrong_known_signing_key(playground_dir):
 
     join_request = create_identity_join_request(root2)
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
 
     shared1 = note_to_self_sync_db_path(root1, alice_hex)
     with sqlite3.connect(shared1) as conn:
@@ -515,7 +521,7 @@ def test_identity_bootstrap_via_hub_bootstrap_transport(playground_dir, minio_se
 
     join_request = create_identity_join_request(root2)
     alice_manager = TeamManager(root1, alice_hex, _http_client=http_a)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
     signed = _open_signed_welcome_bundle(root2, welcome["welcome_bundle"])
     assert signed.bundle.remote_descriptor["protocol"] == "s3"
     assert signed.bundle.remote_descriptor["url"] == minio["endpoint"]

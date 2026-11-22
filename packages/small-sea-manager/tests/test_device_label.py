@@ -9,6 +9,7 @@ import json
 import pathlib
 import sqlite3
 
+import anyio
 import cod_sync.protocol as CodSync
 from cod_sync.git import gitCmd
 import pytest
@@ -137,7 +138,7 @@ def test_joining_device_label_reaches_both_note_to_self_clones(playground_dir):
 
     join_request = create_identity_join_request(root2, device_label="Alice's phone")
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap = bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     joined_hex = bootstrap["joining_device_id_hex"]
@@ -157,7 +158,7 @@ def test_authorizer_writes_the_artifacts_label_not_its_own(playground_dir):
 
     join_request = create_identity_join_request(root2, device_label="Joiner phone")
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap = bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     joined_label = _label_by_device_id(root1, alice_hex, bootstrap["joining_device_id_hex"])
@@ -171,7 +172,7 @@ def test_omitted_joining_device_label_stays_null(playground_dir):
 
     join_request = create_identity_join_request(root2)
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap = bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     assert _label_by_device_id(root1, alice_hex, bootstrap["joining_device_id_hex"]) is None
@@ -194,12 +195,12 @@ def test_reauthorizing_the_same_request_adds_no_row_and_no_commit(playground_dir
 
     join_request = create_identity_join_request(root2, device_label="Alice's phone")
     alice_manager = TeamManager(root1, alice_hex)
-    alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
 
     sync_dir = root1 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
     head_before = gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
 
-    alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
 
     assert _device_labels(root1, alice_hex) == ["Alice's laptop", "Alice's phone"]
     head_after = gitCmd(["-C", str(sync_dir), "rev-parse", "HEAD"]).stdout.strip()
@@ -212,13 +213,13 @@ def test_relabelling_an_admitted_device_is_refused(playground_dir):
 
     join_request = create_identity_join_request(root2, device_label="Alice's phone")
     alice_manager = TeamManager(root1, alice_hex)
-    alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
 
     relabelled = _rewrite_join_request_label(
         join_request["join_request_artifact"], "Alice's work phone"
     )
     with pytest.raises(ValueError, match="different label"):
-        alice_manager.authorize_identity_join(relabelled)
+        anyio.run(alice_manager.authorize_identity_join, relabelled)
 
     assert _device_labels(root1, alice_hex) == ["Alice's laptop", "Alice's phone"]
 
@@ -230,7 +231,7 @@ def test_welcome_bundle_carries_the_authorizing_devices_own_label(playground_dir
 
     join_request = create_identity_join_request(root2, device_label="Joiner phone")
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap = bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     assert bootstrap["authorizing_device_label"] == "Authorizer laptop"
@@ -248,7 +249,7 @@ def test_unlabelled_authorizer_does_not_send_the_participant_nickname(playground
 
     join_request = create_identity_join_request(root2, device_label="Joiner phone")
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap = bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     assert bootstrap["authorizing_device_label"] is None
@@ -265,7 +266,7 @@ def test_authorizing_device_label_stays_present_in_the_signed_bytes(playground_d
 
     join_request = create_identity_join_request(root2)
     alice_manager = TeamManager(root1, alice_hex)
-    welcome = alice_manager.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
 
     signed = _open_signed_welcome_bundle(root2, welcome["welcome_bundle"])
     payload = json.loads(serialize_welcome_bundle_plaintext(signed.bundle).decode("utf-8"))

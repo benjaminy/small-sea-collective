@@ -13,6 +13,7 @@ import pathlib
 import sqlite3
 import subprocess
 
+import anyio
 from sqlalchemy import create_engine
 
 from cod_sync.repo import Repo
@@ -85,7 +86,7 @@ def test_linked_device_preserves_concurrent_work(playground_dir):
     add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, alice_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
     team_result = manager1.create_team(TEAM)
     team_id = bytes.fromhex(team_result["team_id_hex"])

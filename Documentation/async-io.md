@@ -123,5 +123,5 @@ A watch with a timeout of 0 checks for news and returns without touching the ber
 - **The Hub's routes and the Manager.**
   Many of the Hub's `async def` routes call the synchronous backend directly, so one slow storage read in a request still stalls the Hub.
   Most of the Manager's web routes call TeamManager the same way.
-  So far only `push_team` and `fetch_teammate_core` are async.
+  So far only `push_team`, `fetch_teammate_core`, `push_note_to_self`, `refresh_note_to_self`, and `authorize_identity_join` are async.
   These are the next migration steps; see #188.

@@ -530,7 +530,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         if mgr.session_state(_NTS_TEAM, _PASSTHROUGH) != "active":
             return _render_note_to_self_sync(request, error=_CONNECT_TO_HUB_FIRST)
         try:
-            mgr.push_note_to_self()
+            await mgr.push_note_to_self()
         except PublicationIntegrationRequiredError:
             return _render_note_to_self_sync(
                 request,
@@ -567,7 +567,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         if mgr.session_state(_NTS_TEAM, _PASSTHROUGH) != "active":
             return _render_note_to_self_sync(request, error=_CONNECT_TO_HUB_FIRST)
         try:
-            result = mgr.refresh_note_to_self()
+            result = await mgr.refresh_note_to_self()
         except Exception as e:
             return _render_note_to_self_sync(request, error=str(e))
         outcome = result["integration"]

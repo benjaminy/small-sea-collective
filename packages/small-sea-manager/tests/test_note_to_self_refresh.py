@@ -13,12 +13,13 @@ real cloud backend (Hub's storage adapter does not support localfolder).
 import pathlib
 import sqlite3
 
+import anyio
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
+from cod_sync.aio.store import SmallSeaStore as AsyncSmallSeaStore
 from cod_sync.protocol import PublicationIntegrationRequiredError, parked_ref_name
 from cod_sync.repo import Repo
-from cod_sync.store import SmallSeaStore
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
 from small_sea_manager.manager import (
@@ -158,7 +159,7 @@ def test_push_note_to_self_allocates_fresh_s3_berth(playground_dir, minio_server
         secret_key=minio["secret_key"],
     )
 
-    manager.push_note_to_self()
+    anyio.run(manager.push_note_to_self)
 
     session = manager._open_note_to_self_session(mode="passthrough")
     allocation = Provisioning.get_berth_cloud_allocation_for_berth(
@@ -223,11 +224,11 @@ def test_refresh_note_to_self_two_device_team_discovery(playground_dir, minio_se
 
     # Device A creates a team and pushes NoteToSelf to S3
     manager_a.create_team("SharedProject")
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     # --- Bootstrap device B ---
     join_request = create_identity_join_request(root_b)
-    welcome = manager_a.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
     # bootstrap_existing_identity uses the Hub bootstrap transport for S3
     from small_sea_manager.manager import bootstrap_existing_identity as _bootstrap
     _bootstrap(root_b, welcome["welcome_bundle"], _http_client=http_a)
@@ -241,7 +242,7 @@ def test_refresh_note_to_self_two_device_team_discovery(playground_dir, minio_se
 
     # --- Device A creates a SECOND team AFTER bootstrap ---
     manager_a.create_team("PostBootstrapProject")
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     # --- Switch Hub to device B ---
     backend_b = SmallSea.SmallSeaBackend(root_dir=str(root_b), auto_approve_sessions=True)
@@ -261,7 +262,7 @@ def test_refresh_note_to_self_two_device_team_discovery(playground_dir, minio_se
     assert not (root_b / "Participants" / alice_hex / "PostBootstrapProject").exists()
 
     # --- Refresh ---
-    refresh_result = manager_b.refresh_note_to_self()
+    refresh_result = anyio.run(manager_b.refresh_note_to_self)
     assert "teams" in refresh_result
 
     # After refresh: device B sees PostBootstrapProject
@@ -313,10 +314,10 @@ def test_refresh_does_not_sync_device_local_state(playground_dir, minio_server_g
     )
     manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
     manager_a.create_team("MyTeam")
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     join_request = create_identity_join_request(root_b)
-    welcome = manager_a.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
     from small_sea_manager.manager import bootstrap_existing_identity as _bootstrap
     _bootstrap(root_b, welcome["welcome_bundle"], _http_client=http_a)
     _wire_device_b_credentials(root_b, alice_hex, minio)
@@ -326,7 +327,7 @@ def test_refresh_does_not_sync_device_local_state(playground_dir, minio_server_g
     http_b = TestClient(app)
     manager_b = TeamManager(root_b, alice_hex, _http_client=http_b)
 
-    manager_b.refresh_note_to_self()
+    anyio.run(manager_b.refresh_note_to_self)
 
     # Shared NoteToSelf DB must not contain device-local tables
     shared_b = note_to_self_sync_db_path(root_b, alice_hex)
@@ -378,13 +379,13 @@ def test_unchanged_note_to_self_publication_invents_no_signal(playground_dir, mi
 
     manager = TeamManager(root, alice_hex, _http_client=http)
     manager.create_team("SharedProject")
-    manager.push_note_to_self()
+    anyio.run(manager.push_note_to_self)
     after_real_push = Provisioning.get_note_to_self_adopted_signal_count(
         root, alice_hex, berth_id
     )
 
     # Nothing changed locally, so this publication is a no-op.
-    manager.push_note_to_self()
+    anyio.run(manager.push_note_to_self)
     assert (
         Provisioning.get_note_to_self_adopted_signal_count(root, alice_hex, berth_id)
         == after_real_push
@@ -392,7 +393,7 @@ def test_unchanged_note_to_self_publication_invents_no_signal(playground_dir, mi
 
     # A genuine change advances it again.
     manager.create_team("SecondProject")
-    manager.push_note_to_self()
+    anyio.run(manager.push_note_to_self)
     assert (
         Provisioning.get_note_to_self_adopted_signal_count(root, alice_hex, berth_id)
         == after_real_push + 1
@@ -431,17 +432,17 @@ def _diverge_two_devices(workspace, minio):
 
     manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
     manager_a.create_team("SharedProject")
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
     shared_head = _note_to_self_repo(root_a, alice_hex).head()
 
     join_request = create_identity_join_request(root_b)
-    welcome = manager_a.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
     _wire_device_b_credentials(root_b, alice_hex, minio)
 
     # Device A publishes a team device B has not seen.
     manager_a.create_team("OnlyOnA")
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
     cloud_head = _note_to_self_repo(root_a, alice_hex).head()
 
     backend_b = SmallSea.SmallSeaBackend(root_dir=str(root_b), auto_approve_sessions=True)
@@ -467,7 +468,7 @@ def _diverge_two_devices(workspace, minio):
     # Device B commits its own team without refreshing first.
     manager_b.create_team("OnlyOnB")
     with pytest.raises(PublicationIntegrationRequiredError) as excinfo:
-        manager_b.push_note_to_self()
+        anyio.run(manager_b.push_note_to_self)
 
     return {
         "alice_hex": alice_hex,
@@ -569,10 +570,10 @@ def test_integrated_note_to_self_round_trips_back_to_the_other_device(
     # The merge publishes, and the stored head now descends from both sides.
     # No SQLite writer reservation may be held across Hub I/O: the Hub is the
     # other writer, so holding one there would deadlock a real installation.
-    original_put = SmallSeaStore.put_latest_link
+    original_put = AsyncSmallSeaStore.put_latest_link
     probes = []
 
-    def put_latest_link_unlocked(self, *args, **kwargs):
+    async def put_latest_link_unlocked(self, *args, **kwargs):
         probes.append(True)
         probe = sqlite3.connect(str(note_to_self_sync_db_path(root_b, alice_hex)), timeout=0)
         try:
@@ -580,10 +581,10 @@ def test_integrated_note_to_self_round_trips_back_to_the_other_device(
             probe.execute("ROLLBACK")
         finally:
             probe.close()
-        return original_put(self, *args, **kwargs)
+        return await original_put(self, *args, **kwargs)
 
-    monkeypatch.setattr(SmallSeaStore, "put_latest_link", put_latest_link_unlocked)
-    fresh_b.push_note_to_self()
+    monkeypatch.setattr(AsyncSmallSeaStore, "put_latest_link", put_latest_link_unlocked)
+    anyio.run(fresh_b.push_note_to_self)
     monkeypatch.undo()
     assert probes, "the push never reached the store, so the probe proved nothing"
     published = repo_b.head()
@@ -593,7 +594,7 @@ def test_integrated_note_to_self_round_trips_back_to_the_other_device(
     # Device A refreshes and sees the team it never had.
     app.state.backend = scene["backend_a"]
     manager_a = scene["manager_a"]
-    refreshed = manager_a.refresh_note_to_self()
+    refreshed = anyio.run(manager_a.refresh_note_to_self)
     assert refreshed["integration"].outcome == "integrated"
     assert {t["name"] for t in manager_a.list_known_teams()} >= {
         "SharedProject", "OnlyOnA", "OnlyOnB",
@@ -632,7 +633,7 @@ def test_refresh_parks_the_fetched_head_before_touching_the_database(
     monkeypatch.setattr(note_to_self_sync, "adopt_source", die)
     manager_b = TeamManager(root_b, alice_hex, _http_client=scene["http_b"])
     with pytest.raises(RuntimeError):
-        manager_b.refresh_note_to_self()
+        anyio.run(manager_b.refresh_note_to_self)
     monkeypatch.undo()
 
     assert repo_b.head() == local_head_b

@@ -1,6 +1,7 @@
 """Characterize current gaps; passing observations are NOT security guarantees."""
 import sqlite3
 
+import anyio
 import pytest
 
 from small_sea_manager import provisioning
@@ -21,7 +22,7 @@ def prepared_pair(tmp_path, monkeypatch):
     participant = provisioning.create_new_participant(source, 'Alice')
     provisioning.add_cloud_storage(source, participant, protocol='localfolder', url=str(cloud))
     request = create_identity_join_request(target)
-    welcome = TeamManager(source, participant).authorize_identity_join(request['join_request_artifact'])
+    welcome = anyio.run(TeamManager(source, participant).authorize_identity_join, request['join_request_artifact'])
     return source, target, participant, welcome
 
 

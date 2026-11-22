@@ -8,6 +8,7 @@ All three are strict xfails today: the bootstrap code checks only the head.
 
 import pathlib
 
+import anyio
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -129,8 +130,9 @@ def test_identity_bootstrap_refuses_note_to_self_ancestor_signed_by_unknown_key(
     alice_hex = create_new_participant(root1, "Alice")
     add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
     join_request = create_identity_join_request(root2)
-    welcome = TeamManager(root1, alice_hex).authorize_identity_join(
-        join_request["join_request_artifact"]
+    welcome = anyio.run(
+        TeamManager(root1, alice_hex).authorize_identity_join,
+        join_request["join_request_artifact"],
     )
 
     sync_dir = root1 / "Participants" / alice_hex / "NoteToSelf" / "Sync"

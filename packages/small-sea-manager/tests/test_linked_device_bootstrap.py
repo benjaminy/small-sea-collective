@@ -5,6 +5,7 @@ import shutil
 import sqlite3
 import subprocess
 
+import anyio
 import pytest
 from cryptography.exceptions import InvalidSignature
 from sqlalchemy import create_engine, text
@@ -219,7 +220,7 @@ def test_linked_device_bootstrap_round_trip_same_teammate(playground_dir):
 
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, alice_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     team_result = manager1.create_team("ProjectX")
@@ -324,7 +325,7 @@ def test_linked_device_bootstrap_rejects_invalid_payload_version_without_mutatio
     add_cloud_storage(root1, participant_hex, protocol="localfolder", url=str(cloud_dir))
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, participant_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
     team = manager1.create_team("ProjectX")
     team_id = bytes.fromhex(team["team_id_hex"])
@@ -366,7 +367,7 @@ def test_linked_device_bootstrap_rejects_invalid_join_signatures(playground_dir)
 
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, alice_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     team_result = manager1.create_team("ProjectX")
@@ -413,7 +414,7 @@ def test_linked_device_bootstrap_create_replay_returns_stored_bundle_without_ext
 
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, alice_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     team_result = manager1.create_team("ProjectX")
@@ -468,7 +469,7 @@ def test_linked_device_bootstrap_retry_after_interrupted_finalize_is_idempotent(
 
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, alice_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     team_result = manager1.create_team("ProjectX")
@@ -532,7 +533,7 @@ def test_linked_device_bootstrap_peer_sender_keys_transferred(playground_dir):
 
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, alice_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     team_result = manager1.create_team("ProjectX")
@@ -611,7 +612,7 @@ def test_linked_device_bootstrap_transfers_skipped_peer_sender_keys(playground_d
 
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, alice_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     team_result = manager1.create_team("ProjectX")
@@ -698,7 +699,7 @@ def test_linked_device_bootstrap_exclusion_cuts_off_peer(playground_dir):
 
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, alice_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     team_result = manager1.create_team("ProjectX")
@@ -807,7 +808,7 @@ def test_linked_device_bootstrap_prepare_reentry_is_rejected(playground_dir):
 
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, alice_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     team_result = manager1.create_team("ProjectX")
@@ -853,7 +854,7 @@ def test_linked_device_reads_authorizer_pre_link_messages(playground_dir, rotate
 
     join_request = create_identity_join_request(root2)
     manager1 = TeamManager(root1, alice_hex)
-    welcome = manager1.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager1.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root2, welcome["welcome_bundle"])
 
     team_result = manager1.create_team("ProjectX")

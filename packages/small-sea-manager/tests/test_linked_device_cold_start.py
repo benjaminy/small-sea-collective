@@ -13,6 +13,7 @@ import json
 import pathlib
 import sqlite3
 
+import anyio
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
@@ -78,10 +79,10 @@ def _discovered_team_on_device_b(workspace, minio):
         root_a, alice_hex, backend_a._lookup_session(nts_token_a).berth_id, cloud_storage_id,
     )
     manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     join_request = create_identity_join_request(root_b)
-    welcome = manager_a.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
 
     # B enrolls its own credentials for the inherited account (#237).
@@ -93,13 +94,13 @@ def _discovered_team_on_device_b(workspace, minio):
 
     # The team is created after B joined, so only refresh can reveal it.
     manager_a.create_team(TEAM)
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     backend_b = SmallSea.SmallSeaBackend(root_dir=str(root_b), auto_approve_sessions=True)
     app.state.backend = backend_b
     http_b = TestClient(app)
     manager_b = TeamManager(root_b, alice_hex, _http_client=http_b)
-    manager_b.refresh_note_to_self()
+    anyio.run(manager_b.refresh_note_to_self)
     discovered = next(t for t in manager_b.list_known_teams() if t["name"] == TEAM)
     assert discovered["joined_locally"] is False
     return root_a, root_b, alice_hex, manager_a, manager_b

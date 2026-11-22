@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 from dataclasses import replace
 
+import anyio
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as provisioning
@@ -608,7 +609,7 @@ def _run_full_invitation_flow(playground_dir, minio_server_gen, *, link_invitee_
         bob_device_root = root / "bob-install-b"
         bob_device_root.mkdir()
         join_request = create_identity_join_request(bob_device_root)
-        welcome = bob_manager.authorize_identity_join(join_request["join_request_artifact"])
+        welcome = anyio.run(bob_manager.authorize_identity_join, join_request["join_request_artifact"])
         bootstrap_existing_identity(
             bob_device_root, welcome["welcome_bundle"], _http_client=http
         )
@@ -619,9 +620,9 @@ def _run_full_invitation_flow(playground_dir, minio_server_gen, *, link_invitee_
             access_key=bob_minio["access_key"],
             secret_key=bob_minio["secret_key"],
         )
-        bob_manager.push_note_to_self()
+        anyio.run(bob_manager.push_note_to_self)
         linked_manager = TeamManager(bob_device_root, bob_hex, _http_client=http)
-        linked_manager.refresh_note_to_self()
+        anyio.run(linked_manager.refresh_note_to_self)
         prepared = linked_manager.prepare_linked_device_team_join("ProjectX")
         created = bob_manager.create_linked_device_bootstrap(
             "ProjectX", prepared["join_request_bundle"]

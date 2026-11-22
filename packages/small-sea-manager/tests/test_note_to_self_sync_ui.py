@@ -168,10 +168,13 @@ def test_with_a_session_the_routes_call_the_manager_operations(playground_dir):
     participant_hex, manager, client, repo = _install(root)
     _connect(manager)
     calls = []
-    manager.push_note_to_self = lambda: calls.append("push")
-    manager.refresh_note_to_self = lambda: (
+
+    async def push():
+        calls.append("push")
+
+    async def refresh():
         calls.append("refresh")
-        or {
+        return {
             "berth_id": "00",
             "adopted_count": 1,
             "integration": note_to_self_sync.SourceOutcome(
@@ -179,7 +182,9 @@ def test_with_a_session_the_routes_call_the_manager_operations(playground_dir):
             ),
             "teams": [],
         }
-    )
+
+    manager.push_note_to_self = push
+    manager.refresh_note_to_self = refresh
 
     push = client.post("/note-to-self/push")
     _assert_fragment(push)
@@ -196,7 +201,7 @@ def test_a_divergent_push_points_at_the_integration_that_now_exists(playground_d
     _participant_hex, manager, client, _repo = _install(root)
     _connect(manager)
 
-    def refuse():
+    async def refuse():
         raise PublicationIntegrationRequiredError(
             "diverged", attempted_head="a" * 40, observed_head="b" * 40
         )

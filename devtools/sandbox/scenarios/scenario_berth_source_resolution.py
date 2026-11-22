@@ -53,10 +53,10 @@ def _paused_with_two_written_locations(workspace, minio):
     manager_a = setup["manager_a"]
 
     anyio.run(manager_a.push_team, TEAM)
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     manager_b = _reattach(root_b, alice_hex)
-    manager_b.refresh_note_to_self()
+    anyio.run(manager_b.refresh_note_to_self)
     manager_b.reconcile_team_route(TEAM, new_location=True)
     _redistribute_b_sender_key(root_a, root_b, alice_hex)
     anyio.run(manager_b.push_team, TEAM)
@@ -73,12 +73,12 @@ def _paused_with_two_written_locations(workspace, minio):
     _, allocation_a = _core_allocation(root_a, alice_hex)
     head_a = manager_a._team_repo(TEAM).resolve_ref(MAIN)
     manager_a.add_cloud_storage(protocol="s3", url=minio["endpoint"] + "/unrelated-a")
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     manager_b = _reattach(root_b, alice_hex)
     with pytest.raises(PublicationIntegrationRequiredError):
-        manager_b.push_note_to_self()
-    result = manager_b.refresh_note_to_self()
+        anyio.run(manager_b.push_note_to_self)
+    result = anyio.run(manager_b.refresh_note_to_self)
     assert result["integration"].outcome == "integrated", result["integration"]
 
     assert head_a != head_b
@@ -143,7 +143,7 @@ def test_competing_choices_pause_the_berth_and_spare_unrelated_work(
     assert manager_b.core_storage_allocation(TEAM)["allocation"] is None
 
     # NoteToSelf is not paused: resolution has to be able to travel.
-    manager_b.push_note_to_self()
+    anyio.run(manager_b.push_note_to_self)
     assert _live_locations(root_b, alice_hex, berth_id) == sorted(
         [setup["allocation_a"]["location"], setup["allocation_b"]["location"]]
     )
@@ -250,9 +250,9 @@ def test_evidence_that_explains_the_disagreement_away_keeps_the_pause(
         setup["root_a"], setup["root_b"], setup["alice_hex"], setup["berth_id"]
     )
 
-    _reattach(root_b, alice_hex).push_note_to_self()
+    anyio.run(_reattach(root_b, alice_hex).push_note_to_self)
     manager_a = _reattach(root_a, alice_hex)
-    manager_a.refresh_note_to_self()
+    anyio.run(manager_a.refresh_note_to_self)
     status_a = manager_a.berth_source_status(TEAM)
     assert status_a["paused"] is True
     manager_a.resolve_berth_source(
@@ -260,10 +260,10 @@ def test_evidence_that_explains_the_disagreement_away_keeps_the_pause(
         _key_for(status_a, setup["allocation_a"]["location"]),
         status_a["evidence_digest"],
     )
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     manager_b = _reattach(root_b, alice_hex)
-    manager_b.refresh_note_to_self()
+    anyio.run(manager_b.refresh_note_to_self)
     status_b = manager_b.berth_source_status(TEAM)
 
     assert _live_locations(root_b, alice_hex, berth_id) == [
@@ -315,7 +315,7 @@ def test_either_existing_location_can_be_chosen_and_publication_resumes(
     assert _live_locations(root_b, alice_hex, berth_id) == [chosen], (
         "reconcile rotated instead of signing for the chosen row"
     )
-    manager_b.push_note_to_self()
+    anyio.run(manager_b.push_note_to_self)
 
     # Publication is attempted at the chosen location, and what happens there
     # is a question about the chain, not about the placement. B's own location
@@ -387,9 +387,9 @@ def test_a_candidate_a_sibling_deleted_stays_inspectable_and_choosable(
         setup["root_a"], setup["root_b"], setup["alice_hex"], setup["berth_id"]
     )
 
-    _reattach(root_b, alice_hex).push_note_to_self()
+    anyio.run(_reattach(root_b, alice_hex).push_note_to_self)
     manager_a = _reattach(root_a, alice_hex)
-    manager_a.refresh_note_to_self()
+    anyio.run(manager_a.refresh_note_to_self)
     status_a = manager_a.berth_source_status(TEAM)
     assert status_a["paused"] is True
     manager_a.resolve_berth_source(
@@ -397,10 +397,10 @@ def test_a_candidate_a_sibling_deleted_stays_inspectable_and_choosable(
         _key_for(status_a, setup["allocation_a"]["location"]),
         status_a["evidence_digest"],
     )
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     manager_b = _reattach(root_b, alice_hex)
-    manager_b.refresh_note_to_self()
+    anyio.run(manager_b.refresh_note_to_self)
     status_b = manager_b.berth_source_status(TEAM)
     withdrawn = _key_for(status_b, setup["allocation_b"]["location"])
     assert _candidate(status_b, setup["allocation_b"]["location"])["live"] is False

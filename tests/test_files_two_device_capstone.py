@@ -289,7 +289,7 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
     assert manager_a.reconcile_team_route(TEAM)["route"] == "ready"
     assert manager_a.reconcile_team_route(TEAM, app_name=FILES_APP)["route"] == "ready"
     assert anyio.run(manager_a.push_team, TEAM) == "published"
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
     spy.assert_only(mark, "A")
 
     db_guard = _ManagerDatabaseGuard(monkeypatch, [a, b], alice_hex)
@@ -312,7 +312,7 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
 
     # 6. Identity join: B's request is couriered to A, A's welcome back to B.
     join_request = create_identity_join_request(b.root)
-    welcome = manager_a.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
     mark = spy.mark()
     bootstrap_existing_identity(b.root, welcome["welcome_bundle"], _http_client=b.http)
     spy.assert_only(mark, "B")
@@ -326,7 +326,7 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
 
     # 8. Refresh NoteToSelf on B; the team is known but not materialized.
     mark = spy.mark()
-    manager_b.refresh_note_to_self()
+    anyio.run(manager_b.refresh_note_to_self)
     spy.assert_only(mark, "B")
     known = next(t for t in manager_b.list_known_teams() if t["name"] == TEAM)
     assert known["joined_locally"] is False

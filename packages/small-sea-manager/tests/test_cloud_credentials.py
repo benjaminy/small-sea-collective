@@ -14,6 +14,7 @@ that a shared `client_id` means this device is connected.
 import pathlib
 import sqlite3
 
+import anyio
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as provisioning
@@ -536,11 +537,11 @@ def test_linked_device_connects_credentials_to_the_inherited_account(
     )
     manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
     manager_a.create_team("SharedProject")
-    manager_a.push_note_to_self()
+    anyio.run(manager_a.push_note_to_self)
 
     # --- Device B: bootstrap this identity onto a second installation ---
     join_request = create_identity_join_request(root_b)
-    welcome = manager_a.authorize_identity_join(join_request["join_request_artifact"])
+    welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
     bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
 
     backend_b = SmallSea.SmallSeaBackend(root_dir=str(root_b), auto_approve_sessions=True)
@@ -556,7 +557,7 @@ def test_linked_device_connects_credentials_to_the_inherited_account(
     assert accounts_b[0]["credentials_on_this_device"] is False
 
     # 2. B's own Hub refuses the store operation for the reason that is true.
-    assert _cloud_refusal_reason(manager_b.push_note_to_self) == "cloud_credentials_missing"
+    assert _cloud_refusal_reason(lambda: anyio.run(manager_b.push_note_to_self)) == "cloud_credentials_missing"
 
     # 3. B connects to the inherited account and the same operation works.
     _unchanged_by(root_b, alice_hex, lambda: manager_b.connect_cloud_storage_credentials(
@@ -567,12 +568,12 @@ def test_linked_device_connects_credentials_to_the_inherited_account(
     assert manager_b.list_cloud_storage()[0]["credentials_on_this_device"] is True
 
     manager_b.create_team("DeviceBProject")
-    manager_b.push_note_to_self()
+    anyio.run(manager_b.push_note_to_self)
 
     # The bytes really reached the shared location: A reads B's team back.
     http_a = _use(backend_a)
     manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
-    manager_a.refresh_note_to_self()
+    anyio.run(manager_a.refresh_note_to_self)
     assert "DeviceBProject" in {t["name"] for t in manager_a.list_known_teams()}
 
     # 4. Disconnecting takes the access away again, in the same Hub context,
@@ -585,12 +586,12 @@ def test_linked_device_connects_credentials_to_the_inherited_account(
         lambda: manager_b.disconnect_cloud_storage_credentials(account_id),
     )
     assert manager_b.list_cloud_storage()[0]["credentials_on_this_device"] is False
-    assert _cloud_refusal_reason(manager_b.push_note_to_self) == "cloud_credentials_missing"
+    assert _cloud_refusal_reason(lambda: anyio.run(manager_b.push_note_to_self)) == "cloud_credentials_missing"
 
     # 5. A's own credentials and allocation are untouched by all of that.
     http_a = _use(backend_a)
     manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
-    manager_a.refresh_note_to_self()
+    anyio.run(manager_a.refresh_note_to_self)
     assert manager_a.list_cloud_storage()[0]["credentials_on_this_device"] is True
 
     # 6. B reconnects and uses the same storage again.
@@ -601,11 +602,11 @@ def test_linked_device_connects_credentials_to_the_inherited_account(
         access_key=minio["access_key"],
         secret_key=minio["secret_key"],
     ))
-    manager_b.push_note_to_self()
+    anyio.run(manager_b.push_note_to_self)
 
     http_a = _use(backend_a)
     manager_a = TeamManager(root_a, alice_hex, _http_client=http_a)
-    manager_a.refresh_note_to_self()
+    anyio.run(manager_a.refresh_note_to_self)
     assert "AfterDisconnectProject" in {t["name"] for t in manager_a.list_known_teams()}
 
     # Across the whole sequence no device registered another account, and the
