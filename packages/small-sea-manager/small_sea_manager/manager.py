@@ -11,6 +11,7 @@ import httpx
 from cod_sync.aio.protocol import CodSync as _AsyncCodSync
 from cod_sync.aio.repo import Repo as _AsyncRepo
 from cod_sync.aio.store import (
+    CandidateInspectionStore as AsyncCandidateInspectionStore,
     PeerSmallSeaStore as AsyncPeerSmallSeaStore,
     SmallSeaStore as AsyncSmallSeaStore,
 )
@@ -33,7 +34,6 @@ from cod_sync.protocol import (
 )
 from cod_sync.store import (
     BootstrapProxyStore,
-    CandidateInspectionStore,
     PeerSenderKeyUnavailableError as _StorePeerSenderKeyUnavailableError,
     PeerStorageUnknownError as _StorePeerStorageUnknownError,
     PublicationPendingError as _StorePublicationPendingError,
@@ -46,10 +46,7 @@ from small_sea_client.client import (
     SmallSeaError,
     SmallSeaHubUnavailable,
 )
-from small_sea_manager.git_verification import (
-    async_core_history_verifier,
-    core_history_verifier,
-)
+from small_sea_manager.git_verification import core_history_verifier
 from small_sea_manager import admission_events
 from small_sea_manager import berth_source_decision
 from small_sea_manager import git_signing
@@ -1407,7 +1404,7 @@ class TeamManager:
             },
         }
 
-    def inspect_berth_source_candidate(self, team_name, candidate_key) -> dict:
+    async def inspect_berth_source_candidate(self, team_name, candidate_key) -> dict:
         """Fetch one retained candidate's Core chain without integrating it.
 
         The whole walk is bound to the named candidate: every object request
@@ -1444,18 +1441,17 @@ class TeamManager:
         }
         result = None
         try:
-            session = self._get_or_open_session(team_name)
-            store = CandidateInspectionStore(
-                session.token,
-                candidate_key,
-                base_url=self.client._base_url,
-                client=self.client._http_client,
-            )
-            # Import and verify outside the writer reservation. Publishing a
-            # ref makes this evidence visible and belongs with the report.
-            result = CodSync(repo, store, verifier=core_history_verifier(
+            verifier = core_history_verifier(
                 self.root_dir, self.participant_hex, team_name
-            )).fetch()
+            )
+            async with self._hub_http() as http:
+                session = await self._hub_session(http, team_name)
+                store = AsyncCandidateInspectionStore(session.token, candidate_key, http)
+                # Import and verify outside the writer reservation. Publishing
+                # a ref makes this evidence visible and belongs with the report.
+                result = await _AsyncCodSync(
+                    _AsyncRepo(repo.git_dir, repo.work_tree), store, verifier=verifier
+                ).fetch()
         except _NoPublishedHeadError as exc:
             observation.update(disposition="empty", detail=str(exc))
         except (
@@ -1709,7 +1705,7 @@ class TeamManager:
         if intended_head is not None and self._last_published_head(team_name) == intended_head:
             return "already_present"
 
-        verifier = async_core_history_verifier(self.root_dir, self.participant_hex, team_name)
+        verifier = core_history_verifier(self.root_dir, self.participant_hex, team_name)
         async with self._hub_http() as http:
             session = await self._hub_session(http, team_name)
             await session.ensure_cloud_ready()
@@ -1761,7 +1757,7 @@ class TeamManager:
         repo = _AsyncRepo(repo_dir / ".git", repo_dir)
         latest_ref = core_peer_latest_ref(teammate_id)
         try:
-            verifier = async_core_history_verifier(self.root_dir, self.participant_hex, team_name)
+            verifier = core_history_verifier(self.root_dir, self.participant_hex, team_name)
             async with self._hub_http() as http:
                 session = await self._hub_session(http, team_name)
                 store = AsyncPeerSmallSeaStore(session.token, teammate_id, http)

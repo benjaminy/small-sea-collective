@@ -11,9 +11,11 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
+import anyio
 import pytest
 
 import test_note_to_self_integration as fixtures
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.protocol import CodSync
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore
@@ -33,6 +35,8 @@ def inspection(playground_dir, monkeypatch):
     (root / "cloud").mkdir()
     store = LocalFolderStore(root / "cloud")
     CodSync(nts_repo, store).publish()
+    # The Manager reads the same folder through the async store.
+    aio_store = AsyncLocalFolderStore(root / "cloud")
     # These observation probes transport NoteToSelf-shaped test histories.
     # Supply their known root key while exercising real signature verification.
     from small_sea_manager.git_verification import CoreHistoryVerifier
@@ -43,12 +47,15 @@ def inspection(playground_dir, monkeypatch):
     team_repo = Repo.init(root / "inspection" / ".git")
     state = {"core_berth_id": fixtures._BERTH_ID, "placement": "paused"}
     monkeypatch.setattr(manager_module.provisioning, "derive_team_join_state", lambda *args: state)
-    monkeypatch.setattr(manager_module, "CandidateInspectionStore", lambda *args, **kwargs: store)
+    monkeypatch.setattr(manager_module, "AsyncCandidateInspectionStore", lambda *args, **kwargs: aio_store)
+
+    async def hub_session(http, team):
+        return SimpleNamespace(token="test")
 
     def fresh_manager():
         manager = manager_module.TeamManager(root, participant)
         manager._team_repo = lambda team: team_repo
-        manager._get_or_open_session = lambda team: SimpleNamespace(token="test")
+        manager._hub_session = hub_session
         manager._candidate_announcement_status = lambda *args: "missing"
         return manager
 
@@ -57,7 +64,7 @@ def inspection(playground_dir, monkeypatch):
     key = next(c["candidate_key"] for c in reviewed["candidates"] if c["location"] == "loc-A")
     return SimpleNamespace(
         root=root, participant=participant, manager=manager, fresh_manager=fresh_manager,
-        repo=team_repo, publisher=nts_repo, store=store, reviewed=reviewed, key=key, head=nts_repo.head(),
+        repo=team_repo, publisher=nts_repo, store=store, aio_store=aio_store, reviewed=reviewed, key=key, head=nts_repo.head(),
     )
 
 
@@ -118,7 +125,7 @@ def test_interrupted_report_is_reconstructed_before_resolution(inspection, monke
 
     monkeypatch.setattr(env.repo, stop_after, interrupted)
     with pytest.raises(RuntimeError, match="interrupted"):
-        env.manager.inspect_berth_source_candidate("Test", env.key)
+        anyio.run(env.manager.inspect_berth_source_candidate, "Test", env.key)
     assert not any(c["observations"] for c in fixtures._pause_report(env.root, env.participant)["candidates"])
 
     # Resolve directly after a restart, without a status refresh repairing the
@@ -158,7 +165,7 @@ def test_resolution_cannot_pass_an_inspection_publishing_refs(inspection, monkey
 
     monkeypatch.setattr(decision, "attached_note_to_self_connection", impatient_resolution)
     with ThreadPoolExecutor(max_workers=1) as pool:
-        inspection_result = pool.submit(env.manager.inspect_berth_source_candidate, "Test", env.key)
+        inspection_result = pool.submit(anyio.run, env.manager.inspect_berth_source_candidate, "Test", env.key)
         try:
             assert published.wait(5)
             with pytest.raises(sqlite3.OperationalError, match="locked"):
@@ -172,15 +179,15 @@ def test_resolution_cannot_pass_an_inspection_publishing_refs(inspection, monkey
 
 def test_resolution_before_fetch_finishes_preserves_later_evidence(inspection, monkeypatch):
     env = inspection
-    original = env.store.get_latest_link
+    original = env.aio_store.get_latest_link
 
-    def resolve_during_fetch():
+    async def resolve_during_fetch():
         result = env.manager.resolve_berth_source("Test", env.key, env.reviewed["evidence_digest"])
         assert result["resolved"] is True
-        return original()
+        return await original()
 
-    monkeypatch.setattr(env.store, "get_latest_link", resolve_during_fetch)
-    result = env.manager.inspect_berth_source_candidate("Test", env.key)
+    monkeypatch.setattr(env.aio_store, "get_latest_link", resolve_during_fetch)
+    result = anyio.run(env.manager.inspect_berth_source_candidate, "Test", env.key)
     assert result["retained"] is False
     assert env.repo.resolve_ref(result["observation"]["ref_name"]) == env.head
     status = env.fresh_manager().berth_source_status("Test")
@@ -204,12 +211,12 @@ def test_later_fetch_does_not_erase_an_interrupted_observation(inspection, monke
 
     monkeypatch.setattr(env.repo, "advance_ref", interrupt)
     with pytest.raises(RuntimeError, match="interrupted"):
-        env.manager.inspect_berth_source_candidate("Test", env.key)
+        anyio.run(env.manager.inspect_berth_source_candidate, "Test", env.key)
     monkeypatch.setattr(env.repo, "advance_ref", original)
     fixtures._apply_local(env.root, env.participant, [fixtures._insert_team(b"\xee" * 16, "LaterWork")])
     later_head = fixtures._commit_local(env.root, env.participant, env.publisher)
     CodSync(env.publisher, env.store).publish()
-    env.manager.inspect_berth_source_candidate("Test", env.key)
+    anyio.run(env.manager.inspect_berth_source_candidate, "Test", env.key)
     status = env.fresh_manager().berth_source_status("Test")
     candidate = next(c for c in status["candidates"] if c["candidate_key"] == env.key)
     assert {o["observed_head"] for o in candidate["observations"]} == {env.head, later_head}
@@ -218,7 +225,7 @@ def test_later_fetch_does_not_erase_an_interrupted_observation(inspection, monke
 
 def test_divergent_inspection_preserves_both_heads(inspection, monkeypatch):
     env = inspection
-    env.manager.inspect_berth_source_candidate("Test", env.key)
+    anyio.run(env.manager.inspect_berth_source_candidate, "Test", env.key)
     parent = env.publisher.resolve_ref("refs/heads/main^")
     sibling = fixtures._source_commit(
         env.publisher, parent, [fixtures._insert_team(b"\xdd" * 16, "DivergentWork")]
@@ -229,11 +236,11 @@ def test_divergent_inspection_preserves_both_heads(inspection, monkeypatch):
     publisher.import_bundle(bundle)
     publisher.create_ref_immutable("refs/heads/main", sibling)
     (env.root / "sibling-cloud").mkdir()
-    store = LocalFolderStore(env.root / "sibling-cloud")
-    CodSync(publisher, store).publish()
-    monkeypatch.setattr(manager_module, "CandidateInspectionStore", lambda *args, **kwargs: store)
+    CodSync(publisher, LocalFolderStore(env.root / "sibling-cloud")).publish()
+    store = AsyncLocalFolderStore(env.root / "sibling-cloud")
+    monkeypatch.setattr(manager_module, "AsyncCandidateInspectionStore", lambda *args, **kwargs: store)
 
-    result = env.manager.inspect_berth_source_candidate("Test", env.key)
+    result = anyio.run(env.manager.inspect_berth_source_candidate, "Test", env.key)
     assert result["observation"]["disposition"] == "divergent"
     assert env.repo.resolve_ref(manager_module.berth_source_candidate_ref(env.key)) == env.head
     status = env.manager.berth_source_status("Test")

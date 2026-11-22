@@ -170,8 +170,8 @@ def test_both_candidates_are_inspectable_while_the_berth_is_paused(
     main_before = repo_b.resolve_ref(MAIN)
 
     for location in (setup["allocation_a"]["location"], setup["allocation_b"]["location"]):
-        outcome = manager_b.inspect_berth_source_candidate(
-            TEAM, _key_for(status, location)
+        outcome = anyio.run(
+            manager_b.inspect_berth_source_candidate, TEAM, _key_for(status, location)
         )
         assert outcome["observation"]["reached"] is True, outcome
         assert outcome["retained"] is True
@@ -221,8 +221,8 @@ def test_an_unreachable_candidate_is_reported_and_resumes_nothing(
         account["id"], access_key="wrong-key", secret_key="wrong-secret"
     )
 
-    outcome = manager_b.inspect_berth_source_candidate(
-        TEAM, _key_for(status, setup["allocation_a"]["location"])
+    outcome = anyio.run(
+        manager_b.inspect_berth_source_candidate, TEAM, _key_for(status, setup["allocation_a"]["location"])
     )
     assert outcome["observation"]["reached"] is False, outcome
 
@@ -346,8 +346,8 @@ def test_a_choice_reviewed_before_an_investigation_is_refused(
     manager_b = setup["manager_b"]
 
     reviewed = manager_b.berth_source_status(TEAM)
-    manager_b.inspect_berth_source_candidate(
-        TEAM, _key_for(reviewed, setup["allocation_a"]["location"])
+    anyio.run(
+        manager_b.inspect_berth_source_candidate, TEAM, _key_for(reviewed, setup["allocation_a"]["location"])
     )
 
     result = manager_b.resolve_berth_source(
@@ -405,7 +405,7 @@ def test_a_candidate_a_sibling_deleted_stays_inspectable_and_choosable(
     withdrawn = _key_for(status_b, setup["allocation_b"]["location"])
     assert _candidate(status_b, setup["allocation_b"]["location"])["live"] is False
 
-    outcome = manager_b.inspect_berth_source_candidate(TEAM, withdrawn)
+    outcome = anyio.run(manager_b.inspect_berth_source_candidate, TEAM, withdrawn)
     assert outcome["observation"]["reached"] is True, outcome
     assert outcome["observation"]["observed_head"] == setup["head_b"]
 

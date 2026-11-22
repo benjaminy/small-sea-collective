@@ -1,7 +1,8 @@
 """Async bundle stores: the async twin of cod_sync.store.
 
 Only the stores an async caller uses so far are here: the local folder, the
-session's own Hub storage, and a teammate's storage read through the Hub.
+session's own Hub storage, a teammate's storage read through the Hub, and one
+retained placement candidate of the session's own berth.
 Errors, object names and status classification are the sync module's.
 
 A Hub store takes an httpx.AsyncClient whose base_url is the Hub. The caller
@@ -229,3 +230,27 @@ class PeerSmallSeaStore(_HubStore):
             if failure is not None:
                 return failure(f"{cloud_path}: {self._detail(resp)}")
         return super()._classify(resp, cloud_path)
+
+
+class CandidateInspectionStore(_HubStore):
+    """Read-only view of one retained placement candidate of this own berth.
+
+    The async twin of cod_sync.store.CandidateInspectionStore; see it for why
+    every request carries the same candidate key.
+    """
+
+    def __init__(
+        self,
+        session_hex: str,
+        candidate_key: str,
+        client: httpx.AsyncClient,
+        path_prefix: str = "",
+    ):
+        super().__init__(session_hex, client, path_prefix=path_prefix)
+        self.candidate_key = candidate_key
+
+    def _download_endpoint(self, cloud_path: str):
+        return "/berth_source/inspect", {
+            "candidate_key": self.candidate_key,
+            "path": self._path_prefix + cloud_path,
+        }

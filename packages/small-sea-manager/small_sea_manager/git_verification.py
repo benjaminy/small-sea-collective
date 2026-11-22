@@ -14,22 +14,10 @@ def _ssh_key(raw):
 
 
 class CoreHistoryVerifier:
-    """Require recognized device signatures and an anchor-signed root."""
+    """Require recognized device signatures and an anchor-signed root.
 
-    def __init__(self, anchor, trusted_keys):
-        self.signatures = SshCommitVerifier(_ssh_key(key) for key in trusted_keys)
-        self.anchor_fingerprint = _fingerprint(anchor)
-
-    def verify_history(self, repo, head):
-        verified = self.signatures.verify_history(repo, head)
-        for commit, fingerprint in verified.items():
-            commit_object = repo._run_binary(_ORIGINAL_COMMIT + [commit]).stdout
-            _check_root(self.anchor_fingerprint, commit, fingerprint, commit_object)
-        return verified
-
-
-class AsyncCoreHistoryVerifier:
-    """CoreHistoryVerifier for the async Cod Sync, which passes an async Repo."""
+    For the async Cod Sync, which passes an async Repo.
+    """
 
     def __init__(self, anchor, trusted_keys):
         self.signatures = AsyncSshCommitVerifier(_ssh_key(key) for key in trusted_keys)
@@ -65,11 +53,6 @@ _ORIGINAL_COMMIT = ["--no-replace-objects", "cat-file", "commit"]
 def core_history_verifier(root_dir, participant_hex, team_name):
     """Use accepted local certificates, including historical member keys."""
     return CoreHistoryVerifier(*_core_history_keys(root_dir, participant_hex, team_name))
-
-
-def async_core_history_verifier(root_dir, participant_hex, team_name):
-    """core_history_verifier for the async Cod Sync."""
-    return AsyncCoreHistoryVerifier(*_core_history_keys(root_dir, participant_hex, team_name))
 
 
 def _core_history_keys(root_dir, participant_hex, team_name):

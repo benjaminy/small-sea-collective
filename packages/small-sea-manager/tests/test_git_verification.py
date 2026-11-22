@@ -11,7 +11,6 @@ from small_sea_manager import provisioning as p
 from small_sea_manager.git_signing import core_signed_repo, signed_repo
 from cod_sync.aio.repo import Repo as AsyncRepo
 from small_sea_manager.git_verification import (
-    AsyncCoreHistoryVerifier,
     CoreHistoryVerifier,
     core_history_verifier,
 )
@@ -39,6 +38,10 @@ def _commit(repo, content):
     return repo.commit(content)
 
 
+def _verify(verifier, repo, head):
+    return anyio.run(verifier.verify_history, AsyncRepo(repo.git_dir, repo.work_tree), head)
+
+
 def test_core_accepts_anchor_root_and_recognized_device(tmp_path):
     anchor_private, anchor = _key()
     device_private, device = _key()
@@ -46,7 +49,7 @@ def test_core_accepts_anchor_root_and_recognized_device(tmp_path):
     root = _commit(repo, "root")
     signed_repo(repo, device_private, tmp_path / "keys")
     head = _commit(repo, "device")
-    assert set(CoreHistoryVerifier(anchor, {anchor, device}).verify_history(repo, head)) == {root, head}
+    assert set(_verify(CoreHistoryVerifier(anchor, {anchor, device}), repo, head)) == {root, head}
 
 
 def test_core_rejects_recognized_non_anchor_root(tmp_path):
@@ -55,29 +58,16 @@ def test_core_rejects_recognized_non_anchor_root(tmp_path):
     repo = _repo(tmp_path, device_private)
     head = _commit(repo, "wrong root")
     with pytest.raises(UnknownSignerError, match="authority-anchor"):
-        CoreHistoryVerifier(anchor, {anchor, device}).verify_history(repo, head)
+        _verify(CoreHistoryVerifier(anchor, {anchor, device}), repo, head)
 
 
-def test_async_core_verifier_gives_the_same_answers(tmp_path):
-    anchor_private, anchor = _key()
-    device_private, device = _key()
+def test_core_rejects_a_root_no_trusted_key_signed(tmp_path):
+    anchor_private, _ = _key()
+    _, device = _key()
     repo = _repo(tmp_path, anchor_private)
-    root = _commit(repo, "root")
-    signed_repo(repo, device_private, tmp_path / "keys")
-    head = _commit(repo, "device")
-    async_repo = AsyncRepo(repo.git_dir, repo.work_tree)
-
-    def verify(anchor_key, trusted):
-        verifier = AsyncCoreHistoryVerifier(anchor_key, trusted)
-        return anyio.run(verifier.verify_history, async_repo, head)
-
-    assert set(verify(anchor, {anchor, device})) == {root, head}
-    # Without the anchor's key, the root's signature is unrecognized.
+    head = _commit(repo, "root")
     with pytest.raises(UnknownSignerError, match="no supplied key|not in the supplied"):
-        verify(device, {device})
-    # Recognized, but not by the anchor this verifier was given.
-    with pytest.raises(UnknownSignerError, match="authority-anchor"):
-        verify(device, {anchor, device})
+        _verify(CoreHistoryVerifier(device, {device}), repo, head)
 
 
 @pytest.mark.parametrize("unsigned", [True, False])
@@ -94,7 +84,7 @@ def test_core_rejects_unsigned_or_unknown_descendant(tmp_path, unsigned):
     head = _commit(repo, "unaccepted")
     error = UnsignedCommitError if unsigned else UnknownSignerError
     with pytest.raises(error) as caught:
-        CoreHistoryVerifier(anchor, {anchor}).verify_history(repo, head)
+        _verify(CoreHistoryVerifier(anchor, {anchor}), repo, head)
     assert caught.value.commit == head
 
 
@@ -104,12 +94,12 @@ def test_core_verifier_uses_local_adopted_certificates(tmp_path):
     directory = p._team_sync_dir(tmp_path, participant, "Project")
     repo = core_signed_repo(tmp_path, participant, "Project", Repo(directory / ".git", directory))
     verifier = core_history_verifier(tmp_path, participant, "Project")
-    assert repo.head() in verifier.verify_history(repo, repo.head())
+    assert repo.head() in _verify(verifier, repo, repo.head())
     private, _ = _key()
     signed_repo(repo, private, tmp_path / "unknown")
     head = _commit(repo, "uncertified device")
     with pytest.raises(UnknownSignerError):
-        verifier.verify_history(repo, head)
+        _verify(verifier, repo, head)
 
 
 def test_manager_publish_refuses_unsigned_local_history(tmp_path, monkeypatch):

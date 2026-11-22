@@ -11,7 +11,12 @@ import pathlib
 import httpx
 import pytest
 
-from cod_sync.aio.store import LocalFolderStore, PeerSmallSeaStore, SmallSeaStore
+from cod_sync.aio.store import (
+    CandidateInspectionStore,
+    LocalFolderStore,
+    PeerSmallSeaStore,
+    SmallSeaStore,
+)
 from cod_sync.store import (
     CasConflictError,
     DownloadTooLargeError,
@@ -174,6 +179,15 @@ async def test_peer_reads_go_to_the_peer_endpoint():
         await PeerSmallSeaStore("session", "aa" * 16, client).get_latest_link()
     assert client.requests[0].url.path == "/peer_cloud_file"
     assert client.requests[0].url.params["teammate_id"] == "aa" * 16
+
+
+async def test_candidate_reads_carry_the_candidate_key():
+    client = hub(answer(404, {"detail": "nope"}))
+    with pytest.raises(ObjectNotFoundError):
+        await CandidateInspectionStore("session", "candidate", client).get_latest_link()
+    assert client.requests[0].url.path == "/berth_source/inspect"
+    assert client.requests[0].url.params["candidate_key"] == "candidate"
+    assert client.requests[0].url.params["path"] == "latest-link.yaml"
 
 
 async def test_local_folder_store_keeps_the_sync_contract(tmp_path):
