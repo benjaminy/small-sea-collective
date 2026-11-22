@@ -17,10 +17,12 @@ import anyio
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
+from cod_sync.aio.protocol import CodSync as AsyncCodSync
 from cod_sync.aio.store import SmallSeaStore as AsyncSmallSeaStore
 from cod_sync.protocol import PublicationIntegrationRequiredError, parked_ref_name
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
+from small_sea_client import aio as aio_client
 from small_sea_hub.server import app
 from small_sea_manager.manager import (
     TeamManager,
@@ -166,6 +168,107 @@ def test_push_note_to_self_allocates_fresh_s3_berth(playground_dir, minio_server
         root, alice_hex, session.session_info()["berth_id"]
     )
     assert allocation is not None
+
+
+def _s3_device(root, minio):
+    """One installation with S3 storage and a published NoteToSelf."""
+    root.mkdir()
+    alice_hex = create_new_participant(root, "Alice")
+    app.state.backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
+    http = TestClient(app)
+    manager = TeamManager(root, alice_hex, _http_client=http)
+    manager.add_cloud_storage(
+        protocol="s3",
+        url=minio["endpoint"],
+        access_key=minio["access_key"],
+        secret_key=minio["secret_key"],
+    )
+    anyio.run(manager.push_note_to_self)
+    return alice_hex, http, manager
+
+
+def test_identity_join_retry_publishes_the_admission_an_earlier_call_did_not(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    """A repeated join request must not get a bundle before storage holds the admission.
+
+    The first call records the device locally and then fails to publish. The
+    retry finds the device already recorded, and must still publish, because
+    the joining device fetches the stored history.
+    """
+    workspace = pathlib.Path(playground_dir)
+    root_b = workspace / "install-b"
+    root_b.mkdir()
+    alice_hex, http_a, manager_a = _s3_device(workspace / "install-a", minio_server_gen())
+    join_request = create_identity_join_request(root_b)
+
+    async def fail(self, *args, **kwargs):
+        raise RuntimeError("publication failed")
+
+    monkeypatch.setattr(AsyncCodSync, "publish", fail)
+    with pytest.raises(RuntimeError, match="publication failed"):
+        anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
+    monkeypatch.undo()
+
+    welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
+
+    bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    with sqlite3.connect(str(note_to_self_sync_db_path(root_b, alice_hex))) as conn:
+        [(devices,)] = conn.execute("SELECT COUNT(*) FROM user_device").fetchall()
+    assert devices == 2
+
+
+def test_overlapping_refreshes_do_not_move_the_adopted_count_backwards(
+    playground_dir, minio_server_gen, monkeypatch
+):
+    """A refresh that snapshots the count, then finishes after a newer one, loses.
+
+    The first refresh snapshots count 5 and is held in its fetch. A second
+    refresh starts meanwhile; whatever it does, the stored count must end at
+    the newer snapshot, 6.
+    """
+    root = pathlib.Path(playground_dir) / "install-a"
+    alice_hex, _http, manager = _s3_device(root, minio_server_gen())
+
+    counts = iter([5, 6])
+
+    async def watch(self, known, timeout=0, known_self_count=None):
+        return {"self_updated_count": next(counts)}
+
+    first_in_fetch = anyio.Event()
+    release = anyio.Event()
+    second_done = anyio.Event()
+    real_fetch = AsyncCodSync.fetch
+    fetches = []
+
+    async def held_fetch(self, *args, **kwargs):
+        fetches.append(True)
+        if len(fetches) == 1:
+            first_in_fetch.set()
+            await release.wait()
+        return await real_fetch(self, *args, **kwargs)
+
+    monkeypatch.setattr(aio_client.SmallSeaSession, "watch_notifications", watch)
+    monkeypatch.setattr(AsyncCodSync, "fetch", held_fetch)
+
+    async def second():
+        await manager.refresh_note_to_self()
+        second_done.set()
+
+    async def overlap():
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(manager.refresh_note_to_self)
+            await first_in_fetch.wait()
+            tg.start_soon(second)
+            # Give the second refresh the chance to finish first, if it can.
+            with anyio.move_on_after(1):
+                await second_done.wait()
+            release.set()
+
+    anyio.run(overlap)
+
+    berth_id = bytes.fromhex(manager._open_note_to_self_session().session_info()["berth_id"])
+    assert Provisioning.get_note_to_self_adopted_signal_count(root, alice_hex, berth_id) == 6
 
 
 def _wire_device_b_credentials(root_b, alice_hex, minio):

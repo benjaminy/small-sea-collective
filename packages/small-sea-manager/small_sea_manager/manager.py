@@ -283,6 +283,10 @@ class TeamManager:
         # One publication at a time per team, so a second push sees the first
         # one's commit and marker instead of racing it for Git's index lock.
         self._push_locks: dict[str, anyio.Lock] = {}
+        # NoteToSelf push and refresh run one at a time: each reads the adopted
+        # signal count before awaiting the Hub and writes it afterwards, so an
+        # overlapping call could move it backwards.
+        self._note_to_self_lock = anyio.Lock()
         # Confirmed sessions, keyed by (team, mode).
         self._sessions: dict[tuple[str, str], "SmallSeaSession"] = {}
         # Pending PIN requests awaiting confirmation, keyed by (team, mode).
@@ -446,6 +450,10 @@ class TeamManager:
         Hub I/O, so the committed bytes are one stable SQLite state and no Hub
         write can land inside Git's read of the file.
         """
+        async with self._note_to_self_lock:
+            await self._push_note_to_self_locked()
+
+    async def _push_note_to_self_locked(self):
         async with self._hub_http() as http:
             session = await self._hub_session(http, "NoteToSelf", mode="passthrough")
             berth_id, adopted = await self._ensure_note_to_self_adopted_count(session)
@@ -492,6 +500,10 @@ class TeamManager:
         nothing and a later refresh refetches; once it exists, recovery is
         entirely local.
         """
+        async with self._note_to_self_lock:
+            return await self._refresh_note_to_self_locked()
+
+    async def _refresh_note_to_self_locked(self):
         repo_dir = self._note_to_self_repo_dir()
         repo = _Repo(repo_dir / ".git", repo_dir)
         async with self._hub_http() as http:
@@ -758,7 +770,11 @@ class TeamManager:
             remote_descriptor=remote_descriptor,
             expires_in_seconds=expires_in_seconds,
         )
-        if result.get("needs_publish"):
+        if remote_descriptor["protocol"] != "localfolder":
+            # Every call publishes, not only the one that admitted the device:
+            # an earlier call may still be publishing, or may have failed, and
+            # the joining device fetches the stored history, which must already
+            # hold its admission. When it does, this returns already_present.
             await self.push_note_to_self()
         return result
 

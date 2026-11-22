@@ -2262,8 +2262,8 @@ def authorize_identity_join(
 ):
     """Admit a new device into shared NoteToSelf and return a sealed welcome bundle.
 
-    When ``remote_descriptor`` is provided, this function stays local-only and
-    returns whether NoteToSelf needs to be published separately by the caller.
+    A localfolder remote is published here. For any other remote, the caller
+    publishes NoteToSelf before handing out the bundle.
     When absent, it falls back to the older localfolder-only publish path.
     """
     if expires_in_seconds <= 0:
@@ -2355,7 +2355,6 @@ def authorize_identity_join(
             bundle,
             signature,
         ),
-        "needs_publish": inserted_user_device and remote_descriptor.get("protocol") != "localfolder",
     }
 
 
