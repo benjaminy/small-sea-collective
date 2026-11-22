@@ -1156,6 +1156,7 @@ name = "small-sea-manager"
 version = "0.1.0"
 source = { editable = "packages/small-sea-manager" }
 dependencies = [
+    { name = "anyio" },
     { name = "click" },
     { name = "cod-sync" },
     { name = "cryptography" },
@@ -1173,6 +1174,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "anyio", specifier = ">=4.11" },
     { name = "click", specifier = ">=8.0" },
     { name = "cod-sync", editable = "packages/cod-sync" },
     { name = "cryptography", specifier = ">=46.0.3" },

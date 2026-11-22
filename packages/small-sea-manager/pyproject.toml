@@ -9,6 +9,7 @@ dependencies = [
     "cuttlefish",
     "splice-merge",
     "wrasse-trust",
+    "anyio>=4.11",
     "click>=8.0",
     "cryptography>=46.0.3",
     "fastapi[standard]>=0.118.0",

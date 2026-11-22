@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from typing import Literal, Optional
 
+import anyio
 import httpx
 
 from cod_sync.aio.protocol import CodSync as _AsyncCodSync
@@ -276,6 +277,13 @@ class TeamManager:
         # app for the async methods, called in-process on the caller's loop.
         hub_app = getattr(_http_client, "app", None)
         self._async_transport = None if hub_app is None else httpx.ASGITransport(app=hub_app)
+        # An injected client may point at a Hub on another port; the async
+        # methods must reach the same Hub.
+        injected_url = str(getattr(_http_client, "base_url", "") or "")
+        self._hub_base_url = injected_url or self.client._base_url
+        # One publication at a time per team, so a second push sees the first
+        # one's commit and marker instead of racing it for Git's index lock.
+        self._push_locks: dict[str, anyio.Lock] = {}
         # Confirmed sessions, keyed by (team, mode).
         self._sessions: dict[tuple[str, str], "SmallSeaSession"] = {}
         # Pending PIN requests awaiting confirmation, keyed by (team, mode).
@@ -344,7 +352,7 @@ class TeamManager:
         no connection outlives the call or the event loop that made it.
         """
         return httpx.AsyncClient(
-            base_url=self.client._base_url,
+            base_url=self._hub_base_url,
             transport=self._async_transport,
             timeout=_HUB_TIMEOUT,
         )
@@ -1663,14 +1671,17 @@ class TeamManager:
         mode without a PIN provider. The three publication states that need
         attention propagate as their typed Cod Sync errors.
         """
+        lock = self._push_locks.setdefault(team_name, anyio.Lock())
+        async with lock:
+            return await self._push_team_locked(team_name)
+
+    async def _push_team_locked(self, team_name) -> str:
         repo_dir = self._team_repo_dir(team_name)
         repo = _AsyncRepo(repo_dir / ".git", repo_dir)
         signing = self._signing_team_repo(team_name)
         await _AsyncRepo(repo_dir / ".git", repo_dir, env=signing.env).commit_paths(
             ["core.db"], "Update team Core"
         )
-        # Capture the head being published before the remote operation, so the
-        # marker names the exact state Cod Sync was handed.
         intended_head = await repo.head()
 
         # Preparing core.db is purely local, so decide this before opening a
@@ -1686,12 +1697,13 @@ class TeamManager:
             await session.ensure_cloud_ready()
             store = AsyncSmallSeaStore(session.token, http)
             result = await _AsyncCodSync(repo, store, verifier=verifier).publish()
-        # Both ordinary dispositions mean the cloud holds this head — under
-        # already_present it may hold a descendant of it — so the marker is
-        # written for both. Every other disposition raised before this point
-        # and left the marker alone.
-        if intended_head:
-            self._push_status_file(team_name).write_text(intended_head)
+        # Both ordinary dispositions mean the cloud holds the head Cod Sync
+        # attempted — under already_present it may hold a descendant of it — so
+        # the marker is written for both. That head is the one Cod Sync read
+        # when publication started, which can be newer than intended_head if
+        # another Manager action moved main during session setup. Every other
+        # disposition raised before this point and left the marker alone.
+        self._push_status_file(team_name).write_text(result.attempted_head)
         return result.disposition
 
     # ------------------------------------------------------------------ #

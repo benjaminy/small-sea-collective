@@ -10,6 +10,7 @@ import pathlib
 import sqlite3
 
 import anyio
+import httpx
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
@@ -225,6 +226,70 @@ def test_marker_matches_the_published_main_sha(env):
     _clone_dir, published_sha = env.published_core_db("clone")
     assert env.marker.read_text().strip() == published_sha
     assert env.manager.get_team_sync_status(_TEAM) == "synced"
+
+
+def test_marker_names_the_head_cod_sync_published_when_main_moves_during_setup(
+    env, monkeypatch
+):
+    """Another Manager action can commit while push_team waits on the Hub.
+
+    Cod Sync reads main only when publication starts, so it publishes the
+    newer commit; the marker must name that commit, not the one push_team saw
+    before awaiting session setup.
+    """
+    env.announce_storage()
+    real_open = env.manager._hub_session
+
+    async def open_after_another_commit(*a, **kw):
+        with sqlite3.connect(str(env.core_db)) as conn:
+            conn.execute("PRAGMA user_version = 7")
+        env.manager._signing_team_repo(_TEAM).commit_paths(["core.db"], "Concurrent change")
+        return await real_open(*a, **kw)
+
+    monkeypatch.setattr(env.manager, "_hub_session", open_after_another_commit)
+
+    assert anyio.run(env.manager.push_team, _TEAM) == "published"
+
+    _clone_dir, published_sha = env.published_core_db("clone")
+    assert published_sha == env.repo.head()
+    assert env.marker.read_text().strip() == published_sha
+    assert env.manager.get_team_sync_status(_TEAM) == "synced"
+
+
+def test_concurrent_pushes_for_one_team_do_not_collide(env):
+    """Two web pushes for one team run one after the other.
+
+    Without that, both commit the same core.db change at once and one fails
+    on Git's index lock.
+    """
+    env.announce_storage()
+    outcomes = []
+
+    async def push():
+        outcomes.append(await env.manager.push_team(_TEAM))
+
+    async def both():
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(push)
+            tg.start_soon(push)
+
+    anyio.run(both)
+
+    assert sorted(outcomes) == ["already_present", "published"]
+    assert env.manager.get_team_sync_status(_TEAM) == "synced"
+
+
+def test_async_calls_reach_the_hub_the_injected_client_names(playground_dir):
+    alice_hex = _local_team(pathlib.Path(playground_dir))
+    injected = httpx.Client(base_url="http://127.0.0.1:54001")
+    manager = TeamManager(pathlib.Path(playground_dir), alice_hex, _http_client=injected)
+
+    async def hub_port():
+        async with manager._hub_http() as http:
+            return http.base_url.port
+
+    assert anyio.run(hub_port) == 54001
+    injected.close()
 
 
 def test_push_failure_leaves_marker_intact_and_work_preserved(env, monkeypatch):
