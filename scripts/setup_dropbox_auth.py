@@ -155,9 +155,7 @@ def _write_credentials(
             "The participant directory exists but has not been initialised.\n"
             "Run the sandbox first (uv run small-sea-sandbox) to create a live\n"
             "workspace with initialised participants, then point this script at\n"
-            "that workspace with --root-dir.\n\n"
-            "Alternatively, use scripts/setup_dropbox_workspace.py to create a fresh\n"
-            "Dropbox-only workspace without the sandbox.",
+            "that workspace with --root-dir.",
             file=sys.stderr,
         )
         sys.exit(1)
