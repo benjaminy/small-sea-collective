@@ -48,6 +48,29 @@ async def open_session(
     return SmallSeaSession(http, result["token"])
 
 
+async def create_bootstrap_session(
+    http: httpx.AsyncClient,
+    *,
+    protocol: str,
+    url: str,
+    bucket: str,
+    expires_at: str | None = None,
+) -> str:
+    """Ask the Hub for a token that reads one cloud location during bootstrap.
+
+    The async twin of SmallSeaClient.create_bootstrap_session.
+    """
+    payload = {"protocol": protocol, "url": url, "bucket": bucket}
+    if expires_at is not None:
+        payload["expires_at"] = expires_at
+    try:
+        resp = await http.post("/bootstrap/sessions", json=payload)
+    except httpx.ConnectError:
+        raise SmallSeaHubUnavailable()
+    _check_response(resp)
+    return resp.json()["token"]
+
+
 class SmallSeaSession:
     """An authenticated session with the Hub, scoped to one berth."""
 

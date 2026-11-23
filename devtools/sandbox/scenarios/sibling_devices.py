@@ -4,6 +4,7 @@ The Hub's FastAPI app holds one active backend. Switch devices with _reattach;
 these scenarios run sequentially within a process.
 """
 
+from functools import partial
 import shutil
 
 import anyio
@@ -88,7 +89,7 @@ def _two_installations(workspace, minio, http_a_holder):
 
     join_request = create_identity_join_request(root_b)
     welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
-    bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    anyio.run(partial(bootstrap_existing_identity, root_b, welcome["welcome_bundle"], _http_client=http_a))
 
     manager_b_local = TeamManager(root_b, alice_hex)
     accounts = manager_b_local.list_cloud_storage()

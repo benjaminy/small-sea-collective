@@ -1,3 +1,4 @@
+from functools import partial
 import base64
 import json
 import pathlib
@@ -707,9 +708,7 @@ def _run_full_invitation_flow(playground_dir, minio_server_gen, *, link_invitee_
         bob_device_root.mkdir()
         join_request = create_identity_join_request(bob_device_root)
         welcome = anyio.run(bob_manager.authorize_identity_join, join_request["join_request_artifact"])
-        bootstrap_existing_identity(
-            bob_device_root, welcome["welcome_bundle"], _http_client=http
-        )
+        anyio.run(partial(bootstrap_existing_identity, bob_device_root, welcome["welcome_bundle"], _http_client=http))
         bob_device_local = TeamManager(bob_device_root, bob_hex)
         accounts = bob_device_local.list_cloud_storage()
         bob_device_local.connect_cloud_storage_credentials(

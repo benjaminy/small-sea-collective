@@ -138,7 +138,7 @@ def test_localfolder_identity_bootstrap_roundtrip(playground_dir):
 
     assert welcome["auth_string"] == join_request["auth_string"]
 
-    bootstrap = bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+    bootstrap = anyio.run(bootstrap_existing_identity, root2, welcome["welcome_bundle"])
     assert bootstrap["participant_hex"] == alice_hex
     assert bootstrap["second_confirmation_string"] == welcome["second_confirmation_string"]
 
@@ -234,7 +234,7 @@ def test_identity_bootstrap_refuses_a_corrupt_fetched_database(playground_dir):
     CodSync.CodSync(repo, LocalFolderStore(str(cloud_dir))).publish()
 
     with pytest.raises(ValueError, match="not a readable SQLite database"):
-        bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+        anyio.run(bootstrap_existing_identity, root2, welcome["welcome_bundle"])
 
     assert not note_to_self_sync_db_path(root2, alice_hex).exists()
 
@@ -299,13 +299,13 @@ def test_identity_bootstrap_bundle_expiry_and_reissue(playground_dir):
     time.sleep(1.2)
 
     try:
-        bootstrap_existing_identity(root2, expired["welcome_bundle"])
+        anyio.run(bootstrap_existing_identity, root2, expired["welcome_bundle"])
         assert False, "Expected expired welcome bundle to fail"
     except ValueError as exn:
         assert "expired" in str(exn).lower()
 
     fresh = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
-    bootstrap = bootstrap_existing_identity(root2, fresh["welcome_bundle"])
+    bootstrap = anyio.run(bootstrap_existing_identity, root2, fresh["welcome_bundle"])
     assert bootstrap["participant_hex"] == alice_hex
 
 
@@ -337,7 +337,7 @@ def test_identity_bootstrap_rejects_unknown_signer_and_blocks_installation(playg
     )
 
     try:
-        bootstrap_existing_identity(root2, tampered_bundle)
+        anyio.run(bootstrap_existing_identity, root2, tampered_bundle)
         assert False, "Expected unknown signer bootstrap to fail"
     except ValueError as exn:
         assert "signature verification failed" in str(exn).lower()
@@ -412,7 +412,7 @@ def test_bootstrap_rejects_unsupported_payload_version_after_decryption(playgrou
     )
 
     try:
-        bootstrap_existing_identity(root2, bumped_payload)
+        anyio.run(bootstrap_existing_identity, root2, bumped_payload)
         assert False, "Expected unsupported welcome bundle version to be rejected"
     except ValueError as exn:
         assert "welcome bundle" in str(exn)
@@ -439,7 +439,7 @@ def test_bootstrap_rejects_unsupported_signed_wrapper_version(playground_dir):
     )
 
     try:
-        bootstrap_existing_identity(root2, bumped_wrapper)
+        anyio.run(bootstrap_existing_identity, root2, bumped_wrapper)
         assert False, "Expected unsupported signed wrapper version to be rejected"
     except ValueError as exn:
         assert "signed welcome bundle" in str(exn)
@@ -467,7 +467,7 @@ def test_welcome_bundle_aad_binds_the_expected_payload_version(playground_dir):
     )
 
     with pytest.raises(InvalidTag):
-        bootstrap_existing_identity(root2, wrong_aad)
+        anyio.run(bootstrap_existing_identity, root2, wrong_aad)
 
     assert not (root2 / "Participants" / alice_hex).exists()
 
@@ -508,7 +508,7 @@ def test_identity_bootstrap_rejects_wrong_known_signing_key(playground_dir):
     )
 
     try:
-        bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+        anyio.run(bootstrap_existing_identity, root2, welcome["welcome_bundle"])
         assert False, "Expected wrong known signer bootstrap to fail"
     except ValueError as exn:
         assert "signature verification failed" in str(exn).lower()
@@ -558,11 +558,7 @@ def test_identity_bootstrap_via_hub_bootstrap_transport(playground_dir, minio_se
     app.state.backend = backend_b
     http_b = TestClient(app)
 
-    bootstrap = bootstrap_existing_identity(
-        root2,
-        welcome["welcome_bundle"],
-        _http_client=http_b,
-    )
+    bootstrap = anyio.run(functools.partial(bootstrap_existing_identity, root2, welcome["welcome_bundle"], _http_client=http_b))
     assert bootstrap["participant_hex"] == alice_hex
     assert bootstrap["second_confirmation_string"] == welcome["second_confirmation_string"]
 

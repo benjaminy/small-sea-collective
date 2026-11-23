@@ -2,8 +2,9 @@
 
 Only the stores an async caller uses so far are here: the local folder, the
 session's own Hub storage, a teammate's storage read through the Hub, one
-retained placement candidate of the session's own berth, and an inviter's
-storage read at explicit coordinates.
+retained placement candidate of the session's own berth, an inviter's
+storage read at explicit coordinates, and the cloud location a bootstrap
+token is bound to.
 Errors, object names and status classification are the sync module's.
 
 A Hub store takes an httpx.AsyncClient whose base_url is the Hub. The caller
@@ -303,3 +304,13 @@ class ExplicitProxyStore(_HubStore):
         data, _etag = await super()._download(bundle_path(bundle_uid))
         with open(local_path, "wb") as handle:
             handle.write(self._transform(data))
+
+
+class BootstrapProxyStore(_HubStore):
+    """Read-only view of the cloud location bound to a bootstrap token.
+
+    The async twin of cod_sync.store.BootstrapProxyStore.
+    """
+
+    def _download_endpoint(self, cloud_path: str):
+        return "/bootstrap/cloud_file", {"path": cloud_path}

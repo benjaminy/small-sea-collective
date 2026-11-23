@@ -144,6 +144,6 @@ def test_identity_bootstrap_refuses_note_to_self_ancestor_signed_by_unknown_key(
     CodSync(Repo(sync_dir / ".git", sync_dir), LocalFolderStore(str(cloud_dir))).publish()
 
     with pytest.raises(REFUSED):
-        bootstrap_existing_identity(root2, welcome["welcome_bundle"])
+        anyio.run(bootstrap_existing_identity, root2, welcome["welcome_bundle"])
 
     assert not note_to_self_sync_db_path(root2, alice_hex).exists()

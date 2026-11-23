@@ -315,7 +315,7 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
     join_request = create_identity_join_request(b.root)
     welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
     mark = spy.mark()
-    bootstrap_existing_identity(b.root, welcome["welcome_bundle"], _http_client=b.http)
+    anyio.run(functools.partial(bootstrap_existing_identity, b.root, welcome["welcome_bundle"], _http_client=b.http))
     spy.assert_only(mark, "B")
 
     # 7. B enrolls its own credentials for the synced account.

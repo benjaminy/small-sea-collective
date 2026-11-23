@@ -42,7 +42,7 @@ def test_observe_unsigned_baseline_change_preserves_confirmation(prepared_pair, 
         provisioning._push_note_to_self_to_local_remote(
             source, participant, provisioning._single_note_to_self_remote_descriptor(source, participant)
         )
-    result = bootstrap_existing_identity(target, welcome['welcome_bundle'])
+    result = anyio.run(bootstrap_existing_identity, target, welcome['welcome_bundle'])
     assert result['second_confirmation_string'] == welcome['second_confirmation_string']
     with sqlite3.connect(note_to_self_sync_db_path(target, participant)) as conn:
         label = conn.execute('SELECT label FROM user_device WHERE id = ?', (original[0],)).fetchone()[0]
@@ -58,7 +58,7 @@ def test_interruption_before_signature_verification_blocks_identity(prepared_pai
     with monkeypatch.context() as patch:
         patch.setattr(provisioning, 'finalize_identity_bootstrap', interrupt)
         with pytest.raises(RuntimeError, match='injected interruption'):
-            bootstrap_existing_identity(target, welcome['welcome_bundle'])
+            anyio.run(bootstrap_existing_identity, target, welcome['welcome_bundle'])
 
     with pytest.raises(ValueError, match='blocked'):
         TeamManager(target, participant)
@@ -85,7 +85,7 @@ def test_storage_replacement_of_joining_signing_key_is_rejected(prepared_pair):
         source, participant, provisioning._single_note_to_self_remote_descriptor(source, participant)
     )
     with pytest.raises(ValueError, match='joining device keys'):
-        bootstrap_existing_identity(target, welcome['welcome_bundle'])
+        anyio.run(bootstrap_existing_identity, target, welcome['welcome_bundle'])
     with pytest.raises(ValueError, match='blocked'):
         TeamManager(target, participant)
 
@@ -107,7 +107,7 @@ def test_hub_rechecks_block_for_pending_and_existing_sessions(prepared_pair):
     from small_sea_hub.backend import SmallSeaBackend
 
     source, target, participant, welcome = prepared_pair
-    bootstrap_existing_identity(target, welcome['welcome_bundle'])
+    anyio.run(bootstrap_existing_identity, target, welcome['welcome_bundle'])
     backend = SmallSeaBackend(str(target), auto_approve_sessions=True)
     pending_id, pin = backend.request_session(participant, 'SmallSeaCollectiveCore', 'NoteToSelf', 'Smoke Tests')
     token = backend.open_session(participant, 'SmallSeaCollectiveCore', 'NoteToSelf', 'Smoke Tests')
@@ -123,7 +123,7 @@ def test_prepare_can_retry_before_source_adoption(prepared_pair):
     provisioning.prepare_identity_bootstrap(target, welcome['welcome_bundle'])
     with pytest.raises(ValueError, match='blocked'):
         TeamManager(target, participant)
-    result = bootstrap_existing_identity(target, welcome['welcome_bundle'])
+    result = anyio.run(bootstrap_existing_identity, target, welcome['welcome_bundle'])
     assert result['participant_hex'] == participant
     TeamManager(target, participant)
 

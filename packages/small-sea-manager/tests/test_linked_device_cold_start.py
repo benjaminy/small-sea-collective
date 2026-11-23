@@ -8,6 +8,7 @@ No files move between the two installation roots.
 These use MinIO because Hub-mediated NoteToSelf sync needs a real cloud backend.
 """
 
+from functools import partial
 import base64
 import json
 import pathlib
@@ -83,7 +84,7 @@ def _discovered_team_on_device_b(workspace, minio):
 
     join_request = create_identity_join_request(root_b)
     welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
-    bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    anyio.run(partial(bootstrap_existing_identity, root_b, welcome["welcome_bundle"], _http_client=http_a))
 
     # B enrolls its own credentials for the inherited account (#237).
     manager_b_local = TeamManager(root_b, alice_hex)

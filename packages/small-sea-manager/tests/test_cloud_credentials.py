@@ -11,6 +11,7 @@ material and nothing more -- not that the provider would accept it, and not
 that a shared `client_id` means this device is connected.
 """
 
+from functools import partial
 import pathlib
 import sqlite3
 
@@ -542,7 +543,7 @@ def test_linked_device_connects_credentials_to_the_inherited_account(
     # --- Device B: bootstrap this identity onto a second installation ---
     join_request = create_identity_join_request(root_b)
     welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
-    bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    anyio.run(partial(bootstrap_existing_identity, root_b, welcome["welcome_bundle"], _http_client=http_a))
 
     backend_b = SmallSea.SmallSeaBackend(root_dir=str(root_b), auto_approve_sessions=True)
     http_b = _use(backend_b)

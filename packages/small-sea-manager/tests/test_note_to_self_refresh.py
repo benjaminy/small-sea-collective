@@ -213,7 +213,7 @@ def test_identity_join_retry_publishes_the_admission_an_earlier_call_did_not(
 
     welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
 
-    bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    anyio.run(functools.partial(bootstrap_existing_identity, root_b, welcome["welcome_bundle"], _http_client=http_a))
     with sqlite3.connect(str(note_to_self_sync_db_path(root_b, alice_hex))) as conn:
         [(devices,)] = conn.execute("SELECT COUNT(*) FROM user_device").fetchall()
     assert devices == 2
@@ -244,7 +244,7 @@ def test_a_slow_publication_does_not_use_up_the_welcome_bundle_lifetime(
     )
     monkeypatch.undo()
 
-    bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    anyio.run(functools.partial(bootstrap_existing_identity, root_b, welcome["welcome_bundle"], _http_client=http_a))
     with sqlite3.connect(str(note_to_self_sync_db_path(root_b, alice_hex))) as conn:
         [(devices,)] = conn.execute("SELECT COUNT(*) FROM user_device").fetchall()
     assert devices == 2
@@ -366,7 +366,7 @@ def test_refresh_note_to_self_two_device_team_discovery(playground_dir, minio_se
     welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
     # bootstrap_existing_identity uses the Hub bootstrap transport for S3
     from small_sea_manager.manager import bootstrap_existing_identity as _bootstrap
-    _bootstrap(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    anyio.run(functools.partial(_bootstrap, root_b, welcome["welcome_bundle"], _http_client=http_a))
 
     # Sanity: device B has shared NoteToSelf
     shared_b = note_to_self_sync_db_path(root_b, alice_hex)
@@ -454,7 +454,7 @@ def test_refresh_does_not_sync_device_local_state(playground_dir, minio_server_g
     join_request = create_identity_join_request(root_b)
     welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
     from small_sea_manager.manager import bootstrap_existing_identity as _bootstrap
-    _bootstrap(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    anyio.run(functools.partial(_bootstrap, root_b, welcome["welcome_bundle"], _http_client=http_a))
     _wire_device_b_credentials(root_b, alice_hex, minio)
 
     backend_b = SmallSea.SmallSeaBackend(root_dir=str(root_b), auto_approve_sessions=True)
@@ -572,7 +572,7 @@ def _diverge_two_devices(workspace, minio):
 
     join_request = create_identity_join_request(root_b)
     welcome = anyio.run(manager_a.authorize_identity_join, join_request["join_request_artifact"])
-    bootstrap_existing_identity(root_b, welcome["welcome_bundle"], _http_client=http_a)
+    anyio.run(functools.partial(bootstrap_existing_identity, root_b, welcome["welcome_bundle"], _http_client=http_a))
     _wire_device_b_credentials(root_b, alice_hex, minio)
 
     # Device A publishes a team device B has not seen.

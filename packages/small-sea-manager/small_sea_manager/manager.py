@@ -11,7 +11,9 @@ import httpx
 from cod_sync.aio.protocol import CodSync as _AsyncCodSync
 from cod_sync.aio.repo import Repo as _AsyncRepo
 from cod_sync.aio.store import (
+    BootstrapProxyStore as AsyncBootstrapProxyStore,
     CandidateInspectionStore as AsyncCandidateInspectionStore,
+    LocalFolderStore as AsyncLocalFolderStore,
     ExplicitProxyStore as AsyncExplicitProxyStore,
     PeerSmallSeaStore as AsyncPeerSmallSeaStore,
     SmallSeaStore as AsyncSmallSeaStore,
@@ -29,12 +31,10 @@ from cod_sync.format import (
 from cod_sync.protocol import (
     PARKED_REF_PREFIX as _PARKED_REF_PREFIX,
     ChainError as _ChainError,
-    CodSync,
     NoPublishedHeadError as _NoPublishedHeadError,
     PinIntegrationRequiredError as _PinIntegrationRequiredError,
 )
 from cod_sync.store import (
-    BootstrapProxyStore,
     PeerSenderKeyUnavailableError as _StorePeerSenderKeyUnavailableError,
     PeerStorageUnknownError as _StorePeerStorageUnknownError,
     PublicationPendingError as _StorePublicationPendingError,
@@ -220,35 +220,45 @@ def create_identity_join_request(root_dir, *, device_label=None):
     return provisioning.create_identity_join_request(root_dir, device_label=device_label)
 
 
-def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=11437, _http_client=None):
+async def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=11437, _http_client=None):
     """Bootstrap a blank installation into an existing identity."""
     prepared = provisioning.prepare_identity_bootstrap(root_dir, welcome_bundle_b64)
     bundle = prepared["bundle"]
     sync_dir = pathlib.Path(prepared["sync_dir"])
+    fetch_repo = _AsyncRepo(sync_dir / ".git", sync_dir)
 
     remote = bundle.remote_descriptor
     if remote["protocol"] == "localfolder":
-        store = provisioning._store_from_descriptor(remote)
+        try:
+            store = AsyncLocalFolderStore(remote["url"])
+        except _StoreError as exc:
+            raise ValueError(f"Invalid localfolder remote path: {remote['url']}") from exc
+        result = await _AsyncCodSync(fetch_repo, store).fetch()
     else:
-        client = SmallSeaClient(port=hub_port, _http_client=_http_client)
-        bootstrap_token = client.create_bootstrap_session(
-            protocol=remote["protocol"],
-            url=remote["url"],
-            bucket=remote["bucket"],
-            expires_at=bundle.expires_at,
+        # Reach the same Hub a TeamManager built from these arguments would.
+        hub_app = getattr(_http_client, "app", None)
+        transport = None if hub_app is None else httpx.ASGITransport(app=hub_app)
+        base_url = (
+            str(getattr(_http_client, "base_url", "") or "")
+            or f"http://127.0.0.1:{hub_port}"
         )
-        store = BootstrapProxyStore(
-            bootstrap_token,
-            base_url=client._base_url,
-            client=_http_client,
-        )
+        async with httpx.AsyncClient(
+            base_url=base_url, transport=transport, timeout=_HUB_TIMEOUT
+        ) as http:
+            bootstrap_token = await _aio_client.create_bootstrap_session(
+                http,
+                protocol=remote["protocol"],
+                url=remote["url"],
+                bucket=remote["bucket"],
+                expires_at=bundle.expires_at,
+            )
+            store = AsyncBootstrapProxyStore(bootstrap_token, http)
+            result = await _AsyncCodSync(fetch_repo, store).fetch()
 
-    repo = _Repo(sync_dir / ".git", sync_dir)
-    result = CodSync(repo, store).fetch()
     outcome = note_to_self_sync.adopt_fetched_source(
         root_dir,
         bundle.participant_hex,
-        repo,
+        _Repo(sync_dir / ".git", sync_dir),
         result.observed_head,
         result.link_uid,
     )

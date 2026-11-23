@@ -141,7 +141,7 @@ def test_invited_member_can_bootstrap_a_sibling_after_import(playground_dir):
     bob_manager = TeamManager(root, bob)
     request = create_identity_join_request(sibling)
     welcome = anyio.run(bob_manager.authorize_identity_join, request["join_request_artifact"])
-    bootstrap_existing_identity(sibling, welcome["welcome_bundle"])
+    anyio.run(bootstrap_existing_identity, sibling, welcome["welcome_bundle"])
 
     laptop = TeamManager(sibling, bob)
     join = laptop.prepare_linked_device_team_join("ProjectX")
