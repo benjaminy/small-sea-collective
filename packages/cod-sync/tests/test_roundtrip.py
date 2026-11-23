@@ -18,12 +18,12 @@ from cod_sync_test_helpers import (
     working_tree_files,
 )
 
-from cod_sync.store import LocalFolderStore
+from cod_sync.aio.store import LocalFolderStore
 
-pytestmark = pytest.mark.usefixtures("both_cod_syncs")
+pytestmark = pytest.mark.anyio
 
 
-def test_cold_start_then_incremental_round_trip(scratch_dir):
+async def test_cold_start_then_incremental_round_trip(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     alice_pub = scratch / "alice-publication"
     bob_pub = scratch / "bob-publication"
@@ -33,15 +33,15 @@ def test_cold_start_then_incremental_round_trip(scratch_dir):
     commit_file(alice, "README.md", "# My Project\n")
     commit_file(alice, "notes.txt", "remember to buy milk\n")
     alice_store = make_store(alice_pub)
-    make_cod_sync(alice, alice_store).publish()
+    await make_cod_sync(alice, alice_store).publish()
 
     commit_file(alice, "plan.txt", "step 1: profit\n")
-    second = make_cod_sync(alice, alice_store).publish()
+    second = await make_cod_sync(alice, alice_store).publish()
     assert second.disposition == "published"
 
     # ---- Bob cold-starts: init, fetch, check out the observed head ----
     bob = make_repo(scratch / "bob", "bob")
-    result = make_cod_sync(bob, LocalFolderStore(str(alice_pub))).fetch()
+    result = await make_cod_sync(bob, LocalFolderStore(str(alice_pub))).fetch()
     bob.checkout_branch("main", result.observed_head)
     assert working_tree_files(bob) == working_tree_files(alice)
 
@@ -53,12 +53,12 @@ def test_cold_start_then_incremental_round_trip(scratch_dir):
     bob.commit("Bob's changes")
 
     bob_store = make_store(bob_pub)
-    make_cod_sync(bob, bob_store).publish()
+    await make_cod_sync(bob, bob_store).publish()
     assert len(list(bob_pub.glob("B-*.bundle"))) == 1
 
     # ---- Alice parks Bob's head on a peer ref, then merges it explicitly ----
     parked = "refs/peers/bob/main"
-    fetched = make_cod_sync(alice, LocalFolderStore(str(bob_pub))).fetch(
+    fetched = await make_cod_sync(alice, LocalFolderStore(str(bob_pub))).fetch(
         pin_to_ref=parked
     )
     assert alice.resolve_ref(parked) == fetched.observed_head
@@ -73,19 +73,19 @@ def test_cold_start_then_incremental_round_trip(scratch_dir):
     assert_no_scratch(bob)
 
 
-def test_an_unborn_branch_adopts_the_fetched_head(scratch_dir):
+async def test_an_unborn_branch_adopts_the_fetched_head(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     alice_pub = scratch / "alice-publication"
 
     alice = make_repo(scratch / "alice", "alice")
     commit_file(alice, "README.md", "# My Project\n")
     commit_file(alice, "data.txt", "Hello from Alice!\n")
-    make_cod_sync(alice, make_store(alice_pub)).publish()
+    await make_cod_sync(alice, make_store(alice_pub)).publish()
 
     bob = make_repo(scratch / "bob", "bob")
     assert not bob.has_commits()
 
-    result = make_cod_sync(bob, LocalFolderStore(str(alice_pub))).fetch()
+    result = await make_cod_sync(bob, LocalFolderStore(str(alice_pub))).fetch()
     bob.checkout_branch("main", result.observed_head)
 
     assert working_tree_files(alice) == working_tree_files(bob)

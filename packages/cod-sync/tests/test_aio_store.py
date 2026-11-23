@@ -26,6 +26,7 @@ from cod_sync.store import (
     PeerSenderKeyUnavailableError,
     PeerStorageUnknownError,
     PublicationOutcomeUnknownError,
+    PublicationPendingError,
     StoreAuthenticationError,
     StoreAuthorizationError,
     StoreProviderError,
@@ -171,6 +172,41 @@ async def test_a_peer_prerequisite_409_is_not_a_provider_failure(error_code, exp
     store = PeerSmallSeaStore("session", "aa" * 16, hub(answer(409, {"error": error_code, "detail": "later"})))
     with pytest.raises(expected) as exc:
         await store.get_latest_link()
+    assert not isinstance(exc.value, StoreProviderError)
+
+
+async def test_an_unrecognized_peer_409_stays_a_provider_failure():
+    store = PeerSmallSeaStore("session", "aa" * 16, hub(answer(409, {"error": "something_else"})))
+    with pytest.raises(StoreProviderError):
+        await store.get_latest_link()
+
+
+async def test_a_non_cas_409_from_own_storage_is_a_provider_failure():
+    store = SmallSeaStore("session", hub(answer(409, {"error": "peer_storage_unknown", "detail": "no route"})))
+    with pytest.raises(StoreProviderError):
+        await store.get_latest_link()
+
+
+@pytest.mark.parametrize("store_kind", ["own", "peer", "candidate"])
+@pytest.mark.parametrize("reason", [
+    "sender_key_unavailable",
+    "ownership_projection_absent",
+    "device_ownership_unavailable",
+    "device_ownership_ambiguous",
+    "expected_publisher_unknown",
+])
+async def test_publication_prerequisites_survive_every_store(store_kind, reason):
+    client = hub(answer(409, {"error": reason, "detail": "resolve evidence"}))
+    if store_kind == "own":
+        store = SmallSeaStore("session", client)
+    elif store_kind == "peer":
+        store = PeerSmallSeaStore("session", "aa" * 16, client)
+    else:
+        store = CandidateInspectionStore("session", "candidate", client)
+    with pytest.raises(PublicationPendingError) as exc:
+        await store.get_latest_link()
+    assert exc.value.reason == reason
+    assert "resolve evidence" in str(exc.value)
     assert not isinstance(exc.value, StoreProviderError)
 
 

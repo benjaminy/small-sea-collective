@@ -17,6 +17,7 @@ from cod_sync_test_helpers import (
     make_ssh_key,
     make_store,
     public_key_text,
+    verifier_for,
 )
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -40,6 +41,8 @@ from cod_sync.protocol import (
     PublicationIntegrationRequiredError,
 )
 from cod_sync.store import StoreProviderError
+from cod_sync.aio.verify import SshCommitVerifier as AioSshCommitVerifier
+from cod_sync.store import LocalFolderStore
 from cod_sync.verify import (
     SignatureEvidenceKind,
     SignatureInvalidError,
@@ -49,7 +52,7 @@ from cod_sync.verify import (
     VerificationUnavailableError,
 )
 
-pytestmark = pytest.mark.usefixtures("isolated_git_config", "both_cod_syncs")
+pytestmark = [pytest.mark.anyio, pytest.mark.usefixtures("isolated_git_config")]
 
 PIN = "refs/peers/alice/main"
 
@@ -59,7 +62,7 @@ PIN = "refs/peers/alice/main"
 # ---------------------------------------------------------------------------
 
 
-def verifier_for(*keys):
+def sync_verifier_for(*keys):
     return SshCommitVerifier([public_key_text(key) for key in keys])
 
 
@@ -67,7 +70,7 @@ def test_signature_evidence_distinguishes_unknown_bad_unsigned(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     known_key = make_ssh_key(scratch, "known")
     unknown_key = make_ssh_key(scratch, "unknown")
-    verifier = verifier_for(known_key)
+    verifier = sync_verifier_for(known_key)
 
     unsigned = publisher(scratch, name="unsigned")
     unsigned_sha = commit_file(unsigned, "a.txt", "unsigned")
@@ -113,8 +116,14 @@ def publisher(scratch, key=None, name="alice"):
     return repo
 
 
-def publish(repo, publication):
-    return make_cod_sync(repo, make_store(publication)).publish()
+async def publish(repo, publication):
+    return await make_cod_sync(repo, make_store(publication)).publish()
+
+
+def sync_store(path):
+    """A sync store for the tests of the sync CodSync itself."""
+    make_store(path)
+    return LocalFolderStore(str(path))
 
 
 def stored_files(publication):
@@ -126,15 +135,15 @@ def stored_files(publication):
 # ---------------------------------------------------------------------------
 
 
-def test_a_signed_history_is_accepted(scratch_dir):
+async def test_a_signed_history_is_accepted(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")
     alice = publisher(scratch, key)
     commit_file(alice, "a.txt", "a")
-    head = publish(alice, scratch / "publication").observed_head
+    head = (await publish(alice, scratch / "publication")).observed_head
 
     bob = make_repo(scratch / "bob", "bob")
-    result = make_cod_sync(bob, make_store(scratch / "publication"), verifier_for(key)).fetch(
+    result = await make_cod_sync(bob, make_store(scratch / "publication"), verifier_for(key)).fetch(
         pin_to_ref=PIN
     )
 
@@ -142,15 +151,15 @@ def test_a_signed_history_is_accepted(scratch_dir):
     assert bob.resolve_ref(PIN) == head
 
 
-def test_no_verifier_accepts_an_unsigned_history(scratch_dir):
+async def test_no_verifier_accepts_an_unsigned_history(scratch_dir):
     """The default. Nothing in the framework can force an app to verify."""
     scratch = pathlib.Path(scratch_dir)
     alice = publisher(scratch)
     commit_file(alice, "a.txt", "a")
-    head = publish(alice, scratch / "publication").observed_head
+    head = (await publish(alice, scratch / "publication")).observed_head
 
     bob = make_repo(scratch / "bob", "bob")
-    result = make_cod_sync(bob, make_store(scratch / "publication")).fetch(pin_to_ref=PIN)
+    result = await make_cod_sync(bob, make_store(scratch / "publication")).fetch(pin_to_ref=PIN)
 
     assert result.observed_head == head
     assert bob.resolve_ref(PIN) == head
@@ -165,7 +174,7 @@ def test_the_sync_cod_sync_refuses_an_async_verifier(scratch_dir):
 
     bob = make_repo(pathlib.Path(scratch_dir) / "bob", "bob")
     with pytest.raises(TypeError, match="synchronous verifier"):
-        CodSync(bob, make_store(pathlib.Path(scratch_dir) / "publication"), verifier=AsyncVerifier())
+        CodSync(bob, sync_store(pathlib.Path(scratch_dir) / "publication"), verifier=AsyncVerifier())
 
 
 def test_the_sync_cod_sync_refuses_an_awaitable_verdict(scratch_dir):
@@ -173,7 +182,7 @@ def test_the_sync_cod_sync_refuses_an_awaitable_verdict(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     alice = publisher(scratch)
     commit_file(alice, "a.txt", "a")
-    publish(alice, scratch / "publication")
+    CodSync(alice, sync_store(scratch / "publication")).publish()
 
     class WrappedAsyncVerifier:
         def verify_history(self, repo, head):
@@ -183,66 +192,65 @@ def test_the_sync_cod_sync_refuses_an_awaitable_verdict(scratch_dir):
             return check()
 
     bob = make_repo(scratch / "bob", "bob")
-    cod = CodSync(bob, make_store(scratch / "publication"), verifier=WrappedAsyncVerifier())
+    cod = CodSync(bob, sync_store(scratch / "publication"), verifier=WrappedAsyncVerifier())
     with pytest.raises(TypeError, match="synchronous verifier"):
         cod.fetch(pin_to_ref=PIN)
     assert PIN not in all_refs(bob)
 
 
-def test_an_unsigned_history_is_rejected_before_the_pin_moves(scratch_dir):
+async def test_an_unsigned_history_is_rejected_before_the_pin_moves(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")
     alice = publisher(scratch)
     commit_file(alice, "a.txt", "a")
-    publish(alice, scratch / "publication")
+    await publish(alice, scratch / "publication")
 
     bob = make_repo(scratch / "bob", "bob")
     before = all_refs(bob)
     cod_sync = make_cod_sync(bob, make_store(scratch / "publication"), verifier_for(key))
 
     with pytest.raises(UnsignedCommitError):
-        cod_sync.fetch(pin_to_ref=PIN)
+        await cod_sync.fetch(pin_to_ref=PIN)
 
     assert bob.resolve_ref(PIN) is None
     assert all_refs(bob) == before
 
 
-def test_an_unknown_signer_is_rejected(scratch_dir):
+async def test_an_unknown_signer_is_rejected(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     alice_key = make_ssh_key(scratch, "alice")
     mallory_key = make_ssh_key(scratch, "mallory")
     mallory = publisher(scratch, mallory_key, name="mallory")
     commit_file(mallory, "a.txt", "a")
-    head = publish(mallory, scratch / "publication").observed_head
+    head = (await publish(mallory, scratch / "publication")).observed_head
 
     bob = make_repo(scratch / "bob", "bob")
     store = make_store(scratch / "publication")
     with pytest.raises(UnknownSignerError):
-        make_cod_sync(bob, store, verifier_for(alice_key)).fetch(pin_to_ref=PIN)
+        await make_cod_sync(bob, store, verifier_for(alice_key)).fetch(pin_to_ref=PIN)
     assert bob.resolve_ref(PIN) is None
 
     assert (
-        make_cod_sync(bob, store, verifier_for(mallory_key))
-        .fetch(pin_to_ref=PIN)
+        (await make_cod_sync(bob, store, verifier_for(mallory_key)).fetch(pin_to_ref=PIN))
         .observed_head
         == head
     )
 
 
-def test_an_empty_key_set_recognizes_nobody(scratch_dir):
+async def test_an_empty_key_set_recognizes_nobody(scratch_dir):
     """An intentionally empty set is a policy, not a broken verifier."""
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")
     alice = publisher(scratch, key)
     commit_file(alice, "a.txt", "a")
-    publish(alice, scratch / "publication")
+    await publish(alice, scratch / "publication")
 
     bob = make_repo(scratch / "bob", "bob")
     with pytest.raises(UnknownSignerError):
-        make_cod_sync(bob, make_store(scratch / "publication"), SshCommitVerifier([])).fetch()
+        await make_cod_sync(bob, make_store(scratch / "publication"), AioSshCommitVerifier([])).fetch()
 
 
-def test_a_tampered_commit_is_rejected_as_a_bad_signature(scratch_dir):
+async def test_a_tampered_commit_is_rejected_as_a_bad_signature(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")
     alice = publisher(scratch, key)
@@ -258,17 +266,17 @@ def test_a_tampered_commit_is_rejected_as_a_bad_signature(scratch_dir):
     )
     tampered = write.stdout.decode().strip()
     alice._run(["update-ref", MAIN_REF, tampered])
-    publish(alice, scratch / "publication")
+    await publish(alice, scratch / "publication")
 
     bob = make_repo(scratch / "bob", "bob")
     with pytest.raises(SignatureInvalidError) as rejection:
-        make_cod_sync(bob, make_store(scratch / "publication"), verifier_for(key)).fetch()
+        await make_cod_sync(bob, make_store(scratch / "publication"), verifier_for(key)).fetch()
 
     assert rejection.value.commit == tampered
     assert rejection.value.status == "B"
 
 
-def test_an_unsigned_ancestor_is_rejected_though_the_head_is_signed(scratch_dir):
+async def test_an_unsigned_ancestor_is_rejected_though_the_head_is_signed(scratch_dir):
     """The head is not the boundary: everything it relies on is."""
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")
@@ -276,18 +284,18 @@ def test_an_unsigned_ancestor_is_rejected_though_the_head_is_signed(scratch_dir)
     ancestor = commit_file(alice, "a.txt", "a")
     alice.configure_signing(key)
     head = commit_file(alice, "b.txt", "b")
-    publish(alice, scratch / "publication")
+    await publish(alice, scratch / "publication")
 
     bob = make_repo(scratch / "bob", "bob")
     with pytest.raises(UnsignedCommitError) as rejection:
-        make_cod_sync(bob, make_store(scratch / "publication"), verifier_for(key)).fetch()
+        await make_cod_sync(bob, make_store(scratch / "publication"), verifier_for(key)).fetch()
 
     assert rejection.value.commit == ancestor
     assert rejection.value.commit != head
 
 
 @pytest.mark.parametrize("operation", ["fetch", "publish"])
-def test_merge_side_ancestry_is_verified(scratch_dir, operation):
+async def test_merge_side_ancestry_is_verified(scratch_dir, operation):
     """A merge's other parent is relied upon just as much as its first."""
     scratch = pathlib.Path(scratch_dir)
     alice_key = make_ssh_key(scratch, "alice")
@@ -307,7 +315,7 @@ def test_merge_side_ancestry_is_verified(scratch_dir, operation):
     assert sorted(alice._run(["rev-list", "--parents", "-n", "1", merge]).stdout.split()[1:]) == (
         sorted([main_tip, side])
     )
-    publish(alice, scratch / "publication")
+    await publish(alice, scratch / "publication")
 
     bob = make_repo(scratch / "bob", "bob")
     store = make_store(scratch / "publication")
@@ -316,54 +324,54 @@ def test_merge_side_ancestry_is_verified(scratch_dir, operation):
     sync = make_cod_sync(bob, store, verifier_for(alice_key))
     before = all_refs(bob)
     with pytest.raises(UnknownSignerError) as rejection:
-        sync.fetch(pin_to_ref=PIN) if operation == "fetch" else sync.publish()
+        await (sync.fetch(pin_to_ref=PIN) if operation == "fetch" else sync.publish())
 
     assert all_refs(bob) == before
     assert rejection.value.commit == side
     assert bob.resolve_ref(PIN) is None
     sync.verifier = verifier_for(alice_key, mallory_key)
     if operation == "fetch":
-        assert sync.fetch(pin_to_ref=PIN).observed_head == merge
+        assert (await sync.fetch(pin_to_ref=PIN)).observed_head == merge
     else:
         with pytest.raises(PublicationIntegrationRequiredError) as result:
-            sync.publish()
+            await sync.publish()
         assert result.value.observed_head == merge
 
 
 
-def test_a_retry_cannot_ride_on_the_objects_the_rejection_left_behind(scratch_dir):
+async def test_a_retry_cannot_ride_on_the_objects_the_rejection_left_behind(scratch_dir):
     """`_already_satisfied` skips the import; it must not skip verification."""
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")
     alice = publisher(scratch)
     commit_file(alice, "a.txt", "a")
-    head = publish(alice, scratch / "publication").observed_head
+    head = (await publish(alice, scratch / "publication")).observed_head
 
     bob = make_repo(scratch / "bob", "bob")
     cod_sync = make_cod_sync(bob, make_store(scratch / "publication"), verifier_for(key))
     with pytest.raises(UnsignedCommitError):
-        cod_sync.fetch(pin_to_ref=PIN)
+        await cod_sync.fetch(pin_to_ref=PIN)
 
     assert bob.has_commit(head), "the rejected objects are present, which is the point"
     with pytest.raises(UnsignedCommitError):
-        cod_sync.fetch(pin_to_ref=PIN)
+        await cod_sync.fetch(pin_to_ref=PIN)
     assert bob.resolve_ref(PIN) is None
 
 
-def test_a_publication_uploads_nothing_when_the_stored_head_fails_verification(scratch_dir):
+async def test_a_publication_uploads_nothing_when_the_stored_head_fails_verification(scratch_dir):
     """Observation is where a publication accepts the history it builds on."""
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")
     publication = scratch / "publication"
     alice = publisher(scratch)
     commit_file(alice, "a.txt", "a")
-    publish(alice, publication)
+    await publish(alice, publication)
     before = stored_files(publication)
 
     bob = publisher(scratch, key, name="bob")
     commit_file(bob, "b.txt", "b")
     with pytest.raises(UnsignedCommitError):
-        make_cod_sync(bob, make_store(publication), verifier_for(key)).publish()
+        await make_cod_sync(bob, make_store(publication), verifier_for(key)).publish()
 
     assert stored_files(publication) == before
 
@@ -396,7 +404,7 @@ def test_a_status_this_verifier_does_not_accept_is_not_called_tampering(scratch_
 
 @pytest.mark.parametrize("operation", ["fetch", "publish"])
 @pytest.mark.parametrize("local_state", ["replace", "shallow"])
-def test_local_history_overrides_cannot_hide_unsigned_ancestry(
+async def test_local_history_overrides_cannot_hide_unsigned_ancestry(
     scratch_dir, operation, local_state
 ):
     scratch = pathlib.Path(scratch_dir)
@@ -406,9 +414,9 @@ def test_local_history_overrides_cannot_hide_unsigned_ancestry(
     alice.configure_signing(key)
     head = commit_file(alice, "b.txt", "b")
     store = make_store(scratch / "publication")
-    make_cod_sync(alice, store).publish()
+    await make_cod_sync(alice, store).publish()
     bob = publisher(scratch, key, "bob")
-    make_cod_sync(bob, store).fetch()
+    await make_cod_sync(bob, store).fetch()
     bob._run(["update-ref", MAIN_REF, head])
     if local_state == "replace":
         tree = bob._run(["rev-parse", f"{head}^{{tree}}"]).stdout.strip()
@@ -422,7 +430,7 @@ def test_local_history_overrides_cannot_hide_unsigned_ancestry(
     files = stored_files(scratch / "publication")
     sync = make_cod_sync(bob, store, verifier_for(key))
     with pytest.raises(error):
-        sync.fetch(pin_to_ref=PIN) if operation == "fetch" else sync.publish()
+        await (sync.fetch(pin_to_ref=PIN) if operation == "fetch" else sync.publish())
     assert all_refs(bob) == before
     assert stored_files(scratch / "publication") == files
 
@@ -433,12 +441,12 @@ def test_local_history_overrides_cannot_hide_unsigned_ancestry(
         bob._run(["replace", "-d", root])
     tree = bob._run(["rev-parse", f"{head}^{{tree}}"]).stdout.strip()
     signed_root = bob.commit_tree(tree, [], "signed root")
-    assert verifier_for(key).verify_history(bob, signed_root)[signed_root]
+    assert sync_verifier_for(key).verify_history(bob, signed_root)[signed_root]
 
 
 @pytest.mark.parametrize("operation", ["fetch", "publish"])
 @pytest.mark.parametrize("preexisting", [False, True])
-def test_incremental_rejection_and_retry_check_existing_objects(
+async def test_incremental_rejection_and_retry_check_existing_objects(
     scratch_dir, monkeypatch, operation, preexisting
 ):
     scratch = pathlib.Path(scratch_dir)
@@ -447,27 +455,27 @@ def test_incremental_rejection_and_retry_check_existing_objects(
     alice = publisher(scratch, other_key)
     base = commit_file(alice, "a.txt", "a")
     store = make_store(scratch / "publication")
-    make_cod_sync(alice, store).publish()
+    await make_cod_sync(alice, store).publish()
     bob = publisher(scratch, alice_key, "bob")
     if preexisting:
-        make_cod_sync(bob, store).fetch()
+        await make_cod_sync(bob, store).fetch()
     alice.configure_signing(alice_key)
     head = commit_file(alice, "b.txt", "b")
-    make_cod_sync(alice, store).publish()
+    await make_cod_sync(alice, store).publish()
     # A local head is required to exercise publication observation.
     commit_file(bob, "local.txt", "local")
     before = all_refs(bob)
     files = stored_files(scratch / "publication")
     sync = make_cod_sync(bob, store, verifier_for(alice_key))
 
-    def unexpected_upload(*args, **kwargs):
+    async def unexpected_upload(*args, **kwargs):
         pytest.fail("rejected observation must not upload anything")
 
     for method in ("put_bundle", "put_link", "put_latest_link"):
         monkeypatch.setattr(store, method, unexpected_upload)
     for _ in range(2):
         with pytest.raises(UnknownSignerError) as rejection:
-            sync.fetch(pin_to_ref=PIN) if operation == "fetch" else sync.publish()
+            await (sync.fetch(pin_to_ref=PIN) if operation == "fetch" else sync.publish())
         assert rejection.value.commit == base
         assert bob.has_commit(base) and bob.has_commit(head)
         assert all_refs(bob) == before
@@ -475,10 +483,10 @@ def test_incremental_rejection_and_retry_check_existing_objects(
     # Change only the recognized key set for the passing control.
     sync.verifier = verifier_for(alice_key, other_key)
     if operation == "fetch":
-        assert sync.fetch(pin_to_ref=PIN).observed_head == head
+        assert (await sync.fetch(pin_to_ref=PIN)).observed_head == head
     else:
         with pytest.raises(PublicationIntegrationRequiredError) as result:
-            sync.publish()
+            await sync.publish()
         assert result.value.observed_head == head
 
 
@@ -488,7 +496,7 @@ def test_verifier_setup_failures_are_not_unknown_signers(scratch_dir, monkeypatc
     key = make_ssh_key(scratch, "alice")
     repo = publisher(scratch, key)
     head = commit_file(repo, "a.txt", "a")
-    assert verifier_for(key).verify_history(repo, head)[head]
+    assert sync_verifier_for(key).verify_history(repo, head)[head]
     original = repo.signature_report
     if failure == "missing_file":
         def report(rev, signers):
@@ -500,7 +508,7 @@ def test_verifier_setup_failures_are_not_unknown_signers(scratch_dir, monkeypatc
     with pytest.raises(VerificationUnavailableError):
         verifier = (
             SshCommitVerifier(["ssh-ed25519 garbage"])
-            if failure == "malformed_key" else verifier_for(key)
+            if failure == "malformed_key" else sync_verifier_for(key)
         )
         verifier.verify_history(repo, head)
 
@@ -511,7 +519,7 @@ def test_missing_parent_is_not_a_complete_verified_history(scratch_dir):
     repo = publisher(scratch, key)
     parent = commit_file(repo, "a.txt", "a")
     head = commit_file(repo, "b.txt", "b")
-    verifier = verifier_for(key)
+    verifier = sync_verifier_for(key)
     assert set(verifier.verify_history(repo, head)) == {parent, head}
     parent_object = repo.git_dir / "objects" / parent[:2] / parent[2:]
     saved = parent_object.read_bytes()
@@ -539,11 +547,11 @@ def test_good_verdict_from_another_key_set_is_not_accepted(scratch_dir, monkeypa
 
     monkeypatch.setattr(repo, "signature_report", report)
     with pytest.raises(UnknownSignerError):
-        verifier_for(other).verify_history(repo, head)
-    assert verifier_for(key).verify_history(repo, head)[head]
+        sync_verifier_for(other).verify_history(repo, head)
+    assert sync_verifier_for(key).verify_history(repo, head)[head]
 
 
-def test_publish_verifies_local_and_observed_history(scratch_dir):
+async def test_publish_verifies_local_and_observed_history(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")
     publication = scratch / "publication"
@@ -552,22 +560,22 @@ def test_publish_verifies_local_and_observed_history(scratch_dir):
     unsigned = publisher(scratch, name="unsigned")
     commit_file(unsigned, "a.txt", "a")
     with pytest.raises(UnsignedCommitError):
-        make_cod_sync(unsigned, make_store(publication), verifier_for(key)).publish()
+        await make_cod_sync(unsigned, make_store(publication), verifier_for(key)).publish()
     assert stored_files(publication) == []
 
     # Empty store: a signed local history publishes.
     alice = publisher(scratch, key)
     commit_file(alice, "a.txt", "a")
-    head = make_cod_sync(alice, make_store(publication), verifier_for(key)).publish()
+    head = await make_cod_sync(alice, make_store(publication), verifier_for(key)).publish()
     assert head.disposition == "published"
 
     # Store that already holds the objects: the local history is still checked.
     assert (
-        make_cod_sync(alice, make_store(publication), verifier_for(key)).publish().disposition
+        (await make_cod_sync(alice, make_store(publication), verifier_for(key)).publish()).disposition
         == "already_present"
     )
     with pytest.raises(UnknownSignerError):
-        make_cod_sync(
+        await make_cod_sync(
             alice, make_store(publication), verifier_for(make_ssh_key(scratch, "other"))
         ).publish()
 
@@ -576,25 +584,25 @@ def test_publish_verifies_local_and_observed_history(scratch_dir):
     sync = make_cod_sync(alice, make_store(publication), verifier_for(key))
     real_put = sync.store.put_latest_link
 
-    def fail(*args, **kwargs):
+    async def fail(*args, **kwargs):
         raise StoreProviderError("head write failed")
 
     sync.store.put_latest_link = fail
     with pytest.raises(PublicationFailedError):
-        sync.publish()
+        await sync.publish()
     sync.store.put_latest_link = real_put
-    assert sync.publish().disposition == "published"
+    assert (await sync.publish()).disposition == "published"
 
     # A later unsigned commit is refused, and the store keeps its files.
     alice.config("commit.gpgsign", "false")
     commit_file(alice, "c.txt", "c")
     before = stored_files(publication)
     with pytest.raises(UnsignedCommitError):
-        sync.publish()
+        await sync.publish()
     assert stored_files(publication) == before
 
 
-def test_link_signature_cannot_authorize_unsigned_commits(scratch_dir):
+async def test_link_signature_cannot_authorize_unsigned_commits(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")
     publication = scratch / "publication"
@@ -605,12 +613,12 @@ def test_link_signature_cannot_authorize_unsigned_commits(scratch_dir):
         Encoding.Raw, PrivateFormat.Raw, NoEncryption()
     )
     public = device_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-    make_cod_sync(alice, make_store(publication)).publish(
+    await make_cod_sync(alice, make_store(publication)).publish(
         signing_key=raw, teammate_id="alice", device_public_key=public
     )
 
     # The stored link carries a valid signature.
-    link = decode_link(make_store(publication).get_latest_link()[0])
+    link = decode_link((await make_store(publication).get_latest_link())[0])
     entry = link.extensions[SIGNATURES_KEY]["alice"]
     assert verify_link_signature(
         public, entry["signature"], canonical_link_bytes(link)
@@ -618,25 +626,25 @@ def test_link_signature_cannot_authorize_unsigned_commits(scratch_dir):
 
     bob = make_repo(scratch / "bob", "bob")
     with pytest.raises(UnsignedCommitError):
-        make_cod_sync(bob, make_store(publication), verifier_for(key)).fetch(pin_to_ref=PIN)
+        await make_cod_sync(bob, make_store(publication), verifier_for(key)).fetch(pin_to_ref=PIN)
     assert bob.resolve_ref(PIN) is None
 
 
-def test_retained_pin_requires_own_acceptance(scratch_dir):
+async def test_retained_pin_requires_own_acceptance(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")
     alice = publisher(scratch, key)
     observed = commit_file(alice, "a.txt", "accepted")
     store = make_store(scratch / "publication")
-    make_cod_sync(alice, store).publish()
+    await make_cod_sync(alice, store).publish()
     bob = make_repo(scratch / "bob", "bob")
-    make_cod_sync(bob, store, verifier_for(key)).fetch(pin_to_ref=PIN)
+    await make_cod_sync(bob, store, verifier_for(key)).fetch(pin_to_ref=PIN)
     bob.checkout_branch("main", observed)
     retained = commit_file(bob, "b.txt", "unsigned retained descendant")
     bob.advance_ref(PIN, retained)
 
     with pytest.raises(UnsignedCommitError) as caught:
-        make_cod_sync(bob, store, verifier_for(key)).fetch(pin_to_ref=PIN)
+        await make_cod_sync(bob, store, verifier_for(key)).fetch(pin_to_ref=PIN)
 
     assert caught.value.commit == retained
     assert bob.resolve_ref(PIN) == retained

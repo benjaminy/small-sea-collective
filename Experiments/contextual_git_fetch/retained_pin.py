@@ -6,11 +6,13 @@ from pathlib import Path
 import sys
 import tempfile
 
+import anyio
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "packages/cod-sync"))
 sys.path.insert(0, str(ROOT / "packages/cod-sync/tests"))
 
+from cod_sync.aio.verify import SshCommitVerifier as AioSshCommitVerifier
 from cod_sync.verify import SshCommitVerifier, UnknownSignerError
 from cod_sync_test_helpers import (
     commit_file,
@@ -29,15 +31,15 @@ class RecordingVerifier:
     """Record the evidence returned by the real SSH verifier."""
 
     def __init__(self, allowed_keys):
-        self.inner = SshCommitVerifier(allowed_keys)
+        self.inner = AioSshCommitVerifier(allowed_keys)
         self.verified = None
 
-    def verify_history(self, repo, head):
-        self.verified = self.inner.verify_history(repo, head)
+    async def verify_history(self, repo, head):
+        self.verified = await self.inner.verify_history(repo, head)
         return self.verified
 
 
-def run():
+async def run():
     os.environ.update(
         GIT_CONFIG_GLOBAL=os.devnull,
         GIT_CONFIG_SYSTEM=os.devnull,
@@ -55,21 +57,21 @@ def run():
         alice.configure_signing(key_a)
         old_head = commit_file(alice, "a.txt", "A\n", "signed A")
         old_store = make_store(scratch / "old-store")
-        make_cod_sync(alice, old_store).publish()
+        await make_cod_sync(alice, old_store).publish()
 
         alice.configure_signing(key_b)
         later_head = commit_file(alice, "b.txt", "B\n", "signed B")
         new_store = make_store(scratch / "new-store")
-        make_cod_sync(alice, new_store).publish()
+        await make_cod_sync(alice, new_store).publish()
 
         bob = make_repo(scratch / "bob", "bob")
         # Model an earlier transport observation: import B's objects and seed
         # the durable pin before the invocation under examination.
-        make_cod_sync(bob, new_store).fetch()
+        await make_cod_sync(bob, new_store).fetch()
         bob._run(["update-ref", PIN, later_head])
 
         verifier = RecordingVerifier([public_key_text(key_a)])
-        result = make_cod_sync(bob, old_store, verifier).fetch(pin_to_ref=PIN)
+        result = await make_cod_sync(bob, old_store, verifier).fetch(pin_to_ref=PIN)
 
         later_rejection = None
         try:
@@ -79,7 +81,7 @@ def run():
 
         fresh = make_repo(scratch / "fresh", "fresh")
         fresh_verifier = RecordingVerifier([public_key_text(key_a)])
-        fresh_result = make_cod_sync(fresh, old_store, fresh_verifier).fetch(
+        fresh_result = await make_cod_sync(fresh, old_store, fresh_verifier).fetch(
             pin_to_ref=PIN
         )
 
@@ -115,4 +117,4 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    anyio.run(run)

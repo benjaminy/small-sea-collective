@@ -6,6 +6,7 @@
 import pathlib
 
 import boto3
+import httpx
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
@@ -15,8 +16,10 @@ from fastapi.testclient import TestClient
 from small_sea_hub.server import app
 
 from cod_sync.format import decode_link
-from cod_sync.store import ObjectNotFoundError, SmallSeaStore
+from cod_sync.aio.store import SmallSeaStore
+from cod_sync.store import ObjectNotFoundError
 
+pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture(scope="module")
@@ -89,8 +92,16 @@ def hub_env(playground_dir, minio):
     }
 
 
-def test_publish_and_fetch_roundtrip_via_hub(hub_env, scratch_dir):
-    client = hub_env["client"]
+@pytest.fixture
+async def hub_http(hub_env):
+    """An async client that calls the same Hub app in process."""
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as http:
+        yield http
+
+
+async def test_publish_and_fetch_roundtrip_via_hub(hub_env, hub_http, scratch_dir):
     session_hex = hub_env["session_hex"]
     scratch = pathlib.Path(scratch_dir)
 
@@ -99,48 +110,47 @@ def test_publish_and_fetch_roundtrip_via_hub(hub_env, scratch_dir):
     commit_file(alice, "README.md", "# Hub Roundtrip\n")
     commit_file(alice, "notes.txt", "testing through the hub\n")
 
-    alice_store = SmallSeaStore(session_hex, client=client)
-    published = make_cod_sync(alice, alice_store).publish()
+    alice_store = SmallSeaStore(session_hex, hub_http)
+    published = await make_cod_sync(alice, alice_store).publish()
     assert published.disposition == "published"
 
-    link = decode_link(alice_store.get_latest_link()[0])
+    link = decode_link((await alice_store.get_latest_link())[0])
     assert link.previous is None
     assert link.head == published.observed_head
     assert link.version == "2.0.0"
 
     # ---- Bob: cold-start fetch through the same Hub endpoints ----
     bob = make_repo(scratch / "bob", "bob")
-    result = make_cod_sync(bob, SmallSeaStore(session_hex, client=client)).fetch()
+    result = await make_cod_sync(bob, SmallSeaStore(session_hex, hub_http)).fetch()
     bob.checkout_branch("main", result.observed_head)
 
     assert working_tree_files(bob) == working_tree_files(alice)
 
 
-def test_incremental_publication_via_hub(hub_env, scratch_dir):
-    client = hub_env["client"]
+async def test_incremental_publication_via_hub(hub_env, hub_http, scratch_dir):
     session_hex = hub_env["session_hex"]
     scratch = pathlib.Path(scratch_dir)
 
     alice = make_repo(scratch / "alice", "alice")
     commit_file(alice, "a.txt", "one\n")
-    store = SmallSeaStore(session_hex, client=client)
-    first = make_cod_sync(alice, store).publish()
+    store = SmallSeaStore(session_hex, hub_http)
+    first = await make_cod_sync(alice, store).publish()
 
     commit_file(alice, "b.txt", "two\n")
-    second = make_cod_sync(alice, store).publish()
+    second = await make_cod_sync(alice, store).publish()
     assert second.disposition == "published"
 
-    link = decode_link(store.get_latest_link()[0])
+    link = decode_link((await store.get_latest_link())[0])
     assert link.previous.link_id == first.observed_link_uid
     assert link.previous.head == first.observed_head
 
     # Publishing the same head again changes nothing in the cloud.
-    unchanged = make_cod_sync(alice, store).publish()
+    unchanged = await make_cod_sync(alice, store).publish()
     assert unchanged.disposition == "already_present"
     assert unchanged.observed_link_uid == second.observed_link_uid
 
 
-def test_an_empty_bucket_reports_absence_not_a_transport_failure(hub_env):
-    store = SmallSeaStore(hub_env["session_hex"], client=hub_env["client"])
+async def test_an_empty_bucket_reports_absence_not_a_transport_failure(hub_env, hub_http):
+    store = SmallSeaStore(hub_env["session_hex"], hub_http)
     with pytest.raises(ObjectNotFoundError):
-        store.get_latest_link()
+        await store.get_latest_link()

@@ -12,6 +12,9 @@ end-to-end encryption, not bucket ACLs.
 Both obey the same create-only and compare-and-swap contract as the Hub-backed
 stores. A testing store that accepted an etag without enforcing it would make
 the tests that use it prove nothing.
+
+Their methods are coroutines, as async Cod Sync expects, but call boto3
+directly and so block the event loop. That is acceptable only in tests.
 """
 
 from typing import Optional, Tuple
@@ -53,13 +56,13 @@ class _S3StoreBase:
             raise StoreProviderError(f"reading {key} failed: {exn}") from exn
         return response["Body"].read(), response.get("ETag", "").strip('"') or None
 
-    def get_latest_link(self) -> Tuple[bytes, Optional[str]]:
+    async def get_latest_link(self) -> Tuple[bytes, Optional[str]]:
         return self._get(LATEST_LINK_PATH)
 
-    def get_link(self, link_uid: str) -> bytes:
+    async def get_link(self, link_uid: str) -> bytes:
         return self._get(link_path(link_uid))[0]
 
-    def download_bundle(self, bundle_uid: str, local_path) -> None:
+    async def download_bundle(self, bundle_uid: str, local_path) -> None:
         data, _etag = self._get(bundle_path(bundle_uid))
         with open(local_path, "wb") as handle:
             handle.write(data)
@@ -103,14 +106,14 @@ class S3Store(_S3StoreBase):
             raise StoreProviderError(f"writing {key} failed: {exn}") from exn
         return response.get("ETag", "").strip('"') or None
 
-    def put_bundle(self, bundle_uid: str, local_path) -> None:
+    async def put_bundle(self, bundle_uid: str, local_path) -> None:
         with open(local_path, "rb") as handle:
             self._put(bundle_path(bundle_uid), handle.read(), CREATE_ONLY)
 
-    def put_link(self, link_uid: str, data: bytes) -> None:
+    async def put_link(self, link_uid: str, data: bytes) -> None:
         self._put(link_path(link_uid), data, CREATE_ONLY)
 
-    def put_latest_link(
+    async def put_latest_link(
         self, data: bytes, expected_etag: Optional[str], link_uid: Optional[str] = None
     ) -> Optional[str]:
         return self._put(

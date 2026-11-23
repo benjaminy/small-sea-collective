@@ -7,32 +7,20 @@ existed. And archived objects must be write-once, because a link's predecessor
 pointer is only meaningful if the bytes it names cannot change afterwards.
 """
 
-import base64
 import pathlib
 
 import pytest
 
+from cod_sync.aio.store import LocalFolderStore
 from cod_sync.store import (
     LATEST_LINK_PATH,
     CasConflictError,
-    CandidateInspectionStore,
-    DownloadTooLargeError,
-    LocalFolderStore,
-    MalformedStoreResponseError,
     ObjectNotFoundError,
-    PeerSenderKeyUnavailableError,
-    PeerSmallSeaStore,
-    PeerStorageUnknownError,
-    PublicationPendingError,
-    SmallSeaStore,
-    StoreAuthenticationError,
-    StoreAuthorizationError,
     StoreError,
     StoreProviderError,
-    StoreTransportError,
-    bundle_path,
-    link_path,
 )
+
+pytestmark = pytest.mark.anyio
 
 
 @pytest.fixture
@@ -49,23 +37,23 @@ def write_bundle(scratch_dir, name="b.bundle", content=b"BUNDLEBYTES"):
 # ---------------------------------------------------------------- absence #
 
 
-def test_missing_head_is_absence(store):
+async def test_missing_head_is_absence(store):
     with pytest.raises(ObjectNotFoundError) as exc:
-        store.get_latest_link()
+        await store.get_latest_link()
     assert exc.value.path == LATEST_LINK_PATH
 
 
-def test_missing_archived_link_is_absence(store):
+async def test_missing_archived_link_is_absence(store):
     with pytest.raises(ObjectNotFoundError):
-        store.get_link("nope")
+        await store.get_link("nope")
 
 
-def test_missing_bundle_is_absence(store, scratch_dir):
+async def test_missing_bundle_is_absence(store, scratch_dir):
     with pytest.raises(ObjectNotFoundError):
-        store.download_bundle("nope", pathlib.Path(scratch_dir) / "out.bundle")
+        await store.download_bundle("nope", pathlib.Path(scratch_dir) / "out.bundle")
 
 
-def test_a_directory_that_is_not_a_store_is_not_absence(scratch_dir):
+async def test_a_directory_that_is_not_a_store_is_not_absence(scratch_dir):
     with pytest.raises(StoreError):
         LocalFolderStore(pathlib.Path(scratch_dir) / "does-not-exist")
 
@@ -73,69 +61,69 @@ def test_a_directory_that_is_not_a_store_is_not_absence(scratch_dir):
 # -------------------------------------------------------------- write-once #
 
 
-def test_archived_link_is_write_once(store):
-    store.put_link("L1", b"first")
+async def test_archived_link_is_write_once(store):
+    await store.put_link("L1", b"first")
     with pytest.raises(CasConflictError):
-        store.put_link("L1", b"second")
-    assert store.get_link("L1") == b"first"
+        await store.put_link("L1", b"second")
+    assert await store.get_link("L1") == b"first"
 
 
-def test_bundle_is_write_once(store, scratch_dir):
+async def test_bundle_is_write_once(store, scratch_dir):
     original = write_bundle(scratch_dir, "a.bundle", b"ORIGINAL")
     replacement = write_bundle(scratch_dir, "b.bundle", b"REPLACEMENT")
-    store.put_bundle("B1", original)
+    await store.put_bundle("B1", original)
     with pytest.raises(CasConflictError):
-        store.put_bundle("B1", replacement)
+        await store.put_bundle("B1", replacement)
 
     out = pathlib.Path(scratch_dir) / "out.bundle"
-    store.download_bundle("B1", out)
+    await store.download_bundle("B1", out)
     assert out.read_bytes() == b"ORIGINAL"
 
 
 # --------------------------------------------------------------------- CAS #
 
 
-def test_first_head_write_is_create_only(store):
-    store.put_latest_link(b"one", expected_etag=None)
+async def test_first_head_write_is_create_only(store):
+    await store.put_latest_link(b"one", expected_etag=None)
     with pytest.raises(CasConflictError):
-        store.put_latest_link(b"two", expected_etag=None)
-    assert store.get_latest_link()[0] == b"one"
+        await store.put_latest_link(b"two", expected_etag=None)
+    assert (await store.get_latest_link())[0] == b"one"
 
 
-def test_matching_etag_advances_the_head(store):
-    store.put_latest_link(b"one", expected_etag=None)
-    _data, etag = store.get_latest_link()
-    store.put_latest_link(b"two", expected_etag=etag)
-    data, new_etag = store.get_latest_link()
+async def test_matching_etag_advances_the_head(store):
+    await store.put_latest_link(b"one", expected_etag=None)
+    _data, etag = await store.get_latest_link()
+    await store.put_latest_link(b"two", expected_etag=etag)
+    data, new_etag = await store.get_latest_link()
     assert data == b"two"
     assert new_etag != etag
 
 
-def test_stale_etag_is_a_conflict(store):
-    store.put_latest_link(b"one", expected_etag=None)
-    _data, stale = store.get_latest_link()
-    store.put_latest_link(b"two", expected_etag=stale)
+async def test_stale_etag_is_a_conflict(store):
+    await store.put_latest_link(b"one", expected_etag=None)
+    _data, stale = await store.get_latest_link()
+    await store.put_latest_link(b"two", expected_etag=stale)
     with pytest.raises(CasConflictError):
-        store.put_latest_link(b"three", expected_etag=stale)
-    assert store.get_latest_link()[0] == b"two"
+        await store.put_latest_link(b"three", expected_etag=stale)
+    assert (await store.get_latest_link())[0] == b"two"
 
 
-def test_etag_write_without_an_existing_head_is_a_conflict(store):
+async def test_etag_write_without_an_existing_head_is_a_conflict(store):
     with pytest.raises(CasConflictError):
-        store.put_latest_link(b"one", expected_etag="deadbeef")
+        await store.put_latest_link(b"one", expected_etag="deadbeef")
 
 
-def test_head_replacement_leaves_no_partial_file(store):
-    store.put_latest_link(b"one", expected_etag=None)
-    _data, etag = store.get_latest_link()
-    store.put_latest_link(b"a much longer set of link bytes", expected_etag=etag)
-    assert store.get_latest_link()[0] == b"a much longer set of link bytes"
+async def test_head_replacement_leaves_no_partial_file(store):
+    await store.put_latest_link(b"one", expected_etag=None)
+    _data, etag = await store.get_latest_link()
+    await store.put_latest_link(b"a much longer set of link bytes", expected_etag=etag)
+    assert (await store.get_latest_link())[0] == b"a much longer set of link bytes"
     # The replacement is a rename, so no temporary file survives it.
     leftovers = [p.name for p in pathlib.Path(store.path).glob(".latest-link-*")]
     assert leftovers == []
 
 
-def test_initial_head_is_never_visible_half_written(store, monkeypatch):
+async def test_initial_head_is_never_visible_half_written(store, monkeypatch):
     """A reader sees exact absence or a whole head, never staging bytes.
 
     provisioning builds this store directly for the identity bootstrap, so a
@@ -153,14 +141,14 @@ def test_initial_head_is_never_visible_half_written(store, monkeypatch):
         return real_link(source, target)
 
     monkeypatch.setattr(os, "link", watch)
-    store.put_latest_link(b"a complete first head", expected_etag=None)
+    await store.put_latest_link(b"a complete first head", expected_etag=None)
 
     assert seen == [False]
-    assert store.get_latest_link()[0] == b"a complete first head"
+    assert (await store.get_latest_link())[0] == b"a complete first head"
     assert [p.name for p in pathlib.Path(store.path).glob(".latest-link-*")] == []
 
 
-def test_a_failed_initial_head_write_leaves_exact_absence(store, monkeypatch):
+async def test_a_failed_initial_head_write_leaves_exact_absence(store, monkeypatch):
     import os
 
     def fail(source, target):
@@ -168,28 +156,28 @@ def test_a_failed_initial_head_write_leaves_exact_absence(store, monkeypatch):
 
     monkeypatch.setattr(os, "link", fail)
     with pytest.raises(StoreProviderError) as exc:
-        store.put_latest_link(b"one", expected_etag=None)
+        await store.put_latest_link(b"one", expected_etag=None)
 
     assert exc.value.write_closed is True
     with pytest.raises(ObjectNotFoundError):
-        store.get_latest_link()
+        await store.get_latest_link()
     assert [p.name for p in pathlib.Path(store.path).glob(".latest-link-*")] == []
 
 
-def test_initial_head_setup_failure_is_closed(store, monkeypatch):
+async def test_initial_head_setup_failure_is_closed(store, monkeypatch):
     def fail(*args, **kwargs):
         raise OSError("cannot create a staging file")
 
     monkeypatch.setattr("cod_sync.store.tempfile.mkstemp", fail)
     with pytest.raises(StoreProviderError) as exc:
-        store.put_latest_link(b"one", expected_etag=None)
+        await store.put_latest_link(b"one", expected_etag=None)
 
     assert exc.value.write_closed is True
     with pytest.raises(ObjectNotFoundError):
-        store.get_latest_link()
+        await store.get_latest_link()
 
 
-def test_staging_cleanup_failure_does_not_hide_an_installed_head(
+async def test_staging_cleanup_failure_does_not_hide_an_installed_head(
     store, monkeypatch
 ):
     import os
@@ -198,14 +186,14 @@ def test_staging_cleanup_failure_does_not_hide_an_installed_head(
         raise OSError("cannot remove staging name")
 
     monkeypatch.setattr(os, "unlink", fail)
-    etag = store.put_latest_link(b"one", expected_etag=None)
+    etag = await store.put_latest_link(b"one", expected_etag=None)
 
     assert etag
-    assert store.get_latest_link()[0] == b"one"
+    assert (await store.get_latest_link())[0] == b"one"
 
 
-def test_a_returned_local_head_write_failure_is_closed(store, monkeypatch):
-    """A synchronous call leaves no request that can take effect later.
+async def test_a_returned_local_head_write_failure_is_closed(store, monkeypatch):
+    """A call that has returned leaves no request that can take effect later.
 
     Cod Sync reasons against the store protocol, so conclusiveness has to
     arrive as a typed marker on the failure rather than as a store identity it
@@ -213,276 +201,23 @@ def test_a_returned_local_head_write_failure_is_closed(store, monkeypatch):
     """
     import os
 
-    store.put_latest_link(b"one", expected_etag=None)
-    _data, etag = store.get_latest_link()
+    await store.put_latest_link(b"one", expected_etag=None)
+    _data, etag = await store.get_latest_link()
 
     def fail(source, target):
         raise OSError("disk went away")
 
     monkeypatch.setattr(os, "replace", fail)
     with pytest.raises(StoreProviderError) as exc:
-        store.put_latest_link(b"two", expected_etag=etag)
+        await store.put_latest_link(b"two", expected_etag=etag)
 
     assert exc.value.write_closed is True
-    assert store.get_latest_link()[0] == b"one"
+    assert (await store.get_latest_link())[0] == b"one"
     assert CasConflictError.write_closed is True
     assert StoreProviderError("plain").write_closed is False
 
 
-# ------------------------------------------------------- Hub status mapping #
-
-
-class FakeResponse:
-    def __init__(self, status_code, body=None, text=""):
-        self.status_code = status_code
-        self._body = body
-        self.text = text
-        self.headers = {}
-        self._chunks = []
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        return False
-
-    def iter_bytes(self, chunk_size=None):
-        return iter(self._chunks)
-
-    def json(self):
-        if self._body is None:
-            raise ValueError("no json body")
-        return self._body
-
-
-class FakeHubClient:
-    """Stands in for a Hub, answering every request with one canned response."""
-
-    def __init__(self, response=None, raises=None):
-        self.response = response
-        self.raises = raises
-        self.calls = []
-
-    def get(self, path, **kwargs):
-        self.calls.append(("GET", path, kwargs))
-        if self.raises is not None:
-            raise self.raises
-        return self.response
-
-    def stream(self, method, path, **kwargs):
-        self.calls.append((method, path, kwargs))
-        response = self.response
-        if response.status_code == 200:
-            try:
-                body = response.json()
-                content = base64.b64decode(body["data"])
-                response.headers.update({"etag": body.get("etag", "")})
-                response._chunks = [content]
-            except Exception:
-                pass
-        return response
-
-    def post(self, path, **kwargs):
-        self.calls.append(("POST", path, kwargs))
-        if self.raises is not None:
-            raise self.raises
-        return self.response
-
-
-class StreamingResponse:
-    def __init__(self, chunks, headers=None, status_code=200, body_read=None, body=None):
-        self.chunks = chunks
-        self.headers = {"content-type": "application/octet-stream", **(headers or {})}
-        self.status_code = status_code
-        self.body_read = body_read
-        self._body = body
-        self.text = ""
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *_):
-        return False
-
-    def iter_bytes(self, chunk_size=None):
-        for chunk in self.chunks:
-            if self.body_read is not None:
-                self.body_read()
-            yield chunk
-
-    def json(self):
-        if self._body is None:
-            raise ValueError("no JSON")
-        return self._body
-
-
-class StreamingHubClient:
-    def __init__(self, response):
-        self.response = response
-
-    def stream(self, method, path, **kwargs):
-        return self.response
-
-    def get(self, path, **kwargs):
-        return self.response
-
-    def post(self, path, **kwargs):
-        raise AssertionError("unexpected POST")
-
-
-def test_download_refuses_object_over_ceiling_by_content_length():
-    response = StreamingResponse(
-        [b"must not read"],
-        headers={"content-length": "9", "etag": "e"},
-        body_read=lambda: pytest.fail("body was read"),
-    )
-    store = SmallSeaStore(
-        "session", client=StreamingHubClient(response), max_download_bytes=8
-    )
-    with pytest.raises(DownloadTooLargeError) as exc:
-        store.get_link("large")
-    assert exc.value.path == link_path("large")
-    assert exc.value.limit == 8
-
-
-def test_download_refuses_stream_that_exceeds_ceiling_without_content_length():
-    response = StreamingResponse([b"1234", b"5678", b"9"])
-    store = SmallSeaStore(
-        "session", client=StreamingHubClient(response), max_download_bytes=8
-    )
-    with pytest.raises(DownloadTooLargeError):
-        store.get_link("large")
-
-
-def test_truncated_stream_is_transport_error_not_absence():
-    response = StreamingResponse(
-        [b"short"], headers={"content-length": "10"}
-    )
-    store = SmallSeaStore("session", client=StreamingHubClient(response))
-    with pytest.raises(StoreTransportError):
-        store.get_link("truncated")
-
-
-def test_missing_object_still_reported_as_missing():
-    response = StreamingResponse(
-        [], status_code=404, body={"detail": "missing"}
-    )
-    store = SmallSeaStore("session", client=StreamingHubClient(response))
-    with pytest.raises(ObjectNotFoundError):
-        store.get_link("missing")
-
-
-def test_download_bundle_streams_to_local_path(scratch_dir):
-    response = StreamingResponse(
-        [b"first", b" second"], headers={"content-length": "12"}
-    )
-    store = SmallSeaStore("session", client=StreamingHubClient(response))
-    output = pathlib.Path(scratch_dir) / "bundle"
-    store.download_bundle("B1", output)
-    assert output.read_bytes() == b"first second"
-
-
-@pytest.mark.parametrize(
-    "status,expected",
-    [
-        (404, ObjectNotFoundError),
-        (401, StoreAuthenticationError),
-        (403, StoreAuthorizationError),
-        (502, StoreProviderError),
-        (500, StoreProviderError),
-    ],
-)
-def test_hub_status_becomes_a_distinct_error(status, expected):
-    client = FakeHubClient(FakeResponse(status, {"detail": "nope"}))
-    store = SmallSeaStore("session", client=client)
-    with pytest.raises(expected):
-        store.get_latest_link()
-
-
-def test_a_failed_request_is_not_absence():
-    client = FakeHubClient(raises=OSError("connection reset"))
-    store = SmallSeaStore("session", client=client)
-    with pytest.raises(StoreTransportError):
-        store.get_latest_link()
-
-
-def test_an_unreadable_success_is_not_absence():
-    client = FakeHubClient(FakeResponse(200, {"nothing": "useful"}))
-    store = SmallSeaStore("session", client=client)
-    with pytest.raises(MalformedStoreResponseError):
-        store.get_latest_link()
-
-
-def test_hub_writes_are_create_only_except_the_head_cas(scratch_dir):
-    client = FakeHubClient(FakeResponse(200, {"etag": "e1"}))
-    store = SmallSeaStore("session", client=client)
-    store.put_link("L1", b"bytes")
-    store.put_bundle("B1", write_bundle(scratch_dir))
-    store.put_latest_link(b"bytes", expected_etag=None)
-    store.put_latest_link(b"more", expected_etag="e1")
-
-    sent = [call[2]["json"] for call in client.calls]
-    assert sent[0]["path"] == link_path("L1")
-    assert sent[0]["expected_etag"] == "*"
-    assert sent[1]["path"] == bundle_path("B1")
-    assert sent[1]["expected_etag"] == "*"
-    assert sent[2]["expected_etag"] == "*"  # first head: create-only
-    assert sent[2]["notify"] is True
-    assert sent[3]["expected_etag"] == "e1"
-
-
-def test_a_lost_head_response_is_reported_as_unknown():
-    from cod_sync.store import PublicationOutcomeUnknownError
-
-    client = FakeHubClient(raises=OSError("connection reset by peer"))
-    store = SmallSeaStore("session", client=client)
-    with pytest.raises(PublicationOutcomeUnknownError) as exc:
-        store.put_latest_link(b"bytes", expected_etag="e1", link_uid="L9")
-    assert exc.value.expected_etag == "e1"
-    assert exc.value.link_uid == "L9"
-
-
-def test_a_head_write_conflict_is_a_conflict_not_an_unknown_outcome():
-    client = FakeHubClient(
-        FakeResponse(409, {"error": "cas_conflict", "detail": "CAS conflict"})
-    )
-    store = SmallSeaStore("session", client=client)
-    with pytest.raises(CasConflictError):
-        store.put_latest_link(b"bytes", expected_etag="e1")
-
-
-def test_store_maps_never_applied_to_write_closed_error():
-    from cod_sync.store import WriteNeverAppliedError
-
-    client = FakeHubClient(
-        FakeResponse(502, {"error": "write_never_applied", "detail": "offline"})
-    )
-    store = SmallSeaStore("session", client=client)
-    with pytest.raises(WriteNeverAppliedError) as exc:
-        store.put_latest_link(b"bytes", expected_etag="e1")
-    assert exc.value.write_closed is True
-
-
-def test_a_non_cas_409_is_a_provider_failure():
-    client = FakeHubClient(
-        FakeResponse(409, {"error": "peer_storage_unknown", "detail": "no route"})
-    )
-    store = SmallSeaStore("session", client=client)
-    with pytest.raises(StoreProviderError):
-        store.get_latest_link()
-
-
-def test_path_prefix_namespaces_every_object():
-    client = FakeHubClient(FakeResponse(404, {"detail": "nope"}))
-    store = SmallSeaStore("session", client=client, path_prefix="files/registry/")
-    with pytest.raises(ObjectNotFoundError):
-        store.get_link("L1")
-    assert client.calls[0][2]["params"]["path"] == "files/registry/" + link_path("L1")
-
-
 # ------------------------------------------- testing stores, same contract #
-
-
 
 
 @pytest.fixture(scope="module")
@@ -496,103 +231,40 @@ def s3_store(minio, bucket):
     return S3Store(minio["endpoint"], bucket, minio["access_key"], minio["secret_key"])
 
 
-def test_s3_store_enforces_write_once(minio, scratch_dir):
+async def test_s3_store_enforces_write_once(minio, scratch_dir):
     """A testing store that accepted an etag without enforcing it would make
     every test that uses it prove nothing."""
     store = s3_store(minio, "cod-sync-write-once")
 
-    store.put_link("L1", b"first")
+    await store.put_link("L1", b"first")
     with pytest.raises(CasConflictError):
-        store.put_link("L1", b"second")
-    assert store.get_link("L1") == b"first"
+        await store.put_link("L1", b"second")
+    assert await store.get_link("L1") == b"first"
 
     original = write_bundle(scratch_dir, "orig.bundle", b"ORIGINAL")
     replacement = write_bundle(scratch_dir, "repl.bundle", b"REPLACEMENT")
-    store.put_bundle("B1", original)
+    await store.put_bundle("B1", original)
     with pytest.raises(CasConflictError):
-        store.put_bundle("B1", replacement)
+        await store.put_bundle("B1", replacement)
 
     out = pathlib.Path(scratch_dir) / "out.bundle"
-    store.download_bundle("B1", out)
+    await store.download_bundle("B1", out)
     assert out.read_bytes() == b"ORIGINAL"
 
 
-def test_s3_store_head_is_create_only_then_cas(minio):
+async def test_s3_store_head_is_create_only_then_cas(minio):
     store = s3_store(minio, "cod-sync-head-cas")
 
     with pytest.raises(ObjectNotFoundError):
-        store.get_latest_link()
+        await store.get_latest_link()
 
-    store.put_latest_link(b"one", expected_etag=None)
+    await store.put_latest_link(b"one", expected_etag=None)
     with pytest.raises(CasConflictError):
-        store.put_latest_link(b"two", expected_etag=None)
+        await store.put_latest_link(b"two", expected_etag=None)
 
-    _data, etag = store.get_latest_link()
-    store.put_latest_link(b"two", expected_etag=etag)
-    assert store.get_latest_link()[0] == b"two"
+    _data, etag = await store.get_latest_link()
+    await store.put_latest_link(b"two", expected_etag=etag)
+    assert (await store.get_latest_link())[0] == b"two"
 
     with pytest.raises(CasConflictError):
-        store.put_latest_link(b"three", expected_etag=etag)
-
-
-# ---------------------------------------------------------------------------
-# Peer reads: prerequisites that are not provider failures
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "error_code,expected",
-    [
-        ("peer_storage_unknown", PeerStorageUnknownError),
-        ("sender_key_unavailable", PeerSenderKeyUnavailableError),
-    ],
-)
-def test_a_peer_prerequisite_409_is_not_a_provider_failure(error_code, expected):
-    client = FakeHubClient(FakeResponse(409, {"error": error_code, "detail": "later"}))
-    store = PeerSmallSeaStore("session", "aa" * 16, client=client)
-    with pytest.raises(expected) as excinfo:
-        store.get_latest_link()
-
-    assert not isinstance(excinfo.value, StoreProviderError)
-    assert "later" in str(excinfo.value)
-
-
-def test_an_unrecognized_peer_409_stays_a_provider_failure():
-    client = FakeHubClient(FakeResponse(409, {"error": "something_else"}))
-    store = PeerSmallSeaStore("session", "aa" * 16, client=client)
-    with pytest.raises(StoreProviderError):
-        store.get_latest_link()
-
-
-@pytest.mark.parametrize("store_kind", ["own", "peer", "candidate"])
-@pytest.mark.parametrize("reason", [
-    "sender_key_unavailable",
-    "ownership_projection_absent",
-    "device_ownership_unavailable",
-    "device_ownership_ambiguous",
-    "expected_publisher_unknown",
-])
-def test_publication_prerequisites_survive_every_store(store_kind, reason):
-    client = FakeHubClient(FakeResponse(409, {"error": reason, "detail": "resolve evidence"}))
-    if store_kind == "own":
-        store = SmallSeaStore("session", client=client)
-    elif store_kind == "peer":
-        store = PeerSmallSeaStore("session", "aa" * 16, client=client)
-    else:
-        store = CandidateInspectionStore("session", "candidate", client=client)
-
-    with pytest.raises(PublicationPendingError) as excinfo:
-        store.get_latest_link()
-
-    assert excinfo.value.reason == reason
-    assert "resolve evidence" in str(excinfo.value)
-    assert not isinstance(excinfo.value, StoreProviderError)
-
-
-def test_peer_reads_still_share_the_hub_status_classification():
-    client = FakeHubClient(FakeResponse(404, {"detail": "nope"}))
-    store = PeerSmallSeaStore("session", "aa" * 16, client=client)
-    with pytest.raises(ObjectNotFoundError):
-        store.get_latest_link()
-    assert client.calls[0][1] == "/peer_cloud_file"
-    assert client.calls[0][2]["params"]["teammate_id"] == "aa" * 16
+        await store.put_latest_link(b"three", expected_etag=etag)

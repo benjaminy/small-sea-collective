@@ -32,14 +32,14 @@ from cod_sync.protocol import (
     NoPublishedHeadError,
     PinIntegrationRequiredError,
 )
-from cod_sync.store import LocalFolderStore
+from cod_sync.aio.store import LocalFolderStore
 
-pytestmark = pytest.mark.usefixtures("both_cod_syncs")
+pytestmark = pytest.mark.anyio
 
 PIN = "refs/peers/alice/main"
 
 
-def build_chain(scratch, length):
+async def build_chain(scratch, length):
     """Publish `length` successive heads and return (repo, store_path, heads)."""
     repo = make_repo(scratch / "alice", "alice")
     publication = scratch / "publication"
@@ -47,7 +47,7 @@ def build_chain(scratch, length):
     heads = []
     for index in range(length):
         commit_file(repo, f"file{index}.txt", f"content {index}\n")
-        heads.append(make_cod_sync(repo, store).publish().observed_head)
+        heads.append((await make_cod_sync(repo, store).publish()).observed_head)
     return repo, publication, heads
 
 
@@ -62,52 +62,52 @@ def store_at(publication):
 # ------------------------------------------------------------- empty store #
 
 
-def test_an_empty_store_has_no_head(scratch_dir):
+async def test_an_empty_store_has_no_head(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     bob = reader(scratch)
     with pytest.raises(NoPublishedHeadError):
-        make_cod_sync(bob, make_store(scratch / "publication")).fetch()
+        await make_cod_sync(bob, make_store(scratch / "publication")).fetch()
 
 
 # ------------------------------------------------------------ ordinary use #
 
 
-def test_initial_fetch_imports_the_full_snapshot(scratch_dir):
+async def test_initial_fetch_imports_the_full_snapshot(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    alice, publication, heads = build_chain(scratch, 1)
+    alice, publication, heads = await build_chain(scratch, 1)
     bob = reader(scratch)
 
-    result = make_cod_sync(bob, store_at(publication)).fetch()
+    result = await make_cod_sync(bob, store_at(publication)).fetch()
     assert result.observed_head == heads[-1]
     assert bob.has_commit(heads[-1])
     bob.checkout_branch("main", result.observed_head)
     assert working_tree_files(bob) == working_tree_files(alice)
 
 
-def test_incremental_fetch_adds_only_the_new_head(scratch_dir):
+async def test_incremental_fetch_adds_only_the_new_head(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    alice, publication, heads = build_chain(scratch, 1)
+    alice, publication, heads = await build_chain(scratch, 1)
     bob = reader(scratch)
-    make_cod_sync(bob, store_at(publication)).fetch()
+    await make_cod_sync(bob, store_at(publication)).fetch()
 
     commit_file(alice, "later.txt", "later\n")
-    second = make_cod_sync(alice, store_at(publication)).publish().observed_head
+    second = (await make_cod_sync(alice, store_at(publication)).publish()).observed_head
 
     counting = CountingStore(store_at(publication))
-    result = make_cod_sync(bob, counting).fetch()
+    result = await make_cod_sync(bob, counting).fetch()
     assert result.observed_head == second
     # The prerequisite was already local, so no predecessor was read.
     assert counting.link_reads == []
     assert len(counting.bundle_reads) == 1
 
 
-def test_a_cold_start_walks_a_chain_of_three(scratch_dir):
+async def test_a_cold_start_walks_a_chain_of_three(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    alice, publication, heads = build_chain(scratch, 3)
+    alice, publication, heads = await build_chain(scratch, 3)
     bob = reader(scratch)
 
     counting = CountingStore(store_at(publication))
-    result = make_cod_sync(bob, counting).fetch()
+    result = await make_cod_sync(bob, counting).fetch()
 
     assert result.observed_head == heads[-1]
     for head in heads:
@@ -116,32 +116,32 @@ def test_a_cold_start_walks_a_chain_of_three(scratch_dir):
     assert working_tree_files(bob) == working_tree_files(alice)
 
 
-def test_each_bundle_is_downloaded_exactly_once(scratch_dir):
+async def test_each_bundle_is_downloaded_exactly_once(scratch_dir):
     """The old clone walked the chain per link, so an n-link chain cost n^2."""
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 4)
+    _alice, publication, heads = await build_chain(scratch, 4)
     bob = reader(scratch)
 
     counting = CountingStore(store_at(publication))
-    make_cod_sync(bob, counting).fetch()
+    await make_cod_sync(bob, counting).fetch()
 
     assert len(counting.bundle_reads) == len(heads)
     assert len(set(counting.bundle_reads)) == len(counting.bundle_reads)
 
 
-def test_a_walk_crosses_more_than_one_missing_link(scratch_dir):
+async def test_a_walk_crosses_more_than_one_missing_link(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    alice, publication, heads = build_chain(scratch, 1)
+    alice, publication, heads = await build_chain(scratch, 1)
     bob = reader(scratch)
-    make_cod_sync(bob, store_at(publication)).fetch()
+    await make_cod_sync(bob, store_at(publication)).fetch()
 
     # Three more publications land while Bob is away.
     for index in (1, 2, 3):
         commit_file(alice, f"away{index}.txt", f"away {index}\n")
-        heads.append(make_cod_sync(alice, store_at(publication)).publish().observed_head)
+        heads.append((await make_cod_sync(alice, store_at(publication)).publish()).observed_head)
 
     counting = CountingStore(store_at(publication))
-    result = make_cod_sync(bob, counting).fetch()
+    result = await make_cod_sync(bob, counting).fetch()
 
     assert result.observed_head == heads[-1]
     # Newest first, stopping at the head Bob already had: three bundles to
@@ -152,59 +152,59 @@ def test_a_walk_crosses_more_than_one_missing_link(scratch_dir):
         assert bob.has_commit(head)
 
 
-def test_an_already_current_fetch_still_reads_the_latest_bundle(scratch_dir):
+async def test_an_already_current_fetch_still_reads_the_latest_bundle(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 2)
+    _alice, publication, heads = await build_chain(scratch, 2)
     bob = reader(scratch)
-    make_cod_sync(bob, store_at(publication)).fetch()
+    await make_cod_sync(bob, store_at(publication)).fetch()
 
     counting = CountingStore(store_at(publication))
-    result = make_cod_sync(bob, counting).fetch()
+    result = await make_cod_sync(bob, counting).fetch()
 
     assert result.observed_head == heads[-1]
     assert len(counting.bundle_reads) == 1  # validated, but nothing to walk
     assert counting.link_reads == []
 
 
-def test_an_already_current_fetch_still_catches_a_doctored_bundle(scratch_dir):
+async def test_an_already_current_fetch_still_catches_a_doctored_bundle(scratch_dir):
     """Possessing the declared commit is not proof the store published it."""
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 1)
+    _alice, publication, heads = await build_chain(scratch, 1)
     bob = reader(scratch)
-    make_cod_sync(bob, store_at(publication)).fetch()
+    await make_cod_sync(bob, store_at(publication)).fetch()
 
     bundle = next(pathlib.Path(publication).glob("B-*.bundle"))
     bundle.write_bytes(bundle.read_bytes().replace(b"refs/heads/main", b"refs/heads/mane"))
 
     before = all_refs(bob)
     with pytest.raises(ChainError):
-        make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+        await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
     assert all_refs(bob) == before
 
 
-def test_a_corrupt_published_bundle_is_a_chain_error(scratch_dir):
+async def test_a_corrupt_published_bundle_is_a_chain_error(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, _heads = build_chain(scratch, 1)
+    _alice, publication, _heads = await build_chain(scratch, 1)
     bob = reader(scratch)
     bundle = next(pathlib.Path(publication).glob("B-*.bundle"))
     bundle.write_bytes(bundle.read_bytes()[:-20])
 
     before = all_refs(bob)
     with pytest.raises(ChainError, match="payload could not be imported"):
-        make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+        await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
     assert all_refs(bob) == before
 
 
 # ----------------------------------------------------------------- no refs #
 
 
-def test_fetch_creates_no_implicit_ref(scratch_dir):
+async def test_fetch_creates_no_implicit_ref(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 2)
+    _alice, publication, heads = await build_chain(scratch, 2)
     bob = reader(scratch)
 
     before = all_refs(bob)
-    make_cod_sync(bob, store_at(publication)).fetch()
+    await make_cod_sync(bob, store_at(publication)).fetch()
 
     assert all_refs(bob) == before
     assert not (bob.git_dir / "FETCH_HEAD").exists()
@@ -212,13 +212,13 @@ def test_fetch_creates_no_implicit_ref(scratch_dir):
     assert_no_scratch(bob)
 
 
-def test_fetch_with_a_pin_creates_exactly_that_ref(scratch_dir):
+async def test_fetch_with_a_pin_creates_exactly_that_ref(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 2)
+    _alice, publication, heads = await build_chain(scratch, 2)
     bob = reader(scratch)
 
     before = all_refs(bob)
-    result = make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+    result = await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
 
     assert all_refs(bob) == {**before, PIN: heads[-1]}
     assert result.pinned_head == heads[-1]
@@ -228,32 +228,32 @@ def test_fetch_with_a_pin_creates_exactly_that_ref(scratch_dir):
 # -------------------------------------------------------------------- pins #
 
 
-def test_a_pin_advances_forward(scratch_dir):
+async def test_a_pin_advances_forward(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    alice, publication, heads = build_chain(scratch, 1)
+    alice, publication, heads = await build_chain(scratch, 1)
     bob = reader(scratch)
-    make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+    await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
 
     commit_file(alice, "next.txt", "next\n")
-    second = make_cod_sync(alice, store_at(publication)).publish().observed_head
-    result = make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+    second = (await make_cod_sync(alice, store_at(publication)).publish()).observed_head
+    result = await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
 
     assert result.pin_disposition == "advanced"
     assert result.pinned_head == second
 
 
-def test_an_equal_pin_is_unchanged(scratch_dir):
+async def test_an_equal_pin_is_unchanged(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 1)
+    _alice, publication, heads = await build_chain(scratch, 1)
     bob = reader(scratch)
-    make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
-    result = make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+    await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+    result = await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
 
     assert result.pin_disposition == "unchanged"
     assert result.pinned_head == heads[-1]
 
 
-def test_a_stale_observation_leaves_a_newer_pin_alone(scratch_dir):
+async def test_a_stale_observation_leaves_a_newer_pin_alone(scratch_dir):
     """An out-of-order fetch must not walk the pin backward."""
     scratch = pathlib.Path(scratch_dir)
     alice = make_repo(scratch / "alice", "alice")
@@ -263,13 +263,13 @@ def test_a_stale_observation_leaves_a_newer_pin_alone(scratch_dir):
     new_store = make_store(new_publication)
 
     first = commit_file(alice, "a.txt", "one\n")
-    make_cod_sync(alice, old_store).publish()
+    await make_cod_sync(alice, old_store).publish()
     second = commit_file(alice, "b.txt", "two\n")
-    make_cod_sync(alice, new_store).publish()
+    await make_cod_sync(alice, new_store).publish()
 
     bob = reader(scratch)
-    make_cod_sync(bob, store_at(new_publication)).fetch(pin_to_ref=PIN)
-    result = make_cod_sync(bob, store_at(old_publication)).fetch(pin_to_ref=PIN)
+    await make_cod_sync(bob, store_at(new_publication)).fetch(pin_to_ref=PIN)
+    result = await make_cod_sync(bob, store_at(old_publication)).fetch(pin_to_ref=PIN)
 
     assert result.observed_head == first
     assert result.pin_disposition == "stale"
@@ -277,15 +277,15 @@ def test_a_stale_observation_leaves_a_newer_pin_alone(scratch_dir):
     assert bob.resolve_ref(PIN) == second
 
 
-def test_a_divergent_pin_pauses_for_integration(scratch_dir):
+async def test_a_divergent_pin_pauses_for_integration(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 1)
+    _alice, publication, heads = await build_chain(scratch, 1)
     bob = reader(scratch)
     unrelated = commit_file(bob, "own.txt", "bob's own\n")
     bob._run(["update-ref", PIN, unrelated])
 
     with pytest.raises(PinIntegrationRequiredError) as exc:
-        make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+        await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
 
     assert exc.value.observed_head == heads[-1]
     assert bob.resolve_ref(PIN) == unrelated
@@ -306,9 +306,9 @@ def rewrite_latest(publication, mutate):
     return mutated
 
 
-def test_a_head_mismatch_is_rejected_before_any_ref_moves(scratch_dir):
+async def test_a_head_mismatch_is_rejected_before_any_ref_moves(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 1)
+    _alice, publication, heads = await build_chain(scratch, 1)
     bob = reader(scratch)
 
     from dataclasses import replace
@@ -317,15 +317,15 @@ def test_a_head_mismatch_is_rejected_before_any_ref_moves(scratch_dir):
 
     before = all_refs(bob)
     with pytest.raises(ChainError) as exc:
-        make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+        await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
     assert exc.value.advertised_head == heads[-1]
     assert exc.value.declared_head == "c" * 40
     assert all_refs(bob) == before
 
 
-def test_an_initial_bundle_claiming_a_prerequisite_is_rejected(scratch_dir):
+async def test_an_initial_bundle_claiming_a_prerequisite_is_rejected(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 1)
+    _alice, publication, heads = await build_chain(scratch, 1)
     bob = reader(scratch)
 
     from dataclasses import replace
@@ -339,15 +339,15 @@ def test_an_initial_bundle_claiming_a_prerequisite_is_rejected(scratch_dir):
         ),
     )
     with pytest.raises(ChainError) as exc:
-        make_cod_sync(bob, store_at(publication)).fetch()
+        await make_cod_sync(bob, store_at(publication)).fetch()
     assert exc.value.declared_prerequisites == {"d" * 40}
     assert exc.value.actual_prerequisites == set()
 
 
-def test_a_hidden_extra_prerequisite_is_rejected(scratch_dir):
+async def test_a_hidden_extra_prerequisite_is_rejected(scratch_dir):
     """A bundle carrying more prerequisites than its link admits to."""
     scratch = pathlib.Path(scratch_dir)
-    alice, publication, heads = build_chain(scratch, 2)
+    alice, publication, heads = await build_chain(scratch, 2)
     bob = reader(scratch)
 
     # Publish a merge, then rebuild its bundle excluding the side parent too.
@@ -357,7 +357,7 @@ def test_a_hidden_extra_prerequisite_is_rejected(scratch_dir):
     side = commit_file(alice, "side.txt", "side\n")
     alice.checkout_branch("main", heads[-1])
     alice.merge("side")
-    make_cod_sync(alice, store_at(publication)).publish()
+    await make_cod_sync(alice, store_at(publication)).publish()
 
     latest_link = decode_link((pathlib.Path(publication) / "latest-link.yaml").read_bytes())
     target = pathlib.Path(publication) / f"B-{latest_link.bundle_id}.bundle"
@@ -366,14 +366,14 @@ def test_a_hidden_extra_prerequisite_is_rejected(scratch_dir):
 
     before = all_refs(bob)
     with pytest.raises(ChainError) as exc:
-        make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+        await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
     assert exc.value.actual_prerequisites > exc.value.declared_prerequisites
     assert all_refs(bob) == before
 
 
-def test_a_missing_predecessor_is_rejected(scratch_dir):
+async def test_a_missing_predecessor_is_rejected(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 2)
+    _alice, publication, heads = await build_chain(scratch, 2)
     bob = reader(scratch)
 
     latest_link = decode_link((pathlib.Path(publication) / "latest-link.yaml").read_bytes())
@@ -381,13 +381,13 @@ def test_a_missing_predecessor_is_rejected(scratch_dir):
 
     before = all_refs(bob)
     with pytest.raises(ChainError, match="predecessor the store does not hold"):
-        make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+        await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
     assert all_refs(bob) == before
 
 
-def test_a_cycle_terminates(scratch_dir):
+async def test_a_cycle_terminates(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 2)
+    _alice, publication, heads = await build_chain(scratch, 2)
     bob = reader(scratch)
 
     publication = pathlib.Path(publication)
@@ -398,12 +398,12 @@ def test_a_cycle_terminates(scratch_dir):
     )
 
     with pytest.raises(ChainError):
-        make_cod_sync(bob, store_at(publication)).fetch()
+        await make_cod_sync(bob, store_at(publication)).fetch()
 
 
-def test_an_archived_link_read_under_the_wrong_id_is_rejected(scratch_dir):
+async def test_an_archived_link_read_under_the_wrong_id_is_rejected(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 2)
+    _alice, publication, heads = await build_chain(scratch, 2)
     bob = reader(scratch)
 
     publication = pathlib.Path(publication)
@@ -416,12 +416,12 @@ def test_an_archived_link_read_under_the_wrong_id_is_rejected(scratch_dir):
     archived_path.write_bytes(encode_link(replace(archived, link_id="0" * 16)))
 
     with pytest.raises(ChainError, match="own id"):
-        make_cod_sync(bob, store_at(publication)).fetch()
+        await make_cod_sync(bob, store_at(publication)).fetch()
 
 
-def test_an_inconsistent_predecessor_head_is_rejected(scratch_dir):
+async def test_an_inconsistent_predecessor_head_is_rejected(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 3)
+    _alice, publication, heads = await build_chain(scratch, 3)
     bob = reader(scratch)
 
     publication = pathlib.Path(publication)
@@ -434,12 +434,12 @@ def test_an_inconsistent_predecessor_head_is_rejected(scratch_dir):
     archived_path.write_bytes(encode_link(replace(archived, head="e" * 40)))
 
     with pytest.raises(ChainError, match="different head"):
-        make_cod_sync(bob, store_at(publication)).fetch()
+        await make_cod_sync(bob, store_at(publication)).fetch()
 
 
-def test_a_version_regression_is_rejected(scratch_dir):
+async def test_a_version_regression_is_rejected(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 2)
+    _alice, publication, heads = await build_chain(scratch, 2)
     bob = reader(scratch)
 
     publication = pathlib.Path(publication)
@@ -454,23 +454,23 @@ def test_a_version_regression_is_rejected(scratch_dir):
     archived_path.write_bytes(encode_link(replace(archived, version="2.9.0")))
 
     with pytest.raises(ChainError, match="regresses"):
-        make_cod_sync(bob, store_at(publication)).fetch()
+        await make_cod_sync(bob, store_at(publication)).fetch()
 
 
-def test_fetch_cleans_its_temporary_directory(scratch_dir):
+async def test_fetch_cleans_its_temporary_directory(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 3)
+    _alice, publication, heads = await build_chain(scratch, 3)
     bob = reader(scratch)
 
     seen = []
     inner = store_at(publication)
 
     class RecordingStore(CountingStore):
-        def download_bundle(self, bundle_uid, local_path):
+        async def download_bundle(self, bundle_uid, local_path):
             seen.append(pathlib.Path(local_path).parent)
-            return super().download_bundle(bundle_uid, local_path)
+            return await super().download_bundle(bundle_uid, local_path)
 
-    make_cod_sync(bob, RecordingStore(inner)).fetch()
+    await make_cod_sync(bob, RecordingStore(inner)).fetch()
 
     assert seen
     assert len(set(seen)) == 1, "one operation must use one temporary directory"
@@ -478,24 +478,24 @@ def test_fetch_cleans_its_temporary_directory(scratch_dir):
     assert_no_scratch(bob)
 
 
-def test_a_published_merge_round_trips(scratch_dir):
+async def test_a_published_merge_round_trips(scratch_dir):
     """Merging a branch off an older base adds prerequisites git records itself.
 
     They sit behind the declared predecessor, so they are covered rather than
     hidden — and this is the ordinary shape of adopting a teammate's work.
     """
     scratch = pathlib.Path(scratch_dir)
-    alice, publication, heads = build_chain(scratch, 2)
+    alice, publication, heads = await build_chain(scratch, 2)
     bob = reader(scratch)
-    make_cod_sync(bob, store_at(publication)).fetch()
+    await make_cod_sync(bob, store_at(publication)).fetch()
 
     alice.checkout_branch("side", heads[0])
     commit_file(alice, "side.txt", "side\n")
     alice.checkout_branch("main", heads[-1])
     alice.merge("side")
-    merged = make_cod_sync(alice, store_at(publication)).publish()
+    merged = await make_cod_sync(alice, store_at(publication)).publish()
 
-    result = make_cod_sync(bob, store_at(publication)).fetch()
+    result = await make_cod_sync(bob, store_at(publication)).fetch()
     assert result.observed_head == merged.observed_head
     bob.checkout_branch("main", result.observed_head)
     assert working_tree_files(bob) == working_tree_files(alice)
@@ -508,7 +508,7 @@ def test_a_published_merge_round_trips(scratch_dir):
     strict=True,
     reason="#265: a replayed older latest-link is accepted as current",
 )
-def test_a_replayed_older_latest_link_is_refused_or_flagged(scratch_dir):
+async def test_a_replayed_older_latest_link_is_refused_or_flagged(scratch_dir):
     """A store that serves an older, validly signed head must not pass as current.
 
     Bob has already seen the newest head.
@@ -517,9 +517,9 @@ def test_a_replayed_older_latest_link_is_refused_or_flagged(scratch_dir):
     it saw before can tell the state moved backwards.
     """
     scratch = pathlib.Path(scratch_dir)
-    _alice, publication, heads = build_chain(scratch, 2)
+    _alice, publication, heads = await build_chain(scratch, 2)
     bob = reader(scratch)
-    make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+    await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
     assert bob.resolve_ref(PIN) == heads[-1]
 
     latest_path = publication / "latest-link.yaml"
@@ -528,4 +528,4 @@ def test_a_replayed_older_latest_link_is_refused_or_flagged(scratch_dir):
     latest_path.write_bytes(older_bytes)
 
     with pytest.raises(ChainError):
-        make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
+        await make_cod_sync(bob, store_at(publication)).fetch(pin_to_ref=PIN)
