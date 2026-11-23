@@ -81,6 +81,23 @@ def test_manager_web_pin_flow_updates_cached_session_state(playground_dir, monke
     assert captured["confirm"] == ("pending-123", "321")
 
 
+def test_a_late_confirmation_keeps_a_newer_request_pending(playground_dir, monkeypatch):
+    """Another tab may start a new request while the Hub confirms an older one."""
+    participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    manager = TeamManager(pathlib.Path(playground_dir), participant_hex)
+    manager.set_pending("ProjectX", "pending-a")
+
+    async def fake_confirm_session(_http, pending_id, pin):
+        manager.set_pending("ProjectX", "pending-b")
+        return SimpleNamespace(token="session-a")
+
+    monkeypatch.setattr(manager_module._aio_client, "confirm_session", fake_confirm_session)
+
+    anyio.run(manager.confirm_session, "ProjectX", "321")
+    assert manager.session_state("ProjectX") == "pending"
+    assert manager.get_pending_id("ProjectX") == "pending-b"
+
+
 def _push_to_localfolder(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
     cod = CS.CodSync(Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir)))
     cod.publish()

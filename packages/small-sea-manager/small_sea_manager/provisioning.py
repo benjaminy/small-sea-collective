@@ -2286,14 +2286,14 @@ async def admit_identity_join_device(
     A localfolder remote is published here. For any other remote, the caller
     publishes NoteToSelf, then calls issue_welcome_bundle.
     Admitting a device that is already admitted with the same keys and label
-    changes nothing.
+    adds no row, but still commits and publishes, so a retry finishes the
+    work of an attempt that stopped partway.
     """
     root_dir = pathlib.Path(root_dir)
     artifact = deserialize_join_request_artifact(join_request_artifact_b64)
     device_id = bytes.fromhex(artifact.device_id_hex)
     encryption_public_key = bytes.fromhex(artifact.device_encryption_public_key_hex)
     signing_public_key = bytes.fromhex(artifact.device_signing_public_key_hex)
-    inserted_user_device = False
 
     with attached_note_to_self_connection(root_dir, participant_hex) as conn:
         existing = conn.execute(
@@ -2309,7 +2309,6 @@ async def admit_identity_join_device(
                 (device_id, encryption_public_key, signing_public_key, artifact.device_label),
             )
             conn.commit()
-            inserted_user_device = True
         elif existing[0] != encryption_public_key or existing[1] != signing_public_key:
             raise ValueError("A device with that ID is already registered with different keys")
         elif existing[2] != artifact.device_label:
@@ -2319,17 +2318,19 @@ async def admit_identity_join_device(
 
     if remote_descriptor is None:
         remote_descriptor = _single_note_to_self_remote_descriptor(root_dir, participant_hex)
-    if inserted_user_device:
-        repo_dir = root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync"
-        nts_repo = _Repo(repo_dir / ".git", repo_dir)
-        note_to_self_sync.commit_core_db(
-            root_dir,
-            participant_hex,
-            nts_repo,
-            f"Admit device {artifact.device_id_hex[:8]}",
-        )
-        if remote_descriptor.get("protocol") == "localfolder":
-            await _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
+    # A retry commits and publishes too: an earlier attempt may have stopped
+    # after admitting the device but before its admission reached the remote.
+    # Both steps change nothing when they have already happened.
+    repo_dir = root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync"
+    nts_repo = _Repo(repo_dir / ".git", repo_dir)
+    note_to_self_sync.commit_core_db(
+        root_dir,
+        participant_hex,
+        nts_repo,
+        f"Admit device {artifact.device_id_hex[:8]}",
+    )
+    if remote_descriptor.get("protocol") == "localfolder":
+        await _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
 
 
 def issue_welcome_bundle(

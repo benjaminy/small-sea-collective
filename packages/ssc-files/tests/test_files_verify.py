@@ -220,6 +220,32 @@ def test_merge_stops_when_the_checkout_is_detached_during_authorization(playgrou
     assert not (checkout / "source.txt").exists()
 
 
+def test_first_pull_keeps_a_commit_made_during_authorization(playground_dir):
+    """main may be born while the Hub judges; the pull must not reset it."""
+    _, _, dest, checkout, cloud, _ = _setup(playground_dir)
+    git_dir = files._niche_git_dir(str(dest), PEER_TEAM, "docs")
+    calls = []
+    made = []
+
+    async def commit_during_verify(_git_dir, sha):
+        calls.append(sha)
+        # The fetch verifies first; commit during the pull's own authorization.
+        if len(calls) == 2:
+            (checkout / "local.txt").write_text("local\n")
+            files.publish(str(dest), PEER, PEER_TEAM, "docs", str(checkout), message="local",
+                          signer=local_files_signer(PEER_TEAM))
+            made.append(_head(git_dir))
+        return {"commits": [{"commit": sha, "result": "authorized", "reason": "ok"}],
+                "view_identifier": "test"}
+
+    with pytest.raises(files.GitCmdFailed, match="unrelated histories"):
+        anyio.run(functools.partial(
+            files.pull_niche, str(dest), PEER, PEER_TEAM, "docs", LocalFolderStore(str(cloud)),
+            signer=_verifying_signer(PEER_TEAM, commit_during_verify)))
+    assert _head(git_dir) == made[0]
+    assert (checkout / "local.txt").read_text() == "local\n"
+
+
 def _token_recording_hub(seen):
     import base64
     import httpx

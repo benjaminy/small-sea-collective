@@ -777,20 +777,10 @@ async def _cod_pull(git_dir, checkout, remote, signer, recheck=None):
     fetched SHA explicitly. recheck is as in _cod_merge_ref.
     """
     result = await _AsyncCodSync(_AsyncRepo(git_dir), remote, verifier=signer).fetch()
-
-    repo = Repo(git_dir, work_tree=checkout, env=signer.env)
-    head_result = gitCmd(
-        ["--git-dir", str(git_dir), "rev-parse", "--verify", "HEAD"],
-        raise_on_error=False,
-    )
-    if head_result.returncode != 0:
-        # Unborn branch — adopt the fetched head as the initial local branch.
-        checked_sha = await _authorize_history(git_dir, result.observed_head, signer)
-        if recheck is not None:
-            repo = Repo(git_dir, work_tree=recheck(), env=signer.env)
-        repo.checkout_branch("main", checked_sha)
-    else:
-        await _cod_merge_ref(git_dir, checkout, result.observed_head, signer, recheck)
+    # _cod_merge_ref decides between merging and adopting the fetched head
+    # after authorization, so a commit made during that wait is merged, not
+    # discarded.
+    await _cod_merge_ref(git_dir, checkout, result.observed_head, signer, recheck)
     return result
 
 

@@ -394,6 +394,26 @@ def test_localfolder_identity_bootstrap_preserves_an_unresolved_push(
     assert exc.value.observed_absent is True
 
 
+def test_a_retried_authorization_publishes_before_welcoming(playground_dir, monkeypatch):
+    """An earlier attempt may admit the device and then fail to publish."""
+    root1, root2, alice_hex = _localfolder_participant(pathlib.Path(playground_dir))
+    join_request = create_identity_join_request(root2)
+    alice_manager = TeamManager(root1, alice_hex)
+    real_push = provisioning._push_note_to_self_to_local_remote
+
+    async def failing_push(*_args):
+        raise StoreProviderError("the remote is unreachable")
+
+    monkeypatch.setattr(provisioning, "_push_note_to_self_to_local_remote", failing_push)
+    with pytest.raises(StoreProviderError):
+        anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
+
+    monkeypatch.setattr(provisioning, "_push_note_to_self_to_local_remote", real_push)
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
+    bootstrap = anyio.run(bootstrap_existing_identity, root2, welcome["welcome_bundle"])
+    assert bootstrap["participant_hex"] == alice_hex
+
+
 def test_identity_bootstrap_bundle_expiry_and_reissue(playground_dir):
     workspace = pathlib.Path(playground_dir)
     root1 = workspace / "install-a"

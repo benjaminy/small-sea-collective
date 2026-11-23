@@ -353,12 +353,17 @@ class TeamManager:
             self.set_pending(team, pending_id, mode=mode)
 
     async def confirm_session(self, team: str, pin: str, mode: str = "encrypted") -> None:
-        """Confirm the pending session for (team, mode) with the PIN the Hub showed."""
+        """Confirm the pending session for (team, mode) with the PIN the Hub showed.
+
+        If a newer request for (team, mode) started while the Hub was
+        confirming this one, the newer request stays pending and this
+        confirmation is not recorded.
+        """
+        pending_id = self.get_pending_id(team, mode)
         async with self._hub_http() as http:
-            session = await _aio_client.confirm_session(
-                http, self.get_pending_id(team, mode), pin
-            )
-        self.set_session(team, session.token, mode=mode)
+            session = await _aio_client.confirm_session(http, pending_id, pin)
+        if self.get_pending_id(team, mode) == pending_id:
+            self.set_session(team, session.token, mode=mode)
 
     async def resend_notification(self, team: str, mode: str = "encrypted") -> None:
         """Ask the Hub to show the PIN for (team, mode) again, if one is pending."""
