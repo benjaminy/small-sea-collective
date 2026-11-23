@@ -1810,9 +1810,14 @@ def _load_pending_join_state(root_dir) -> dict:
     return json.loads(path.read_text())
 
 
-def _clear_pending_join_state(root_dir) -> None:
+def _clear_pending_join_state(root_dir, device_id_hex: str) -> None:
+    """Remove the pending join request, if it is still the one for device_id_hex.
+
+    A newer join request made while this bootstrap fetched has replaced the
+    record; its welcome bundle still needs it.
+    """
     path = _bootstrap_state_path(root_dir)
-    if path.exists():
+    if path.exists() and json.loads(path.read_text())["device_id_hex"] == device_id_hex:
         path.unlink()
 
 
@@ -2518,7 +2523,7 @@ def finalize_identity_bootstrap(root_dir, prepared: dict):
         pending_encryption_key_path.unlink()
     if pending_signing_private_key_path.exists():
         pending_signing_private_key_path.unlink()
-    _clear_pending_join_state(root_dir)
+    _clear_pending_join_state(root_dir, state["device_id_hex"])
     return {
         "participant_hex": bundle.participant_hex,
         "identity_label": bundle.identity_label,

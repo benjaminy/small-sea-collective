@@ -5,8 +5,10 @@ import sqlite3
 import time
 import json
 import base64
+from types import SimpleNamespace
 
 import anyio
+import httpx
 import cod_sync.protocol as CodSync
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore, StoreProviderError
@@ -17,6 +19,8 @@ from cryptography.exceptions import InvalidTag
 from cuttlefish import generate_bootstrap_signing_keypair, open_welcome_bundle, seal_welcome_bundle
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
+import small_sea_manager.manager as manager_module
+import small_sea_manager.provisioning as provisioning
 from small_sea_manager.manager import TeamManager, bootstrap_existing_identity, create_identity_join_request
 from small_sea_manager.provisioning import (
     _push_note_to_self_to_local_remote,
@@ -205,6 +209,71 @@ def test_an_invalid_welcome_lifetime_admits_nothing(playground_dir):
         [(devices,)] = conn.execute("SELECT COUNT(*) FROM user_device").fetchall()
     assert devices == 1
     assert not any(cloud_dir.iterdir())
+
+
+def test_finishing_a_bootstrap_keeps_a_join_request_made_during_its_fetch(
+    playground_dir, monkeypatch
+):
+    """The newer request's welcome bundle still needs its pending record."""
+    workspace = pathlib.Path(playground_dir)
+    root1 = workspace / "install-a"
+    root2 = workspace / "install-b"
+    cloud_dir = workspace / "cloud"
+    root1.mkdir()
+    root2.mkdir()
+    cloud_dir.mkdir()
+    alice_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
+    join_request = create_identity_join_request(root2)
+    alice_manager = TeamManager(root1, alice_hex)
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
+
+    newer = []
+
+    class _JoinDuringFetch(manager_module.AsyncLocalFolderStore):
+        async def get_latest_link(self):
+            if not newer:
+                newer.append(create_identity_join_request(root2))
+            return await super().get_latest_link()
+
+    monkeypatch.setattr(manager_module, "AsyncLocalFolderStore", _JoinDuringFetch)
+    anyio.run(bootstrap_existing_identity, root2, welcome["welcome_bundle"])
+
+    newer_artifact = deserialize_join_request_artifact(newer[0]["join_request_artifact"])
+    assert _pending_join_state(root2)["device_id_hex"] == newer_artifact.device_id_hex
+
+
+def test_cloud_bootstrap_sends_hub_requests_through_the_injected_transport(
+    playground_dir, monkeypatch
+):
+    """A MockTransport client has no app, but bootstrap must still use it."""
+    seen = []
+
+    def _hub(request):
+        seen.append(request.url.path)
+        if request.url.path == "/bootstrap/sessions":
+            return httpx.Response(200, json={"token": "bootstrap-token"})
+        return httpx.Response(404, json={"detail": "not found"})
+
+    injected = httpx.Client(base_url="http://hub.invalid", transport=httpx.MockTransport(_hub))
+    bundle = SimpleNamespace(
+        remote_descriptor={"protocol": "s3", "url": "http://cloud.invalid", "bucket": "b"},
+        expires_at="2099-01-01T00:00:00+00:00",
+        participant_hex="aa",
+    )
+    sync_dir = pathlib.Path(playground_dir) / "Sync"
+    monkeypatch.setattr(
+        provisioning, "prepare_identity_bootstrap",
+        lambda root_dir, welcome: {"bundle": bundle, "sync_dir": str(sync_dir)},
+    )
+
+    with pytest.raises(CodSync.NoPublishedHeadError):
+        anyio.run(functools.partial(
+            bootstrap_existing_identity, playground_dir, "unused", _http_client=injected
+        ))
+    injected.close()
+
+    assert seen[:2] == ["/bootstrap/sessions", "/bootstrap/cloud_file"]
 
 
 def test_identity_bootstrap_refuses_a_corrupt_fetched_database(playground_dir):

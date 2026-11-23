@@ -220,6 +220,22 @@ def create_identity_join_request(root_dir, *, device_label=None):
     return provisioning.create_identity_join_request(root_dir, device_label=device_label)
 
 
+def _async_hub_transport(http_client) -> httpx.AsyncBaseTransport | None:
+    """The async transport that reaches the Hub an injected sync client reaches.
+
+    None means the async client opens its own network connections.
+    """
+    hub_app = getattr(http_client, "app", None)
+    if hub_app is not None:
+        # A Starlette TestClient: call the same app in-process.
+        return httpx.ASGITransport(app=hub_app)
+    transport = getattr(http_client, "_transport", None)
+    if isinstance(transport, httpx.AsyncBaseTransport):
+        # A transport that also serves async requests, such as MockTransport.
+        return transport
+    return None
+
+
 async def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=11437, _http_client=None):
     """Bootstrap a blank installation into an existing identity."""
     prepared = provisioning.prepare_identity_bootstrap(root_dir, welcome_bundle_b64)
@@ -236,8 +252,7 @@ async def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=114
         result = await _AsyncCodSync(fetch_repo, store).fetch()
     else:
         # Reach the same Hub a TeamManager built from these arguments would.
-        hub_app = getattr(_http_client, "app", None)
-        transport = None if hub_app is None else httpx.ASGITransport(app=hub_app)
+        transport = _async_hub_transport(_http_client)
         base_url = (
             str(getattr(_http_client, "base_url", "") or "")
             or f"http://127.0.0.1:{hub_port}"
@@ -280,10 +295,10 @@ class TeamManager:
         provisioning.assert_identity_bootstrap_trusted(self.root_dir, self.participant_hex)
         provisioning.migrate_participant_team_dbs(self.root_dir, self.participant_hex)
         self.client = SmallSeaClient(port=hub_port, _http_client=_http_client)
-        # A test that injects a Starlette TestClient for the Hub gets the same
-        # app for the async methods, called in-process on the caller's loop.
-        hub_app = getattr(_http_client, "app", None)
-        self._async_transport = None if hub_app is None else httpx.ASGITransport(app=hub_app)
+        # A test that injects a client for the Hub gets the same Hub for the
+        # async methods: a TestClient's app, called in-process on the
+        # caller's loop, or a transport that also serves async requests.
+        self._async_transport = _async_hub_transport(_http_client)
         # An injected client may point at a Hub on another port; the async
         # methods must reach the same Hub.
         injected_url = str(getattr(_http_client, "base_url", "") or "")
