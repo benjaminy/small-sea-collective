@@ -59,15 +59,17 @@ def fetch_main(repo, store, **kwargs):
     return anyio.run(functools.partial(cod.fetch, **kwargs))
 
 
-def async_hub_client(test_client, base_url="http://testserver"):
+def async_hub_client(test_client):
     """An httpx.AsyncClient that reaches the same Hub as a sync test client.
 
-    For a TestClient it calls the app in process, so it holds no connection
-    and needs no closing.
+    It uses the test client's base URL, both to pick the transport and for
+    its own requests. For a TestClient it calls the app in process, so it
+    holds no connection and needs no closing.
     """
     import httpx
     from small_sea_client.aio import async_transport_for
 
+    base_url = str(test_client.base_url)
     return httpx.AsyncClient(
         transport=async_transport_for(test_client, base_url), base_url=base_url
     )

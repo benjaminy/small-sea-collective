@@ -135,6 +135,46 @@ def test_a_confirmation_finishing_before_a_newer_request_is_answered_is_ignored(
     assert manager.get_pending_id("ProjectX") == "pending-b"
 
 
+def test_an_older_pin_submitted_after_a_newer_request_started_is_not_confirmed(
+    playground_dir, monkeypatch
+):
+    """The cached pending ID still names request A while B waits on the Hub."""
+    participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    manager = TeamManager(pathlib.Path(playground_dir), participant_hex)
+    confirmed = []
+
+    async def scenario():
+        b_started = anyio.Event()
+        release_b = anyio.Event()
+        answers = iter(["pending-a", "pending-b"])
+
+        async def fake_start_session(_http, *args, mode=None):
+            pending_id = next(answers)
+            if pending_id == "pending-b":
+                b_started.set()
+                await release_b.wait()
+            return None, pending_id
+
+        async def fake_confirm_session(_http, pending_id, pin):
+            confirmed.append(pending_id)
+            return SimpleNamespace(token="session-a")
+
+        monkeypatch.setattr(manager_module._aio_client, "start_session", fake_start_session)
+        monkeypatch.setattr(manager_module._aio_client, "confirm_session", fake_confirm_session)
+
+        await manager.request_session("ProjectX", "encrypted", "ManagerUI")
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(manager.request_session, "ProjectX", "encrypted", "ManagerUI")
+            await b_started.wait()
+            await manager.confirm_session("ProjectX", "321")
+            release_b.set()
+
+    anyio.run(scenario)
+    assert confirmed == []
+    assert manager.session_state("ProjectX") == "pending"
+    assert manager.get_pending_id("ProjectX") == "pending-b"
+
+
 def test_a_late_answer_to_an_older_request_is_ignored(playground_dir, monkeypatch):
     participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
     manager = TeamManager(pathlib.Path(playground_dir), participant_hex)

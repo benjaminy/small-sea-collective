@@ -299,6 +299,8 @@ class TeamManager:
         # response changes the cached state only if no newer request started
         # while it was awaited.
         self._session_requests: dict[tuple[str, str], int] = {}
+        # Which request, by that count, produced each pending ID.
+        self._pending_request: dict[tuple[str, str], int] = {}
 
     # ------------------------------------------------------------------ #
     # Session state management
@@ -315,8 +317,10 @@ class TeamManager:
         self._sessions.pop((team, mode), None)
 
     def set_pending(self, team: str, pending_id: str, mode: str = "encrypted") -> None:
-        """Record a pending PIN request for (team, mode)."""
-        self._pending[(team, mode)] = pending_id
+        """Record a pending PIN request for (team, mode), as the newest request's."""
+        key = (team, mode)
+        self._pending[key] = pending_id
+        self._pending_request[key] = self._session_requests.get(key, 0)
 
     def clear_pending(self, team: str, mode: str = "encrypted") -> None:
         self._pending.pop((team, mode), None)
@@ -366,13 +370,17 @@ class TeamManager:
     async def confirm_session(self, team: str, pin: str, mode: str = "encrypted") -> None:
         """Confirm the pending session for (team, mode) with the PIN the Hub showed.
 
-        If a newer request for (team, mode) started while the Hub was
-        confirming this one, even one the Hub has not answered yet, the newer
-        request stays current and this confirmation is not recorded.
+        Only the newest request's PIN can be confirmed. If a newer request has
+        started, even one the Hub has not answered yet, the cached pending ID
+        belongs to an older request: this does nothing, and the newer request
+        stays current. The same holds if a newer request starts while the Hub
+        is confirming.
         """
         key = (team, mode)
         started = self._session_requests.get(key, 0)
         pending_id = self.get_pending_id(team, mode)
+        if pending_id is not None and self._pending_request.get(key) != started:
+            return
         async with self._hub_http() as http:
             session = await _aio_client.confirm_session(http, pending_id, pin)
         if (
