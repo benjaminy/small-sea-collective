@@ -391,9 +391,6 @@ class TeamManager:
         repo_dir = self._note_to_self_repo_dir()
         return _Repo(repo_dir / ".git", repo_dir)
 
-    def _open_note_to_self_session(self, mode: str = "passthrough"):
-        return self._get_or_open_session("NoteToSelf", mode=mode)
-
     async def _note_to_self_remote_descriptor(self) -> dict:
         cloud = self._cloud()
         if cloud["protocol"] == "localfolder":
@@ -679,8 +676,11 @@ class TeamManager:
             "self_in_team": self_in_team,
         }
 
-    def known_apps(self, team_name):
-        """Return Core registered apps and names ever granted by this Hub."""
+    async def known_apps(self, team_name):
+        """Return Core registered apps and names ever granted by this Hub.
+
+        Asks the Hub only when a NoteToSelf session is already confirmed.
+        """
         core_path = (
             self.root_dir / "Participants" / self.participant_hex
             / team_name / "Sync" / "core.db"
@@ -692,17 +692,20 @@ class TeamManager:
 
         names = {name: {"app_name": name, "sources": ["registered"]}
                  for name in registered_names}
-        session = self.note_to_self_session_if_active()
-        if session is not None:
-            for grant in session.list_granted_apps():
-                if grant["team_name"] != team_name:
-                    continue
-                entry = names.setdefault(
-                    grant["app_name"],
-                    {"app_name": grant["app_name"], "sources": []},
-                )
-                if "granted" not in entry["sources"]:
-                    entry["sources"].append("granted")
+        grants = []
+        if self.note_to_self_session_if_active() is not None:
+            async with self._hub_http() as http:
+                session = await self._hub_session(http, "NoteToSelf", mode="passthrough")
+                grants = await session.list_granted_apps()
+        for grant in grants:
+            if grant["team_name"] != team_name:
+                continue
+            entry = names.setdefault(
+                grant["app_name"],
+                {"app_name": grant["app_name"], "sources": []},
+            )
+            if "granted" not in entry["sources"]:
+                entry["sources"].append("granted")
         return sorted(names.values(), key=lambda item: item["app_name"])
 
     def delete_team(self, team_name):
@@ -851,7 +854,7 @@ class TeamManager:
             artifact_id_hex,
         )
 
-    def refresh_app_sightings(self):
+    async def refresh_app_sightings(self):
         """Read Hub app-bootstrap sightings, clear resolved rows, prune stale.
 
         For each sighting in the listed snapshot:
@@ -867,48 +870,49 @@ class TeamManager:
         prompts and also carries a ``cleanup_warning`` string when any
         per-row clear or the prune call failed.
         """
-        session = self._open_note_to_self_session()
-        snapshot = session.app_sightings()
-        prompts = []
-        cleanup_failures = 0
-        for sighting in snapshot:
-            prompt = provisioning.current_app_sighting_prompt(
-                self.root_dir,
-                self.participant_hex,
-                sighting,
-            )
-            if prompt is None:
-                try:
-                    session.clear_app_sighting(
-                        app_name=sighting["app_name"],
-                        team_name=sighting["team_name"],
-                        client_name=sighting["client_name"],
-                        last_seen_at=sighting["last_seen_at"],
-                    )
-                except Exception as exc:
-                    cleanup_failures += 1
-                    _LOG.warning(
-                        "clear_app_sighting failed for %s/%s/%s: %s",
-                        sighting["team_name"],
-                        sighting["app_name"],
-                        sighting["client_name"],
-                        exc,
-                    )
-                continue
-            if provisioning.app_sighting_dismissed(
-                self.root_dir,
-                self.participant_hex,
-                sighting,
-            ):
-                continue
-            prompts.append(prompt)
+        async with self._hub_http() as http:
+            session = await self._hub_session(http, "NoteToSelf", mode="passthrough")
+            snapshot = await session.app_sightings()
+            prompts = []
+            cleanup_failures = 0
+            for sighting in snapshot:
+                prompt = provisioning.current_app_sighting_prompt(
+                    self.root_dir,
+                    self.participant_hex,
+                    sighting,
+                )
+                if prompt is None:
+                    try:
+                        await session.clear_app_sighting(
+                            app_name=sighting["app_name"],
+                            team_name=sighting["team_name"],
+                            client_name=sighting["client_name"],
+                            last_seen_at=sighting["last_seen_at"],
+                        )
+                    except Exception as exc:
+                        cleanup_failures += 1
+                        _LOG.warning(
+                            "clear_app_sighting failed for %s/%s/%s: %s",
+                            sighting["team_name"],
+                            sighting["app_name"],
+                            sighting["client_name"],
+                            exc,
+                        )
+                    continue
+                if provisioning.app_sighting_dismissed(
+                    self.root_dir,
+                    self.participant_hex,
+                    sighting,
+                ):
+                    continue
+                prompts.append(prompt)
 
-        prune_failed = False
-        try:
-            session.prune_stale_app_sightings()
-        except Exception as exc:
-            prune_failed = True
-            _LOG.warning("prune_stale_app_sightings failed: %s", exc)
+            prune_failed = False
+            try:
+                await session.prune_stale_app_sightings()
+            except Exception as exc:
+                prune_failed = True
+                _LOG.warning("prune_stale_app_sightings failed: %s", exc)
 
         warning = None
         if cleanup_failures or prune_failed:

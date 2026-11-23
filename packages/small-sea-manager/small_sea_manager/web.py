@@ -277,7 +277,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             teammates.append(teammate)
         return teammates
 
-    def _team_detail_context(
+    async def _team_detail_context(
         mgr: TeamManager, team_name: str, *,
         notice: str = None, error: str = None, admission_package_token: str = None,
     ):
@@ -320,13 +320,13 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "team_notice": notice,
             "team_error": error,
             "admission_package_token": admission_package_token,
-            "known_apps": mgr.known_apps(team_name),
+            "known_apps": await mgr.known_apps(team_name),
             "known_apps_need_hub": (
                 mgr.note_to_self_session_if_active() is None
             ),
         }
 
-    def _render_team_detail(
+    async def _render_team_detail(
         request: Request, team_name: str, *,
         notice: str = None, error: str = None, admission_package_token: str = None,
     ):
@@ -335,7 +335,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "fragments/team_detail.html",
             {
                 "request": request,
-                **_team_detail_context(
+                **await _team_detail_context(
                     mgr, team_name, notice=notice, error=error,
                     admission_package_token=admission_package_token,
                 ),
@@ -401,10 +401,10 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             },
         )
 
-    def _refresh_app_sightings_after_action(request: Request, notice: str):
+    async def _refresh_app_sightings_after_action(request: Request, notice: str):
         mgr = _mgr(request)
         try:
-            sightings = mgr.refresh_app_sightings()
+            sightings = await mgr.refresh_app_sightings()
         except Exception as e:
             return _render_app_sightings(
                 request,
@@ -611,7 +611,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 error="Connect to Hub to refresh sightings.",
             )
         try:
-            sightings = mgr.refresh_app_sightings()
+            sightings = await mgr.refresh_app_sightings()
         except Exception as e:
             return _render_app_sightings(request, error=str(e))
         return _render_app_sightings(
@@ -627,7 +627,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             mgr.register_app_for_participant(app_name)
         except Exception as e:
             return _render_app_sightings(request, error=str(e))
-        return _refresh_app_sightings_after_action(
+        return await _refresh_app_sightings_after_action(
             request,
             f"Registered {app_name} for this participant.",
         )
@@ -643,7 +643,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             mgr.activate_app_for_team(team_name, app_name)
         except Exception as e:
             return _render_app_sightings(request, error=str(e))
-        return _refresh_app_sightings_after_action(
+        return await _refresh_app_sightings_after_action(
             request,
             f"Activated {app_name} for {team_name}.",
         )
@@ -658,7 +658,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             mgr.dismiss_participant_app_sighting(app_name)
         except Exception as e:
             return _render_app_sightings(request, error=str(e))
-        return _refresh_app_sightings_after_action(
+        return await _refresh_app_sightings_after_action(
             request,
             f"Dismissed participant prompt for {app_name}.",
         )
@@ -674,7 +674,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             mgr.dismiss_team_app_sighting(team_name, app_name)
         except Exception as e:
             return _render_app_sightings(request, error=str(e))
-        return _refresh_app_sightings_after_action(
+        return await _refresh_app_sightings_after_action(
             request,
             f"Dismissed {team_name} prompt for {app_name}.",
         )
@@ -702,7 +702,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
 
     @app.get("/teams/{team_name}", response_class=HTMLResponse)
     async def team_detail(request: Request, team_name: str):
-        return _render_team_detail(request, team_name)
+        return await _render_team_detail(request, team_name)
 
     # ------------------------------------------------------------------ #
     # Team sessions (PIN flow per team)
@@ -873,7 +873,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         except Exception as e:
             notice = None
             error = str(e)
-        return _render_team_detail(request, team_name, notice=notice, error=error)
+        return await _render_team_detail(request, team_name, notice=notice, error=error)
 
     @app.post(
         "/teams/{team_name}/invitations/{inv_id}/approve", response_class=HTMLResponse
@@ -887,7 +887,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         except Exception as e:
             notice = None
             error = str(e)
-        return _render_team_detail(request, team_name, notice=notice, error=error)
+        return await _render_team_detail(request, team_name, notice=notice, error=error)
 
     @app.post(
         "/teams/{team_name}/invitations/{inv_id}/finalize", response_class=HTMLResponse
@@ -901,7 +901,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         except Exception as e:
             notice = None
             error = str(e)
-        return _render_team_detail(request, team_name, notice=notice, error=error)
+        return await _render_team_detail(request, team_name, notice=notice, error=error)
 
     # ------------------------------------------------------------------ #
     # Cloud storage
@@ -1103,7 +1103,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         except Exception as e:
             notice = None
             error = str(e)
-        return _render_team_detail(
+        return await _render_team_detail(
             request, team_name, notice=notice, error=error,
             admission_package_token=admission_package_token,
         )
@@ -1138,7 +1138,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         except Exception as e:
             notice = None
             error = str(e)
-        return _render_team_detail(request, team_name, notice=notice, error=error)
+        return await _render_team_detail(request, team_name, notice=notice, error=error)
 
     @app.post("/teams/{team_name}/admission-events/{event_type}/{artifact_id}/dismiss", response_class=HTMLResponse)
     async def dismiss_admission_event(

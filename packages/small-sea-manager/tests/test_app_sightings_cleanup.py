@@ -6,6 +6,7 @@ preservation, conservative prompts for unknown teams, and non-fatal cleanup
 failures.
 """
 
+import anyio
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -14,6 +15,7 @@ from fastapi.testclient import TestClient
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 from small_sea_hub.server import app as hub_app
+from small_sea_client import aio as aio_client
 from small_sea_manager.manager import TeamManager
 
 
@@ -97,7 +99,7 @@ def test_resolved_row_is_cleared_after_registration_and_activation(playground_di
         backend.root_dir, participant_hex, _TEAM, _FILES_APP,
     )
 
-    prompts = mgr.refresh_app_sightings()
+    prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert list(prompts) == []
     assert _hub_rows(backend) == []
@@ -119,7 +121,7 @@ def test_resolved_row_cleared_even_when_dismissed(playground_dir):
         backend.root_dir, participant_hex, _TEAM, _FILES_APP,
     )
 
-    prompts = mgr.refresh_app_sightings()
+    prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert list(prompts) == []
     assert _hub_rows(backend) == []
@@ -134,7 +136,7 @@ def test_dismissed_unresolved_row_remains(playground_dir):
     mgr = _make_manager(backend, participant_hex, client)
     mgr.dismiss_team_app_sighting(_TEAM, _FILES_APP)
 
-    prompts = mgr.refresh_app_sightings()
+    prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert list(prompts) == []
     rows = _hub_rows(backend)
@@ -150,7 +152,7 @@ def test_fresh_dismissed_unresolved_row_keeps_existing_display(playground_dir):
     mgr = _make_manager(backend, participant_hex, client)
     mgr.dismiss_participant_app_sighting(_FILES_APP)
 
-    prompts = mgr.refresh_app_sightings()
+    prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert list(prompts) == []
     assert len(_hub_rows(backend)) == 1
@@ -169,7 +171,7 @@ def test_team_not_locally_cloned_keeps_conservative_prompt(playground_dir):
     )
     mgr = _make_manager(backend, participant_hex, client)
 
-    prompts = mgr.refresh_app_sightings()
+    prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert len(prompts) == 1
     assert prompts[0]["app_name"] == _FILES_APP
@@ -200,10 +202,10 @@ def test_stale_row_shown_once_from_pre_prune_snapshot(playground_dir):
     )
     mgr = _make_manager(backend, participant_hex, client)
 
-    first = mgr.refresh_app_sightings()
+    first = anyio.run(mgr.refresh_app_sightings)
     assert len(first) == 1
 
-    second = mgr.refresh_app_sightings()
+    second = anyio.run(mgr.refresh_app_sightings)
     assert list(second) == []
     assert _hub_rows(backend) == []
 
@@ -227,11 +229,11 @@ def test_stale_row_with_unknown_team_shown_once_then_pruned(playground_dir):
     )
     mgr = _make_manager(backend, participant_hex, client)
 
-    first = mgr.refresh_app_sightings()
+    first = anyio.run(mgr.refresh_app_sightings)
     assert len(first) == 1
     assert first[0].get("team_unavailable") is True
 
-    second = mgr.refresh_app_sightings()
+    second = anyio.run(mgr.refresh_app_sightings)
     assert list(second) == []
     assert _hub_rows(backend) == []
 
@@ -254,7 +256,7 @@ def test_stale_dismissed_unresolved_row_shown_zero_times_but_pruned(playground_d
     mgr = _make_manager(backend, participant_hex, client)
     mgr.dismiss_team_app_sighting(_TEAM, _FILES_APP)
 
-    prompts = mgr.refresh_app_sightings()
+    prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert list(prompts) == []
     assert _hub_rows(backend) == []
@@ -263,7 +265,7 @@ def test_stale_dismissed_unresolved_row_shown_zero_times_but_pruned(playground_d
 # ---- cleanup failures are non-fatal ----
 
 
-def test_clear_failure_is_non_fatal_and_omits_resolved_prompt(playground_dir):
+def test_clear_failure_is_non_fatal_and_omits_resolved_prompt(playground_dir, monkeypatch):
     """If the per-row clear call raises, refresh still returns the prompts
     it computed and surfaces a single warning. The resolved row is not added
     to prompts because its current_app_sighting_prompt is None."""
@@ -277,38 +279,26 @@ def test_clear_failure_is_non_fatal_and_omits_resolved_prompt(playground_dir):
         backend.root_dir, participant_hex, _TEAM, _FILES_APP,
     )
 
-    session = mgr._open_note_to_self_session()
-    real_clear = session.clear_app_sighting
-
-    def _boom(**_kwargs):
+    async def _boom(self, **_kwargs):
         raise RuntimeError("hub flaked")
 
-    session.clear_app_sighting = _boom
-    try:
-        prompts = mgr.refresh_app_sightings()
-    finally:
-        session.clear_app_sighting = real_clear
+    monkeypatch.setattr(aio_client.SmallSeaSession, "clear_app_sighting", _boom)
+    prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert list(prompts) == []
     assert prompts.cleanup_warning is not None
     assert "could not clear" in prompts.cleanup_warning
 
 
-def test_prune_failure_is_non_fatal(playground_dir):
+def test_prune_failure_is_non_fatal(playground_dir, monkeypatch):
     backend, participant_hex, client = _fresh_env(playground_dir)
     _request_files_session(client)
     mgr = _make_manager(backend, participant_hex, client)
-    session = mgr._open_note_to_self_session()
-    real_prune = session.prune_stale_app_sightings
-
-    def _boom():
+    async def _boom(self):
         raise RuntimeError("hub flaked")
 
-    session.prune_stale_app_sightings = _boom
-    try:
-        prompts = mgr.refresh_app_sightings()
-    finally:
-        session.prune_stale_app_sightings = real_prune
+    monkeypatch.setattr(aio_client.SmallSeaSession, "prune_stale_app_sightings", _boom)
+    prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert len(prompts) == 1
     assert prompts.cleanup_warning is not None
@@ -329,7 +319,7 @@ def test_refresh_returns_current_prompts_not_raw_hub_rows(playground_dir):
     )
     mgr = _make_manager(backend, participant_hex, client)
 
-    prompts = mgr.refresh_app_sightings()
+    prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert len(prompts) == 1
     assert prompts[0]["reason"] == "team_berth_missing"

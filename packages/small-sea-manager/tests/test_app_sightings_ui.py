@@ -1,5 +1,6 @@
 """Micro tests for the Manager app-bootstrap sightings UI."""
 
+import anyio
 import sqlite3
 from html.parser import HTMLParser
 from pathlib import Path
@@ -224,7 +225,10 @@ def test_app_sightings_fragment_renders_exact_actions_by_reason(
     participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
     app = create_app(playground_dir, participant_hex)
     app.state.manager.set_session("NoteToSelf", "token", mode="passthrough")
-    monkeypatch.setattr(app.state.manager, "refresh_app_sightings", lambda: [_sighting(reason)])
+    async def _refresh():
+        return [_sighting(reason)]
+
+    monkeypatch.setattr(app.state.manager, "refresh_app_sightings", _refresh)
     client = TestClient(app)
 
     response = client.post("/app-sightings/refresh")
@@ -237,14 +241,13 @@ def test_app_sightings_fragment_hides_team_actions_for_edge_rows(playground_dir,
     participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
     app = create_app(playground_dir, participant_hex)
     app.state.manager.set_session("NoteToSelf", "token", mode="passthrough")
-    monkeypatch.setattr(
-        app.state.manager,
-        "refresh_app_sightings",
-        lambda: [
+    async def _refresh():
+        return [
             {**_sighting("app_unknown", team_name="PhoneTeam"), "team_unavailable": True, "team_available": False},
             _sighting("app_unknown", team_name=None),
-        ],
-    )
+        ]
+
+    monkeypatch.setattr(app.state.manager, "refresh_app_sightings", _refresh)
     client = TestClient(app)
 
     response = client.post("/app-sightings/refresh")
@@ -335,7 +338,7 @@ def test_manager_current_prompt_recheck_matches_hub_predicates(
     token = _open_core_session(hub_client)
     manager = TeamManager(root, participant_hex, _http_client=hub_client)
     manager.set_session("NoteToSelf", token, mode="passthrough")
-    prompts = manager.refresh_app_sightings()
+    prompts = anyio.run(manager.refresh_app_sightings)
 
     if expected_reason is None:
         assert hub_resp.status_code == 200
@@ -359,7 +362,7 @@ def test_unknown_team_sighting_stays_visible_and_conservative(playground_dir):
     manager = TeamManager(backend.root_dir, participant_hex, _http_client=hub_client)
     manager.set_session("NoteToSelf", token, mode="passthrough")
 
-    prompts = manager.refresh_app_sightings()
+    prompts = anyio.run(manager.refresh_app_sightings)
 
     assert len(prompts) == 1
     assert prompts[0]["reason"] == "app_unknown"
@@ -438,17 +441,17 @@ def test_app_sighting_dismissal_scope_across_teams(playground_dir):
     manager = TeamManager(backend.root_dir, participant_hex, _http_client=hub_client)
     manager.set_session("NoteToSelf", token, mode="passthrough")
 
-    assert {prompt["team_name"] for prompt in manager.refresh_app_sightings()} == {
+    assert {prompt["team_name"] for prompt in anyio.run(manager.refresh_app_sightings)} == {
         _TEAM,
         "ProjectY",
     }
 
     manager.dismiss_team_app_sighting(_TEAM, _APP)
 
-    assert [prompt["team_name"] for prompt in manager.refresh_app_sightings()] == [
+    assert [prompt["team_name"] for prompt in anyio.run(manager.refresh_app_sightings)] == [
         "ProjectY"
     ]
 
     manager.dismiss_participant_app_sighting(_APP)
 
-    assert manager.refresh_app_sightings() == []
+    assert anyio.run(manager.refresh_app_sightings) == []

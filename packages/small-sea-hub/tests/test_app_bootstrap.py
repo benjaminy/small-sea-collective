@@ -1,5 +1,6 @@
 """Micro tests for app bootstrap via Hub sightings and Manager registration."""
 
+import anyio
 import sqlite3
 
 import small_sea_hub.backend as SmallSea
@@ -254,7 +255,7 @@ def test_manager_refreshes_sightings_and_applies_local_disposition(playground_di
     manager = TeamManager(backend.root_dir, participant_hex, _http_client=client)
     manager.set_session("NoteToSelf", token, mode="passthrough")
 
-    sightings = manager.refresh_app_sightings()
+    sightings = anyio.run(manager.refresh_app_sightings)
 
     assert len(sightings) == 1
     assert sightings[0]["app_name"] == _FILES_APP
@@ -264,7 +265,7 @@ def test_manager_refreshes_sightings_and_applies_local_disposition(playground_di
 
     assert resp.status_code == 409
     assert _sighting_rows(backend)[0]["seen_count"] == 2
-    assert manager.refresh_app_sightings() == []
+    assert anyio.run(manager.refresh_app_sightings) == []
 
 
 def test_manager_participant_app_disposition_suppresses_sighting(playground_dir):
@@ -277,7 +278,7 @@ def test_manager_participant_app_disposition_suppresses_sighting(playground_dir)
 
     manager.dismiss_participant_app_sighting(_FILES_APP)
 
-    assert manager.refresh_app_sightings() == []
+    assert anyio.run(manager.refresh_app_sightings) == []
 
 
 def test_team_app_disposition_requires_known_team(playground_dir):

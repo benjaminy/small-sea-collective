@@ -95,6 +95,49 @@ class SmallSeaSession:
         result = await self._get("/session/peers")
         return result.get("peers", [])
 
+    async def list_granted_apps(self) -> list[dict]:
+        """List app names that have ever received a confirmed session.
+
+        Only a caller whose own session is on NoteToSelf may call this.
+        """
+        return await self._get("/apps/granted")
+
+    async def app_sightings(self) -> list[dict]:
+        """Return app-bootstrap sightings visible to this Manager/Core session."""
+        return await self._get("/sightings")
+
+    async def clear_app_sighting(
+        self,
+        *,
+        app_name: str,
+        team_name: str,
+        client_name: str,
+        last_seen_at: str,
+    ) -> int:
+        """Delete one Hub sighting whose tuple and last_seen_at still match.
+
+        Pass the values from app_sightings() unchanged: the Hub compares
+        last_seen_at as a string, so a reformatted timestamp misses the row.
+        Returns the number of rows deleted, 0 or 1.
+        """
+        result = await self._post(
+            "/sightings/clear",
+            {
+                "app_name": app_name,
+                "team_name": team_name,
+                "client_name": client_name,
+                "last_seen_at": last_seen_at,
+            },
+        )
+        return int(result["deleted_count"])
+
+    async def prune_stale_app_sightings(self) -> int:
+        """Delete this participant's Hub sightings older than the stale window.
+
+        Returns the number of pruned rows.
+        """
+        return int((await self._post("/sightings/prune-stale", {}))["pruned_count"])
+
     async def watch_notifications(
         self,
         known: dict,

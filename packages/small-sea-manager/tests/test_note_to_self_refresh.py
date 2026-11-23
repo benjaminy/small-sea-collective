@@ -164,7 +164,7 @@ def test_push_note_to_self_allocates_fresh_s3_berth(playground_dir, minio_server
 
     anyio.run(manager.push_note_to_self)
 
-    session = manager._open_note_to_self_session(mode="passthrough")
+    session = manager._get_or_open_session("NoteToSelf", mode="passthrough")
     allocation = Provisioning.get_berth_cloud_allocation_for_berth(
         root, alice_hex, session.session_info()["berth_id"]
     )
@@ -299,7 +299,7 @@ def test_overlapping_refreshes_do_not_move_the_adopted_count_backwards(
 
     anyio.run(overlap)
 
-    berth_id = bytes.fromhex(manager._open_note_to_self_session().session_info()["berth_id"])
+    berth_id = bytes.fromhex(manager._get_or_open_session("NoteToSelf", mode="passthrough").session_info()["berth_id"])
     assert Provisioning.get_note_to_self_adopted_signal_count(root, alice_hex, berth_id) == 6
 
 

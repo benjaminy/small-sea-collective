@@ -1,7 +1,9 @@
 """Micro tests for the Manager's per-team known app list."""
 
-from fastapi.testclient import TestClient
+import anyio
 import sqlite3
+
+from fastapi.testclient import TestClient
 
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
@@ -67,7 +69,7 @@ def test_known_apps_merges_registered_and_granted(playground_dir):
     _confirm(hub, _FILES, _TEAM)
     _seed_grant(backend, participant_hex, "SmallSeaCollectiveFi1es")
 
-    apps = manager.known_apps(_TEAM)
+    apps = anyio.run(manager.known_apps, _TEAM)
 
     assert [app["app_name"] for app in apps] == sorted(
         app["app_name"] for app in apps
@@ -81,7 +83,7 @@ def test_known_apps_merges_registered_and_granted(playground_dir):
 def test_known_apps_without_hub_shows_registered_only(playground_dir):
     _backend, _participant_hex, _hub, manager, _web = _setup(playground_dir)
 
-    apps = manager.known_apps(_TEAM)
+    apps = anyio.run(manager.known_apps, _TEAM)
 
     assert {app["app_name"] for app in apps} == {_CORE, _FILES}
     assert all(app["sources"] == ["registered"] for app in apps)
