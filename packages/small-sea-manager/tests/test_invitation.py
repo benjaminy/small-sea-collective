@@ -274,6 +274,73 @@ def test_a_team_row_arriving_during_the_clone_leaves_no_clone_behind(playground_
     assert not (root / "Participants" / bob / "ProjectX" / "Sync").exists()
 
 
+def test_another_team_with_the_same_name_arriving_during_the_clone_stops_acceptance(
+    playground_dir,
+):
+    """Only team.id is unique, so the name has to be checked again before the insert."""
+    root = pathlib.Path(playground_dir)
+    _alice, bob, token, inviter_store = _localfolder_invitation(root)
+    other_team_id = b"\x01" * 16
+
+    class _OtherTeamDuringFetch(AsyncLocalFolderStore):
+        async def download_bundle(self, bundle_uid, local_path):
+            with provisioning.attached_note_to_self_connection(root, bob) as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
+                    (other_team_id, "ProjectX", b"\x02" * 16),
+                )
+            await super().download_bundle(bundle_uid, local_path)
+
+    with pytest.raises(ValueError, match="already exists"):
+        anyio.run(
+            provisioning.accept_invitation, root, bob, token,
+            _OtherTeamDuringFetch(inviter_store.path),
+        )
+
+    with provisioning.attached_note_to_self_connection(root, bob) as conn:
+        rows = conn.execute("SELECT id FROM team WHERE name = 'ProjectX'").fetchall()
+    assert [bytes(row[0]) for row in rows] == [other_team_id]
+    assert not (root / "Participants" / bob / "ProjectX" / "Sync").exists()
+
+
+def test_a_busy_note_to_self_database_leaves_no_clone_behind(playground_dir, monkeypatch):
+    """The clone goes on any failed insert, so acceptance can be retried."""
+    root = pathlib.Path(playground_dir)
+    _alice, bob, token, inviter_store = _localfolder_invitation(root)
+    real_connection = provisioning.attached_note_to_self_connection
+
+    def _impatient_connection(root_dir, participant_hex):
+        conn = real_connection(root_dir, participant_hex)
+        conn.execute("PRAGMA busy_timeout = 0")
+        return conn
+
+    monkeypatch.setattr(provisioning, "attached_note_to_self_connection", _impatient_connection)
+    writer = []
+
+    class _WriterDuringFetch(AsyncLocalFolderStore):
+        async def download_bundle(self, bundle_uid, local_path):
+            if not writer:
+                conn = real_connection(root, bob)
+                conn.execute("BEGIN IMMEDIATE")
+                writer.append(conn)
+            await super().download_bundle(bundle_uid, local_path)
+
+    with pytest.raises(sqlite3.OperationalError, match="locked"):
+        anyio.run(
+            provisioning.accept_invitation, root, bob, token,
+            _WriterDuringFetch(inviter_store.path),
+        )
+    writer[0].rollback()
+    writer[0].close()
+
+    assert not provisioning.has_local_team_clone(root, bob, "ProjectX")
+    anyio.run(
+        provisioning.accept_invitation, root, bob, token,
+        AsyncLocalFolderStore(inviter_store.path),
+    )
+    assert provisioning.has_local_team_clone(root, bob, "ProjectX")
+
+
 def test_invitation_rejects_core_with_forged_genesis(playground_dir, monkeypatch):
     root = pathlib.Path(playground_dir)
     _alice, bob, token, inviter_store = _localfolder_invitation(

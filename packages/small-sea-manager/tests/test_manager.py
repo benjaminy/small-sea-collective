@@ -397,6 +397,7 @@ def _watching_manager(playground_dir, monkeypatch, session):
 
     async def _open(http, team, mode="encrypted"):
         assert (team, mode) == ("ProjectX", "encrypted")
+        manager.watch_http_timeout = http.timeout
         return session
 
     monkeypatch.setattr(manager, "_hub_session", _open)
@@ -409,6 +410,14 @@ def test_admission_wait_watches_from_the_peers_known_counts(playground_dir, monk
 
     assert anyio.run(manager.wait_for_team_admission_signal, "ProjectX", 7) is True
     assert session.watched == ({"aa": 2}, 7)
+
+
+def test_admission_wait_gives_up_soon_after_its_own_timeout(playground_dir, monkeypatch):
+    """A stalled Hub must not hold the panel for the cloud-transfer timeout."""
+    manager = _watching_manager(playground_dir, monkeypatch, _WatchSession())
+
+    anyio.run(manager.wait_for_team_admission_signal, "ProjectX", 7)
+    assert 7 < manager.watch_http_timeout.read <= 20
 
 
 def test_admission_wait_reports_false_when_the_hub_is_down(playground_dir, monkeypatch):

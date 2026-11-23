@@ -6193,6 +6193,14 @@ async def accept_invitation(
 
     try:
         with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
+            # A NoteToSelf refresh can import a team with this ID or this name
+            # while the clone above is fetched. Only the ID is unique, so check
+            # both while holding the write lock that the insert will use.
+            conn.execute("BEGIN IMMEDIATE")
+            if conn.execute(
+                "SELECT 1 FROM team WHERE id = ? OR name = ?", (team_id, team_name)
+            ).fetchone() is not None:
+                raise ValueError(f"Team '{team_name}' already exists in NoteToSelf")
             conn.execute(
                 "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
                 (team_id, team_name, acceptor_teammate_id),
@@ -6202,18 +6210,13 @@ async def accept_invitation(
             # berth resolution currently accepts any NoteToSelf Core berth for the
             # app, so accepting a team invitation does not add a per-team Core row.
             conn.commit()
-    except sqlite3.IntegrityError as exc:
-        # A NoteToSelf refresh can import this team while the clone above is
-        # fetched. Remove this attempt's clone, or the device would look
-        # joined with no team keys and no authority anchor.
+    except BaseException:
+        # Whatever stopped the insert (a team that arrived, a busy database),
+        # remove this attempt's clone, or the device would look joined with no
+        # team keys and no authority anchor, and a retry would find the
+        # directory taken.
         shutil.rmtree(team_sync_dir)
-        with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
-            arrived = conn.execute(
-                "SELECT 1 FROM team WHERE id = ? OR name = ?", (team_id, team_name)
-            ).fetchone()
-        if arrived is None:
-            raise
-        raise ValueError(f"Team '{team_name}' already exists in NoteToSelf") from exc
+        raise
 
     # --- Generate local current device key ---
     team_keys = _generate_initial_team_device_key(

@@ -353,7 +353,7 @@ class TeamManager:
         """
         return self._team_locks.setdefault(team_name, anyio.Lock())
 
-    def _hub_http(self) -> httpx.AsyncClient:
+    def _hub_http(self, timeout: httpx.Timeout = _HUB_TIMEOUT) -> httpx.AsyncClient:
         """A new async HTTP client for the Hub.
 
         Each async method opens its own and closes it before returning, so
@@ -362,7 +362,7 @@ class TeamManager:
         return httpx.AsyncClient(
             base_url=self._hub_base_url,
             transport=self._async_transport,
-            timeout=_HUB_TIMEOUT,
+            timeout=timeout,
         )
 
     async def _hub_session(
@@ -1987,8 +1987,12 @@ class TeamManager:
         """Wait for a Hub-backed berth pulse that may imply fresh admission events."""
         if (team_name, "encrypted") not in self._sessions:
             return False
+        # The Hub holds the watch open for timeout seconds. A stalled Hub
+        # should cost the admission panel little more than that, not the
+        # long read timeout that cloud transfers need.
+        watch_timeout = httpx.Timeout(timeout + 10, connect=5.0)
         try:
-            async with self._hub_http() as http:
+            async with self._hub_http(watch_timeout) as http:
                 session = await self._hub_session(http, team_name, mode="encrypted")
                 known = {
                     peer["teammate_id"]: int(peer.get("signal_count", 0))
