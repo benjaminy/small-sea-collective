@@ -49,6 +49,7 @@ from small_sea_manager.manager import (
     bootstrap_existing_identity,
     create_identity_join_request,
 )
+from small_sea_client import aio
 from ssc_files import files, sync
 
 TEAM = "Garden"
@@ -83,15 +84,18 @@ class _Device:
         app.state.backend = self.backend
         self.http = TestClient(app)
 
-    def signer(self, team_name, hub_port=11437, *, _http_client=None, key_session=None):
+    async def signer(self, team_name, hub_port=11437, *, _http_client=None, key_token=None):
         """A CommitSigner using this session's real workhorse key and the Hub's verifier.
 
-        `key_session` names another session whose workhorse key signs instead,
+        `key_token` names another session whose workhorse key signs instead,
         for tests that sign with a key scoped to a different berth.
         """
-        session = sync.get_team_session(team_name, hub_port, _http_client=_http_client)
-        info = session.session_info()
-        key_owner = key_session or session
+        async with sync.hub_http(hub_port, _http_client) as http:
+            session = sync.get_team_session(team_name, http)
+            key_owner = session if key_token is None else aio.SmallSeaSession(http, key_token)
+            info = await session.session_info()
+            authority_view = await session.authority_view()
+            public_key = await key_owner.signing_public_key()
         seed = self.backend.signing_key(key_owner.token)
         key_path = self.root.parent / f"{self.root.name}-key-{key_owner.token[:8]}"
         key_path.write_bytes(Ed25519PrivateKey.from_private_bytes(seed).private_bytes(
@@ -100,12 +104,12 @@ class _Device:
         key_path.chmod(0o600)
         env = signing_git_env(
             os.environ, program=shutil.which("ssh-keygen"),
-            public_key=key_owner.signing_public_key(), signing_key=str(key_path),
+            public_key=public_key, signing_key=str(key_path),
             extra_env={"GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@t",
                        "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t"},
         )
-        return files.CommitSigner(info["team_id"], info["berth_id"], session.authority_view(),
-                                  env, session.verify_history)
+        return files.CommitSigner(info["team_id"], info["berth_id"], authority_view, env,
+                                  sync.hub_verifier(team_name, hub_port, _http_client=_http_client))
 
     def use_files(self):
         """Point Files' per-user config at this device's file."""
@@ -201,9 +205,12 @@ class _ManagerDatabaseGuard:
                     )
                     for frame in stack
                 )
+                # Files reaches each device's in-process Hub on its own
+                # thread, so Hub frames, including the separately loaded
+                # server modules, can sit above Files frames on one stack.
                 has_hub_frame = any(
                     (frame.frame.f_globals.get("__name__") or "").startswith(
-                        "small_sea_hub"
+                        ("small_sea_hub", "_capstone_hub_server_")
                     )
                     for frame in stack
                 )
@@ -300,15 +307,15 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
     # 5. Files on A: login, niche, checkout, publish, push.
     a.use_files()
     mark = spy.mark()
-    login_a = sync.login_team(a.files_root, TEAM, alice_hex, _http_client=a.http)
+    login_a = anyio.run(functools.partial(sync.login_team, a.files_root, TEAM, alice_hex, _http_client=a.http))
     ctx_a = files.materialization_context_from_session_info(login_a.session_info)
-    files.create_niche(a.files_root, alice_hex, ctx_a, NICHE, signer=a.signer(TEAM, _http_client=a.http))
+    files.create_niche(a.files_root, alice_hex, ctx_a, NICHE, signer=anyio.run(functools.partial(a.signer, TEAM, _http_client=a.http)))
     checkout_a = a.root / "checkout"
     files.add_checkout(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a))
     original = b"tomatoes by the fence\n"
     (checkout_a / "beds.txt").write_bytes(original)
-    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A1", signer=a.signer(TEAM, _http_client=a.http))
-    sync.push_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
+    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A1", signer=anyio.run(functools.partial(a.signer, TEAM, _http_client=a.http)))
+    anyio.run(functools.partial(sync.push_via_hub, a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http))
     spy.assert_only(mark, "A")
 
     # 6. Identity join: B's request is couriered to A, A's welcome back to B.
@@ -346,28 +353,24 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
     # 10. Files on B derives its context from B's Hub session.
     b.use_files()
     mark = spy.mark()
-    login_b = sync.login_team(b.files_root, TEAM, alice_hex, _http_client=b.http)
+    login_b = anyio.run(functools.partial(sync.login_team, b.files_root, TEAM, alice_hex, _http_client=b.http))
     ctx_b = files.materialization_context_from_session_info(login_b.session_info)
     assert ctx_b.team_id == ctx_a.team_id
     monkeypatch.setattr(sync, "commit_signer", b.signer)
 
     # 11. Fetch B's own registry through the Hub, discover the niche, then fetch it.
-    fetched_registry = sync.fetch_self_via_hub(
-        b.files_root, alice_hex, TEAM, _http_client=b.http
-    )
+    fetched_registry = anyio.run(functools.partial(sync.fetch_self_via_hub, b.files_root, alice_hex, TEAM, _http_client=b.http))
     assert fetched_registry.registry_sha
-    files.merge_self_registry(b.files_root, alice_hex, ctx_b, signer=b.signer(TEAM, _http_client=b.http))
+    anyio.run(functools.partial(files.merge_self_registry, b.files_root, alice_hex, ctx_b, signer=anyio.run(functools.partial(b.signer, TEAM, _http_client=b.http))))
     discovered = [n["name"] for n in files.list_niches(b.files_root, alice_hex, ctx_b)]
     assert "plans" in discovered
     niche = discovered[0]
     assert niche == NICHE
-    fetched = sync.fetch_self_via_hub(
-        b.files_root, alice_hex, TEAM, niche, _http_client=b.http
-    )
+    fetched = anyio.run(functools.partial(sync.fetch_self_via_hub, b.files_root, alice_hex, TEAM, niche, _http_client=b.http))
     assert fetched.niche_sha == _git_head(files._niche_git_dir(a.files_root, ctx_a, niche))
     checkout_b = b.root / "checkout"
     files.add_checkout(b.files_root, alice_hex, ctx_b, niche, str(checkout_b))
-    sync.merge_self(b.files_root, alice_hex, TEAM, niche, _http_client=b.http)
+    anyio.run(functools.partial(sync.merge_self, b.files_root, alice_hex, TEAM, niche, _http_client=b.http))
     assert (checkout_b / "beds.txt").read_bytes() == original
 
     return SimpleNamespace(
@@ -387,8 +390,8 @@ def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen):
     # 12. B changes the file and pushes through B's Hub.
     from_b = b"tomatoes by the fence\nbeans on the trellis\n"
     (checkout_b / "beds.txt").write_bytes(from_b)
-    files.publish(b.files_root, alice_hex, ctx_b, niche, str(checkout_b), message="B1", signer=b.signer(TEAM, _http_client=b.http))
-    sync.push_via_hub(b.files_root, alice_hex, TEAM, niche, _http_client=b.http)
+    files.publish(b.files_root, alice_hex, ctx_b, niche, str(checkout_b), message="B1", signer=anyio.run(functools.partial(b.signer, TEAM, _http_client=b.http)))
+    anyio.run(functools.partial(sync.push_via_hub, b.files_root, alice_hex, TEAM, niche, _http_client=b.http))
     spy.assert_only(mark, "B")
 
     # 13. A learns B's signing delegation, then fetches and integrates B's change.
@@ -403,23 +406,23 @@ def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen):
     (participant,) = manager_a.list_teammates(TEAM)
     anyio.run(manager_a.fetch_teammate_core, TEAM, participant["id"])
     manager_a.integrate_core_sources(TEAM)
-    sync.fetch_self_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
-    sync.merge_self(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
+    anyio.run(functools.partial(sync.fetch_self_via_hub, a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http))
+    anyio.run(functools.partial(sync.merge_self, a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http))
     assert (checkout_a / "beds.txt").read_bytes() == from_b
 
     # 14. A publishes again on the converged history, with no conflict.
     (checkout_a / "beds.txt").write_bytes(from_b + b"squash in the corner\n")
-    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A2", signer=a.signer(TEAM, _http_client=a.http))
-    sync.push_via_hub(a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
+    files.publish(a.files_root, alice_hex, ctx_a, NICHE, str(checkout_a), message="A2", signer=anyio.run(functools.partial(a.signer, TEAM, _http_client=a.http)))
+    anyio.run(functools.partial(sync.push_via_hub, a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http))
     spy.assert_only(mark, "A")
     db_guard.assert_clean()
 
     # 15. Each device's Hub accepts every commit in that device's final Files history.
     for device, context in ((a, ctx_a), (b, ctx_b)):
         device.use_files()
-        session = sync.get_team_session(TEAM, _http_client=device.http)
         git_dir = files._niche_git_dir(device.files_root, context, NICHE)
-        verdicts = session.verify_history(git_dir, _git_head(git_dir))["commits"]
+        verify = sync.hub_verifier(TEAM, _http_client=device.http)
+        verdicts = anyio.run(verify, git_dir, _git_head(git_dir))["commits"]
         assert verdicts, f"no commits verified on {device.name}"
         assert {v["result"] for v in verdicts} == {"authorized"}, verdicts
     assert all(owner in ("A", "B") for owner, _op, _bucket in spy.calls)
@@ -445,30 +448,36 @@ def test_signed_capstone_refuses_bad_history(
     env = _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen)
     a, b, alice_hex, niche = env.a, env.b, env.alice_hex, env.niche
     import small_sea_manager.provisioning as Provisioning
-    from small_sea_client.client import SmallSeaClient, SmallSeaSession
 
     # B commits something A must refuse.
     # B's own Hub would refuse to publish it, so B's verifier is replaced by one that accepts everything.
     b.use_files()
-    key_session = None
+    key_token = None
     if case == "wrong_berth":
-        token = b.backend.open_session(
+        key_token = b.backend.open_session(
             "Alice", "SmallSeaCollectiveCore", TEAM, "Smoke Tests").hex()
-        key_session = SmallSeaSession(SmallSeaClient(_http_client=b.http), token)
-    signer = b.signer(TEAM, _http_client=b.http, key_session=key_session)
+    signer = anyio.run(functools.partial(b.signer, TEAM, _http_client=b.http, key_token=key_token))
     if case == "unsigned":
         signer = replace(signer, env={
             k: v for k, v in os.environ.items() if not k.startswith("GIT_CONFIG_")
         } | {"GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@t",
              "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t"})
-    rogue = replace(signer, verify=lambda _git_dir, sha: {
-        "commits": [{"commit": sha, "result": "authorized", "reason": "test"}],
-        "view_identifier": b""})
-    monkeypatch.setattr(sync, "commit_signer", lambda *_a, **_k: rogue)
+    async def _accept_everything(_git_dir, sha):
+        return {
+            "commits": [{"commit": sha, "result": "authorized", "reason": "test"}],
+            "view_identifier": b"",
+        }
+
+    rogue = replace(signer, verify=_accept_everything)
+
+    async def _rogue_signer(*_a, **_k):
+        return rogue
+
+    monkeypatch.setattr(sync, "commit_signer", _rogue_signer)
     (env.checkout_b / "beds.txt").write_bytes(b"bad change\n")
     files.publish(b.files_root, alice_hex, env.ctx_b, niche, str(env.checkout_b),
                   message="B-bad", signer=rogue)
-    sync.push_via_hub(b.files_root, alice_hex, TEAM, niche, _http_client=b.http)
+    anyio.run(functools.partial(sync.push_via_hub, b.files_root, alice_hex, TEAM, niche, _http_client=b.http))
     bad_head = _git_head(files._niche_git_dir(b.files_root, env.ctx_b, niche))
 
     # A learns B's delegations, except in the missing-authority case.
@@ -480,7 +489,11 @@ def test_signed_capstone_refuses_bad_history(
     if case == "ambiguous_authority":
         # Two records that grant and then restrict the same standing cannot be ordered.
         _team_id, teammate_id = Provisioning._team_row(a.root, alice_hex, TEAM)
-        berth_id = sync.get_team_session(TEAM, _http_client=b.http).session_info()["berth_id"]
+        async def _berth_id():
+            async with sync.hub_http(_http_client=b.http) as http:
+                return (await sync.get_team_session(TEAM, http).session_info())["berth_id"]
+
+        berth_id = anyio.run(_berth_id)
         for mode in ("automatic", "proposal-only"):
             Provisioning.set_teammate_integration_mode(
                 a.root, alice_hex, TEAM, teammate_id, berth_id, mode)
@@ -493,7 +506,7 @@ def test_signed_capstone_refuses_bad_history(
     content_before = (env.checkout_a / "beds.txt").read_bytes()
 
     with pytest.raises((files.UnauthorizedHistoryError, sync.SelfFetchPartialError)) as caught:
-        sync.fetch_self_via_hub(a.files_root, alice_hex, TEAM, niche, _http_client=a.http)
+        anyio.run(functools.partial(sync.fetch_self_via_hub, a.files_root, alice_hex, TEAM, niche, _http_client=a.http))
     refusals = _refusals(caught.value)
     if case != "ambiguous_authority":
         # Every A and B commit is ambiguous in that case, so the registry is refused before the niche.

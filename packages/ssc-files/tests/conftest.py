@@ -23,12 +23,12 @@ def in_process_hub_signer(request, monkeypatch):
         return
     from ssc_files import files, sync
 
-    def signer(team_name, hub_port=11437, *, _http_client=None):
+    async def signer(team_name, hub_port=11437, *, _http_client=None):
         if request.module.__name__.split(".")[-1] == "test_sync":
             return local_files_signer(request.module.TEAM)
-        session = sync.get_team_session(team_name, hub_port, _http_client=_http_client)
-        context = files.materialization_context_from_session_info(session.session_info())
-        return local_files_signer(context)
+        async with sync.hub_http(hub_port, _http_client) as http:
+            info = await sync.get_team_session(team_name, http).session_info()
+        return local_files_signer(files.materialization_context_from_session_info(info))
 
     monkeypatch.setattr(sync, "commit_signer", signer)
 

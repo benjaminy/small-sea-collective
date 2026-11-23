@@ -12,6 +12,8 @@ These tests demonstrate progressively more interesting collaborative situations:
 Crypto is out of scope here; these tests focus purely on the sync and
 merge mechanics.
 """
+import functools
+import anyio
 from test_support import local_files_signer
 
 
@@ -19,7 +21,7 @@ import os
 import pathlib
 
 import pytest
-from cod_sync.store import LocalFolderStore
+from cod_sync.aio.store import LocalFolderStore
 from ssc_files.files import (
     FilesMaterializationContext,
     add_checkout,
@@ -59,11 +61,11 @@ def setup_participant(playground, name, participant_hex):
 
 
 def do_push(root, participant_hex, cloud):
-    push_niche(str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderStore(str(cloud)), signer=local_files_signer(_team(participant_hex)))
+    anyio.run(functools.partial(push_niche, str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderStore(str(cloud)), signer=local_files_signer(_team(participant_hex))))
 
 
 def do_pull(root, participant_hex, cloud):
-    pull_niche(str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderStore(str(cloud)), signer=local_files_signer(_team(participant_hex)))
+    anyio.run(functools.partial(pull_niche, str(root), participant_hex, _team(participant_hex), NICHE, LocalFolderStore(str(cloud)), signer=local_files_signer(_team(participant_hex))))
 
 
 def write(checkout, filename, content):

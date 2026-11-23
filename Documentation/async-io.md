@@ -125,3 +125,7 @@ A watch with a timeout of 0 checks for news and returns without touching the ber
   Most of the Manager's web routes call TeamManager the same way.
   So far only `push_team`, `fetch_teammate_core`, `push_note_to_self`, `refresh_note_to_self`, `authorize_identity_join`, `inspect_berth_source_candidate`, `prepare_team_route`, `reconcile_team_route`, `accept_invitation`, `refresh_app_sightings`, `known_apps`, `wait_for_team_admission_signal`, and the module-level `bootstrap_existing_identity` are async.
   These are the next migration steps; see #188.
+- **Signed commits in Files.**
+  In Files, everything that reaches the Hub or a store is async: push, fetch, pull, and merge in `files.py`, and every Hub call in `sync.py`.
+  Local Git work stays synchronous, including the commits that `create_niche`, `publish`, and a merge make.
+  Git signs those commits by running `small-sea-git-sign`, which asks the Hub, so a web route that commits still waits on the Hub without letting other tasks run.

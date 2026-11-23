@@ -1,5 +1,7 @@
 """Micro tests for signed Files commits."""
 
+import functools
+import anyio
 from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import subprocess
@@ -12,6 +14,8 @@ from cod_sync.git import GitCmdFailed
 from cod_sync.work_context import context_from_commit
 from cod_sync.repo import Repo
 from ssc_files import files
+import httpx
+from small_sea_client import aio
 from small_sea_client.client import SmallSeaClient, SmallSeaSession
 from small_sea_hub.backend import SmallSeaBackend
 from small_sea_hub.server import app
@@ -80,7 +84,7 @@ def test_files_registry_content_merge_signed(tmp_path, test_signer):
     files.create_niche(root, PARTICIPANT, context, "other", signer=signer)
     _git(registry, registry_checkout, "update-ref",
          f"refs/peers/{PEER}/main", peer_registry)
-    files.merge_registry(root, PARTICIPANT, context, PEER, signer=signer)
+    anyio.run(functools.partial(files.merge_registry, root, PARTICIPANT, context, PEER, signer=signer))
     _verify(tmp_path, registry, "HEAD", signer, "SmallSeaCollectiveFiles/merge")
 
     (checkout / "base").write_text("base")
@@ -91,7 +95,7 @@ def test_files_registry_content_merge_signed(tmp_path, test_signer):
     (checkout / "local-file").write_text("local")
     files.publish(root, PARTICIPANT, context, "docs", checkout, signer=signer)
     _git(git_dir, checkout, "update-ref", f"refs/peers/{PEER}/main", peer)
-    files.merge_niche(root, PARTICIPANT, context, "docs", PEER, signer=signer)
+    anyio.run(functools.partial(files.merge_niche, root, PARTICIPANT, context, "docs", PEER, signer=signer))
     _verify(tmp_path, git_dir, "HEAD", signer, "SmallSeaCollectiveFiles/merge")
 
     base = _git(git_dir, checkout, "rev-parse", "HEAD")
@@ -99,7 +103,7 @@ def test_files_registry_content_merge_signed(tmp_path, test_signer):
     (checkout / "other-file").write_text("other")
     files.publish(root, PARTICIPANT, context, "docs", checkout, signer=signer)
     _git(git_dir, checkout, "update-ref", "refs/cod-sync/parked/self-test", self_head)
-    files.merge_self_niche(root, PARTICIPANT, context, "docs", signer=signer)
+    anyio.run(functools.partial(files.merge_self_niche, root, PARTICIPANT, context, "docs", signer=signer))
     _verify(tmp_path, git_dir, "HEAD", signer, "SmallSeaCollectiveFiles/merge")
 
 
@@ -112,7 +116,7 @@ def test_files_publish_completes_merge_as_files_merge(tmp_path, test_signer):
     files.publish(root, PARTICIPANT, context, "docs", checkout, signer=signer)
     _git(git_dir, checkout, "update-ref", f"refs/peers/{PEER}/main", peer)
     with pytest.raises(files.MergeConflictError):
-        files.merge_niche(root, PARTICIPANT, context, "docs", PEER, signer=signer)
+        anyio.run(functools.partial(files.merge_niche, root, PARTICIPANT, context, "docs", PEER, signer=signer))
     (checkout / "same").write_text("resolved\n")
     files.publish(root, PARTICIPANT, context, "docs", checkout, signer=signer)
     _verify(tmp_path, git_dir, "HEAD", signer, "SmallSeaCollectiveFiles/merge")
@@ -145,7 +149,7 @@ def test_files_signing_failure_preserves_head(tmp_path, test_signer):
     local = files.publish(root, PARTICIPANT, context, "docs", checkout, signer=signer)
     _git(git_dir, checkout, "update-ref", f"refs/peers/{PEER}/main", peer)
     with pytest.raises(GitCmdFailed) as exc:
-        files.merge_niche(root, PARTICIPANT, context, "docs", PEER, signer=bad)
+        anyio.run(functools.partial(files.merge_niche, root, PARTICIPANT, context, "docs", PEER, signer=bad))
     assert "/missing/git-signer" in exc.value.err
     assert _git(git_dir, checkout, "rev-parse", "HEAD") == local
 
@@ -156,6 +160,15 @@ def test_files_signer_scope_mismatch_rejected(tmp_path, test_signer):
                   replace(signer, berth_id="ff" * 16)):
         with pytest.raises(ValueError, match="signer team or berth"):
             files.publish(root, PARTICIPANT, context, "docs", checkout, signer=wrong)
+
+
+async def _signer_through_hub(port, token):
+    hub_url = f"http://127.0.0.1:{port}"
+    async with httpx.AsyncClient(base_url=hub_url) as http:
+        # This test only commits, so the signer never checks history.
+        return await files.CommitSigner.from_session(
+            aio.SmallSeaSession(http, token), hub_url, verify=None
+        )
 
 
 def test_files_commit_signed_through_real_hub(tmp_path):
@@ -192,8 +205,7 @@ def test_files_commit_signed_through_real_hub(tmp_path):
     thread.start()
     try:
         session = SmallSeaSession(SmallSeaClient(port=server.server_port), token)
-        signer = files.CommitSigner.from_session(
-            session, f"http://127.0.0.1:{server.server_port}")
+        signer = anyio.run(_signer_through_hub, server.server_port, token)
         signer = replace(signer, env={**signer.env,
                                       "GIT_AUTHOR_NAME": "Hub Test",
                                       "GIT_AUTHOR_EMAIL": "hub@test",

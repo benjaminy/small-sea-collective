@@ -5,7 +5,7 @@ import pathlib
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from small_sea_client.client import SmallSeaClient
+from small_sea_client import aio
 
 from ssc_files import sync, files
 
@@ -39,8 +39,8 @@ def create_app(
     def _http_client(request: Request):
         return request.app.state.http_client
 
-    def _client(request: Request) -> SmallSeaClient:
-        return SmallSeaClient(port=_hub_port(request), _http_client=_http_client(request))
+    def _hub(request: Request):
+        return sync.hub_http(_hub_port(request), _http_client(request))
 
     def _pending(request: Request) -> dict[str, str]:
         return request.app.state.pending_sessions
@@ -79,13 +79,13 @@ def create_app(
             },
         )
 
-    def _build_peers(request: Request, team_name: str, niche_name: str) -> list[dict]:
+    async def _build_peers(request: Request, team_name: str, niche_name: str) -> list[dict]:
         """Return peer list annotated with update status, or [] if no active session."""
         vr, ph = _vr(request), _ph(request)
         if _session_state(request, team_name) != "active":
             return []
         try:
-            peers = sync.list_team_peers(
+            peers = await sync.list_team_peers(
                 team_name,
                 hub_port=_hub_port(request),
                 _http_client=_http_client(request),
@@ -103,7 +103,7 @@ def create_app(
             peers = []
         return peers
 
-    def _peer_panel_response(request: Request, team_name: str, niche_name: str):
+    async def _peer_panel_response(request: Request, team_name: str, niche_name: str):
         return templates.TemplateResponse(
             "fragments/peer_panel.html",
             {
@@ -111,7 +111,7 @@ def create_app(
                 "team_name": team_name,
                 "niche_name": niche_name,
                 "team_session_status": _session_state(request, team_name),
-                "peers": _build_peers(request, team_name, niche_name),
+                "peers": await _build_peers(request, team_name, niche_name),
             },
         )
 
@@ -152,7 +152,7 @@ def create_app(
             return str(exc)
         return str(exc)
 
-    def _niche_detail_response(
+    async def _niche_detail_response(
         request: Request,
         team_name: str,
         niche_name: str,
@@ -165,7 +165,7 @@ def create_app(
         vr, ph = _vr(request), _ph(request)
         context = _team_context(request, team_name)
         team_session_status = _session_state(request, team_name)
-        peers = _build_peers(request, team_name, niche_name) if load_peers else None
+        peers = await _build_peers(request, team_name, niche_name) if load_peers else None
         checkout = files.get_checkout(vr, ph, context, niche_name)
         checkout_status = (
             files.status(vr, ph, context, niche_name, checkout)
@@ -233,7 +233,7 @@ def create_app(
         team_name = team_name.strip()
         if not team_name:
             return _index_response(request, login_error="Enter a team name.")
-        error = _start_login(request, team_name)
+        error = await _start_login(request, team_name)
         if error:
             return _index_response(request, login_error=error)
         return RedirectResponse("/", status_code=303)
@@ -245,9 +245,10 @@ def create_app(
         vr, ph = _vr(request), _ph(request)
         context = _team_context(request, team_name)
         try:
-            files.create_niche(vr, ph, context, niche_name,
-                               signer=sync.commit_signer(team_name, _hub_port(request),
-                                                         _http_client=_http_client(request)))
+            signer = await sync.commit_signer(
+                team_name, _hub_port(request), _http_client=_http_client(request)
+            )
+            files.create_niche(vr, ph, context, niche_name, signer=signer)
             error = None
         except ValueError as e:
             error = str(e)
@@ -262,23 +263,26 @@ def create_app(
 
     @app.get("/teams/{team_name}/niches/{niche_name}", response_class=HTMLResponse)
     async def niche_detail(request: Request, team_name: str, niche_name: str):
-        return _niche_detail_response(request, team_name, niche_name)
+        return await _niche_detail_response(request, team_name, niche_name)
 
     @app.get(
         "/teams/{team_name}/niches/{niche_name}/peer_panel", response_class=HTMLResponse
     )
     async def peer_panel(request: Request, team_name: str, niche_name: str):
         """Lightweight fragment endpoint for background peer-panel polling."""
-        return _peer_panel_response(request, team_name, niche_name)
+        return await _peer_panel_response(request, team_name, niche_name)
 
-    def _start_login(request: Request, team_name: str) -> str | None:
+    async def _start_login(request: Request, team_name: str) -> str | None:
         """Request a Hub session; return an error message, or None on success."""
         try:
-            session, pending_id = _client(request).start_session(
-                _ph(request), sync.HUB_APP_NAME, team_name, "SmallSeaCollectiveFilesWeb"
-            )
+            async with _hub(request) as http:
+                session, pending_id = await aio.start_session(
+                    http, _ph(request), sync.HUB_APP_NAME, team_name,
+                    "SmallSeaCollectiveFilesWeb",
+                )
+                if session is not None:
+                    await sync.finalize_login(_vr(request), team_name, _ph(request), session)
             if session is not None:
-                sync.finalize_login(_vr(request), team_name, _ph(request), session)
                 _pending(request).pop(team_name, None)
             else:
                 _pending(request)[team_name] = pending_id
@@ -288,7 +292,7 @@ def create_app(
 
     @app.post("/teams/{team_name}/session/request", response_class=HTMLResponse)
     async def team_session_request(request: Request, team_name: str):
-        error = _start_login(request, team_name)
+        error = await _start_login(request, team_name)
         return _session_fragment(request, team_name, error=error)
 
     @app.post("/teams/{team_name}/session/confirm", response_class=HTMLResponse)
@@ -305,8 +309,9 @@ def create_app(
             for ctx in files.iter_materialized_teams(_vr(request), _ph(request))
         )
         try:
-            session = _client(request).confirm_session(pending_id, pin.strip())
-            sync.finalize_login(_vr(request), team_name, _ph(request), session)
+            async with _hub(request) as http:
+                session = await aio.confirm_session(http, pending_id, pin.strip())
+                await sync.finalize_login(_vr(request), team_name, _ph(request), session)
             _pending(request).pop(team_name, None)
         except Exception as exc:
             return _session_fragment(request, team_name, error=str(exc))
@@ -323,7 +328,8 @@ def create_app(
         pending_id = _pending(request).get(team_name)
         try:
             if pending_id:
-                _client(request).resend_notification(pending_id)
+                async with _hub(request) as http:
+                    await aio.resend_notification(http, pending_id)
         except Exception as exc:
             return _session_fragment(request, team_name, error=str(exc))
         return _session_fragment(request, team_name)
@@ -400,10 +406,11 @@ def create_app(
         vr, ph = _vr(request), _ph(request)
         context = _team_context(request, team_name)
         try:
+            signer = await sync.commit_signer(
+                team_name, _hub_port(request), _http_client=_http_client(request)
+            )
             commit_hash = files.publish(
-                vr, ph, context, niche_name, checkout_path, message=message,
-                signer=sync.commit_signer(team_name, _hub_port(request),
-                                          _http_client=_http_client(request)),
+                vr, ph, context, niche_name, checkout_path, message=message, signer=signer,
             )
             notice = f"Published {commit_hash[:8]}"
             error = None
@@ -437,7 +444,7 @@ def create_app(
             _http_client(request),
         )
         try:
-            sync.push_via_hub(
+            await sync.push_via_hub(
                 vr, ph, team_name, niche_name, hub_port=hub_port, _http_client=http_client
             )
             notice = "Pushed niche and registry through the Hub."
@@ -454,7 +461,7 @@ def create_app(
         except sync.FilesSyncError as exc:
             notice = None
             error = str(exc)
-        return _niche_detail_response(
+        return await _niche_detail_response(
             request,
             team_name,
             niche_name,
@@ -479,7 +486,7 @@ def create_app(
         )
         teammate_id = from_teammate_id.strip()
         try:
-            sync.fetch_via_hub(
+            await sync.fetch_via_hub(
                 vr,
                 ph,
                 team_name,
@@ -505,7 +512,7 @@ def create_app(
         except sync.FilesSyncError as exc:
             notice = None
             error = str(exc)
-        return _niche_detail_response(
+        return await _niche_detail_response(
             request,
             team_name,
             niche_name,
@@ -526,7 +533,7 @@ def create_app(
         """
         vr, ph = _vr(request), _ph(request)
         try:
-            result = sync.merge_self(vr, ph, team_name, niche_name)
+            result = await sync.merge_self(vr, ph, team_name, niche_name)
             merged = len(result.registry_shas) + len(result.niche_shas)
             notice = (
                 f"Merged {merged} parked change(s) from your own cloud chain. "
@@ -538,7 +545,7 @@ def create_app(
         except sync.FilesSyncError as exc:
             notice = None
             error = _merge_error_message(exc)
-        return _niche_detail_response(
+        return await _niche_detail_response(
             request,
             team_name,
             niche_name,
@@ -564,7 +571,7 @@ def create_app(
         )
         teammate_id = from_teammate_id.strip()
         try:
-            sync.merge_via_hub(
+            await sync.merge_via_hub(
                 vr,
                 ph,
                 team_name,
@@ -578,7 +585,7 @@ def create_app(
         except sync.FilesSyncError as exc:
             notice = None
             error = _merge_error_message(exc)
-        return _niche_detail_response(
+        return await _niche_detail_response(
             request,
             team_name,
             niche_name,

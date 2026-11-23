@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import pathlib
 import tomllib
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Awaitable, Callable, Optional
 
+import httpx
+from cod_sync.aio.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.protocol import (
     NoPublishedHeadError,
     PublicationFailedError,
@@ -16,14 +19,18 @@ from cod_sync.protocol import (
     PublicationOutcomeUnresolvedError,
     PublicationRetryableError,
 )
-from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
-from small_sea_client.client import SmallSeaClient, SmallSeaError, SmallSeaSession
+from small_sea_client import aio
+from small_sea_client.aio import SmallSeaSession
+from small_sea_client.client import SmallSeaClient
 
 from ssc_files import files
 
 _CONFIG_PATH = pathlib.Path.home() / ".config" / "small-sea" / "files.toml"
 HUB_APP_NAME = "SmallSeaCollectiveFiles"
 _CLI_CLIENT_NAME = "SmallSeaCollectiveFilesCLI"
+# Generous on reads and writes, which carry whole bundles; short on connect,
+# so an absent Hub is reported at once.
+_HUB_TIMEOUT = httpx.Timeout(300.0, connect=5.0)
 
 
 class FilesSyncError(Exception):
@@ -375,7 +382,7 @@ def niche_path_prefix(niche_name: str) -> str:
     return f"niches/{niche_name}/"
 
 
-def finalize_login(
+async def finalize_login(
     files_root: str,
     team_name: str,
     participant_hex: str,
@@ -388,7 +395,7 @@ def finalize_login(
     request/confirm endpoints. Returns the session_info dict for the caller's
     convenience.
     """
-    info = session.session_info()
+    info = await session.session_info()
     if info.get("team_name") != team_name:
         raise FilesSyncError(
             f"Hub returned session for team {info.get('team_name')!r}, expected {team_name!r}"
@@ -410,7 +417,7 @@ def finalize_login(
     return info
 
 
-def login_team(
+async def login_team(
     files_root: str,
     team_name: str,
     participant_hex: str,
@@ -426,18 +433,20 @@ def login_team(
     discover team_id for a friendly team_name. After login, the team's
     metadata.json holds team_id; offline operations resolve from there.
     """
-    client = SmallSeaClient(port=hub_port, _http_client=_http_client)
-    session, pending_id = client.start_session(
-        participant_hex, HUB_APP_NAME, team_name, _CLI_CLIENT_NAME
-    )
+    async with hub_http(hub_port, _http_client) as http:
+        session, pending_id = await aio.start_session(
+            http, participant_hex, HUB_APP_NAME, team_name, _CLI_CLIENT_NAME
+        )
 
-    auto_approved = session is not None
-    if session is None:
-        if pin_reader is None:
-            raise LoginRequiredError("A PIN is required to complete Files login.")
-        session = client.confirm_session(pending_id, pin_reader(pending_id).strip())
+        auto_approved = session is not None
+        if session is None:
+            if pin_reader is None:
+                raise LoginRequiredError("A PIN is required to complete Files login.")
+            session = await aio.confirm_session(
+                http, pending_id, pin_reader(pending_id).strip()
+            )
 
-    info = finalize_login(files_root, team_name, participant_hex, session)
+        info = await finalize_login(files_root, team_name, participant_hex, session)
     return LoginResult(
         session_token=session.token,
         session_info=info,
@@ -445,13 +454,28 @@ def login_team(
     )
 
 
-def get_team_session(
-    team_name: str,
-    hub_port: int = SmallSeaClient.DEFAULT_PORT,
-    *,
-    _http_client=None,
-) -> SmallSeaSession:
-    """Construct a SmallSeaSession from the cached token for this team.
+@contextlib.asynccontextmanager
+async def hub_http(hub_port: int = SmallSeaClient.DEFAULT_PORT, _http_client=None):
+    """A new async HTTP client for the Hub, closed when the block ends.
+
+    Each Hub-facing function opens its own, so no connection outlives the
+    call or the event loop that made it. A test that injects a sync client
+    gets the Hub that client reaches.
+    """
+    hub_url = (
+        str(getattr(_http_client, "base_url", "") or "")
+        or f"http://127.0.0.1:{hub_port}"
+    )
+    async with httpx.AsyncClient(
+        base_url=hub_url,
+        transport=aio.async_transport_for(_http_client, hub_url),
+        timeout=_HUB_TIMEOUT,
+    ) as http:
+        yield http
+
+
+def get_team_session(team_name: str, http: httpx.AsyncClient) -> SmallSeaSession:
+    """Construct an async Hub session on http from the cached token for this team.
 
     Does NOT contact the Hub. Token staleness or revocation surfaces at the
     moment of actual use, when the Hub rejects the request. The caller should
@@ -467,25 +491,42 @@ def get_team_session(
         raise LoginRequiredError(
             f"No cached Hub session for {team_name!r}. Run `ssc-files login {team_name}`."
         )
-
-    client = SmallSeaClient(port=hub_port, _http_client=_http_client)
-    return SmallSeaSession(client, token)
+    return SmallSeaSession(http, token)
 
 
-def commit_signer(team_name, hub_port=SmallSeaClient.DEFAULT_PORT, *, _http_client=None):
-    session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
-    return files.CommitSigner.from_session(session, f"http://127.0.0.1:{hub_port}")
+def hub_verifier(
+    team_name: str, hub_port: int = SmallSeaClient.DEFAULT_PORT, *, _http_client=None
+) -> Callable[[pathlib.Path | str, str], Awaitable[dict]]:
+    """An async history check for a CommitSigner.
+
+    Each check opens its own Hub connection, so the signer can outlive the
+    connection it was built on.
+    """
+    async def verify(git_dir, head):
+        async with hub_http(hub_port, _http_client) as http:
+            return await get_team_session(team_name, http).verify_history(git_dir, head)
+
+    return verify
 
 
-def list_team_peers(
+async def commit_signer(team_name, hub_port=SmallSeaClient.DEFAULT_PORT, *, _http_client=None):
+    async with hub_http(hub_port, _http_client) as http:
+        return await files.CommitSigner.from_session(
+            get_team_session(team_name, http),
+            f"http://127.0.0.1:{hub_port}",
+            hub_verifier(team_name, hub_port, _http_client=_http_client),
+        )
+
+
+async def list_team_peers(
     team_name: str,
     hub_port: int = SmallSeaClient.DEFAULT_PORT,
     *,
     _http_client=None,
 ) -> list[dict]:
     """Return best-effort peer info for a cached team session."""
-    session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
-    return session.session_peers()
+    async with hub_http(hub_port, _http_client) as http:
+        return await get_team_session(team_name, http).session_peers()
 
 
 def resolve_team_context(files_root: str, participant_hex: str, team_name: str):
@@ -514,36 +555,17 @@ def resolve_team_context(files_root: str, participant_hex: str, team_name: str):
     return matches[0]
 
 
-def _remote_kwargs(session: SmallSeaSession) -> dict:
-    client = session._client
-    return {
-        "base_url": client._base_url,
-        "client": client._http_client,
-    }
-
-
 def make_registry_remote(session: SmallSeaSession) -> SmallSeaStore:
-    return SmallSeaStore(
-        session.token,
-        path_prefix=registry_path_prefix(),
-        **_remote_kwargs(session),
-    )
+    return SmallSeaStore(session.token, session._http, path_prefix=registry_path_prefix())
 
 
 def make_niche_remote(niche_name: str, session: SmallSeaSession) -> SmallSeaStore:
-    return SmallSeaStore(
-        session.token,
-        path_prefix=niche_path_prefix(niche_name),
-        **_remote_kwargs(session),
-    )
+    return SmallSeaStore(session.token, session._http, path_prefix=niche_path_prefix(niche_name))
 
 
 def make_peer_registry_remote(teammate_id: str, session: SmallSeaSession) -> PeerSmallSeaStore:
     return PeerSmallSeaStore(
-        session.token,
-        teammate_id,
-        path_prefix=registry_path_prefix(),
-        **_remote_kwargs(session),
+        session.token, teammate_id, session._http, path_prefix=registry_path_prefix()
     )
 
 
@@ -553,14 +575,11 @@ def make_peer_niche_remote(
     session: SmallSeaSession,
 ) -> PeerSmallSeaStore:
     return PeerSmallSeaStore(
-        session.token,
-        teammate_id,
-        path_prefix=niche_path_prefix(niche_name),
-        **_remote_kwargs(session),
+        session.token, teammate_id, session._http, path_prefix=niche_path_prefix(niche_name)
     )
 
 
-def push_via_hub(
+async def push_via_hub(
     files_root: str,
     participant_hex: str,
     team_name: str,
@@ -578,33 +597,34 @@ def push_via_hub(
     afterwards from both results.
     """
     context = resolve_team_context(files_root, participant_hex, team_name)
-    session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
-    session.ensure_cloud_ready()
-    signer = commit_signer(team_name, hub_port, _http_client=_http_client)
+    signer = await commit_signer(team_name, hub_port, _http_client=_http_client)
     merge_hint = f"`ssc-files merge --from-self {team_name} {niche_name}`"
-    niche_result = _publish(
-        "niche",
-        merge_hint,
-        lambda: files.push_niche(
-            files_root,
-            participant_hex,
-            context,
-            niche_name,
-            make_niche_remote(niche_name, session),
-            signer=signer,
-        ),
-    )
-    registry_result = _publish(
-        "registry",
-        merge_hint,
-        lambda: files.push_registry(
-            files_root,
-            participant_hex,
-            context,
-            make_registry_remote(session),
-            signer=signer,
-        ),
-    )
+    async with hub_http(hub_port, _http_client) as http:
+        session = get_team_session(team_name, http)
+        await session.ensure_cloud_ready()
+        niche_result = await _publish(
+            "niche",
+            merge_hint,
+            files.push_niche(
+                files_root,
+                participant_hex,
+                context,
+                niche_name,
+                make_niche_remote(niche_name, session),
+                signer=signer,
+            ),
+        )
+        registry_result = await _publish(
+            "registry",
+            merge_hint,
+            files.push_registry(
+                files_root,
+                participant_hex,
+                context,
+                make_registry_remote(session),
+                signer=signer,
+            ),
+        )
     if (
         niche_result.disposition == "already_present"
         and registry_result.disposition == "already_present"
@@ -614,14 +634,14 @@ def push_via_hub(
         )
 
 
-def _publish(scope: str, merge_hint: str, publish: Callable):
+async def _publish(scope: str, merge_hint: str, publish: Awaitable):
     """Run one Cod Sync publication and translate its three attention states.
 
     Cod Sync makes at most one head write and observes at most twice; a failed
     publication is never retried here.
     """
     try:
-        return publish()
+        return await publish
     except PublicationIntegrationRequiredError as exc:
         raise PushConflictError(scope, exc, merge_hint) from exc
     except PublicationOutcomeUnresolvedError as exc:
@@ -630,7 +650,7 @@ def _publish(scope: str, merge_hint: str, publish: Callable):
         raise PushRetryableError(scope, exc) from exc
 
 
-def pull_via_hub(
+async def pull_via_hub(
     files_root: str,
     participant_hex: str,
     team_name: str,
@@ -641,7 +661,7 @@ def pull_via_hub(
     _http_client=None,
 ) -> None:
     """Pull a registry and niche from a peer through the Hub."""
-    fetch_via_hub(
+    await fetch_via_hub(
         files_root,
         participant_hex,
         team_name,
@@ -650,7 +670,7 @@ def pull_via_hub(
         hub_port=hub_port,
         _http_client=_http_client,
     )
-    merge_via_hub(
+    await merge_via_hub(
         files_root,
         participant_hex,
         team_name,
@@ -661,7 +681,7 @@ def pull_via_hub(
     )
 
 
-def fetch_via_hub(
+async def fetch_via_hub(
     files_root: str,
     participant_hex: str,
     team_name: str,
@@ -673,39 +693,40 @@ def fetch_via_hub(
 ) -> FetchResult:
     """Fetch a registry and niche from a peer through the Hub without merging."""
     context = resolve_team_context(files_root, participant_hex, team_name)
-    session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
-    signer = commit_signer(team_name, hub_port, _http_client=_http_client)
+    signer = await commit_signer(team_name, hub_port, _http_client=_http_client)
+    async with hub_http(hub_port, _http_client) as http:
+        session = get_team_session(team_name, http)
 
-    # Observe signal_count BEFORE fetching. If the peer pushes again during
-    # the fetch, we intentionally record the pre-second-push count so the
-    # next poll shows a hint (phantom-hint trade-off: one extra no-op fetch
-    # beats silently dropping a signal). Non-fatal if peers cannot be listed.
-    observed_signal_count = 0
-    try:
-        for peer in session.session_peers():
-            if peer["teammate_id"] == from_teammate_id:
-                observed_signal_count = int(peer.get("signal_count", 0))
-                break
-    except Exception:
-        pass
+        # Observe signal_count BEFORE fetching. If the peer pushes again during
+        # the fetch, we intentionally record the pre-second-push count so the
+        # next poll shows a hint (phantom-hint trade-off: one extra no-op fetch
+        # beats silently dropping a signal). Non-fatal if peers cannot be listed.
+        observed_signal_count = 0
+        try:
+            for peer in await session.session_peers():
+                if peer["teammate_id"] == from_teammate_id:
+                    observed_signal_count = int(peer.get("signal_count", 0))
+                    break
+        except Exception:
+            pass
 
-    registry_sha = files.fetch_registry(
-        files_root,
-        participant_hex,
-        context,
-        from_teammate_id,
-        make_peer_registry_remote(from_teammate_id, session),
-        signer=signer,
-    )
-    niche_sha = files.fetch_niche(
-        files_root,
-        participant_hex,
-        context,
-        niche_name,
-        from_teammate_id,
-        make_peer_niche_remote(niche_name, from_teammate_id, session),
-        signer=signer,
-    )
+        registry_sha = await files.fetch_registry(
+            files_root,
+            participant_hex,
+            context,
+            from_teammate_id,
+            make_peer_registry_remote(from_teammate_id, session),
+            signer=signer,
+        )
+        niche_sha = await files.fetch_niche(
+            files_root,
+            participant_hex,
+            context,
+            niche_name,
+            from_teammate_id,
+            make_peer_niche_remote(niche_name, from_teammate_id, session),
+            signer=signer,
+        )
 
     # Advance the watermark now that the fetch succeeded.
     set_signal_watermark(
@@ -719,7 +740,7 @@ def fetch_via_hub(
     )
 
 
-def merge_via_hub(
+async def merge_via_hub(
     files_root: str,
     participant_hex: str,
     team_name: str,
@@ -750,10 +771,10 @@ def merge_via_hub(
     if dirty_entries:
         raise DirtyCheckoutError([e["path"] for e in dirty_entries])
 
-    signer = commit_signer(team_name, hub_port, _http_client=_http_client)
+    signer = await commit_signer(team_name, hub_port, _http_client=_http_client)
 
     try:
-        registry_sha = files.merge_registry(
+        registry_sha = await files.merge_registry(
             files_root,
             participant_hex,
             context,
@@ -766,7 +787,7 @@ def merge_via_hub(
         raise UnauthorizedHistoryError(exc) from exc
 
     try:
-        niche_sha = files.merge_niche(
+        niche_sha = await files.merge_niche(
             files_root,
             participant_hex,
             context,
@@ -825,7 +846,7 @@ class SelfFetchResult:
     niche_sha: str | None
 
 
-def fetch_self_via_hub(
+async def fetch_self_via_hub(
     files_root: str,
     participant_hex: str,
     team_name: str,
@@ -846,38 +867,39 @@ def fetch_self_via_hub(
     registry failure, including a malformed chain, stops the fetch.
     """
     context = resolve_team_context(files_root, participant_hex, team_name)
-    session = get_team_session(team_name, hub_port=hub_port, _http_client=_http_client)
-    signer = commit_signer(team_name, hub_port, _http_client=_http_client)
-    try:
-        registry_sha = files.fetch_self_registry(
-            files_root, participant_hex, context, make_registry_remote(session),
-            signer=signer,
-        )
-    except NoPublishedHeadError:
-        registry_sha = None
-    if niche_name is None:
-        return SelfFetchResult(registry_sha=registry_sha, niche_sha=None)
-    niche_remote = make_niche_remote(niche_name, session)
-    if registry_sha is None:
+    signer = await commit_signer(team_name, hub_port, _http_client=_http_client)
+    async with hub_http(hub_port, _http_client) as http:
+        session = get_team_session(team_name, http)
         try:
-            niche_sha = files.fetch_self_niche(
+            registry_sha = await files.fetch_self_registry(
+                files_root, participant_hex, context, make_registry_remote(session),
+                signer=signer,
+            )
+        except NoPublishedHeadError:
+            registry_sha = None
+        if niche_name is None:
+            return SelfFetchResult(registry_sha=registry_sha, niche_sha=None)
+        niche_remote = make_niche_remote(niche_name, session)
+        if registry_sha is None:
+            try:
+                niche_sha = await files.fetch_self_niche(
+                    files_root, participant_hex, context, niche_name, niche_remote,
+                    signer=signer,
+                )
+            except NoPublishedHeadError as exc:
+                raise SelfFetchNoHeadError(niche_name) from exc
+            return SelfFetchResult(registry_sha=None, niche_sha=niche_sha)
+        try:
+            niche_sha = await files.fetch_self_niche(
                 files_root, participant_hex, context, niche_name, niche_remote,
                 signer=signer,
             )
-        except NoPublishedHeadError as exc:
-            raise SelfFetchNoHeadError(niche_name) from exc
-        return SelfFetchResult(registry_sha=None, niche_sha=niche_sha)
-    try:
-        niche_sha = files.fetch_self_niche(
-            files_root, participant_hex, context, niche_name, niche_remote,
-            signer=signer,
-        )
-    except Exception as exc:
-        raise SelfFetchPartialError(registry_sha, exc) from exc
+        except Exception as exc:
+            raise SelfFetchPartialError(registry_sha, exc) from exc
     return SelfFetchResult(registry_sha=registry_sha, niche_sha=niche_sha)
 
 
-def merge_self(
+async def merge_self(
     files_root: str,
     participant_hex: str,
     team_name: str,
@@ -907,10 +929,10 @@ def merge_self(
     except files.StaleCheckoutError as exc:
         raise StaleCheckoutError(exc.team_name, exc.niche_name, exc.checkout_path) from exc
 
-    signer = commit_signer(team_name, hub_port, _http_client=_http_client)
+    signer = await commit_signer(team_name, hub_port, _http_client=_http_client)
 
     try:
-        registry_shas = files.merge_self_registry(files_root, participant_hex, context,
+        registry_shas = await files.merge_self_registry(files_root, participant_hex, context,
                                                   signer=signer)
     except files.MergeConflictError as exc:
         raise PullConflictError("registry", exc.paths) from exc
@@ -918,7 +940,7 @@ def merge_self(
         raise UnauthorizedHistoryError(exc) from exc
 
     try:
-        niche_shas = files.merge_self_niche(
+        niche_shas = await files.merge_self_niche(
             files_root, participant_hex, context, niche_name, signer=signer
         )
     except files.MergeConflictError as exc:

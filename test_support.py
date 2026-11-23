@@ -48,7 +48,7 @@ def local_files_signer(context):
         extra_env={"GIT_AUTHOR_NAME": "Files Test", "GIT_AUTHOR_EMAIL": "files@test",
                    "GIT_COMMITTER_NAME": "Files Test", "GIT_COMMITTER_EMAIL": "files@test"},
     )
-    def approve_history(git_dir, sha):
+    async def approve_history(git_dir, sha):
         commits = subprocess.check_output(
             ["git", "--git-dir", str(git_dir), "rev-list", sha], text=True
         ).splitlines()

@@ -1,3 +1,5 @@
+import functools
+import anyio
 from test_support import local_files_signer
 import pathlib
 import shutil
@@ -5,7 +7,7 @@ import subprocess
 
 import pytest
 from cod_sync.protocol import PublicationIntegrationRequiredError, parked_ref_name
-from cod_sync.store import LocalFolderStore
+from cod_sync.aio.store import LocalFolderStore
 from ssc_files import sync
 from ssc_files.files import (
     NicheResidency,
@@ -47,7 +49,7 @@ def test_sync_niche_between_devices(playground_dir):
     (pathlib.Path(checkout_a) / "beach.jpg").write_bytes(b"fake-beach-data")
     publish(root_a, PARTICIPANT, TEAM, "photos", checkout_a, message="add photos", signer=local_files_signer(TEAM))
 
-    push_niche(root_a, PARTICIPANT, TEAM, "photos", LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, root_a, PARTICIPANT, TEAM, "photos", LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM)))
 
     # --- Device B: join flow: fetch → attach checkout → merge ---
     root_b = str(playground / "device-b")
@@ -55,9 +57,9 @@ def test_sync_niche_between_devices(playground_dir):
     materialize_team(root_b, TEAM)
     checkout_b = str(playground / "checkout-b" / "photos")
 
-    fetch_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(fetch_niche, root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM)))
     add_checkout(root_b, PARTICIPANT, TEAM, "photos", checkout_b)
-    merge_niche(root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(merge_niche, root_b, PARTICIPANT, TEAM, "photos", PARTICIPANT, signer=local_files_signer(TEAM)))
 
     # --- Assert both checkouts have the same files ---
     sunset_b = pathlib.Path(checkout_b) / "sunset.jpg"
@@ -89,7 +91,7 @@ def test_merge_via_hub_no_checkout_cached_preserves_residency(playground_dir, mo
     # No add_checkout: niche git dir exists but no checkout row → CACHED.
 
     with pytest.raises(sync.NoCheckoutError) as exc_info:
-        sync.merge_via_hub(root, PARTICIPANT, TEAM.team_name, "files", "some-peer-id")
+        anyio.run(sync.merge_via_hub, root, PARTICIPANT, TEAM.team_name, "files", "some-peer-id")
 
     err = exc_info.value
     assert err.residency is NicheResidency.CACHED
@@ -106,7 +108,7 @@ def test_merge_via_hub_no_checkout_remote_only_preserves_residency(playground_di
     # No create_niche: no git dir → REMOTE_ONLY.
 
     with pytest.raises(sync.NoCheckoutError) as exc_info:
-        sync.merge_via_hub(root, PARTICIPANT, TEAM.team_name, "files", "some-peer-id")
+        anyio.run(sync.merge_via_hub, root, PARTICIPANT, TEAM.team_name, "files", "some-peer-id")
 
     err = exc_info.value
     assert err.residency is NicheResidency.REMOTE_ONLY
@@ -145,15 +147,15 @@ def _two_device_conflict(playground_dir):
     add_checkout(root_a, PARTICIPANT, TEAM, "notes", str(checkout_a))
     (checkout_a / "shared.txt").write_text("v1\n")
     publish(root_a, PARTICIPANT, TEAM, "notes", str(checkout_a), message="v1", signer=local_files_signer(TEAM))
-    push_niche(root_a, PARTICIPANT, TEAM, "notes", LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, root_a, PARTICIPANT, TEAM, "notes", LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM)))
 
     root_b = str(playground / "device-b")
     init_files(root_b, PARTICIPANT)
     materialize_team(root_b, TEAM)
     checkout_b = pathlib.Path(playground) / "checkout-b"
-    fetch_niche(root_b, PARTICIPANT, TEAM, "notes", PARTICIPANT, LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(fetch_niche, root_b, PARTICIPANT, TEAM, "notes", PARTICIPANT, LocalFolderStore(str(cloud_dir)), signer=local_files_signer(TEAM)))
     add_checkout(root_b, PARTICIPANT, TEAM, "notes", str(checkout_b))
-    merge_niche(root_b, PARTICIPANT, TEAM, "notes", PARTICIPANT, signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(merge_niche, root_b, PARTICIPANT, TEAM, "notes", PARTICIPANT, signer=local_files_signer(TEAM)))
 
     return {
         "cloud_dir": cloud_dir,
@@ -168,15 +170,12 @@ def _diverge(env, *, a_text, b_text):
     """Give each device one new commit and let device A win the cloud head."""
     (env["checkout_a"] / "a.txt").write_text(a_text)
     publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a", signer=local_files_signer(TEAM))
-    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
 
     (env["checkout_b"] / "b.txt").write_text(b_text)
     publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError) as exc_info:
-        push_niche(
-            env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])),
-            signer=local_files_signer(TEAM),
-        )
+        anyio.run(functools.partial(push_niche, env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
     return exc_info.value
 
 
@@ -203,7 +202,7 @@ def test_merge_self_integrates_a_parked_sibling_device_head(playground_dir):
     )
     assert parked == failure.observed_head
 
-    result = sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    result = anyio.run(sync.merge_self, env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
 
     assert result.merged_anything
     assert result.niche_shas == [failure.observed_head]
@@ -211,7 +210,7 @@ def test_merge_self_integrates_a_parked_sibling_device_head(playground_dir):
     assert (env["checkout_b"] / "b.txt").read_text() == "from B\n"
 
     # Nothing is outstanding now, and the ref is not merged a second time.
-    again = sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    again = anyio.run(sync.merge_self, env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
     assert again.niche_shas == []
     assert not again.merged_anything
 
@@ -234,7 +233,7 @@ def test_self_conflict_status_tracks_what_merge_self_would_integrate(playground_
     assert status.outstanding
     assert status.niche_shas == [failure.observed_head]
 
-    sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    anyio.run(sync.merge_self, env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
     assert not sync.self_conflict_status(
         env["root_b"], PARTICIPANT, TEAM, "notes"
     ).outstanding
@@ -256,7 +255,7 @@ def test_web_offers_and_runs_the_self_store_merge(playground_dir, monkeypatch):
     env = _two_device_conflict(playground_dir)
     failure = _diverge(env, a_text="from A\n", b_text="from B\n")
 
-    def _refused_push(*_args, **_kwargs):
+    async def _refused_push(*_args, **_kwargs):
         raise sync.PushConflictError(
             "niche",
             failure,
@@ -299,36 +298,30 @@ def test_merge_self_leaves_an_already_integrated_parked_ref_alone(playground_dir
     """
     env = _two_device_conflict(playground_dir)
     first = _diverge(env, a_text="from A\n", b_text="from B\n")
-    sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    anyio.run(sync.merge_self, env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
 
     # Device B publishes the merge; device A gets ahead again.
-    push_niche(env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
     (env["checkout_a"] / "a2.txt").write_text("from A again\n")
     publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a2", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError):
         # Device A has not seen B's merge commit, so its own push is refused
         # and it parks B's head; pull it in so A can win the race again.
-        push_niche(
-            env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])),
-            signer=local_files_signer(TEAM),
-        )
-    sync.merge_self(env["root_a"], PARTICIPANT, TEAM.team_name, "notes")
-    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM))
+        anyio.run(functools.partial(push_niche, env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
+    anyio.run(sync.merge_self, env["root_a"], PARTICIPANT, TEAM.team_name, "notes")
+    anyio.run(functools.partial(push_niche, env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
 
     (env["checkout_b"] / "b2.txt").write_text("from B again\n")
     publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b2", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError) as exc_info:
-        push_niche(
-            env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])),
-            signer=local_files_signer(TEAM),
-        )
+        anyio.run(functools.partial(push_niche, env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
     second = exc_info.value
 
     git_dir = _niche_git_dir(env["root_b"], TEAM, "notes")
     assert _resolve_ref(git_dir, parked_ref_name(first.observed_link_uid)) is not None
     assert _resolve_ref(git_dir, parked_ref_name(second.observed_link_uid)) is not None
 
-    result = sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    result = anyio.run(sync.merge_self, env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
     assert result.niche_shas == [second.observed_head]
     assert (env["checkout_b"] / "a2.txt").read_text() == "from A again\n"
 
@@ -339,32 +332,18 @@ def test_merge_self_merges_a_descendant_before_its_parked_ancestor(playground_di
 
     (env["checkout_a"] / "shared.txt").write_text("intermediate\n")
     publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a1", signer=local_files_signer(TEAM))
-    push_niche(
-        env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])),
-        signer=local_files_signer(TEAM),
-    )
+    anyio.run(functools.partial(push_niche, env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
 
     (env["checkout_b"] / "shared.txt").write_text("resolved\n")
     publish(env["root_b"], PARTICIPANT, TEAM, "notes", str(env["checkout_b"]), message="b", signer=local_files_signer(TEAM))
     with pytest.raises(PublicationIntegrationRequiredError) as first_info:
-        push_niche(
-            env["root_b"], PARTICIPANT, TEAM, "notes",
-            LocalFolderStore(str(env["cloud_dir"])),
-            signer=local_files_signer(TEAM),
-        )
+        anyio.run(functools.partial(push_niche, env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
 
     (env["checkout_a"] / "shared.txt").write_text("resolved\n")
     publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a2", signer=local_files_signer(TEAM))
-    push_niche(
-        env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])),
-        signer=local_files_signer(TEAM),
-    )
+    anyio.run(functools.partial(push_niche, env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
     with pytest.raises(PublicationIntegrationRequiredError) as second_info:
-        push_niche(
-            env["root_b"], PARTICIPANT, TEAM, "notes",
-            LocalFolderStore(str(env["cloud_dir"])),
-            signer=local_files_signer(TEAM),
-        )
+        anyio.run(functools.partial(push_niche, env["root_b"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
 
     first = first_info.value
     second = second_info.value
@@ -385,7 +364,7 @@ def test_merge_self_merges_a_descendant_before_its_parked_ancestor(playground_di
     status = sync.self_conflict_status(env["root_b"], PARTICIPANT, TEAM, "notes")
     assert status.niche_shas == [second.observed_head]
 
-    result = sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    result = anyio.run(sync.merge_self, env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
 
     assert result.niche_shas == [second.observed_head]
     assert (env["checkout_b"] / "shared.txt").read_text() == "resolved\n"
@@ -417,7 +396,7 @@ def test_merge_self_preflight_blocks_registry_when_niche_git_dir_is_missing(play
 
     shutil.rmtree(_niche_git_dir(root, TEAM, "notes"))
     with pytest.raises(sync.DirtyCheckoutError):
-        sync.merge_self(root, PARTICIPANT, TEAM.team_name, "notes")
+        anyio.run(sync.merge_self, root, PARTICIPANT, TEAM.team_name, "notes")
 
     assert _git(registry_git, "rev-parse", "HEAD") == registry_head
 
@@ -431,13 +410,13 @@ def test_merge_self_reports_every_unusable_checkout_state(playground_dir):
 
     # No git dir at all.
     with pytest.raises(sync.NoCheckoutError) as exc_info:
-        sync.merge_self(root, PARTICIPANT, TEAM.team_name, "notes")
+        anyio.run(sync.merge_self, root, PARTICIPANT, TEAM.team_name, "notes")
     assert exc_info.value.residency is NicheResidency.REMOTE_ONLY
 
     # Local history, no checkout attached.
     create_niche(root, PARTICIPANT, TEAM, "notes", signer=local_files_signer(TEAM))
     with pytest.raises(sync.NoCheckoutError) as exc_info:
-        sync.merge_self(root, PARTICIPANT, TEAM.team_name, "notes")
+        anyio.run(sync.merge_self, root, PARTICIPANT, TEAM.team_name, "notes")
     assert exc_info.value.residency is NicheResidency.CACHED
 
     checkout = playground / "checkout"
@@ -448,7 +427,7 @@ def test_merge_self_reports_every_unusable_checkout_state(playground_dir):
     # Dirty checkout.
     (checkout / "shared.txt").write_text("uncommitted\n")
     with pytest.raises(sync.DirtyCheckoutError) as dirty_info:
-        sync.merge_self(root, PARTICIPANT, TEAM.team_name, "notes")
+        anyio.run(sync.merge_self, root, PARTICIPANT, TEAM.team_name, "notes")
     # Only that the dirty file is reported: the exact path text is unreliable
     # because files.status strips the whole porcelain output before slicing, so
     # the first entry loses a character. Pre-existing, not this branch's.
@@ -458,7 +437,7 @@ def test_merge_self_reports_every_unusable_checkout_state(playground_dir):
     # Registered checkout directory removed from disk.
     shutil.rmtree(checkout)
     with pytest.raises(sync.StaleCheckoutError) as stale_info:
-        sync.merge_self(root, PARTICIPANT, TEAM.team_name, "notes")
+        anyio.run(sync.merge_self, root, PARTICIPANT, TEAM.team_name, "notes")
     assert stale_info.value.checkout_path == str(checkout)
 
 
@@ -474,7 +453,7 @@ def test_cli_merge_requires_exactly_one_source(monkeypatch, tmp_path):
         {"files_root": str(tmp_path / "files"), "participant_hex": PARTICIPANT}
     )
 
-    def _unreachable(*_args, **_kwargs):
+    async def _unreachable(*_args, **_kwargs):
         raise AssertionError("no merge should run without a valid source")
 
     monkeypatch.setattr(sync, "merge_self", _unreachable)
@@ -503,10 +482,10 @@ def test_cli_merge_from_self_reports_nothing_parked(monkeypatch, tmp_path):
 
     from ssc_files.cli import cli
 
-    monkeypatch.setattr(
-        sync, "merge_self",
-        lambda *_a, **_k: sync.SelfMergeResult(registry_shas=[], niche_shas=[]),
-    )
+    async def _merge_self(*_a, **_k):
+        return sync.SelfMergeResult(registry_shas=[], niche_shas=[])
+
+    monkeypatch.setattr(sync, "merge_self", _merge_self)
     result = CliRunner().invoke(cli, ["merge", "ProjectX", "docs", "--from-self"])
 
     assert result.exit_code == 0, result.output
@@ -527,7 +506,7 @@ def test_cli_fetch_requires_exactly_one_source(monkeypatch, tmp_path):
 
     _cli_config(monkeypatch, tmp_path)
 
-    def _unreachable(*_args, **_kwargs):
+    async def _unreachable(*_args, **_kwargs):
         raise AssertionError("no fetch should run without a valid source")
 
     monkeypatch.setattr(sync, "fetch_self_via_hub", _unreachable)
@@ -553,7 +532,7 @@ def test_cli_fetch_from_self_reports_both_heads(monkeypatch, tmp_path):
     _cli_config(monkeypatch, tmp_path)
     calls = []
 
-    def _fetch(*args, **kwargs):
+    async def _fetch(*args, **kwargs):
         calls.append(args)
         return sync.SelfFetchResult(registry_sha="a" * 40, niche_sha="b" * 40)
 
@@ -574,7 +553,7 @@ def test_cli_fetch_from_self_partial_failure_says_registry_kept(monkeypatch, tmp
 
     _cli_config(monkeypatch, tmp_path)
 
-    def _partial(*_args, **_kwargs):
+    async def _partial(*_args, **_kwargs):
         raise sync.SelfFetchPartialError("a" * 40, RuntimeError("the store publishes no head"))
 
     monkeypatch.setattr(sync, "fetch_self_via_hub", _partial)
@@ -610,16 +589,13 @@ def test_fetch_self_parks_a_sibling_head_without_writing_or_moving_head(playgrou
     env = _two_device_conflict(playground_dir)
     (env["checkout_a"] / "a.txt").write_text("from A\n")
     publish(env["root_a"], PARTICIPANT, TEAM, "notes", str(env["checkout_a"]), message="a", signer=local_files_signer(TEAM))
-    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
     a_head = _git(_niche_git_dir(env["root_a"], TEAM, "notes"), "rev-parse", "HEAD")
 
     git_dir_b = _niche_git_dir(env["root_b"], TEAM, "notes")
     b_head_before = _git(git_dir_b, "rev-parse", "HEAD")
 
-    fetched = fetch_self_niche(
-        env["root_b"], PARTICIPANT, TEAM, "notes", _NoWriteStore(str(env["cloud_dir"])),
-        signer=local_files_signer(TEAM),
-    )
+    fetched = anyio.run(functools.partial(fetch_self_niche, env["root_b"], PARTICIPANT, TEAM, "notes", _NoWriteStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM)))
 
     assert fetched == a_head
     assert _git(git_dir_b, "rev-parse", "HEAD") == b_head_before
@@ -630,19 +606,16 @@ def test_fetch_self_parks_a_sibling_head_without_writing_or_moving_head(playgrou
     assert parked == a_head
 
     # Refetching the same head verifies the immutable ref rather than failing.
-    assert fetch_self_niche(
-        env["root_b"], PARTICIPANT, TEAM, "notes", _NoWriteStore(str(env["cloud_dir"])),
-        signer=local_files_signer(TEAM),
-    ) == a_head
+    assert anyio.run(functools.partial(fetch_self_niche, env["root_b"], PARTICIPANT, TEAM, "notes", _NoWriteStore(str(env["cloud_dir"])), signer=local_files_signer(TEAM))) == a_head
 
     # A dirty checkout still blocks integration, and the parked head survives.
     (env["checkout_b"] / "shared.txt").write_text("dirty\n")
     with pytest.raises(sync.DirtyCheckoutError):
-        sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+        anyio.run(sync.merge_self, env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
     assert _git(git_dir_b, "rev-parse", "HEAD") == b_head_before
     (env["checkout_b"] / "shared.txt").write_text("v1\n")
 
-    result = sync.merge_self(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+    result = anyio.run(sync.merge_self, env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
     assert result.niche_shas == [a_head]
     assert (env["checkout_b"] / "a.txt").read_text() == "from A\n"
 
@@ -653,7 +626,7 @@ def test_fetch_self_via_hub_keeps_the_registry_when_the_niche_fails(playground_d
     env = _two_device_conflict(playground_dir)
     registry_cloud = pathlib.Path(playground_dir) / "registry-cloud"
     registry_cloud.mkdir()
-    push_registry(env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(registry_cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_registry, env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(registry_cloud)), signer=local_files_signer(TEAM)))
     empty_niche_cloud = pathlib.Path(playground_dir) / "empty-niche-cloud"
     empty_niche_cloud.mkdir()
 
@@ -667,7 +640,7 @@ def test_fetch_self_via_hub_keeps_the_registry_when_the_niche_fails(playground_d
     )
 
     with pytest.raises(sync.SelfFetchPartialError) as exc_info:
-        sync.fetch_self_via_hub(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+        anyio.run(sync.fetch_self_via_hub, env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
 
     registry_git_b = _registry_git_dir(env["root_b"], TEAM)
     parked = _git(
@@ -682,7 +655,7 @@ def test_fetch_self_via_hub_can_fetch_registry_for_niche_discovery(playground_di
     cloud = pathlib.Path(playground_dir) / "registry-cloud"
     cloud.mkdir()
     create_niche(env["root_a"], PARTICIPANT, TEAM, "plans", signer=local_files_signer(TEAM))
-    push_registry(env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_registry, env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM)))
 
     monkeypatch.setattr(sync, "resolve_team_context", lambda *_a: TEAM)
     monkeypatch.setattr(sync, "get_team_session", lambda *_a, **_k: None)
@@ -692,12 +665,12 @@ def test_fetch_self_via_hub_can_fetch_registry_for_niche_discovery(playground_di
         lambda *_a: pytest.fail("registry-only fetch must not request a niche remote"),
     )
 
-    result = sync.fetch_self_via_hub(env["root_b"], PARTICIPANT, TEAM.team_name)
+    result = anyio.run(sync.fetch_self_via_hub, env["root_b"], PARTICIPANT, TEAM.team_name)
     assert result.registry_sha
     assert result.niche_sha is None
     from ssc_files.files import merge_self_registry
 
-    merge_self_registry(env["root_b"], PARTICIPANT, TEAM, signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(merge_self_registry, env["root_b"], PARTICIPANT, TEAM, signer=local_files_signer(TEAM)))
     from ssc_files.files import list_niches
 
     assert "plans" in [
@@ -708,7 +681,7 @@ def test_fetch_self_via_hub_can_fetch_registry_for_niche_discovery(playground_di
 class _GarbageLatestStore(_NoWriteStore):
     """A store whose registry head exists but does not decode."""
 
-    def get_latest_link(self):
+    async def get_latest_link(self):
         return b"not a link", "etag"
 
 
@@ -718,7 +691,7 @@ def test_fetch_self_via_hub_does_not_treat_a_malformed_registry_as_absent(
     env = _two_device_conflict(playground_dir)
     niche_cloud = pathlib.Path(playground_dir) / "niche-cloud"
     niche_cloud.mkdir()
-    push_niche(env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(niche_cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, env["root_a"], PARTICIPANT, TEAM, "notes", LocalFolderStore(str(niche_cloud)), signer=local_files_signer(TEAM)))
     registry_cloud = pathlib.Path(playground_dir) / "registry-cloud"
     registry_cloud.mkdir()
 
@@ -730,7 +703,7 @@ def test_fetch_self_via_hub_does_not_treat_a_malformed_registry_as_absent(
     monkeypatch.setattr(sync, "make_niche_remote", lambda _n, _s: _NoWriteStore(str(niche_cloud)))
 
     with pytest.raises(Exception) as exc_info:
-        sync.fetch_self_via_hub(env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
+        anyio.run(sync.fetch_self_via_hub, env["root_b"], PARTICIPANT, TEAM.team_name, "notes")
     assert not isinstance(exc_info.value, sync.NoPublishedHeadError)
     # The niche was not fetched behind a registry failure.
     niche_git_b = _niche_git_dir(env["root_b"], TEAM, "notes")
@@ -743,11 +716,10 @@ def test_cli_fetch_from_self_reports_missing_registry(monkeypatch, tmp_path):
     from ssc_files.cli import cli
 
     _cli_config(monkeypatch, tmp_path)
-    monkeypatch.setattr(
-        sync,
-        "fetch_self_via_hub",
-        lambda *_a, **_k: sync.SelfFetchResult(registry_sha=None, niche_sha="b" * 40),
-    )
+    async def _fetch_self(*_a, **_k):
+        return sync.SelfFetchResult(registry_sha=None, niche_sha="b" * 40)
+
+    monkeypatch.setattr(sync, "fetch_self_via_hub", _fetch_self)
     result = CliRunner().invoke(cli, ["fetch", "ProjectX", "docs", "--from-self"])
 
     assert result.exit_code == 0, result.output
@@ -763,7 +735,7 @@ def test_cli_fetch_from_self_reports_cod_sync_errors_without_traceback(monkeypat
 
     _cli_config(monkeypatch, tmp_path)
 
-    def _chain_error(*_a, **_k):
+    async def _chain_error(*_a, **_k):
         raise ChainError("injected malformed registry")
 
     monkeypatch.setattr(sync, "fetch_self_via_hub", _chain_error)

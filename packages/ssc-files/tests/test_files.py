@@ -1,3 +1,5 @@
+import functools
+import anyio
 from test_support import local_files_signer
 import json
 import pathlib
@@ -333,7 +335,7 @@ PARTICIPANT_B = "bb" * 16
 
 def _two_files_setup(playground_dir):
     """Set up alice (PARTICIPANT) and bob (PARTICIPANT_B) filess sharing a niche."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from ssc_files.files import (
         fetch_niche,
         push_niche,
@@ -351,12 +353,12 @@ def _two_files_setup(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "shared", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, playground_dir, PARTICIPANT, TEAM, "shared", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM)))
 
     # Bob gets an empty files and fetches from alice
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     bob_co = playground / "checkout-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", str(bob_co))
@@ -366,7 +368,7 @@ def _two_files_setup(playground_dir):
 
 def test_merge_without_checkout_raises(playground_dir):
     """merge_niche raises NoCheckoutError when no checkout is attached."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from ssc_files.files import fetch_niche, push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -379,15 +381,15 @@ def test_merge_without_checkout_raises(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "stuff", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, playground_dir, PARTICIPANT, TEAM, "stuff", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM)))
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     # Bob has a fetched ref but no checkout — merge must fail clearly
     with pytest.raises(NoCheckoutError):
-        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+        anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "stuff", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
 
 def test_merge_dirty_tracked_file_raises(playground_dir):
@@ -399,7 +401,7 @@ def test_merge_dirty_tracked_file_raises(playground_dir):
     (bob_co / "hello.txt").write_text("modified\n")
 
     with pytest.raises(DirtyCheckoutError) as exc_info:
-        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+        anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     assert "hello.txt" in exc_info.value.paths
 
@@ -416,7 +418,7 @@ def test_merge_dirty_untracked_file_raises(playground_dir):
     (bob_co / "untracked.txt").write_text("surprise\n")
 
     with pytest.raises(DirtyCheckoutError) as exc_info:
-        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+        anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     assert "untracked.txt" in exc_info.value.paths
 
@@ -426,7 +428,7 @@ def test_merge_clean_checkout_succeeds(playground_dir):
     playground, bob_root, bob_co = _two_files_setup(playground_dir)
 
     # Bob's checkout is clean; merge should succeed and deliver alice's file
-    result_sha = merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    result_sha = anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "shared", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     assert result_sha is not None
     assert (bob_co / "hello.txt").exists()
@@ -507,7 +509,7 @@ def test_no_checkout_error_cached_message(playground_dir):
     create_niche(playground_dir, PARTICIPANT, TEAM, "stuff", signer=local_files_signer(TEAM))
 
     with pytest.raises(NoCheckoutError) as exc_info:
-        merge_niche(playground_dir, PARTICIPANT, TEAM, "stuff", "some-peer-id", signer=local_files_signer(TEAM))
+        anyio.run(functools.partial(merge_niche, playground_dir, PARTICIPANT, TEAM, "stuff", "some-peer-id", signer=local_files_signer(TEAM)))
 
     err = exc_info.value
     assert err.residency is NicheResidency.CACHED
@@ -526,7 +528,7 @@ def test_no_checkout_error_remote_only_message(playground_dir):
     # Files is initialised but "ghost" niche was never created locally —
     # there is no git dir, so residency is REMOTE_ONLY.
     with pytest.raises(NoCheckoutError) as exc_info:
-        merge_niche(playground_dir, PARTICIPANT, TEAM, "ghost", "some-peer-id", signer=local_files_signer(TEAM))
+        anyio.run(functools.partial(merge_niche, playground_dir, PARTICIPANT, TEAM, "ghost", "some-peer-id", signer=local_files_signer(TEAM)))
 
     err = exc_info.value
     assert err.residency is NicheResidency.REMOTE_ONLY
@@ -570,7 +572,7 @@ PARTICIPANT_C = "cc" * 16
 
 def _full_sync_setup(playground_dir):
     """Alice creates + publishes + pushes a niche. Returns (playground, cloud, bob_root)."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from ssc_files.files import push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -583,7 +585,7 @@ def _full_sync_setup(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "sync", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, playground_dir, PARTICIPANT, TEAM, "sync", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM)))
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
@@ -593,16 +595,16 @@ def _full_sync_setup(playground_dir):
 
 def test_no_transit_dir_ever_created(playground_dir):
     """No transit/ directory is created anywhere in the files tree across the full lifecycle."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from ssc_files.files import push_niche
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     # Bob: fetch → add_checkout → merge
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     # Walk every files directory and assert no transit/ dir exists
     for files_root in [pathlib.Path(playground_dir), bob_root]:
@@ -613,13 +615,10 @@ def test_no_transit_dir_ever_created(playground_dir):
 
 def test_fetch_without_checkout_pins_ref(playground_dir):
     """fetch_niche on a CACHED niche (no checkout) pins the parked ref to the expected SHA."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
-    fetched_sha = fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)),
-        signer=local_files_signer(_team_for(PARTICIPANT_B)),
-    )
+    fetched_sha = anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     assert fetched_sha is not None
     # The niche is CACHED (no checkout registered)
@@ -634,14 +633,11 @@ def test_fetch_without_checkout_pins_ref(playground_dir):
 
 def test_peer_update_status_cached_resolve_ref_path(playground_dir):
     """peer_update_status reports a valid parked_sha and ready_to_merge=True for a CACHED niche."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from ssc_files.files import peer_update_status
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
-    fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)),
-        signer=local_files_signer(_team_for(PARTICIPANT_B)),
-    )
+    anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "sync", PARTICIPANT)
     assert status_info["parked_sha"] is not None
@@ -651,7 +647,7 @@ def test_peer_update_status_cached_resolve_ref_path(playground_dir):
 
 def test_peer_update_status_cached_is_ancestor_path(playground_dir):
     """peer_update_status exercises _is_ancestor for a CACHED niche with local commit history."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from ssc_files.files import peer_update_status, push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -665,28 +661,25 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
     publish(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co), message="A", signer=local_files_signer(TEAM))
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM)))
 
     # Bob: fetch A, add checkout, merge A (creates local HEAD at A), then unregister checkout
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
     remove_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
     # Bob's niche is now CACHED with HEAD at A
 
     # Alice: commit B, push
     (alice_co / "b.txt").write_text("b\n")
     publish(playground_dir, PARTICIPANT, TEAM, "history", str(alice_co), message="B", signer=local_files_signer(TEAM))
-    push_niche(playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, playground_dir, PARTICIPANT, TEAM, "history", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM)))
 
     # Bob: fetch B — parked_sha is B, HEAD is A, so _is_ancestor is exercised
-    sha_B = fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud)),
-        signer=local_files_signer(_team_for(PARTICIPANT_B)),
-    )
+    sha_B = anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
     status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "history", PARTICIPANT)
     assert status_info["parked_sha"] == sha_B
     assert status_info["already_merged"] is False
@@ -694,7 +687,7 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
 
     # Bob re-registers, merges B, removes checkout again → already_merged=True
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
     remove_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "history", str(bob_co))
 
     status_info = peer_update_status(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "niche", "history", PARTICIPANT)
@@ -704,7 +697,7 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
 
 def test_initial_history_pull(playground_dir):
     """pull_niche on a fresh local git dir (no prior commits) populates the checkout."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from ssc_files.files import pull_niche
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
@@ -717,7 +710,7 @@ def test_initial_history_pull(playground_dir):
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
 
-    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(pull_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     assert (bob_co / "file.txt").exists()
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -725,16 +718,13 @@ def test_initial_history_pull(playground_dir):
 
 def test_initial_history_merge(playground_dir):
     """fetch_niche + add_checkout + merge_niche on a fresh git dir populates the checkout."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
-    fetch_niche(
-        str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)),
-        signer=local_files_signer(_team_for(PARTICIPANT_B)),
-    )
+    anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     assert (bob_co / "file.txt").exists()
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -742,7 +732,7 @@ def test_initial_history_merge(playground_dir):
 
 def test_merge_conflict_paths_in_user_checkout(playground_dir):
     """niche_conflict_paths returns conflicted filenames after a merge conflict."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from ssc_files.files import MergeConflictError, niche_conflict_paths, push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -757,27 +747,27 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
 
     cloud = playground / "cloud"
     cloud.mkdir()
-    push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM)))
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     # Both Alice and Bob modify the same file divergently and push/re-fetch
     (alice_co / "shared.txt").write_text("alice edit\n")
     publish(playground_dir, PARTICIPANT, TEAM, "conflict", str(alice_co), message="alice", signer=local_files_signer(TEAM))
-    push_niche(playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, playground_dir, PARTICIPANT, TEAM, "conflict", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM)))
 
     (bob_co / "shared.txt").write_text("bob edit\n")
     publish(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", str(bob_co), message="bob", signer=local_files_signer(_team_for(PARTICIPANT_B)))
 
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     with pytest.raises(MergeConflictError):
-        merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+        anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     conflict_files = niche_conflict_paths(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "conflict")
     assert "shared.txt" in conflict_files
@@ -785,7 +775,7 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
 
 def test_stale_bundle_guard(playground_dir):
     """pull_niche raises RuntimeError when the remote has no content, leaving the checkout unchanged."""
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from ssc_files.files import pull_niche
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
@@ -797,14 +787,14 @@ def test_stale_bundle_guard(playground_dir):
     _init_git_dir(git_dir)
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", str(bob_co))
-    pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(pull_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
     assert (bob_co / "file.txt").read_text() == "v1\n"
 
     # Now point pull at an empty store, which publishes no head at all.
     empty_cloud = playground / "cloud-empty"
     empty_cloud.mkdir()
     with pytest.raises(NoPublishedHeadError):
-        pull_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(empty_cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+        anyio.run(functools.partial(pull_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", LocalFolderStore(str(empty_cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
 
     # Checkout is unchanged
     assert (bob_co / "file.txt").read_text() == "v1\n"
@@ -859,7 +849,7 @@ def test_niche_conflict_paths_stale_and_cached(playground_dir):
 def test_cwd_preserved_across_files_operations(playground_dir):
     """os.getcwd() is identical before and after every files operation that touches git."""
     import os
-    from cod_sync.store import LocalFolderStore
+    from cod_sync.aio.store import LocalFolderStore
     from ssc_files.files import (
         merge_registry,
         push_niche,
@@ -882,21 +872,21 @@ def test_cwd_preserved_across_files_operations(playground_dir):
 
     cwd_before = os.getcwd()
 
-    push_niche(playground_dir, PARTICIPANT, TEAM, "cwdtest", LocalFolderStore(str(cloud_niche)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_niche, playground_dir, PARTICIPANT, TEAM, "cwdtest", LocalFolderStore(str(cloud_niche)), signer=local_files_signer(TEAM)))
     assert os.getcwd() == cwd_before
 
-    push_registry(playground_dir, PARTICIPANT, TEAM, LocalFolderStore(str(cloud_reg)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(push_registry, playground_dir, PARTICIPANT, TEAM, LocalFolderStore(str(cloud_reg)), signer=local_files_signer(TEAM)))
     assert os.getcwd() == cwd_before
 
     bob_root = playground / "files-bob"
     init_files(str(bob_root), PARTICIPANT_B)
 
-    fetch_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT, LocalFolderStore(str(cloud_niche)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT, LocalFolderStore(str(cloud_niche)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
     assert os.getcwd() == cwd_before
 
     bob_co = playground / "co-bob"
     add_checkout(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", str(bob_co))
-    merge_niche(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(merge_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "cwdtest", PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
     assert os.getcwd() == cwd_before
 
     # pull_niche (initial pull path)
@@ -908,19 +898,19 @@ def test_cwd_preserved_across_files_operations(playground_dir):
     _init_git_dir(git_dir2)
     bob2_co = playground / "co-bob2"
     add_checkout(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", str(bob2_co))
-    pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderStore(str(cloud_niche)), signer=local_files_signer(_team_for(PARTICIPANT_C)))
+    anyio.run(functools.partial(pull_niche, str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderStore(str(cloud_niche)), signer=local_files_signer(_team_for(PARTICIPANT_C))))
     assert os.getcwd() == cwd_before
 
     # merge_registry (covers _cod_merge_ref via registry path)
     from ssc_files.files import fetch_registry
-    fetch_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, LocalFolderStore(str(cloud_reg)), signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(fetch_registry, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, LocalFolderStore(str(cloud_reg)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
     assert os.getcwd() == cwd_before
-    merge_registry(str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B)))
+    anyio.run(functools.partial(merge_registry, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), PARTICIPANT, signer=local_files_signer(_team_for(PARTICIPANT_B))))
     assert os.getcwd() == cwd_before
 
     # Failure path: pull_niche on an empty store raises but leaves CWD unchanged
     empty_cloud = playground / "cloud-empty"
     empty_cloud.mkdir()
     with pytest.raises(NoPublishedHeadError):
-        pull_niche(str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderStore(str(empty_cloud)), signer=local_files_signer(_team_for(PARTICIPANT_C)))
+        anyio.run(functools.partial(pull_niche, str(bob2_root), PARTICIPANT_C, _team_for(PARTICIPANT_C), "cwdtest", LocalFolderStore(str(empty_cloud)), signer=local_files_signer(_team_for(PARTICIPANT_C))))
     assert os.getcwd() == cwd_before

@@ -5,6 +5,8 @@ login: everything comes from the config file and Files state already on
 disk, and the Hub is reached over real loopback HTTP.
 """
 
+import functools
+import anyio
 import hashlib
 import json
 import os
@@ -14,23 +16,20 @@ import sys
 from ssc_files import files, sync
 
 
+async def _session_info(team, hub_port):
+    async with sync.hub_http(hub_port) as http:
+        return await sync.get_team_session(team, http).session_info()
+
+
 def main():
     request = json.loads(sys.argv[1])
     team = request["team"]
     participant = request["participant"]
 
-    session = sync.get_team_session(team, hub_port=request["hub_port"])
-    info = session.session_info()
+    info = anyio.run(_session_info, team, request["hub_port"])
     context = files.materialization_context_from_session_info(info)
 
-    sync.pull_via_hub(
-        request["files_root"],
-        participant,
-        team,
-        request["niche"],
-        request["from_teammate_id"],
-        hub_port=request["hub_port"],
-    )
+    anyio.run(functools.partial(sync.pull_via_hub, request["files_root"], participant, team, request["niche"], request["from_teammate_id"], hub_port=request["hub_port"]))
     content = pathlib.Path(request["checkout"], request["path"]).read_bytes()
 
     json.dump({

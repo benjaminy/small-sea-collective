@@ -18,14 +18,17 @@ import small_sea_manager.provisioning as Provisioning
 from ssc_files import files, sync
 
 
-def _hub_signer(team_name, hub_port=11437, *, _http_client=None, tmp_dir):
+async def _hub_signer(team_name, hub_port=11437, *, _http_client=None, tmp_dir):
     """Sign with the session's real workhorse key and verify through the Hub's /session/verify.
 
     The Hub signing program is not installed in tests, so the key is exported to a file
     for ssh-keygen; the signature is the one the Hub would produce.
     """
-    session = sync.get_team_session(team_name, hub_port, _http_client=_http_client)
-    info = session.session_info()
+    async with sync.hub_http(hub_port, _http_client) as http:
+        session = sync.get_team_session(team_name, http)
+        info = await session.session_info()
+        public_key = await session.signing_public_key()
+        authority_view = await session.authority_view()
     seed = app.state.backend.signing_key(session.token)
     key_path = tmp_dir / f"key-{session.token[:8]}"
     key_path.write_bytes(Ed25519PrivateKey.from_private_bytes(seed).private_bytes(
@@ -34,12 +37,12 @@ def _hub_signer(team_name, hub_port=11437, *, _http_client=None, tmp_dir):
     key_path.chmod(0o600)
     env = signing_git_env(
         os.environ, program=shutil.which("ssh-keygen"),
-        public_key=session.signing_public_key(), signing_key=str(key_path),
+        public_key=public_key, signing_key=str(key_path),
         extra_env={"GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@t",
                    "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t"},
     )
-    return files.CommitSigner(info["team_id"], info["berth_id"], session.authority_view(),
-                              env, session.verify_history)
+    return files.CommitSigner(info["team_id"], info["berth_id"], authority_view, env,
+                              sync.hub_verifier(team_name, hub_port, _http_client=_http_client))
 
 
 def test_files_history_survives_teammate_removal(playground_dir, minio_server_gen, monkeypatch, tmp_path):
@@ -62,15 +65,15 @@ def test_files_history_survives_teammate_removal(playground_dir, minio_server_ge
         root, env["alice_hex"], "ProjectX", distribution["artifacts"][0]["distribution_payload"])
     # Bob signs and publishes a Files commit.
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "bob-files.toml"))
-    bob_login = sync.login_team(bob_files_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_login = anyio.run(functools.partial(sync.login_team, bob_files_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: ""))
     bob_context = files.materialization_context_from_session_info(bob_login.session_info)
-    bob_signer = sync.commit_signer("ProjectX", _http_client=http)
+    bob_signer = anyio.run(functools.partial(sync.commit_signer, "ProjectX", _http_client=http))
     bob_checkout = tmp_path / "bob-checkout"
     files.create_niche(bob_files_root, env["bob_hex"], bob_context, "docs", signer=bob_signer)
     files.add_checkout(bob_files_root, env["bob_hex"], bob_context, "docs", str(bob_checkout))
     (bob_checkout / "notes.txt").write_text("from bob\n")
     files.publish(bob_files_root, env["bob_hex"], bob_context, "docs", str(bob_checkout), message="bob", signer=bob_signer)
-    sync.push_via_hub(bob_files_root, env["bob_hex"], "ProjectX", "docs", _http_client=http)
+    anyio.run(functools.partial(sync.push_via_hub, bob_files_root, env["bob_hex"], "ProjectX", "docs", _http_client=http))
 
     # Bob publishes his Core so Alice can fetch his Files storage.
     bob_manager = TeamManager(root, env["bob_hex"], _http_client=http)
@@ -94,15 +97,15 @@ def test_files_history_survives_teammate_removal(playground_dir, minio_server_ge
 
     # Alice fetches Bob's history while Bob is still a teammate.
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
-    alice_login = sync.login_team(alice_files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = anyio.run(functools.partial(sync.login_team, alice_files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: ""))
     alice_context = files.materialization_context_from_session_info(alice_login.session_info)
     alice_checkout = tmp_path / "alice-checkout"
-    sync.fetch_via_hub(alice_files_root, env["alice_hex"], "ProjectX", "docs", env["bob_teammate_id_hex"], _http_client=http)
+    anyio.run(functools.partial(sync.fetch_via_hub, alice_files_root, env["alice_hex"], "ProjectX", "docs", env["bob_teammate_id_hex"], _http_client=http))
     files.add_checkout(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
 
     # Alice removes Bob; the Hub reads Alice's Core database, so this takes effect locally at once.
     Provisioning.remove_teammate(root, env["alice_hex"], "ProjectX", env["bob_teammate_id_hex"])
 
     # Bob's earlier commit is still in the fetched history, and it stays valid.
-    sync.merge_via_hub(alice_files_root, env["alice_hex"], "ProjectX", "docs", env["bob_teammate_id_hex"], _http_client=http)
+    anyio.run(functools.partial(sync.merge_via_hub, alice_files_root, env["alice_hex"], "ProjectX", "docs", env["bob_teammate_id_hex"], _http_client=http))
     assert (alice_checkout / "notes.txt").read_text() == "from bob\n"

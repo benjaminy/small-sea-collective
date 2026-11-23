@@ -288,7 +288,7 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
     bob_checkout = root / "bob-checkout"
 
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
-    alice_login = sync.login_team(alice_files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = anyio.run(functools.partial(sync.login_team, alice_files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: ""))
     alice_context = files.materialization_context_from_session_info(alice_login.session_info)
     files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs", signer=local_files_signer(alice_context))
     files.add_checkout(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
@@ -308,25 +308,11 @@ def test_web_push_and_pull_through_hub(playground_dir, minio_server_gen, monkeyp
 
     # Bob joins: fetch → attach checkout → merge (3-step join flow)
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "bob-files.toml"))
-    bob_login = sync.login_team(bob_files_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_login = anyio.run(functools.partial(sync.login_team, bob_files_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: ""))
     bob_context = files.materialization_context_from_session_info(bob_login.session_info)
-    sync.fetch_via_hub(
-        bob_files_root,
-        env["bob_hex"],
-        "ProjectX",
-        "docs",
-        env["alice_teammate_id_hex"],
-        _http_client=http,
-    )
+    anyio.run(functools.partial(sync.fetch_via_hub, bob_files_root, env["bob_hex"], "ProjectX", "docs", env["alice_teammate_id_hex"], _http_client=http))
     files.add_checkout(bob_files_root, env["bob_hex"], bob_context, "docs", str(bob_checkout))
-    sync.merge_via_hub(
-        bob_files_root,
-        env["bob_hex"],
-        "ProjectX",
-        "docs",
-        env["alice_teammate_id_hex"],
-        _http_client=http,
-    )
+    anyio.run(functools.partial(sync.merge_via_hub, bob_files_root, env["bob_hex"], "ProjectX", "docs", env["alice_teammate_id_hex"], _http_client=http))
 
     (alice_checkout / "notes.txt").write_text("hello again\n")
     files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="update", signer=local_files_signer(alice_context))
@@ -390,7 +376,7 @@ def test_peer_panel_fragment_active_session(playground_dir, minio_server_gen, mo
     files.init_files(files_root, env["alice_hex"])
 
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
-    login = sync.login_team(files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    login = anyio.run(functools.partial(sync.login_team, files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: ""))
     context = files.materialization_context_from_session_info(login.session_info)
     files.create_niche(files_root, env["alice_hex"], context, "docs", signer=local_files_signer(context))
 
@@ -422,18 +408,18 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     bob_checkout = root / "bob-checkout"
 
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "alice-files.toml"))
-    alice_login = sync.login_team(alice_files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: "")
+    alice_login = anyio.run(functools.partial(sync.login_team, alice_files_root, "ProjectX", env["alice_hex"], _http_client=http, pin_reader=lambda _: ""))
     alice_context = files.materialization_context_from_session_info(alice_login.session_info)
     files.create_niche(alice_files_root, env["alice_hex"], alice_context, "docs", signer=local_files_signer(alice_context))
     files.add_checkout(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout))
     (alice_checkout / "notes.txt").write_text("v1\n")
     files.publish(alice_files_root, env["alice_hex"], alice_context, "docs", str(alice_checkout), message="init", signer=local_files_signer(alice_context))
 
-    sync.push_via_hub(alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http)
+    anyio.run(functools.partial(sync.push_via_hub, alice_files_root, env["alice_hex"], "ProjectX", "docs", _http_client=http))
 
     # Bob logs in.
     monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(root / "bob-files.toml"))
-    bob_login = sync.login_team(bob_files_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: "")
+    bob_login = anyio.run(functools.partial(sync.login_team, bob_files_root, "ProjectX", env["bob_hex"], _http_client=http, pin_reader=lambda _: ""))
 
     # Seed peer_counts so /session/peers reports Alice's signal_count = 3.
     # The background watcher is not running in TestClient; we set it directly.

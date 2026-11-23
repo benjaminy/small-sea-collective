@@ -1,5 +1,6 @@
 """Two independent Files homes exchanging one file through separate Hubs."""
 
+import functools
 import json
 import os
 import pathlib
@@ -172,19 +173,19 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         files.init_files(bob_files, bob)
 
         monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "alice-files.toml"))
-        alice_login = sync.login_team(alice_files, TEAM, alice, _http_client=alice_http, pin_reader=lambda _: "")
+        alice_login = anyio.run(functools.partial(sync.login_team, alice_files, TEAM, alice, _http_client=alice_http, pin_reader=lambda _: ""))
         alice_context = files.materialization_context_from_session_info(alice_login.session_info)
-        alice_signer = sync.commit_signer(TEAM, alice_port, _http_client=alice_http)
+        alice_signer = anyio.run(functools.partial(sync.commit_signer, TEAM, alice_port, _http_client=alice_http))
         files.create_niche(alice_files, alice, alice_context, "docs", signer=alice_signer)
         files.add_checkout(alice_files, alice, alice_context, "docs", alice_checkout)
         retained = "two homes, one retained file\n"
         (alice_checkout / "notes.txt").write_text(retained)
         files.publish(alice_files, alice, alice_context, "docs", alice_checkout,
                       message="publish notes", signer=alice_signer)
-        sync.push_via_hub(alice_files, alice, TEAM, "docs", _http_client=alice_http)
+        anyio.run(functools.partial(sync.push_via_hub, alice_files, alice, TEAM, "docs", _http_client=alice_http))
 
         monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "bob-files.toml"))
-        bob_login = sync.login_team(bob_files, TEAM, bob, _http_client=bob_http, pin_reader=lambda _: "")
+        bob_login = anyio.run(functools.partial(sync.login_team, bob_files, TEAM, bob, _http_client=bob_http, pin_reader=lambda _: ""))
         bob_context = files.materialization_context_from_session_info(bob_login.session_info)
         # Bob must integrate Alice's Core authority events before the Hub can
         # authorize Alice's signed Files history.
@@ -193,10 +194,9 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         anyio.run(bob_manager.fetch_teammate_core, TEAM, team["teammate_id_hex"])
         outcomes = bob_manager.integrate_core_sources(TEAM)
         assert [o["outcome"] for o in outcomes] == ["integrated"], outcomes
-        sync.fetch_via_hub(bob_files, bob, TEAM, "docs", team["teammate_id_hex"], _http_client=bob_http)
+        anyio.run(functools.partial(sync.fetch_via_hub, bob_files, bob, TEAM, "docs", team["teammate_id_hex"], _http_client=bob_http))
         files.add_checkout(bob_files, bob, bob_context, "docs", bob_checkout)
-        sync.merge_via_hub(bob_files, bob, TEAM, "docs", team["teammate_id_hex"],
-                           hub_port=bob_port, _http_client=bob_http)
+        anyio.run(functools.partial(sync.merge_via_hub, bob_files, bob, TEAM, "docs", team["teammate_id_hex"], hub_port=bob_port, _http_client=bob_http))
         assert (bob_checkout / "notes.txt").read_text() == retained
 
         _stop(bob_process, bob_http)
@@ -208,7 +208,7 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         (alice_checkout / "notes.txt").write_text(updated)
         files.publish(alice_files, alice, alice_context, "docs", alice_checkout,
                       message="post-restart update", signer=alice_signer)
-        sync.push_via_hub(alice_files, alice, TEAM, "docs", _http_client=alice_http)
+        anyio.run(functools.partial(sync.push_via_hub, alice_files, alice, TEAM, "docs", _http_client=alice_http))
         request = {
             "team": TEAM,
             "participant": bob,
@@ -241,7 +241,7 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
         # judge his Files history.
         monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "bob-files.toml"))
         (bob_checkout / "bob.txt").write_text("from bob\n")
-        bob_signer = sync.commit_signer(TEAM, bob_port, _http_client=bob_http)
+        bob_signer = anyio.run(functools.partial(sync.commit_signer, TEAM, bob_port, _http_client=bob_http))
         files.publish(bob_files, bob, bob_context, "docs", bob_checkout,
                       message="bob's note", signer=bob_signer)
         bob_git_dir = files._niche_git_dir(bob_files, bob_context, "docs")
@@ -250,8 +250,8 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
             check=True, capture_output=True, text=True,
         ).stdout.strip()
 
-        bob_session = sync.get_team_session(TEAM, bob_port, _http_client=bob_http)
-        verdicts = bob_session.verify_history(bob_git_dir, bob_head)
+        verify = sync.hub_verifier(TEAM, bob_port, _http_client=bob_http)
+        verdicts = anyio.run(verify, bob_git_dir, bob_head)
         by_commit = {v["commit"]: v for v in verdicts["commits"]}
         # Bob's merges fast-forwarded, so the history holds Alice's two
         # commits and Bob's one. All three are authorized in Bob's view.

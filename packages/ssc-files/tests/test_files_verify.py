@@ -1,9 +1,11 @@
+import functools
+import anyio
 from dataclasses import replace
 import pathlib
 import subprocess
 
 import pytest
-from cod_sync.store import LocalFolderStore
+from cod_sync.aio.store import LocalFolderStore
 from ssc_files import files, sync
 from test_support import local_files_signer
 
@@ -14,7 +16,7 @@ PEER_TEAM = files.FilesMaterializationContext(PEER, "11" * 16, "22" * 16, "Verif
 
 
 def _history(result="authorized", reason="ok"):
-    def verify(_git_dir, sha):
+    async def verify(_git_dir, sha):
         return {"commits": [{"commit": sha, "result": result, "reason": reason}],
                 "view_identifier": "test"}
     return verify
@@ -33,7 +35,7 @@ def _setup(playground_dir):
                   signer=local_files_signer(TEAM))
     cloud = root / "cloud"
     cloud.mkdir()
-    files.push_niche(str(source), PARTICIPANT, TEAM, "docs", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM))
+    anyio.run(functools.partial(files.push_niche, str(source), PARTICIPANT, TEAM, "docs", LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM)))
 
     dest = root / "dest"
     files.init_files(str(dest), PEER)
@@ -41,10 +43,7 @@ def _setup(playground_dir):
     files.create_niche(str(dest), PEER, PEER_TEAM, "docs", signer=local_files_signer(PEER_TEAM))
     checkout = root / "dest-checkout"
     files.add_checkout(str(dest), PEER, PEER_TEAM, "docs", str(checkout))
-    fetched = files.fetch_niche(str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT,
-                                LocalFolderStore(str(cloud)),
-        signer=local_files_signer(PEER_TEAM),
-    )
+    fetched = anyio.run(functools.partial(files.fetch_niche, str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(PEER_TEAM)))
     return root, source, dest, checkout, cloud, fetched
 
 
@@ -64,7 +63,7 @@ def test_merge_refuses_unsigned_history_and_leaves_branch_unchanged(playground_d
     before = _head(git_dir)
     signer = _verifying_signer(PEER_TEAM, _history("unsigned", "no signature"))
     with pytest.raises(files.UnauthorizedHistoryError) as caught:
-        files.merge_niche(str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT, signer=signer)
+        anyio.run(functools.partial(files.merge_niche, str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT, signer=signer))
     assert caught.value.sha == fetched
     assert caught.value.refusals[0]["result"] == "unsigned"
     assert _head(git_dir) == before
@@ -75,14 +74,14 @@ def test_merge_refuses_missing_authority(playground_dir):
     _, _, dest, _, _, _ = _setup(playground_dir)
     signer = _verifying_signer(PEER_TEAM, _history("missing_authority", "no authority"))
     with pytest.raises(files.UnauthorizedHistoryError) as caught:
-        files.merge_niche(str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT, signer=signer)
+        anyio.run(functools.partial(files.merge_niche, str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT, signer=signer))
     assert caught.value.refusals[0]["result"] == "missing_authority"
 
 
 def test_merge_accepts_fully_authorized_history(playground_dir):
     _, _, dest, checkout, _, fetched = _setup(playground_dir)
     signer = _verifying_signer(PEER_TEAM, _history())
-    assert files.merge_niche(str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT, signer=signer) == fetched
+    assert anyio.run(functools.partial(files.merge_niche, str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT, signer=signer)) == fetched
     assert (checkout / "source.txt").read_text() == "source\n"
 
 
@@ -97,8 +96,7 @@ def test_first_adopt_refuses_unauthorized_head(playground_dir):
     checkout2 = pathlib.Path(playground_dir) / "unborn-checkout"
     checkout2.mkdir()
     with pytest.raises(files.UnauthorizedHistoryError):
-        files._cod_pull(target_git2, checkout2, LocalFolderStore(str(cloud)),
-                        _verifying_signer(PEER_TEAM, _history("bad_signature", "bad sig")))
+        anyio.run(files._cod_pull, target_git2, checkout2, LocalFolderStore(str(cloud)), _verifying_signer(PEER_TEAM, _history("bad_signature", "bad sig")))
     assert subprocess.run(["git", "--git-dir", str(target_git2), "rev-parse", "--verify", "HEAD"],
                           capture_output=True).returncode != 0
     assert not (checkout2 / "source.txt").exists()
@@ -113,10 +111,7 @@ def test_merge_self_refuses_unauthorized_parked_head(playground_dir, monkeypatch
     subprocess.run(["git", "--git-dir", str(git_dir), "update-ref", ref, fetched], check=True)
     monkeypatch.setattr(files.CS, "outstanding_parked_heads", lambda _repo: [(ref, fetched)])
     with pytest.raises(files.UnauthorizedHistoryError):
-        files._merge_parked_self_refs(
-            git_dir, checkout,
-            _verifying_signer(PEER_TEAM, _history("wrong_scope", "wrong scope")),
-        )
+        anyio.run(files._merge_parked_self_refs, git_dir, checkout, _verifying_signer(PEER_TEAM, _history("wrong_scope", "wrong scope")))
     assert _head(git_dir) is None
 
 
@@ -134,12 +129,11 @@ def test_merge_uses_checked_sha_not_moved_ref(playground_dir):
     alternate = subprocess.check_output(["git", "-C", str(extra), "rev-parse", "HEAD"], text=True).strip()
     subprocess.run(["git", "--git-dir", str(git_dir), "fetch", str(extra), alternate], check=True, capture_output=True)
     ref = files._peer_ref_name(PARTICIPANT)
-    def move_during_verify(_git_dir, sha):
+    async def move_during_verify(_git_dir, sha):
         assert sha == fetched
         subprocess.run(["git", "--git-dir", str(git_dir), "update-ref", ref, alternate], check=True)
         return {"commits": [{"commit": sha, "result": "authorized", "reason": "ok"}], "view_identifier": "test"}
-    files.merge_niche(str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT,
-                      signer=_verifying_signer(PEER_TEAM, move_during_verify))
+    anyio.run(functools.partial(files.merge_niche, str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT, signer=_verifying_signer(PEER_TEAM, move_during_verify)))
     assert _head(git_dir) == fetched
     assert (checkout / "source.txt").exists()
     assert not (checkout / "alternate.txt").exists()
@@ -150,18 +144,19 @@ def test_refusal_leaves_parked_ref_in_place(playground_dir):
     git_dir = files._niche_git_dir(str(dest), PEER_TEAM, "docs")
     ref = files._peer_ref_name(PARTICIPANT)
     with pytest.raises(files.UnauthorizedHistoryError):
-        files.merge_niche(str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT,
-                          signer=_verifying_signer(PEER_TEAM, _history("ambiguous_authority", "ambiguous")))
+        anyio.run(functools.partial(files.merge_niche, str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT, signer=_verifying_signer(PEER_TEAM, _history("ambiguous_authority", "ambiguous"))))
     assert files._resolve_ref(git_dir, ref) == fetched
 
 
 def test_sync_merge_via_hub_surfaces_refusal(playground_dir, monkeypatch):
     _, _, dest, _, _, _ = _setup(playground_dir)
     monkeypatch.setattr(sync, "resolve_team_context", lambda *_: PEER_TEAM)
-    monkeypatch.setattr(sync, "commit_signer", lambda *_args, **_kwargs:
-                        _verifying_signer(PEER_TEAM, _history("unsigned", "no signature")))
+    async def _signer(*_args, **_kwargs):
+        return _verifying_signer(PEER_TEAM, _history("unsigned", "no signature"))
+
+    monkeypatch.setattr(sync, "commit_signer", _signer)
     with pytest.raises(sync.UnauthorizedHistoryError, match="1 commit.*unsigned: no signature"):
-        sync.merge_via_hub(str(dest), PEER, "VerifyTeam", "docs", PARTICIPANT)
+        anyio.run(sync.merge_via_hub, str(dest), PEER, "VerifyTeam", "docs", PARTICIPANT)
 
 
 @pytest.mark.parametrize("operation", ["fetch", "fetch_self", "publish"])
@@ -176,13 +171,13 @@ def test_files_transfer_refuses_unaccepted_history(playground_dir, operation, ve
     signer = _verifying_signer(PEER_TEAM, _history(verdict, "refused"))
     with pytest.raises(files.UnauthorizedHistoryError):
         if operation == "fetch":
-            files._cod_fetch(dest_git, LocalFolderStore(str(cloud)), "refs/peers/new/main", signer)
+            anyio.run(files._cod_fetch, dest_git, LocalFolderStore(str(cloud)), "refs/peers/new/main", signer)
         elif operation == "fetch_self":
-            files._cod_fetch_self(dest_git, LocalFolderStore(str(cloud)), signer)
+            anyio.run(files._cod_fetch_self, dest_git, LocalFolderStore(str(cloud)), signer)
         else:
             unpublished = root / "unpublished"
             unpublished.mkdir()
-            files._cod_push(source_git, LocalFolderStore(str(unpublished)), signer)
+            anyio.run(files._cod_push, source_git, LocalFolderStore(str(unpublished)), signer)
     assert Repo(dest_git).list_refs("refs/") == before
     if operation == "publish":
         assert not list(unpublished.iterdir())

@@ -1,10 +1,18 @@
 """Click CLI for Small Sea Files."""
 
+import functools
+
+import anyio
 import click
 from cod_sync.protocol import CodSyncError
 
 from ssc_files import files as files_core
 from ssc_files import sync
+
+
+def _run(async_fn, *args, **kwargs):
+    """Run one async Files operation to completion from a command."""
+    return anyio.run(functools.partial(async_fn, *args, **kwargs))
 
 
 def _config() -> dict:
@@ -98,7 +106,8 @@ def login_cmd(team_name, participant, hub_port):
     try:
         files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
-        result = sync.login_team(
+        result = _run(
+            sync.login_team,
             files_root,
             team_name,
             participant,
@@ -124,7 +133,8 @@ def push_cmd(team_name, niche_name, files_root, participant, hub_port):
     try:
         files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
-        sync.push_via_hub(
+        _run(
+            sync.push_via_hub,
             files_root,
             participant,
             team_name,
@@ -172,7 +182,8 @@ def fetch_cmd(team_name, niche_name, from_teammate, from_self, files_root, parti
     try:
         files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
-        result = sync.fetch_via_hub(
+        result = _run(
+            sync.fetch_via_hub,
             files_root,
             participant,
             team_name,
@@ -194,7 +205,8 @@ def _fetch_self(team_name, niche_name, files_root, participant, hub_port):
     try:
         files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
-        result = sync.fetch_self_via_hub(
+        result = _run(
+            sync.fetch_self_via_hub,
             files_root, participant, team_name, niche_name, hub_port=hub_port
         )
     except sync.SelfFetchPartialError as exc:
@@ -248,10 +260,11 @@ def merge_cmd(team_name, niche_name, from_teammate, from_self, files_root, parti
         files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
         if from_self:
-            self_result = sync.merge_self(files_root, participant, team_name, niche_name,
+            self_result = _run(sync.merge_self, files_root, participant, team_name, niche_name,
                                           hub_port=hub_port)
         else:
-            sync.merge_via_hub(
+            _run(
+            sync.merge_via_hub,
                 files_root,
                 participant,
                 team_name,
@@ -310,7 +323,8 @@ def pull_cmd(team_name, niche_name, from_teammate, files_root, participant, hub_
     try:
         files_root = sync.require_value(files_root, "files_root")
         participant = sync.require_value(participant, "participant_hex")
-        sync.pull_via_hub(
+        _run(
+            sync.pull_via_hub,
             files_root,
             participant,
             team_name,
@@ -369,7 +383,7 @@ def create_cmd(files_root, participant_hex, team_name, niche_name):
     """Create a new niche."""
     context = _team_context(files_root, participant_hex, team_name)
     niche_id = files_core.create_niche(files_root, participant_hex, context, niche_name,
-                                       signer=sync.commit_signer(team_name, _resolve_sync()[2]))
+                                       signer=_run(sync.commit_signer, team_name, _resolve_sync()[2]))
     click.echo(f"Created niche '{niche_name}' ({niche_id})")
 
 
@@ -450,7 +464,7 @@ def publish_cmd(files_root, participant_hex, team_name, niche_name, checkout_pat
         checkout_path,
         files=list(files) if files else None,
         message=message,
-        signer=sync.commit_signer(team_name, _resolve_sync()[2]),
+        signer=_run(sync.commit_signer, team_name, _resolve_sync()[2]),
     )
     click.echo(f"Published: {commit_hash[:8]}")
 
