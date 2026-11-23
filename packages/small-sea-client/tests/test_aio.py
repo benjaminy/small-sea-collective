@@ -13,7 +13,13 @@ from small_sea_client.aio import (
     resend_notification,
     start_session,
 )
-from small_sea_client.client import SmallSeaError, SmallSeaHubUnavailable, SmallSeaNotFound
+from small_sea_client.client import (
+    SmallSeaAppBootstrapRequired,
+    SmallSeaConflict,
+    SmallSeaError,
+    SmallSeaHubUnavailable,
+    SmallSeaNotFound,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -160,6 +166,119 @@ async def test_resend_notification_names_the_pending_session():
     http, _ = hub(lambda r: httpx.Response(404, json={"detail": "expired"}))
     with pytest.raises(SmallSeaNotFound):
         await resend_notification(http, "pend-1")
+
+
+async def test_start_session_can_override_mode():
+    http, requests = hub(lambda r: httpx.Response(200, json={"pending_id": "p2"}))
+    await start_session(http, "alice", "MyApp", "MyTeam", "TestClient", mode="passthrough")
+    assert json.loads(requests[0].content)["mode"] == "passthrough"
+
+
+def bootstrap_required(reason="app_unknown", team="ProjectX"):
+    return lambda r: httpx.Response(409, json={
+        "error": "app_bootstrap_required",
+        "reason": reason,
+        "app": "SmallSeaCollectiveFiles",
+        "team": team,
+    })
+
+
+@pytest.mark.parametrize("reason", [
+    "app_unknown",
+    "participant_berth_missing",
+    "team_berth_missing",
+    "app_friendly_name_ambiguous",
+    "future_more_specific_reason",
+])
+async def test_app_bootstrap_required_preserves_reason_app_and_team(reason):
+    http, _ = hub(bootstrap_required(reason))
+    with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
+        await start_session(http, "alice", "SmallSeaCollectiveFiles", "ProjectX", "TestClient")
+    assert (exc_info.value.reason, exc_info.value.app, exc_info.value.team) == (
+        reason, "SmallSeaCollectiveFiles", "ProjectX",
+    )
+
+
+async def test_app_bootstrap_required_is_an_error_but_not_a_conflict():
+    http, _ = hub(bootstrap_required())
+    with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
+        await start_session(http, "alice", "SmallSeaCollectiveFiles", "ProjectX", "TestClient")
+    assert isinstance(exc_info.value, SmallSeaError)
+    assert not isinstance(exc_info.value, SmallSeaConflict)
+    expected = (
+        "SmallSeaCollectiveFiles isn't set up yet. "
+        "Open Manager to register it for team ProjectX."
+    )
+    assert exc_info.value.user_message == expected
+    assert str(exc_info.value) == expected
+
+
+async def test_app_bootstrap_required_allows_no_team():
+    http, _ = hub(bootstrap_required(team=None))
+    with pytest.raises(SmallSeaAppBootstrapRequired) as exc_info:
+        await start_session(http, "alice", "SmallSeaCollectiveFiles", "ProjectX", "TestClient")
+    assert exc_info.value.team is None
+    assert (
+        exc_info.value.user_message
+        == "SmallSeaCollectiveFiles isn't set up yet. Open Manager to register it."
+    )
+
+
+async def test_confirm_session_with_a_wrong_pin_raises():
+    http, _ = hub(lambda r: httpx.Response(400, json={"detail": "Invalid PIN"}))
+    with pytest.raises(SmallSeaError, match="Invalid PIN"):
+        await confirm_session(http, "pending123", "0000")
+
+
+async def test_start_session_reports_an_unreachable_hub():
+    def refuse(request):
+        raise httpx.ConnectError("refused")
+    http, _ = hub(refuse)
+    with pytest.raises(SmallSeaHubUnavailable):
+        await start_session(http, "alice", "MyApp", "MyTeam", "TestClient")
+
+
+async def test_a_server_error_without_json_uses_the_response_text():
+    http, _ = hub(lambda r: httpx.Response(500, text="server sad"))
+    with pytest.raises(SmallSeaError, match="HTTP 500: server sad"):
+        await start_session(http, "alice", "MyApp", "MyTeam", "TestClient")
+
+
+async def test_clear_app_sighting_sends_the_tuple_verbatim():
+    """The Hub compares last_seen_at as a string, so it must not be reformatted."""
+    s, requests = session(lambda r: httpx.Response(200, json={"deleted_count": 1}))
+    deleted = await s.clear_app_sighting(
+        app_name="SmallSeaCollectiveFiles",
+        team_name="ProjectX",
+        client_name="ssc-files:default",
+        last_seen_at="2026-05-01T12:00:00.000000+00:00",
+    )
+    assert deleted == 1
+    assert requests[0].url.path == "/sightings/clear"
+    assert json.loads(requests[0].content) == {
+        "app_name": "SmallSeaCollectiveFiles",
+        "team_name": "ProjectX",
+        "client_name": "ssc-files:default",
+        "last_seen_at": "2026-05-01T12:00:00.000000+00:00",
+    }
+    assert requests[0].headers["authorization"] == f"Bearer {TOKEN}"
+
+
+async def test_clear_app_sighting_returns_zero_when_nothing_matched():
+    s, _ = session(lambda r: httpx.Response(200, json={"deleted_count": 0}))
+    assert await s.clear_app_sighting(
+        app_name="SmallSeaCollectiveFiles",
+        team_name="ProjectX",
+        client_name="cli",
+        last_seen_at="2026-05-01T12:00:00.000000+00:00",
+    ) == 0
+
+
+async def test_prune_stale_app_sightings_returns_the_count():
+    s, requests = session(lambda r: httpx.Response(200, json={"pruned_count": 3}))
+    assert await s.prune_stale_app_sightings() == 3
+    assert requests[0].url.path == "/sightings/prune-stale"
+    assert requests[0].headers["authorization"] == f"Bearer {TOKEN}"
 
 
 async def test_async_transport_for_an_injected_client():

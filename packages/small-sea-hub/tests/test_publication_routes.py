@@ -23,9 +23,8 @@ from types import SimpleNamespace
 
 import pytest
 from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
-from cod_sync.protocol import CodSync
 from cod_sync.repo import Repo
-from cod_sync.store import LocalFolderStore, StoreTransportError
+from cod_sync.store import StoreTransportError
 from fastapi.testclient import TestClient
 
 from small_sea_hub.backend import SmallSeaBackend
@@ -37,6 +36,7 @@ from small_sea_note_to_self.sender_keys import (
     load_team_sender_key,
     save_peer_sender_key,
 )
+from test_support import async_hub_client, fetch_main, publish_main
 
 OBJECT_PATH = "chains/latest-link.yaml"
 OTHER_PATH = "chains/other-link.yaml"
@@ -85,7 +85,7 @@ def team(tmp_path):
         invitee_label="Bob",
     )
     alice_sync = tmp_path / "Participants" / alice / "ProjectX" / "Sync"
-    CodSync(Repo(alice_sync / ".git", alice_sync), LocalFolderStore(str(cloud))).publish()
+    publish_main(Repo(alice_sync / ".git", alice_sync), AsyncLocalFolderStore(str(cloud)))
     acceptance = anyio.run(
         functools.partial(
             p.accept_invitation,
@@ -452,7 +452,7 @@ def _record_ownership(core_db, device_key_id, teammate_id):
 def test_a_newcomers_cod_sync_fetch_fails_on_a_link_published_before_it_joined(routed):
     # Pins #280 through the Hub: Bob's key for Alice starts at the step Alice
     # had when Bob joined, so one pre-join publication makes the chain unreadable.
-    from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
+    from cod_sync.aio.store import PeerSmallSeaStore, SmallSeaStore
 
     env = routed
     alice_token = open_session(env, "Alice")
@@ -463,13 +463,13 @@ def test_a_newcomers_cod_sync_fetch_fails_on_a_link_published_before_it_joined(r
     repo = Repo.init(work / ".git").with_work_tree(work)
     repo.config("user.email", "alice@test")
     repo.config("user.name", "alice")
-    alice_store = SmallSeaStore(alice_token, client=env.http)
+    alice_store = SmallSeaStore(alice_token, async_hub_client(env.http))
 
     def publish_commit(name):
         (work / name).write_text(name)
         repo.stage([name])
         repo.commit(f"write {name}")
-        CodSync(repo, alice_store).publish()
+        publish_main(repo, alice_store)
 
     publish_commit("before-join.txt")
 
@@ -489,10 +489,10 @@ def test_a_newcomers_cod_sync_fetch_fails_on_a_link_published_before_it_joined(r
     bob_work = env.root / "bob-work"
     bob_work.mkdir()
     bob_repo = Repo.init(bob_work / ".git").with_work_tree(bob_work)
-    bob_store = PeerSmallSeaStore(bob_token, env.alice_teammate.hex(), client=env.http)
+    bob_store = PeerSmallSeaStore(bob_token, env.alice_teammate.hex(), async_hub_client(env.http))
     env.requested.clear()
     with pytest.raises(StoreTransportError, match="No skipped key for iteration"):
-        CodSync(bob_repo, bob_store).fetch()
+        fetch_main(bob_repo, bob_store)
 
     # The head and the newest bundle were published after the join and read
     # fine; the fetch stops at the archived pre-join link.

@@ -12,7 +12,6 @@ from fastapi.testclient import TestClient
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
 from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
-from cod_sync.store import LocalFolderStore
 from cod_sync.repo import Repo
 from small_sea_hub.server import app, _register_session_peers, _run_runtime_reconciliation_for_session
 from small_sea_manager import admission_events as AdmissionEvents
@@ -22,6 +21,7 @@ from small_sea_manager.provisioning import (
     _team_row,
 )
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_public
+from test_support import publish_main
 
 
 def _request_and_confirm(client, team="ProjectX", mode="encrypted"):
@@ -91,10 +91,7 @@ def _add_same_teammate_linked_device_bundle(root: Path, participant_hex: str, te
 
 
 def _push_to_localfolder(repo_dir: Path, cloud_dir: Path):
-    import cod_sync.protocol as CS
-
-    cod = CS.CodSync(Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir)))
-    cod.publish()
+    publish_main(Repo(repo_dir / ".git", repo_dir), AsyncLocalFolderStore(str(cloud_dir)))
 
 
 def _create_shared_team_with_bob(root: Path):

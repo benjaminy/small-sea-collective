@@ -33,6 +33,46 @@ def _files_signing_key():
         return key_path, public_file.read().strip()
 
 
+def publish_main(repo, store, **kwargs):
+    """Publish a sync Repo's main through an async store, from sync test code.
+
+    Runs the async CodSync in its own event loop, so a caller already inside
+    one must await cod_sync.aio.protocol.CodSync itself.
+    """
+    import functools
+
+    from cod_sync.aio.protocol import CodSync
+    from cod_sync.aio.repo import Repo as AioRepo
+
+    cod = CodSync(AioRepo(repo.git_dir, repo.work_tree, env=repo.env), store, verifier=kwargs.pop("verifier", None))
+    return anyio.run(functools.partial(cod.publish, **kwargs))
+
+
+def fetch_main(repo, store, **kwargs):
+    """Fetch a store's head into a sync Repo with the async CodSync; see publish_main."""
+    import functools
+
+    from cod_sync.aio.protocol import CodSync
+    from cod_sync.aio.repo import Repo as AioRepo
+
+    cod = CodSync(AioRepo(repo.git_dir, repo.work_tree, env=repo.env), store, verifier=kwargs.pop("verifier", None))
+    return anyio.run(functools.partial(cod.fetch, **kwargs))
+
+
+def async_hub_client(test_client, base_url="http://testserver"):
+    """An httpx.AsyncClient that reaches the same Hub as a sync test client.
+
+    For a TestClient it calls the app in process, so it holds no connection
+    and needs no closing.
+    """
+    import httpx
+    from small_sea_client.aio import async_transport_for
+
+    return httpx.AsyncClient(
+        transport=async_transport_for(test_client, base_url), base_url=base_url
+    )
+
+
 def local_files_signer(context):
     """Sign Files micro test commits with an on-disk SSH key.
 

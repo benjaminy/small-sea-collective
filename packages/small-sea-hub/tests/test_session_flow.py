@@ -1,5 +1,6 @@
 """Tests for the two-step PIN-based session approval flow."""
 
+import anyio
 from datetime import datetime, timedelta, timezone
 import pathlib
 import sqlite3
@@ -343,7 +344,8 @@ def test_pending_sessions_lists_with_pin(playground_dir):
 
 def test_session_info_via_client(playground_dir):
     """SmallSeaSession.session_info() wraps GET /session/info."""
-    from small_sea_client.client import SmallSeaClient, SmallSeaSession
+    from small_sea_client.aio import SmallSeaSession
+    from test_support import async_hub_client
 
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
     alice_hex = Provisioning.create_new_participant(playground_dir, "alice")
@@ -351,9 +353,8 @@ def test_session_info_via_client(playground_dir):
     http = TestClient(app)
 
     session_hex = _request_and_confirm(http, mode="passthrough")
-    sc = SmallSeaClient(_http_client=http)
-    session = SmallSeaSession(sc, session_hex)
-    info = session.session_info()
+    session = SmallSeaSession(async_hub_client(http), session_hex)
+    info = anyio.run(session.session_info)
 
     assert info["participant_hex"] == alice_hex
     assert info["team_name"] == "NoteToSelf"
@@ -527,7 +528,8 @@ def test_cannot_delete_another_participants_session(playground_dir):
 
 def test_list_sessions_via_client(playground_dir):
     """SmallSeaSession.list_sessions()/delete_session() wrap the confirmed-sessions endpoints."""
-    from small_sea_client.client import SmallSeaClient, SmallSeaSession
+    from small_sea_client.aio import SmallSeaSession
+    from test_support import async_hub_client
 
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
     Provisioning.create_new_participant(playground_dir, "alice")
@@ -535,12 +537,11 @@ def test_list_sessions_via_client(playground_dir):
     http = TestClient(app)
 
     session_hex = _request_and_confirm(http, mode="passthrough")
-    sc = SmallSeaClient(_http_client=http)
-    session = SmallSeaSession(sc, session_hex)
+    session = SmallSeaSession(async_hub_client(http), session_hex)
 
-    sessions = session.list_sessions()
+    sessions = anyio.run(session.list_sessions)
     assert len(sessions) == 1
-    session.delete_session(sessions[0]["id"])
+    anyio.run(session.delete_session, sessions[0]["id"])
 
     info_resp = http.get(
         "/session/info",

@@ -4,13 +4,14 @@ import time
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.protocol import CodSync
-from cod_sync.store import SmallSeaStore
+from cod_sync.aio.store import SmallSeaStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_manager.manager import TeamManager
 from test_support import (
     accept_and_export,
+    async_hub_client,
+    publish_main,
     publish_storage_announcement_for_session,
 )
 
@@ -44,10 +45,9 @@ def _push_via_hub(http, session_hex, repo_dir):
     resp = http.post("/cloud/setup", headers=auth)
     assert resp.status_code == 200, resp.text
     publish_storage_announcement_for_session(Server.app.state.backend, session_hex)
-    remote = SmallSeaStore(session_hex, base_url="http://testserver", client=http)
+    remote = SmallSeaStore(session_hex, async_hub_client(http))
     repo_path = pathlib.Path(repo_dir)
-    cs = CodSync(Repo(repo_path / ".git", repo_path), remote)
-    cs.publish()
+    publish_main(Repo(repo_path / ".git", repo_path), remote)
 
 
 def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
