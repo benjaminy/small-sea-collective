@@ -527,13 +527,17 @@ def create_app(
     async def merge_self_sync(request: Request, team_name: str, niche_name: str):
         """Integrate a competing head published by another of this user's devices.
 
-        Purely local: the head was already validated and parked by the refused
-        push, so this contacts no Hub and no teammate. The person pushes again
+        The head was already fetched and parked by the refused push, so this
+        downloads nothing and contacts no teammate. It still asks the Hub to
+        judge the history and sign the merge. The person pushes again
         afterwards.
         """
         vr, ph = _vr(request), _ph(request)
         try:
-            result = await sync.merge_self(vr, ph, team_name, niche_name)
+            result = await sync.merge_self(
+                vr, ph, team_name, niche_name,
+                hub_port=_hub_port(request), _http_client=_http_client(request),
+            )
             merged = len(result.registry_shas) + len(result.niche_shas)
             notice = (
                 f"Merged {merged} parked change(s) from your own cloud chain. "

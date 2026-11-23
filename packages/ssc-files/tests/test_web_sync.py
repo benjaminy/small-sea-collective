@@ -534,3 +534,28 @@ def test_web_login_unknown_team_shows_error_on_index(playground_dir, monkeypatch
     assert resp.status_code == 200
     assert "notice-err" in resp.text
     assert not list(files.iter_materialized_teams(files_root, alice_hex))
+
+
+def test_web_merge_self_uses_the_configured_hub(playground_dir, monkeypatch):
+    """merge_self asks the Hub to judge and sign, so it must reach the app's Hub."""
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", f"{playground_dir}/files.toml")
+    files_root = f"{playground_dir}/files"
+    participant_hex = "aa" * 16
+    files.init_files(files_root, participant_hex)
+    context = files.FilesMaterializationContext(participant_hex, "11" * 16, "22" * 16, "ProjectX")
+    files.materialize_team(files_root, context)
+    files.create_niche(files_root, participant_hex, context, "docs", signer=local_files_signer(context))
+
+    seen = {}
+
+    async def fake_merge_self(*_args, **kwargs):
+        seen.update(kwargs)
+        raise sync.FilesSyncError("stopped")
+
+    monkeypatch.setattr(sync, "merge_self", fake_merge_self)
+    injected = object()
+    client = TestClient(create_app(files_root, participant_hex, hub_port=5299, _http_client=injected))
+
+    resp = client.post("/teams/ProjectX/niches/docs/merge-self")
+    assert resp.status_code == 200
+    assert seen == {"hub_port": 5299, "_http_client": injected}

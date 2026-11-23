@@ -631,7 +631,6 @@ def test_fetch_self_via_hub_keeps_the_registry_when_the_niche_fails(playground_d
     empty_niche_cloud.mkdir()
 
     monkeypatch.setattr(sync, "resolve_team_context", lambda *_a: TEAM)
-    monkeypatch.setattr(sync, "get_team_session", lambda *_a, **_k: None)
     monkeypatch.setattr(
         sync, "make_registry_remote", lambda _s: _NoWriteStore(str(registry_cloud))
     )
@@ -658,7 +657,6 @@ def test_fetch_self_via_hub_can_fetch_registry_for_niche_discovery(playground_di
     anyio.run(functools.partial(push_registry, env["root_a"], PARTICIPANT, TEAM, LocalFolderStore(str(cloud)), signer=local_files_signer(TEAM)))
 
     monkeypatch.setattr(sync, "resolve_team_context", lambda *_a: TEAM)
-    monkeypatch.setattr(sync, "get_team_session", lambda *_a, **_k: None)
     monkeypatch.setattr(sync, "make_registry_remote", lambda _s: LocalFolderStore(str(cloud)))
     monkeypatch.setattr(
         sync, "make_niche_remote",
@@ -696,7 +694,6 @@ def test_fetch_self_via_hub_does_not_treat_a_malformed_registry_as_absent(
     registry_cloud.mkdir()
 
     monkeypatch.setattr(sync, "resolve_team_context", lambda *_a: TEAM)
-    monkeypatch.setattr(sync, "get_team_session", lambda *_a, **_k: None)
     monkeypatch.setattr(
         sync, "make_registry_remote", lambda _s: _GarbageLatestStore(str(registry_cloud))
     )

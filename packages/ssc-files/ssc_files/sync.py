@@ -481,6 +481,11 @@ def get_team_session(team_name: str, http: httpx.AsyncClient) -> SmallSeaSession
     moment of actual use, when the Hub rejects the request. The caller should
     suggest re-running `ssc-files login <team_name>` in that case.
     """
+    return SmallSeaSession(http, cached_session_token(team_name))
+
+
+def cached_session_token(team_name: str) -> str:
+    """The cached Hub session token for this team, read from the config file."""
     config = load_config()
     token = (
         (config.get("team_sessions") or {})
@@ -491,30 +496,32 @@ def get_team_session(team_name: str, http: httpx.AsyncClient) -> SmallSeaSession
         raise LoginRequiredError(
             f"No cached Hub session for {team_name!r}. Run `ssc-files login {team_name}`."
         )
-    return SmallSeaSession(http, token)
+    return token
 
 
 def hub_verifier(
-    team_name: str, hub_port: int = SmallSeaClient.DEFAULT_PORT, *, _http_client=None
+    session_token: str, hub_port: int = SmallSeaClient.DEFAULT_PORT, *, _http_client=None
 ) -> Callable[[pathlib.Path | str, str], Awaitable[dict]]:
-    """An async history check for a CommitSigner.
+    """An async history check for a CommitSigner, under one Hub session.
 
     Each check opens its own Hub connection, so the signer can outlive the
     connection it was built on.
     """
     async def verify(git_dir, head):
         async with hub_http(hub_port, _http_client) as http:
-            return await get_team_session(team_name, http).verify_history(git_dir, head)
+            return await SmallSeaSession(http, session_token).verify_history(git_dir, head)
 
     return verify
 
 
 async def commit_signer(team_name, hub_port=SmallSeaClient.DEFAULT_PORT, *, _http_client=None):
+    """A signer bound to the team's cached session as it stands now."""
+    token = cached_session_token(team_name)
     async with hub_http(hub_port, _http_client) as http:
         return await files.CommitSigner.from_session(
-            get_team_session(team_name, http),
+            SmallSeaSession(http, token),
             f"http://127.0.0.1:{hub_port}",
-            hub_verifier(team_name, hub_port, _http_client=_http_client),
+            hub_verifier(token, hub_port, _http_client=_http_client),
         )
 
 
@@ -600,7 +607,7 @@ async def push_via_hub(
     signer = await commit_signer(team_name, hub_port, _http_client=_http_client)
     merge_hint = f"`ssc-files merge --from-self {team_name} {niche_name}`"
     async with hub_http(hub_port, _http_client) as http:
-        session = get_team_session(team_name, http)
+        session = SmallSeaSession(http, signer.session_token)
         await session.ensure_cloud_ready()
         niche_result = await _publish(
             "niche",
@@ -695,7 +702,7 @@ async def fetch_via_hub(
     context = resolve_team_context(files_root, participant_hex, team_name)
     signer = await commit_signer(team_name, hub_port, _http_client=_http_client)
     async with hub_http(hub_port, _http_client) as http:
-        session = get_team_session(team_name, http)
+        session = SmallSeaSession(http, signer.session_token)
 
         # Observe signal_count BEFORE fetching. If the peer pushes again during
         # the fetch, we intentionally record the pre-second-push count so the
@@ -869,7 +876,7 @@ async def fetch_self_via_hub(
     context = resolve_team_context(files_root, participant_hex, team_name)
     signer = await commit_signer(team_name, hub_port, _http_client=_http_client)
     async with hub_http(hub_port, _http_client) as http:
-        session = get_team_session(team_name, http)
+        session = SmallSeaSession(http, signer.session_token)
         try:
             registry_sha = await files.fetch_self_registry(
                 files_root, participant_hex, context, make_registry_remote(session),

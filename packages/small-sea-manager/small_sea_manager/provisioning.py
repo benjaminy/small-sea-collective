@@ -1801,7 +1801,7 @@ def _publish_local_device_prekey_bundle(
 
 @contextlib.contextmanager
 def _pending_join_state_lock(root_dir):
-    """Hold the lock that writes and removals of the pending join request share."""
+    """Hold the lock that reads, writes and removals of the pending join request share."""
     state_dir = _bootstrap_state_dir(root_dir)
     state_dir.mkdir(parents=True, exist_ok=True)
     with open(state_dir / "pending_identity_join.lock", "w") as lock:
@@ -1817,9 +1817,10 @@ def _persist_pending_join_state(root_dir, state: dict) -> None:
 
 def _load_pending_join_state(root_dir) -> dict:
     path = _bootstrap_state_path(root_dir)
-    if not path.exists():
-        raise ValueError("No pending identity-join state found")
-    return json.loads(path.read_text())
+    with _pending_join_state_lock(root_dir):
+        if not path.exists():
+            raise ValueError("No pending identity-join state found")
+        return json.loads(path.read_text())
 
 
 def _clear_pending_join_state(root_dir, device_id_hex: str) -> None:

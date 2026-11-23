@@ -42,7 +42,8 @@ async def _hub_signer(team_name, hub_port=11437, *, _http_client=None, tmp_dir):
                    "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t"},
     )
     return files.CommitSigner(info["team_id"], info["berth_id"], authority_view, env,
-                              sync.hub_verifier(team_name, hub_port, _http_client=_http_client))
+                              sync.hub_verifier(session.token, hub_port, _http_client=_http_client),
+                              session.token)
 
 
 def test_files_history_survives_teammate_removal(playground_dir, minio_server_gen, monkeypatch, tmp_path):

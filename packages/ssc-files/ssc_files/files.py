@@ -207,6 +207,11 @@ class CommitSigner:
     # from a head. It opens its own Hub connection, so the signer outlives
     # the connection it was built on.
     verify: Callable[[pathlib.Path | str, str], Awaitable[dict]]
+    # The Hub session the signer was built from. Verification, signing, and
+    # the operation's store all use it, so a later login cannot swap the
+    # session out from under an operation. None for test signers that never
+    # reach a Hub.
+    session_token: str | None = None
 
     async def verify_history(self, repo, head):
         """Let Cod Sync use the same Hub decision as Files integration."""
@@ -214,7 +219,10 @@ class CommitSigner:
 
     @classmethod
     async def from_session(cls, session, hub_url, verify):
-        """A signer for the berth of session, an async Hub session."""
+        """A signer for the berth of session, an async Hub session.
+
+        verify must judge history under the same session.
+        """
         info = await session.session_info()
         program = shutil.which("small-sea-git-sign")
         if program is None:
@@ -225,7 +233,7 @@ class CommitSigner:
                 os.environ, program=program, public_key=await session.signing_public_key(),
                 extra_env={"SMALL_SEA_HUB_URL": hub_url,
                            "SMALL_SEA_SESSION_TOKEN": session.token},
-            ), verify,
+            ), verify, session.token,
         )
 
     def message(self, message, purpose):
@@ -691,7 +699,7 @@ def _peer_ref_name(teammate_id, branch="main"):
     return f"refs/peers/{teammate_id}/{branch}"
 
 
-async def _merge_parked_self_refs(git_dir, checkout, signer):
+async def _merge_parked_self_refs(git_dir, checkout, signer, recheck=None):
     """Merge every outstanding parked self-store ref into checkout.
 
     Returns the SHAs actually merged, in merge order, and an empty list when
@@ -707,7 +715,7 @@ async def _merge_parked_self_refs(git_dir, checkout, signer):
     for ref, sha in maximal:
         if _has_commits(git_dir) and _is_ancestor(git_dir, sha, "HEAD"):
             continue
-        await _cod_merge_ref(git_dir, checkout, ref, signer)
+        await _cod_merge_ref(git_dir, checkout, ref, signer, recheck)
         merged.append(sha)
     return merged
 
@@ -762,11 +770,11 @@ async def _cod_push(git_dir, remote, signer):
     return await _AsyncCodSync(_AsyncRepo(git_dir), remote, verifier=signer).publish()
 
 
-async def _cod_pull(git_dir, checkout, remote, signer):
+async def _cod_pull(git_dir, checkout, remote, signer, recheck=None):
     """Fetch from remote and merge the observed head into the user checkout.
 
     The fetch itself needs no work tree and moves no ref; the merge names the
-    fetched SHA explicitly.
+    fetched SHA explicitly. recheck is as in _cod_merge_ref.
     """
     result = await _AsyncCodSync(_AsyncRepo(git_dir), remote, verifier=signer).fetch()
 
@@ -778,9 +786,11 @@ async def _cod_pull(git_dir, checkout, remote, signer):
     if head_result.returncode != 0:
         # Unborn branch — adopt the fetched head as the initial local branch.
         checked_sha = await _authorize_history(git_dir, result.observed_head, signer)
+        if recheck is not None:
+            repo = Repo(git_dir, work_tree=recheck(), env=signer.env)
         repo.checkout_branch("main", checked_sha)
     else:
-        await _cod_merge_ref(git_dir, checkout, result.observed_head, signer)
+        await _cod_merge_ref(git_dir, checkout, result.observed_head, signer, recheck)
     return result
 
 
@@ -798,13 +808,20 @@ async def _cod_fetch(git_dir, remote, pin_to_ref, signer):
     return result.pinned_head
 
 
-async def _cod_merge_ref(git_dir, checkout, ref_name, signer):
+async def _cod_merge_ref(git_dir, checkout, ref_name, signer, recheck=None):
     """Merge a parked peer ref into the user checkout.
 
     Uses explicit --git-dir/--work-tree flags throughout.
+
+    Other tasks run while the Hub authorizes the history, and one of them may
+    detach the checkout or attach another. recheck, when given, returns the
+    checkout to write into or raises; it runs after authorization, with no
+    await between it and Git.
     """
-    git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
     checked_sha = await _authorize_history(git_dir, ref_name, signer)
+    if recheck is not None:
+        checkout = recheck()
+    git_prefix = ["--git-dir", str(git_dir), "--work-tree", str(checkout)]
     if _has_commits(git_dir):
         command = git_prefix + ["merge", "-m", signer.message(
             f"Merge {checked_sha}", MERGE_PURPOSE), checked_sha]
@@ -1160,6 +1177,11 @@ def _require_clean_checkout(files_root, participant_hex, context, niche_name):
     return checkout
 
 
+def _rechecker(files_root, participant_hex, context, niche_name):
+    """Recheck the niche's registered checkout just before a merge writes to it."""
+    return lambda: _require_clean_checkout(files_root, participant_hex, context, niche_name)
+
+
 async def pull_niche(files_root, participant_hex, context, niche_name, remote, *, signer):
     """Pull a niche from cloud storage and merge into the user checkout.
 
@@ -1179,7 +1201,10 @@ async def pull_niche(files_root, participant_hex, context, niche_name, remote, *
 
     checkout = _require_clean_checkout(files_root, participant_hex, context, niche_name)
 
-    await _cod_pull(git_dir, checkout, remote, signer)
+    await _cod_pull(
+        git_dir, checkout, remote, signer,
+        _rechecker(files_root, participant_hex, context, niche_name),
+    )
 
 
 async def fetch_niche(files_root, participant_hex, context, niche_name, teammate_id, remote, *, signer):
@@ -1241,7 +1266,10 @@ async def merge_niche(files_root, participant_hex, context, niche_name, teammate
             files_root, participant_hex, context, "niche", niche_name, teammate_id, parked_sha
         )
         return parked_sha
-    await _cod_merge_ref(git_dir, checkout, ref_name, signer)
+    await _cod_merge_ref(
+        git_dir, checkout, ref_name, signer,
+        _rechecker(files_root, participant_hex, context, niche_name),
+    )
     _record_peer_merge(
         files_root, participant_hex, context, "niche", niche_name, teammate_id, parked_sha
     )
@@ -1281,7 +1309,10 @@ async def merge_self_niche(files_root, participant_hex, context, niche_name, *, 
     _validate_signer(context, signer)
     git_dir = _niche_git_dir(files_root, context, niche_name)
     checkout = _require_clean_checkout(files_root, participant_hex, context, niche_name)
-    return await _merge_parked_self_refs(git_dir, checkout, signer)
+    return await _merge_parked_self_refs(
+        git_dir, checkout, signer,
+        _rechecker(files_root, participant_hex, context, niche_name),
+    )
 
 
 def registry_conflict_paths(files_root, participant_hex, context):

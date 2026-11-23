@@ -270,6 +270,28 @@ def test_a_join_request_written_during_cleanup_survives_it(playground_dir, monke
     assert _pending_join_state(root) == {"device_id_hex": "new"}
 
 
+def test_reading_the_join_request_waits_for_a_writer(playground_dir):
+    """A writer truncates the file before writing it, so a reader must wait for the lock."""
+    root = pathlib.Path(playground_dir)
+    provisioning._persist_pending_join_state(root, {"device_id_hex": "old"})
+    result = {}
+
+    def _read():
+        result["state"] = provisioning._load_pending_join_state(root)
+
+    reader = threading.Thread(target=_read)
+    with provisioning._pending_join_state_lock(root):
+        # Stand in for a writer that has truncated the file and not yet refilled it.
+        provisioning._bootstrap_state_path(root).write_text("")
+        reader.start()
+        reader.join(0.3)
+        assert reader.is_alive()
+        provisioning._bootstrap_state_path(root).write_text(json.dumps({"device_id_hex": "new"}))
+    reader.join(5)
+
+    assert result["state"] == {"device_id_hex": "new"}
+
+
 def test_cloud_bootstrap_sends_hub_requests_through_the_injected_transport(
     playground_dir, monkeypatch
 ):

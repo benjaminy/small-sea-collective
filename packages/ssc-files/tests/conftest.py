@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import pathlib
 import shutil
@@ -21,14 +22,19 @@ def in_process_hub_signer(request, monkeypatch):
         "test_sync", "test_hub_sync", "test_web_sync",
     }:
         return
+    from small_sea_client import aio
     from ssc_files import files, sync
 
     async def signer(team_name, hub_port=11437, *, _http_client=None):
         if request.module.__name__.split(".")[-1] == "test_sync":
             return local_files_signer(request.module.TEAM)
+        token = sync.cached_session_token(team_name)
         async with sync.hub_http(hub_port, _http_client) as http:
-            info = await sync.get_team_session(team_name, http).session_info()
-        return local_files_signer(files.materialization_context_from_session_info(info))
+            info = await aio.SmallSeaSession(http, token).session_info()
+        return dataclasses.replace(
+            local_files_signer(files.materialization_context_from_session_info(info)),
+            session_token=token,
+        )
 
     monkeypatch.setattr(sync, "commit_signer", signer)
 

@@ -109,7 +109,8 @@ class _Device:
                        "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@t"},
         )
         return files.CommitSigner(info["team_id"], info["berth_id"], authority_view, env,
-                                  sync.hub_verifier(team_name, hub_port, _http_client=_http_client))
+                                  sync.hub_verifier(session.token, hub_port, _http_client=_http_client),
+                                  session.token)
 
     def use_files(self):
         """Point Files' per-user config at this device's file."""
@@ -421,7 +422,7 @@ def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen):
     for device, context in ((a, ctx_a), (b, ctx_b)):
         device.use_files()
         git_dir = files._niche_git_dir(device.files_root, context, NICHE)
-        verify = sync.hub_verifier(TEAM, _http_client=device.http)
+        verify = sync.hub_verifier(sync.cached_session_token(TEAM), _http_client=device.http)
         verdicts = anyio.run(verify, git_dir, _git_head(git_dir))["commits"]
         assert verdicts, f"no commits verified on {device.name}"
         assert {v["result"] for v in verdicts} == {"authorized"}, verdicts

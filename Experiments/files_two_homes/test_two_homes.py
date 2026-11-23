@@ -250,7 +250,7 @@ def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, m
             check=True, capture_output=True, text=True,
         ).stdout.strip()
 
-        verify = sync.hub_verifier(TEAM, bob_port, _http_client=bob_http)
+        verify = sync.hub_verifier(sync.cached_session_token(TEAM), bob_port, _http_client=bob_http)
         verdicts = anyio.run(verify, bob_git_dir, bob_head)
         by_commit = {v["commit"]: v for v in verdicts["commits"]}
         # Bob's merges fast-forwarded, so the history holds Alice's two

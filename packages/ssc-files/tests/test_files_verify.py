@@ -181,3 +181,100 @@ def test_files_transfer_refuses_unaccepted_history(playground_dir, operation, ve
     assert Repo(dest_git).list_refs("refs/") == before
     if operation == "publish":
         assert not list(unpublished.iterdir())
+
+
+def test_merge_writes_into_the_checkout_registered_after_authorization(playground_dir):
+    """Another request may detach the checkout and attach another while the Hub judges."""
+    root, _, dest, old_checkout, _, fetched = _setup(playground_dir)
+    git_dir = files._niche_git_dir(str(dest), PEER_TEAM, "docs")
+    new_checkout = root / "new-checkout"
+
+    async def reattach_during_verify(_git_dir, sha):
+        files.remove_checkout(str(dest), PEER, PEER_TEAM, "docs", str(old_checkout))
+        files.add_checkout(str(dest), PEER, PEER_TEAM, "docs", str(new_checkout))
+        return {"commits": [{"commit": sha, "result": "authorized", "reason": "ok"}],
+                "view_identifier": "test"}
+
+    anyio.run(functools.partial(
+        files.merge_niche, str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT,
+        signer=_verifying_signer(PEER_TEAM, reattach_during_verify)))
+    assert _head(git_dir) == fetched
+    assert (new_checkout / "source.txt").read_text() == "source\n"
+    assert not (old_checkout / "source.txt").exists()
+
+
+def test_merge_stops_when_the_checkout_is_detached_during_authorization(playground_dir):
+    _, _, dest, checkout, _, _ = _setup(playground_dir)
+    git_dir = files._niche_git_dir(str(dest), PEER_TEAM, "docs")
+
+    async def detach_during_verify(_git_dir, sha):
+        files.remove_checkout(str(dest), PEER, PEER_TEAM, "docs", str(checkout))
+        return {"commits": [{"commit": sha, "result": "authorized", "reason": "ok"}],
+                "view_identifier": "test"}
+
+    with pytest.raises(files.NoCheckoutError):
+        anyio.run(functools.partial(
+            files.merge_niche, str(dest), PEER, PEER_TEAM, "docs", PARTICIPANT,
+            signer=_verifying_signer(PEER_TEAM, detach_during_verify)))
+    assert _head(git_dir) is None
+    assert not (checkout / "source.txt").exists()
+
+
+def _token_recording_hub(seen):
+    import base64
+    import httpx
+
+    def handler(request):
+        seen.append((request.url.path, request.headers["Authorization"]))
+        if request.url.path == "/session/info":
+            return httpx.Response(200, json={"team_id": "11" * 16, "berth_id": "22" * 16})
+        if request.url.path == "/session/authority_view":
+            return httpx.Response(200, json={"authority_view": base64.urlsafe_b64encode(b"view").decode()})
+        if request.url.path == "/session/signing_key":
+            return httpx.Response(200, json={"public_key": "ssh-ed25519 AAAA test"})
+        if request.url.path == "/session/verify":
+            return httpx.Response(200, json={"commits": [], "view_identifier": "dGVzdA"})
+        return httpx.Response(200, json={})
+
+    return httpx.Client(transport=httpx.MockTransport(handler), base_url="http://127.0.0.1:5299")
+
+
+def test_signer_keeps_the_session_it_was_built_from(tmp_path, monkeypatch):
+    """A later login must not change which session judges an operation in flight."""
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "files.toml"))
+    monkeypatch.setattr(files.shutil, "which", lambda _name: "/bin/true")
+    seen = []
+    http = _token_recording_hub(seen)
+    sync.store_session_token("VerifyTeam", "first-token")
+    signer = anyio.run(functools.partial(sync.commit_signer, "VerifyTeam", 5299, _http_client=http))
+
+    sync.store_session_token("VerifyTeam", "second-token")
+    anyio.run(signer.verify, tmp_path, "0" * 40)
+
+    assert signer.session_token == "first-token"
+    assert seen[-1] == ("/session/verify", "Bearer first-token")
+
+
+def test_push_uses_the_signers_session(tmp_path, monkeypatch):
+    monkeypatch.setenv("SMALL_SEA_FILES_CONFIG", str(tmp_path / "files.toml"))
+    sync.store_session_token("VerifyTeam", "second-token")
+    seen = []
+    http = _token_recording_hub(seen)
+
+    async def signer(*_args, **_kwargs):
+        return replace(local_files_signer(TEAM), session_token="first-token")
+
+    class _Pushed:
+        disposition = "published"
+
+    async def fake_push(*_args, **_kwargs):
+        return _Pushed()
+
+    monkeypatch.setattr(sync, "resolve_team_context", lambda *_: TEAM)
+    monkeypatch.setattr(sync, "commit_signer", signer)
+    monkeypatch.setattr(files, "push_niche", fake_push)
+    monkeypatch.setattr(files, "push_registry", fake_push)
+    anyio.run(functools.partial(
+        sync.push_via_hub, str(tmp_path), PARTICIPANT, "VerifyTeam", "docs", _http_client=http))
+
+    assert seen == [("/cloud/setup", "Bearer first-token")]
