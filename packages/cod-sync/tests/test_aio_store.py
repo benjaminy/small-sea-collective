@@ -13,6 +13,7 @@ import pytest
 
 from cod_sync.aio.store import (
     CandidateInspectionStore,
+    ExplicitProxyStore,
     LocalFolderStore,
     PeerSmallSeaStore,
     SmallSeaStore,
@@ -188,6 +189,24 @@ async def test_candidate_reads_carry_the_candidate_key():
     assert client.requests[0].url.path == "/berth_source/inspect"
     assert client.requests[0].url.params["candidate_key"] == "candidate"
     assert client.requests[0].url.params["path"] == "latest-link.yaml"
+
+
+async def test_explicit_proxy_reads_transform_links_and_bundles(tmp_path):
+    client = hub(lambda r: httpx.Response(200, headers=OCTETS, content=b"sealed"))
+    store = ExplicitProxyStore(
+        "session", "s3", "http://minio", "bucket", client,
+        download_transform=lambda data: data.upper(),
+    )
+    assert (await store.get_latest_link())[0] == b"SEALED"
+    await store.download_bundle("b1", tmp_path / "bundle")
+    assert (tmp_path / "bundle").read_bytes() == b"SEALED"
+    first = client.requests[0]
+    assert first.url.path == "/cloud_proxy"
+    assert dict(first.url.params) == {
+        "protocol": "s3", "url": "http://minio", "bucket": "bucket",
+        "path": "latest-link.yaml",
+    }
+    assert client.requests[1].url.params["path"] == bundle_path("b1")
 
 
 async def test_local_folder_store_keeps_the_sync_contract(tmp_path):

@@ -385,7 +385,13 @@ class CodSync:
         Existing objects can skip import, but cannot skip this check.
         """
         if self.verifier is not None:
-            self.verifier.verify_history(self.repo, head)
+            verdict = self.verifier.verify_history(self.repo, head)
+            if inspect.isawaitable(verdict):
+                # A sync wrapper around an async verifier: nothing has been
+                # checked, so refuse rather than drop the awaitable.
+                if inspect.iscoroutine(verdict):
+                    verdict.close()
+                raise TypeError("This Cod Sync needs a synchronous verifier")
 
     # ------------------------------------------------------------------ #
     # Publication

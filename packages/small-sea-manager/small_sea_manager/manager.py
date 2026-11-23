@@ -12,6 +12,7 @@ from cod_sync.aio.protocol import CodSync as _AsyncCodSync
 from cod_sync.aio.repo import Repo as _AsyncRepo
 from cod_sync.aio.store import (
     CandidateInspectionStore as AsyncCandidateInspectionStore,
+    ExplicitProxyStore as AsyncExplicitProxyStore,
     PeerSmallSeaStore as AsyncPeerSmallSeaStore,
     SmallSeaStore as AsyncSmallSeaStore,
 )
@@ -766,6 +767,10 @@ class TeamManager:
 
     async def authorize_identity_join(self, join_request_artifact_b64, *, expires_in_seconds=600):
         """Admit a new device into this participant's NoteToSelf identity."""
+        # Checked here because the bundle is issued only after the admission
+        # is recorded and published.
+        if expires_in_seconds <= 0:
+            raise ValueError("expires_in_seconds must be positive")
         remote_descriptor = await self._note_to_self_remote_descriptor()
         provisioning.admit_identity_join_device(
             self.root_dir,
@@ -969,7 +974,6 @@ class TeamManager:
         """
         import base64 as _b64
         import json as _json
-        from cod_sync.store import ExplicitProxyStore
 
         token = _json.loads(_b64.b64decode(token_b64))
         inviter_cloud = token["inviter_cloud"]
@@ -989,25 +993,24 @@ class TeamManager:
 
         # NoteToSelf session to access /cloud_proxy for the inviter's bucket.
         # The acceptor doesn't have a team session yet — NoteToSelf provides auth.
-        nts_session = self._get_or_open_session("NoteToSelf", mode="passthrough")
-        http = self.client._http_client  # None in production; injected TestClient in tests
-        proxy_store = ExplicitProxyStore(
-            nts_session.token,
-            inviter_cloud["protocol"],
-            inviter_cloud["url"],
-            inviter_bucket,
-            base_url=self.client._base_url,
-            client=http,
-            download_transform=_decrypt_payload,
-        )
+        async with self._hub_http() as http:
+            nts_session = await self._hub_session(http, "NoteToSelf", mode="passthrough")
+            proxy_store = AsyncExplicitProxyStore(
+                nts_session.token,
+                inviter_cloud["protocol"],
+                inviter_cloud["url"],
+                inviter_bucket,
+                http,
+                download_transform=_decrypt_payload,
+            )
 
-        # Clone + local DB writes. No cloud push and no route publication
-        # happen here; the low-level token return is deliberately discarded so
-        # only the export gate can produce a courier token.
-        provisioning.accept_invitation(
-            self.root_dir, self.participant_hex, token_b64,
-            inviter_store=proxy_store,
-        )
+            # Clone + local DB writes. No cloud push and no route publication
+            # happen here; the low-level token return is deliberately discarded
+            # so only the export gate can produce a courier token.
+            await provisioning.accept_invitation(
+                self.root_dir, self.participant_hex, token_b64,
+                inviter_store=proxy_store,
+            )
         return await self.prepare_team_route(token["team_name"])
 
     # ------------------------------------------------------------------ #

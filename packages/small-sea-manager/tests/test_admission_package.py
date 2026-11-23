@@ -1,5 +1,6 @@
 """Micro tests for the admission package the inviter exports after finalization."""
 
+import functools
 import json
 import pathlib
 import shutil
@@ -8,7 +9,7 @@ import subprocess
 
 import anyio
 import pytest
-from cod_sync.store import LocalFolderStore
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 import small_sea_manager.provisioning as provisioning
@@ -336,8 +337,11 @@ def test_finalize_admission_returns_a_package_bob_can_import(playground_dir):
         invitee_label="Bob",
     )
     _push_to_localfolder(alice_sync, alice_cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(alice_cloud)),
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(alice_cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposal_id = provisioning.list_invitations(root, alice_hex, "ProjectX")[0]["id"]

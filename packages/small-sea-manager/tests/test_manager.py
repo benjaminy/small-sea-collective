@@ -1,8 +1,11 @@
+import anyio
+import functools
 import pathlib
 import sqlite3
 from types import SimpleNamespace
 
 import cod_sync.protocol as CS
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore
 from fastapi.testclient import TestClient
@@ -105,11 +108,14 @@ def _create_shared_team_with_bob(root: pathlib.Path):
     )
     _push_to_localfolder(alice_repo, alice_cloud)
 
-    bob_acceptance = Provisioning.accept_invitation(
-        root,
-        bob_hex,
-        token_b64,
-        inviter_store=LocalFolderStore(str(alice_cloud)),
+    bob_acceptance = anyio.run(
+        functools.partial(
+            Provisioning.accept_invitation,
+            root,
+            bob_hex,
+            token_b64,
+            inviter_store=AsyncLocalFolderStore(str(alice_cloud)),
+        )
     )
     Provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", bob_acceptance)
     return alice_hex, bob_hex
@@ -290,11 +296,14 @@ def test_manager_web_renders_steward_and_non_steward_admission_controls(playgrou
     )
     _push_to_localfolder(alice_repo, alice_cloud)
 
-    bob_acceptance = Provisioning.accept_invitation(
-        root,
-        bob_hex,
-        token_b64,
-        inviter_store=LocalFolderStore(str(alice_cloud)),
+    bob_acceptance = anyio.run(
+        functools.partial(
+            Provisioning.accept_invitation,
+            root,
+            bob_hex,
+            token_b64,
+            inviter_store=AsyncLocalFolderStore(str(alice_cloud)),
+        )
     )
 
     bob_self_id_hex = next(

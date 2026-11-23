@@ -53,6 +53,8 @@ from small_sea_note_to_self.bootstrap_status import (
 
 import cod_sync.protocol as CodSync
 import cod_sync.store as CodStore
+from cod_sync.aio.protocol import CodSync as _AsyncCodSync
+from cod_sync.aio.repo import Repo as _AsyncRepo
 from cod_sync.repo import Repo as _Repo
 from cuttlefish import (
     generate_bootstrap_keypair,
@@ -6007,7 +6009,7 @@ def create_invitation(
     return token_b64
 
 
-def accept_invitation(
+async def accept_invitation(
     root_dir,
     acceptor_participant_hex,
     token_b64,
@@ -6022,7 +6024,8 @@ def accept_invitation(
     is `TeamManager`'s separate step, after Hub materialization settles the
     locator.
 
-    All the work here is local. The signed base acceptance is persisted to the
+    inviter_store is an async Cod Sync store. Fetching from it is the only
+    network step; the rest is local. The signed base acceptance is persisted to the
     device-local DB and also returned, but that return is a test-only escape
     hatch: it bypasses the export gate, so a direct caller can obtain a
     route-less acceptance without marking it exported. `TeamManager` is the
@@ -6076,7 +6079,9 @@ def accept_invitation(
     try:
         repo = _Repo.init(team_sync_dir / ".git").with_work_tree(team_sync_dir)
         try:
-            result = CodSync.CodSync(repo, inviter_store).fetch()
+            result = await _AsyncCodSync(
+                _AsyncRepo(repo.git_dir, repo.work_tree), inviter_store
+            ).fetch()
         except CodSync.NoPublishedHeadError as exc:
             inviter_url = (
                 f"{inviter_cloud['protocol']}://{inviter_cloud['url']}/{inviter_bucket}"

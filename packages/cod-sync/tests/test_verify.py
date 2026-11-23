@@ -168,6 +168,27 @@ def test_the_sync_cod_sync_refuses_an_async_verifier(scratch_dir):
         CodSync(bob, make_store(pathlib.Path(scratch_dir) / "publication"), verifier=AsyncVerifier())
 
 
+def test_the_sync_cod_sync_refuses_an_awaitable_verdict(scratch_dir):
+    """A sync wrapper can hide an async verifier from the constructor check."""
+    scratch = pathlib.Path(scratch_dir)
+    alice = publisher(scratch)
+    commit_file(alice, "a.txt", "a")
+    publish(alice, scratch / "publication")
+
+    class WrappedAsyncVerifier:
+        def verify_history(self, repo, head):
+            async def check():
+                raise AssertionError("never awaited")
+
+            return check()
+
+    bob = make_repo(scratch / "bob", "bob")
+    cod = CodSync(bob, make_store(scratch / "publication"), verifier=WrappedAsyncVerifier())
+    with pytest.raises(TypeError, match="synchronous verifier"):
+        cod.fetch(pin_to_ref=PIN)
+    assert PIN not in all_refs(bob)
+
+
 def test_an_unsigned_history_is_rejected_before_the_pin_moves(scratch_dir):
     scratch = pathlib.Path(scratch_dir)
     key = make_ssh_key(scratch, "alice")

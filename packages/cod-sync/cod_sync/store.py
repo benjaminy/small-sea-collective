@@ -425,9 +425,6 @@ class _HubStore:
     def _download_endpoint(self, cloud_path: str) -> Tuple[str, dict]:
         raise NotImplementedError
 
-    def _transform_download(self, data: bytes) -> bytes:
-        return data
-
     # -- status classification -- #
 
     @staticmethod
@@ -475,7 +472,7 @@ class _HubStore:
     def _download(self, cloud_path: str) -> Tuple[bytes, Optional[str]]:
         data = bytearray()
         etag = self._read_download(cloud_path, lambda chunk: data.extend(chunk))
-        return self._transform_download(bytes(data)), etag
+        return bytes(data), etag
 
     def _read_download(self, cloud_path: str, write_chunk) -> Optional[str]:
         endpoint, params = self._download_endpoint(cloud_path)
@@ -525,14 +522,8 @@ class _HubStore:
         return self._download(link_path(link_uid))[0]
 
     def download_bundle(self, bundle_uid: str, local_path) -> None:
-        cloud_path = bundle_path(bundle_uid)
-        chunks = [] if getattr(self, "_download_transform", None) is not None else None
         with open(local_path, "wb") as handle:
-            if chunks is None:
-                self._read_download(cloud_path, handle.write)
-            else:
-                self._read_download(cloud_path, chunks.append)
-                handle.write(self._transform_download(b"".join(chunks)))
+            self._read_download(bundle_path(bundle_uid), handle.write)
 
 
 class SmallSeaStore(_HubStore):
@@ -683,43 +674,6 @@ class CandidateInspectionStore(_HubStore):
             "candidate_key": self.candidate_key,
             "path": self._path_prefix + cloud_path,
         }
-
-
-class ExplicitProxyStore(_HubStore):
-    """Read-only view of a chain at explicit cloud coordinates.
-
-    Used during invitation acceptance, when the inviter's repository must be
-    read before any peer relationship exists. Requires a NoteToSelf session.
-    """
-
-    def __init__(
-        self,
-        session_hex: str,
-        protocol: str,
-        url: str,
-        bucket: str,
-        base_url: str = "http://localhost:11437",
-        client=None,
-        download_transform=None,
-    ):
-        super().__init__(session_hex, base_url, client=client)
-        self._protocol = protocol
-        self._url = url
-        self._bucket = bucket
-        self._download_transform = download_transform
-
-    def _download_endpoint(self, cloud_path: str):
-        return "/cloud_proxy", {
-            "protocol": self._protocol,
-            "url": self._url,
-            "bucket": self._bucket,
-            "path": cloud_path,
-        }
-
-    def _transform_download(self, data: bytes) -> bytes:
-        if self._download_transform is None:
-            return data
-        return self._download_transform(data)
 
 
 class BootstrapProxyStore(_HubStore):

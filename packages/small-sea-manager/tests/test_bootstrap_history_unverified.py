@@ -14,6 +14,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import small_sea_manager.provisioning as provisioning
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.protocol import CodSync
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore
@@ -84,7 +85,7 @@ def test_accept_invitation_refuses_core_ancestor_signed_by_unknown_key(
     CodSync(Repo(alice_sync / ".git", alice_sync), store).publish()
 
     with pytest.raises(REFUSED):
-        provisioning.accept_invitation(root, bob, token, store)
+        anyio.run(provisioning.accept_invitation, root, bob, token, AsyncLocalFolderStore(store.path))
 
     bob_sync = root / "Participants" / bob / "ProjectX" / "Sync"
     assert not bob_sync.exists()

@@ -1,8 +1,11 @@
+import anyio
+import functools
 import pathlib
 import shutil
 import sqlite3
 
 import cod_sync.protocol as CS
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore
 
@@ -115,11 +118,14 @@ def test_quorum_two_requires_second_steward_and_inviter_finalization(playground_
         invitee_label="Bob",
     )
     _push_to_localfolder(alice_sync, alice_cloud)
-    acceptance = provisioning.accept_invitation(
-        root,
-        bob_hex,
-        token,
-        inviter_store=LocalFolderStore(str(alice_cloud)),
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root,
+            bob_hex,
+            token,
+            inviter_store=AsyncLocalFolderStore(str(alice_cloud)),
+        )
     )
 
     # Changing the rule after opening this proposal cannot waive its second endorsement.
@@ -161,11 +167,14 @@ def test_governance_drift_invalidates_proposal(playground_dir):
         {"protocol": "localfolder", "url": str(alice_cloud)},
         invitee_label="Bob",
     )
-    acceptance = provisioning.accept_invitation(
-        root,
-        bob_hex,
-        token,
-        inviter_store=LocalFolderStore(str(alice_cloud)),
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root,
+            bob_hex,
+            token,
+            inviter_store=AsyncLocalFolderStore(str(alice_cloud)),
+        )
     )
 
     with sqlite3.connect(alice_sync / "core.db") as conn:
@@ -212,11 +221,14 @@ def test_contributor_role_finalizes_as_proposal_only_on_core(playground_dir):
         mode_plan=provisioning.mode_plan_for_preset("contributor"),
     )
     provisioning.set_team_admission_policy(root, alice_hex, "ProjectX", quorum=2)
-    acceptance = provisioning.accept_invitation(
-        root,
-        bob_hex,
-        token,
-        inviter_store=LocalFolderStore(str(alice_cloud)),
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root,
+            bob_hex,
+            token,
+            inviter_store=AsyncLocalFolderStore(str(alice_cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
 

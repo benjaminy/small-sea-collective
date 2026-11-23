@@ -1,8 +1,9 @@
 """Async bundle stores: the async twin of cod_sync.store.
 
 Only the stores an async caller uses so far are here: the local folder, the
-session's own Hub storage, a teammate's storage read through the Hub, and one
-retained placement candidate of the session's own berth.
+session's own Hub storage, a teammate's storage read through the Hub, one
+retained placement candidate of the session's own berth, and an inviter's
+storage read at explicit coordinates.
 Errors, object names and status classification are the sync module's.
 
 A Hub store takes an httpx.AsyncClient whose base_url is the Hub. The caller
@@ -254,3 +255,51 @@ class CandidateInspectionStore(_HubStore):
             "candidate_key": self.candidate_key,
             "path": self._path_prefix + cloud_path,
         }
+
+
+class ExplicitProxyStore(_HubStore):
+    """Read-only view of a chain at explicit cloud coordinates.
+
+    Used during invitation acceptance, when the inviter's repository must be
+    read before any peer relationship exists. Requires a NoteToSelf session.
+    download_transform, when
+    given, receives each whole downloaded object, so a bundle is held in
+    memory rather than streamed to disk.
+    """
+
+    def __init__(
+        self,
+        session_hex: str,
+        protocol: str,
+        url: str,
+        bucket: str,
+        client: httpx.AsyncClient,
+        download_transform=None,
+    ):
+        super().__init__(session_hex, client)
+        self._protocol = protocol
+        self._url = url
+        self._bucket = bucket
+        self._download_transform = download_transform
+
+    def _download_endpoint(self, cloud_path: str):
+        return "/cloud_proxy", {
+            "protocol": self._protocol,
+            "url": self._url,
+            "bucket": self._bucket,
+            "path": cloud_path,
+        }
+
+    def _transform(self, data: bytes) -> bytes:
+        if self._download_transform is None:
+            return data
+        return self._download_transform(data)
+
+    async def _download(self, cloud_path: str) -> Tuple[bytes, Optional[str]]:
+        data, etag = await super()._download(cloud_path)
+        return self._transform(data), etag
+
+    async def download_bundle(self, bundle_uid: str, local_path) -> None:
+        data, _etag = await super()._download(bundle_path(bundle_uid))
+        with open(local_path, "wb") as handle:
+            handle.write(self._transform(data))

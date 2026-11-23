@@ -13,6 +13,7 @@ storage adapter.
 
 import anyio
 import base64
+import functools
 import json
 import pathlib
 import sqlite3
@@ -23,6 +24,7 @@ import cod_sync.protocol as CS
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as provisioning
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore
 from fastapi.testclient import TestClient
@@ -98,8 +100,11 @@ def _invite(root, alice_hex, alice_cloud, label="Bob") -> str:
 
 def _accept_locally(root, invitee_hex, token, alice_cloud) -> str:
     """Run the invitee's local ceremony. Returns the base acceptance token."""
-    return provisioning.accept_invitation(
-        root, invitee_hex, token, inviter_store=LocalFolderStore(str(alice_cloud))
+    return anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, invitee_hex, token, inviter_store=AsyncLocalFolderStore(str(alice_cloud)),
+        )
     )
 
 

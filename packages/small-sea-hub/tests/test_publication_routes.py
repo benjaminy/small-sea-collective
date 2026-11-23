@@ -10,7 +10,9 @@ that each entry point resolves the right context and the right expected
 publisher, and that a refusal reaches the client as a refusal.
 """
 
+import anyio
 import base64
+import functools
 import json
 import os
 import sqlite3
@@ -20,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.protocol import CodSync
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore, StoreTransportError
@@ -83,8 +86,11 @@ def team(tmp_path):
     )
     alice_sync = tmp_path / "Participants" / alice / "ProjectX" / "Sync"
     CodSync(Repo(alice_sync / ".git", alice_sync), LocalFolderStore(str(cloud))).publish()
-    acceptance = p.accept_invitation(
-        tmp_path, bob, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance = anyio.run(
+        functools.partial(
+            p.accept_invitation,
+            tmp_path, bob, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     p.complete_invitation_acceptance(tmp_path, alice, "ProjectX", acceptance)
 

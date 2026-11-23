@@ -13,13 +13,16 @@ endorsement/acceptance/snapshot rows are refused at decision points.
 Runs entirely over LocalFolderStore -- no MinIO or Hub.
 """
 
+import anyio
 import base64
+import functools
 import json
 import pathlib
 import shutil
 import sqlite3
 
 import cod_sync.protocol as CS
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from cod_sync.store import LocalFolderStore
 import pytest
@@ -62,8 +65,11 @@ def _admit(root, alice_hex, invitee_hex, cloud, *, mode_plan=None, label="Bob"):
         mode_plan=mode_plan,
     )
     _push(root / "Participants" / alice_hex / "ProjectX" / "Sync", cloud)
-    acceptance = provisioning.accept_invitation(
-        root, invitee_hex, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, invitee_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     return json.loads(base64.b64decode(acceptance).decode())
@@ -239,8 +245,11 @@ def _make_proposal_and_accept(root, alice_hex, bob_hex, cloud):
         invitee_label="Bob",
     )
     _push(root / "Participants" / alice_hex / "ProjectX" / "Sync", cloud)
-    acceptance_b64 = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance_b64 = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     return json.loads(base64.b64decode(acceptance_b64).decode())
 
@@ -379,8 +388,11 @@ def test_one_steward_two_devices_endorse_once(playground_dir):
         invitee_label="Bob",
     )
     _push(alice_sync, cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
 
@@ -424,8 +436,11 @@ def test_expired_proposal_refuses_endorsement_without_mutation(playground_dir):
         invitee_label="Bob",
     )
     _push(alice_sync, cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
 
@@ -466,8 +481,11 @@ def test_tampered_mode_plan_blocks_completion(playground_dir):
         mode_plan=provisioning.mode_plan_for_preset("contributor"),
     )
     _push(alice_sync, cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
 
     # Escalate the stored plan to the steward expansion, as a malicious merge
@@ -514,8 +532,11 @@ def test_forged_endorsements_do_not_count_toward_quorum(playground_dir):
         invitee_label="Bob",
     )
     _push(alice_sync, cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposals = provisioning.list_invitations(root, alice_hex, "ProjectX")
@@ -612,8 +633,11 @@ def test_tampered_snapshot_json_is_rejected_against_signed_digest(playground_dir
         invitee_label="Bob",
     )
     _push(alice_sync, cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposal_hex = provisioning.list_invitations(root, alice_hex, "ProjectX")[0]["id"]
@@ -655,8 +679,11 @@ def test_tampered_acceptance_row_is_rejected_at_finalization(playground_dir):
         invitee_label="Bob",
     )
     _push(alice_sync, cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposal_hex = provisioning.list_invitations(root, alice_hex, "ProjectX")[0]["id"]
@@ -698,8 +725,11 @@ def test_forged_finalization_rows_are_ignored_and_do_not_block(playground_dir):
         invitee_label="Bob",
     )
     _push(alice_sync, cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposals = provisioning.list_invitations(root, alice_hex, "ProjectX")
@@ -976,8 +1006,11 @@ def test_tampered_proposal_author_does_not_enable_finalization(playground_dir):
         invitee_label="Bob",
     )
     _push(alice_sync, cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud))
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", acceptance)
     proposals = provisioning.list_invitations(root, alice_hex, "ProjectX")

@@ -1,4 +1,5 @@
 import anyio
+import functools
 import json
 import sqlite3
 import threading
@@ -10,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.store import LocalFolderStore
 from cod_sync.repo import Repo
 from small_sea_hub.server import app, _register_session_peers, _run_runtime_reconciliation_for_session
@@ -119,11 +121,14 @@ def _create_shared_team_with_bob(root: Path):
     )
     _push_to_localfolder(alice_repo, alice_cloud)
 
-    bob_acceptance = provisioning.accept_invitation(
-        root,
-        bob_hex,
-        token_b64,
-        inviter_store=LocalFolderStore(str(alice_cloud)),
+    bob_acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root,
+            bob_hex,
+            token_b64,
+            inviter_store=AsyncLocalFolderStore(str(alice_cloud)),
+        )
     )
     provisioning.complete_invitation_acceptance(root, alice_hex, "ProjectX", bob_acceptance)
     return alice_hex, bob_hex

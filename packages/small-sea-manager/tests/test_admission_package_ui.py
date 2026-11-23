@@ -5,12 +5,14 @@ to hand to Bob, and Bob's "Import admission package" form must import a
 valid token and show a notice -- not a 500 -- for a garbage one.
 """
 
+import anyio
 import base64
+import functools
 import json
 import pathlib
 import re
 
-from cod_sync.store import LocalFolderStore
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from fastapi.testclient import TestClient
 
 import small_sea_manager.provisioning as provisioning
@@ -29,8 +31,11 @@ def _accept(root, bob_hex, cloud, invitee_label="Bob"):
         invitee_label=invitee_label,
     )
     _push(alice_sync, cloud_dir)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud_dir)),
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud_dir)),
+        )
     )
     return alice_hex, acceptance
 
@@ -50,8 +55,11 @@ def test_completion_response_carries_the_package_token(playground_dir):
         invitee_label="Bob",
     )
     _push(alice_sync, cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud)),
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
 
     client = TestClient(create_app(root, alice_hex))
@@ -72,8 +80,11 @@ def test_posting_a_valid_token_imports_the_package(playground_dir):
         invitee_label="Bob",
     )
     _push(alice_sync, cloud)
-    acceptance = provisioning.accept_invitation(
-        root, bob_hex, token, inviter_store=LocalFolderStore(str(cloud)),
+    acceptance = anyio.run(
+        functools.partial(
+            provisioning.accept_invitation,
+            root, bob_hex, token, inviter_store=AsyncLocalFolderStore(str(cloud)),
+        )
     )
     alice_client = TestClient(create_app(root, alice_hex))
     completion = alice_client.post(

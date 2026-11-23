@@ -180,6 +180,33 @@ def test_localfolder_identity_bootstrap_roundtrip(playground_dir):
     assert team_device_row[0] == joined_device_id
 
 
+def test_an_invalid_welcome_lifetime_admits_nothing(playground_dir):
+    workspace = pathlib.Path(playground_dir)
+    root1 = workspace / "install-a"
+    root2 = workspace / "install-b"
+    cloud_dir = workspace / "cloud"
+    root1.mkdir()
+    root2.mkdir()
+    cloud_dir.mkdir()
+    alice_hex = create_new_participant(root1, "Alice")
+    add_cloud_storage(root1, alice_hex, protocol="localfolder", url=str(cloud_dir))
+    join_request = create_identity_join_request(root2)
+
+    with pytest.raises(ValueError, match="expires_in_seconds"):
+        anyio.run(
+            functools.partial(
+                TeamManager(root1, alice_hex).authorize_identity_join,
+                join_request["join_request_artifact"],
+                expires_in_seconds=0,
+            )
+        )
+
+    with sqlite3.connect(str(note_to_self_sync_db_path(root1, alice_hex))) as conn:
+        [(devices,)] = conn.execute("SELECT COUNT(*) FROM user_device").fetchall()
+    assert devices == 1
+    assert not any(cloud_dir.iterdir())
+
+
 def test_identity_bootstrap_refuses_a_corrupt_fetched_database(playground_dir):
     workspace = pathlib.Path(playground_dir)
     root1 = workspace / "install-a"

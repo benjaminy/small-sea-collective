@@ -11,6 +11,7 @@ import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as provisioning
 from small_sea_note_to_self.db import device_local_db_path
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.protocol import CodSync
 from cod_sync.store import LocalFolderStore, SmallSeaStore
 from cod_sync.repo import Repo
@@ -227,7 +228,7 @@ def test_invitation_rejects_token_with_invalid_anchor_signature(playground_dir):
     ).decode()
 
     with pytest.raises(ValueError, match="anchor signature is invalid"):
-        provisioning.accept_invitation(root, bob, tampered_token, inviter_store)
+        anyio.run(provisioning.accept_invitation, root, bob, tampered_token, AsyncLocalFolderStore(inviter_store.path))
 
     # The refusal leaves nothing behind (#298), so the genuine token still works.
     team_id = bytes.fromhex(token_data["team_id"])
@@ -240,7 +241,7 @@ def test_invitation_rejects_token_with_invalid_anchor_signature(playground_dir):
                 f"SELECT 1 FROM {table} WHERE team_id = ?", (team_id,)
             ).fetchall()
             assert rows == [], table
-    provisioning.accept_invitation(root, bob, token, inviter_store)
+    anyio.run(provisioning.accept_invitation, root, bob, token, AsyncLocalFolderStore(inviter_store.path))
     assert sorted(team_names()) == ["NoteToSelf", "ProjectX"]
 
 
@@ -252,7 +253,7 @@ def test_invitation_rejects_core_with_forged_genesis(playground_dir, monkeypatch
     team_id = bytes.fromhex(json.loads(base64.b64decode(token))["team_id"])
 
     with pytest.raises(ValueError, match="does not match inviter signature"):
-        provisioning.accept_invitation(root, bob, token, inviter_store)
+        anyio.run(provisioning.accept_invitation, root, bob, token, AsyncLocalFolderStore(inviter_store.path))
 
     assert provisioning.get_authority_anchor(root, bob, team_id) is None
 
