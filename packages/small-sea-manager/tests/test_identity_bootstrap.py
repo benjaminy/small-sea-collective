@@ -2,6 +2,7 @@ import dataclasses
 import functools
 import pathlib
 import sqlite3
+import threading
 import time
 import json
 import base64
@@ -241,6 +242,32 @@ def test_finishing_a_bootstrap_keeps_a_join_request_made_during_its_fetch(
 
     newer_artifact = deserialize_join_request_artifact(newer[0]["join_request_artifact"])
     assert _pending_join_state(root2)["device_id_hex"] == newer_artifact.device_id_hex
+
+
+def test_a_join_request_written_during_cleanup_survives_it(playground_dir, monkeypatch):
+    """Cleanup reads the record and removes it under the lock writers take."""
+    root = pathlib.Path(playground_dir)
+    provisioning._persist_pending_join_state(root, {"device_id_hex": "old"})
+    read_done = threading.Event()
+    real_loads = json.loads
+
+    def _slow_loads(text, *args, **kwargs):
+        value = real_loads(text, *args, **kwargs)
+        if threading.current_thread().name == "cleanup":
+            read_done.set()
+            time.sleep(0.3)
+        return value
+
+    monkeypatch.setattr(provisioning.json, "loads", _slow_loads)
+    cleanup = threading.Thread(
+        target=provisioning._clear_pending_join_state, args=(root, "old"), name="cleanup"
+    )
+    cleanup.start()
+    assert read_done.wait(5)
+    provisioning._persist_pending_join_state(root, {"device_id_hex": "new"})
+    cleanup.join(5)
+
+    assert _pending_join_state(root) == {"device_id_hex": "new"}
 
 
 def test_cloud_bootstrap_sends_hub_requests_through_the_injected_transport(

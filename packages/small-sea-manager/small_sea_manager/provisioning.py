@@ -8,6 +8,8 @@
 # schema is the shared contract between the two packages.
 
 import base64
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
@@ -1797,10 +1799,20 @@ def _publish_local_device_prekey_bundle(
     }
 
 
+@contextlib.contextmanager
+def _pending_join_state_lock(root_dir):
+    """Hold the lock that writes and removals of the pending join request share."""
+    state_dir = _bootstrap_state_dir(root_dir)
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with open(state_dir / "pending_identity_join.lock", "w") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        yield
+
+
 def _persist_pending_join_state(root_dir, state: dict) -> None:
     path = _bootstrap_state_path(root_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, sort_keys=True, indent=2))
+    with _pending_join_state_lock(root_dir):
+        path.write_text(json.dumps(state, sort_keys=True, indent=2))
 
 
 def _load_pending_join_state(root_dir) -> dict:
@@ -1817,8 +1829,9 @@ def _clear_pending_join_state(root_dir, device_id_hex: str) -> None:
     record; its welcome bundle still needs it.
     """
     path = _bootstrap_state_path(root_dir)
-    if path.exists() and json.loads(path.read_text())["device_id_hex"] == device_id_hex:
-        path.unlink()
+    with _pending_join_state_lock(root_dir):
+        if path.exists() and json.loads(path.read_text())["device_id_hex"] == device_id_hex:
+            path.unlink()
 
 
 def _mark_identity_bootstrap_untrusted(root_dir, participant_hex: str, *, reason: str) -> None:

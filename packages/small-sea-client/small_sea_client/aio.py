@@ -15,20 +15,40 @@ import httpx
 from small_sea_client.client import SmallSeaError, SmallSeaHubUnavailable, _check_response
 
 
-def async_transport_for(http_client) -> httpx.AsyncBaseTransport | None:
+class _BorrowedTransport(httpx.AsyncBaseTransport):
+    """Forwards requests to a transport that the injecting client owns.
+
+    Closing the async client that uses it leaves the owner's transport open.
+    """
+
+    def __init__(self, transport: httpx.AsyncBaseTransport):
+        self._transport = transport
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return await self._transport.handle_async_request(request)
+
+    async def aclose(self) -> None:
+        pass
+
+
+def async_transport_for(http_client, hub_url: str) -> httpx.AsyncBaseTransport | None:
     """The async transport that reaches the Hub an injected sync client reaches.
 
     Tests inject a sync client for the Hub; async calls must reach the same
-    Hub. None means the async client opens its own network connections.
+    Hub. hub_url is the Hub's base URL, which picks the client's transport
+    the way the client itself would, including a transport mounted for that
+    URL. None means the async client opens its own network connections.
     """
     hub_app = getattr(http_client, "app", None)
     if hub_app is not None:
         # A Starlette TestClient: call the same app in-process.
         return httpx.ASGITransport(app=hub_app)
-    transport = getattr(http_client, "_transport", None)
+    if not isinstance(http_client, httpx.Client):
+        return None
+    transport = http_client._transport_for_url(httpx.URL(hub_url))
     if isinstance(transport, httpx.AsyncBaseTransport):
         # A transport that also serves async requests, such as MockTransport.
-        return transport
+        return _BorrowedTransport(transport)
     return None
 
 

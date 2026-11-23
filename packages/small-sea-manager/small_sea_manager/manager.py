@@ -236,11 +236,11 @@ async def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=114
         result = await _AsyncCodSync(fetch_repo, store).fetch()
     else:
         # Reach the same Hub a TeamManager built from these arguments would.
-        transport = _aio_client.async_transport_for(_http_client)
         base_url = (
             str(getattr(_http_client, "base_url", "") or "")
             or f"http://127.0.0.1:{hub_port}"
         )
+        transport = _aio_client.async_transport_for(_http_client, base_url)
         async with httpx.AsyncClient(
             base_url=base_url, transport=transport, timeout=_HUB_TIMEOUT
         ) as http:
@@ -279,14 +279,14 @@ class TeamManager:
         provisioning.assert_identity_bootstrap_trusted(self.root_dir, self.participant_hex)
         provisioning.migrate_participant_team_dbs(self.root_dir, self.participant_hex)
         self.client = SmallSeaClient(port=hub_port, _http_client=_http_client)
-        # A test that injects a client for the Hub gets the same Hub for the
-        # async methods: a TestClient's app, called in-process on the
-        # caller's loop, or a transport that also serves async requests.
-        self._async_transport = _aio_client.async_transport_for(_http_client)
         # An injected client may point at a Hub on another port; the async
         # methods must reach the same Hub.
         injected_url = str(getattr(_http_client, "base_url", "") or "")
         self._hub_base_url = injected_url or self.client._base_url
+        # A test that injects a client for the Hub gets the same Hub for the
+        # async methods: a TestClient's app, called in-process on the
+        # caller's loop, or a transport that also serves async requests.
+        self._async_transport = _aio_client.async_transport_for(_http_client, self._hub_base_url)
         # One push or route change at a time per team; see _team_lock.
         self._team_locks: dict[str, anyio.Lock] = {}
         # NoteToSelf push and refresh run one at a time: each reads the adopted

@@ -163,12 +163,45 @@ async def test_resend_notification_names_the_pending_session():
 
 
 async def test_async_transport_for_an_injected_client():
-    mock = httpx.MockTransport(lambda r: httpx.Response(200))
-    assert async_transport_for(httpx.Client(transport=mock)) is mock
-    assert async_transport_for(httpx.Client(base_url="http://127.0.0.1:54001")) is None
-    assert async_transport_for(None) is None
+    seen = []
+    mock = httpx.MockTransport(lambda r: seen.append(r.url.path) or httpx.Response(200))
+    async with httpx.AsyncClient(
+        base_url="http://hub", transport=async_transport_for(httpx.Client(transport=mock), "http://hub")
+    ) as http:
+        await http.get("/x")
+    assert seen == ["/x"]
+    plain = httpx.Client(base_url="http://127.0.0.1:54001")
+    assert async_transport_for(plain, "http://127.0.0.1:54001") is None
+    assert async_transport_for(None, "http://hub") is None
 
     class _TestClientLike:
         app = object()
 
-    assert isinstance(async_transport_for(_TestClientLike()), httpx.ASGITransport)
+    assert isinstance(async_transport_for(_TestClientLike(), "http://hub"), httpx.ASGITransport)
+
+
+async def test_closing_the_async_client_leaves_the_injected_transport_open():
+    class _Stateful(httpx.MockTransport):
+        closed = False
+
+        async def aclose(self):
+            self.closed = True
+
+    mock = _Stateful(lambda r: httpx.Response(200))
+    injected = httpx.Client(base_url="http://hub", transport=mock)
+    async with httpx.AsyncClient(
+        base_url="http://hub", transport=async_transport_for(injected, "http://hub")
+    ) as http:
+        assert (await http.get("/x")).status_code == 200
+    assert not mock.closed
+
+
+async def test_async_transport_for_uses_the_transport_mounted_for_the_hub():
+    seen = []
+    mock = httpx.MockTransport(lambda r: seen.append(r.url.path) or httpx.Response(200))
+    injected = httpx.Client(mounts={"http://hub": mock})
+    async with httpx.AsyncClient(
+        base_url="http://hub", transport=async_transport_for(injected, "http://hub")
+    ) as http:
+        await http.get("/x")
+    assert seen == ["/x"]
