@@ -1983,18 +1983,18 @@ class TeamManager:
             proposal_id,
         )
 
-    def wait_for_team_admission_signal(self, team_name: str, timeout: int = 15) -> bool:
+    async def wait_for_team_admission_signal(self, team_name: str, timeout: int = 15) -> bool:
         """Wait for a Hub-backed berth pulse that may imply fresh admission events."""
-        key = (team_name, "encrypted")
-        session = self._sessions.get(key)
-        if session is None:
+        if (team_name, "encrypted") not in self._sessions:
             return False
         try:
-            known = {
-                peer["teammate_id"]: int(peer.get("signal_count", 0))
-                for peer in session.session_peers()
-            }
-            result = session.watch_notifications(known, timeout=timeout)
+            async with self._hub_http() as http:
+                session = await self._hub_session(http, team_name, mode="encrypted")
+                known = {
+                    peer["teammate_id"]: int(peer.get("signal_count", 0))
+                    for peer in await session.session_peers()
+                }
+                result = await session.watch_notifications(known, timeout=timeout)
         except SmallSeaHubUnavailable:
             return False
         except Exception:

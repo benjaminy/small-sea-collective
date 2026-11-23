@@ -1,6 +1,5 @@
 """FastAPI + Jinja2 + htmx web UI for the Small Sea Manager."""
 
-import asyncio
 import base64
 import json
 import pathlib
@@ -1163,11 +1162,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         active = mgr.session_state(team_name, _ENCRYPTED) == "active"
         hub_available = True
         if active:
-            hub_available = await asyncio.to_thread(
-                mgr.wait_for_team_admission_signal,
-                team_name,
-                15,
-            )
+            hub_available = await mgr.wait_for_team_admission_signal(team_name, 15)
         team = mgr.get_team(team_name)
         return templates.TemplateResponse(
             "fragments/admission_events_watch.html",

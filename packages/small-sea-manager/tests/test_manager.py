@@ -14,6 +14,7 @@ from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 import small_sea_manager.provisioning as Provisioning
 from small_sea_manager.admission_events import AdmissionEventType
 from small_sea_manager import admission_events
+from small_sea_client.client import SmallSeaHubUnavailable
 from small_sea_manager.manager import TeamManager, _CORE_APP
 from small_sea_manager.web import create_app
 
@@ -343,11 +344,10 @@ def test_admission_watch_endpoint_backs_off_when_hub_wait_unavailable(playground
     manager = app.state.manager
 
     manager.set_session("ProjectX", "token-encrypted")
-    monkeypatch.setattr(
-        manager,
-        "wait_for_team_admission_signal",
-        lambda team_name, timeout=15: False,
-    )
+    async def _wait(team_name, timeout=15):
+        return False
+
+    monkeypatch.setattr(manager, "wait_for_team_admission_signal", _wait)
 
     response = client.get("/teams/ProjectX/admission-events/watch")
     assert response.status_code == 200
@@ -362,15 +362,66 @@ def test_admission_watch_endpoint_stays_fast_when_hub_wait_succeeds(playground_d
     manager = app.state.manager
 
     manager.set_session("ProjectX", "token-encrypted")
-    monkeypatch.setattr(
-        manager,
-        "wait_for_team_admission_signal",
-        lambda team_name, timeout=15: True,
-    )
+    async def _wait(team_name, timeout=15):
+        return True
+
+    monkeypatch.setattr(manager, "wait_for_team_admission_signal", _wait)
 
     response = client.get("/teams/ProjectX/admission-events/watch")
     assert response.status_code == 200
     assert 'load delay:0.2s' in response.text
+
+
+class _WatchSession:
+    """A fake async team session: one peer, and a watch that reports an update."""
+
+    def __init__(self, *, hub_down=False):
+        self.hub_down = hub_down
+        self.watched = None
+
+    async def session_peers(self):
+        if self.hub_down:
+            raise SmallSeaHubUnavailable()
+        return [{"teammate_id": "aa", "signal_count": 2}]
+
+    async def watch_notifications(self, known, timeout=30):
+        self.watched = (known, timeout)
+        return {"updated": {"aa": 3}}
+
+
+def _watching_manager(playground_dir, monkeypatch, session):
+    participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    Provisioning.create_team(playground_dir, participant_hex, "ProjectX")
+    manager = TeamManager(playground_dir, participant_hex)
+    manager.set_session("ProjectX", "token-encrypted")
+
+    async def _open(http, team, mode="encrypted"):
+        assert (team, mode) == ("ProjectX", "encrypted")
+        return session
+
+    monkeypatch.setattr(manager, "_hub_session", _open)
+    return manager
+
+
+def test_admission_wait_watches_from_the_peers_known_counts(playground_dir, monkeypatch):
+    session = _WatchSession()
+    manager = _watching_manager(playground_dir, monkeypatch, session)
+
+    assert anyio.run(manager.wait_for_team_admission_signal, "ProjectX", 7) is True
+    assert session.watched == ({"aa": 2}, 7)
+
+
+def test_admission_wait_reports_false_when_the_hub_is_down(playground_dir, monkeypatch):
+    manager = _watching_manager(playground_dir, monkeypatch, _WatchSession(hub_down=True))
+
+    assert anyio.run(manager.wait_for_team_admission_signal, "ProjectX") is False
+
+
+def test_admission_wait_without_a_team_session_asks_no_hub(playground_dir, monkeypatch):
+    manager = _watching_manager(playground_dir, monkeypatch, None)
+    manager.clear_session("ProjectX")
+
+    assert anyio.run(manager.wait_for_team_admission_signal, "ProjectX") is False
 
 
 def test_admission_watch_response_has_one_oob_events_root(playground_dir):
