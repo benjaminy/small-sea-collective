@@ -6191,16 +6191,29 @@ async def accept_invitation(
     finally:
         core_engine.dispose()
 
-    with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
-        conn.execute(
-            "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
-            (team_id, team_name, acceptor_teammate_id),
-        )
-        conn.execute("INSERT INTO local.team_spine_origin VALUES (?, ?)", (team_id, token["spine_origin"]))
-        # Core participant registration is identity-wide in NoteToSelf. Hub
-        # berth resolution currently accepts any NoteToSelf Core berth for the
-        # app, so accepting a team invitation does not add a per-team Core row.
-        conn.commit()
+    try:
+        with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
+            conn.execute(
+                "INSERT INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
+                (team_id, team_name, acceptor_teammate_id),
+            )
+            conn.execute("INSERT INTO local.team_spine_origin VALUES (?, ?)", (team_id, token["spine_origin"]))
+            # Core participant registration is identity-wide in NoteToSelf. Hub
+            # berth resolution currently accepts any NoteToSelf Core berth for the
+            # app, so accepting a team invitation does not add a per-team Core row.
+            conn.commit()
+    except sqlite3.IntegrityError as exc:
+        # A NoteToSelf refresh can import this team while the clone above is
+        # fetched. Remove this attempt's clone, or the device would look
+        # joined with no team keys and no authority anchor.
+        shutil.rmtree(team_sync_dir)
+        with attached_note_to_self_connection(root_dir, acceptor_participant_hex) as conn:
+            arrived = conn.execute(
+                "SELECT 1 FROM team WHERE id = ? OR name = ?", (team_id, team_name)
+            ).fetchone()
+        if arrived is None:
+            raise
+        raise ValueError(f"Team '{team_name}' already exists in NoteToSelf") from exc
 
     # --- Generate local current device key ---
     team_keys = _generate_initial_team_device_key(

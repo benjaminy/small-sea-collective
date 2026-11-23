@@ -245,6 +245,35 @@ def test_invitation_rejects_token_with_invalid_anchor_signature(playground_dir):
     assert sorted(team_names()) == ["NoteToSelf", "ProjectX"]
 
 
+def test_a_team_row_arriving_during_the_clone_leaves_no_clone_behind(playground_dir):
+    """A NoteToSelf refresh can import the team while the clone is fetched."""
+    root = pathlib.Path(playground_dir)
+    _alice, bob, token, inviter_store = _localfolder_invitation(root)
+    token_data = json.loads(base64.b64decode(token))
+
+    class _RefreshDuringFetch(AsyncLocalFolderStore):
+        async def download_bundle(self, bundle_uid, local_path):
+            with provisioning.attached_note_to_self_connection(root, bob) as conn:
+                conn.execute(
+                    "INSERT OR IGNORE INTO team (id, name, self_in_team) VALUES (?, ?, ?)",
+                    (
+                        bytes.fromhex(token_data["team_id"]),
+                        "ProjectX",
+                        bytes.fromhex(token_data["invitee_teammate_id"]),
+                    ),
+                )
+            await super().download_bundle(bundle_uid, local_path)
+
+    with pytest.raises(ValueError, match="already exists"):
+        anyio.run(
+            provisioning.accept_invitation, root, bob, token,
+            _RefreshDuringFetch(inviter_store.path),
+        )
+
+    assert not provisioning.has_local_team_clone(root, bob, "ProjectX")
+    assert not (root / "Participants" / bob / "ProjectX" / "Sync").exists()
+
+
 def test_invitation_rejects_core_with_forged_genesis(playground_dir, monkeypatch):
     root = pathlib.Path(playground_dir)
     _alice, bob, token, inviter_store = _localfolder_invitation(
