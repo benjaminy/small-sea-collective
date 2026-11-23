@@ -15,6 +15,7 @@ import small_sea_manager.provisioning as Provisioning
 from small_sea_manager.admission_events import AdmissionEventType
 from small_sea_manager import admission_events
 from small_sea_client.client import SmallSeaHubUnavailable
+import small_sea_manager.manager as manager_module
 from small_sea_manager.manager import TeamManager, _CORE_APP
 from small_sea_manager.web import create_app
 
@@ -50,16 +51,16 @@ def test_manager_web_pin_flow_updates_cached_session_state(playground_dir, monke
 
     captured = {}
 
-    def fake_start_session(participant, app_name, team_name, client_name, mode=None):
+    async def fake_start_session(_http, participant, app_name, team_name, client_name, mode=None):
         captured["start"] = (participant, app_name, team_name, client_name, mode)
         return None, "pending-123"
 
-    def fake_confirm_session(pending_id, pin):
+    async def fake_confirm_session(_http, pending_id, pin):
         captured["confirm"] = (pending_id, pin)
         return SimpleNamespace(token="session-abc")
 
-    monkeypatch.setattr(manager.client, "start_session", fake_start_session)
-    monkeypatch.setattr(manager.client, "confirm_session", fake_confirm_session)
+    monkeypatch.setattr(manager_module._aio_client, "start_session", fake_start_session)
+    monkeypatch.setattr(manager_module._aio_client, "confirm_session", fake_confirm_session)
 
     response = client.post("/session/request")
     assert response.status_code == 200

@@ -19,7 +19,6 @@ from small_sea_client.client import SmallSeaCloudStorageRequired
 from small_sea_manager.manager import (
     ROUTE_REASON_BY_CLOUD_REASON,
     TeamManager,
-    _CORE_APP,
 )
 from small_sea_manager.provisioning import (
     AdmissionPackageRejectedError,
@@ -215,25 +214,18 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     def _mgr(request: Request) -> TeamManager:
         return request.app.state.manager
 
-    def _other_hub_sessions(mgr: TeamManager):
+    async def _other_hub_sessions(mgr: TeamManager):
         """List this participant's other confirmed Hub sessions, or None.
 
         None means either there is no active NoteToSelf session to ask with,
         or the Hub could not be asked; either way the card shows nothing new.
         """
-        session = mgr.note_to_self_session_if_active()
-        if session is None:
-            return None
         try:
-            own_id = session.session_info()["session_id"]
-            sessions = session.list_sessions()
+            return await mgr.other_hub_sessions()
         except Exception:
             return None
-        # Hide only this Manager's current session. Older Manager sessions
-        # stay listed: confirmed sessions never expire, so they pile up.
-        return [s for s in sessions if s["id"] != own_id]
 
-    def _hub_connection_ctx(request: Request, error: str = None):
+    async def _hub_connection_ctx(request: Request, error: str = None):
         mgr = _mgr(request)
         return templates.TemplateResponse(
             "fragments/hub_connection.html",
@@ -242,7 +234,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "session_status": mgr.session_state(_NTS_TEAM, _PASSTHROUGH),
                 "session_error": error,
                 "session_mode_badge": _mode_badge(_PASSTHROUGH),
-                "other_sessions": _other_hub_sessions(mgr),
+                "other_sessions": await _other_hub_sessions(mgr),
             },
         )
 
@@ -321,7 +313,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
             "admission_package_token": admission_package_token,
             "known_apps": await mgr.known_apps(team_name),
             "known_apps_need_hub": (
-                mgr.note_to_self_session_if_active() is None
+                mgr.note_to_self_token_if_active() is None
             ),
         }
 
@@ -447,7 +439,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
                 "teams": _teams_with_status(mgr),
                 "session_status": mgr.session_state(_NTS_TEAM, _PASSTHROUGH),
                 "session_error": None,
-                "other_sessions": _other_hub_sessions(mgr),
+                "other_sessions": await _other_hub_sessions(mgr),
                 "sightings": None,
                 "nts_sources": mgr.note_to_self_conflict_status(),
                 "nts_notice": None,
@@ -466,56 +458,43 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     async def session_request(request: Request):
         mgr = _mgr(request)
         try:
-            session, pending_id = mgr.client.start_session(
-                mgr.participant_hex, _CORE_APP, _NTS_TEAM, "ManagerUI", mode=_PASSTHROUGH
-            )
-            if session is not None:
-                mgr.set_session(_NTS_TEAM, session.token, mode=_PASSTHROUGH)
-            else:
-                mgr.set_pending(_NTS_TEAM, pending_id, mode=_PASSTHROUGH)
+            await mgr.request_session(_NTS_TEAM, _PASSTHROUGH, "ManagerUI")
         except Exception as e:
-            return _hub_connection_ctx(request, error=str(e))
-        return _hub_connection_ctx(request)
+            return await _hub_connection_ctx(request, error=str(e))
+        return await _hub_connection_ctx(request)
 
     @app.post("/session/confirm", response_class=HTMLResponse)
     async def session_confirm(request: Request, pin: str = Form(...)):
         mgr = _mgr(request)
-        pending_id = mgr.get_pending_id(_NTS_TEAM, _PASSTHROUGH)
         try:
-            session = mgr.client.confirm_session(pending_id, pin.strip())
-            mgr.set_session(_NTS_TEAM, session.token, mode=_PASSTHROUGH)
+            await mgr.confirm_session(_NTS_TEAM, pin.strip(), mode=_PASSTHROUGH)
         except Exception as e:
-            return _hub_connection_ctx(request, error=str(e))
-        return _hub_connection_ctx(request)
+            return await _hub_connection_ctx(request, error=str(e))
+        return await _hub_connection_ctx(request)
 
     @app.post("/session/resend-notification", response_class=HTMLResponse)
     async def session_resend_notification(request: Request):
         mgr = _mgr(request)
-        pending_id = mgr.get_pending_id(_NTS_TEAM, _PASSTHROUGH)
         try:
-            if pending_id:
-                mgr.client.resend_notification(pending_id)
+            await mgr.resend_notification(_NTS_TEAM, mode=_PASSTHROUGH)
         except Exception as e:
-            return _hub_connection_ctx(request, error=str(e))
-        return _hub_connection_ctx(request)
+            return await _hub_connection_ctx(request, error=str(e))
+        return await _hub_connection_ctx(request)
 
     @app.post("/session/close", response_class=HTMLResponse)
     async def session_close(request: Request):
         mgr = _mgr(request)
         mgr.clear_session(_NTS_TEAM, mode=_PASSTHROUGH)
-        return _hub_connection_ctx(request)
+        return await _hub_connection_ctx(request)
 
     @app.post("/session/other/{session_id}/delete", response_class=HTMLResponse)
     async def session_delete_other(request: Request, session_id: str):
         mgr = _mgr(request)
-        session = mgr.note_to_self_session_if_active()
-        if session is None:
-            return _hub_connection_ctx(request)
         try:
-            session.delete_session(session_id)
+            await mgr.delete_hub_session(session_id)
         except Exception as e:
-            return _hub_connection_ctx(request, error=str(e))
-        return _hub_connection_ctx(request)
+            return await _hub_connection_ctx(request, error=str(e))
+        return await _hub_connection_ctx(request)
 
     # ------------------------------------------------------------------ #
     # NoteToSelf sync
@@ -711,13 +690,7 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     async def team_session_request(request: Request, team_name: str):
         mgr = _mgr(request)
         try:
-            session, pending_id = mgr.client.start_session(
-                mgr.participant_hex, _CORE_APP, team_name, "ManagerUI", mode=_ENCRYPTED
-            )
-            if session is not None:
-                mgr.set_session(team_name, session.token, mode=_ENCRYPTED)
-            else:
-                mgr.set_pending(team_name, pending_id, mode=_ENCRYPTED)
+            await mgr.request_session(team_name, _ENCRYPTED, "ManagerUI")
         except Exception as e:
             return _team_session_ctx(request, team_name, error=str(e))
         return _team_session_ctx(request, team_name)
@@ -727,10 +700,8 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
         request: Request, team_name: str, pin: str = Form(...)
     ):
         mgr = _mgr(request)
-        pending_id = mgr.get_pending_id(team_name, _ENCRYPTED)
         try:
-            session = mgr.client.confirm_session(pending_id, pin.strip())
-            mgr.set_session(team_name, session.token, mode=_ENCRYPTED)
+            await mgr.confirm_session(team_name, pin.strip(), mode=_ENCRYPTED)
         except Exception as e:
             return _team_session_ctx(request, team_name, error=str(e))
         return _team_session_ctx(request, team_name)
@@ -738,10 +709,8 @@ def create_app(root_dir: str, participant_hex: str, hub_port: int = 11437) -> Fa
     @app.post("/teams/{team_name}/session/resend-notification", response_class=HTMLResponse)
     async def team_session_resend(request: Request, team_name: str):
         mgr = _mgr(request)
-        pending_id = mgr.get_pending_id(team_name, _ENCRYPTED)
         try:
-            if pending_id:
-                mgr.client.resend_notification(pending_id)
+            await mgr.resend_notification(team_name, mode=_ENCRYPTED)
         except Exception as e:
             return _team_session_ctx(request, team_name, error=str(e))
         return _team_session_ctx(request, team_name)

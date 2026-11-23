@@ -14,6 +14,9 @@ import httpx
 
 from small_sea_client.client import SmallSeaError, SmallSeaHubUnavailable, _check_response
 
+#: The port a Hub listens on unless told otherwise.
+DEFAULT_PORT = 11437
+
 
 class _BorrowedTransport(httpx.AsyncBaseTransport):
     """Forwards requests to a transport that the injecting client owns.
@@ -191,6 +194,23 @@ class SmallSeaSession:
         """Return peers visible to this session, with best-effort labels."""
         result = await self._get("/session/peers")
         return result.get("peers", [])
+
+    async def list_sessions(self) -> list[dict]:
+        """List this participant's confirmed Hub sessions, without tokens.
+
+        Only a caller whose own session is on NoteToSelf may call this;
+        other sessions raise SmallSeaError with code "session_admin_not_allowed".
+        """
+        return await self._get("/sessions/confirmed")
+
+    async def delete_session(self, session_id: str) -> None:
+        """Delete one of this participant's confirmed Hub sessions by id.
+
+        Raises SmallSeaNotFound if the id names no session belonging to this
+        participant. Only a caller whose own session is on NoteToSelf may
+        call this.
+        """
+        await self._send("DELETE", f"/sessions/confirmed/{session_id}")
 
     async def list_granted_apps(self) -> list[dict]:
         """List app names that have ever received a confirmed session.

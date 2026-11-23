@@ -39,8 +39,9 @@ def test_observe_unsigned_baseline_change_preserves_confirmation(prepared_pair, 
         repo = provisioning._Repo(repo_dir / '.git', repo_dir)
         repo.stage(['core.db'])
         repo.commit('Experiment: storage substitutes bootstrap device label')
-        provisioning._push_note_to_self_to_local_remote(
-            source, participant, provisioning._single_note_to_self_remote_descriptor(source, participant)
+        anyio.run(
+            provisioning._push_note_to_self_to_local_remote,
+            source, participant, provisioning._single_note_to_self_remote_descriptor(source, participant),
         )
     result = anyio.run(bootstrap_existing_identity, target, welcome['welcome_bundle'])
     assert result['second_confirmation_string'] == welcome['second_confirmation_string']
@@ -81,8 +82,9 @@ def test_storage_replacement_of_joining_signing_key_is_rejected(prepared_pair):
     repo = provisioning._Repo(source_db.parent / '.git', source_db.parent)
     repo.stage(['core.db'])
     repo.commit('Experiment: storage replaces joining signing key')
-    provisioning._push_note_to_self_to_local_remote(
-        source, participant, provisioning._single_note_to_self_remote_descriptor(source, participant)
+    anyio.run(
+        provisioning._push_note_to_self_to_local_remote,
+        source, participant, provisioning._single_note_to_self_remote_descriptor(source, participant),
     )
     with pytest.raises(ValueError, match='joining device keys'):
         anyio.run(bootstrap_existing_identity, target, welcome['welcome_bundle'])

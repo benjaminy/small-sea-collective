@@ -42,7 +42,6 @@ from cod_sync.store import (
 )
 from small_sea_client import aio as _aio_client
 from small_sea_client.client import (
-    SmallSeaClient,
     SmallSeaCloudStorageRequired,
     SmallSeaError,
     SmallSeaHubUnavailable,
@@ -270,7 +269,7 @@ class TeamManager:
     """Business logic for team management operations.
 
     Reads team/teammate/invitation data directly from the local SQLite DB.
-    Hub sessions (via SmallSeaClient) are used only for cloud sync operations.
+    Hub sessions are used only for cloud sync operations.
     """
 
     def __init__(self, root_dir, participant_hex, hub_port=11437, _http_client=None):
@@ -278,11 +277,10 @@ class TeamManager:
         self.participant_hex = participant_hex
         provisioning.assert_identity_bootstrap_trusted(self.root_dir, self.participant_hex)
         provisioning.migrate_participant_team_dbs(self.root_dir, self.participant_hex)
-        self.client = SmallSeaClient(port=hub_port, _http_client=_http_client)
         # An injected client may point at a Hub on another port; the async
         # methods must reach the same Hub.
         injected_url = str(getattr(_http_client, "base_url", "") or "")
-        self._hub_base_url = injected_url or self.client._base_url
+        self._hub_base_url = injected_url or f"http://127.0.0.1:{hub_port}"
         # A test that injects a client for the Hub gets the same Hub for the
         # async methods: a TestClient's app, called in-process on the
         # caller's loop, or a transport that also serves async requests.
@@ -293,8 +291,8 @@ class TeamManager:
         # signal count before awaiting the Hub and writes it afterwards, so an
         # overlapping call could move it backwards.
         self._note_to_self_lock = anyio.Lock()
-        # Confirmed sessions, keyed by (team, mode).
-        self._sessions: dict[tuple[str, str], "SmallSeaSession"] = {}
+        # Tokens of confirmed sessions, keyed by (team, mode).
+        self._sessions: dict[tuple[str, str], str] = {}
         # Pending PIN requests awaiting confirmation, keyed by (team, mode).
         self._pending: dict[tuple[str, str], str] = {}
 
@@ -304,9 +302,8 @@ class TeamManager:
 
     def set_session(self, team: str, token: str, mode: str = "encrypted") -> None:
         """Store a confirmed session token for (team, mode)."""
-        from small_sea_client.client import SmallSeaSession
         key = (team, mode)
-        self._sessions[key] = SmallSeaSession(self.client, token)
+        self._sessions[key] = token
         self._pending.pop(key, None)
 
     def clear_session(self, team: str, mode: str = "encrypted") -> None:
@@ -332,27 +329,70 @@ class TeamManager:
     def get_pending_id(self, team: str, mode: str = "encrypted") -> str | None:
         return self._pending.get((team, mode))
 
-    def note_to_self_session_if_active(self):
-        """Return the confirmed NoteToSelf/passthrough session, or None.
+    def note_to_self_token_if_active(self) -> str | None:
+        """Return the confirmed NoteToSelf/passthrough session token, or None.
 
         Listing and deleting this participant's Hub sessions requires this
         session, per the Hub's #282 shortcut.
         """
         return self._sessions.get(("NoteToSelf", "passthrough"))
 
-    def _get_or_open_session(self, team: str, mode: str = "encrypted") -> "SmallSeaSession":
-        """Return a confirmed session for (team, mode).
+    async def request_session(self, team: str, mode: str, client_name: str) -> None:
+        """Ask the Hub for a session for (team, mode).
 
-        Uses the cached session if one has been established (e.g. via PIN
-        flow). Otherwise opens a new session via open_session, which requires
-        the Hub to be in auto-approve mode.
+        In auto-approve mode the session is confirmed at once. Otherwise the
+        Hub shows the person a PIN, and the request waits for confirm_session.
         """
-        key = (team, mode)
-        if key in self._sessions:
-            return self._sessions[key]
-        return self.client.open_session(
-            self.participant_hex, _CORE_APP, team, "TeamManager", mode=mode
-        )
+        async with self._hub_http() as http:
+            session, pending_id = await _aio_client.start_session(
+                http, self.participant_hex, _CORE_APP, team, client_name, mode=mode
+            )
+        if session is not None:
+            self.set_session(team, session.token, mode=mode)
+        else:
+            self.set_pending(team, pending_id, mode=mode)
+
+    async def confirm_session(self, team: str, pin: str, mode: str = "encrypted") -> None:
+        """Confirm the pending session for (team, mode) with the PIN the Hub showed."""
+        async with self._hub_http() as http:
+            session = await _aio_client.confirm_session(
+                http, self.get_pending_id(team, mode), pin
+            )
+        self.set_session(team, session.token, mode=mode)
+
+    async def resend_notification(self, team: str, mode: str = "encrypted") -> None:
+        """Ask the Hub to show the PIN for (team, mode) again, if one is pending."""
+        pending_id = self.get_pending_id(team, mode)
+        if pending_id:
+            async with self._hub_http() as http:
+                await _aio_client.resend_notification(http, pending_id)
+
+    async def other_hub_sessions(self) -> list[dict] | None:
+        """List this participant's confirmed Hub sessions other than this Manager's.
+
+        None means there is no active NoteToSelf session to ask with.
+        """
+        token = self.note_to_self_token_if_active()
+        if token is None:
+            return None
+        async with self._hub_http() as http:
+            session = _aio_client.SmallSeaSession(http, token)
+            own_id = (await session.session_info())["session_id"]
+            sessions = await session.list_sessions()
+        # Hide only this Manager's current session. Older Manager sessions
+        # stay listed: confirmed sessions never expire, so they pile up.
+        return [s for s in sessions if s["id"] != own_id]
+
+    async def delete_hub_session(self, session_id: str) -> None:
+        """Delete one of this participant's confirmed Hub sessions.
+
+        Needs an active NoteToSelf session; without one this does nothing.
+        """
+        token = self.note_to_self_token_if_active()
+        if token is None:
+            return
+        async with self._hub_http() as http:
+            await _aio_client.SmallSeaSession(http, token).delete_session(session_id)
 
     def _team_lock(self, team_name: str) -> anyio.Lock:
         """The lock that lets one push or route change run at a time per team.
@@ -377,10 +417,14 @@ class TeamManager:
     async def _hub_session(
         self, http: httpx.AsyncClient, team: str, mode: str = "encrypted"
     ) -> _aio_client.SmallSeaSession:
-        """The async counterpart of _get_or_open_session, on http."""
+        """A session for (team, mode) on http.
+
+        Uses the confirmed session if there is one, such as from the PIN flow.
+        Otherwise opens a new one, which requires the Hub to auto-approve.
+        """
         cached = self._sessions.get((team, mode))
         if cached is not None:
-            return _aio_client.SmallSeaSession(http, cached.token)
+            return _aio_client.SmallSeaSession(http, cached)
         return await _aio_client.open_session(
             http, self.participant_hex, _CORE_APP, team, "TeamManager", mode=mode
         )
@@ -702,7 +746,7 @@ class TeamManager:
         names = {name: {"app_name": name, "sources": ["registered"]}
                  for name in registered_names}
         grants = []
-        if self.note_to_self_session_if_active() is not None:
+        if self.note_to_self_token_if_active() is not None:
             async with self._hub_http() as http:
                 session = await self._hub_session(http, "NoteToSelf", mode="passthrough")
                 grants = await session.list_granted_apps()
@@ -784,7 +828,7 @@ class TeamManager:
         if expires_in_seconds <= 0:
             raise ValueError("expires_in_seconds must be positive")
         remote_descriptor = await self._note_to_self_remote_descriptor()
-        provisioning.admit_identity_join_device(
+        await provisioning.admit_identity_join_device(
             self.root_dir,
             self.participant_hex,
             join_request_artifact_b64,

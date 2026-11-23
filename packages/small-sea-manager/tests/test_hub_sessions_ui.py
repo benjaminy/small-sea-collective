@@ -81,17 +81,23 @@ def test_delete_route_removes_session_and_rerenders_card(playground_dir):
     manager_client, manager = _manager_web(backend.root_dir, participant_hex, hub_client)
 
     _open_session(hub_client, _FILES_APP, _TEAM, client_name="Phone")
-    nts_session = manager.note_to_self_session_if_active()
-    [other] = [
-        s for s in nts_session.list_sessions() if s["client"] == "Phone"
-    ]
+    nts_token = manager.note_to_self_token_if_active()
+
+    def list_sessions():
+        resp = hub_client.get(
+            "/sessions/confirmed", headers={"Authorization": f"Bearer {nts_token}"}
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    [other] = [s for s in list_sessions() if s["client"] == "Phone"]
 
     resp = manager_client.post(f"/session/other/{other['id']}/delete")
 
     assert resp.status_code == 200
     assert "<html" not in resp.text.lower()
     assert "Phone" not in resp.text
-    assert [s["client"] for s in nts_session.list_sessions()] == ["ManagerUI"]
+    assert [s["client"] for s in list_sessions()] == ["ManagerUI"]
 
 
 def test_delete_route_shows_hub_error_instead_of_500(playground_dir):

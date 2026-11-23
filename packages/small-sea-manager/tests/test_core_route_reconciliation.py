@@ -455,7 +455,11 @@ def test_the_gap_blocks_this_devices_own_hub_cloud_io(playground_dir, monkeypatc
     backend = SmallSea.SmallSeaBackend(root_dir=str(root), auto_approve_sessions=True)
     app.state.backend = backend
     mgr = TeamManager(root, alice_hex, _http_client=TestClient(app))
-    session_hex = mgr._get_or_open_session(TEAM).token
+    async def _session_token():
+        async with mgr._hub_http() as http:
+            return (await mgr._hub_session(http, TEAM)).token
+
+    session_hex = anyio.run(_session_token)
     ss_session = backend._lookup_session(session_hex)
 
     # Before the replacement, the device's own announcement admits its I/O.

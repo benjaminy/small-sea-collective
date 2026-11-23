@@ -53,10 +53,11 @@ from small_sea_note_to_self.bootstrap_status import (
     identity_bootstrap_status_path as _identity_bootstrap_status_path,
 )
 
-import cod_sync.protocol as CodSync
-import cod_sync.store as CodStore
 from cod_sync.aio.protocol import CodSync as _AsyncCodSync
 from cod_sync.aio.repo import Repo as _AsyncRepo
+from cod_sync.aio.store import LocalFolderStore as _AsyncLocalFolderStore
+from cod_sync.protocol import NoPublishedHeadError as _NoPublishedHeadError
+from cod_sync.store import StoreError as _StoreError
 from cod_sync.repo import Repo as _Repo
 from cuttlefish import (
     generate_bootstrap_keypair,
@@ -2102,7 +2103,7 @@ def _single_note_to_self_remote_descriptor(root_dir, participant_hex: str) -> di
     return descriptor
 
 
-def _push_note_to_self_to_local_remote(root_dir, participant_hex: str, remote_descriptor: dict) -> None:
+async def _push_note_to_self_to_local_remote(root_dir, participant_hex: str, remote_descriptor: dict) -> None:
     protocol = remote_descriptor["protocol"]
     if protocol != "localfolder":
         raise NotImplementedError(
@@ -2111,15 +2112,15 @@ def _push_note_to_self_to_local_remote(root_dir, participant_hex: str, remote_de
     remote_path = remote_descriptor["url"]
     repo_dir = pathlib.Path(root_dir) / "Participants" / participant_hex / "NoteToSelf" / "Sync"
     store = _store_from_descriptor(remote_descriptor)
-    return CodSync.CodSync(_Repo(repo_dir / ".git", repo_dir), store).publish()
+    return await _AsyncCodSync(_AsyncRepo(repo_dir / ".git", repo_dir), store).publish()
 
 
 def _store_from_descriptor(remote_descriptor: dict):
     protocol = remote_descriptor["protocol"]
     if protocol == "localfolder":
         try:
-            return CodStore.LocalFolderStore(remote_descriptor["url"])
-        except CodStore.StoreError as exc:
+            return _AsyncLocalFolderStore(remote_descriptor["url"])
+        except _StoreError as exc:
             raise ValueError(
                 f"Invalid localfolder remote path: {remote_descriptor['url']}"
             ) from exc
@@ -2273,7 +2274,7 @@ def create_identity_join_request(root_dir, *, device_label=None):
     }
 
 
-def admit_identity_join_device(
+async def admit_identity_join_device(
     root_dir,
     participant_hex,
     join_request_artifact_b64,
@@ -2328,7 +2329,7 @@ def admit_identity_join_device(
             f"Admit device {artifact.device_id_hex[:8]}",
         )
         if remote_descriptor.get("protocol") == "localfolder":
-            _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
+            await _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
 
 
 def issue_welcome_bundle(
@@ -2549,26 +2550,6 @@ def finalize_identity_bootstrap(root_dir, prepared: dict):
             signature,
         ),
     }
-
-
-def bootstrap_existing_identity(root_dir, welcome_bundle_b64):
-    """Complete local-only identity bootstrap for localfolder remotes."""
-    prepared = prepare_identity_bootstrap(root_dir, welcome_bundle_b64)
-    bundle = prepared["bundle"]
-    sync_dir = pathlib.Path(prepared["sync_dir"])
-    store = _store_from_descriptor(bundle.remote_descriptor)
-    repo = _Repo(sync_dir / ".git", sync_dir)
-    result = CodSync.CodSync(repo, store).fetch()
-    outcome = note_to_self_sync.adopt_fetched_source(
-        root_dir,
-        bundle.participant_hex,
-        repo,
-        result.observed_head,
-        result.link_uid,
-    )
-    if outcome.outcome != "integrated":
-        raise ValueError(outcome.detail or "the fetched NoteToSelf source was refused")
-    return finalize_identity_bootstrap(root_dir, prepared)
 
 
 
@@ -6101,7 +6082,7 @@ async def accept_invitation(
             result = await _AsyncCodSync(
                 _AsyncRepo(repo.git_dir, repo.work_tree), inviter_store
             ).fetch()
-        except CodSync.NoPublishedHeadError as exc:
+        except _NoPublishedHeadError as exc:
             inviter_url = (
                 f"{inviter_cloud['protocol']}://{inviter_cloud['url']}/{inviter_bucket}"
             )

@@ -36,6 +36,13 @@ from small_sea_note_to_self.db import note_to_self_sync_db_path
 
 
 
+
+async def _note_to_self_session_info(manager):
+    async with manager._hub_http() as http:
+        session = await manager._hub_session(http, "NoteToSelf", mode="passthrough")
+        return await session.session_info()
+
+
 def _note_to_self_repo(root, participant_hex):
     repo_dir = pathlib.Path(root) / "Participants" / participant_hex / "NoteToSelf" / "Sync"
     return Repo(repo_dir / ".git", repo_dir)
@@ -164,9 +171,8 @@ def test_push_note_to_self_allocates_fresh_s3_berth(playground_dir, minio_server
 
     anyio.run(manager.push_note_to_self)
 
-    session = manager._get_or_open_session("NoteToSelf", mode="passthrough")
     allocation = Provisioning.get_berth_cloud_allocation_for_berth(
-        root, alice_hex, session.session_info()["berth_id"]
+        root, alice_hex, anyio.run(_note_to_self_session_info, manager)["berth_id"]
     )
     assert allocation is not None
 
@@ -299,7 +305,7 @@ def test_overlapping_refreshes_do_not_move_the_adopted_count_backwards(
 
     anyio.run(overlap)
 
-    berth_id = bytes.fromhex(manager._get_or_open_session("NoteToSelf", mode="passthrough").session_info()["berth_id"])
+    berth_id = bytes.fromhex(anyio.run(_note_to_self_session_info, manager)["berth_id"])
     assert Provisioning.get_note_to_self_adopted_signal_count(root, alice_hex, berth_id) == 6
 
 

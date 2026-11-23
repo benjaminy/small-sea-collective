@@ -12,6 +12,7 @@ import anyio
 import httpx
 import cod_sync.protocol as CodSync
 from cod_sync.repo import Repo
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.store import LocalFolderStore, StoreProviderError
 from cod_sync.git import gitCmd
 import pytest
@@ -371,13 +372,13 @@ def test_localfolder_identity_bootstrap_preserves_an_unresolved_push(
         "protocol": "localfolder",
         "url": str(cloud_dir),
     }
-    inner = LocalFolderStore(str(cloud_dir))
+    inner = AsyncLocalFolderStore(str(cloud_dir))
 
     class InconclusiveHeadStore:
         def __getattr__(self, name):
             return getattr(inner, name)
 
-        def put_latest_link(self, data, expected_etag, link_uid=None):
+        async def put_latest_link(self, data, expected_etag, link_uid=None):
             raise StoreProviderError("the head write may still take effect")
 
     monkeypatch.setattr(
@@ -386,7 +387,7 @@ def test_localfolder_identity_bootstrap_preserves_an_unresolved_push(
     )
 
     with pytest.raises(CodSync.PublicationOutcomeUnresolvedError) as exc:
-        _push_note_to_self_to_local_remote(root, participant_hex, descriptor)
+        anyio.run(_push_note_to_self_to_local_remote, root, participant_hex, descriptor)
 
     assert isinstance(exc.value.cause, StoreProviderError)
     assert exc.value.write_phase == "head"
@@ -619,7 +620,8 @@ def test_identity_bootstrap_rejects_wrong_known_signing_key(playground_dir):
     repo_dir = root1 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
     gitCmd(["-C", str(repo_dir), "add", "core.db"])
     gitCmd(["-C", str(repo_dir), "commit", "-m", "Rotate signer for test"])
-    _push_note_to_self_to_local_remote(
+    anyio.run(
+        _push_note_to_self_to_local_remote,
         root1,
         alice_hex,
         _single_note_to_self_remote_descriptor(root1, alice_hex),

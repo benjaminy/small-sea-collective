@@ -132,9 +132,13 @@ def test_competing_choices_pause_the_berth_and_spare_unrelated_work(
     # its location at one place in the Hub, so asserting it there is the
     # general claim; publishing genuinely outstanding team work is the same
     # refusal reached the way a person would reach it.
-    session = manager_b._get_or_open_session(TEAM)
+    async def _ensure_cloud_ready():
+        async with manager_b._hub_http() as http:
+            session = await manager_b._hub_session(http, TEAM)
+            await session.ensure_cloud_ready()
+
     with pytest.raises(SmallSeaCloudStorageRequired) as raised:
-        session.ensure_cloud_ready()
+        anyio.run(_ensure_cloud_ready)
     assert raised.value.reason == "berth_source_paused"
 
     with pytest.raises(SmallSeaCloudStorageRequired) as raised:
@@ -453,12 +457,11 @@ def test_publication_retry_after_resolution_keeps_the_choice(
     after it landed exercises Cod Sync's settlement. Interruption before the
     Manager marker exercises a separate restart with no recorded success.
     """
-    from cod_sync.aio.store import SmallSeaStore as AsyncSmallSeaStore
-    from cod_sync.protocol import CodSync, PublicationRetryableError
-    from cod_sync.repo import Repo
-    from cod_sync.store import (
-        CandidateInspectionStore, PublicationOutcomeUnknownError, StoreTransportError,
-    )
+    from cod_sync.aio.protocol import CodSync
+    from cod_sync.aio.repo import Repo
+    from cod_sync.aio.store import CandidateInspectionStore, SmallSeaStore as AsyncSmallSeaStore
+    from cod_sync.protocol import PublicationRetryableError
+    from cod_sync.store import PublicationOutcomeUnknownError, StoreTransportError
     from small_sea_hub.adapters.s3 import SmallSeaS3Adapter
 
     setup = _paused_with_two_written_locations(pathlib.Path(playground_dir), minio_server_gen())
@@ -534,14 +537,15 @@ def test_publication_retry_after_resolution_keeps_the_choice(
                 assert anyio.run(manager.push_team, TEAM) == "already_present"
                 assert manager._last_published_head(TEAM) == intended
 
+    async def _observed_head(fresh_manager, key, label):
+        async with fresh_manager._hub_http() as http:
+            session = await fresh_manager._hub_session(http, TEAM)
+            store = CandidateInspectionStore(session.token, key, http)
+            reader = await Repo.init(pathlib.Path(playground_dir) / label / ".git")
+            return (await CodSync(reader, store).fetch()).observed_head
+
     def observed_head(fresh_manager, key, label):
-        session = fresh_manager._get_or_open_session(TEAM)
-        store = CandidateInspectionStore(
-            session.token, key, client=fresh_manager.client._http_client,
-            base_url=fresh_manager.client._base_url,
-        )
-        reader = Repo.init(pathlib.Path(playground_dir) / label / ".git")
-        return CodSync(reader, store).fetch().observed_head
+        return anyio.run(_observed_head, fresh_manager, key, label)
 
     manager = _reattach(root, participant)
     before_retry = observed_head(manager, chosen_key, "before-retry")
