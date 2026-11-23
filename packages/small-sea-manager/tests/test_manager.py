@@ -98,6 +98,72 @@ def test_a_late_confirmation_keeps_a_newer_request_pending(playground_dir, monke
     assert manager.get_pending_id("ProjectX") == "pending-b"
 
 
+def test_a_confirmation_finishing_before_a_newer_request_is_answered_is_ignored(
+    playground_dir, monkeypatch
+):
+    """Tab B's request may still be waiting on the Hub when tab A's confirmation returns."""
+    participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    manager = TeamManager(pathlib.Path(playground_dir), participant_hex)
+    manager.set_pending("ProjectX", "pending-a")
+
+    async def scenario():
+        b_started = anyio.Event()
+        a_done = anyio.Event()
+
+        async def fake_confirm_session(_http, pending_id, pin):
+            await b_started.wait()
+            return SimpleNamespace(token="session-a")
+
+        async def fake_start_session(_http, *args, mode=None):
+            b_started.set()
+            await a_done.wait()
+            return None, "pending-b"
+
+        monkeypatch.setattr(manager_module._aio_client, "confirm_session", fake_confirm_session)
+        monkeypatch.setattr(manager_module._aio_client, "start_session", fake_start_session)
+
+        async def confirm_a():
+            await manager.confirm_session("ProjectX", "321")
+            a_done.set()
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(confirm_a)
+            tg.start_soon(manager.request_session, "ProjectX", "encrypted", "ManagerUI")
+
+    anyio.run(scenario)
+    assert manager.session_state("ProjectX") == "pending"
+    assert manager.get_pending_id("ProjectX") == "pending-b"
+
+
+def test_a_late_answer_to_an_older_request_is_ignored(playground_dir, monkeypatch):
+    participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    manager = TeamManager(pathlib.Path(playground_dir), participant_hex)
+
+    async def scenario():
+        b_done = anyio.Event()
+        answers = iter(["pending-a", "pending-b"])
+
+        async def fake_start_session(_http, *args, mode=None):
+            pending_id = next(answers)
+            if pending_id == "pending-a":
+                await b_done.wait()
+            return None, pending_id
+
+        monkeypatch.setattr(manager_module._aio_client, "start_session", fake_start_session)
+
+        async def request_b():
+            await manager.request_session("ProjectX", "encrypted", "ManagerUI")
+            b_done.set()
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(manager.request_session, "ProjectX", "encrypted", "ManagerUI")
+            await anyio.sleep(0)
+            tg.start_soon(request_b)
+
+    anyio.run(scenario)
+    assert manager.get_pending_id("ProjectX") == "pending-b"
+
+
 def _push_to_localfolder(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
     cod = CS.CodSync(Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir)))
     cod.publish()

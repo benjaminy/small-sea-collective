@@ -126,7 +126,7 @@ from small_sea_manager import berth_authority, berth_source_decision
 from small_sea_manager.spine import bootstrap as spine_bootstrap
 from small_sea_manager.spine import encoding as spine_encoding
 from small_sea_manager import note_to_self_sync
-from small_sea_manager.git_signing import core_signed_repo
+from small_sea_manager.git_signing import core_signed_repo, nts_signed_repo
 from small_sea_manager.constitution_projection import (
     record_integration_mode_change,
     record_key_certificate,
@@ -2320,15 +2320,15 @@ async def admit_identity_join_device(
         remote_descriptor = _single_note_to_self_remote_descriptor(root_dir, participant_hex)
     # A retry commits and publishes too: an earlier attempt may have stopped
     # after admitting the device but before its admission reached the remote.
-    # Both steps change nothing when they have already happened.
+    # The commit compares rows, not bytes, as push_note_to_self does: a VACUUM
+    # or an adoption can leave core.db byte-different from HEAD with the same
+    # rows, and committing that would give other devices an empty change to
+    # integrate. Publishing an already-published head changes nothing.
     repo_dir = root_dir / "Participants" / participant_hex / "NoteToSelf" / "Sync"
-    nts_repo = _Repo(repo_dir / ".git", repo_dir)
-    note_to_self_sync.commit_core_db(
-        root_dir,
-        participant_hex,
-        nts_repo,
-        f"Admit device {artifact.device_id_hex[:8]}",
-    )
+    nts_repo = nts_signed_repo(root_dir, participant_hex, _Repo(repo_dir / ".git", repo_dir))
+    with note_to_self_sync.write_reservation(root_dir, participant_hex) as conn:
+        if note_to_self_sync.live_differs_from_head(nts_repo, conn):
+            nts_repo.commit_paths(["core.db"], f"Admit device {artifact.device_id_hex[:8]}")
     if remote_descriptor.get("protocol") == "localfolder":
         await _push_note_to_self_to_local_remote(root_dir, participant_hex, remote_descriptor)
 

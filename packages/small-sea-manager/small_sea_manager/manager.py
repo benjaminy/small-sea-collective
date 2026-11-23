@@ -295,6 +295,10 @@ class TeamManager:
         self._sessions: dict[tuple[str, str], str] = {}
         # Pending PIN requests awaiting confirmation, keyed by (team, mode).
         self._pending: dict[tuple[str, str], str] = {}
+        # How many session requests have started for (team, mode). A Hub
+        # response changes the cached state only if no newer request started
+        # while it was awaited.
+        self._session_requests: dict[tuple[str, str], int] = {}
 
     # ------------------------------------------------------------------ #
     # Session state management
@@ -342,11 +346,18 @@ class TeamManager:
 
         In auto-approve mode the session is confirmed at once. Otherwise the
         Hub shows the person a PIN, and the request waits for confirm_session.
+        If a newer request for (team, mode) starts before the Hub answers,
+        this answer is not recorded.
         """
+        key = (team, mode)
+        started = self._session_requests.get(key, 0) + 1
+        self._session_requests[key] = started
         async with self._hub_http() as http:
             session, pending_id = await _aio_client.start_session(
                 http, self.participant_hex, _CORE_APP, team, client_name, mode=mode
             )
+        if self._session_requests[key] != started:
+            return
         if session is not None:
             self.set_session(team, session.token, mode=mode)
         else:
@@ -356,13 +367,18 @@ class TeamManager:
         """Confirm the pending session for (team, mode) with the PIN the Hub showed.
 
         If a newer request for (team, mode) started while the Hub was
-        confirming this one, the newer request stays pending and this
-        confirmation is not recorded.
+        confirming this one, even one the Hub has not answered yet, the newer
+        request stays current and this confirmation is not recorded.
         """
+        key = (team, mode)
+        started = self._session_requests.get(key, 0)
         pending_id = self.get_pending_id(team, mode)
         async with self._hub_http() as http:
             session = await _aio_client.confirm_session(http, pending_id, pin)
-        if self.get_pending_id(team, mode) == pending_id:
+        if (
+            self._session_requests.get(key, 0) == started
+            and self.get_pending_id(team, mode) == pending_id
+        ):
             self.set_session(team, session.token, mode=mode)
 
     async def resend_notification(self, team: str, mode: str = "encrypted") -> None:

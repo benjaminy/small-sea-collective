@@ -414,6 +414,24 @@ def test_a_retried_authorization_publishes_before_welcoming(playground_dir, monk
     assert bootstrap["participant_hex"] == alice_hex
 
 
+def test_reissuing_a_welcome_adds_no_commit_for_unchanged_rows(playground_dir):
+    """A VACUUM rewrites core.db's bytes but none of its rows."""
+    root1, root2, alice_hex = _localfolder_participant(pathlib.Path(playground_dir))
+    join_request = create_identity_join_request(root2)
+    alice_manager = TeamManager(root1, alice_hex)
+    anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
+    repo_dir = root1 / "Participants" / alice_hex / "NoteToSelf" / "Sync"
+    head = Repo(repo_dir / ".git", repo_dir).head()
+
+    with sqlite3.connect(note_to_self_sync_db_path(root1, alice_hex)) as conn:
+        conn.execute("VACUUM")
+    welcome = anyio.run(alice_manager.authorize_identity_join, join_request["join_request_artifact"])
+
+    assert Repo(repo_dir / ".git", repo_dir).head() == head
+    bootstrap = anyio.run(bootstrap_existing_identity, root2, welcome["welcome_bundle"])
+    assert bootstrap["participant_hex"] == alice_hex
+
+
 def test_identity_bootstrap_bundle_expiry_and_reissue(playground_dir):
     workspace = pathlib.Path(playground_dir)
     root1 = workspace / "install-a"
