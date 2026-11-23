@@ -5,7 +5,14 @@ import json
 import httpx
 import pytest
 
-from small_sea_client.aio import SmallSeaSession, open_session
+from small_sea_client.aio import (
+    SmallSeaSession,
+    async_transport_for,
+    confirm_session,
+    open_session,
+    resend_notification,
+    start_session,
+)
 from small_sea_client.client import SmallSeaError, SmallSeaHubUnavailable, SmallSeaNotFound
 
 pytestmark = pytest.mark.anyio
@@ -110,3 +117,58 @@ async def test_ensure_cloud_ready():
     await s.ensure_cloud_ready()
     assert requests[0].method == "POST" and requests[0].url.path == "/cloud/setup"
     assert requests[0].headers["authorization"] == f"Bearer {TOKEN}"
+
+
+def hub(respond):
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return respond(request)
+
+    return httpx.AsyncClient(base_url="http://hub", transport=httpx.MockTransport(handler)), requests
+
+
+async def test_start_session_in_auto_approve_mode_returns_a_session():
+    http, requests = hub(lambda r: httpx.Response(200, json={"token": TOKEN}))
+    s, pending_id = await start_session(http, "p1", "App", "Team", "Client")
+    assert (s.token, pending_id) == (TOKEN, None)
+    assert json.loads(requests[0].content) == {
+        "participant": "p1", "app": "App", "team": "Team", "client": "Client", "mode": "encrypted",
+    }
+
+
+async def test_start_session_in_pin_mode_returns_the_pending_id():
+    http, _ = hub(lambda r: httpx.Response(200, json={"pending_id": "pend-1"}))
+    assert await start_session(http, "p1", "App", "Team", "Client") == (None, "pend-1")
+
+
+async def test_confirm_session_sends_the_pin_and_returns_a_session():
+    http, requests = hub(lambda r: httpx.Response(200, json=TOKEN))
+    s = await confirm_session(http, "pend-1", "1234")
+    assert s.token == TOKEN
+    assert requests[0].url.path == "/sessions/confirm"
+    assert json.loads(requests[0].content) == {"pending_id": "pend-1", "pin": "1234"}
+
+
+async def test_resend_notification_names_the_pending_session():
+    http, requests = hub(lambda r: httpx.Response(200, json={}))
+    await resend_notification(http, "pend-1")
+    assert requests[0].method == "POST"
+    assert requests[0].url.path == "/sessions/pend-1/resend-notification"
+
+    http, _ = hub(lambda r: httpx.Response(404, json={"detail": "expired"}))
+    with pytest.raises(SmallSeaNotFound):
+        await resend_notification(http, "pend-1")
+
+
+async def test_async_transport_for_an_injected_client():
+    mock = httpx.MockTransport(lambda r: httpx.Response(200))
+    assert async_transport_for(httpx.Client(transport=mock)) is mock
+    assert async_transport_for(httpx.Client(base_url="http://127.0.0.1:54001")) is None
+    assert async_transport_for(None) is None
+
+    class _TestClientLike:
+        app = object()
+
+    assert isinstance(async_transport_for(_TestClientLike()), httpx.ASGITransport)

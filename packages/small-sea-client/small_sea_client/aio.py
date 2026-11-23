@@ -15,6 +15,58 @@ import httpx
 from small_sea_client.client import SmallSeaError, SmallSeaHubUnavailable, _check_response
 
 
+def async_transport_for(http_client) -> httpx.AsyncBaseTransport | None:
+    """The async transport that reaches the Hub an injected sync client reaches.
+
+    Tests inject a sync client for the Hub; async calls must reach the same
+    Hub. None means the async client opens its own network connections.
+    """
+    hub_app = getattr(http_client, "app", None)
+    if hub_app is not None:
+        # A Starlette TestClient: call the same app in-process.
+        return httpx.ASGITransport(app=hub_app)
+    transport = getattr(http_client, "_transport", None)
+    if isinstance(transport, httpx.AsyncBaseTransport):
+        # A transport that also serves async requests, such as MockTransport.
+        return transport
+    return None
+
+
+async def _hub_post(http: httpx.AsyncClient, path: str, payload: dict):
+    try:
+        resp = await http.post(path, json=payload)
+    except httpx.ConnectError:
+        raise SmallSeaHubUnavailable()
+    _check_response(resp)
+    return resp.json()
+
+
+async def start_session(
+    http: httpx.AsyncClient,
+    participant: str,
+    app: str,
+    team: str,
+    client_name: str,
+    mode: str = "encrypted",
+) -> "tuple[SmallSeaSession | None, str | None]":
+    """Begin a session, in auto-approve or PIN mode.
+
+    The async twin of SmallSeaClient.start_session. In auto-approve mode the
+    Hub returns a token at once: (session, None). Otherwise it shows the
+    person a PIN and returns (None, pending_id); pass both to confirm_session.
+    """
+    result = await _hub_post(http, "/sessions/request", {
+        "participant": participant,
+        "app": app,
+        "team": team,
+        "client": client_name,
+        "mode": mode,
+    })
+    if "token" in result:
+        return SmallSeaSession(http, result["token"]), None
+    return None, result["pending_id"]
+
+
 async def open_session(
     http: httpx.AsyncClient,
     participant: str,
@@ -28,24 +80,31 @@ async def open_session(
     The async twin of SmallSeaClient.open_session. Raises SmallSeaError if
     the Hub is not in auto-approve mode.
     """
-    payload = {
-        "participant": participant,
-        "app": app,
-        "team": team,
-        "client": client_name,
-        "mode": mode,
-    }
-    try:
-        resp = await http.post("/sessions/request", json=payload)
-    except httpx.ConnectError:
-        raise SmallSeaHubUnavailable()
-    _check_response(resp)
-    result = resp.json()
-    if "token" not in result:
+    session, _pending_id = await start_session(http, participant, app, team, client_name, mode)
+    if session is None:
         raise SmallSeaError(
-            "Hub is not in auto-approve mode; use request_session/confirm_session"
+            "Hub is not in auto-approve mode; use start_session/confirm_session"
         )
-    return SmallSeaSession(http, result["token"])
+    return session
+
+
+async def confirm_session(http: httpx.AsyncClient, pending_id: str, pin: str) -> "SmallSeaSession":
+    """Complete a PIN-mode session with the PIN the Hub showed the person.
+
+    The async twin of SmallSeaClient.confirm_session. Raises SmallSeaError if
+    the PIN is wrong or has expired.
+    """
+    token = await _hub_post(http, "/sessions/confirm", {"pending_id": pending_id, "pin": pin})
+    return SmallSeaSession(http, token)
+
+
+async def resend_notification(http: httpx.AsyncClient, pending_id: str) -> None:
+    """Ask the Hub to show the PIN for a pending session again.
+
+    The async twin of SmallSeaClient.resend_notification. Raises
+    SmallSeaNotFound if the pending session has expired or does not exist.
+    """
+    await _hub_post(http, f"/sessions/{pending_id}/resend-notification", {})
 
 
 async def create_bootstrap_session(
@@ -63,12 +122,7 @@ async def create_bootstrap_session(
     payload = {"protocol": protocol, "url": url, "bucket": bucket}
     if expires_at is not None:
         payload["expires_at"] = expires_at
-    try:
-        resp = await http.post("/bootstrap/sessions", json=payload)
-    except httpx.ConnectError:
-        raise SmallSeaHubUnavailable()
-    _check_response(resp)
-    return resp.json()["token"]
+    return (await _hub_post(http, "/bootstrap/sessions", payload))["token"]
 
 
 class SmallSeaSession:
