@@ -62,14 +62,15 @@ def fetch_main(repo, store, **kwargs):
 def async_hub_client(test_client):
     """An httpx.AsyncClient that reaches the same Hub as a sync test client.
 
-    It uses the test client's base URL, both to pick the transport and for
-    its own requests. For a TestClient it calls the app in process, so it
-    holds no connection and needs no closing.
+    It uses the test client's base URL, or http://testserver if that is
+    empty, both to pick the transport and for its own requests. For a
+    TestClient it calls the app in process, so it holds no connection and
+    needs no closing.
     """
     import httpx
     from small_sea_client.aio import async_transport_for
 
-    base_url = str(test_client.base_url)
+    base_url = str(test_client.base_url) or "http://testserver"
     return httpx.AsyncClient(
         transport=async_transport_for(test_client, base_url), base_url=base_url
     )

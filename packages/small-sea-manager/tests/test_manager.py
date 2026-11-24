@@ -4,6 +4,7 @@ import pathlib
 import sqlite3
 from types import SimpleNamespace
 
+import pytest
 from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
@@ -137,7 +138,7 @@ def test_a_confirmation_finishing_before_a_newer_request_is_answered_is_ignored(
 def test_an_older_pin_submitted_after_a_newer_request_started_is_not_confirmed(
     playground_dir, monkeypatch
 ):
-    """The cached pending ID still names request A while B waits on the Hub."""
+    """A's PIN, submitted while B waits on the Hub, is not sent to the Hub."""
     participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
     manager = TeamManager(pathlib.Path(playground_dir), participant_hex)
     confirmed = []
@@ -172,6 +173,30 @@ def test_an_older_pin_submitted_after_a_newer_request_started_is_not_confirmed(
     assert confirmed == []
     assert manager.session_state("ProjectX") == "pending"
     assert manager.get_pending_id("ProjectX") == "pending-b"
+
+
+def test_a_failed_replacement_request_leaves_nothing_pending(playground_dir, monkeypatch):
+    """The person can request again instead of facing A's unconfirmable PIN."""
+    participant_hex = Provisioning.create_new_participant(playground_dir, "alice")
+    manager = TeamManager(pathlib.Path(playground_dir), participant_hex)
+    answers = iter([(None, "pending-a"), SmallSeaHubUnavailable()])
+
+    async def fake_start_session(_http, *args, mode=None):
+        answer = next(answers)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+    monkeypatch.setattr(manager_module._aio_client, "start_session", fake_start_session)
+
+    async def scenario():
+        await manager.request_session("ProjectX", "encrypted", "ManagerUI")
+        with pytest.raises(SmallSeaHubUnavailable):
+            await manager.request_session("ProjectX", "encrypted", "ManagerUI")
+
+    anyio.run(scenario)
+    assert manager.session_state("ProjectX") == "none"
+    assert manager.get_pending_id("ProjectX") is None
 
 
 def test_a_late_answer_to_an_older_request_is_ignored(playground_dir, monkeypatch):
