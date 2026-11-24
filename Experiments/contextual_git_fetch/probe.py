@@ -16,9 +16,9 @@ import anyio
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'packages/cod-sync'))
 
-from cod_sync.aio.protocol import MAIN_REF, CodSync
-from cod_sync.aio.repo import Repo as AioRepo
-from cod_sync.aio.store import LocalFolderStore
+from cod_sync.protocol import MAIN_REF, CodSync
+from cod_sync.async_repo import Repo as AsyncRepo
+from cod_sync.store import LocalFolderStore
 from cod_sync.repo import Repo, RepoError
 from cod_sync.verify import (
     SignatureInvalidError,
@@ -122,9 +122,9 @@ class ContextualVerifier:
         return dict(evidence)
 
 
-def _aio(repo):
+def _async(repo):
     """The async view of a sync Repo, for the async CodSync."""
-    return AioRepo(repo.git_dir, repo.work_tree)
+    return AsyncRepo(repo.git_dir, repo.work_tree)
 
 
 def run():
@@ -166,7 +166,7 @@ def run():
             store_dir = root / f'{name}-store'
             store_dir.mkdir()
             store = LocalFolderStore(str(store_dir))
-            anyio.run(CodSync(_aio(repo), store).publish)
+            anyio.run(CodSync(_async(repo), store).publish)
             return store, oids, repo
 
         def fetch_case(name, store, view, mutate_after_capture=None,
@@ -180,22 +180,22 @@ def run():
             local_dir = root / f'local-{name}'
             local_dir.mkdir()
             local = Repo.init(local_dir / '.git').with_work_tree(local_dir)
-            aio_local = _aio(local)
+            async_local = _async(local)
             if before_pin is not None:
-                original_advance_ref = aio_local.advance_ref
+                original_advance_ref = async_local.advance_ref
 
                 async def wrapped(ref_name, new_sha, _original=original_advance_ref):
                     before_pin()
                     return await _original(ref_name, new_sha)
 
-                aio_local.advance_ref = wrapped
+                async_local.advance_ref = wrapped
             pin = 'refs/smallsea/peer'
             before = local.resolve_ref(pin)
             verifier = ContextualVerifier(
                 view, empty if signers is None else signers, mutate_after_capture)
             record = {'pin_before': before}
             try:
-                result = anyio.run(lambda: CodSync(aio_local, store, verifier=verifier).fetch(pin_to_ref=pin))
+                result = anyio.run(lambda: CodSync(async_local, store, verifier=verifier).fetch(pin_to_ref=pin))
                 record['outcome'] = 'fetched'
                 record['pin_disposition'] = result.pin_disposition
             except VerificationError as exc:
@@ -240,7 +240,7 @@ def run():
                         'update-ref', MAIN_REF, tam], check=True, capture_output=True)
         (root / 'tampered-store-2').mkdir()
         store2 = LocalFolderStore(str(root / 'tampered-store-2'))
-        anyio.run(CodSync(_aio(src), store2).publish)
+        anyio.run(CodSync(_async(src), store2).publish)
         r = fetch_case('invalid_signature', store2, PolicyView('v1', grants_ok, []))
         assert r['outcome'] == 'SignatureInvalidError' and not r['advanced'], r
 
@@ -258,7 +258,7 @@ def run():
         late = src.commit('late')
         (root / 'removed-store-2').mkdir()
         store3 = LocalFolderStore(str(root / 'removed-store-2'))
-        anyio.run(CodSync(_aio(src), store3).publish)
+        anyio.run(CodSync(_async(src), store3).publish)
         r = fetch_case('removed_key_later_work', store3,
                        PolicyView('v2', grants_ok, [oids['old']]))
         assert r['outcome'] == 'AuthorityPaused' and not r['advanced'], r

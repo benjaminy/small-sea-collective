@@ -14,8 +14,8 @@ import httpx
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.aio.protocol import CodSync as AsyncCodSync
-from cod_sync.aio.store import SmallSeaStore as AsyncSmallSeaStore
+from cod_sync.protocol import CodSync as AsyncCodSync
+from cod_sync.store import SmallSeaStore as AsyncSmallSeaStore
 from cod_sync.protocol import (
     PublicationIntegrationRequiredError,
     PublicationOutcomeUnresolvedError,

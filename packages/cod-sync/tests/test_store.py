@@ -11,7 +11,7 @@ import pathlib
 
 import pytest
 
-from cod_sync.aio.store import LocalFolderStore
+from cod_sync.store import LocalFolderStore
 from cod_sync.store import (
     LATEST_LINK_PATH,
     CasConflictError,

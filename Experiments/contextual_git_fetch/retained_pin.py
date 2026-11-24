@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "packages/cod-sync"))
 sys.path.insert(0, str(ROOT / "packages/cod-sync/tests"))
 
-from cod_sync.aio.verify import SshCommitVerifier as AioSshCommitVerifier
+from cod_sync.async_verify import SshCommitVerifier as AsyncSshCommitVerifier
 from cod_sync.verify import SshCommitVerifier, UnknownSignerError
 from cod_sync_test_helpers import (
     commit_file,
@@ -35,7 +35,7 @@ class RecordingVerifier:
     """Record the evidence returned by the real SSH verifier."""
 
     def __init__(self, allowed_keys):
-        self.inner = AioSshCommitVerifier(allowed_keys)
+        self.inner = AsyncSshCommitVerifier(allowed_keys)
         self.verified = None
 
     async def verify_history(self, repo, head):

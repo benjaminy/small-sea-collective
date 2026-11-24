@@ -265,8 +265,8 @@ dependencies = [
     { name = "anyio" },
     { name = "boto3" },
     { name = "cryptography" },
+    { name = "httpx" },
     { name = "pyyaml" },
-    { name = "requests" },
 ]
 
 [package.metadata]
@@ -274,8 +274,8 @@ requires-dist = [
     { name = "anyio", specifier = ">=4.11" },
     { name = "boto3", specifier = ">=1.35.0" },
     { name = "cryptography", specifier = ">=41.0" },
+    { name = "httpx", specifier = ">=0.28" },
     { name = "pyyaml", specifier = ">=6.0.3" },
-    { name = "requests", specifier = ">=2.32.5" },
 ]
 
 [[package]]

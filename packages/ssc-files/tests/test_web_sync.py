@@ -49,7 +49,7 @@ def _push_team_repo_via_hub(http, session_hex, repo_dir, manager, team_name):
     report = anyio.run(functools.partial(manager.reconcile_team_route, team_name, app_name=_CORE_APP))
     assert report["route"] == "ready", report
 
-    from cod_sync.aio.store import SmallSeaStore
+    from cod_sync.store import SmallSeaStore
     from cod_sync.repo import Repo
     remote = SmallSeaStore(session_hex, async_hub_client(http))
     repo_path = pathlib.Path(repo_dir)

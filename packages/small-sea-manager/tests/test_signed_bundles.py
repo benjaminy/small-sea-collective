@@ -10,7 +10,7 @@ from cod_sync.format import (
     decode_link,
     verify_link_signature,
 )
-from cod_sync.aio.store import PeerSmallSeaStore, SmallSeaStore
+from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app

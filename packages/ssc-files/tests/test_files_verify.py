@@ -5,7 +5,7 @@ import pathlib
 import subprocess
 
 import pytest
-from cod_sync.aio.store import LocalFolderStore
+from cod_sync.store import LocalFolderStore
 from ssc_files import files, sync
 from test_support import local_files_signer
 

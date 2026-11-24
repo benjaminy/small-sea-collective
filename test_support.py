@@ -37,14 +37,14 @@ def publish_main(repo, store, **kwargs):
     """Publish a sync Repo's main through an async store, from sync test code.
 
     Runs the async CodSync in its own event loop, so a caller already inside
-    one must await cod_sync.aio.protocol.CodSync itself.
+    one must await cod_sync.protocol.CodSync itself.
     """
     import functools
 
-    from cod_sync.aio.protocol import CodSync
-    from cod_sync.aio.repo import Repo as AioRepo
+    from cod_sync.protocol import CodSync
+    from cod_sync.async_repo import Repo as AsyncRepo
 
-    cod = CodSync(AioRepo(repo.git_dir, repo.work_tree, env=repo.env), store, verifier=kwargs.pop("verifier", None))
+    cod = CodSync(AsyncRepo(repo.git_dir, repo.work_tree, env=repo.env), store, verifier=kwargs.pop("verifier", None))
     return anyio.run(functools.partial(cod.publish, **kwargs))
 
 
@@ -52,10 +52,10 @@ def fetch_main(repo, store, **kwargs):
     """Fetch a store's head into a sync Repo with the async CodSync; see publish_main."""
     import functools
 
-    from cod_sync.aio.protocol import CodSync
-    from cod_sync.aio.repo import Repo as AioRepo
+    from cod_sync.protocol import CodSync
+    from cod_sync.async_repo import Repo as AsyncRepo
 
-    cod = CodSync(AioRepo(repo.git_dir, repo.work_tree, env=repo.env), store, verifier=kwargs.pop("verifier", None))
+    cod = CodSync(AsyncRepo(repo.git_dir, repo.work_tree, env=repo.env), store, verifier=kwargs.pop("verifier", None))
     return anyio.run(functools.partial(cod.fetch, **kwargs))
 
 

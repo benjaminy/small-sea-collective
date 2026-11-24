@@ -26,10 +26,10 @@ import time
 import httpx
 import pytest
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.aio.protocol import CodSync
-from cod_sync.aio.repo import Repo
-from cod_sync.aio.store import PeerSmallSeaStore as AioPeerSmallSeaStore
-from cod_sync.aio.store import SmallSeaStore as AioSmallSeaStore
+from cod_sync.protocol import CodSync
+from cod_sync.async_repo import Repo
+from cod_sync.store import PeerSmallSeaStore
+from cod_sync.store import SmallSeaStore
 from small_sea_manager.manager import TeamManager, _CORE_APP
 from test_support import _shut_down, accept_and_export, acceptance_record_from_courier, reserve_ports
 
@@ -109,7 +109,7 @@ async def _publish_core(http, core_token, root, participant_hex, manager):
     assert report["route"] == "ready", report
     sync_dir = root / "Participants" / participant_hex / TEAM / "Sync"
     async with httpx.AsyncClient(base_url=str(http.base_url), timeout=http.timeout) as client:
-        store = AioSmallSeaStore(core_token, client)
+        store = SmallSeaStore(core_token, client)
         await CodSync(Repo(sync_dir / ".git", sync_dir), store).publish()
 
 
@@ -210,11 +210,11 @@ async def _move_and_location(tmp_path, team, http):
         cals[name] = await CalendarRepo.create(tmp_path / name.lower() / "calendar", name, signer)
 
     async def publish(me):
-        await cals[me].publish(AioSmallSeaStore(team[me]["token"], http[me]))
+        await cals[me].publish(SmallSeaStore(team[me]["token"], http[me]))
 
     async def sync(me, them):
         them_id = team[them]["teammate_id"]
-        store = AioPeerSmallSeaStore(team[me]["token"], them_id, http[me])
+        store = PeerSmallSeaStore(team[me]["token"], them_id, http[me])
         await cals[me].fetch(store, them_id)
         return await cals[me].merge(peer_ref(them_id))
 
@@ -247,7 +247,7 @@ async def _move_and_location(tmp_path, team, http):
     # A commit Bob's Hub did not sign is refused when Alice fetches it.
     unsigned = CalendarRepo(cals["Bob"].path)
     await unsigned.save(EVENT, _fixture("base.ics"), "unsigned")
-    await unsigned.publish(AioSmallSeaStore(team["Bob"]["token"], http["Bob"]))
+    await unsigned.publish(SmallSeaStore(team["Bob"]["token"], http["Bob"]))
     head = await cals["Alice"].repo.head()
     with pytest.raises(UnauthorizedHistory):
         await sync("Alice", "Bob")

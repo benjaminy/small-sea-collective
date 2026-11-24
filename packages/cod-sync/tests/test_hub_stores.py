@@ -1,4 +1,4 @@
-"""Micro tests for cod_sync.aio.store.
+"""Micro tests for cod_sync.store.
 
 The Hub stores get a real httpx.AsyncClient whose transport answers in
 process, so the status classification and streaming code run as they would
@@ -11,7 +11,7 @@ import pathlib
 import httpx
 import pytest
 
-from cod_sync.aio.store import (
+from cod_sync.store import (
     CandidateInspectionStore,
     ExplicitProxyStore,
     LocalFolderStore,

@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 import pytest
-from cod_sync.aio.store import LocalFolderStore
+from cod_sync.store import LocalFolderStore
 from cod_sync.store import StoreTransportError
 
 import tide_table.sync_agent as sync_agent

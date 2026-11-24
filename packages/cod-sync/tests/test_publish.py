@@ -32,7 +32,7 @@ from cod_sync.protocol import (
     outstanding_parked_heads,
     parked_ref_name,
 )
-from cod_sync.aio.store import LocalFolderStore
+from cod_sync.store import LocalFolderStore
 from cod_sync.store import (
     CasConflictError,
     ObjectNotFoundError,

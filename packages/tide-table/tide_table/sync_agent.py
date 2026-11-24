@@ -16,7 +16,7 @@ can shut it down before the Hub it talks to goes away.
 import asyncio
 from dataclasses import dataclass
 
-from cod_sync.aio.store import PeerSmallSeaStore, SmallSeaStore
+from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.protocol import NoPublishedHeadError
 from small_sea_client.aio import SmallSeaSession
 

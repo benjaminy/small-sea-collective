@@ -457,9 +457,9 @@ def test_publication_retry_after_resolution_keeps_the_choice(
     after it landed exercises Cod Sync's settlement. Interruption before the
     Manager marker exercises a separate restart with no recorded success.
     """
-    from cod_sync.aio.protocol import CodSync
-    from cod_sync.aio.repo import Repo
-    from cod_sync.aio.store import CandidateInspectionStore, SmallSeaStore as AsyncSmallSeaStore
+    from cod_sync.protocol import CodSync
+    from cod_sync.async_repo import Repo
+    from cod_sync.store import CandidateInspectionStore, SmallSeaStore as AsyncSmallSeaStore
     from cod_sync.protocol import PublicationRetryableError
     from cod_sync.store import PublicationOutcomeUnknownError, StoreTransportError
     from small_sea_hub.adapters.s3 import SmallSeaS3Adapter

@@ -3,7 +3,7 @@
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-from cod_sync.aio.verify import SshCommitVerifier as AsyncSshCommitVerifier
+from cod_sync.async_verify import SshCommitVerifier as AsyncSshCommitVerifier
 from cod_sync.verify import SshCommitVerifier, UnknownSignerError
 
 

@@ -9,7 +9,7 @@ import subprocess
 
 import anyio
 import pytest
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 import small_sea_manager.provisioning as provisioning

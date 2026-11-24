@@ -9,7 +9,7 @@ from cod_sync.repo import Repo
 from cod_sync.verify import UnknownSignerError, UnsignedCommitError
 from small_sea_manager import provisioning as p
 from small_sea_manager.git_signing import core_signed_repo, signed_repo
-from cod_sync.aio.repo import Repo as AsyncRepo
+from cod_sync.async_repo import Repo as AsyncRepo
 from small_sea_manager.git_verification import (
     CoreHistoryVerifier,
     core_history_verifier,
@@ -104,7 +104,7 @@ def test_core_verifier_uses_local_adopted_certificates(tmp_path):
 
 def test_manager_publish_refuses_unsigned_local_history(tmp_path, monkeypatch):
     from types import SimpleNamespace
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from small_sea_manager import manager as m
 
     participant = p.create_new_participant(tmp_path, "Alice")

@@ -31,9 +31,9 @@ import struct
 import sys
 import time
 
-from cod_sync.aio.git import git_cmd_binary
-from cod_sync.aio.protocol import CodSync
-from cod_sync.aio.repo import Repo
+from cod_sync.async_git import git_cmd_binary
+from cod_sync.protocol import CodSync
+from cod_sync.async_repo import Repo
 from cod_sync.repo import RepoError
 
 DB = "calendar.sqlite"
@@ -146,7 +146,7 @@ class CalendarRepo:
     # --- sync ----------------------------------------------------------------
 
     async def publish(self, store):
-        """Publish main to store, an async store (cod_sync.aio.store)."""
+        """Publish main to store, an async store (cod_sync.store)."""
         return await CodSync(self.repo, store, verifier=self.signer).publish()
 
     async def fetch(self, store, teammate_id_hex):

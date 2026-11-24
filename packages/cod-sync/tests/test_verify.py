@@ -36,13 +36,11 @@ from cod_sync.format import (
 )
 from cod_sync.protocol import (
     MAIN_REF,
-    CodSync,
     PublicationFailedError,
     PublicationIntegrationRequiredError,
 )
 from cod_sync.store import StoreProviderError
-from cod_sync.aio.verify import SshCommitVerifier as AioSshCommitVerifier
-from cod_sync.store import LocalFolderStore
+from cod_sync.async_verify import SshCommitVerifier as AsyncSshCommitVerifier
 from cod_sync.verify import (
     SignatureEvidenceKind,
     SignatureInvalidError,
@@ -120,12 +118,6 @@ async def publish(repo, publication):
     return await make_cod_sync(repo, make_store(publication)).publish()
 
 
-def sync_store(path):
-    """A sync store for the tests of the sync CodSync itself."""
-    make_store(path)
-    return LocalFolderStore(str(path))
-
-
 def stored_files(publication):
     return sorted(p.name for p in pathlib.Path(publication).rglob("*") if p.is_file())
 
@@ -163,39 +155,6 @@ async def test_no_verifier_accepts_an_unsigned_history(scratch_dir):
 
     assert result.observed_head == head
     assert bob.resolve_ref(PIN) == head
-
-
-def test_the_sync_cod_sync_refuses_an_async_verifier(scratch_dir):
-    """It would call verify_history, get a coroutine, and never run the check."""
-
-    class AsyncVerifier:
-        async def verify_history(self, repo, head):
-            raise AssertionError("never awaited")
-
-    bob = make_repo(pathlib.Path(scratch_dir) / "bob", "bob")
-    with pytest.raises(TypeError, match="synchronous verifier"):
-        CodSync(bob, sync_store(pathlib.Path(scratch_dir) / "publication"), verifier=AsyncVerifier())
-
-
-def test_the_sync_cod_sync_refuses_an_awaitable_verdict(scratch_dir):
-    """A sync wrapper can hide an async verifier from the constructor check."""
-    scratch = pathlib.Path(scratch_dir)
-    alice = publisher(scratch)
-    commit_file(alice, "a.txt", "a")
-    CodSync(alice, sync_store(scratch / "publication")).publish()
-
-    class WrappedAsyncVerifier:
-        def verify_history(self, repo, head):
-            async def check():
-                raise AssertionError("never awaited")
-
-            return check()
-
-    bob = make_repo(scratch / "bob", "bob")
-    cod = CodSync(bob, sync_store(scratch / "publication"), verifier=WrappedAsyncVerifier())
-    with pytest.raises(TypeError, match="synchronous verifier"):
-        cod.fetch(pin_to_ref=PIN)
-    assert PIN not in all_refs(bob)
 
 
 async def test_an_unsigned_history_is_rejected_before_the_pin_moves(scratch_dir):
@@ -247,7 +206,7 @@ async def test_an_empty_key_set_recognizes_nobody(scratch_dir):
 
     bob = make_repo(scratch / "bob", "bob")
     with pytest.raises(UnknownSignerError):
-        await make_cod_sync(bob, make_store(scratch / "publication"), AioSshCommitVerifier([])).fetch()
+        await make_cod_sync(bob, make_store(scratch / "publication"), AsyncSshCommitVerifier([])).fetch()
 
 
 async def test_a_tampered_commit_is_rejected_as_a_bad_signature(scratch_dir):

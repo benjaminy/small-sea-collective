@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from small_sea_hub.server import app, _register_session_peers, _run_runtime_reconciliation_for_session
 from small_sea_manager import admission_events as AdmissionEvents

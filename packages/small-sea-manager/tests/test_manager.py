@@ -5,7 +5,7 @@ import sqlite3
 from types import SimpleNamespace
 
 import pytest
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair

@@ -53,9 +53,9 @@ from small_sea_note_to_self.bootstrap_status import (
     identity_bootstrap_status_path as _identity_bootstrap_status_path,
 )
 
-from cod_sync.aio.protocol import CodSync as _AsyncCodSync
-from cod_sync.aio.repo import Repo as _AsyncRepo
-from cod_sync.aio.store import LocalFolderStore as _AsyncLocalFolderStore
+from cod_sync.protocol import CodSync as _AsyncCodSync
+from cod_sync.async_repo import Repo as _AsyncRepo
+from cod_sync.store import LocalFolderStore as _AsyncLocalFolderStore
 from cod_sync.protocol import NoPublishedHeadError as _NoPublishedHeadError
 from cod_sync.store import StoreError as _StoreError
 from cod_sync.repo import Repo as _Repo

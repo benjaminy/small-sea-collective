@@ -16,9 +16,9 @@ import pytest
 
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.aio.protocol import CodSync
-from cod_sync.aio.repo import Repo as AioRepo
-from cod_sync.aio.store import SmallSeaStore
+from cod_sync.protocol import CodSync
+from cod_sync.async_repo import Repo as AsyncRepo
+from cod_sync.store import SmallSeaStore
 from cod_sync.format import decode_link
 from cod_sync.repo import Repo
 from cod_sync.git import gitCmd
@@ -147,13 +147,13 @@ def test_push_clone_roundtrip_subprocess(hub_env):
                 alice_store = SmallSeaStore(session_hex, http)
                 alice = make_repo(alice_repo)
                 published = await CodSync(
-                    AioRepo(alice.git_dir, alice.work_tree), alice_store
+                    AsyncRepo(alice.git_dir, alice.work_tree), alice_store
                 ).publish()
                 latest = decode_link((await alice_store.get_latest_link())[0])
 
                 # ---- Bob: cold-start fetch via SmallSeaStore (real HTTP) ----
                 bob_store = SmallSeaStore(session_hex, http)
-                fetched = await CodSync(AioRepo(bob.git_dir, bob.work_tree), bob_store).fetch()
+                fetched = await CodSync(AsyncRepo(bob.git_dir, bob.work_tree), bob_store).fetch()
                 return published, latest, fetched
 
         published, latest, result = anyio.run(roundtrip)

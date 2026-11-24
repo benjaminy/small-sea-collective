@@ -20,8 +20,8 @@ import anyio
 import pytest
 import small_sea_manager.manager as manager_module
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.aio.repo import Repo as AsyncRepo
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.async_repo import Repo as AsyncRepo
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.format import decode_link
 from cod_sync.protocol import PARKED_REF_PREFIX
 from cod_sync.repo import RefAdvanceContendedError, Repo, RepoError

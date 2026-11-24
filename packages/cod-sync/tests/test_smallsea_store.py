@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from small_sea_hub.server import app
 
 from cod_sync.format import decode_link
-from cod_sync.aio.store import SmallSeaStore
+from cod_sync.store import SmallSeaStore
 from cod_sync.store import ObjectNotFoundError
 
 pytestmark = pytest.mark.anyio

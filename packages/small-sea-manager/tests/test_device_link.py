@@ -3,7 +3,7 @@ import sqlite3
 
 import anyio
 
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.format import canonical_link_bytes, decode_link, verify_link_signature
 from cod_sync.repo import Repo
 from small_sea_manager.provisioning import (

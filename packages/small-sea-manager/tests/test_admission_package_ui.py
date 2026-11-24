@@ -12,7 +12,7 @@ import json
 import pathlib
 import re
 
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from fastapi.testclient import TestClient
 
 import small_sea_manager.provisioning as provisioning

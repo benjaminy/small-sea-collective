@@ -12,7 +12,7 @@ import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as provisioning
 from small_sea_note_to_self.db import device_local_db_path
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore, SmallSeaStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore, SmallSeaStore
 from cod_sync.repo import Repo
 from cryptography.exceptions import InvalidSignature
 from cuttlefish.group import (

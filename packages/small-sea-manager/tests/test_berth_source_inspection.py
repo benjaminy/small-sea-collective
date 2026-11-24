@@ -15,7 +15,7 @@ import anyio
 import pytest
 
 import test_note_to_self_integration as fixtures
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from small_sea_hub.backend import SmallSeaBackend
 from small_sea_hub.cloud_errors import CloudAllocationConflictExn
@@ -32,8 +32,8 @@ def inspection(playground_dir, monkeypatch):
     fixtures._competing_allocations(root, participant, nts_repo)
     manager_module.TeamManager(root, participant).integrate_note_to_self()
     (root / "cloud").mkdir()
-    aio_store = AsyncLocalFolderStore(root / "cloud")
-    publish_main(nts_repo, aio_store)
+    async_store = AsyncLocalFolderStore(root / "cloud")
+    publish_main(nts_repo, async_store)
     # These observation probes transport NoteToSelf-shaped test histories.
     # Supply their known root key while exercising real signature verification.
     from small_sea_manager.git_verification import CoreHistoryVerifier
@@ -44,7 +44,7 @@ def inspection(playground_dir, monkeypatch):
     team_repo = Repo.init(root / "inspection" / ".git")
     state = {"core_berth_id": fixtures._BERTH_ID, "placement": "paused"}
     monkeypatch.setattr(manager_module.provisioning, "derive_team_join_state", lambda *args: state)
-    monkeypatch.setattr(manager_module, "AsyncCandidateInspectionStore", lambda *args, **kwargs: aio_store)
+    monkeypatch.setattr(manager_module, "AsyncCandidateInspectionStore", lambda *args, **kwargs: async_store)
 
     async def hub_session(http, team):
         return SimpleNamespace(token="test")
@@ -61,7 +61,7 @@ def inspection(playground_dir, monkeypatch):
     key = next(c["candidate_key"] for c in reviewed["candidates"] if c["location"] == "loc-A")
     return SimpleNamespace(
         root=root, participant=participant, manager=manager, fresh_manager=fresh_manager,
-        repo=team_repo, publisher=nts_repo, aio_store=aio_store, reviewed=reviewed, key=key, head=nts_repo.head(),
+        repo=team_repo, publisher=nts_repo, async_store=async_store, reviewed=reviewed, key=key, head=nts_repo.head(),
     )
 
 
@@ -176,14 +176,14 @@ def test_resolution_cannot_pass_an_inspection_publishing_refs(inspection, monkey
 
 def test_resolution_before_fetch_finishes_preserves_later_evidence(inspection, monkeypatch):
     env = inspection
-    original = env.aio_store.get_latest_link
+    original = env.async_store.get_latest_link
 
     async def resolve_during_fetch():
         result = env.manager.resolve_berth_source("Test", env.key, env.reviewed["evidence_digest"])
         assert result["resolved"] is True
         return await original()
 
-    monkeypatch.setattr(env.aio_store, "get_latest_link", resolve_during_fetch)
+    monkeypatch.setattr(env.async_store, "get_latest_link", resolve_during_fetch)
     result = anyio.run(env.manager.inspect_berth_source_candidate, "Test", env.key)
     assert result["retained"] is False
     assert env.repo.resolve_ref(result["observation"]["ref_name"]) == env.head
@@ -212,7 +212,7 @@ def test_later_fetch_does_not_erase_an_interrupted_observation(inspection, monke
     monkeypatch.setattr(env.repo, "advance_ref", original)
     fixtures._apply_local(env.root, env.participant, [fixtures._insert_team(b"\xee" * 16, "LaterWork")])
     later_head = fixtures._commit_local(env.root, env.participant, env.publisher)
-    publish_main(env.publisher, env.aio_store)
+    publish_main(env.publisher, env.async_store)
     anyio.run(env.manager.inspect_berth_source_candidate, "Test", env.key)
     status = env.fresh_manager().berth_source_status("Test")
     candidate = next(c for c in status["candidates"] if c["candidate_key"] == env.key)

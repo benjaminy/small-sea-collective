@@ -4,7 +4,7 @@ import pathlib
 import shutil
 import sqlite3
 
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 
 import small_sea_manager.provisioning as provisioning

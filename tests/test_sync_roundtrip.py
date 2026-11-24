@@ -24,9 +24,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 import small_sea_manager.provisioning as Provisioning
-from cod_sync.aio.protocol import CodSync
-from cod_sync.aio.repo import Repo as AioRepo
-from cod_sync.aio.store import PeerSmallSeaStore, SmallSeaStore
+from cod_sync.protocol import CodSync
+from cod_sync.async_repo import Repo as AsyncRepo
+from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.repo import Repo
 from cod_sync.git import gitCmd
 
@@ -189,11 +189,11 @@ def test_push_and_pull_via_hub(sync_env):
             async with httpx.AsyncClient(base_url=hub_endpoint, timeout=60) as http:
                 # ---- Alice: publish via SmallSeaStore ----
                 alice_store = SmallSeaStore(alice_token, http)
-                await CodSync(AioRepo(alice.git_dir, alice.work_tree), alice_store).publish()
+                await CodSync(AsyncRepo(alice.git_dir, alice.work_tree), alice_store).publish()
 
                 # ---- Bob: fetch via peer proxy ----
                 bob_store = PeerSmallSeaStore(bob_token, alice_teammate_id_hex, http)
-                return await CodSync(AioRepo(bob.git_dir, bob.work_tree), bob_store).fetch()
+                return await CodSync(AsyncRepo(bob.git_dir, bob.work_tree), bob_store).fetch()
 
         result = anyio.run(roundtrip)
         bob.checkout_branch("main", result.observed_head)

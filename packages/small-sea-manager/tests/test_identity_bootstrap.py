@@ -12,7 +12,7 @@ import anyio
 import httpx
 import cod_sync.protocol as CodSync
 from cod_sync.repo import Repo
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.store import StoreProviderError
 from cod_sync.git import gitCmd
 import pytest

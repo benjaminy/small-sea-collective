@@ -7,7 +7,7 @@ import subprocess
 
 import pytest
 from cod_sync.protocol import PublicationIntegrationRequiredError, parked_ref_name
-from cod_sync.aio.store import LocalFolderStore
+from cod_sync.store import LocalFolderStore
 from ssc_files import sync
 from ssc_files.files import (
     NicheResidency,

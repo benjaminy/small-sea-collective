@@ -18,7 +18,7 @@ from cod_sync_test_helpers import (
     working_tree_files,
 )
 
-from cod_sync.aio.store import LocalFolderStore
+from cod_sync.store import LocalFolderStore
 
 pytestmark = pytest.mark.anyio
 

@@ -32,7 +32,7 @@ from cod_sync.protocol import (
     NoPublishedHeadError,
     PinIntegrationRequiredError,
 )
-from cod_sync.aio.store import LocalFolderStore
+from cod_sync.store import LocalFolderStore
 
 pytestmark = pytest.mark.anyio
 

@@ -1,4 +1,4 @@
-"""Micro tests for cod_sync.aio.repo.Repo, ported from test_repo.py."""
+"""Micro tests for cod_sync.async_repo.Repo, ported from test_repo.py."""
 
 import io
 import pathlib
@@ -8,7 +8,7 @@ import pytest
 
 pytestmark = pytest.mark.anyio
 
-from cod_sync.aio.repo import (
+from cod_sync.async_repo import (
     REF_ADVANCE_ATTEMPTS,
     BundleFormatError,
     ConflictError,

@@ -22,7 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from cod_sync.store import StoreTransportError
 from fastapi.testclient import TestClient
@@ -452,7 +452,7 @@ def _record_ownership(core_db, device_key_id, teammate_id):
 def test_a_newcomers_cod_sync_fetch_fails_on_a_link_published_before_it_joined(routed):
     # Pins #280 through the Hub: Bob's key for Alice starts at the step Alice
     # had when Bob joined, so one pre-join publication makes the chain unreadable.
-    from cod_sync.aio.store import PeerSmallSeaStore, SmallSeaStore
+    from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
 
     env = routed
     alice_token = open_session(env, "Alice")

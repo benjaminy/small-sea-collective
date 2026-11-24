@@ -8,9 +8,9 @@ from typing import Literal, Optional
 import anyio
 import httpx
 
-from cod_sync.aio.protocol import CodSync as _AsyncCodSync
-from cod_sync.aio.repo import Repo as _AsyncRepo
-from cod_sync.aio.store import (
+from cod_sync.protocol import CodSync as _AsyncCodSync
+from cod_sync.async_repo import Repo as _AsyncRepo
+from cod_sync.store import (
     BootstrapProxyStore as AsyncBootstrapProxyStore,
     CandidateInspectionStore as AsyncCandidateInspectionStore,
     LocalFolderStore as AsyncLocalFolderStore,

@@ -1,23 +1,23 @@
-"""Micro tests for cod_sync.aio.git."""
+"""Micro tests for cod_sync.async_git."""
 
 import os
 
 import anyio
 import pytest
 
-import cod_sync.aio.git as aio_git
+import cod_sync.async_git as async_git
 from cod_sync.git import GitCmdFailed
 
 pytestmark = pytest.mark.anyio
 
 
 async def test_text_output_and_failure():
-    result = await aio_git.git_cmd(["--version"])
+    result = await async_git.git_cmd(["--version"])
     assert result.returncode == 0 and result.stdout.startswith("git version")
 
     with pytest.raises(GitCmdFailed):
-        await aio_git.git_cmd(["no-such-subcommand"])
-    result = await aio_git.git_cmd(["no-such-subcommand"], raise_on_error=False)
+        await async_git.git_cmd(["no-such-subcommand"])
+    result = await async_git.git_cmd(["no-such-subcommand"], raise_on_error=False)
     assert result.returncode != 0 and isinstance(result.stderr, str)
 
 
@@ -30,7 +30,7 @@ async def _cancel_git(git_params, ready, timeout=5):
 
     async def run():
         try:
-            await aio_git.git_cmd(git_params)
+            await async_git.git_cmd(git_params)
         except anyio.get_cancelled_exc_class():
             outcome.append("cancelled")
             raise
@@ -78,7 +78,7 @@ async def test_cancelling_the_caller_stops_git(monkeypatch):
 
 async def test_cancelled_write_releases_its_lock(tmp_path):
     repo = tmp_path / "repo"
-    await aio_git.git_cmd(["init", "-q", str(repo)])
+    await async_git.git_cmd(["init", "-q", str(repo)])
     (repo / ".gitattributes").write_text("*.txt filter=slow\n")
     (repo / "a.txt").write_text("a\n")
     # A clean filter that stalls keeps `git add` holding index.lock.
@@ -87,11 +87,11 @@ async def test_cancelled_write_releases_its_lock(tmp_path):
 
     assert outcome == ["cancelled"]
     assert not (repo / ".git" / "index.lock").exists()
-    await aio_git.git_cmd(["-C", str(repo), "-c", "filter.slow.clean=cat", "add", "a.txt"])
+    await async_git.git_cmd(["-C", str(repo), "-c", "filter.slow.clean=cat", "add", "a.txt"])
 
 
 async def test_cancelling_kills_children_that_ignore_sigterm(monkeypatch):
-    monkeypatch.setattr(aio_git, "STOP_GRACE", 0.2)
+    monkeypatch.setattr(async_git, "STOP_GRACE", 0.2)
     # The ignored SIGTERM is inherited by sleep, which keeps git's pipes open.
     start = anyio.current_time()
     outcome = await _cancel_git(
@@ -102,7 +102,7 @@ async def test_cancelling_kills_children_that_ignore_sigterm(monkeypatch):
 
 
 async def test_cancelling_after_git_exits_stops_children_holding_its_output(monkeypatch, tmp_path):
-    monkeypatch.setattr(aio_git, "STOP_GRACE", 0.2)
+    monkeypatch.setattr(async_git, "STOP_GRACE", 0.2)
     started = []
     real_open = anyio.open_process
 
@@ -128,7 +128,7 @@ async def test_cancelling_after_git_exits_stops_children_holding_its_output(monk
 
 
 async def test_cancelling_kills_children_that_outlive_git(monkeypatch, tmp_path):
-    monkeypatch.setattr(aio_git, "STOP_GRACE", 0.2)
+    monkeypatch.setattr(async_git, "STOP_GRACE", 0.2)
     pid_file = tmp_path / "pid"
     # The background sleep ignores SIGTERM and holds none of git's pipes, so
     # git and its shell exit on SIGTERM and leave it running in their group.

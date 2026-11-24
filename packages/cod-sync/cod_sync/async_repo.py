@@ -13,7 +13,7 @@ import pathlib
 import tempfile
 from typing import Dict, List, Optional, Set, Union
 
-from cod_sync.aio.git import git_cmd as _git_cmd, git_cmd_binary as _git_cmd_binary
+from cod_sync.async_git import git_cmd as _git_cmd, git_cmd_binary as _git_cmd_binary
 from cod_sync.git import GitCmdFailed
 from cod_sync.repo import (  # noqa: F401  (re-exported for callers of this module)
     REF_ADVANCE_ATTEMPTS,

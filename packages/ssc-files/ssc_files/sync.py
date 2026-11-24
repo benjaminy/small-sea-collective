@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
 import httpx
-from cod_sync.aio.store import PeerSmallSeaStore, SmallSeaStore
+from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.protocol import (
     NoPublishedHeadError,
     PublicationFailedError,

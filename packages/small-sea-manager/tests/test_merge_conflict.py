@@ -11,7 +11,7 @@ import subprocess
 from datetime import datetime, timezone
 
 import small_sea_manager.provisioning as provisioning
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from cod_sync.git import gitCmd
 from small_sea_manager.provisioning import (

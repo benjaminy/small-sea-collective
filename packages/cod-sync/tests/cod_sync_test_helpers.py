@@ -9,10 +9,10 @@ import subprocess
 
 import pytest
 
-from cod_sync.aio.protocol import CodSync
-from cod_sync.aio.repo import Repo as AioRepo
-from cod_sync.aio.store import LocalFolderStore
-from cod_sync.aio.verify import SshCommitVerifier
+from cod_sync.protocol import CodSync
+from cod_sync.async_repo import Repo as AsyncRepo
+from cod_sync.store import LocalFolderStore
+from cod_sync.async_verify import SshCommitVerifier
 from cod_sync.repo import Repo
 
 
@@ -45,7 +45,7 @@ def make_store(path) -> LocalFolderStore:
 
 def make_cod_sync(repo: Repo, store, verifier=None) -> CodSync:
     """An async CodSync over the git directory of a sync Repo."""
-    return CodSync(AioRepo(repo.git_dir, repo.work_tree, env=repo.env), store, verifier=verifier)
+    return CodSync(AsyncRepo(repo.git_dir, repo.work_tree, env=repo.env), store, verifier=verifier)
 
 
 def verifier_for(*keys) -> SshCommitVerifier:

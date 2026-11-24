@@ -15,6 +15,10 @@ Object naming inside a store:
 Production stores reach the network only through the Hub. LocalFolderStore
 performs local filesystem I/O; the direct-provider stores in cod_sync.testing
 are test infrastructure, not a production exception to the gateway rule.
+
+Every store method is a coroutine. A Hub store takes an httpx.AsyncClient
+whose base_url is the Hub. The caller owns the client and closes it, so one
+connection pool can serve every store and session object an app holds.
 """
 
 import base64
@@ -27,7 +31,7 @@ import shutil
 import tempfile
 from typing import Optional, Protocol, Tuple
 
-import requests
+import httpx
 
 logger = logging.getLogger("cod_sync")
 
@@ -178,29 +182,29 @@ class PublicationOutcomeUnknownError(StoreError):
 class ReadableBundleStore(Protocol):
     """Everything fetch needs, and nothing publication needs."""
 
-    def get_latest_link(self) -> Tuple[bytes, Optional[str]]:
+    async def get_latest_link(self) -> Tuple[bytes, Optional[str]]:
         """Return the current head link's bytes and its etag.
 
         Raises ObjectNotFoundError when the store holds no chain yet.
         """
 
-    def get_link(self, link_uid: str) -> bytes:
+    async def get_link(self, link_uid: str) -> bytes:
         """Return an archived link's bytes."""
 
-    def download_bundle(self, bundle_uid: str, local_path) -> None:
+    async def download_bundle(self, bundle_uid: str, local_path) -> None:
         """Write a bundle's bytes to local_path."""
 
 
 class WritableBundleStore(ReadableBundleStore, Protocol):
     """Adds the three writes publication performs, in that order."""
 
-    def put_bundle(self, bundle_uid: str, local_path) -> None:
+    async def put_bundle(self, bundle_uid: str, local_path) -> None:
         """Create a bundle object. A colliding uid raises CasConflictError."""
 
-    def put_link(self, link_uid: str, data: bytes) -> None:
+    async def put_link(self, link_uid: str, data: bytes) -> None:
         """Create an archived link. A colliding uid raises CasConflictError."""
 
-    def put_latest_link(
+    async def put_latest_link(
         self, data: bytes, expected_etag: Optional[str], link_uid: Optional[str] = None
     ) -> Optional[str]:
         """Move the chain head, the moment a publication becomes visible.
@@ -226,8 +230,12 @@ class LocalFolderStore:
     which is harmless because a write-once object is unreachable until the head
     naming it lands, and the head is written last.
 
-    A returned head-write failure is closed: the call is synchronous, so it
+    A returned head-write failure is closed: the write never awaits, so it
     leaves no request that could take effect after it returns.
+
+    Its reads and writes are small local file operations, so they run on the
+    event loop rather than in a thread. A head replacement holds an flock, but
+    only within one call, so two publishers on one loop cannot deadlock.
     """
 
     def __init__(self, path):
@@ -268,13 +276,13 @@ class LocalFolderStore:
             raise StoreProviderError(f"writing {name} failed: {exc}") from exc
         return self._etag_bytes(data)
 
-    def get_latest_link(self) -> Tuple[bytes, Optional[str]]:
+    async def get_latest_link(self) -> Tuple[bytes, Optional[str]]:
         return self._read(LATEST_LINK_PATH)
 
-    def get_link(self, link_uid: str) -> bytes:
+    async def get_link(self, link_uid: str) -> bytes:
         return self._read(link_path(link_uid))[0]
 
-    def download_bundle(self, bundle_uid: str, local_path) -> None:
+    async def download_bundle(self, bundle_uid: str, local_path) -> None:
         source = self._full(bundle_path(bundle_uid))
         try:
             shutil.copyfile(source, local_path)
@@ -285,11 +293,11 @@ class LocalFolderStore:
                 f"reading {bundle_path(bundle_uid)} failed: {exc}"
             ) from exc
 
-    def put_bundle(self, bundle_uid: str, local_path) -> None:
+    async def put_bundle(self, bundle_uid: str, local_path) -> None:
         with open(local_path, "rb") as handle:
             self._create_only(bundle_path(bundle_uid), handle.read())
 
-    def put_link(self, link_uid: str, data: bytes) -> None:
+    async def put_link(self, link_uid: str, data: bytes) -> None:
         self._create_only(link_path(link_uid), data)
 
     def _stage_head(self, data: bytes) -> str:
@@ -367,7 +375,7 @@ class LocalFolderStore:
                 fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         return self._etag_bytes(data)
 
-    def put_latest_link(
+    async def put_latest_link(
         self, data: bytes, expected_etag: Optional[str], link_uid: Optional[str] = None
     ) -> Optional[str]:
         try:
@@ -400,27 +408,15 @@ class _HubStore:
     def __init__(
         self,
         session_hex: str,
-        base_url: str,
-        client=None,
+        client: httpx.AsyncClient,
         path_prefix: str = "",
         max_download_bytes: int = 256 * 1024 * 1024,
     ):
         self.session_hex = session_hex
+        self._client = client
         self._auth = {"Authorization": f"Bearer {session_hex}"}
         self._path_prefix = path_prefix
         self._max_download_bytes = max_download_bytes
-        if client is not None:
-            self._http_get = client.get
-            self._http_post = client.post
-            self._http_stream = lambda path, **kw: client.stream("GET", path, **kw)
-        else:
-            self._http_get = lambda path, **kw: requests.get(f"{base_url}{path}", **kw)
-            self._http_post = lambda path, **kw: requests.post(f"{base_url}{path}", **kw)
-            self._http_stream = lambda path, **kw: requests.get(
-                f"{base_url}{path}", stream=True, **kw
-            )
-
-    # -- endpoint hooks -- #
 
     def _download_endpoint(self, cloud_path: str) -> Tuple[str, dict]:
         raise NotImplementedError
@@ -461,28 +457,25 @@ class _HubStore:
             return StoreProviderError(f"{cloud_path}: {detail}")
         return StoreProviderError(f"{cloud_path}: HTTP {resp.status_code}: {detail}")
 
-    def _send(self, send, *args, **kwargs):
+    async def _post(self, path: str, **kwargs):
         try:
-            return send(*args, **kwargs)
-        except StoreError:
-            raise
+            return await self._client.post(path, **kwargs)
         except Exception as exc:
             raise StoreTransportError(f"request failed: {exc}") from exc
 
-    def _download(self, cloud_path: str) -> Tuple[bytes, Optional[str]]:
+    async def _download(self, cloud_path: str) -> Tuple[bytes, Optional[str]]:
         data = bytearray()
-        etag = self._read_download(cloud_path, lambda chunk: data.extend(chunk))
+        etag = await self._read_download(cloud_path, data.extend)
         return bytes(data), etag
 
-    def _read_download(self, cloud_path: str, write_chunk) -> Optional[str]:
+    async def _read_download(self, cloud_path: str, write_chunk) -> Optional[str]:
         endpoint, params = self._download_endpoint(cloud_path)
         try:
-            with self._send(
-                self._http_stream, endpoint, params=params, headers=self._auth
+            async with self._client.stream(
+                "GET", endpoint, params=params, headers=self._auth
             ) as resp:
                 if resp.status_code != 200:
-                    if hasattr(resp, "read"):
-                        resp.read()
+                    await resp.aread()
                     raise self._classify(resp, cloud_path)
                 content_type = resp.headers.get("content-type", "").split(";", 1)[0]
                 if content_type != "application/octet-stream":
@@ -494,11 +487,7 @@ class _HubStore:
                 if expected is not None and expected > self._max_download_bytes:
                     raise DownloadTooLargeError(cloud_path, self._max_download_bytes)
                 total = 0
-                if hasattr(resp, "iter_bytes"):
-                    chunks = resp.iter_bytes(chunk_size=64 * 1024)
-                else:
-                    chunks = resp.iter_content(chunk_size=64 * 1024)
-                for chunk in chunks:
+                async for chunk in resp.aiter_bytes(chunk_size=64 * 1024):
                     total += len(chunk)
                     if total > self._max_download_bytes:
                         raise DownloadTooLargeError(cloud_path, self._max_download_bytes)
@@ -513,17 +502,15 @@ class _HubStore:
         except Exception as exc:
             raise StoreTransportError(f"{cloud_path}: download failed: {exc}") from exc
 
-    # -- reads -- #
+    async def get_latest_link(self) -> Tuple[bytes, Optional[str]]:
+        return await self._download(LATEST_LINK_PATH)
 
-    def get_latest_link(self) -> Tuple[bytes, Optional[str]]:
-        return self._download(LATEST_LINK_PATH)
+    async def get_link(self, link_uid: str) -> bytes:
+        return (await self._download(link_path(link_uid)))[0]
 
-    def get_link(self, link_uid: str) -> bytes:
-        return self._download(link_path(link_uid))[0]
-
-    def download_bundle(self, bundle_uid: str, local_path) -> None:
+    async def download_bundle(self, bundle_uid: str, local_path) -> None:
         with open(local_path, "wb") as handle:
-            self._read_download(bundle_path(bundle_uid), handle.write)
+            await self._read_download(bundle_path(bundle_uid), handle.write)
 
 
 class SmallSeaStore(_HubStore):
@@ -533,26 +520,10 @@ class SmallSeaStore(_HubStore):
     chains and the Hub's own signals.yaml can share it.
     """
 
-    def __init__(
-        self,
-        session_hex: str,
-        base_url: str = "http://localhost:11437",
-        client=None,
-        path_prefix: str = "",
-        max_download_bytes: int = 256 * 1024 * 1024,
-    ):
-        super().__init__(
-            session_hex,
-            base_url,
-            client=client,
-            path_prefix=path_prefix,
-            max_download_bytes=max_download_bytes,
-        )
-
     def _download_endpoint(self, cloud_path: str):
         return "/cloud_file", {"path": self._path_prefix + cloud_path}
 
-    def _upload(
+    async def _upload(
         self,
         cloud_path: str,
         data: bytes,
@@ -567,7 +538,7 @@ class SmallSeaStore(_HubStore):
             payload["expected_etag"] = expected_etag
         if notify:
             payload["notify"] = True
-        resp = self._send(self._http_post, "/cloud_file", json=payload, headers=self._auth)
+        resp = await self._post("/cloud_file", json=payload, headers=self._auth)
         if resp.status_code != 200:
             raise self._classify(resp, cloud_path)
         try:
@@ -577,19 +548,20 @@ class SmallSeaStore(_HubStore):
                 f"{cloud_path}: unreadable Hub response: {exc}"
             ) from exc
 
-    def put_bundle(self, bundle_uid: str, local_path) -> None:
+    async def put_bundle(self, bundle_uid: str, local_path) -> None:
         with open(local_path, "rb") as handle:
-            self._upload(bundle_path(bundle_uid), handle.read(), CREATE_ONLY)
+            data = handle.read()
+        await self._upload(bundle_path(bundle_uid), data, CREATE_ONLY)
 
-    def put_link(self, link_uid: str, data: bytes) -> None:
-        self._upload(link_path(link_uid), data, CREATE_ONLY)
+    async def put_link(self, link_uid: str, data: bytes) -> None:
+        await self._upload(link_path(link_uid), data, CREATE_ONLY)
 
-    def put_latest_link(
+    async def put_latest_link(
         self, data: bytes, expected_etag: Optional[str], link_uid: Optional[str] = None
     ) -> Optional[str]:
         # notify=True tells the Hub to bump signals.yaml once the head moves.
         try:
-            return self._upload(
+            return await self._upload(
                 LATEST_LINK_PATH,
                 data,
                 CREATE_ONLY if expected_etag is None else expected_etag,
@@ -614,11 +586,10 @@ class PeerSmallSeaStore(_HubStore):
         self,
         session_hex: str,
         teammate_id_hex: str,
-        base_url: str = "http://localhost:11437",
-        client=None,
+        client: httpx.AsyncClient,
         path_prefix: str = "",
     ):
-        super().__init__(session_hex, base_url, client=client, path_prefix=path_prefix)
+        super().__init__(session_hex, client, path_prefix=path_prefix)
         self.teammate_id_hex = teammate_id_hex
 
     #: Storage discovery is specific to peer reads. Publication prerequisites
@@ -662,11 +633,10 @@ class CandidateInspectionStore(_HubStore):
         self,
         session_hex: str,
         candidate_key: str,
-        base_url: str = "http://localhost:11437",
-        client=None,
+        client: httpx.AsyncClient,
         path_prefix: str = "",
     ):
-        super().__init__(session_hex, base_url, client=client, path_prefix=path_prefix)
+        super().__init__(session_hex, client, path_prefix=path_prefix)
         self.candidate_key = candidate_key
 
     def _download_endpoint(self, cloud_path: str):
@@ -676,13 +646,56 @@ class CandidateInspectionStore(_HubStore):
         }
 
 
-class BootstrapProxyStore(_HubStore):
-    """Read-only view scoped to the cloud descriptor bound to a bootstrap token."""
+class ExplicitProxyStore(_HubStore):
+    """Read-only view of a chain at explicit cloud coordinates.
+
+    Used during invitation acceptance, when the inviter's repository must be
+    read before any peer relationship exists. Requires a NoteToSelf session.
+    download_transform, when
+    given, receives each whole downloaded object, so a bundle is held in
+    memory rather than streamed to disk.
+    """
 
     def __init__(
-        self, session_hex: str, base_url: str = "http://localhost:11437", client=None
+        self,
+        session_hex: str,
+        protocol: str,
+        url: str,
+        bucket: str,
+        client: httpx.AsyncClient,
+        download_transform=None,
     ):
-        super().__init__(session_hex, base_url, client=client)
+        super().__init__(session_hex, client)
+        self._protocol = protocol
+        self._url = url
+        self._bucket = bucket
+        self._download_transform = download_transform
+
+    def _download_endpoint(self, cloud_path: str):
+        return "/cloud_proxy", {
+            "protocol": self._protocol,
+            "url": self._url,
+            "bucket": self._bucket,
+            "path": cloud_path,
+        }
+
+    def _transform(self, data: bytes) -> bytes:
+        if self._download_transform is None:
+            return data
+        return self._download_transform(data)
+
+    async def _download(self, cloud_path: str) -> Tuple[bytes, Optional[str]]:
+        data, etag = await super()._download(cloud_path)
+        return self._transform(data), etag
+
+    async def download_bundle(self, bundle_uid: str, local_path) -> None:
+        data, _etag = await super()._download(bundle_path(bundle_uid))
+        with open(local_path, "wb") as handle:
+            handle.write(self._transform(data))
+
+
+class BootstrapProxyStore(_HubStore):
+    """Read-only view of the cloud location bound to a bootstrap token."""
 
     def _download_endpoint(self, cloud_path: str):
         return "/bootstrap/cloud_file", {"path": cloud_path}

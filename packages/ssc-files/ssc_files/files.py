@@ -28,8 +28,8 @@ from datetime import datetime, timezone
 from typing import Awaitable, Callable
 
 import cod_sync.protocol as CS
-from cod_sync.aio.protocol import CodSync as _AsyncCodSync
-from cod_sync.aio.repo import Repo as _AsyncRepo
+from cod_sync.protocol import CodSync as _AsyncCodSync
+from cod_sync.async_repo import Repo as _AsyncRepo
 from cod_sync.git import GitCmdFailed, gitCmd, signing_git_env
 from cod_sync.repo import Repo
 from cod_sync.work_context import WorkContext, commit_message_with_context

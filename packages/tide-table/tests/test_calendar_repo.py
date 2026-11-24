@@ -8,7 +8,7 @@ demo scenario through the Hub.
 import pathlib
 
 import pytest
-from cod_sync.aio.store import LocalFolderStore
+from cod_sync.store import LocalFolderStore
 from cod_sync.repo import RepoError
 
 from tide_table.calendar_repo import CalendarRepo, EventConflict, event_uid, peer_ref

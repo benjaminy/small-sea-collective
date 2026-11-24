@@ -1,9 +1,13 @@
 """Cod Sync: publishing and fetching a `main` history through a bundle store.
 
-This module coordinates. It executes no Git command and parses no YAML: repo.py
-owns the repository, store.py owns byte transport, and format.py owns the link
-codec. What is left here is the decision-making, which is entirely about what
-must be proved before anything durable moves.
+This module coordinates. It executes no Git command and parses no YAML:
+async_repo.py owns the repository, store.py owns byte transport, and format.py
+owns the link codec. What is left here is the decision-making, which is
+entirely about what must be proved before anything durable moves.
+
+CodSync's publish and fetch are coroutines. They take an async Repo
+(cod_sync.async_repo) and an async store, and a verifier's verify_history must
+be a coroutine too.
 
 What Cod Sync proves
     A bundle advertises the head its link declares, the bundle's actual Git
@@ -23,7 +27,6 @@ What a publication may move
     touches a work tree, or constructs a merge.
 """
 
-import inspect
 import logging
 import tempfile
 from dataclasses import dataclass
@@ -367,37 +370,28 @@ class _ChainEntry:
 class CodSync:
     """Publish and fetch one repository's `main` through one store."""
 
-    def __init__(self, repo: Repo, store, verifier=None):
+    def __init__(self, repo, store, verifier=None):
         """verifier is optional, and absent means signatures are not checked.
 
         A verifier implements verify_history(repo, head).
         """
-        if verifier is not None and inspect.iscoroutinefunction(verifier.verify_history):
-            # Calling it here would make a coroutine and never run the check.
-            raise TypeError("This Cod Sync needs a synchronous verifier")
         self.repo = repo
         self.store = store
         self.verifier = verifier
 
-    def _require_verified(self, head: str):
+    async def _require_verified(self, head: str):
         """Check every commit head relies on, at the moment of acceptance.
 
         Existing objects can skip import, but cannot skip this check.
         """
         if self.verifier is not None:
-            verdict = self.verifier.verify_history(self.repo, head)
-            if inspect.isawaitable(verdict):
-                # A sync wrapper around an async verifier: nothing has been
-                # checked, so refuse rather than drop the awaitable.
-                if inspect.iscoroutine(verdict):
-                    verdict.close()
-                raise TypeError("This Cod Sync needs a synchronous verifier")
+            await self.verifier.verify_history(self.repo, head)
 
     # ------------------------------------------------------------------ #
     # Publication
     # ------------------------------------------------------------------ #
 
-    def publish(
+    async def publish(
         self, signing_key=None, teammate_id=None, device_public_key=None
     ) -> PublishResult:
         """Extend the store's chain with local `main`.
@@ -414,14 +408,14 @@ class CodSync:
         Returns a PublishResult for the two ordinary outcomes and raises a
         PublicationFailedError subclass for the three that need attention.
         """
-        attempted_head = self.repo.resolve_ref(MAIN_REF)
+        attempted_head = await self.repo.resolve_ref(MAIN_REF)
         if attempted_head is None:
             raise NoLocalHeadError(f"{MAIN_REF} does not resolve; nothing to publish")
 
         with tempfile.TemporaryDirectory(prefix="cod-sync-publish-") as work_dir:
             work = Path(work_dir)
             try:
-                observed = self._observe(work / "initial")
+                observed = await self._observe(work / "initial")
             except StoreError as exc:
                 raise PublicationRetryableError(
                     "the initial observation failed before any head write",
@@ -431,7 +425,7 @@ class CodSync:
 
             # Before any upload, a verifier must accept the local history just
             # as `_observe` made it accept the stored history.
-            self._require_verified(attempted_head)
+            await self._require_verified(attempted_head)
 
             if observed.head is None:
                 link = Link(
@@ -441,7 +435,7 @@ class CodSync:
                     previous=None,
                 )
             else:
-                state = self._git_state(observed.head, attempted_head)
+                state = await self._git_state(observed.head, attempted_head)
                 if state == "contains":
                     # No head write has been attempted, so none can be open.
                     return PublishResult(
@@ -458,8 +452,8 @@ class CodSync:
                         observed_head=observed.head,
                         observed_etag=observed.etag,
                         observed_link_uid=observed.link_uid,
-                        merge_base=self.repo.merge_base(observed.head, attempted_head),
-                        parked_ref=self._park(observed),
+                        merge_base=await self.repo.merge_base(observed.head, attempted_head),
+                        parked_ref=await self._park(observed),
                         imported=observed.imported,
                     )
                 # A successor has to be written conditionally on this exact
@@ -483,13 +477,13 @@ class CodSync:
                 )
 
             bundle_path = work / f"{link.bundle_id}.bundle"
-            self.repo.create_bundle_from_head(
+            await self.repo.create_bundle_from_head(
                 bundle_path,
                 attempted_head,
                 predecessor_head=observed.head,
             )
-            self._require_bundle_matches(link, bundle_path)
-            return self._upload(
+            await self._require_bundle_matches(link, bundle_path)
+            return await self._upload(
                 link,
                 bundle_path,
                 attempted_head,
@@ -502,7 +496,7 @@ class CodSync:
 
     # -- observation -- #
 
-    def _observe(self, work: Path) -> _Observation:
+    async def _observe(self, work: Path) -> _Observation:
         """Read the stored head once and validate it as a publication.
 
         Importing is part of observing: comparing an observed head to
@@ -514,7 +508,7 @@ class CodSync:
         left exactly where they were.
         """
         try:
-            latest_bytes, etag = self.store.get_latest_link()
+            latest_bytes, etag = await self.store.get_latest_link()
         except ObjectNotFoundError:
             return _Observation()
 
@@ -529,7 +523,7 @@ class CodSync:
         # The archived copy is what a successor's predecessor pointer resolves
         # to, so a chain must not be extended through a link nobody can reread.
         try:
-            archived = self.store.get_link(stored.link_id)
+            archived = await self.store.get_link(stored.link_id)
         except ObjectNotFoundError as exc:
             raise ChainError(
                 "the store's head has no archived copy to point back at",
@@ -543,18 +537,18 @@ class CodSync:
 
         work.mkdir(parents=True, exist_ok=True)
         imported = False
-        if self.repo.has_commit(stored.head):
+        if await self.repo.has_commit(stored.head):
             stored_bundle = work / f"{stored.bundle_id}.bundle"
-            self.store.download_bundle(stored.bundle_id, stored_bundle)
-            self._require_bundle_matches(stored, stored_bundle)
-            self._verify_stored_bundle(stored, stored_bundle)
+            await self.store.download_bundle(stored.bundle_id, stored_bundle)
+            await self._require_bundle_matches(stored, stored_bundle)
+            await self._verify_stored_bundle(stored, stored_bundle)
         else:
-            pending, _links_read, _downloads = self._resolve(stored, work)
+            pending, _links_read, _downloads = await self._resolve(stored, work)
             for entry in pending:
-                self._import(entry)
+                await self._import(entry)
             imported = True
 
-        self._require_verified(stored.head)
+        await self._require_verified(stored.head)
         return _Observation(
             head=stored.head,
             etag=etag,
@@ -562,17 +556,17 @@ class CodSync:
             imported=imported,
         )
 
-    def _git_state(self, observed_head: str, attempted_head: str) -> str:
+    async def _git_state(self, observed_head: str, attempted_head: str) -> str:
         """Where a validated stored head sits relative to the attempted one."""
-        if observed_head == attempted_head or self.repo.is_ancestor(
+        if observed_head == attempted_head or await self.repo.is_ancestor(
             attempted_head, observed_head
         ):
             return "contains"
-        if self.repo.is_ancestor(observed_head, attempted_head):
+        if await self.repo.is_ancestor(observed_head, attempted_head):
             return "behind"
         return "diverged"
 
-    def _park(self, observed: _Observation) -> str:
+    async def _park(self, observed: _Observation) -> str:
         """Preserve a competing head for a later, separate integration process.
 
         The publishing process exits with only an exception to show for the
@@ -583,7 +577,7 @@ class CodSync:
         """
         ref_name = parked_ref_name(observed.link_uid)
         try:
-            self.repo.create_ref_immutable(ref_name, observed.head)
+            await self.repo.create_ref_immutable(ref_name, observed.head)
         except RefImmutableConflictError as exc:
             raise ChainError(
                 "the same link has already been parked at a different head",
@@ -595,7 +589,7 @@ class CodSync:
 
     # -- writing -- #
 
-    def _upload(
+    async def _upload(
         self,
         link: Link,
         bundle_path: Path,
@@ -624,7 +618,7 @@ class CodSync:
             (PHASE_ARCHIVED_LINK, lambda: self.store.put_link(link.link_id, blob)),
         ):
             try:
-                write()
+                await write()
             except StoreError as exc:
                 raise PublicationRetryableError(
                     "the publication failed before any head write",
@@ -641,11 +635,11 @@ class CodSync:
                 ) from exc
 
         try:
-            new_etag = self.store.put_latest_link(
+            new_etag = await self.store.put_latest_link(
                 blob, predecessor.etag, link_uid=link.link_id
             )
         except StoreError as exc:
-            return self._settle(exc, link, attempted_head, predecessor, work)
+            return await self._settle(exc, link, attempted_head, predecessor, work)
 
         return PublishResult(
             disposition="published",
@@ -660,7 +654,7 @@ class CodSync:
 
     # -- settlement -- #
 
-    def _settle(
+    async def _settle(
         self,
         failure: StoreError,
         link: Link,
@@ -682,7 +676,7 @@ class CodSync:
         merge_base = None
         parked_ref = None
         try:
-            observed = self._observe(work / "settlement")
+            observed = await self._observe(work / "settlement")
         except Exception as exc:
             # Once a head write may be open, any failed observation is evidence
             # for "unknown" rather than a reason to bypass settlement.
@@ -693,13 +687,13 @@ class CodSync:
             if observed.head is None:
                 state = "empty"
             else:
-                state = self._git_state(observed.head, attempted_head)
+                state = await self._git_state(observed.head, attempted_head)
                 if state == "diverged":
                     # Parking follows the observation, not the disposition, so
                     # an unresolved outcome preserves the same evidence an
                     # integration_required one would.
-                    merge_base = self.repo.merge_base(observed.head, attempted_head)
-                    parked_ref = self._park(observed)
+                    merge_base = await self.repo.merge_base(observed.head, attempted_head)
+                    parked_ref = await self._park(observed)
 
         closed = (
             isinstance(failure, CasConflictError)
@@ -807,14 +801,14 @@ class CodSync:
     # Fetch
     # ------------------------------------------------------------------ #
 
-    def fetch(self, pin_to_ref: Optional[str] = None) -> FetchResult:
+    async def fetch(self, pin_to_ref: Optional[str] = None) -> FetchResult:
         """Import the store's published `main` history.
 
         Creates no remote, remote-tracking ref, FETCH_HEAD, or temporary tag.
         The only durable ref that can move is pin_to_ref, and only forward.
         """
         try:
-            latest_bytes, _etag = self.store.get_latest_link()
+            latest_bytes, _etag = await self.store.get_latest_link()
         except ObjectNotFoundError as exc:
             raise NoPublishedHeadError("the store publishes no head") from exc
 
@@ -822,17 +816,17 @@ class CodSync:
 
         with tempfile.TemporaryDirectory(prefix="cod-sync-fetch-") as work_dir:
             work = Path(work_dir)
-            chain, links_read, downloads = self._resolve(latest, work)
+            chain, links_read, downloads = await self._resolve(latest, work)
             for entry in chain:
-                self._import(entry)
+                await self._import(entry)
             observed_head = latest.head
-            self._require_verified(observed_head)
+            await self._require_verified(observed_head)
 
         pinned_head = None
         disposition = None
         if pin_to_ref is not None:
             try:
-                advance = self.repo.advance_ref(pin_to_ref, observed_head)
+                advance = await self.repo.advance_ref(pin_to_ref, observed_head)
             except RefDivergedError as exc:
                 raise PinIntegrationRequiredError(
                     pin_to_ref, exc.current_sha, observed_head, latest.link_id
@@ -841,7 +835,7 @@ class CodSync:
             disposition = advance.disposition
             # A retained descendant needs its own acceptance decision.
             if pinned_head != observed_head:
-                self._require_verified(pinned_head)
+                await self._require_verified(pinned_head)
 
         return FetchResult(
             observed_head=observed_head,
@@ -852,26 +846,26 @@ class CodSync:
             bundles_downloaded=downloads,
         )
 
-    def _resolve(self, latest: Link, work: Path):
+    async def _resolve(self, latest: Link, work: Path):
         """Walk newest to oldest until the chain reaches local history.
 
         Returns the entries still needing import, oldest first, along with how
         many links were read and how many bundles were downloaded. Every bundle
         is downloaded once, to its own path.
         """
-        entry = self._download_and_check(latest, work)
+        entry = await self._download_and_check(latest, work)
         links_read = 1
         downloads = 1
 
         # A head already present locally still has to be validated as a
         # publication, but once it is, there is nothing left to walk or import.
-        if self._already_satisfied(entry):
+        if await self._already_satisfied(entry):
             return [], links_read, downloads
 
         pending: List[_ChainEntry] = [entry]
         visited = {latest.link_id}
         current = latest
-        while current.previous is not None and not self.repo.has_commit(
+        while current.previous is not None and not await self.repo.has_commit(
             current.previous.head
         ):
             previous_uid = current.previous.link_id
@@ -882,7 +876,7 @@ class CodSync:
                 )
             visited.add(previous_uid)
             try:
-                previous_bytes = self.store.get_link(previous_uid)
+                previous_bytes = await self.store.get_link(previous_uid)
             except ObjectNotFoundError as exc:
                 raise ChainError(
                     "the chain names a predecessor the store does not hold",
@@ -891,39 +885,39 @@ class CodSync:
             previous = decode_link(previous_bytes)
             links_read += 1
             self._require_predecessor_consistent(current, previous)
-            pending.append(self._download_and_check(previous, work))
+            pending.append(await self._download_and_check(previous, work))
             downloads += 1
             current = previous
 
         pending.reverse()
         return pending, links_read, downloads
 
-    def _download_and_check(self, link: Link, work: Path) -> _ChainEntry:
+    async def _download_and_check(self, link: Link, work: Path) -> _ChainEntry:
         bundle_path = work / f"{link.bundle_id}.bundle"
-        self.store.download_bundle(link.bundle_id, bundle_path)
-        descriptor = self._require_bundle_matches(link, bundle_path)
+        await self.store.download_bundle(link.bundle_id, bundle_path)
+        descriptor = await self._require_bundle_matches(link, bundle_path)
         return _ChainEntry(link=link, bundle_path=bundle_path, descriptor=descriptor)
 
-    def _already_satisfied(self, entry: _ChainEntry) -> bool:
+    async def _already_satisfied(self, entry: _ChainEntry) -> bool:
         """True when the validated latest bundle needs no import."""
         link = entry.link
-        if not self.repo.has_commit(link.head):
+        if not await self.repo.has_commit(link.head):
             return False
-        if any(
-            not self.repo.has_commit(sha) for sha in entry.descriptor.prerequisites
-        ):
+        if any([
+            not await self.repo.has_commit(sha) for sha in entry.descriptor.prerequisites
+        ]):
             return False
-        self.repo.verify_bundle(entry.bundle_path)
-        self._require_ancestry(link, entry.descriptor)
+        await self.repo.verify_bundle(entry.bundle_path)
+        await self._require_ancestry(link, entry.descriptor)
         return True
 
-    def _import(self, entry: _ChainEntry):
+    async def _import(self, entry: _ChainEntry):
         link = entry.link
         # The walk stops at the declared predecessor, so a bundle that needs
         # anything outside that history arrives here unsatisfiable. Say so,
         # rather than letting `bundle verify` report it as a bare git failure.
         missing = {
-            sha for sha in entry.descriptor.prerequisites if not self.repo.has_commit(sha)
+            sha for sha in entry.descriptor.prerequisites if not await self.repo.has_commit(sha)
         }
         if missing:
             raise ChainError(
@@ -936,9 +930,9 @@ class CodSync:
                 ),
                 actual_prerequisites=set(entry.descriptor.prerequisites),
             )
-        self.repo.verify_bundle(entry.bundle_path)
+        await self.repo.verify_bundle(entry.bundle_path)
         try:
-            self.repo.import_bundle(entry.bundle_path)
+            await self.repo.import_bundle(entry.bundle_path)
         except RepoError as exc:
             raise ChainError(
                 "the published bundle payload could not be imported",
@@ -946,27 +940,27 @@ class CodSync:
                 bundle_uid=link.bundle_id,
                 declared_head=link.head,
             ) from exc
-        if not self.repo.has_commit(link.head):
+        if not await self.repo.has_commit(link.head):
             raise ChainError(
                 "importing the bundle did not produce its declared head",
                 link_uid=link.link_id,
                 bundle_uid=link.bundle_id,
                 declared_head=link.head,
             )
-        self._require_ancestry(link, entry.descriptor)
+        await self._require_ancestry(link, entry.descriptor)
 
     # ------------------------------------------------------------------ #
     # Shared validation
     # ------------------------------------------------------------------ #
 
-    def _require_bundle_matches(self, link: Link, bundle_path) -> BundleDescriptor:
+    async def _require_bundle_matches(self, link: Link, bundle_path) -> BundleDescriptor:
         """Check a bundle's own header against the link that advertises it."""
         try:
             # Parse the header without Git first so malformed peer bytes keep a
             # structural-chain type rather than looking like a local Git write
             # failure. Git then supplies the advertised heads independently.
-            prerequisites = frozenset(self.repo.bundle_prerequisites(bundle_path))
-            heads: Dict[str, str] = self.repo.bundle_heads(bundle_path)
+            prerequisites = frozenset(await self.repo.bundle_prerequisites(bundle_path))
+            heads: Dict[str, str] = await self.repo.bundle_heads(bundle_path)
         except RepoError as exc:
             raise ChainError(
                 "the published bundle is not readable as a Git bundle",
@@ -1017,7 +1011,7 @@ class CodSync:
             )
         return descriptor
 
-    def _require_ancestry(self, link: Link, descriptor: BundleDescriptor):
+    async def _require_ancestry(self, link: Link, descriptor: BundleDescriptor):
         """Check the graph claims that only hold once the objects are present.
 
         A merge pulls in commits whose parents sit behind the predecessor, so
@@ -1029,7 +1023,7 @@ class CodSync:
         if link.previous is None:
             return
         for sha in descriptor.prerequisites - {link.previous.head}:
-            if not self.repo.is_ancestor(sha, link.previous.head):
+            if not await self.repo.is_ancestor(sha, link.previous.head):
                 raise ChainError(
                     "the bundle needs a prerequisite outside its declared predecessor",
                     link_uid=link.link_id,
@@ -1038,7 +1032,7 @@ class CodSync:
                     declared_prerequisites={link.previous.head},
                     actual_prerequisites=set(descriptor.prerequisites),
                 )
-        if self.repo.has_commit(link.head) and not self.repo.is_ancestor(
+        if await self.repo.has_commit(link.head) and not await self.repo.is_ancestor(
             link.previous.head, link.head
         ):
             raise ChainError(
@@ -1049,13 +1043,13 @@ class CodSync:
                 declared_prerequisites={link.previous.head},
             )
 
-    def _verify_stored_bundle(self, link: Link, bundle_path):
+    async def _verify_stored_bundle(self, link: Link, bundle_path):
         """Verify a stored publication before reporting success or extending it."""
         descriptor = BundleDescriptor(
             head=link.head,
-            prerequisites=frozenset(self.repo.bundle_prerequisites(bundle_path)),
+            prerequisites=frozenset(await self.repo.bundle_prerequisites(bundle_path)),
         )
-        if any(not self.repo.has_commit(sha) for sha in descriptor.prerequisites):
+        if any([not await self.repo.has_commit(sha) for sha in descriptor.prerequisites]):
             raise ChainError(
                 "the stored bundle has unavailable prerequisites",
                 link_uid=link.link_id,
@@ -1066,8 +1060,8 @@ class CodSync:
                 ),
                 actual_prerequisites=set(descriptor.prerequisites),
             )
-        self.repo.verify_bundle(bundle_path)
-        self._require_ancestry(link, descriptor)
+        await self.repo.verify_bundle(bundle_path)
+        await self._require_ancestry(link, descriptor)
 
     @staticmethod
     def _require_predecessor_consistent(child: Link, parent: Link):

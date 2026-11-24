@@ -23,7 +23,7 @@ from dataclasses import replace
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as provisioning
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
+from cod_sync.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_client.client import (

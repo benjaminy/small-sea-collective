@@ -335,7 +335,7 @@ PARTICIPANT_B = "bb" * 16
 
 def _two_files_setup(playground_dir):
     """Set up alice (PARTICIPANT) and bob (PARTICIPANT_B) filess sharing a niche."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import (
         fetch_niche,
         push_niche,
@@ -368,7 +368,7 @@ def _two_files_setup(playground_dir):
 
 def test_merge_without_checkout_raises(playground_dir):
     """merge_niche raises NoCheckoutError when no checkout is attached."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import fetch_niche, push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -572,7 +572,7 @@ PARTICIPANT_C = "cc" * 16
 
 def _full_sync_setup(playground_dir):
     """Alice creates + publishes + pushes a niche. Returns (playground, cloud, bob_root)."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -595,7 +595,7 @@ def _full_sync_setup(playground_dir):
 
 def test_no_transit_dir_ever_created(playground_dir):
     """No transit/ directory is created anywhere in the files tree across the full lifecycle."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import push_niche
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
@@ -615,7 +615,7 @@ def test_no_transit_dir_ever_created(playground_dir):
 
 def test_fetch_without_checkout_pins_ref(playground_dir):
     """fetch_niche on a CACHED niche (no checkout) pins the parked ref to the expected SHA."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     fetched_sha = anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
@@ -633,7 +633,7 @@ def test_fetch_without_checkout_pins_ref(playground_dir):
 
 def test_peer_update_status_cached_resolve_ref_path(playground_dir):
     """peer_update_status reports a valid parked_sha and ready_to_merge=True for a CACHED niche."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import peer_update_status
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
@@ -647,7 +647,7 @@ def test_peer_update_status_cached_resolve_ref_path(playground_dir):
 
 def test_peer_update_status_cached_is_ancestor_path(playground_dir):
     """peer_update_status exercises _is_ancestor for a CACHED niche with local commit history."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import peer_update_status, push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -697,7 +697,7 @@ def test_peer_update_status_cached_is_ancestor_path(playground_dir):
 
 def test_initial_history_pull(playground_dir):
     """pull_niche on a fresh local git dir (no prior commits) populates the checkout."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import pull_niche
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
@@ -718,7 +718,7 @@ def test_initial_history_pull(playground_dir):
 
 def test_initial_history_merge(playground_dir):
     """fetch_niche + add_checkout + merge_niche on a fresh git dir populates the checkout."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
 
     anyio.run(functools.partial(fetch_niche, str(bob_root), PARTICIPANT_B, _team_for(PARTICIPANT_B), "sync", PARTICIPANT, LocalFolderStore(str(cloud)), signer=local_files_signer(_team_for(PARTICIPANT_B))))
@@ -732,7 +732,7 @@ def test_initial_history_merge(playground_dir):
 
 def test_merge_conflict_paths_in_user_checkout(playground_dir):
     """niche_conflict_paths returns conflicted filenames after a merge conflict."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import MergeConflictError, niche_conflict_paths, push_niche
 
     playground = pathlib.Path(playground_dir)
@@ -775,7 +775,7 @@ def test_merge_conflict_paths_in_user_checkout(playground_dir):
 
 def test_stale_bundle_guard(playground_dir):
     """pull_niche raises RuntimeError when the remote has no content, leaving the checkout unchanged."""
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import pull_niche
 
     playground, cloud, bob_root = _full_sync_setup(playground_dir)
@@ -849,7 +849,7 @@ def test_niche_conflict_paths_stale_and_cached(playground_dir):
 def test_cwd_preserved_across_files_operations(playground_dir):
     """os.getcwd() is identical before and after every files operation that touches git."""
     import os
-    from cod_sync.aio.store import LocalFolderStore
+    from cod_sync.store import LocalFolderStore
     from ssc_files.files import (
         merge_registry,
         push_niche,

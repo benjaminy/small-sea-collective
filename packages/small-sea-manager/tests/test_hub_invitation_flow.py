@@ -14,7 +14,7 @@ import boto3
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 from botocore.config import Config as BotoConfig
-from cod_sync.aio.store import SmallSeaStore
+from cod_sync.store import SmallSeaStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
