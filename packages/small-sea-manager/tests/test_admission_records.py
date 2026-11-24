@@ -21,10 +21,8 @@ import pathlib
 import shutil
 import sqlite3
 
-import cod_sync.protocol as CS
 from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
-from cod_sync.store import LocalFolderStore
 import pytest
 
 import small_sea_manager.provisioning as provisioning
@@ -35,11 +33,11 @@ from wrasse_trust.constitution import (
     verify_constitution_record,
 )
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_public
+from test_support import publish_main
 
 
 def _push(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
-    cod = CS.CodSync(Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir)))
-    cod.publish()
+    publish_main(Repo(repo_dir / ".git", repo_dir), AsyncLocalFolderStore(str(cloud_dir)))
 
 
 def _setup_team(root: pathlib.Path, *, quorum: int | None = None):

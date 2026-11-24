@@ -4,10 +4,8 @@ import pathlib
 import sqlite3
 from types import SimpleNamespace
 
-import cod_sync.protocol as CS
 from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
-from cod_sync.store import LocalFolderStore
 from fastapi.testclient import TestClient
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
@@ -18,6 +16,7 @@ from small_sea_client.client import SmallSeaHubUnavailable
 import small_sea_manager.manager as manager_module
 from small_sea_manager.manager import TeamManager, _CORE_APP
 from small_sea_manager.web import create_app
+from test_support import publish_main
 
 
 def test_team_manager_session_cache_is_keyed_by_team_and_mode(playground_dir):
@@ -205,8 +204,7 @@ def test_a_late_answer_to_an_older_request_is_ignored(playground_dir, monkeypatc
 
 
 def _push_to_localfolder(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
-    cod = CS.CodSync(Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir)))
-    cod.publish()
+    publish_main(Repo(repo_dir / ".git", repo_dir), AsyncLocalFolderStore(str(cloud_dir)))
 
 
 def _create_shared_team_with_bob(root: pathlib.Path):

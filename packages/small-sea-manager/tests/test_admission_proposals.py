@@ -4,17 +4,15 @@ import pathlib
 import shutil
 import sqlite3
 
-import cod_sync.protocol as CS
 from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
-from cod_sync.store import LocalFolderStore
 
 import small_sea_manager.provisioning as provisioning
+from test_support import publish_main
 
 
 def _push_to_localfolder(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
-    cod = CS.CodSync(Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir)))
-    cod.publish()
+    publish_main(Repo(repo_dir / ".git", repo_dir), AsyncLocalFolderStore(str(cloud_dir)))
 
 
 def _bootstrap_existing_steward_clone(

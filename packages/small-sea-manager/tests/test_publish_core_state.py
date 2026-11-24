@@ -17,20 +17,19 @@ import small_sea_manager.provisioning as Provisioning
 from cod_sync.aio.protocol import CodSync as AsyncCodSync
 from cod_sync.aio.store import SmallSeaStore as AsyncSmallSeaStore
 from cod_sync.protocol import (
-    CodSync,
     PublicationIntegrationRequiredError,
     PublicationOutcomeUnresolvedError,
     PublicationRetryableError,
 )
-from cod_sync.store import CasConflictError, SmallSeaStore
+from cod_sync.store import CasConflictError
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app as hub_app
 from small_sea_manager.manager import TeamManager
 from small_sea_manager.web import create_app
+from test_support import async_hub_client, fetch_main
 
 _TEAM = "ProjectX"
-_HUB_URL = "http://testserver"
 
 
 # ---------------------------------------------------------------------------
@@ -128,10 +127,8 @@ class _HubEnv:
         dest = self.root / dest_name
         dest.mkdir(parents=True)
         repo = Repo.init(dest / ".git").with_work_tree(dest)
-        store = SmallSeaStore(
-            _open_session(self.http, _TEAM), base_url=_HUB_URL, client=self.http
-        )
-        result = CodSync(repo, store).fetch()
+        store = AsyncSmallSeaStore(_open_session(self.http, _TEAM), async_hub_client(self.http))
+        result = fetch_main(repo, store)
         repo.checkout_branch("main", start_point=result.observed_head)
         return dest, result.observed_head
 

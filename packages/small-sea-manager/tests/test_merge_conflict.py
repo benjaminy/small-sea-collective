@@ -10,10 +10,9 @@ import sqlite3
 import subprocess
 from datetime import datetime, timezone
 
-import cod_sync.protocol as CS
 import small_sea_manager.provisioning as provisioning
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
-from cod_sync.store import LocalFolderStore
 from cod_sync.git import gitCmd
 from small_sea_manager.provisioning import (
     _install_sqlite_merge_driver,
@@ -22,6 +21,7 @@ from small_sea_manager.provisioning import (
     create_new_participant,
     create_team,
 )
+from test_support import fetch_main, publish_main
 
 ALICE_CLOUD = {
     "protocol": "localfolder",
@@ -35,9 +35,12 @@ def _repo(repo_dir):
     return Repo(pathlib.Path(repo_dir) / ".git", pathlib.Path(repo_dir))
 
 
-def _make_cod_sync(repo_dir, cloud_dir):
-    """Create a CodSync for a repo directory and a local-folder store."""
-    return CS.CodSync(_repo(repo_dir), LocalFolderStore(str(cloud_dir)))
+def _publish(repo_dir, cloud_dir, **kwargs):
+    return publish_main(_repo(repo_dir), AsyncLocalFolderStore(str(cloud_dir)), **kwargs)
+
+
+def _fetch(repo_dir, cloud_dir):
+    return fetch_main(_repo(repo_dir), AsyncLocalFolderStore(str(cloud_dir)))
 
 
 def test_concurrent_invitations_merge(playground_dir):
@@ -63,7 +66,7 @@ def test_concurrent_invitations_merge(playground_dir):
     team_sync_1 = root1 / "Participants" / alice_hex / "ProjectX" / "Sync"
 
     # 3. Push team repo to cloud via cod-sync
-    _make_cod_sync(team_sync_1, cloud_dir).publish()
+    _publish(team_sync_1, cloud_dir)
 
     # 4. Clone from cloud into device 2's team directory
     #    Device 2 needs the same path structure: Participants/<alice_hex>/ProjectX/Sync/
@@ -71,7 +74,7 @@ def test_concurrent_invitations_merge(playground_dir):
     team_sync_2.mkdir(parents=True)
 
     repo2 = Repo.init(team_sync_2 / ".git").with_work_tree(team_sync_2)
-    cloned = CS.CodSync(repo2, LocalFolderStore(str(cloud_dir))).fetch()
+    cloned = fetch_main(repo2, AsyncLocalFolderStore(str(cloud_dir)))
     repo2.checkout_branch("main", cloned.observed_head)
 
     # Install merge driver on device 2 (git config is local-only)
@@ -82,7 +85,7 @@ def test_concurrent_invitations_merge(playground_dir):
         root1, alice_hex, "ProjectX", ALICE_CLOUD, invitee_label="Bob"
     )
 
-    _make_cod_sync(team_sync_1, cloud_dir).publish()
+    _publish(team_sync_1, cloud_dir)
 
     # 6. Device 2: create invitation for Carol (commit locally only)
     #    We need to insert directly into device 2's DB since create_invitation
@@ -91,7 +94,7 @@ def test_concurrent_invitations_merge(playground_dir):
 
     # 7. Device 2: fetch + merge from cloud
     #    This should trigger the splice-sqlite-merge driver
-    fetched = _make_cod_sync(team_sync_2, cloud_dir).fetch()
+    fetched = _fetch(team_sync_2, cloud_dir)
     _repo(team_sync_2).merge(fetched.observed_head)
 
     # 8. Assert: device 2's core.db has BOTH Bob and Carol admission proposals
@@ -105,9 +108,9 @@ def test_concurrent_invitations_merge(playground_dir):
     assert "Carol" in labels_2, f"Missing Carol in device 2. Got: {labels_2}"
 
     # 9. Push device 2 to cloud, fetch+merge on device 1
-    _make_cod_sync(team_sync_2, cloud_dir).publish()
+    _publish(team_sync_2, cloud_dir)
 
-    fetched = _make_cod_sync(team_sync_1, cloud_dir).fetch()
+    fetched = _fetch(team_sync_1, cloud_dir)
     _repo(team_sync_1).merge(fetched.observed_head)
 
     # 10. Assert: device 1 also has both proposals

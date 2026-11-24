@@ -1,11 +1,11 @@
 import pathlib
 import sqlite3
 
-import cod_sync.protocol as CS
+import anyio
 
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.format import canonical_link_bytes, decode_link, verify_link_signature
 from cod_sync.repo import Repo
-from cod_sync.store import LocalFolderStore
 from small_sea_manager.provisioning import (
     _install_sqlite_merge_driver,
     add_cloud_storage,
@@ -16,6 +16,7 @@ from small_sea_manager.provisioning import (
     get_trusted_device_keys_for_teammate_in_team_db,
     issue_device_link_for_teammate,
 )
+from test_support import fetch_main, publish_main
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair
 
 
@@ -32,8 +33,12 @@ def _repo(repo_dir):
     return Repo(repo_dir / ".git", repo_dir)
 
 
-def _make_cod_sync(repo_dir, cloud_dir):
-    return CS.CodSync(_repo(repo_dir), LocalFolderStore(str(cloud_dir)))
+def _publish(repo_dir, cloud_dir, **kwargs):
+    return publish_main(_repo(repo_dir), AsyncLocalFolderStore(str(cloud_dir)), **kwargs)
+
+
+def _fetch(repo_dir, cloud_dir):
+    return fetch_main(_repo(repo_dir), AsyncLocalFolderStore(str(cloud_dir)))
 
 
 def test_issue_device_link_for_teammate_updates_trusted_device_lookup(playground_dir):
@@ -99,13 +104,13 @@ def test_device_link_honored_after_fetch_merge_without_extra_shared_state(playgr
     alice_teammate_id = bytes.fromhex(alice_teammate_id_hex)
 
     team_sync_1 = root1 / "Participants" / alice_hex / "ProjectX" / "Sync"
-    cloud_store = LocalFolderStore(str(cloud_dir))
-    _make_cod_sync(team_sync_1, cloud_dir).publish()
+    cloud_store = AsyncLocalFolderStore(str(cloud_dir))
+    _publish(team_sync_1, cloud_dir)
 
     team_sync_2 = root2 / "Participants" / alice_hex / "ProjectX" / "Sync"
     team_sync_2.mkdir(parents=True)
     repo2 = Repo.init(team_sync_2 / ".git").with_work_tree(team_sync_2)
-    cloned = CS.CodSync(repo2, LocalFolderStore(str(cloud_dir))).fetch()
+    cloned = fetch_main(repo2, AsyncLocalFolderStore(str(cloud_dir)))
     repo2.checkout_branch("main", cloned.observed_head)
     _install_sqlite_merge_driver(team_sync_2)
 
@@ -113,9 +118,9 @@ def test_device_link_honored_after_fetch_merge_without_extra_shared_state(playgr
     linked_public_key = linked_key.public_key
 
     issue_device_link_for_teammate(root1, alice_hex, "ProjectX", linked_public_key)
-    _make_cod_sync(team_sync_1, cloud_dir).publish()
+    _publish(team_sync_1, cloud_dir)
 
-    fetched = _make_cod_sync(team_sync_2, cloud_dir).fetch()
+    fetched = _fetch(team_sync_2, cloud_dir)
     _repo(team_sync_2).merge(fetched.observed_head)
 
     trusted_keys_on_device_2 = get_trusted_device_keys_for_teammate_in_team_db(
@@ -124,13 +129,14 @@ def test_device_link_honored_after_fetch_merge_without_extra_shared_state(playgr
     assert linked_public_key in trusted_keys_on_device_2
 
     create_invitation(root1, alice_hex, "ProjectX", ALICE_CLOUD, invitee_label="Bob")
-    _make_cod_sync(team_sync_1, cloud_dir).publish(
+    _publish(
+        team_sync_1, cloud_dir,
         signing_key=linked_priv,
         teammate_id=alice_teammate_id_hex,
         device_public_key=linked_public_key,
     )
 
-    latest_link = decode_link(cloud_store.get_latest_link()[0])
+    latest_link = decode_link(anyio.run(cloud_store.get_latest_link)[0])
     linked_signature = latest_link.extensions["signatures"][alice_teammate_id_hex]
     assert linked_signature["device_public_key"] == linked_public_key.hex()
 

@@ -14,8 +14,7 @@ import boto3
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 from botocore.config import Config as BotoConfig
-from cod_sync.protocol import CodSync
-from cod_sync.store import SmallSeaStore
+from cod_sync.aio.store import SmallSeaStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
@@ -23,6 +22,8 @@ from small_sea_manager.manager import TeamManager
 from test_support import (
     accept_and_export,
     acceptance_record_from_courier,
+    async_hub_client,
+    publish_main,
     publish_storage_announcement_for_session,
 )
 
@@ -74,16 +75,15 @@ def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
     )
 
 
-def _push_via_hub(http, session_hex, repo_dir, base_url="http://testserver"):
+def _push_via_hub(http, session_hex, repo_dir):
     """Push a team repo to cloud via Hub using SmallSeaStore."""
     auth = {"Authorization": f"Bearer {session_hex}"}
     resp = http.post("/cloud/setup", headers=auth)
     assert resp.status_code == 200, resp.text
     publish_storage_announcement_for_session(app.state.backend, session_hex)
-    remote = SmallSeaStore(session_hex, base_url=base_url, client=http)
+    remote = SmallSeaStore(session_hex, async_hub_client(http))
     repo_path = pathlib.Path(repo_dir)
-    cs = CodSync(Repo(repo_path / ".git", repo_path), remote)
-    cs.publish()
+    publish_main(Repo(repo_path / ".git", repo_path), remote)
 
 
 def test_invitation_flow_via_hub(playground_dir, minio_server_gen):

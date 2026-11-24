@@ -13,7 +13,7 @@ import httpx
 import cod_sync.protocol as CodSync
 from cod_sync.repo import Repo
 from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
-from cod_sync.store import LocalFolderStore, StoreProviderError
+from cod_sync.store import StoreProviderError
 from cod_sync.git import gitCmd
 import pytest
 import small_sea_hub.backend as SmallSea
@@ -42,6 +42,7 @@ from small_sea_note_to_self.bootstrap import (
     welcome_bundle_aad,
 )
 from small_sea_note_to_self.db import device_local_db_path, note_to_self_sync_db_path
+from test_support import publish_main
 
 
 def _count_rows(db_path, sql, params=()):
@@ -350,7 +351,7 @@ def test_identity_bootstrap_refuses_a_corrupt_fetched_database(playground_dir):
     )
     repo.stage(["core.db"])
     repo.commit("publish corrupt bootstrap source")
-    CodSync.CodSync(repo, LocalFolderStore(str(cloud_dir))).publish()
+    publish_main(repo, AsyncLocalFolderStore(str(cloud_dir)))
 
     with pytest.raises(ValueError, match="not a readable SQLite database"):
         anyio.run(bootstrap_existing_identity, root2, welcome["welcome_bundle"])

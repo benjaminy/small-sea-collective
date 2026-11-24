@@ -15,9 +15,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import small_sea_manager.provisioning as provisioning
 from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
-from cod_sync.protocol import CodSync
 from cod_sync.repo import Repo
-from cod_sync.store import LocalFolderStore
 from cod_sync.verify import VerificationError
 from small_sea_manager.git_signing import core_signed_repo, nts_signed_repo, signed_repo
 from small_sea_manager.manager import (
@@ -29,6 +27,7 @@ from small_sea_manager.provisioning import add_cloud_storage, create_new_partici
 from small_sea_note_to_self.db import note_to_self_sync_db_path
 
 from test_invitation import _localfolder_invitation
+from test_support import publish_main
 from test_linked_device_cold_start import (
     TEAM,
     _discovered_team_on_device_b,
@@ -82,10 +81,10 @@ def test_accept_invitation_refuses_core_ancestor_signed_by_unknown_key(
         alice_sync, root / "rogue-keys", unsigned=False,
         sign_head=lambda repo: core_signed_repo(root, alice, "ProjectX", repo),
     )
-    CodSync(Repo(alice_sync / ".git", alice_sync), store).publish()
+    publish_main(Repo(alice_sync / ".git", alice_sync), store)
 
     with pytest.raises(REFUSED):
-        anyio.run(provisioning.accept_invitation, root, bob, token, AsyncLocalFolderStore(store.path))
+        anyio.run(provisioning.accept_invitation, root, bob, token, store)
 
     bob_sync = root / "Participants" / bob / "ProjectX" / "Sync"
     assert not bob_sync.exists()
@@ -141,7 +140,7 @@ def test_identity_bootstrap_refuses_note_to_self_ancestor_signed_by_unknown_key(
         sync_dir, root1 / "rogue-keys", unsigned=False,
         sign_head=lambda repo: nts_signed_repo(root1, alice_hex, repo),
     )
-    CodSync(Repo(sync_dir / ".git", sync_dir), LocalFolderStore(str(cloud_dir))).publish()
+    publish_main(Repo(sync_dir / ".git", sync_dir), AsyncLocalFolderStore(str(cloud_dir)))
 
     with pytest.raises(REFUSED):
         anyio.run(bootstrap_existing_identity, root2, welcome["welcome_bundle"])

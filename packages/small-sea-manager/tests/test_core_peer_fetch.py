@@ -21,11 +21,11 @@ import pytest
 import small_sea_manager.manager as manager_module
 import small_sea_manager.provisioning as Provisioning
 from cod_sync.aio.repo import Repo as AsyncRepo
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.format import decode_link
-from cod_sync.protocol import CodSync, PARKED_REF_PREFIX
+from cod_sync.protocol import PARKED_REF_PREFIX
 from cod_sync.repo import RefAdvanceContendedError, Repo, RepoError
 from cod_sync.store import (
-    LocalFolderStore,
     PeerSenderKeyUnavailableError as StorePeerSenderKeyUnavailableError,
     PublicationPendingError as StorePublicationPendingError,
     PeerStorageUnknownError as StorePeerStorageUnknownError,
@@ -44,6 +44,7 @@ from small_sea_manager.manager import (
     TeammateNotFoundError,
     core_peer_latest_ref,
 )
+from test_support import publish_main
 
 _TEAM = "ProjectX"
 _BOB = "bb" * 16
@@ -77,16 +78,16 @@ class _RecordingPeerStore:
     def __init__(self, session_hex, teammate_id_hex, client):
         self.teammate_id_hex = teammate_id_hex
         _RecordingPeerStore.built.append(teammate_id_hex)
-        self._inner = LocalFolderStore(str(_RecordingPeerStore.publications[teammate_id_hex]))
+        self._inner = AsyncLocalFolderStore(str(_RecordingPeerStore.publications[teammate_id_hex]))
 
     async def get_latest_link(self):
-        return self._inner.get_latest_link()
+        return await self._inner.get_latest_link()
 
     async def get_link(self, link_uid):
-        return self._inner.get_link(link_uid)
+        return await self._inner.get_link(link_uid)
 
     async def download_bundle(self, bundle_uid, local_path):
-        return self._inner.download_bundle(bundle_uid, local_path)
+        return await self._inner.download_bundle(bundle_uid, local_path)
 
 
 class _FailingPeerStore:
@@ -156,7 +157,7 @@ def _publish(env, teammate_id_hex, files, work_name=None, publication_name=None)
         (work / name).write_text(content)
         repo.stage([name])
         repo.commit(f"write {name}")
-    result = CodSync(repo, LocalFolderStore(str(publication))).publish()
+    result = publish_main(repo, AsyncLocalFolderStore(str(publication)))
     return result.observed_head
 
 
@@ -292,7 +293,7 @@ def test_a_park_that_cannot_be_written_reports_a_local_ref_failure(env):
     first, _competing, publication = _diverge(env)
     repo = _alice_repo(env)
     # This link's observation ref already names some other head.
-    link = decode_link(LocalFolderStore(str(publication)).get_latest_link()[0])
+    link = decode_link(anyio.run(AsyncLocalFolderStore(str(publication)).get_latest_link)[0])
     ref = manager_module.core_peer_observation_ref(_BOB, link.link_id)
     repo._run(["update-ref", ref, first])
 
@@ -542,7 +543,7 @@ def test_core_fetch_refuses_unsigned_descendant(env):
     (repo.work_tree / "data").write_text("unsigned")
     repo.stage(["data"])
     rejected = repo.commit("unsigned descendant")
-    CodSync(repo, LocalFolderStore(str(_publication(env, _BOB)))).publish()
+    publish_main(repo, AsyncLocalFolderStore(str(_publication(env, _BOB))))
 
     with pytest.raises(InvalidCoreChainError) as caught:
         anyio.run(env.manager.fetch_teammate_core, _TEAM, _BOB)

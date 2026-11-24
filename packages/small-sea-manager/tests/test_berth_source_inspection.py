@@ -16,14 +16,13 @@ import pytest
 
 import test_note_to_self_integration as fixtures
 from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
-from cod_sync.protocol import CodSync
 from cod_sync.repo import Repo
-from cod_sync.store import LocalFolderStore
 from small_sea_hub.backend import SmallSeaBackend
 from small_sea_hub.cloud_errors import CloudAllocationConflictExn
 from small_sea_manager import berth_source_decision as decision
 from small_sea_manager import manager as manager_module
 from small_sea_note_to_self.db import attached_note_to_self_connection
+from test_support import publish_main
 
 
 @pytest.fixture
@@ -33,10 +32,8 @@ def inspection(playground_dir, monkeypatch):
     fixtures._competing_allocations(root, participant, nts_repo)
     manager_module.TeamManager(root, participant).integrate_note_to_self()
     (root / "cloud").mkdir()
-    store = LocalFolderStore(root / "cloud")
-    CodSync(nts_repo, store).publish()
-    # The Manager reads the same folder through the async store.
     aio_store = AsyncLocalFolderStore(root / "cloud")
+    publish_main(nts_repo, aio_store)
     # These observation probes transport NoteToSelf-shaped test histories.
     # Supply their known root key while exercising real signature verification.
     from small_sea_manager.git_verification import CoreHistoryVerifier
@@ -64,7 +61,7 @@ def inspection(playground_dir, monkeypatch):
     key = next(c["candidate_key"] for c in reviewed["candidates"] if c["location"] == "loc-A")
     return SimpleNamespace(
         root=root, participant=participant, manager=manager, fresh_manager=fresh_manager,
-        repo=team_repo, publisher=nts_repo, store=store, aio_store=aio_store, reviewed=reviewed, key=key, head=nts_repo.head(),
+        repo=team_repo, publisher=nts_repo, aio_store=aio_store, reviewed=reviewed, key=key, head=nts_repo.head(),
     )
 
 
@@ -215,7 +212,7 @@ def test_later_fetch_does_not_erase_an_interrupted_observation(inspection, monke
     monkeypatch.setattr(env.repo, "advance_ref", original)
     fixtures._apply_local(env.root, env.participant, [fixtures._insert_team(b"\xee" * 16, "LaterWork")])
     later_head = fixtures._commit_local(env.root, env.participant, env.publisher)
-    CodSync(env.publisher, env.store).publish()
+    publish_main(env.publisher, env.aio_store)
     anyio.run(env.manager.inspect_berth_source_candidate, "Test", env.key)
     status = env.fresh_manager().berth_source_status("Test")
     candidate = next(c for c in status["candidates"] if c["candidate_key"] == env.key)
@@ -236,8 +233,8 @@ def test_divergent_inspection_preserves_both_heads(inspection, monkeypatch):
     publisher.import_bundle(bundle)
     publisher.create_ref_immutable("refs/heads/main", sibling)
     (env.root / "sibling-cloud").mkdir()
-    CodSync(publisher, LocalFolderStore(env.root / "sibling-cloud")).publish()
     store = AsyncLocalFolderStore(env.root / "sibling-cloud")
+    publish_main(publisher, store)
     monkeypatch.setattr(manager_module, "AsyncCandidateInspectionStore", lambda *args, **kwargs: store)
 
     result = anyio.run(env.manager.inspect_berth_source_candidate, "Test", env.key)

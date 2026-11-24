@@ -2,6 +2,7 @@ import json
 import pathlib
 import sqlite3
 
+import anyio
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 from cod_sync.format import (
@@ -9,8 +10,7 @@ from cod_sync.format import (
     decode_link,
     verify_link_signature,
 )
-from cod_sync.protocol import CodSync
-from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
+from cod_sync.aio.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
 from small_sea_hub.server import app
@@ -22,6 +22,8 @@ from small_sea_manager.provisioning import (
 from test_support import (
     accept_and_export,
     acceptance_record_from_courier,
+    async_hub_client,
+    publish_main,
     publish_storage_announcement_for_session,
 )
 
@@ -55,10 +57,9 @@ def _push_via_hub(http, session_hex, repo_dir, **push_kwargs):
     resp = http.post("/cloud/setup", headers=auth)
     assert resp.status_code == 200, resp.text
     publish_storage_announcement_for_session(app.state.backend, session_hex)
-    remote = SmallSeaStore(session_hex, base_url="http://testserver", client=http)
+    remote = SmallSeaStore(session_hex, async_hub_client(http))
     repo_path = pathlib.Path(repo_dir)
-    cs = CodSync(Repo(repo_path / ".git", repo_path), remote)
-    cs.publish(**push_kwargs)
+    publish_main(Repo(repo_path / ".git", repo_path), remote, **push_kwargs)
 
 
 def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
@@ -185,10 +186,9 @@ def test_signed_bundle_roundtrip(playground_dir, minio_server_gen):
 
     bob_team_token = _open_session(http, "Bob", "ProjectX", mode="passthrough")
     peer_remote = PeerSmallSeaStore(
-        bob_team_token, alice_teammate_id_hex,
-        base_url="http://testserver", client=http,
+        bob_team_token, alice_teammate_id_hex, async_hub_client(http),
     )
-    link = decode_link(peer_remote.get_latest_link()[0])
+    link = decode_link(anyio.run(peer_remote.get_latest_link)[0])
 
     assert "signatures" in link.extensions
     assert alice_teammate_id_hex in link.extensions["signatures"]

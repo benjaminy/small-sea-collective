@@ -10,7 +10,6 @@ import pathlib
 import sqlite3
 
 import anyio
-import cod_sync.protocol as CodSync
 from cod_sync.git import gitCmd
 import pytest
 from cuttlefish import open_welcome_bundle

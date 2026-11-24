@@ -20,13 +20,11 @@ import sqlite3
 import subprocess
 from dataclasses import replace
 
-import cod_sync.protocol as CS
 import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as provisioning
 from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
 from cod_sync.repo import Repo
-from cod_sync.store import LocalFolderStore
 from fastapi.testclient import TestClient
 from small_sea_client.client import (
     SmallSeaCloudStorageRequired,
@@ -42,6 +40,7 @@ from small_sea_note_to_self.db import (
     list_admission_acceptance_artifacts,
     save_admission_acceptance_artifact,
 )
+from test_support import fetch_main, publish_main
 from wrasse_trust.keys import ProtectionLevel, generate_key_pair, key_id_from_public
 from wrasse_trust.transport import (
     TeammateBerthStorageAnnouncement,
@@ -57,9 +56,7 @@ TEAM = "ProjectX"
 
 
 def _push(repo_dir: pathlib.Path, cloud_dir: pathlib.Path):
-    CS.CodSync(
-        Repo(repo_dir / ".git", repo_dir), LocalFolderStore(str(cloud_dir))
-    ).publish()
+    publish_main(Repo(repo_dir / ".git", repo_dir), AsyncLocalFolderStore(str(cloud_dir)))
 
 
 def _sync_dir(root, participant_hex) -> pathlib.Path:
@@ -1208,9 +1205,7 @@ def test_the_couriered_row_merges_cleanly_with_the_invitees_own_history(
     _push(_sync_dir(root, bob_hex), bob_cloud)
 
     alice_sync = _sync_dir(root, alice_hex)
-    fetched = CS.CodSync(
-        Repo(alice_sync / ".git", alice_sync), LocalFolderStore(str(bob_cloud))
-    ).fetch()
+    fetched = fetch_main(Repo(alice_sync / ".git", alice_sync), AsyncLocalFolderStore(str(bob_cloud)))
     # Run git directly so the merge driver's own stderr is observable; Repo.merge
     # captures and discards it.
     merge = subprocess.run(

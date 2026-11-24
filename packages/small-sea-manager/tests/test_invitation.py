@@ -12,9 +12,7 @@ import pytest
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as provisioning
 from small_sea_note_to_self.db import device_local_db_path
-from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore
-from cod_sync.protocol import CodSync
-from cod_sync.store import LocalFolderStore, SmallSeaStore
+from cod_sync.aio.store import LocalFolderStore as AsyncLocalFolderStore, SmallSeaStore
 from cod_sync.repo import Repo
 from cryptography.exceptions import InvalidSignature
 from cuttlefish.group import (
@@ -41,6 +39,8 @@ from small_sea_manager.provisioning import (
 from test_support import (
     accept_and_export,
     acceptance_record_from_courier,
+    async_hub_client,
+    publish_main,
     publish_storage_announcement_for_session,
     route_sidecar_from_courier,
 )
@@ -82,10 +82,9 @@ def _push_via_hub(http, session_hex, repo_dir, **push_kwargs):
     resp = http.post("/cloud/setup", headers=auth)
     assert resp.status_code == 200, resp.text
     publish_storage_announcement_for_session(app.state.backend, session_hex)
-    remote = SmallSeaStore(session_hex, base_url="http://testserver", client=http)
+    remote = SmallSeaStore(session_hex, async_hub_client(http))
     repo_path = pathlib.Path(repo_dir)
-    cs = CodSync(Repo(repo_path / ".git", repo_path), remote)
-    cs.publish(**push_kwargs)
+    publish_main(Repo(repo_path / ".git", repo_path), remote, **push_kwargs)
 
 
 def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
@@ -129,11 +128,11 @@ def _localfolder_invitation(root, monkeypatch=None, forge_core=False):
     provisioning.add_cloud_storage(root, alice, protocol="localfolder", url=str(cloud))
     provisioning.create_team(root, alice, "ProjectX")
     alice_sync = pathlib.Path(root) / "Participants" / alice / "ProjectX" / "Sync"
-    CodSync(Repo(alice_sync / ".git", alice_sync), LocalFolderStore(str(cloud))).publish()
+    publish_main(Repo(alice_sync / ".git", alice_sync), AsyncLocalFolderStore(str(cloud)))
     token = create_invitation(
         root, alice, "ProjectX", {"protocol": "localfolder", "url": str(cloud)}
     )
-    CodSync(Repo(alice_sync / ".git", alice_sync), LocalFolderStore(str(cloud))).publish()
+    publish_main(Repo(alice_sync / ".git", alice_sync), AsyncLocalFolderStore(str(cloud)))
     if monkeypatch is not None and forge_core:
         original = provisioning._load_team_certificates
 
@@ -160,7 +159,7 @@ def _localfolder_invitation(root, monkeypatch=None, forge_core=False):
             return original(conn, team_id)
 
         monkeypatch.setattr(provisioning, "_load_team_certificates", forged_certificates)
-    return alice, bob, token, LocalFolderStore(str(cloud))
+    return alice, bob, token, AsyncLocalFolderStore(str(cloud))
 
 
 def test_create_invitation(playground_dir):
@@ -229,7 +228,7 @@ def test_invitation_rejects_token_with_invalid_anchor_signature(playground_dir):
     ).decode()
 
     with pytest.raises(ValueError, match="anchor signature is invalid"):
-        anyio.run(provisioning.accept_invitation, root, bob, tampered_token, AsyncLocalFolderStore(inviter_store.path))
+        anyio.run(provisioning.accept_invitation, root, bob, tampered_token, inviter_store)
 
     # The refusal leaves nothing behind (#298), so the genuine token still works.
     team_id = bytes.fromhex(token_data["team_id"])
@@ -242,7 +241,7 @@ def test_invitation_rejects_token_with_invalid_anchor_signature(playground_dir):
                 f"SELECT 1 FROM {table} WHERE team_id = ?", (team_id,)
             ).fetchall()
             assert rows == [], table
-    anyio.run(provisioning.accept_invitation, root, bob, token, AsyncLocalFolderStore(inviter_store.path))
+    anyio.run(provisioning.accept_invitation, root, bob, token, inviter_store)
     assert sorted(team_names()) == ["NoteToSelf", "ProjectX"]
 
 
@@ -337,7 +336,7 @@ def test_a_busy_note_to_self_database_leaves_no_clone_behind(playground_dir, mon
     assert not provisioning.has_local_team_clone(root, bob, "ProjectX")
     anyio.run(
         provisioning.accept_invitation, root, bob, token,
-        AsyncLocalFolderStore(inviter_store.path),
+        inviter_store,
     )
     assert provisioning.has_local_team_clone(root, bob, "ProjectX")
 
@@ -350,7 +349,7 @@ def test_invitation_rejects_core_with_forged_genesis(playground_dir, monkeypatch
     team_id = bytes.fromhex(json.loads(base64.b64decode(token))["team_id"])
 
     with pytest.raises(ValueError, match="does not match inviter signature"):
-        anyio.run(provisioning.accept_invitation, root, bob, token, AsyncLocalFolderStore(inviter_store.path))
+        anyio.run(provisioning.accept_invitation, root, bob, token, inviter_store)
 
     assert provisioning.get_authority_anchor(root, bob, team_id) is None
 
