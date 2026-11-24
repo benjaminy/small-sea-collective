@@ -181,6 +181,8 @@ These projects are part of the surrounding conversation but do not directly cont
   Rooms are team-shaped but the primary deployment model is homeserver-federated.
 - **MLS (Messaging Layer Security) ecosystem (Wire, parts of Webex).**
   Defines a group key-agreement protocol; useful as a comparison for Cuttlefish's group-message handling, less so for the social architecture.
+
+For how Signal, Matrix, MLS, Keybase, Secure Scuttlebutt, p2panda and Keyhive let new members read history encrypted before they joined, see [history-access-prior-art.md](history-access-prior-art.md).
 - **OrbitDB, Berty, Holepunch/Pears.**
   Each lives in the decentralized-collaboration neighborhood with various group concepts; none clearly contests the team-as-primitive framing.
 
