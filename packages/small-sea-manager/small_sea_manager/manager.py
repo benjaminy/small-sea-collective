@@ -40,7 +40,7 @@ from cod_sync.store import (
     PublicationPendingError as _StorePublicationPendingError,
     StoreError as _StoreError,
 )
-from small_sea_client import aio as _aio_client
+from small_sea_client import client as _hub_client
 from small_sea_client.client import (
     SmallSeaCloudStorageRequired,
     SmallSeaError,
@@ -239,11 +239,11 @@ async def bootstrap_existing_identity(root_dir, welcome_bundle_b64, hub_port=114
             str(getattr(_http_client, "base_url", "") or "")
             or f"http://127.0.0.1:{hub_port}"
         )
-        transport = _aio_client.async_transport_for(_http_client, base_url)
+        transport = _hub_client.async_transport_for(_http_client, base_url)
         async with httpx.AsyncClient(
             base_url=base_url, transport=transport, timeout=_HUB_TIMEOUT
         ) as http:
-            bootstrap_token = await _aio_client.create_bootstrap_session(
+            bootstrap_token = await _hub_client.create_bootstrap_session(
                 http,
                 protocol=remote["protocol"],
                 url=remote["url"],
@@ -284,7 +284,7 @@ class TeamManager:
         # A test that injects a client for the Hub gets the same Hub for the
         # async methods: a TestClient's app, called in-process on the
         # caller's loop, or a transport that also serves async requests.
-        self._async_transport = _aio_client.async_transport_for(_http_client, self._hub_base_url)
+        self._async_transport = _hub_client.async_transport_for(_http_client, self._hub_base_url)
         # One push or route change at a time per team; see _team_lock.
         self._team_locks: dict[str, anyio.Lock] = {}
         # NoteToSelf push and refresh run one at a time: each reads the adopted
@@ -357,7 +357,7 @@ class TeamManager:
         self._session_requests[key] = started
         self.clear_pending(team, mode)
         async with self._hub_http() as http:
-            session, pending_id = await _aio_client.start_session(
+            session, pending_id = await _hub_client.start_session(
                 http, self.participant_hex, _CORE_APP, team, client_name, mode=mode
             )
         if self._session_requests[key] != started:
@@ -381,7 +381,7 @@ class TeamManager:
         if pending_id is None:
             return
         async with self._hub_http() as http:
-            session = await _aio_client.confirm_session(http, pending_id, pin)
+            session = await _hub_client.confirm_session(http, pending_id, pin)
         if (
             self._session_requests.get(key, 0) == started
             and self.get_pending_id(team, mode) == pending_id
@@ -393,7 +393,7 @@ class TeamManager:
         pending_id = self.get_pending_id(team, mode)
         if pending_id:
             async with self._hub_http() as http:
-                await _aio_client.resend_notification(http, pending_id)
+                await _hub_client.resend_notification(http, pending_id)
 
     async def other_hub_sessions(self) -> list[dict] | None:
         """List this participant's confirmed Hub sessions other than this Manager's.
@@ -404,7 +404,7 @@ class TeamManager:
         if token is None:
             return None
         async with self._hub_http() as http:
-            session = _aio_client.SmallSeaSession(http, token)
+            session = _hub_client.SmallSeaSession(http, token)
             own_id = (await session.session_info())["session_id"]
             sessions = await session.list_sessions()
         # Hide only this Manager's current session. Older Manager sessions
@@ -420,7 +420,7 @@ class TeamManager:
         if token is None:
             return
         async with self._hub_http() as http:
-            await _aio_client.SmallSeaSession(http, token).delete_session(session_id)
+            await _hub_client.SmallSeaSession(http, token).delete_session(session_id)
 
     def _team_lock(self, team_name: str) -> anyio.Lock:
         """The lock that lets one push or route change run at a time per team.
@@ -444,7 +444,7 @@ class TeamManager:
 
     async def _hub_session(
         self, http: httpx.AsyncClient, team: str, mode: str = "encrypted"
-    ) -> _aio_client.SmallSeaSession:
+    ) -> _hub_client.SmallSeaSession:
         """A session for (team, mode) on http.
 
         Uses the confirmed session if there is one, such as from the PIN flow.
@@ -452,8 +452,8 @@ class TeamManager:
         """
         cached = self._sessions.get((team, mode))
         if cached is not None:
-            return _aio_client.SmallSeaSession(http, cached)
-        return await _aio_client.open_session(
+            return _hub_client.SmallSeaSession(http, cached)
+        return await _hub_client.open_session(
             http, self.participant_hex, _CORE_APP, team, "TeamManager", mode=mode
         )
 

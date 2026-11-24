@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.protocol import NoPublishedHeadError
-from small_sea_client.aio import SmallSeaSession
+from small_sea_client.client import SmallSeaSession
 
 WATCH_TIMEOUT = 30  # seconds the Hub may hold each watch request
 RETRY_DELAY = 5

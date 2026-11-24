@@ -49,7 +49,7 @@ from small_sea_manager.manager import (
     bootstrap_existing_identity,
     create_identity_join_request,
 )
-from small_sea_client import aio
+from small_sea_client import client as hub_client
 from ssc_files import files, sync
 
 TEAM = "Garden"
@@ -92,7 +92,7 @@ class _Device:
         """
         async with sync.hub_http(hub_port, _http_client) as http:
             session = sync.get_team_session(team_name, http)
-            key_owner = session if key_token is None else aio.SmallSeaSession(http, key_token)
+            key_owner = session if key_token is None else hub_client.SmallSeaSession(http, key_token)
             info = await session.session_info()
             authority_view = await session.authority_view()
             public_key = await key_owner.signing_public_key()

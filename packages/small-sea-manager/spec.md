@@ -24,7 +24,7 @@ The Manager has a special but well-defined relationship with the Hub:
 
 1. **Direct DB writes** — The Manager is the sole writer of the participant's `core.db` files (NoteToSelf and per-team). The Hub reads these databases directly (file-watch + cache flush). There is no API between them for this data. The Manager never calls Hub endpoints to read or write team/membership/invitation data.
 
-2. **Hub as app client** — The Manager also uses the Hub as a regular app client (via `SmallSeaClient`) to perform cloud operations: pushing and pulling berth data through Cod Sync. This is done via Hub sessions, one per berth, opened lazily as needed.
+2. **Hub as app client** — The Manager also uses the Hub as a regular app client (via `small_sea_client.client`) to perform cloud operations: pushing and pulling berth data through Cod Sync. This is done via Hub sessions, one per berth, opened lazily as needed.
 
 This means the Manager has *two distinct layers*:
 

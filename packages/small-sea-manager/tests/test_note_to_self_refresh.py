@@ -23,7 +23,7 @@ from cod_sync.store import SmallSeaStore as AsyncSmallSeaStore
 from cod_sync.protocol import PublicationIntegrationRequiredError, parked_ref_name
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
-from small_sea_client import aio as aio_client
+from small_sea_client import client as hub_client
 from small_sea_hub.server import app
 from small_sea_manager.manager import (
     TeamManager,
@@ -286,7 +286,7 @@ def test_overlapping_refreshes_do_not_move_the_adopted_count_backwards(
             await release.wait()
         return await real_fetch(self, *args, **kwargs)
 
-    monkeypatch.setattr(aio_client.SmallSeaSession, "watch_notifications", watch)
+    monkeypatch.setattr(hub_client.SmallSeaSession, "watch_notifications", watch)
     monkeypatch.setattr(AsyncCodSync, "fetch", held_fetch)
 
     async def second():

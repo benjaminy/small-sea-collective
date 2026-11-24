@@ -15,7 +15,7 @@ from cod_sync.work_context import context_from_commit
 from cod_sync.repo import Repo
 from ssc_files import files
 import httpx
-from small_sea_client import aio
+from small_sea_client import client as hub_client
 from small_sea_hub.backend import SmallSeaBackend
 from small_sea_hub.server import app
 import small_sea_manager.provisioning as provisioning
@@ -165,7 +165,7 @@ async def _signer_through_hub(port, token):
     """Return a Files signer, the session info and the signing public key."""
     hub_url = f"http://127.0.0.1:{port}"
     async with httpx.AsyncClient(base_url=hub_url) as http:
-        session = aio.SmallSeaSession(http, token)
+        session = hub_client.SmallSeaSession(http, token)
         # This test only commits, so the signer never checks history.
         signer = await files.CommitSigner.from_session(session, hub_url, verify=None)
         return signer, await session.session_info(), await session.signing_public_key()

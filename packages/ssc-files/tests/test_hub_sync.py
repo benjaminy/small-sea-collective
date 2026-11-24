@@ -18,7 +18,7 @@ from fastapi.testclient import TestClient
 from ssc_files import sync, files
 from ssc_files.cli import cli
 import httpx
-from small_sea_client import aio
+from small_sea_client import client as hub_client
 from small_sea_hub.adapters.s3 import SmallSeaS3Adapter
 from small_sea_hub.server import app
 from small_sea_manager.manager import TeamManager, _CORE_APP
@@ -376,7 +376,7 @@ def test_sync_config_roundtrip_and_remote_prefixes(tmp_path, monkeypatch):
     assert loaded["hub_port"] == 12345
     assert loaded["team_sessions"]["Project X"]["session_token"] == "tok-123"
 
-    session = aio.SmallSeaSession(httpx.AsyncClient(base_url="http://127.0.0.1:7777"), "session-token")
+    session = hub_client.SmallSeaSession(httpx.AsyncClient(base_url="http://127.0.0.1:7777"), "session-token")
     registry_remote = sync.make_registry_remote(session)
     niche_remote = sync.make_niche_remote("docs", session)
 

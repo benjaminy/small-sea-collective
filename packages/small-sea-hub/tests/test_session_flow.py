@@ -344,7 +344,7 @@ def test_pending_sessions_lists_with_pin(playground_dir):
 
 def test_session_info_via_client(playground_dir):
     """SmallSeaSession.session_info() wraps GET /session/info."""
-    from small_sea_client.aio import SmallSeaSession
+    from small_sea_client.client import SmallSeaSession
     from test_support import async_hub_client
 
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)
@@ -528,7 +528,7 @@ def test_cannot_delete_another_participants_session(playground_dir):
 
 def test_list_sessions_via_client(playground_dir):
     """SmallSeaSession.list_sessions()/delete_session() wrap the confirmed-sessions endpoints."""
-    from small_sea_client.aio import SmallSeaSession
+    from small_sea_client.client import SmallSeaSession
     from test_support import async_hub_client
 
     backend = SmallSea.SmallSeaBackend(root_dir=playground_dir)

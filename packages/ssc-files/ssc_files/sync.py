@@ -19,8 +19,8 @@ from cod_sync.protocol import (
     PublicationOutcomeUnresolvedError,
     PublicationRetryableError,
 )
-from small_sea_client import aio
-from small_sea_client.aio import SmallSeaSession
+from small_sea_client import client as hub_client
+from small_sea_client.client import SmallSeaSession
 
 from ssc_files import files
 
@@ -420,7 +420,7 @@ async def login_team(
     files_root: str,
     team_name: str,
     participant_hex: str,
-    hub_port: int = aio.DEFAULT_PORT,
+    hub_port: int = hub_client.DEFAULT_PORT,
     *,
     pin_reader: Optional[Callable[[str], str]] = None,
     _http_client=None,
@@ -433,7 +433,7 @@ async def login_team(
     metadata.json holds team_id; offline operations resolve from there.
     """
     async with hub_http(hub_port, _http_client) as http:
-        session, pending_id = await aio.start_session(
+        session, pending_id = await hub_client.start_session(
             http, participant_hex, HUB_APP_NAME, team_name, _CLI_CLIENT_NAME
         )
 
@@ -441,7 +441,7 @@ async def login_team(
         if session is None:
             if pin_reader is None:
                 raise LoginRequiredError("A PIN is required to complete Files login.")
-            session = await aio.confirm_session(
+            session = await hub_client.confirm_session(
                 http, pending_id, pin_reader(pending_id).strip()
             )
 
@@ -454,7 +454,7 @@ async def login_team(
 
 
 @contextlib.asynccontextmanager
-async def hub_http(hub_port: int = aio.DEFAULT_PORT, _http_client=None):
+async def hub_http(hub_port: int = hub_client.DEFAULT_PORT, _http_client=None):
     """A new async HTTP client for the Hub, closed when the block ends.
 
     Each Hub-facing function opens its own, so no connection outlives the
@@ -467,7 +467,7 @@ async def hub_http(hub_port: int = aio.DEFAULT_PORT, _http_client=None):
     )
     async with httpx.AsyncClient(
         base_url=hub_url,
-        transport=aio.async_transport_for(_http_client, hub_url),
+        transport=hub_client.async_transport_for(_http_client, hub_url),
         timeout=_HUB_TIMEOUT,
     ) as http:
         yield http
@@ -499,7 +499,7 @@ def cached_session_token(team_name: str) -> str:
 
 
 def hub_verifier(
-    session_token: str, hub_port: int = aio.DEFAULT_PORT, *, _http_client=None
+    session_token: str, hub_port: int = hub_client.DEFAULT_PORT, *, _http_client=None
 ) -> Callable[[pathlib.Path | str, str], Awaitable[dict]]:
     """An async history check for a CommitSigner, under one Hub session.
 
@@ -513,7 +513,7 @@ def hub_verifier(
     return verify
 
 
-async def commit_signer(team_name, hub_port=aio.DEFAULT_PORT, *, _http_client=None):
+async def commit_signer(team_name, hub_port=hub_client.DEFAULT_PORT, *, _http_client=None):
     """A signer bound to the team's cached session as it stands now."""
     token = cached_session_token(team_name)
     async with hub_http(hub_port, _http_client) as http:
@@ -526,7 +526,7 @@ async def commit_signer(team_name, hub_port=aio.DEFAULT_PORT, *, _http_client=No
 
 async def list_team_peers(
     team_name: str,
-    hub_port: int = aio.DEFAULT_PORT,
+    hub_port: int = hub_client.DEFAULT_PORT,
     *,
     _http_client=None,
 ) -> list[dict]:
@@ -591,7 +591,7 @@ async def push_via_hub(
     team_name: str,
     niche_name: str,
     *,
-    hub_port: int = aio.DEFAULT_PORT,
+    hub_port: int = hub_client.DEFAULT_PORT,
     _http_client=None,
 ) -> None:
     """Push a niche and its registry through the Hub using a cached session.
@@ -663,7 +663,7 @@ async def pull_via_hub(
     niche_name: str,
     from_teammate_id: str,
     *,
-    hub_port: int = aio.DEFAULT_PORT,
+    hub_port: int = hub_client.DEFAULT_PORT,
     _http_client=None,
 ) -> None:
     """Pull a registry and niche from a peer through the Hub."""
@@ -694,7 +694,7 @@ async def fetch_via_hub(
     niche_name: str,
     from_teammate_id: str,
     *,
-    hub_port: int = aio.DEFAULT_PORT,
+    hub_port: int = hub_client.DEFAULT_PORT,
     _http_client=None,
 ) -> FetchResult:
     """Fetch a registry and niche from a peer through the Hub without merging."""
@@ -753,7 +753,7 @@ async def merge_via_hub(
     niche_name: str,
     from_teammate_id: str,
     *,
-    hub_port: int = aio.DEFAULT_PORT,
+    hub_port: int = hub_client.DEFAULT_PORT,
     _http_client=None,
 ) -> MergeResult:
     """Merge already-fetched peer refs for a registry and niche.
@@ -858,7 +858,7 @@ async def fetch_self_via_hub(
     team_name: str,
     niche_name: str | None = None,
     *,
-    hub_port: int = aio.DEFAULT_PORT,
+    hub_port: int = hub_client.DEFAULT_PORT,
     _http_client=None,
 ) -> SelfFetchResult:
     """Fetch this participant's own registry and, optionally, one niche through the Hub.
@@ -911,7 +911,7 @@ async def merge_self(
     team_name: str,
     niche_name: str,
     *,
-    hub_port: int = aio.DEFAULT_PORT,
+    hub_port: int = hub_client.DEFAULT_PORT,
     _http_client=None,
 ) -> SelfMergeResult:
     """Integrate parked heads from this participant's own cloud chains.

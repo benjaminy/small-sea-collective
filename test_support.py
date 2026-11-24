@@ -68,7 +68,7 @@ def async_hub_client(test_client):
     needs no closing.
     """
     import httpx
-    from small_sea_client.aio import async_transport_for
+    from small_sea_client.client import async_transport_for
 
     base_url = str(test_client.base_url) or "http://testserver"
     return httpx.AsyncClient(

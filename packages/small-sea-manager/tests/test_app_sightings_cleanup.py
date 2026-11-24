@@ -15,7 +15,7 @@ from fastapi.testclient import TestClient
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
 from small_sea_hub.server import app as hub_app
-from small_sea_client import aio as aio_client
+from small_sea_client import client as hub_client
 from small_sea_manager.manager import TeamManager
 
 
@@ -282,7 +282,7 @@ def test_clear_failure_is_non_fatal_and_omits_resolved_prompt(playground_dir, mo
     async def _boom(self, **_kwargs):
         raise RuntimeError("hub flaked")
 
-    monkeypatch.setattr(aio_client.SmallSeaSession, "clear_app_sighting", _boom)
+    monkeypatch.setattr(hub_client.SmallSeaSession, "clear_app_sighting", _boom)
     prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert list(prompts) == []
@@ -297,7 +297,7 @@ def test_prune_failure_is_non_fatal(playground_dir, monkeypatch):
     async def _boom(self):
         raise RuntimeError("hub flaked")
 
-    monkeypatch.setattr(aio_client.SmallSeaSession, "prune_stale_app_sightings", _boom)
+    monkeypatch.setattr(hub_client.SmallSeaSession, "prune_stale_app_sightings", _boom)
     prompts = anyio.run(mgr.refresh_app_sightings)
 
     assert len(prompts) == 1

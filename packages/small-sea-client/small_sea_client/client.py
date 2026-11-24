@@ -1,8 +1,18 @@
+"""Async Hub client: the session calls an app makes, and the errors they raise.
+
+The functions and SmallSeaSession take an httpx.AsyncClient whose base_url is
+the Hub. The caller owns the client and closes it. Its timeout must outlast the
+longest watch the caller asks for, because the Hub holds a watch open until
+something changes.
+"""
+
 import base64
-from dataclasses import dataclass
 from typing import Optional
 
 import httpx
+
+#: The port a Hub listens on unless told otherwise.
+DEFAULT_PORT = 11437
 
 
 class SmallSeaError(Exception):
@@ -11,12 +21,6 @@ class SmallSeaError(Exception):
 
 class SmallSeaHubUnavailable(Exception):
     """Could not connect to the Hub."""
-
-
-@dataclass(frozen=True)
-class CommitSignature:
-    signature: str
-    public_key: str
 
 
 class SmallSeaNotFound(SmallSeaError):
@@ -38,43 +42,6 @@ class SmallSeaCloudStorageRequired(SmallSeaConflict):
     def __init__(self, reason: str, detail: str):
         self.reason = reason
         super().__init__(detail)
-
-
-class SmallSeaPublicationPending(SmallSeaConflict):
-    """The Hub could not yet judge a downloaded object's publication.
-
-    The bytes were retrieved; the evidence needed to accept them (a sender key,
-    an accepted device-ownership row) has not arrived on this device. A
-    conflict rather than a not-found, so a caller cannot read it as an empty
-    chain. `reason` names the missing prerequisite.
-    """
-
-    def __init__(self, reason: str, detail: str):
-        self.reason = reason
-        super().__init__(detail)
-
-
-class SmallSeaPublicationNotAuthentic(SmallSeaError):
-    """The retrieved bytes are not the requested object's authentic publication.
-
-    Deliberately not a not-found and never an empty result: the object may well
-    exist and something served the wrong or altered bytes for it.
-    """
-
-    def __init__(self, reason: str, detail: str):
-        self.reason = reason
-        super().__init__(detail)
-
-
-_PUBLICATION_PENDING_ERRORS = frozenset(
-    {
-        "sender_key_unavailable",
-        "ownership_projection_absent",
-        "device_ownership_unavailable",
-        "device_ownership_ambiguous",
-        "expected_publisher_unknown",
-    }
-)
 
 
 class SmallSeaAppBootstrapRequired(SmallSeaError):
@@ -126,298 +93,212 @@ def _check_response(resp: httpx.Response) -> None:
         raise SmallSeaCloudStorageRequired(
             str(body.get("reason", "cloud_storage_required")), detail
         )
-    if (
-        resp.status_code == 409
-        and isinstance(body, dict)
-        and body.get("error") in _PUBLICATION_PENDING_ERRORS
-    ):
-        raise SmallSeaPublicationPending(str(body["error"]), detail)
     if resp.status_code == 409:
         raise SmallSeaConflict(detail)
-    if (
-        resp.status_code == 502
-        and isinstance(body, dict)
-        and body.get("error") == "publication_not_authentic"
-    ):
-        raise SmallSeaPublicationNotAuthentic(
-            str(body.get("reason", "publication_not_authentic")), detail
-        )
     raise SmallSeaError(f"HTTP {resp.status_code}: {detail}")
 
 
-class SmallSeaClient:
-    """HTTP transport and session factory for the Small Sea Hub."""
+class _BorrowedTransport(httpx.AsyncBaseTransport):
+    """Forwards requests to a transport that the injecting client owns.
 
-    DEFAULT_PORT = 11437
+    Closing the async client that uses it leaves the owner's transport open.
+    """
 
-    def __init__(self, port: int = DEFAULT_PORT, _http_client=None):
-        self._base_url = f"http://127.0.0.1:{port}"
-        self._http_client = _http_client
+    def __init__(self, transport: httpx.AsyncBaseTransport):
+        self._transport = transport
 
-    def request_session(
-        self,
-        participant: str,
-        app: str,
-        team: str,
-        client_name: str,
-        mode: str = "encrypted",
-    ) -> str:
-        """Begin the two-step session flow.
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        return await self._transport.handle_async_request(request)
 
-        The Hub fires a system notification containing a 4-digit PIN. Returns
-        the pending_id; pass it along with the PIN to confirm_session() once
-        the user reads it.
-        """
-        result = self._post(
-            "/sessions/request",
-            {
-                "participant": participant,
-                "app": app,
-                "team": team,
-                "client": client_name,
-                "mode": mode,
-            },
+    async def aclose(self) -> None:
+        pass
+
+
+def async_transport_for(http_client, hub_url: str) -> httpx.AsyncBaseTransport | None:
+    """The async transport that reaches the Hub an injected sync client reaches.
+
+    Tests inject a sync client for the Hub; async calls must reach the same
+    Hub. hub_url is the Hub's base URL, which picks the client's transport
+    the way the client itself would, including a transport mounted for that
+    URL. None means the async client opens its own network connections.
+    """
+    hub_app = getattr(http_client, "app", None)
+    if hub_app is not None:
+        # A Starlette TestClient: call the same app in-process.
+        return httpx.ASGITransport(app=hub_app)
+    if not isinstance(http_client, httpx.Client):
+        return None
+    transport = http_client._transport_for_url(httpx.URL(hub_url))
+    if isinstance(transport, httpx.AsyncBaseTransport):
+        # A transport that also serves async requests, such as MockTransport.
+        return _BorrowedTransport(transport)
+    return None
+
+
+async def _hub_post(http: httpx.AsyncClient, path: str, payload: dict):
+    try:
+        resp = await http.post(path, json=payload)
+    except httpx.ConnectError:
+        raise SmallSeaHubUnavailable()
+    _check_response(resp)
+    return resp.json()
+
+
+async def start_session(
+    http: httpx.AsyncClient,
+    participant: str,
+    app: str,
+    team: str,
+    client_name: str,
+    mode: str = "encrypted",
+) -> "tuple[SmallSeaSession | None, str | None]":
+    """Begin a session, in auto-approve or PIN mode.
+
+    In auto-approve mode the Hub returns a token at once: (session, None).
+    Otherwise it shows the person a PIN and returns (None, pending_id); pass
+    both to confirm_session.
+    """
+    result = await _hub_post(http, "/sessions/request", {
+        "participant": participant,
+        "app": app,
+        "team": team,
+        "client": client_name,
+        "mode": mode,
+    })
+    if "token" in result:
+        return SmallSeaSession(http, result["token"]), None
+    return None, result["pending_id"]
+
+
+async def open_session(
+    http: httpx.AsyncClient,
+    participant: str,
+    app: str,
+    team: str,
+    client_name: str,
+    mode: str = "encrypted",
+) -> "SmallSeaSession":
+    """Open a session when the Hub is running in auto-approve mode.
+
+    Raises SmallSeaError if the Hub is not in auto-approve mode.
+    """
+    session, _pending_id = await start_session(http, participant, app, team, client_name, mode)
+    if session is None:
+        raise SmallSeaError(
+            "Hub is not in auto-approve mode; use start_session/confirm_session"
         )
-        return result["pending_id"]
+    return session
 
-    def start_session(
-        self,
-        participant: str,
-        app: str,
-        team: str,
-        client_name: str,
-        mode: str = "encrypted",
-    ) -> "tuple[SmallSeaSession | None, str | None]":
-        """Begin a session, handling both auto-approve and PIN modes in one call.
 
-        Makes one request to /sessions/request and branches on the response:
-        - Auto-approve: Hub returns token immediately → (session, None)
-        - PIN required: Hub returns only pending_id → (None, pending_id);
-          the Hub has already sent the PIN via OS notification; pass pending_id
-          and the PIN to confirm_session() to complete the flow.
-        """
-        result = self._post(
-            "/sessions/request",
-            {
-                "participant": participant,
-                "app": app,
-                "team": team,
-                "client": client_name,
-                "mode": mode,
-            },
-        )
-        if "token" in result:
-            return SmallSeaSession(self, result["token"]), None
-        return None, result["pending_id"]
+async def confirm_session(http: httpx.AsyncClient, pending_id: str, pin: str) -> "SmallSeaSession":
+    """Complete a PIN-mode session with the PIN the Hub showed the person.
 
-    def open_session(
-        self,
-        participant: str,
-        app: str,
-        team: str,
-        client_name: str,
-        mode: str = "encrypted",
-    ) -> "SmallSeaSession":
-        """Open a session when the Hub is running in auto-approve mode.
+    Raises SmallSeaError if the PIN is wrong or has expired.
+    """
+    token = await _hub_post(http, "/sessions/confirm", {"pending_id": pending_id, "pin": pin})
+    return SmallSeaSession(http, token)
 
-        The Hub must have SMALL_SEA_AUTO_APPROVE_SESSIONS=1 set. The PIN step
-        is skipped entirely and a session token is returned immediately.
-        Raises SmallSeaError if the Hub is not in auto-approve mode.
-        """
-        result = self._post(
-            "/sessions/request",
-            {
-                "participant": participant,
-                "app": app,
-                "team": team,
-                "client": client_name,
-                "mode": mode,
-            },
-        )
-        if "token" not in result:
-            raise SmallSeaError(
-                "Hub is not in auto-approve mode; use request_session/confirm_session"
-            )
-        return SmallSeaSession(self, result["token"])
 
-    def resend_notification(self, pending_id: str) -> None:
-        """Ask the Hub to re-fire the OS notification for a pending session.
+async def resend_notification(http: httpx.AsyncClient, pending_id: str) -> None:
+    """Ask the Hub to show the PIN for a pending session again.
 
-        Use this when the user missed the original PIN notification. The PIN
-        never appears in the HTTP response — it only travels via the OS
-        notification. Raises SmallSeaNotFound if the pending session has
-        expired or does not exist.
-        """
-        self._post(f"/sessions/{pending_id}/resend-notification", {})
+    Raises SmallSeaNotFound if the pending session has expired or does not
+    exist.
+    """
+    await _hub_post(http, f"/sessions/{pending_id}/resend-notification", {})
 
-    def confirm_session(self, pending_id: str, pin: str) -> "SmallSeaSession":
-        """Complete the session flow with the PIN from the Hub notification.
 
-        Returns a SmallSeaSession on success. Raises SmallSeaError if the PIN
-        is wrong or expired.
-        """
-        token = self._post("/sessions/confirm", {"pending_id": pending_id, "pin": pin})
-        return SmallSeaSession(self, token)
-
-    def create_bootstrap_session(
-        self,
-        *,
-        protocol: str,
-        url: str,
-        bucket: str,
-        expires_at: str | None = None,
-    ) -> str:
-        payload = {
-            "protocol": protocol,
-            "url": url,
-            "bucket": bucket,
-        }
-        if expires_at is not None:
-            payload["expires_at"] = expires_at
-        result = self._post("/bootstrap/sessions", payload)
-        return result["token"]
-
-    # ---- Internal HTTP helpers ----
-
-    def _post(
-        self,
-        path: str,
-        json_data: dict,
-        *,
-        token: Optional[str] = None,
-    ):
-        headers = {}
-        if token is not None:
-            headers["Authorization"] = f"Bearer {token}"
-        try:
-            if self._http_client is not None:
-                resp = self._http_client.post(path, json=json_data, headers=headers)
-            else:
-                resp = httpx.post(f"{self._base_url}{path}", json=json_data, headers=headers)
-        except httpx.ConnectError:
-            raise SmallSeaHubUnavailable()
-        _check_response(resp)
-        return resp.json()
-
-    def _get(
-        self,
-        path: str,
-        *,
-        params: Optional[dict] = None,
-        token: Optional[str] = None,
-    ):
-        headers = {}
-        if token is not None:
-            headers["Authorization"] = f"Bearer {token}"
-        try:
-            if self._http_client is not None:
-                resp = self._http_client.get(path, params=params, headers=headers)
-            else:
-                resp = httpx.get(f"{self._base_url}{path}", params=params, headers=headers)
-        except httpx.ConnectError:
-            raise SmallSeaHubUnavailable()
-        _check_response(resp)
-        return resp.json()
-
-    def _delete(
-        self,
-        path: str,
-        *,
-        token: Optional[str] = None,
-    ):
-        headers = {}
-        if token is not None:
-            headers["Authorization"] = f"Bearer {token}"
-        try:
-            if self._http_client is not None:
-                resp = self._http_client.delete(path, headers=headers)
-            else:
-                resp = httpx.delete(f"{self._base_url}{path}", headers=headers)
-        except httpx.ConnectError:
-            raise SmallSeaHubUnavailable()
-        _check_response(resp)
-        return resp.json()
+async def create_bootstrap_session(
+    http: httpx.AsyncClient,
+    *,
+    protocol: str,
+    url: str,
+    bucket: str,
+    expires_at: str | None = None,
+) -> str:
+    """Ask the Hub for a token that reads one cloud location during bootstrap."""
+    payload = {"protocol": protocol, "url": url, "bucket": bucket}
+    if expires_at is not None:
+        payload["expires_at"] = expires_at
+    return (await _hub_post(http, "/bootstrap/sessions", payload))["token"]
 
 
 class SmallSeaSession:
     """An authenticated session with the Hub, scoped to one berth."""
 
-    def __init__(self, client: SmallSeaClient, token: str):
-        self._client = client
+    def __init__(self, http: httpx.AsyncClient, token: str):
+        self._http = http
         self._token = token
-        self._last_notification_id: Optional[str] = None
 
     @property
     def token(self) -> str:
-        """The session token. Can be persisted and passed to SmallSeaSession() to resume."""
         return self._token
 
-    # ---- Session info ----
+    async def verify_history(self, git_dir, head: str) -> dict:
+        """Ask the Hub to judge every commit reachable from head."""
+        result = await self._post("/session/verify", {"git_dir": str(git_dir), "head": head})
+        token = result["view_identifier"]
+        result["view_identifier"] = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+        return result
 
-    def list_sessions(self) -> list[dict]:
+    async def ensure_cloud_ready(self) -> None:
+        """Create and publish the cloud bucket for this session (S3 only).
+
+        Must be called before the first push. Safe to call multiple times.
+        """
+        await self._post("/cloud/setup", {})
+
+    async def ensure_berth_cloud_ready(self, berth_id_hex: str) -> None:
+        """Manager sessions only: set up storage for another berth of this team."""
+        await self._post(f"/manager/berths/{berth_id_hex}/cloud/setup", {})
+
+    async def session_info(self) -> dict:
+        """Return metadata for this session: participant_hex, team_name, app_name, berth_id, client."""
+        return await self._get("/session/info")
+
+    async def signing_public_key(self) -> str:
+        """Return this session berth's workhorse public key."""
+        return (await self._get("/session/signing_key"))["public_key"]
+
+    async def authority_view(self) -> bytes:
+        """Return the identifier of this session team's adopted authority view."""
+        token = (await self._get("/session/authority_view"))["authority_view"]
+        return base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
+
+    async def session_peers(self) -> list[dict]:
+        """Return peers visible to this session, with best-effort labels."""
+        result = await self._get("/session/peers")
+        return result.get("peers", [])
+
+    async def list_sessions(self) -> list[dict]:
         """List this participant's confirmed Hub sessions, without tokens.
 
         Only a caller whose own session is on NoteToSelf may call this;
         other sessions raise SmallSeaError with code "session_admin_not_allowed".
         """
-        return self._client._get("/sessions/confirmed", token=self._token)
+        return await self._get("/sessions/confirmed")
 
-    def list_granted_apps(self) -> list[dict]:
-        """List app names that have ever received a confirmed session.
-
-        Only a caller whose own session is on NoteToSelf may call this.
-        """
-        return self._client._get("/apps/granted", token=self._token)
-
-    def delete_session(self, session_id: str) -> None:
+    async def delete_session(self, session_id: str) -> None:
         """Delete one of this participant's confirmed Hub sessions by id.
 
         Raises SmallSeaNotFound if the id names no session belonging to this
         participant. Only a caller whose own session is on NoteToSelf may
         call this.
         """
-        self._client._delete(f"/sessions/confirmed/{session_id}", token=self._token)
+        await self._send("DELETE", f"/sessions/confirmed/{session_id}")
 
-    def session_info(self) -> dict:
-        """Return metadata for this session: participant_hex, team_name, app_name, berth_id, client."""
-        return self._client._get("/session/info", token=self._token)
+    async def list_granted_apps(self) -> list[dict]:
+        """List app names that have ever received a confirmed session.
 
-    def sign_commit(self, payload: bytes, purpose: str) -> CommitSignature:
-        """Ask the Hub to sign an unsigned git commit body for this berth."""
-        result = self._client._post(
-            "/session/sign", {"purpose": purpose, "payload": base64.b64encode(payload).decode("ascii")},
-            token=self._token,
-        )
-        return CommitSignature(result["signature"], result["public_key"])
+        Only a caller whose own session is on NoteToSelf may call this.
+        """
+        return await self._get("/apps/granted")
 
-    def authority_view(self) -> bytes:
-        """Return the identifier of this session team's adopted authority view."""
-        token = self._client._get("/session/authority_view", token=self._token)["authority_view"]
-        return base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-
-    def verify_history(self, git_dir, head: str) -> dict:
-        """Ask the Hub to judge every commit reachable from head."""
-        result = self._client._post(
-            "/session/verify", {"git_dir": str(git_dir), "head": head}, token=self._token,
-        )
-        token = result["view_identifier"]
-        result["view_identifier"] = base64.urlsafe_b64decode(token + "=" * (-len(token) % 4))
-        return result
-
-    def signing_public_key(self) -> str:
-        """Return this session berth's workhorse public key."""
-        return self._client._get("/session/signing_key", token=self._token)["public_key"]
-
-    def session_peers(self) -> list[dict]:
-        """Return peers visible to this session, with best-effort labels."""
-        result = self._client._get("/session/peers", token=self._token)
-        return result.get("peers", [])
-
-    def app_sightings(self) -> list[dict]:
+    async def app_sightings(self) -> list[dict]:
         """Return app-bootstrap sightings visible to this Manager/Core session."""
-        return self._client._get("/sightings", token=self._token)
+        return await self._get("/sightings")
 
-    def clear_app_sighting(
+    async def clear_app_sighting(
         self,
         *,
         app_name: str,
@@ -427,15 +308,11 @@ class SmallSeaSession:
     ) -> int:
         """Delete one Hub sighting whose tuple and last_seen_at still match.
 
-        Pass the values from app_sightings() unchanged. last_seen_at must be
-        byte-identical to the listed value; reformatting the timestamp will
-        silently miss the row because the Hub uses string equality for the
-        precondition.
-
-        Returns the number of rows deleted (0 or 1). The Hub returns 0 — not
-        an error — when the row has been bumped or already cleared.
+        Pass the values from app_sightings() unchanged: the Hub compares
+        last_seen_at as a string, so a reformatted timestamp misses the row.
+        Returns the number of rows deleted, 0 or 1.
         """
-        result = self._client._post(
+        result = await self._post(
             "/sightings/clear",
             {
                 "app_name": app_name,
@@ -443,154 +320,43 @@ class SmallSeaSession:
                 "client_name": client_name,
                 "last_seen_at": last_seen_at,
             },
-            token=self._token,
         )
         return int(result["deleted_count"])
 
-    def prune_stale_app_sightings(self) -> int:
+    async def prune_stale_app_sightings(self) -> int:
         """Delete this participant's Hub sightings older than the stale window.
 
-        Returns the number of pruned rows. The Hub holds the stale window
-        and the cutoff clock; this call has no body parameters.
+        Returns the number of pruned rows.
         """
-        # _post requires a JSON object; the Hub accepts {} as equivalent to
-        # an empty body. Any other shape is rejected with 400.
-        result = self._client._post(
-            "/sightings/prune-stale",
-            {},
-            token=self._token,
-        )
-        return int(result["pruned_count"])
+        return int((await self._post("/sightings/prune-stale", {}))["pruned_count"])
 
-    # ---- Cloud storage ----
-
-    def ensure_cloud_ready(self) -> None:
-        """Create and publish the cloud bucket for this session (S3 only).
-
-        Must be called before the first push. Safe to call multiple times.
-        """
-        self._client._post("/cloud/setup", {}, token=self._token)
-
-    def ensure_berth_cloud_ready(self, berth_id_hex: str) -> None:
-        """Manager sessions only: set up storage for another berth of this team."""
-        self._client._post(
-            f"/manager/berths/{berth_id_hex}/cloud/setup", {}, token=self._token
-        )
-
-    def upload(self, path: str, data: bytes) -> str:
-        """Unconditional upload. Creates or overwrites the file. Returns the etag."""
-        result = self._client._post(
-            "/cloud_file",
-            {"path": path, "data": base64.b64encode(data).decode()},
-            token=self._token,
-        )
-        return result["etag"]
-
-    def upload_if_match(self, path: str, data: bytes, expected_etag: str) -> str:
-        """Upload only if the file still matches expected_etag (compare-and-swap).
-
-        Returns the new etag on success. Raises SmallSeaConflict if the file
-        has been modified since expected_etag was read.
-        """
-        result = self._client._post(
-            "/cloud_file",
-            {
-                "path": path,
-                "data": base64.b64encode(data).decode(),
-                "expected_etag": expected_etag,
-            },
-            token=self._token,
-        )
-        return result["etag"]
-
-    def upload_create_only(self, path: str, data: bytes) -> str:
-        """Upload only if no file exists at path yet. Returns the new etag.
-
-        Raises SmallSeaConflict if a file already exists at path.
-
-        Note: not yet implemented in the Hub.
-        """
-        raise NotImplementedError("upload_create_only is not yet implemented in the Hub")
-
-    def download(self, path: str) -> tuple[bytes, str]:
-        """Download a file. Returns (data, etag).
-
-        Raises SmallSeaNotFound if no file exists at path.
-        """
-        headers = {"Authorization": f"Bearer {self._token}"}
-        try:
-            if self._client._http_client is not None:
-                resp = self._client._http_client.get(
-                    "/cloud_file", params={"path": path}, headers=headers
-                )
-            else:
-                resp = httpx.get(
-                    f"{self._client._base_url}/cloud_file",
-                    params={"path": path},
-                    headers=headers,
-                )
-        except httpx.ConnectError:
-            raise SmallSeaHubUnavailable()
-        _check_response(resp)
-        return resp.content, resp.headers["etag"]
-
-    # ---- Sync notifications ----
-
-    def watch_notifications(
+    async def watch_notifications(
         self,
         known: dict,
         timeout: int = 30,
         known_self_count: Optional[int] = None,
     ) -> dict:
-        """Block until a sync count exceeds a known value.
+        """Wait until a teammate's publication count exceeds the known one.
 
-        known: {teammate_id_hex: last_known_count} — the counts the caller has
-            already processed. Returns immediately if the Hub already has higher
-            counts; otherwise blocks up to timeout seconds.
-
-        If known_self_count is provided, the Hub may also return
-        {"self_updated_count": int} for NoteToSelf self-updates.
+        known: {teammate_id_hex: last_known_count}. Returns at once if the Hub
+        already has a higher count; otherwise waits up to timeout seconds.
         """
         payload = {"known": known, "timeout": timeout}
         if known_self_count is not None:
             payload["known_self_count"] = known_self_count
-        return self._client._post("/notifications/watch", payload, token=self._token)
+        return await self._post("/notifications/watch", payload)
 
-    # ---- ntfy Notifications ----
+    async def _post(self, path: str, json_data: dict):
+        return await self._send("POST", path, json=json_data)
 
-    def send_notification(self, message: str, title: Optional[str] = None) -> str:
-        """Send a notification to all berth teammates. Returns the message id."""
-        body: dict = {"message": message}
-        if title is not None:
-            body["title"] = title
-        result = self._client._post("/notifications", body, token=self._token)
-        return result["id"]
+    async def _get(self, path: str):
+        return await self._send("GET", path)
 
-    def poll_notifications(
-        self, since: Optional[str] = None, timeout: int = 30
-    ) -> list[dict]:
-        """Poll for notifications since the given cursor.
-
-        If since is provided it is used directly (pass "all" to fetch everything).
-        Otherwise the internally tracked cursor from the last call is used; if
-        there is no cursor yet, defaults to "all".
-
-        The cursor is updated after each call that returns messages. Apps that
-        need to resume after a restart should persist session.last_notification_id
-        and pass it as since when recreating the session.
-        """
-        effective_since = since if since is not None else (self._last_notification_id or "all")
-        result = self._client._get(
-            "/notifications",
-            params={"since": effective_since, "timeout": str(timeout)},
-            token=self._token,
-        )
-        messages = result["messages"]
-        if messages:
-            self._last_notification_id = messages[-1]["id"]
-        return messages
-
-    @property
-    def last_notification_id(self) -> Optional[str]:
-        """The ID of the last notification seen, for persisting the poll cursor."""
-        return self._last_notification_id
+    async def _send(self, method: str, path: str, **kwargs):
+        headers = {"Authorization": f"Bearer {self._token}"}
+        try:
+            resp = await self._http.request(method, path, headers=headers, **kwargs)
+        except httpx.ConnectError:
+            raise SmallSeaHubUnavailable()
+        _check_response(resp)
+        return resp.json()

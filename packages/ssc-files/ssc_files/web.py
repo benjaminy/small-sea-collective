@@ -5,7 +5,7 @@ import pathlib
 from fastapi import FastAPI, Form, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from small_sea_client import aio
+from small_sea_client import client as hub_client
 
 from ssc_files import sync, files
 
@@ -276,7 +276,7 @@ def create_app(
         """Request a Hub session; return an error message, or None on success."""
         try:
             async with _hub(request) as http:
-                session, pending_id = await aio.start_session(
+                session, pending_id = await hub_client.start_session(
                     http, _ph(request), sync.HUB_APP_NAME, team_name,
                     "SmallSeaCollectiveFilesWeb",
                 )
@@ -310,7 +310,7 @@ def create_app(
         )
         try:
             async with _hub(request) as http:
-                session = await aio.confirm_session(http, pending_id, pin.strip())
+                session = await hub_client.confirm_session(http, pending_id, pin.strip())
                 await sync.finalize_login(_vr(request), team_name, _ph(request), session)
             _pending(request).pop(team_name, None)
         except Exception as exc:
@@ -329,7 +329,7 @@ def create_app(
         try:
             if pending_id:
                 async with _hub(request) as http:
-                    await aio.resend_notification(http, pending_id)
+                    await hub_client.resend_notification(http, pending_id)
         except Exception as exc:
             return _session_fragment(request, team_name, error=str(exc))
         return _session_fragment(request, team_name)

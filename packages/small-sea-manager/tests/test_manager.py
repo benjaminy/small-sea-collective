@@ -59,8 +59,8 @@ def test_manager_web_pin_flow_updates_cached_session_state(playground_dir, monke
         captured["confirm"] = (pending_id, pin)
         return SimpleNamespace(token="session-abc")
 
-    monkeypatch.setattr(manager_module._aio_client, "start_session", fake_start_session)
-    monkeypatch.setattr(manager_module._aio_client, "confirm_session", fake_confirm_session)
+    monkeypatch.setattr(manager_module._hub_client, "start_session", fake_start_session)
+    monkeypatch.setattr(manager_module._hub_client, "confirm_session", fake_confirm_session)
 
     response = client.post("/session/request")
     assert response.status_code == 200
@@ -91,7 +91,7 @@ def test_a_late_confirmation_keeps_a_newer_request_pending(playground_dir, monke
         manager.set_pending("ProjectX", "pending-b")
         return SimpleNamespace(token="session-a")
 
-    monkeypatch.setattr(manager_module._aio_client, "confirm_session", fake_confirm_session)
+    monkeypatch.setattr(manager_module._hub_client, "confirm_session", fake_confirm_session)
 
     anyio.run(manager.confirm_session, "ProjectX", "321")
     assert manager.session_state("ProjectX") == "pending"
@@ -119,8 +119,8 @@ def test_a_confirmation_finishing_before_a_newer_request_is_answered_is_ignored(
             await a_done.wait()
             return None, "pending-b"
 
-        monkeypatch.setattr(manager_module._aio_client, "confirm_session", fake_confirm_session)
-        monkeypatch.setattr(manager_module._aio_client, "start_session", fake_start_session)
+        monkeypatch.setattr(manager_module._hub_client, "confirm_session", fake_confirm_session)
+        monkeypatch.setattr(manager_module._hub_client, "start_session", fake_start_session)
 
         async def confirm_a():
             await manager.confirm_session("ProjectX", "321")
@@ -159,8 +159,8 @@ def test_an_older_pin_submitted_after_a_newer_request_started_is_not_confirmed(
             confirmed.append(pending_id)
             return SimpleNamespace(token="session-a")
 
-        monkeypatch.setattr(manager_module._aio_client, "start_session", fake_start_session)
-        monkeypatch.setattr(manager_module._aio_client, "confirm_session", fake_confirm_session)
+        monkeypatch.setattr(manager_module._hub_client, "start_session", fake_start_session)
+        monkeypatch.setattr(manager_module._hub_client, "confirm_session", fake_confirm_session)
 
         await manager.request_session("ProjectX", "encrypted", "ManagerUI")
         async with anyio.create_task_group() as tg:
@@ -187,7 +187,7 @@ def test_a_failed_replacement_request_leaves_nothing_pending(playground_dir, mon
             raise answer
         return answer
 
-    monkeypatch.setattr(manager_module._aio_client, "start_session", fake_start_session)
+    monkeypatch.setattr(manager_module._hub_client, "start_session", fake_start_session)
 
     async def scenario():
         await manager.request_session("ProjectX", "encrypted", "ManagerUI")
@@ -213,7 +213,7 @@ def test_a_late_answer_to_an_older_request_is_ignored(playground_dir, monkeypatc
                 await b_done.wait()
             return None, pending_id
 
-        monkeypatch.setattr(manager_module._aio_client, "start_session", fake_start_session)
+        monkeypatch.setattr(manager_module._hub_client, "start_session", fake_start_session)
 
         async def request_b():
             await manager.request_session("ProjectX", "encrypted", "ManagerUI")

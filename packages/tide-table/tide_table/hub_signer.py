@@ -15,7 +15,7 @@ import shutil
 
 from cod_sync.git import signing_git_env
 from cod_sync.work_context import WorkContext, commit_message_with_context
-from small_sea_client.aio import SmallSeaSession
+from small_sea_client.client import SmallSeaSession
 
 PURPOSE = "TideTable/calendar"
 
