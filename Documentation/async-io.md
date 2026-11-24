@@ -91,7 +91,10 @@ We do not use aiosqlite: it runs SQLite in a thread, and that buys nothing for q
 
 ## When a call blocks the event loop
 
-Keep a synchronous call when the experiment can wait for it.
+In the long run we want async code throughout.
+Where a library has no async version, use a worker process rather than a thread, knowing that stopping the process does not undo a write the provider already received.
+
+For now, keep a synchronous call when the experiment can wait for it.
 Change it when something else must run during the wait, or when blocking would put data at risk or invalidate a result.
 For example, a peer watcher waiting on an unreachable bucket must still let the Hub answer a local request.
 A micro test holds the peer read open and checks that the Hub answers before the read finishes.
