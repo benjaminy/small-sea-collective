@@ -15,8 +15,8 @@ It is a finished demo, and we left it as it is.
 
 ## Interface shape
 
-Anything that reaches the Hub or a store is async and has no sync version:
-`cod_sync.protocol` (CodSync), `cod_sync.store` (the stores), and `small_sea_client.client` (Hub sessions).
+Cod Sync publication and fetch, its store interface, and Hub session calls are async-only.
+They live in `cod_sync.protocol`, `cod_sync.store`, and `small_sea_client.client`.
 Local Git work stays synchronous in `cod_sync.repo`, `cod_sync.git`, and `cod_sync.verify`.
 Their async versions live beside them in `cod_sync.async_repo`, `cod_sync.async_git`, and `cod_sync.async_verify`, because CodSync runs Git without blocking the event loop.
 An async module shares its sync twin's exceptions, result types, and pure helpers, and imports them rather than copying them.
@@ -30,10 +30,9 @@ The caller closes the client, after stopping everything that uses it.
 The client's timeout must outlast the longest watch the caller asks for, because the Hub holds a watch open until something changes.
 (Tide Table uses the watch timeout plus 30 seconds.)
 
-The Manager is the exception.
-Each async TeamManager method opens its own client and closes it before returning (`_hub_http` in `manager.py`).
-TeamManager is long-lived, and its callers are web routes, scripts that enter through `anyio.run`, and tests that each start their own event loop;
-a client opened per call never outlives the loop that made it.
+The Manager and Files open Hub clients per call (`_hub_http` in the Manager and `hub_http` in Files).
+Their web routes, scripts and micro tests can enter through different event loops.
+Closing each client at the end of its call keeps connections on the loop that opened them.
 
 **Streamed responses and temporary files.**
 A call that opens a streamed download, or makes a temporary directory, finishes with it before returning.
@@ -90,32 +89,31 @@ Short SQLite reads and writes on local files stay synchronous and run on the eve
 So do the small file operations of Cod Sync's local-folder store.
 We do not use aiosqlite: it runs SQLite in a thread, and that buys nothing for queries this short.
 
-## Code with no async version
+## When a call blocks the event loop
 
-Use an async library wherever one exists.
-When there really is none, run the blocking call in a worker process (`anyio.to_process.run_sync`), not a worker thread.
-A cancelled caller can kill a worker process.
-An abandoned worker thread runs on until its call returns, and nothing can stop it;
-it can still be writing after its caller has released the lock that was supposed to protect the write.
+Keep a synchronous call when the experiment can wait for it.
+Change it when something else must run during the wait, or when blocking would put data at risk or invalidate a result.
+For example, a peer watcher waiting on an unreachable bucket must still let the Hub answer a local request.
+A micro test holds the peer read open and checks that the Hub answers before the read finishes.
 
-The Hub watcher still calls blocking adapters (boto3, and storage and notification adapters that use synchronous httpx) in worker threads, through `_in_thread` in `server.py`.
-It passes `abandon_on_cancel=True`, so a cancelled caller stops waiting at once and Hub shutdown does not wait out a storage provider's retries.
-These threads are a stopgap to replace with async clients, not a pattern to copy.
+Prefer an async client for network I/O and the async Git runner for subprocesses when the caller needs that concurrency.
+A worker process can help if a blocking library does expensive work that we need to be able to stop.
+AnyIO's `to_process.run_sync` waits for a running call by default.
+With `cancellable=True`, cancellation abruptly terminates the worker.
+A storage provider that already received a request can still apply the write after the worker dies.
 
-Changes to shared state stay on the event loop.
-Code that awaits lets other tasks run in the meantime, whether it waits on an async client, a process, or a thread.
-If two tasks could now overlap where they could not before, guard them with an `anyio.Lock`, and keep together the steps whose order matters.
-For example, encrypted uploads that share a sender key must stay in order from reading the key's iteration through saving the advanced key.
+Avoid worker threads unless they buy something the experiment needs.
+The Hub watcher uses `_in_thread` as a temporary bridge to blocking adapters.
+With `abandon_on_cancel=True`, the watcher can exit while the thread finishes its call.
+Revisit that bridge when the adapter changes.
+Keeping a thread long term would need a compelling reason specific to that call.
 
-## Blocking for now
-
-Nobody uses Small Sea for real work yet, so code may still block the event loop.
-An app that freezes until a synchronous call finishes is acceptable for now; we fix it when the freeze matters or the code is being rewritten anyway.
-
-A block is a bug now when it causes a failure rather than a pause: a timeout, a deadlock, or a flaky test.
-For example, the Manager's NoteToSelf push holds a SQLite write reservation while Git commits.
-It must not await while it holds the reservation:
-another task's SQLite write would then block the event loop until the reservation's timeout, and fail.
+Before introducing an await, check what another task could change during the wait.
+Two encrypted uploads that share a sender key must stay in order from reading its iteration through saving the advanced key.
+If a caller releases a lock on cancellation while a write is still in flight, the next caller can start too soon.
+Sometimes keeping a short section synchronous protects the experiment.
+The Manager's NoteToSelf push holds a SQLite writer reservation while Git reads the live database.
+If it awaited Git there, a second SQLite writer on the event loop could block the task that must release the reservation.
 
 ## Event loops in tests
 
@@ -128,17 +126,7 @@ A watch with a timeout of 0 checks for news and returns without touching the ber
 
 ## Open questions
 
-- **What a cancelled publish or fetch leaves behind.**
-  Cod Sync stops a cancelled Git command cleanly, but nobody has yet checked whether every step at which a publish or fetch can be cancelled leaves the repository and the store in a state the next attempt handles.
-- **A sync Hub client.**
-  Command-line tools could enter async code once through `anyio.run`.
-  We have not yet found a caller that needs a separate sync client.
-- **The Hub's routes and the Manager.**
-  Many of the Hub's `async def` routes call the synchronous backend directly, so one slow storage read in a request still stalls the Hub.
-  Most of the Manager's web routes call TeamManager the same way.
-  So far only `push_team`, `fetch_teammate_core`, `push_note_to_self`, `refresh_note_to_self`, `authorize_identity_join`, `inspect_berth_source_candidate`, `prepare_team_route`, `reconcile_team_route`, `accept_invitation`, `refresh_app_sightings`, `known_apps`, `wait_for_team_admission_signal`, and the module-level `bootstrap_existing_identity` are async.
-  Under "Blocking for now" this can wait.
-- **Signed commits in Files.**
-  In Files, everything that reaches the Hub or a store is async: push, fetch, pull, and merge in `files.py`, and every Hub call in `sync.py`.
-  Local Git work stays synchronous, including the commits that `create_niche`, `publish`, and a merge make.
-  Git signs those commits by running `small-sea-git-sign`, which asks the Hub, so a web route that commits still waits on the Hub without letting other tasks run.
+- If a caller cancels a publish after sending the head write, what does the next attempt observe when the provider applies that write late?
+  A fetch interrupted around a peer-pin update poses a similar question about the local ref.
+- Which blocking calls interfere with the next experiment?
+  Candidates include a Hub request waiting on cloud storage, a Manager route running local Git, and a Files merge waiting for the Git signing helper to contact the Hub.
