@@ -1457,32 +1457,3 @@ async def watch_notifications(
         return {"updated": {}}
 
     return _check()
-
-
-class SendNotificationReq(pydantic.BaseModel):
-    message: str
-    title: Optional[str] = None
-
-
-@app.post("/notifications")
-async def send_notification(
-    req: SendNotificationReq, session_hex: str = Depends(_require_session)
-):
-    small_sea = app.state.backend
-    ok, msg_id, err = small_sea.send_notification(
-        session_hex, req.message, title=req.title
-    )
-    if not ok:
-        raise HTTPException(status_code=500, detail=err)
-    return {"ok": True, "id": msg_id}
-
-
-@app.get("/notifications")
-async def poll_notifications(
-    session_hex: str = Depends(_require_session),
-    since: Optional[str] = None,
-    timeout: int = 30,
-):
-    small_sea = app.state.backend
-    messages = small_sea.poll_notifications(session_hex, since=since, timeout=timeout)
-    return {"ok": True, "messages": messages}

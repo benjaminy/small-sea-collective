@@ -2222,13 +2222,6 @@ class SmallSeaBackend:
         adapter = self._make_notification_adapter(ss_session)
         return adapter.publish(message, title)
 
-    def poll_notifications(self, session_hex, since=None, timeout=30):
-        ss_session = self._lookup_session(session_hex)
-        adapter = self._make_notification_adapter(ss_session)
-        if since is None:
-            since = "all"
-        return adapter.poll(since, timeout)
-
 
 def setup_logging(
     log_file="app.log",

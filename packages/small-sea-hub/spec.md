@@ -402,14 +402,10 @@ Requires `url` (ntfy server base URL). The ntfy topic is derived automatically a
 `ss-{sha256("{team}/{app}")[:16]}`, so all participants sharing a berth converge on the
 same topic without any configuration. Set `access_key` if your ntfy server requires auth.
 
-`POST /notifications` publishes; `GET /notifications` long-polls with `since` (ntfy message ID
-or `"all"`) and `timeout` (seconds, default 30).
-
 **Gotify** (`protocol = "gotify"`): Self-hosted push notification server.
 Requires `url` (Gotify server base URL), `access_key` (app token for publishing), and
-`access_token` (client token for polling, defaults to app token if omitted).
-`GET /notifications` returns messages with id > `since` (numeric string or `"all"`) but does
-not long-poll — use Gotify's WebSocket stream (`/stream`) for real-time delivery.
+`access_token` (client token for reading, defaults to app token if omitted).
+The Hub only publishes to Gotify; nothing reads Gotify messages yet.
 
 ### Watcher-triggered notifications
 
@@ -817,30 +813,6 @@ Response:
 upload from another session on the same berth, or any local team-DB revision change detected by
 the watcher). An empty response is not an error — it is the signal to re-enumerate local team
 state before the next watch call.
-
----
-
-### ntfy notification endpoints
-
-**`POST /notifications`**
-
-```json
-{ "message": "<text>", "title": "<optional title>" }
-```
-
-Response:
-```json
-{ "ok": true, "id": "<message_id>" }
-```
-
----
-
-**`GET /notifications?since=<id>&timeout=<seconds>`** — Long-poll for new messages.
-
-Response:
-```json
-{ "ok": true, "messages": [ ... ] }
-```
 
 ---
 

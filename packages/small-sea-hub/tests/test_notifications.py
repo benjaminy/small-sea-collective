@@ -1,5 +1,8 @@
+import json
 import pathlib
 import time
+
+import httpx
 
 import small_sea_hub.backend as SmallSea
 import small_sea_hub.server as Server
@@ -77,7 +80,7 @@ def _make_bucket_public(endpoint, access_key, secret_key, bucket_name):
 
 
 def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
-    """Two participants on one Hub: one sends a notification, the other receives it."""
+    """Two participants on one Hub: the Hub sends one's notification, the other's topic has it."""
     alice_minio = minio_server_gen()
     bob_minio = minio_server_gen()
 
@@ -149,38 +152,20 @@ def test_notification_roundtrip(playground_dir, ntfy_server, minio_server_gen):
     alice_session = _open_session(http, "Alice", "ProjectX")
     bob_session = _open_session(http, "Bob", "ProjectX")
 
-    # Alice sends a notification
-    resp = http.post(
-        "/notifications",
-        json={
-            "message": "new data available",
-            "title": "Sync Update",
-        },
-        headers={"Authorization": f"Bearer {alice_session}"},
+    # Alice sends a notification the way the peer watcher does
+    ok, msg_id, err = backend.send_notification(
+        alice_session, "new data available", title="Sync Update"
     )
-    assert resp.status_code == 200
-    send_result = resp.json()
-    assert send_result["ok"] is True
-    assert send_result["id"] is not None
+    assert ok, err
+    assert msg_id is not None
 
     # Brief pause for ntfy to process
     time.sleep(0.5)
 
-    # Bob polls for notifications
-    resp = http.get(
-        "/notifications",
-        params={
-            "since": "all",
-            "timeout": "5",
-        },
-        headers={"Authorization": f"Bearer {bob_session}"},
-    )
+    # Bob reads the topic his session's adapter uses (same berth = same topic)
+    bob_topic = backend._make_notification_adapter(backend._lookup_session(bob_session)).topic
+    resp = httpx.get(f"{ntfy_url}/{bob_topic}/json", params={"poll": "1", "since": "all"}, timeout=10)
     assert resp.status_code == 200
-    poll_result = resp.json()
-    assert poll_result["ok"] is True
-    messages = poll_result["messages"]
-
-    # Bob should see Alice's message (same berth = same ntfy topic)
-    assert len(messages) >= 1
-    texts = [m.get("message") for m in messages]
+    messages = [json.loads(line) for line in resp.text.splitlines() if line]
+    texts = [m.get("message") for m in messages if m.get("event") == "message"]
     assert "new data available" in texts

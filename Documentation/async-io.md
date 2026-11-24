@@ -90,18 +90,32 @@ Short SQLite reads and writes on local files stay synchronous and run on the eve
 So do the small file operations of Cod Sync's local-folder store.
 We do not use aiosqlite: it runs SQLite in a thread, and that buys nothing for queries this short.
 
-## Code that cannot be async yet
+## Code with no async version
 
-Some libraries we depend on only block: boto3, and the Hub's storage and notification adapters, which use synchronous httpx.
-Async code runs each such call in a worker thread with `anyio.to_thread.run_sync`, one call at a time.
-Changes to shared state stay on the event loop, so no two threads change it at once.
+Use an async library wherever one exists.
+When there really is none, run the blocking call in a worker process (`anyio.to_process.run_sync`), not a worker thread.
+A cancelled caller can kill a worker process.
+An abandoned worker thread runs on until its call returns, and nothing can stop it;
+it can still be writing after its caller has released the lock that was supposed to protect the write.
 
-The Hub passes `abandon_on_cancel=True` (see `_in_thread` in `server.py`), so a cancelled caller stops waiting at once and Hub shutdown does not wait out a storage provider's retries.
-The thread runs on until the blocking call returns, and its result is dropped.
-That is why a worker thread is a stopgap: it frees the event loop, but nothing can stop it.
+The Hub watcher still calls blocking adapters (boto3, and storage and notification adapters that use synchronous httpx) in worker threads, through `_in_thread` in `server.py`.
+It passes `abandon_on_cancel=True`, so a cancelled caller stops waiting at once and Hub shutdown does not wait out a storage provider's retries.
+These threads are a stopgap to replace with async clients, not a pattern to copy.
 
-Code that waits on a thread lets other tasks run in the meantime.
-If two tasks could now overlap where they could not before, guard them with an `anyio.Lock`.
+Changes to shared state stay on the event loop.
+Code that awaits lets other tasks run in the meantime, whether it waits on an async client, a process, or a thread.
+If two tasks could now overlap where they could not before, guard them with an `anyio.Lock`, and keep together the steps whose order matters.
+For example, encrypted uploads that share a sender key must stay in order from reading the key's iteration through saving the advanced key.
+
+## Blocking for now
+
+Nobody uses Small Sea for real work yet, so code may still block the event loop.
+An app that freezes until a synchronous call finishes is acceptable for now; we fix it when the freeze matters or the code is being rewritten anyway.
+
+A block is a bug now when it causes a failure rather than a pause: a timeout, a deadlock, or a flaky test.
+For example, the Manager's NoteToSelf push holds a SQLite write reservation while Git commits.
+It must not await while it holds the reservation:
+another task's SQLite write would then block the event loop until the reservation's timeout, and fail.
 
 ## Event loops in tests
 
@@ -123,7 +137,7 @@ A watch with a timeout of 0 checks for news and returns without touching the ber
   Many of the Hub's `async def` routes call the synchronous backend directly, so one slow storage read in a request still stalls the Hub.
   Most of the Manager's web routes call TeamManager the same way.
   So far only `push_team`, `fetch_teammate_core`, `push_note_to_self`, `refresh_note_to_self`, `authorize_identity_join`, `inspect_berth_source_candidate`, `prepare_team_route`, `reconcile_team_route`, `accept_invitation`, `refresh_app_sightings`, `known_apps`, `wait_for_team_admission_signal`, and the module-level `bootstrap_existing_identity` are async.
-  These are the next migration steps; see #188.
+  Under "Blocking for now" this can wait.
 - **Signed commits in Files.**
   In Files, everything that reaches the Hub or a store is async: push, fetch, pull, and merge in `files.py`, and every Hub call in `sync.py`.
   Local Git work stays synchronous, including the commits that `create_niche`, `publish`, and a merge make.
