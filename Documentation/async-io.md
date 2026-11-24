@@ -7,21 +7,20 @@ This note records the rules the first async code settled on, and the questions i
 The design discussion is [issue #188](https://github.com/benjaminy/small-sea-collective/issues/188).
 
 The rules come from code that already follows them:
-Cod Sync's async modules (`packages/cod-sync/cod_sync/aio/`),
-the async Hub session (`packages/small-sea-client/small_sea_client/aio.py`),
+Cod Sync's transfers and async Git modules (`packages/cod-sync/cod_sync/`),
+the Hub session (`packages/small-sea-client/small_sea_client/client.py`),
 and the Hub's peer watcher (`packages/small-sea-hub/small_sea_hub/server.py`).
 Tide Table (`packages/tide-table/`) was written before we chose AnyIO and still uses plain asyncio.
 It is a finished demo, and we left it as it is.
 
 ## Interface shape
 
-Async code lives in its own modules, named after the sync modules they replace: `cod_sync.aio.repo` beside `cod_sync.repo`, `small_sea_client.aio` beside `small_sea_client.client`.
+Anything that reaches the Hub or a store is async and has no sync version:
+`cod_sync.protocol` (CodSync), `cod_sync.store` (the stores), and `small_sea_client.client` (Hub sessions).
+Local Git work stays synchronous in `cod_sync.repo`, `cod_sync.git`, and `cod_sync.verify`.
+Their async versions live beside them in `cod_sync.async_repo`, `cod_sync.async_git`, and `cod_sync.async_verify`, because CodSync runs Git without blocking the event loop.
 An async module shares its sync twin's exceptions, result types, and pure helpers, and imports them rather than copying them.
 No method is sometimes awaitable and sometimes not.
-
-An async module holds only what some async caller uses.
-Callers move over package by package.
-Once nothing uses a sync module, we delete it rather than keep both.
 
 ## Who owns what
 

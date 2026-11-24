@@ -78,14 +78,20 @@ Invalid signing configuration or an unavailable key fails creation; a signing-fa
 `CodSync(repo, store, verifier=...)` verifies stored history before `fetch` moves a pin or `publish` accepts an observation.
 It checks existing objects again on every invocation, including after rejection.
 Publication does not check the local head it uploads.
+CodSync's `publish` and `fetch` are coroutines.
+`repo` is a `cod_sync.async_repo.Repo`, and the verifier's `verify_history` must be a coroutine too.
 
-`cod_sync.verify.SshCommitVerifier` takes SSH public key lines and returns commit-to-fingerprint evidence.
+`cod_sync.async_verify.SshCommitVerifier`, the verifier to pass to CodSync, takes SSH public key lines and returns commit-to-fingerprint evidence.
 It verifies original commit objects with Git replacement processing disabled and rejects shallow or incomplete history.
 It accepts only Git's `G` verdict with a fingerprint in the supplied key set.
 Unsigned commits, bad signatures, unknown signers, and verification setup failures have distinct errors.
 An empty key set recognizes nobody; malformed keys are setup failures.
+`cod_sync.verify.SshCommitVerifier` makes the same checks for synchronous code that holds a `cod_sync.repo.Repo`.
 
 A signature attests a commit object, not the original authorship of copied content.
 Membership and key authorization remain Manager decisions.
-No runtime caller supplies a verifier yet; berth-scoped keys and Manager wiring are separate work.
+The Manager verifies Core history with `CoreHistoryVerifier` (in `small_sea_manager/git_verification.py`).
+It runs the async `SshCommitVerifier` with the device keys from this device's accepted certificates, then requires the root commit to be signed by the team's anchor key.
+Files and Tide Table pass verifiers that ask the Hub to judge the history (`POST /session/verify`).
+The Hub runs the sync `SshCommitVerifier` to answer.
 The micro tests exercise git 2.50.1 (Apple Git-155); other versions remain untested.
