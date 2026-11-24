@@ -1,4 +1,8 @@
-"""Reproduce a stale fetch retaining a later, unverified-by-this-call pin."""
+"""Check that a stale fetch no longer returns a retained pin its verifier did not accept.
+
+The original 2026-09-15 run reproduced that gap; #266 closed it.
+See retained-pin.md for both results.
+"""
 
 import json
 import os
@@ -71,7 +75,11 @@ async def run():
         bob._run(["update-ref", PIN, later_head])
 
         verifier = RecordingVerifier([public_key_text(key_a)])
-        result = await make_cod_sync(bob, old_store, verifier).fetch(pin_to_ref=PIN)
+        stale_rejection = None
+        try:
+            await make_cod_sync(bob, old_store, verifier).fetch(pin_to_ref=PIN)
+        except UnknownSignerError as exc:
+            stale_rejection = type(exc).__name__
 
         later_rejection = None
         try:
@@ -88,8 +96,9 @@ async def run():
         output = {
             "prediction": {
                 "fresh_pin_points_to_verified_A": True,
-                "stale_fetch_observes_and_verifies_A": True,
-                "stale_fetch_retains_descendant_B": True,
+                "stale_fetch_verifies_A": True,
+                "stale_fetch_rejects_retained_B": True,
+                "pin_still_points_to_B": True,
                 "A_only_verifier_rejects_B": True,
             },
             "observed": {
@@ -98,17 +107,11 @@ async def run():
                     and fresh.resolve_ref(PIN) == old_head
                     and set(fresh_verifier.verified) == {old_head}
                 ),
-                "stale_fetch_observes_and_verifies_A": (
-                    result.observed_head == old_head
-                    and set(verifier.verified) == {old_head}
-                ),
-                "stale_fetch_retains_descendant_B": (
-                    result.pin_disposition == "stale"
-                    and result.pinned_head == later_head
-                    and bob.resolve_ref(PIN) == later_head
-                ),
+                "stale_fetch_verifies_A": set(verifier.verified) == {old_head},
+                "stale_fetch_rejects_retained_B": stale_rejection == "UnknownSignerError",
+                "pin_still_points_to_B": bob.resolve_ref(PIN) == later_head,
                 "A_only_verifier_rejects_B": later_rejection == "UnknownSignerError",
-                "pin_disposition": result.pin_disposition,
+                "stale_fetch_rejection": stale_rejection,
                 "later_head_rejection": later_rejection,
             },
         }

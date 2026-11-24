@@ -1,5 +1,9 @@
 # Retained descendant pin probe
 
+The gap this probe found is closed.
+The original prediction, fixture and result below are kept as the record of the 2026-09-15 run.
+The [follow-up](#follow-up-2026-11-23) describes the fix and what the probe checks now.
+
 ## Prediction
 
 An old-store fetch with an A-only `SshCommitVerifier` will verify signed commit A and report A as `observed_head`.
@@ -15,9 +19,8 @@ It then runs the real `CodSync.fetch`, `SshCommitVerifier`, and `Repo.advance_re
 Git ignores global and system configuration, and the probe removes `SSH_AUTH_SOCK`.
 The probe uses only temporary local files.
 
-## Result
+## Result (2026-09-15)
 
-Run with `.venv/bin/python Experiments/contextual_git_fetch/retained_pin.py`.
 The saved run produced:
 
 ```json
@@ -48,3 +51,41 @@ The fixture therefore presupposes an earlier operation that imported B and seede
 Pins record transport observations.
 Retaining B does not integrate B into an app branch and does not release or authorize B's signing key.
 The probe covers one linear history, one process, and `LocalFolderStore`; it does not model concurrent ref writers or remote storage.
+
+## Follow-up (2026-11-23)
+
+Commit `830e030` (#266) closed the gap.
+When the pin is left at a commit other than the observed head, `CodSync.fetch` now asks the verifier to accept that retained commit as well.
+If the verifier rejects it, the fetch raises and returns no `pinned_head`.
+So a fetch can no longer hand its caller a pinned head that its verifier did not accept.
+
+The fix does not move the pin back.
+B stays pinned, as a transport observation from the earlier operation; only this fetch fails.
+
+`retained_pin.py` now checks the current behavior and fails if the old gap returns.
+It also runs on the async `CodSync`, `SshCommitVerifier` and `Repo.advance_ref`, since the sync `CodSync` is being removed.
+Run it with `uv run python Experiments/contextual_git_fetch/retained_pin.py`.
+On 2026-11-23 it produced:
+
+```json
+{
+  "observed": {
+    "A_only_verifier_rejects_B": true,
+    "fresh_pin_points_to_verified_A": true,
+    "later_head_rejection": "UnknownSignerError",
+    "pin_still_points_to_B": true,
+    "stale_fetch_rejection": "UnknownSignerError",
+    "stale_fetch_rejects_retained_B": true,
+    "stale_fetch_verifies_A": true
+  },
+  "prediction": {
+    "A_only_verifier_rejects_B": true,
+    "fresh_pin_points_to_verified_A": true,
+    "pin_still_points_to_B": true,
+    "stale_fetch_rejects_retained_B": true,
+    "stale_fetch_verifies_A": true
+  }
+}
+```
+
+The limits above still apply: one linear history, one process, `LocalFolderStore`, and no concurrent ref writers.

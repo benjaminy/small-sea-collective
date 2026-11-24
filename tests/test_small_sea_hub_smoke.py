@@ -7,17 +7,20 @@ import pathlib
 import shutil
 import tempfile
 
+import anyio
 import boto3
+import httpx
 import requests
 from botocore.config import Config as BotoConfig
 import pytest
 
 import small_sea_hub.backend as SmallSea
 import small_sea_manager.provisioning as Provisioning
-import cod_sync.protocol as CS
+from cod_sync.aio.protocol import CodSync
+from cod_sync.aio.repo import Repo as AioRepo
+from cod_sync.aio.store import SmallSeaStore
 from cod_sync.format import decode_link
 from cod_sync.repo import Repo
-from cod_sync.store import SmallSeaStore
 from cod_sync.git import gitCmd
 
 
@@ -135,20 +138,28 @@ def test_push_clone_roundtrip_subprocess(hub_env):
         gitCmd(["-C", str(alice_repo), "add", "-A"])
         gitCmd(["-C", str(alice_repo), "commit", "-m", "initial commit"])
 
-        # ---- Alice: publish via SmallSeaStore (real HTTP) ----
-        alice_store = SmallSeaStore(session_hex, base_url=hub_endpoint)
-        published = CS.CodSync(make_repo(alice_repo), alice_store).publish()
-        assert published.disposition == "published"
-
-        latest = decode_link(alice_store.get_latest_link()[0])
-        assert latest.previous is None
-        assert latest.head == published.attempted_head
-
-        # ---- Bob: cold-start fetch via SmallSeaStore (real HTTP) ----
-        bob_store = SmallSeaStore(session_hex, base_url=hub_endpoint)
         gitCmd(["init", "-b", "main", str(bob_repo)])
         bob = make_repo(bob_repo)
-        result = CS.CodSync(bob, bob_store).fetch()
+
+        async def roundtrip():
+            async with httpx.AsyncClient(base_url=hub_endpoint, timeout=60) as http:
+                # ---- Alice: publish via SmallSeaStore (real HTTP) ----
+                alice_store = SmallSeaStore(session_hex, http)
+                alice = make_repo(alice_repo)
+                published = await CodSync(
+                    AioRepo(alice.git_dir, alice.work_tree), alice_store
+                ).publish()
+                latest = decode_link((await alice_store.get_latest_link())[0])
+
+                # ---- Bob: cold-start fetch via SmallSeaStore (real HTTP) ----
+                bob_store = SmallSeaStore(session_hex, http)
+                fetched = await CodSync(AioRepo(bob.git_dir, bob.work_tree), bob_store).fetch()
+                return published, latest, fetched
+
+        published, latest, result = anyio.run(roundtrip)
+        assert published.disposition == "published"
+        assert latest.previous is None
+        assert latest.head == published.attempted_head
         bob.checkout_branch("main", result.observed_head)
 
         # ---- Verify working trees match ----

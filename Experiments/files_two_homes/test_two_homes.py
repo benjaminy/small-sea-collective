@@ -89,17 +89,19 @@ def _setup_cloud(root, participant, minio):
 
 
 def _push_core(client, root, token, participant):
-    from cod_sync.protocol import CodSync
-    from cod_sync.repo import Repo
-    from cod_sync.store import SmallSeaStore
+    from cod_sync.aio.protocol import CodSync
+    from cod_sync.aio.repo import Repo
+    from cod_sync.aio.store import SmallSeaStore
 
     response = client.post("/cloud/setup", headers={"Authorization": f"Bearer {token}"})
     response.raise_for_status()
     repo_path = pathlib.Path(root) / "Participants" / participant / TEAM / "Sync"
-    CodSync(
-        Repo(repo_path / ".git", repo_path),
-        SmallSeaStore(token, base_url=str(client.base_url), client=client),
-    ).publish()
+
+    async def publish():
+        async with httpx.AsyncClient(base_url=str(client.base_url), timeout=client.timeout) as http:
+            await CodSync(Repo(repo_path / ".git", repo_path), SmallSeaStore(token, http)).publish()
+
+    anyio.run(publish)
 
 
 def test_two_independent_homes_survive_bob_restart(tmp_path, minio_server_gen, monkeypatch):

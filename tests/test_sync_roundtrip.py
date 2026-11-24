@@ -14,6 +14,8 @@ import pathlib
 import shutil
 import tempfile
 
+import anyio
+import httpx
 import pytest
 import requests
 
@@ -22,9 +24,10 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 import small_sea_manager.provisioning as Provisioning
-import cod_sync.protocol as CS
+from cod_sync.aio.protocol import CodSync
+from cod_sync.aio.repo import Repo as AioRepo
+from cod_sync.aio.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.repo import Repo
-from cod_sync.store import PeerSmallSeaStore, SmallSeaStore
 from cod_sync.git import gitCmd
 
 
@@ -174,22 +177,25 @@ def test_push_and_pull_via_hub(sync_env):
         )
         assert resp.status_code == 200, resp.text
 
-        # ---- Alice: publish via SmallSeaStore ----
-        alice_store = SmallSeaStore(alice_token, base_url=hub_endpoint)
-        CS.CodSync(_repo(alice_repo), alice_store).publish()
-
-        # ---- Bob: fetch via peer proxy ----
-        bob_store = PeerSmallSeaStore(
-            bob_token, alice_teammate_id_hex, base_url=hub_endpoint
-        )
-
         # Init Bob's repo so fetch/adopt has somewhere to land.
         _git(["init", "-b", "main", str(bob_repo)])
         _git(["config", "user.email", "bob@test"], repo_dir=bob_repo)
         _git(["config", "user.name", "Bob"], repo_dir=bob_repo)
 
+        alice = _repo(alice_repo)
         bob = _repo(bob_repo)
-        result = CS.CodSync(bob, bob_store).fetch()
+
+        async def roundtrip():
+            async with httpx.AsyncClient(base_url=hub_endpoint, timeout=60) as http:
+                # ---- Alice: publish via SmallSeaStore ----
+                alice_store = SmallSeaStore(alice_token, http)
+                await CodSync(AioRepo(alice.git_dir, alice.work_tree), alice_store).publish()
+
+                # ---- Bob: fetch via peer proxy ----
+                bob_store = PeerSmallSeaStore(bob_token, alice_teammate_id_hex, http)
+                return await CodSync(AioRepo(bob.git_dir, bob.work_tree), bob_store).fetch()
+
+        result = anyio.run(roundtrip)
         bob.checkout_branch("main", result.observed_head)
 
         # ---- Verify ----
