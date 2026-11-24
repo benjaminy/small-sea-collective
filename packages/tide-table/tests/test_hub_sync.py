@@ -108,7 +108,7 @@ async def _publish_core(http, core_token, root, participant_hex, manager):
     report = await manager.reconcile_team_route(TEAM, app_name=_CORE_APP)
     assert report["route"] == "ready", report
     sync_dir = root / "Participants" / participant_hex / TEAM / "Sync"
-    async with httpx.AsyncClient(base_url=str(http.base_url)) as client:
+    async with httpx.AsyncClient(base_url=str(http.base_url), timeout=http.timeout) as client:
         store = AioSmallSeaStore(core_token, client)
         await CodSync(Repo(sync_dir / ".git", sync_dir), store).publish()
 
