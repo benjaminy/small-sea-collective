@@ -32,6 +32,7 @@ import small_sea_manager.provisioning as Provisioning
 from botocore.config import Config as BotoConfig
 from cod_sync.repo import Repo
 from fastapi.testclient import TestClient
+from small_sea_hub.server import _register_session_peers, _watcher_pass
 from small_sea_hub.server import app as hub_app
 from small_sea_manager.manager import (
     CoreFetchRemoteError,
@@ -282,3 +283,58 @@ def test_delivered_sender_key_cannot_read_a_link_published_before_it(teams):
     )
     with pytest.raises(CoreFetchRemoteError, match="No skipped key for iteration"):
         anyio.run(alice.fetch_teammate_core, _ALICE_TEAM, bob_id)
+
+
+def _bob_sender_keys_held_by_alice(teams):
+    _private, bob_device_public = Provisioning.get_current_team_device_key(
+        teams["root"], teams["bob_hex"], _ALICE_TEAM
+    )
+    bob_device_key_id = Provisioning.key_id_from_public(bob_device_public)
+    db = Provisioning.device_local_db_path(teams["root"], teams["alice_hex"])
+    with sqlite3.connect(str(db)) as conn:
+        return conn.execute(
+            "SELECT chain_id FROM peer_sender_key WHERE sender_device_key_id = ?",
+            (bob_device_key_id,),
+        ).fetchall()
+
+
+def test_the_hub_watcher_delivers_the_invitees_sender_key_to_the_inviter(teams):
+    """The Hub's runtime watch carries Bob's sender key to Alice (#235).
+
+    Task 100 handed Bob's redistribution artifact to Alice's Provisioning by
+    hand. Here nobody touches the artifact: Bob's Hub session reconciles and
+    uploads it to Bob's storage, and Alice's session finds it when Bob's peer
+    signal changes.
+    The test calls the watcher pass directly instead of running the Hub's
+    background loop, and both sessions share one Hub backend, as the rest of
+    this file does.
+    Not tested: whether Alice can then read Bob's chain (task 100 says not yet).
+    """
+    bob = teams["bob"]
+    assert bob.import_admission_package(_ALICE_TEAM, teams["alice_package"]) is True
+    anyio.run(bob.push_team, _ALICE_TEAM)
+
+    backend = hub_app.state.backend
+    hub_app.state.watched_sessions = {}
+    hub_app.state.watched_peers = {}
+    hub_app.state.peer_counts = {}
+    hub_app.state.peer_signal_events = {}
+    hub_app.state.ntfy_listener_berths = set()
+    hub_app.state.logger = backend.logger
+
+    def watch(nickname):
+        token = backend.open_session(
+            nickname, "SmallSeaCollectiveCore", _ALICE_TEAM, "Smoke Tests", mode="encrypted"
+        )
+        _register_session_peers(token.hex())
+
+    # Alice's session is already watching, and has seen Bob's current signal.
+    watch("Alice")
+    anyio.run(_watcher_pass, hub_app)
+    assert _bob_sender_keys_held_by_alice(teams) == []
+
+    # Bob's session reconciles and uploads the artifact, which bumps his signal.
+    # The same pass then checks Alice's peers, sees the change, and reads it.
+    watch("Bob")
+    anyio.run(_watcher_pass, hub_app)
+    assert len(_bob_sender_keys_held_by_alice(teams)) == 1
