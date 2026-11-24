@@ -26,11 +26,10 @@ import time
 import httpx
 import pytest
 import small_sea_manager.provisioning as Provisioning
+from cod_sync.aio.protocol import CodSync
+from cod_sync.aio.repo import Repo
 from cod_sync.aio.store import PeerSmallSeaStore as AioPeerSmallSeaStore
 from cod_sync.aio.store import SmallSeaStore as AioSmallSeaStore
-from cod_sync.protocol import CodSync
-from cod_sync.repo import Repo
-from cod_sync.store import SmallSeaStore
 from small_sea_manager.manager import TeamManager, _CORE_APP
 from test_support import _shut_down, accept_and_export, acceptance_record_from_courier, reserve_ports
 
@@ -109,8 +108,9 @@ async def _publish_core(http, core_token, root, participant_hex, manager):
     report = await manager.reconcile_team_route(TEAM, app_name=_CORE_APP)
     assert report["route"] == "ready", report
     sync_dir = root / "Participants" / participant_hex / TEAM / "Sync"
-    store = SmallSeaStore(core_token, base_url=str(http.base_url))
-    CodSync(Repo(sync_dir / ".git", sync_dir), store).publish()
+    async with httpx.AsyncClient(base_url=str(http.base_url)) as client:
+        store = AioSmallSeaStore(core_token, client)
+        await CodSync(Repo(sync_dir / ".git", sync_dir), store).publish()
 
 
 async def _setup_two_teammate_team(root, minio_server_gen, hub_gen):

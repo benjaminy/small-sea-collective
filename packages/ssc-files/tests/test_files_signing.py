@@ -16,7 +16,6 @@ from cod_sync.repo import Repo
 from ssc_files import files
 import httpx
 from small_sea_client import aio
-from small_sea_client.client import SmallSeaClient, SmallSeaSession
 from small_sea_hub.backend import SmallSeaBackend
 from small_sea_hub.server import app
 import small_sea_manager.provisioning as provisioning
@@ -163,12 +162,13 @@ def test_files_signer_scope_mismatch_rejected(tmp_path, test_signer):
 
 
 async def _signer_through_hub(port, token):
+    """Return a Files signer, the session info and the signing public key."""
     hub_url = f"http://127.0.0.1:{port}"
     async with httpx.AsyncClient(base_url=hub_url) as http:
+        session = aio.SmallSeaSession(http, token)
         # This test only commits, so the signer never checks history.
-        return await files.CommitSigner.from_session(
-            aio.SmallSeaSession(http, token), hub_url, verify=None
-        )
+        signer = await files.CommitSigner.from_session(session, hub_url, verify=None)
+        return signer, await session.session_info(), await session.signing_public_key()
 
 
 def test_files_commit_signed_through_real_hub(tmp_path):
@@ -204,20 +204,21 @@ def test_files_commit_signed_through_real_hub(tmp_path):
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        session = SmallSeaSession(SmallSeaClient(port=server.server_port), token)
-        signer = anyio.run(_signer_through_hub, server.server_port, token)
+        signer, session_info, public_key = anyio.run(
+            _signer_through_hub, server.server_port, token
+        )
         signer = replace(signer, env={**signer.env,
                                       "GIT_AUTHOR_NAME": "Hub Test",
                                       "GIT_AUTHOR_EMAIL": "hub@test",
                                       "GIT_COMMITTER_NAME": "Hub Test",
                                       "GIT_COMMITTER_EMAIL": "hub@test"})
-        context = files.FilesMaterializationContext.from_session_info(session.session_info())
+        context = files.FilesMaterializationContext.from_session_info(session_info)
         root = tmp_path / "files"
         files.init_files(root, participant)
         files.create_niche(root, participant, context, "docs", signer=signer)
         registry = files._registry_git_dir(root, context)
         signers = tmp_path / "hub-allowed-signers"
-        signers.write_text(f"hub@test {session.signing_public_key()}\n")
+        signers.write_text(f"hub@test {public_key}\n")
         _git(registry, tmp_path, "-c", f"gpg.ssh.allowedSignersFile={signers}",
              "verify-commit", "HEAD")
         assert context_from_commit(Repo(registry), "HEAD").purpose == "SmallSeaCollectiveFiles/registry"

@@ -14,6 +14,8 @@ from small_sea_manager.manager import TeamManager, _CORE_APP
 from test_support import (
     accept_and_export,
     acceptance_record_from_courier,
+    async_hub_client,
+    publish_main,
 )
 
 
@@ -47,13 +49,11 @@ def _push_team_repo_via_hub(http, session_hex, repo_dir, manager, team_name):
     report = anyio.run(functools.partial(manager.reconcile_team_route, team_name, app_name=_CORE_APP))
     assert report["route"] == "ready", report
 
-    from cod_sync.protocol import CodSync
+    from cod_sync.aio.store import SmallSeaStore
     from cod_sync.repo import Repo
-    from cod_sync.store import SmallSeaStore
-    remote = SmallSeaStore(session_hex, base_url="http://testserver", client=http)
+    remote = SmallSeaStore(session_hex, async_hub_client(http))
     repo_path = pathlib.Path(repo_dir)
-    cs = CodSync(Repo(repo_path / ".git", repo_path), remote)
-    cs.publish()
+    publish_main(Repo(repo_path / ".git", repo_path), remote)
 
 
 def _session_berth_info(http, session_hex):
@@ -392,7 +392,6 @@ def test_peer_panel_fragment_active_session(playground_dir, minio_server_gen, mo
 def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
     playground_dir, minio_server_gen, monkeypatch
 ):
-    from small_sea_client.client import SmallSeaClient, SmallSeaSession
     from small_sea_hub.server import app as hub_app
 
     env = _setup_two_teammate_team(playground_dir, minio_server_gen)
@@ -423,8 +422,7 @@ def test_unfetched_hint_appears_after_peer_push_and_clears_after_fetch(
 
     # Seed peer_counts so /session/peers reports Alice's signal_count = 3.
     # The background watcher is not running in TestClient; we set it directly.
-    bob_session = SmallSeaSession(SmallSeaClient(port=11437, _http_client=http), bob_login.session_token)
-    bob_berth_id_hex = bob_session.session_info()["berth_id"]
+    bob_berth_id_hex = bob_login.session_info["berth_id"]
     if not hasattr(hub_app.state, "peer_counts"):
         hub_app.state.peer_counts = {}
     hub_app.state.peer_counts[(bob_berth_id_hex, env["alice_teammate_id_hex"])] = 3
