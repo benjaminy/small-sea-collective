@@ -28,6 +28,7 @@ import importlib.util
 import inspect
 import os
 import pathlib
+import re
 import shutil
 import sqlite3
 import sys
@@ -407,6 +408,7 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen, *, b
     files.add_checkout(b.files_root, alice_hex, ctx_b, niche, str(checkout_b))
     anyio.run(functools.partial(sync.merge_self, b.files_root, alice_hex, TEAM, niche, _http_client=b.http))
     assert (checkout_b / "beds.txt").read_bytes() == original
+    spy.assert_only(mark, "B")
 
     if b_watches_before_edit:
         mark = spy.mark()
@@ -420,13 +422,7 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen, *, b
     )
 
 
-@pytest.mark.parametrize("b_watches", [
-    "before_edit",
-    pytest.param("after_push", marks=pytest.mark.xfail(
-        raises=sync.SelfFetchPartialError, strict=True,
-        reason="#280: B prepares its distribution after the push, at a later "
-               "sender-key iteration, so A cannot decrypt B's niche links.")),
-])
+@pytest.mark.parametrize("b_watches", ["before_edit", "after_push"])
 def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen, b_watches):
     """B's Hub first runs its watcher either before B edits or right after B pushes.
 
@@ -469,7 +465,18 @@ def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen, b
     (participant,) = manager_a.list_teammates(TEAM)
     anyio.run(manager_a.fetch_teammate_core, TEAM, participant["id"])
     manager_a.integrate_core_sources(TEAM)
-    anyio.run(functools.partial(sync.fetch_self_via_hub, a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http))
+    fetch_a = functools.partial(sync.fetch_self_via_hub, a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http)
+    if b_watches == "after_push":
+        # B prepared its distribution after the push, at a later sender-key
+        # iteration, so A cannot decrypt even B's newest niche link.
+        with pytest.raises(sync.SelfFetchPartialError) as caught:
+            anyio.run(fetch_a)
+        assert re.search(
+            r"latest-link\.yaml: download failed: No skipped key for iteration \d+",
+            str(caught.value.niche_error),
+        ), repr(caught.value.niche_error)
+        pytest.xfail("#280: A cannot read what B published before preparing its distribution")
+    anyio.run(fetch_a)
     anyio.run(functools.partial(sync.merge_self, a.files_root, alice_hex, TEAM, NICHE, _http_client=a.http))
     assert (checkout_a / "beds.txt").read_bytes() == from_b
 
