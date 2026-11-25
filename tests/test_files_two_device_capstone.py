@@ -57,7 +57,7 @@ NICHE = "plans"
 FILES_APP = sync.HUB_APP_NAME
 
 
-def _load_hub_app(tag):
+def _load_hub_server(tag):
     """Load a fresh copy of the Hub server module, giving an independent app."""
     import small_sea_hub.server as template
 
@@ -66,7 +66,7 @@ def _load_hub_app(tag):
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
-    return module.app
+    return module
 
 
 class _Device:
@@ -80,9 +80,30 @@ class _Device:
         self.backend = SmallSea.SmallSeaBackend(
             root_dir=str(root), auto_approve_sessions=True
         )
-        app = _load_hub_app(name)
-        app.state.backend = self.backend
-        self.http = TestClient(app)
+        self.hub = _load_hub_server(name)
+        self.hub.app.state.backend = self.backend
+        self.http = TestClient(self.hub.app)
+
+    def watcher_pass(self):
+        """Run one pass of this Hub's runtime watch, as its background loop would.
+
+        The TestClient does not run the Hub's lifespan, so the first call sets up
+        the watcher state and registers the sessions opened so far, as a Hub
+        restart does.
+        Sessions opened later register themselves through the Hub's routes.
+        """
+        state = self.hub.app.state
+        if not hasattr(state, "watched_sessions"):
+            state.watched_sessions = {}
+            state.watched_peers = {}
+            state.peer_counts = {}
+            state.self_signal_counts = {}
+            state.peer_signal_events = {}
+            state.ntfy_listener_berths = set()
+            state.logger = self.backend.logger
+            for token_hex in self.backend.all_session_tokens():
+                self.hub._register_session_peers(token_hex)
+        anyio.run(self.hub._watcher_pass, self.hub.app)
 
     async def signer(self, team_name, hub_port=11437, *, _http_client=None, key_token=None):
         """A CommitSigner using this session's real workhorse key and the Hub's verifier.
@@ -273,8 +294,25 @@ def test_files_database_guard_detects_manager_database_open(tmp_path, monkeypatc
         guard.assert_clean()
 
 
-def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
-    """Steps 1-11: both devices set up, B holds A's Files niche in a checkout."""
+def _b_sender_keys_held_by_a(env):
+    import small_sea_manager.provisioning as Provisioning
+
+    _private, b_public = Provisioning.get_current_team_device_key(env.b.root, env.alice_hex, TEAM)
+    b_key_id = Provisioning.key_id_from_public(b_public)
+    db = Provisioning.device_local_db_path(env.a.root, env.alice_hex)
+    with sqlite3.connect(str(db)) as conn:
+        return conn.execute(
+            "SELECT chain_id FROM peer_sender_key WHERE sender_device_key_id = ?",
+            (b_key_id,),
+        ).fetchall()
+
+
+def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen, *, b_watches_before_edit=True):
+    """Steps 1-11: both devices set up, B holds A's Files niche in a checkout.
+
+    With `b_watches_before_edit`, B's Hub runs a watcher pass at the end, which
+    prepares and uploads B's sender-key distribution for A.
+    """
     minio = minio_server_gen()
     a = _Device("A", tmp_path / "device-a", monkeypatch)
     b = _Device("B", tmp_path / "device-b", monkeypatch)
@@ -340,16 +378,12 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
     known = next(t for t in manager_b.list_known_teams() if t["name"] == TEAM)
     assert known["joined_locally"] is False
 
-    # 9. Linked-device bootstrap and sender-key redistribution.
+    # 9. Linked-device bootstrap.
+    # B's sender key reaches A later, through the Hubs' runtime watch.
     prepared = manager_b.prepare_linked_device_team_join(TEAM)
     created = manager_a.create_linked_device_bootstrap(TEAM, prepared["join_request_bundle"])
     manager_b.finalize_linked_device_bootstrap(TEAM, created["bootstrap_bundle"])
     assert manager_b.get_team(TEAM)["joined_locally"] is True
-    redistribution = Provisioning.redistribute_sender_key(b.root, alice_hex, TEAM)
-    for artifact in redistribution["artifacts"]:
-        Provisioning.receive_sender_key_distribution(
-            a.root, alice_hex, TEAM, artifact["distribution_payload"],
-        )
 
     # 10. Files on B derives its context from B's Hub session.
     b.use_files()
@@ -374,26 +408,54 @@ def _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen):
     anyio.run(functools.partial(sync.merge_self, b.files_root, alice_hex, TEAM, niche, _http_client=b.http))
     assert (checkout_b / "beds.txt").read_bytes() == original
 
+    if b_watches_before_edit:
+        mark = spy.mark()
+        b.watcher_pass()
+        spy.assert_only(mark, "B")
+
     return SimpleNamespace(
-        a=a, b=b, spy=spy, mark=mark, db_guard=db_guard, alice_hex=alice_hex,
+        a=a, b=b, spy=spy, db_guard=db_guard, alice_hex=alice_hex,
         manager_a=manager_a, manager_b=manager_b, ctx_a=ctx_a, ctx_b=ctx_b,
         checkout_a=checkout_a, checkout_b=checkout_b, original=original, niche=niche,
     )
 
 
-def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen):
-    env = _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen)
-    a, b, spy, mark, db_guard = env.a, env.b, env.spy, env.mark, env.db_guard
+@pytest.mark.parametrize("b_watches", [
+    "before_edit",
+    pytest.param("after_push", marks=pytest.mark.xfail(
+        raises=sync.SelfFetchPartialError, strict=True,
+        reason="#280: B prepares its distribution after the push, at a later "
+               "sender-key iteration, so A cannot decrypt B's niche links.")),
+])
+def test_signed_files_two_device_flow(tmp_path, monkeypatch, minio_server_gen, b_watches):
+    """B's Hub first runs its watcher either before B edits or right after B pushes.
+
+    Either way A's Hub runs its watcher after both, and must receive B's key.
+    """
+    env = _two_devices_until_b_has_files(
+        tmp_path, monkeypatch, minio_server_gen,
+        b_watches_before_edit=(b_watches == "before_edit"))
+    a, b, spy, db_guard = env.a, env.b, env.spy, env.db_guard
     alice_hex, manager_a, manager_b = env.alice_hex, env.manager_a, env.manager_b
     ctx_a, ctx_b, checkout_a, checkout_b, niche = (
         env.ctx_a, env.ctx_b, env.checkout_a, env.checkout_b, env.niche)
 
     # 12. B changes the file and pushes through B's Hub.
+    mark = spy.mark()
     from_b = b"tomatoes by the fence\nbeans on the trellis\n"
     (checkout_b / "beds.txt").write_bytes(from_b)
     files.publish(b.files_root, alice_hex, ctx_b, niche, str(checkout_b), message="B1", signer=anyio.run(functools.partial(b.signer, TEAM, _http_client=b.http)))
     anyio.run(functools.partial(sync.push_via_hub, b.files_root, alice_hex, TEAM, niche, _http_client=b.http))
+    if b_watches == "after_push":
+        b.watcher_pass()
     spy.assert_only(mark, "B")
+
+    # A's Hub picks B's sender key out of Alice's storage.
+    assert _b_sender_keys_held_by_a(env) == []
+    mark = spy.mark()
+    a.watcher_pass()
+    spy.assert_only(mark, "A")
+    assert len(_b_sender_keys_held_by_a(env)) == 1
 
     # 13. A learns B's signing delegation, then fetches and integrates B's change.
     # B's key was delegated in B's Core chain when B first signed.
@@ -449,6 +511,7 @@ def test_signed_capstone_refuses_bad_history(
     env = _two_devices_until_b_has_files(tmp_path, monkeypatch, minio_server_gen)
     a, b, alice_hex, niche = env.a, env.b, env.alice_hex, env.niche
     import small_sea_manager.provisioning as Provisioning
+    a.watcher_pass()
 
     # B commits something A must refuse.
     # B's own Hub would refuse to publish it, so B's verifier is replaced by one that accepts everything.
